@@ -25,3 +25,20 @@ def test_inventory_access_layer_and_candidate_views(tmp_path: Path) -> None:
         assert connection.execute("SELECT _source_row FROM cases ORDER BY _source_row").fetchall() == [(2,), (3,)]
     finally:
         connection.close()
+
+
+def test_access_layer_joins_a_unique_secondary_table(tmp_path: Path) -> None:
+    (tmp_path / "images.csv").write_text("case_id,image_path\n1,a.png\n2,b.png\n", encoding="utf-8")
+    (tmp_path / "labels.csv").write_text("case_id,diagnosis\n1,benign\n2,malignant\n", encoding="utf-8")
+    inventory = discover_dataset(tmp_path)
+    schema_map = infer_schema(inventory)
+    assert len(schema_map["joins"]) == 1
+    manifest = build_access_layer(inventory, schema_map, tmp_path / "runs")
+    connection = duckdb.connect(manifest["duckdb_path"])
+    try:
+        assert connection.execute('SELECT "table_1_diagnosis" FROM cases ORDER BY case_id').fetchall() == [
+            ("benign",),
+            ("malignant",),
+        ]
+    finally:
+        connection.close()

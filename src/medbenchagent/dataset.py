@@ -177,12 +177,29 @@ def infer_schema(inventory: dict[str, object]) -> dict[str, object]:
         unknowns.append("Select the stable case or image identifier column.")
     if len(image_options) > 1:
         unknowns.append("Select the column that resolves to image files.")
+    joins: list[dict[str, object]] = []
+    for entity in candidates:
+        if entity["table_id"] == canonical["table_id"]:
+            continue
+        shared_keys = set(key_options) & set(entity["candidate_primary_keys"])
+        if len(shared_keys) == 1:
+            key = shared_keys.pop()
+            joins.append(
+                {
+                    "left_table": canonical["table_id"],
+                    "left_column": key,
+                    "right_table": entity["table_id"],
+                    "right_column": key,
+                }
+            )
+        else:
+            unknowns.append(f"Confirm the join path for {entity['table_id']}.")
     return {
         "entities": candidates,
         "canonical_table": canonical["table_id"],
         "case_key": key_options[0] if len(key_options) == 1 else None,
         "image_column": image_options[0] if len(image_options) == 1 else None,
-        "joins": [],
+        "joins": joins,
         "unknowns": unknowns,
     }
 
@@ -207,6 +224,10 @@ def propose_schema(inventory: dict[str, object], heuristic: dict[str, object]) -
         unresolved.append("Select the stable case or image identifier column.")
     if len(canonical["candidate_image_columns"]) > 1 and not heuristic.get("image_column"):
         unresolved.append("Select the column that resolves to image files.")
+    joined_tables = {join["right_table"] for join in heuristic["joins"]}
+    for entity in heuristic["entities"]:
+        if entity["table_id"] != heuristic["canonical_table"] and entity["table_id"] not in joined_tables:
+            unresolved.append(f"Confirm the join path for {entity['table_id']}.")
     heuristic["unknowns"] = unresolved
     heuristic["model_proposal"] = {
         key: proposal.get(key)
@@ -260,7 +281,29 @@ def build_access_layer(inventory: dict[str, object], schema_map: dict[str, objec
             if records:
                 connection.executemany(f'INSERT INTO "{sql_name}" VALUES ({placeholders})', records)
         canonical = str(schema_map["canonical_table"])
-        connection.execute(f'CREATE VIEW cases AS SELECT * FROM "{table_map[canonical]}"')
+        select_fields = ["c.*"]
+        joins = []
+        for index, join in enumerate(schema_map.get("joins", [])):
+            if join["left_table"] != canonical:
+                raise ValueError("A join must start from the canonical table.")
+            related = str(join["right_table"])
+            right_column = str(join["right_column"])
+            duplicates = connection.execute(
+                f'SELECT COUNT(*) - COUNT(DISTINCT "{right_column}") FROM "{table_map[related]}"'
+            ).fetchone()[0]
+            if duplicates:
+                raise ValueError(f"Join key {related}.{right_column} is not unique.")
+            related_source = next(item for item in raw_tables if item["table_id"] == related)
+            alias = f"j{index}"
+            for column in related_source["columns"]:
+                if column != right_column:
+                    select_fields.append(f'{alias}."{column}" AS "{related}_{column}"')
+            joins.append(
+                f'LEFT JOIN "{table_map[related]}" {alias} ON c."{join["left_column"]}" = {alias}."{right_column}"'
+            )
+        connection.execute(
+            "CREATE VIEW cases AS SELECT " + ", ".join(select_fields) + f' FROM "{table_map[canonical]}" c ' + " ".join(joins)
+        )
     finally:
         connection.close()
     compact_inventory = {key: value for key, value in inventory.items() if key not in {"_raw_tables", "image_paths"}}
