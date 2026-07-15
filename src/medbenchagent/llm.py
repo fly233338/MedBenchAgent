@@ -4,13 +4,25 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from openai import OpenAI
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ModelUnavailable(RuntimeError):
     """Raised when the planning model is not configured or returns invalid JSON."""
+
+
+def load_project_env() -> None:
+    """Load the repository's optional .env without overriding process-level settings."""
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+
+
+load_project_env()
 
 
 def complete_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
