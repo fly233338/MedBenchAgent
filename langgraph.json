@@ -1,6 +1,6 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "benchmark_builder": "./src/medbenchagent/workflow/graph.py:compile_benchmark_graph"
+    "benchmark_builder": "./src/medbenchagent/workflow/graph.py:benchmark_graph"
   }
 }

@@ -29,6 +29,7 @@ packages = ["src/medbenchagent"]
 
 [dependency-groups]
 dev = [
+    "langgraph-cli[inmem]>=0.3.0",
     "pytest>=8.0.0",
     "ruff>=0.6.0",
 ]
