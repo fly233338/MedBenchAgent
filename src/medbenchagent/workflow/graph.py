@@ -102,11 +102,33 @@ def _apply_mapping_answer(schema_map: dict[str, Any], answer: object) -> dict[st
         if column not in columns:
             raise ValueError(f"{column!r} is not a column in the canonical table.")
         schema_map[field] = column
+    join = re.search(
+        r"\bjoin\s*=\s*(table_\d+)\.([A-Za-z0-9_]+)\s*:\s*(table_\d+)\.([A-Za-z0-9_]+)", str(answer)
+    )
+    if join:
+        left_table, left_column, right_table, right_column = join.groups()
+        entities = {entity["table_id"]: entity for entity in schema_map["entities"]}
+        if left_table not in entities or right_table not in entities:
+            raise ValueError("The requested join references an unknown table.")
+        if left_column not in entities[left_table]["columns"] or right_column not in entities[right_table]["columns"]:
+            raise ValueError("The requested join references an unknown column.")
+        schema_map["joins"] = [
+            {
+                "left_table": left_table,
+                "left_column": left_column,
+                "right_table": right_table,
+                "right_column": right_column,
+            }
+        ]
     unresolved = []
     if not schema_map.get("case_key"):
         unresolved.append("Select the stable case or image identifier column using case_key=<column>.")
     if len(canonical["candidate_image_columns"]) > 1 and not schema_map.get("image_column"):
         unresolved.append("Select the image-reference column using image_column=<column>.")
+    joined_tables = {item["right_table"] for item in schema_map.get("joins", [])}
+    for entity in schema_map["entities"]:
+        if entity["table_id"] != schema_map["canonical_table"] and entity["table_id"] not in joined_tables:
+            unresolved.append(f"Confirm the join path for {entity['table_id']}.")
     schema_map["unknowns"] = unresolved
     return schema_map
 
