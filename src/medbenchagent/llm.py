@@ -27,10 +27,10 @@ load_project_env()
 
 def complete_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
     """Return a JSON object from the configured DeepSeek-compatible endpoint."""
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = os.getenv("DEEPSEEK_API_KEY", "local-vllm")
     model = os.getenv("DEEPSEEK_MODEL")
-    if not api_key or not model:
-        raise ModelUnavailable("DEEPSEEK_API_KEY and DEEPSEEK_MODEL must be configured.")
+    if not model:
+        raise ModelUnavailable("DEEPSEEK_MODEL must be configured.")
 
     client = OpenAI(api_key=api_key, base_url=os.getenv("DEEPSEEK_BASE_URL"))
     response = client.chat.completions.create(
