@@ -1,0 +1,41 @@
+[project]
+name = "medbenchagent"
+version = "0.1.0"
+description = "An agent development project built with LangGraph."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "chromadb>=0.5.0",
+    "duckdb>=1.1.0",
+    "langgraph>=0.6.0",
+    "langchain-core>=0.3.0",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "openai>=1.0.0",
+    "openpyxl>=3.1.0",
+    "pypdf>=5.0.0",
+    "python-dotenv>=1.0.0",
+    "sentence-transformers>=3.0.0",
+]
+
+[project.scripts]
+medbenchagent = "medbenchagent.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/medbenchagent"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

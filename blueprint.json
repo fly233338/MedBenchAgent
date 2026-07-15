@@ -1,0 +1,155 @@
+{
+  "benchmark_info": {
+    "disease": "str",
+    "modality": "str",
+    "description": "str",
+    "language": "en",
+    "sample_count": 0
+  },
+
+  "tasks": {
+    "modality_identification": {
+      "description": "Identify the medical imaging modality shown in the image.",
+      "require": "This task requires a modality field containing at least two distinct values, such as CT, MRI, X-ray, ultrasound, mammography, or pathology.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "accuracy",
+      "sample_count": null
+    },
+
+    "view_identification": {
+      "description": "Identify the imaging view, projection, plane, or acquisition orientation.",
+      "require": "This task requires a view, projection, or plane field with values such as CC, MLO, AP, PA, lateral, axial, coronal, or sagittal.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "accuracy",
+      "sample_count": null
+    },
+
+    "laterality_identification": {
+      "description": "Identify the anatomical side represented in the image or containing the target finding.",
+      "require": "This task requires a laterality field with values such as left, right, or bilateral.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "accuracy",
+      "sample_count": null
+    },
+
+    "image_quality_assessment": {
+      "description": "Determine whether the image has sufficient diagnostic quality or identify the primary image-quality issue.",
+      "require": "This task requires a quality or artifact field with values such as diagnostic, non-diagnostic, motion artifact, blur, underexposure, or overexposure.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "accuracy",
+      "sample_count": null
+    },
+
+    "anatomy_identification": {
+      "description": "Identify the anatomical structure, organ, or tissue shown in the image.",
+      "require": "This task requires an anatomy field containing at least two meaningful values, such as breast, lung, liver, brain, retina, or bone.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "accuracy",
+      "sample_count": null
+    },
+
+    "anatomy_attribute": {
+      "description": "Determine a global anatomical or tissue-level characteristic that is not specific to a focal finding.",
+      "require": "This task requires a structured anatomy-attribute field such as breast density, organ size, tissue composition, parenchymal pattern, or anatomical development stage.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "accuracy",
+      "sample_count": null
+    },
+
+    "finding_presence": {
+      "description": "Determine whether an abnormal imaging finding is present.",
+      "require": "This task requires a finding-presence or abnormality field with values such as present and absent, or normal and abnormal.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "accuracy",
+      "sample_count": null
+    },
+
+    "finding_type": {
+      "description": "Identify the type of abnormal imaging finding shown in the image.",
+      "require": "This task requires a finding-type field containing at least two clinically meaningful values, such as mass, calcification, nodule, effusion, fracture, asymmetry, or architectural distortion.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "accuracy",
+      "sample_count": null
+    },
+
+    "finding_attribute": {
+      "description": "Identify a morphological or visual characteristic of a specific imaging finding.",
+      "require": "This task requires structured finding-attribute fields such as shape, margin, distribution, texture, density, echogenicity, enhancement, or signal intensity.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "accuracy",
+      "sample_count": null
+    },
+
+    "finding_description": {
+      "description": "Describe the clinically relevant visual characteristics of a specific imaging finding.",
+      "require": "This task requires either a paired expert-written finding description or structured fields such as finding type, shape, margin, location, distribution, and imaging appearance.",
+      "task_type": "open_vqa",
+      "response_format": "free_text",
+      "metric": "bleu",
+      "sample_count": null
+    },
+
+    "assessment_category": {
+      "description": "Determine the standardized clinical assessment category supported by the medical image.",
+      "require": "This task requires an assessment-category field with values such as BI-RADS 1–6, PI-RADS 1–5, LI-RADS categories, Lung-RADS categories, or an equivalent standardized system.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "macro_f1",
+      "sample_count": null
+    },
+
+    "severity_grading": {
+      "description": "Determine the severity, stage, or grade of an abnormality or disease.",
+      "require": "This task requires a severity, grade, or stage field with ordered values such as mild, moderate, and severe; grade 1–3; or stage I–IV.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "macro_f1",
+      "sample_count": null
+    },
+
+    "diagnosis": {
+      "description": "Determine the most likely named diagnosis supported by the medical image.",
+      "require": "This task requires a diagnosis field containing clinically specific disease or condition labels, such as pneumonia, fracture, fibroadenoma, cyst, invasive ductal carcinoma, or another expert-confirmed diagnosis.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "accuracy",
+      "sample_count": null
+    },
+
+    "pathology_status": {
+      "description": "Determine the pathological or malignancy status associated with the imaging finding.",
+      "require": "This task requires a pathology or malignancy-status field with values such as benign, malignant, atypical, high-risk, in situ, or invasive.",
+      "task_type": "close_vqa",
+      "response_format": "letter",
+      "metric": "macro_f1",
+      "sample_count": null
+    },
+
+    "report_generation": {
+      "description": "Generate a complete medical imaging report based on the provided image or image set.",
+      "require": "This task requires a paired report field containing a complete expert-written medical imaging report for each corresponding case.",
+      "task_type": "open_vqa",
+      "response_format": "free_text",
+      "metric": "bleu",
+      "sample_count": null
+    },
+
+    "detection": {
+      "description": "Locate the imaging finding specified by an accompanying textual description.",
+      "require": "This task requires a finding label or textual finding description paired with a correct bounding-box field for the corresponding target.",
+      "task_type": "open_vqa",
+      "response_format": "bbox",
+      "metric": "miou",
+      "sample_count": null
+    }
+  }
+}
