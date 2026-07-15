@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
-from medbenchagent.benchmark_info import extract_benchmark_info, merge_info, missing_fields
+from medbenchagent.benchmark_info import extract_benchmark_info, merge_info, missing_fields, write_working_blueprint
 from medbenchagent.contracts import GenerationRequest
 from medbenchagent.dataset import build_access_layer, discover_dataset, infer_schema, plan_task_capabilities, propose_schema
 from medbenchagent.llm import ModelUnavailable
@@ -28,6 +28,7 @@ class BenchmarkState(MessagesState):
     user_requirement: str
     user_constraints: list[str]
     benchmark_confirmed: bool
+    working_blueprint_path: str
     dataset_root: str
     dataset_inventory: dict[str, Any]
     dataset_schema_map: dict[str, Any]
@@ -82,10 +83,14 @@ def _benchmark_info_node(state: BenchmarkState) -> dict[str, Any]:
             }
         )
         if _confirmed(answer):
+            working_blueprint_path = state.get("working_blueprint_path") or write_working_blueprint(
+                info, PROJECT_ROOT / "benchmarks" / "runs"
+            )
             return {
                 "benchmark_info": info,
                 "user_requirement": requirement,
                 "benchmark_confirmed": True,
+                "working_blueprint_path": working_blueprint_path,
             }
         requirement = f"{requirement}\nRequested correction: {answer}"
         info = merge_info(info, {})
@@ -179,7 +184,9 @@ def _dataset_node(state: BenchmarkState) -> dict[str, Any]:
             )
             return {"dataset_root": root, "user_constraints": [*constraints, str(answer)]}
         manifest = build_access_layer(inventory, schema_map, PROJECT_ROOT / "benchmarks" / "runs")
-        plans = plan_task_capabilities(BLUEPRINT, manifest, schema_map)
+        blueprint_path = state.get("working_blueprint_path")
+        blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8")) if blueprint_path else BLUEPRINT
+        plans = plan_task_capabilities(blueprint, manifest, schema_map)
         plans = _apply_task_feedback(plans, state.get("task_plan_feedback", ""))
     except ModelUnavailable as exc:
         interrupt({"kind": "model_configuration", "message": str(exc)})

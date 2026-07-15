@@ -3,12 +3,31 @@
 from __future__ import annotations
 
 import re
+import json
+import uuid
 from pathlib import Path
 from typing import Any
 
 from medbenchagent.llm import complete_json
 
 REQUIRED_FIELDS = ("disease", "modality", "description", "language", "sample_count")
+TEMPLATE_BLUEPRINT_PATH = Path(__file__).parents[2] / "blueprint.json"
+
+EXTRACTION_PROMPT = """Extract a medical VLM benchmark request into one JSON object.
+Return exactly these five keys and no wrapper object:
+{
+  "disease": "English disease name or null",
+  "modality": "English imaging modality or null",
+  "description": "concise English benchmark objective or null",
+  "language": "en, zh, or null",
+  "sample_count": "positive integer or null"
+}
+
+The user may write Chinese, English, or both. Infer the requested benchmark language,
+not the language of the user's message. Translate disease and modality to standard
+English medical terms. Convert expressions such as "20题", "10k", and "2.5k" to a
+positive integer. Use null only when the user did not provide or imply a value.
+Return valid JSON only."""
 
 
 def parse_sample_count(value: object) -> int | None:
@@ -47,13 +66,22 @@ def merge_info(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, An
 
 
 def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Use DeepSeek to extract only the five fields defined in ``blueprint.json``."""
-    blueprint_path = Path(__file__).parents[2] / "blueprint.json"
-    blueprint = blueprint_path.read_text(encoding="utf-8")
+    """Use DeepSeek to fill only the five benchmark-info fields."""
     result = complete_json(
-        "Extract benchmark_info faithfully. Return JSON with exactly disease, modality, "
-        "description, language, sample_count. Use null for unavailable values. "
-        "sample_count may be a number or a k/m scale string.",
-        f"Blueprint:\n{blueprint}\n\nCurrent values: {existing or {}}\n\nUser text:\n{requirement}",
+        EXTRACTION_PROMPT,
+        f"Current values: {json.dumps(existing or {})}\n\nUser requirement:\n{requirement}",
     )
     return merge_info(existing or {}, result)
+
+
+def write_working_blueprint(
+    benchmark_info: dict[str, Any], runs_root: str | Path, template_path: Path = TEMPLATE_BLUEPRINT_PATH
+) -> str:
+    """Copy the immutable blueprint template and replace only its benchmark-info section."""
+    blueprint = json.loads(template_path.read_text(encoding="utf-8"))
+    blueprint["benchmark_info"] = benchmark_info
+    run_dir = Path(runs_root) / uuid.uuid4().hex
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output_path = run_dir / "blueprint.json"
+    output_path.write_text(json.dumps(blueprint, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(output_path)
