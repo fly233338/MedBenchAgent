@@ -27,7 +27,7 @@ load_project_env()
 
 def complete_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
     """Return a JSON object from the configured DeepSeek-compatible endpoint."""
-    api_key = os.getenv("DEEPSEEK_API_KEY", "local-vllm")
+    api_key = os.getenv("DEEPSEEK_API_KEY") or "local-vllm"
     model = os.getenv("DEEPSEEK_MODEL")
     if not model:
         raise ModelUnavailable("DEEPSEEK_MODEL must be configured.")

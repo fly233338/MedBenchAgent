@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,9 +29,15 @@ def test_complete_json_uses_placeholder_key_for_unauthenticated_vllm(monkeypatch
                 )
             )
 
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
     monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     monkeypatch.setattr(llm, "OpenAI", FakeOpenAI)
 
     assert llm.complete_json("system", "user") == {}
     assert captured["api_key"] == "local-vllm"
+
+
+def test_langgraph_server_loads_project_env_file() -> None:
+    config_path = Path(__file__).parents[1] / "langgraph.json"
+
+    assert json.loads(config_path.read_text(encoding="utf-8"))["env"] == "./.env"
