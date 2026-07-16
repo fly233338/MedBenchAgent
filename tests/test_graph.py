@@ -8,10 +8,12 @@ import medbenchagent.workflow.graph as workflow
 
 
 def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, monkeypatch) -> None:
-    dataset_root = tmp_path / "dataset"
-    dataset_root.mkdir()
-    (dataset_root / "cases.csv").write_text(
-        "case_id,image_path,diagnosis\n1,image-1.png,benign\n2,image-2.png,malignant\n", encoding="utf-8"
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"image")
+    annotation_path = tmp_path / "annotation.jsonl"
+    annotation_path.write_text(
+        '{"image_id":"img-1","image_path":"image.png","patient_id":null,"case_id":null,"study_id":"study-1","annotation":{"breast_birads":"BI-RADS 4"}}\n',
+        encoding="utf-8",
     )
 
     monkeypatch.setattr(
@@ -25,7 +27,19 @@ def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, mon
             "sample_count": 2,
         },
     )
-    monkeypatch.setattr(workflow, "propose_schema", lambda _inventory, schema: schema)
+    monkeypatch.setattr(
+        workflow,
+        "screen_tasks",
+        lambda _blueprint, _profile, _overrides: [
+            {
+                "task_id": "assessment_category",
+                "decision": "retain",
+                "supporting_fields": ["annotation.breast_birads"],
+                "reason": "BI-RADS is available.",
+            }
+        ],
+    )
+    monkeypatch.setattr(workflow, "apply_task_screening", lambda _path, _plans: str(tmp_path / "report.json"))
 
     class FakeRag:
         def __init__(self, *_args):
@@ -43,7 +57,7 @@ def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, mon
     assert result["__interrupt__"]
     result = graph.invoke(Command(resume="yes"), config)
     assert result["__interrupt__"]
-    result = graph.invoke(Command(resume=str(dataset_root)), config)
+    result = graph.invoke(Command(resume=str(annotation_path)), config)
     assert result["__interrupt__"]
     result = graph.invoke(Command(resume="yes"), config)
     assert result["__interrupt__"]
@@ -52,3 +66,6 @@ def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, mon
     result = graph.invoke(Command(resume="yes"), config)
     assert result["ready_for_generation"] is True
     assert result["generation_request"]["target_sample_count"] == 2
+    assert result["generation_request"]["approved_task_plans"][0]["supporting_fields"] == [
+        "annotation.breast_birads"
+    ]

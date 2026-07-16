@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +18,16 @@ from medbenchagent.benchmark_info import (
     write_working_blueprint,
 )
 from medbenchagent.contracts import GenerationRequest
-from medbenchagent.dataset import build_access_layer, discover_dataset, infer_schema, plan_task_capabilities, propose_schema
+from medbenchagent.dataset import AnnotationValidationError, prepare_annotation_dataset
 from medbenchagent.llm import ModelUnavailable
 from medbenchagent.pdf_rag import LocalPdfRag, RagUnavailable, design_questions
+from medbenchagent.task_screening import (
+    TaskScreeningReviewRequired,
+    apply_task_screening,
+    screen_tasks,
+)
 
 PROJECT_ROOT = Path(__file__).parents[3]
-BLUEPRINT = json.loads((PROJECT_ROOT / "blueprint.json").read_text(encoding="utf-8"))
 
 
 class BenchmarkState(MessagesState):
@@ -32,16 +35,15 @@ class BenchmarkState(MessagesState):
 
     benchmark_info: dict[str, Any]
     user_requirement: str
-    user_constraints: list[str]
     benchmark_confirmed: bool
     working_blueprint_path: str
-    dataset_root: str
-    dataset_inventory: dict[str, Any]
-    dataset_schema_map: dict[str, Any]
+    annotation_path: str
+    dataset_profile: dict[str, Any]
     dataset_access_manifest: dict[str, Any]
+    task_screening_report_path: str
+    task_screening_overrides: dict[str, dict[str, Any]]
     task_plans: list[dict[str, Any]]
     task_plans_confirmed: bool
-    task_plan_feedback: str
     materials_root: str
     question_designs: list[dict[str, Any]]
     designs_confirmed: bool
@@ -105,126 +107,81 @@ def _benchmark_info_node(state: BenchmarkState) -> dict[str, Any]:
         info = merge_info(info, {})
 
 
-def _apply_mapping_answer(schema_map: dict[str, Any], answer: object) -> dict[str, Any]:
-    """Accept explicit ``case_key=<column>`` and ``image_column=<column>`` constraints only."""
-    constraints = dict(re.findall(r"\b(case_key|image_column)\s*=\s*([A-Za-z0-9_]+)", str(answer)))
-    canonical = next(
-        entity for entity in schema_map["entities"] if entity["table_id"] == schema_map["canonical_table"]
-    )
-    columns = canonical["columns"]
-    for field, column in constraints.items():
-        if column not in columns:
-            raise ValueError(f"{column!r} is not a column in the canonical table.")
-        schema_map[field] = column
-    join = re.search(
-        r"\bjoin\s*=\s*(table_\d+)\.([A-Za-z0-9_]+)\s*:\s*(table_\d+)\.([A-Za-z0-9_]+)", str(answer)
-    )
-    if join:
-        left_table, left_column, right_table, right_column = join.groups()
-        entities = {entity["table_id"]: entity for entity in schema_map["entities"]}
-        if left_table not in entities or right_table not in entities:
-            raise ValueError("The requested join references an unknown table.")
-        if left_column not in entities[left_table]["columns"] or right_column not in entities[right_table]["columns"]:
-            raise ValueError("The requested join references an unknown column.")
-        schema_map["joins"] = [
-            {
-                "left_table": left_table,
-                "left_column": left_column,
-                "right_table": right_table,
-                "right_column": right_column,
-            }
-        ]
-    unresolved = []
-    if not schema_map.get("case_key"):
-        unresolved.append("Select the stable case or image identifier column using case_key=<column>.")
-    if len(canonical["candidate_image_columns"]) > 1 and not schema_map.get("image_column"):
-        unresolved.append("Select the image-reference column using image_column=<column>.")
-    joined_tables = {item["right_table"] for item in schema_map.get("joins", [])}
-    for entity in schema_map["entities"]:
-        if entity["table_id"] != schema_map["canonical_table"] and entity["table_id"] not in joined_tables:
-            unresolved.append(f"Confirm the join path for {entity['table_id']}.")
-    schema_map["unknowns"] = unresolved
-    return schema_map
-
-
-def _apply_task_feedback(plans: list[dict[str, Any]], feedback: str) -> list[dict[str, Any]]:
-    """Apply only explicit, auditable quota and decision modifications."""
-    match = re.search(r"task_id\s*=\s*([A-Za-z0-9_]+).*?(?:count|recommended_count)\s*=\s*(\d+)", feedback)
-    if match:
-        task_id, count = match.groups()
-        for plan in plans:
-            if plan["task_id"] == task_id and plan["decision"] == "retain":
-                plan["recommended_count"] = min(int(count), int(plan["eligible_case_count"]))
-    drop = re.search(r"task_id\s*=\s*([A-Za-z0-9_]+).*?decision\s*=\s*drop", feedback)
-    if drop:
-        for plan in plans:
-            if plan["task_id"] == drop.group(1):
-                plan["decision"] = "drop"
-                plan["recommended_count"] = 0
-                plan["decision_reason"] = "Explicitly dropped by the user."
-    return plans
-
-
 def _dataset_node(state: BenchmarkState) -> dict[str, Any]:
-    root = state.get("dataset_root")
-    if not root:
-        root = str(
+    annotation_path = state.get("annotation_path")
+    if not annotation_path:
+        annotation_path = str(
             interrupt(
                 {
-                    "kind": "dataset_root",
-                    "question": "Provide the local directory containing CSV/XLSX files and image assets.",
+                    "kind": "annotation_path",
+                    "question": "Provide the absolute path to annotation.jsonl.",
                 }
             )
         ).strip()
     try:
-        inventory = discover_dataset(root)
-        schema_map = infer_schema(inventory)
-        schema_map = propose_schema(inventory, schema_map)
-        constraints = list(state.get("user_constraints", []))
-        for constraint in constraints:
-            schema_map = _apply_mapping_answer(schema_map, constraint)
-        if schema_map["unknowns"]:
-            answer = interrupt(
-                {
-                    "kind": "schema_mapping_review",
-                    "schema_candidates": schema_map,
-                    "question": schema_map["unknowns"][0],
-                }
-            )
-            return {"dataset_root": root, "user_constraints": [*constraints, str(answer)]}
-        manifest = build_access_layer(inventory, schema_map, PROJECT_ROOT / "benchmarks" / "runs")
-        blueprint_path = state.get("working_blueprint_path")
-        blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8")) if blueprint_path else BLUEPRINT
-        plans = plan_task_capabilities(blueprint, manifest, schema_map)
-        plans = _apply_task_feedback(plans, state.get("task_plan_feedback", ""))
+        profile, manifest = prepare_annotation_dataset(
+            annotation_path, PROJECT_ROOT / "benchmarks" / "dataset_cache"
+        )
+        blueprint_path = state["working_blueprint_path"]
+        blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
+        plans = screen_tasks(blueprint, profile, state.get("task_screening_overrides"))
+        report_path = apply_task_screening(blueprint_path, plans)
+    except TaskScreeningReviewRequired as exc:
+        answer = interrupt(
+            {
+                "kind": "task_support_review",
+                "task_id": exc.task_id,
+                "model_response": exc.response,
+                "valid_annotation_paths": exc.valid_paths,
+                "question": "Provide a JSON task decision with task_id, decision, supporting_fields, and reason.",
+            }
+        )
+        try:
+            override = json.loads(str(answer))
+        except json.JSONDecodeError as parse_error:
+            raise ValueError("Task review response must be valid JSON.") from parse_error
+        return {
+            "annotation_path": annotation_path,
+            "task_screening_overrides": {**state.get("task_screening_overrides", {}), exc.task_id: override},
+        }
     except ModelUnavailable as exc:
         interrupt({"kind": "model_configuration", "message": str(exc)})
-        return {"dataset_root": root, "task_plans_confirmed": False}
-    except ValueError as exc:
-        answer = interrupt({"kind": "dataset_error", "message": str(exc), "question": "Provide a corrected path or mapping."})
-        return {"dataset_root": str(answer).strip(), "user_constraints": []}
-    compact_inventory = {key: value for key, value in inventory.items() if key != "_raw_tables" and key != "image_paths"}
+        return {"annotation_path": annotation_path, "task_plans_confirmed": False}
+    except (AnnotationValidationError, ValueError) as exc:
+        answer = interrupt({"kind": "dataset_error", "message": str(exc), "question": "Provide a corrected annotation.jsonl path."})
+        return {"annotation_path": str(answer).strip(), "task_screening_overrides": {}}
     answer = interrupt(
         {
             "kind": "task_plan_confirmation",
-            "inventory": compact_inventory,
-            "schema_map": schema_map,
+            "dataset_profile": profile,
+            "dataset_access_manifest": manifest,
             "task_plans": plans,
-            "question": "Confirm the task decisions and recommended counts, or provide a correction.",
+            "question": "Confirm the task retain/drop decisions and supporting fields.",
         }
     )
     if not _confirmed(answer):
+        override_answer = interrupt(
+            {
+                "kind": "task_plan_change_required",
+                "question": "Provide a JSON task decision with task_id, decision, supporting_fields, and reason.",
+            }
+        )
+        try:
+            override = json.loads(str(override_answer))
+        except json.JSONDecodeError as parse_error:
+            raise ValueError("Task-plan change must be valid JSON.") from parse_error
+        task_id = override.get("task_id")
+        if not isinstance(task_id, str):
+            raise ValueError("Task-plan change must include task_id.")
         return {
-            "dataset_root": root,
-            "user_constraints": [*constraints, str(answer)],
-            "task_plan_feedback": str(answer),
-            "task_plans_confirmed": False,
+            "annotation_path": annotation_path,
+            "task_screening_overrides": {**state.get("task_screening_overrides", {}), task_id: override},
         }
     return {
-        "dataset_root": root,
-        "dataset_inventory": compact_inventory,
-        "dataset_schema_map": schema_map,
+        "annotation_path": annotation_path,
+        "dataset_profile": profile,
         "dataset_access_manifest": manifest,
+        "task_screening_report_path": report_path,
         "task_plans": plans,
         "task_plans_confirmed": True,
     }

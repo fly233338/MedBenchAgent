@@ -1,44 +1,112 @@
+import json
 from pathlib import Path
 
 import duckdb
+import pytest
 
-from medbenchagent.dataset import build_access_layer, discover_dataset, infer_schema, plan_task_capabilities
+from medbenchagent.dataset import AnnotationValidationError, annotation_schema_path, prepare_annotation_dataset
 
 
-def test_inventory_access_layer_and_candidate_views(tmp_path: Path) -> None:
-    data_path = tmp_path / "cases.csv"
-    data_path.write_text(
-        "case_id,image_path,diagnosis\n1,image-1.png,benign\n2,image-2.png,malignant\n",
-        encoding="utf-8",
+def _write_annotation_dataset(tmp_path: Path, records: list[dict]) -> Path:
+    images = tmp_path / "images"
+    images.mkdir(exist_ok=True)
+    for record in records:
+        relative_path = Path(record["image_path"])
+        image_path = tmp_path / relative_path
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(b"image")
+    annotation_path = tmp_path / "annotation.jsonl"
+    annotation_path.write_text(
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records), encoding="utf-8"
     )
-    inventory = discover_dataset(tmp_path)
-    schema_map = infer_schema(inventory)
-    assert schema_map["unknowns"] == []
-    manifest = build_access_layer(inventory, schema_map, tmp_path / "runs")
-    blueprint = {"tasks": {"diagnosis": {"response_format": "letter"}}}
-    plans = plan_task_capabilities(blueprint, manifest, schema_map)
-    assert plans[0]["decision"] == "retain"
-    assert plans[0]["eligible_case_count"] == 2
+    return annotation_path
+
+
+def _records() -> list[dict]:
+    return [
+        {
+            "image_id": "img-001",
+            "image_path": "images/img-001.png",
+            "patient_id": None,
+            "case_id": None,
+            "study_id": "study-001",
+            "annotation": {
+                "laterality": "L",
+                "breast_birads": "BI-RADS 4",
+                "findings": [{"finding_type": "calcification", "bbox": [120, 80, 260, 210]}],
+            },
+        },
+        {
+            "image_id": "img-002",
+            "image_path": "images/img-002.png",
+            "patient_id": None,
+            "case_id": None,
+            "study_id": "study-001",
+            "annotation": {
+                "laterality": "R",
+                "breast_birads": "BI-RADS 2",
+                "findings": [
+                    {"finding_type": "mass", "bbox": [1, 2, 3, 4]},
+                    {"finding_type": "calcification", "bbox": [5, 6, 7, 8]},
+                ],
+            },
+        },
+    ]
+
+
+def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(tmp_path: Path, monkeypatch) -> None:
+    annotation_path = _write_annotation_dataset(tmp_path, _records())
+    monkeypatch.setattr("medbenchagent.llm.complete_json", lambda *_args: pytest.fail("LLM must not be called"))
+
+    profile, manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
+
+    assert profile["total_images"] == 2
+    assert profile["valid_images"] == 2
+    assert profile["fields"]["annotation.findings[*].finding_type"]["coverage_images"] == 2
+    assert profile["fields"]["annotation.findings[*].finding_type"]["unique_value_count"] == 2
+    assert profile["fields"]["annotation.breast_birads"]["coverage_rate"] == 1.0
     connection = duckdb.connect(manifest["duckdb_path"])
     try:
-        assert connection.execute('SELECT COUNT(*) FROM "task_candidates_diagnosis"').fetchone()[0] == 2
-        assert connection.execute("SELECT _source_row FROM cases ORDER BY _source_row").fetchall() == [(2,), (3,)]
+        assert connection.execute("SELECT COUNT(*) FROM images").fetchone()[0] == 2
+        stored = connection.execute("SELECT annotation::VARCHAR FROM images WHERE image_id = 'img-002'").fetchone()[0]
+        assert stored.index('"mass"') < stored.index('"calcification"')
+        assert connection.execute("SELECT patient_id, case_id, study_id FROM images LIMIT 1").fetchone() == (
+            None,
+            None,
+            "study-001",
+        )
     finally:
         connection.close()
 
+    monkeypatch.setattr("medbenchagent.dataset.load_annotation_jsonl", lambda _path: pytest.fail("cache not used"))
+    cached_profile, cached_manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
+    assert cached_profile == profile
+    assert cached_manifest == manifest
 
-def test_access_layer_joins_a_unique_secondary_table(tmp_path: Path) -> None:
-    (tmp_path / "images.csv").write_text("case_id,image_path\n1,a.png\n2,b.png\n", encoding="utf-8")
-    (tmp_path / "labels.csv").write_text("case_id,diagnosis\n1,benign\n2,malignant\n", encoding="utf-8")
-    inventory = discover_dataset(tmp_path)
-    schema_map = infer_schema(inventory)
-    assert len(schema_map["joins"]) == 1
-    manifest = build_access_layer(inventory, schema_map, tmp_path / "runs")
-    connection = duckdb.connect(manifest["duckdb_path"])
-    try:
-        assert connection.execute('SELECT "table_1_diagnosis" FROM cases ORDER BY case_id').fetchall() == [
-            ("benign",),
-            ("malignant",),
-        ]
-    finally:
-        connection.close()
+
+@pytest.mark.parametrize(
+    ("records", "expected"),
+    [
+        ([{key: value for key, value in _records()[0].items() if key != "study_id"}], "missing required fields"),
+        ([_records()[0], {**_records()[1], "image_id": "img-001"}], "duplicate image_id"),
+        ([{**_records()[0], "annotation": []}], "annotation must be a JSON object"),
+        ([{**_records()[0], "image_path": "images/missing.png"}], "image_path does not exist"),
+    ],
+)
+def test_annotation_jsonl_rejects_invalid_records(tmp_path: Path, records: list[dict], expected: str) -> None:
+    annotation_path = _write_annotation_dataset(tmp_path, records)
+    if "image_path does not exist" in expected:
+        (tmp_path / "images" / "missing.png").unlink()
+
+    with pytest.raises(AnnotationValidationError, match=expected):
+        prepare_annotation_dataset(annotation_path, tmp_path / "cache")
+
+
+def test_annotation_jsonl_rejects_invalid_json_and_schema_is_versioned(tmp_path: Path) -> None:
+    annotation_path = tmp_path / "annotation.jsonl"
+    annotation_path.write_text("{not json}\n", encoding="utf-8")
+
+    with pytest.raises(AnnotationValidationError, match="invalid JSON"):
+        prepare_annotation_dataset(annotation_path, tmp_path / "cache")
+    schema = json.loads(annotation_schema_path().read_text(encoding="utf-8"))
+    assert schema["title"].endswith("v1")

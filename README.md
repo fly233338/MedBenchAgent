@@ -1,8 +1,20 @@
 # MedBenchAgent
 
 MedBenchAgent plans medical VLM benchmark generation from a natural-language brief,
-tabular datasets, image assets, and PDF medical references.  The first release stops
-after an approved `GenerationRequest`; it does not generate benchmark items.
+image-level `annotation.jsonl` data, and PDF medical references. The first release
+stops after an approved `GenerationRequest`; it does not generate benchmark items.
+
+## Dataset input
+
+The workflow accepts only an `annotation.jsonl` file. Each line represents one image
+and must contain `image_id`, `image_path`, `patient_id`, `case_id`, `study_id`, and an
+object-valued `annotation`. Image paths are resolved relative to the JSONL file.
+The versioned output contract is at
+`src/medbenchagent/schemas/annotation.v1.schema.json`.
+
+Validated data is cached by JSONL content hash under `benchmarks/dataset_cache/` as a
+DuckDB database with one `images` row per JSONL line and a deterministic profile. CSV
+and XLSX inputs are not supported.
 
 ## Development
 

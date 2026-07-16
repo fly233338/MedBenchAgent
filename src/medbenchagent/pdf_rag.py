@@ -120,7 +120,12 @@ def design_questions(
             continue
         query = " ".join(
             str(value)
-            for value in (benchmark_info.get("disease"), benchmark_info.get("modality"), plan["task_id"], plan["answer_sources"])
+            for value in (
+                benchmark_info.get("disease"),
+                benchmark_info.get("modality"),
+                plan["task_id"],
+                plan.get("supporting_fields", []),
+            )
         )
         citations = rag.retrieve(query)
         context = "\n\n".join(
