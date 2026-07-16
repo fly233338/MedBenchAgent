@@ -74,6 +74,22 @@ def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = N
     return merge_info(existing or {}, result)
 
 
+def extract_benchmark_field(field: str, user_answer: str) -> object:
+    """Normalize one explicitly supplied BenchmarkInfo value without revisiting other fields."""
+    if field not in REQUIRED_FIELDS:
+        raise ValueError(f"Unsupported BenchmarkInfo field: {field}")
+    result = complete_json(
+        f"""Extract only the {field!r} value for a medical VLM benchmark.
+Return exactly one JSON object with one key: {{"{field}": value}}.
+The user may answer in Chinese or English. Translate disease and modality to standard
+English terms. For language return only en or zh. For sample_count return a positive
+integer, converting expressions such as 20题, 10k, and 2.5k. Do not return any other
+BenchmarkInfo fields. Return valid JSON only.""",
+        f"User answer for {field}:\n{user_answer}",
+    )
+    return result.get(field)
+
+
 def write_working_blueprint(
     benchmark_info: dict[str, Any], runs_root: str | Path, template_path: Path = TEMPLATE_BLUEPRINT_PATH
 ) -> str:

@@ -11,7 +11,13 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
-from medbenchagent.benchmark_info import extract_benchmark_info, merge_info, missing_fields, write_working_blueprint
+from medbenchagent.benchmark_info import (
+    extract_benchmark_field,
+    extract_benchmark_info,
+    merge_info,
+    missing_fields,
+    write_working_blueprint,
+)
 from medbenchagent.contracts import GenerationRequest
 from medbenchagent.dataset import build_access_layer, discover_dataset, infer_schema, plan_task_capabilities, propose_schema
 from medbenchagent.llm import ModelUnavailable
@@ -67,14 +73,17 @@ def _benchmark_info_node(state: BenchmarkState) -> dict[str, Any]:
         except ModelUnavailable as exc:
             interrupt({"kind": "model_configuration", "message": str(exc)})
             continue
-        missing = missing_fields(info)
-        if missing:
+        while missing := missing_fields(info):
             field = missing[0]
             answer = interrupt(
                 {"kind": "benchmark_info_missing", "field": field, "question": f"Please provide {field}."}
             )
-            requirement = f"{requirement}\nSupplement for {field}: {answer}"
-            continue
+            try:
+                value = extract_benchmark_field(field, str(answer))
+            except ModelUnavailable as exc:
+                interrupt({"kind": "model_configuration", "message": str(exc)})
+                continue
+            info = merge_info(info, {field: value})
         answer = interrupt(
             {
                 "kind": "benchmark_info_confirmation",
