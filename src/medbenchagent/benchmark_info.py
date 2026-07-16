@@ -18,7 +18,7 @@ Return exactly these five keys and no wrapper object:
 {
   "disease": "English disease name or null",
   "modality": "English imaging modality or null",
-  "description": "concise English benchmark objective or null",
+  "description": "One complete English sentence describing the benchmark objective, disease, modality, and requested task focus; never return only keywords or a phrase.",
   "language": "en, zh, or null",
   "sample_count": "positive integer or null"
 }
