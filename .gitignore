@@ -32,3 +32,8 @@ benchmarks/dataset_cache/
 .DS_Store
 Thumbs.db
 .agent/
+.codex/
+
+datasets/
+materials/
+models/
