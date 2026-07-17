@@ -18,7 +18,8 @@ REQUIRED_RECORD_FIELDS = (
     "study_id",
     "annotation",
 )
-PROFILE_SCHEMA_VERSION = "annotation-profile.v1"
+PROFILE_SCHEMA_VERSION = "annotation-profile.v2"
+CACHE_FORMAT_VERSION = "annotation-cache.v2"
 
 
 class AnnotationValidationError(ValueError):
@@ -55,6 +56,10 @@ def _value_type(value: object) -> str:
     return "object"
 
 
+def _is_non_empty(value: object) -> bool:
+    return value is not None and value not in ("", [], {})
+
+
 def _validate_optional_id(record: dict[str, Any], field: str, line_number: int) -> None:
     value = record[field]
     if value is not None and (not isinstance(value, str) or not value.strip()):
@@ -62,7 +67,7 @@ def _validate_optional_id(record: dict[str, Any], field: str, line_number: int) 
 
 
 def load_annotation_jsonl(annotation_path: str | Path) -> list[dict[str, Any]]:
-    """Validate JSONL records and resolve image paths relative to the JSONL file."""
+    """Validate annotation records without accessing image files."""
     path = Path(annotation_path).expanduser().resolve()
     if path.name != "annotation.jsonl":
         raise AnnotationValidationError("Input file must be named annotation.jsonl.")
@@ -97,12 +102,7 @@ def load_annotation_jsonl(annotation_path: str | Path) -> list[dict[str, Any]]:
                 _validate_optional_id(record, field, line_number)
             if not isinstance(record["annotation"], dict):
                 raise AnnotationValidationError(f"Line {line_number}: annotation must be a JSON object.")
-            resolved_image_path = (path.parent / image_path).resolve()
-            if not resolved_image_path.is_file():
-                raise AnnotationValidationError(
-                    f"Line {line_number}: image_path does not exist: {resolved_image_path}"
-                )
-            records.append({**record, "_resolved_image_path": str(resolved_image_path), "_source_row": line_number})
+            records.append({**record, "_source_row": line_number})
     if not records:
         raise AnnotationValidationError("annotation.jsonl contains no records.")
     return records
@@ -119,15 +119,15 @@ def _collect_profile_values(
         {
             "types": set(),
             "covering_images": set(),
-            "non_null_count": 0,
+            "non_empty_count": 0,
             "values": Counter(),
             "examples": [],
         },
     )
     item["types"].add(_value_type(value))
     item["covering_images"].add(image_index)
-    if value is not None:
-        item["non_null_count"] += 1
+    if _is_non_empty(value):
+        item["non_empty_count"] += 1
         encoded = _canonical_value(value)
         item["values"][encoded] += 1
         if len(item["examples"]) < 3:
@@ -157,7 +157,7 @@ def build_dataset_profile(records: list[dict[str, Any]], content_hash: str) -> d
             "types": sorted(item["types"]),
             "coverage_images": len(item["covering_images"]),
             "coverage_rate": round(len(item["covering_images"]) / len(records), 4),
-            "non_null_count": item["non_null_count"],
+            "non_empty_count": item["non_empty_count"],
             "unique_value_count": len(item["values"]),
             "examples": item["examples"],
             "frequent_values": frequent_values,
@@ -166,7 +166,6 @@ def build_dataset_profile(records: list[dict[str, Any]], content_hash: str) -> d
         "schema_version": PROFILE_SCHEMA_VERSION,
         "annotation_sha256": content_hash,
         "total_images": len(records),
-        "valid_images": len(records),
         "fields": fields,
         "annotation_examples": [record["annotation"] for record in records[:3]],
     }
@@ -179,7 +178,6 @@ def _write_database(records: list[dict[str, Any]], database_path: Path) -> None:
             """CREATE TABLE images (
                 image_id VARCHAR PRIMARY KEY,
                 image_path VARCHAR NOT NULL,
-                resolved_image_path VARCHAR NOT NULL,
                 patient_id VARCHAR,
                 case_id VARCHAR,
                 study_id VARCHAR,
@@ -188,12 +186,11 @@ def _write_database(records: list[dict[str, Any]], database_path: Path) -> None:
             )"""
         )
         connection.executemany(
-            "INSERT INTO images VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?)",
+            "INSERT INTO images VALUES (?, ?, ?, ?, ?, CAST(? AS JSON), ?)",
             [
                 (
                     record["image_id"],
                     record["image_path"],
-                    record["_resolved_image_path"],
                     record["patient_id"],
                     record["case_id"],
                     record["study_id"],
@@ -215,7 +212,7 @@ def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Pa
     if not source_path.is_file():
         raise AnnotationValidationError(f"annotation.jsonl does not exist: {source_path}")
     content_hash = _content_hash(source_path)
-    cache_dir = Path(cache_root) / content_hash
+    cache_dir = Path(cache_root) / CACHE_FORMAT_VERSION / content_hash
     database_path = cache_dir / "dataset.duckdb"
     profile_path = cache_dir / "dataset_profile.json"
     manifest_path = cache_dir / "dataset_access_manifest.json"
@@ -234,6 +231,7 @@ def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Pa
     manifest = {
         "annotation_path": str(source_path),
         "annotation_sha256": content_hash,
+        "cache_format_version": CACHE_FORMAT_VERSION,
         "duckdb_path": str(database_path),
         "table": "images",
         "provenance_fields": ["_source_row"],

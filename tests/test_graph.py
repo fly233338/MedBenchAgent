@@ -8,11 +8,9 @@ import medbenchagent.workflow.graph as workflow
 
 
 def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, monkeypatch) -> None:
-    image_path = tmp_path / "image.png"
-    image_path.write_bytes(b"image")
     annotation_path = tmp_path / "annotation.jsonl"
     annotation_path.write_text(
-        '{"image_id":"img-1","image_path":"image.png","patient_id":null,"case_id":null,"study_id":"study-1","annotation":{"breast_birads":"BI-RADS 4"}}\n',
+        '{"image_id":"img-1","image_path":"/external/images/img-1.dicom","patient_id":null,"case_id":null,"study_id":"study-1","annotation":{"breast_birads":"BI-RADS 4"}}\n',
         encoding="utf-8",
     )
 

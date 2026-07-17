@@ -8,13 +8,15 @@ stops after an approved `GenerationRequest`; it does not generate benchmark item
 
 The workflow accepts only an `annotation.jsonl` file. Each line represents one image
 and must contain `image_id`, `image_path`, `patient_id`, `case_id`, `study_id`, and an
-object-valued `annotation`. Image paths are resolved relative to the JSONL file.
-The versioned output contract is at
+object-valued `annotation`. `image_path` is stored as opaque metadata: dataset
+exploration does not resolve it or check whether an image file exists. Benchmark items
+are identified by `image_id`; mapping IDs to image files is the responsibility of an
+external module. The versioned input contract is at
 `src/medbenchagent/schemas/annotation.v1.schema.json`.
 
-Validated data is cached by JSONL content hash under `benchmarks/dataset_cache/` as a
-DuckDB database with one `images` row per JSONL line and a deterministic profile. CSV
-and XLSX inputs are not supported.
+Validated annotation text is cached by JSONL content hash and cache-format version
+under `benchmarks/dataset_cache/` as a DuckDB database with one `images` row per JSONL
+line and a deterministic annotation profile. CSV and XLSX inputs are not supported.
 
 ## Development
 
