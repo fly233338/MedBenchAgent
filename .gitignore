@@ -31,3 +31,4 @@ benchmarks/dataset_cache/
 *.code-workspace
 .DS_Store
 Thumbs.db
+.agent/
