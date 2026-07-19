@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -51,8 +52,25 @@ def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, mon
     monkeypatch.setattr(
         workflow,
         "design_questions",
-        lambda _rag, _info, plans, _feedback: [{"task_id": plan["task_id"], "citations": []} for plan in plans],
+        lambda _rag, _info, plans, _feedback: [
+            {
+                "task_id": plan["task_id"],
+                "answer_list": ["BI-RADS 2", "BI-RADS 4"],
+                "answer_field": "annotation.breast_birads",
+                "answer_value_mapping": {},
+                "citations": [],
+            }
+            for plan in plans
+        ],
     )
+    raw_path = tmp_path / "benchmark_items.raw.jsonl"
+    raw_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        workflow,
+        "generate_raw_benchmark",
+        lambda _request: SimpleNamespace(raw_output_path=str(raw_path), item_count=2, task_counts={"assessment_category": 2}),
+    )
+    monkeypatch.setattr(workflow, "balance_jsonl", lambda _input, output, _seed: output)
     graph = workflow.compile_benchmark_graph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "test-thread"}}
     result = graph.invoke({"messages": [HumanMessage(content="make a benchmark")]}, config)
@@ -71,4 +89,18 @@ def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, mon
     assert result["generation_request"]["approved_task_plans"][0]["supporting_fields"] == [
         "annotation.breast_birads"
     ]
+    assert result["raw_output_path"] == str(raw_path)
+    assert result["benchmark_output_path"].endswith("benchmark_items.jsonl")
     assert task_plan_calls == 1
+
+
+def test_finalize_uses_raw_file_when_balancing_is_disabled(tmp_path: Path, monkeypatch) -> None:
+    raw_path = tmp_path / "benchmark_items.raw.jsonl"
+    raw_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(workflow, "balance_jsonl", lambda *_args: (_ for _ in ()).throw(AssertionError("not called")))
+
+    result = workflow._finalize_benchmark_node(
+        {"raw_output_path": str(raw_path), "generation_request": {"balance_answer_positions": False}}
+    )
+
+    assert result == {"benchmark_output_path": str(raw_path)}

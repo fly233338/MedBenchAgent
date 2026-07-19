@@ -135,7 +135,9 @@ def design_questions(
             design = complete_json(
                 "Design a medical benchmark question specification. Use only the supplied PDF excerpts for "
                 "medical phrasing. Do not alter ground-truth labels. Return JSON with question_templates, "
-                "placeholder_bindings, answer_list, source_value_mapping, validation_rules.",
+                "placeholder_bindings, answer_list, answer_field, answer_value_mapping, validation_rules. "
+                "answer_list must be the fixed unique option strings. answer_field must be one supporting "
+                "annotation field. answer_value_mapping maps serialized annotation values to answer_list values.",
                 f"Benchmark: {json.dumps(benchmark_info)}\nTask plan: {json.dumps(plan)}\n"
                 f"User design feedback: {feedback}\nPDF excerpts:\n{context}",
             )
@@ -147,7 +149,8 @@ def design_questions(
                 "question_templates": design.get("question_templates", []),
                 "placeholder_bindings": design.get("placeholder_bindings", {}),
                 "answer_list": design.get("answer_list", []),
-                "source_value_mapping": design.get("source_value_mapping", {}),
+                "answer_field": design.get("answer_field"),
+                "answer_value_mapping": design.get("answer_value_mapping", design.get("source_value_mapping", {})),
                 "validation_rules": design.get("validation_rules", []),
                 "citations": [{key: item[key] for key in ("pdf", "page", "chunk_id")} for item in citations],
             }

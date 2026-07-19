@@ -1,4 +1,4 @@
-"""Stable contracts passed from planning to a future generator."""
+"""Stable contracts passed from planning through benchmark generation."""
 
 from __future__ import annotations
 
@@ -10,8 +10,11 @@ class GenerationRequest(TypedDict):
     dataset_access_manifest: dict[str, object]
     approved_task_plans: list[dict[str, object]]
     question_designs: list[dict[str, object]]
+    closed_tasks: list[dict[str, object]]
     target_sample_count: int
     seed: int
+    balance_answer_positions: bool
+    output_directory: str
 
 
 class BenchmarkItem(TypedDict):

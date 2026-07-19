@@ -2,7 +2,9 @@
 
 MedBenchAgent plans medical VLM benchmark generation from a natural-language brief,
 image-level `annotation.jsonl` data, and PDF medical references. The first release
-stops after an approved `GenerationRequest`; it does not generate benchmark items.
+creates closed VQA benchmark items after an approved Question Design. It writes an immutable,
+unshuffled `benchmark_items.raw.jsonl`, then by default writes a separately balanced
+`benchmark_items.jsonl` copy. Both files contain exactly the requested `sample_count`.
 
 ## Dataset input
 
@@ -45,3 +47,16 @@ uv run langgraph dev --host 127.0.0.1 --port 8123 --no-browser --allow-blocking
 ```
 
 The graph entry point is `medbenchagent.workflow.graph:compile_benchmark_graph`.
+
+## Benchmark outputs
+
+Only retained `close_vqa` tasks are generated. Their fixed option lists and answers are
+resolved from annotations; DeepSeek generates and independently reviews only question wording.
+The raw file keeps task/source-row order and the original option order. The final copy balances
+the correct option positions inside each task while retaining all other item content.
+
+Balance an existing raw file without modifying it:
+
+```bash
+uv run medbenchagent balance-answers --input RAW --output COPY --seed 0
+```

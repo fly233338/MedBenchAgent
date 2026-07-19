@@ -11,8 +11,10 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
 from medbenchagent.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
+from medbenchagent.answer_balance import balance_jsonl
 from medbenchagent.contracts import GenerationRequest
 from medbenchagent.dataset import AnnotationValidationError, prepare_annotation_dataset
+from medbenchagent.generation import generate_raw_benchmark
 from medbenchagent.pdf_rag import LocalPdfRag, RagUnavailable, design_questions
 from medbenchagent.task_screening import (
     apply_task_plan,
@@ -46,6 +48,14 @@ class BenchmarkState(MessagesState):
     designs_confirmed: bool
     generation_request: GenerationRequest
     ready_for_generation: bool
+    raw_output_path: str
+    benchmark_output_path: str
+    generated_item_count: int
+    generated_task_counts: dict[str, int]
+    item_count: int
+    task_counts: dict[str, int]
+    seed: int
+    balance_answer_positions: bool
 
 
 def _latest_user_text(state: BenchmarkState) -> str:
@@ -239,15 +249,62 @@ def _design_review_node(state: BenchmarkState) -> dict[str, Any]:
 
 
 def _generation_request_node(state: BenchmarkState) -> dict[str, Any]:
+    blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
+    designs = {str(design.get("task_id")): design for design in state["question_designs"]}
+    closed_tasks: list[dict[str, Any]] = []
+    for plan in state["task_plans"]:
+        if plan["decision"] != "retain":
+            continue
+        task = blueprint["tasks"].get(plan["task_id"], {})
+        if task.get("task_type") != "close_vqa":
+            continue
+        design = designs.get(plan["task_id"])
+        if design is None:
+            raise ValueError(f"Question Design is missing retained task: {plan['task_id']}")
+        answer_field = design.get("answer_field")
+        if answer_field is None and len(plan.get("supporting_fields", [])) == 1:
+            answer_field = plan["supporting_fields"][0]
+        closed_tasks.append(
+            {
+                "task_id": plan["task_id"],
+                "task_type": "close_vqa",
+                "description": task.get("description", ""),
+                "answer_field": answer_field,
+                "answer_value_mapping": design.get("answer_value_mapping", {}),
+                "options": design.get("answer_list", []),
+            }
+        )
     request: GenerationRequest = {
         "benchmark_info": state["benchmark_info"],
         "dataset_access_manifest": state["dataset_access_manifest"],
         "approved_task_plans": [plan for plan in state["task_plans"] if plan["decision"] == "retain"],
         "question_designs": state["question_designs"],
+        "closed_tasks": closed_tasks,
         "target_sample_count": int(state["benchmark_info"]["sample_count"]),
-        "seed": 0,
+        "seed": int(state.get("seed", 0)),
+        "balance_answer_positions": bool(state.get("balance_answer_positions", True)),
+        "output_directory": str(Path(state["working_blueprint_path"]).parent),
     }
     return {"generation_request": request, "ready_for_generation": True}
+
+
+def _generate_raw_benchmark_node(state: BenchmarkState) -> dict[str, Any]:
+    result = generate_raw_benchmark(state["generation_request"])
+    return {
+        "raw_output_path": result.raw_output_path,
+        "generated_item_count": result.item_count,
+        "generated_task_counts": result.task_counts,
+        "item_count": result.item_count,
+        "task_counts": result.task_counts,
+    }
+
+
+def _finalize_benchmark_node(state: BenchmarkState) -> dict[str, Any]:
+    raw_path = state["raw_output_path"]
+    if not state["generation_request"]["balance_answer_positions"]:
+        return {"benchmark_output_path": raw_path}
+    output_path = str(Path(raw_path).with_name("benchmark_items.jsonl"))
+    return {"benchmark_output_path": balance_jsonl(raw_path, output_path, state["generation_request"]["seed"])}
 
 
 def compile_benchmark_graph(*, checkpointer: Any = None):
@@ -264,6 +321,8 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_node("rag_design", _rag_design_node)
     graph.add_node("design_review", _design_review_node)
     graph.add_node("generation_request", _generation_request_node)
+    graph.add_node("generate_raw_benchmark", _generate_raw_benchmark_node)
+    graph.add_node("finalize_benchmark", _finalize_benchmark_node)
     graph.add_edge(START, "benchmark_extract")
     graph.add_edge("benchmark_extract", "benchmark_confirm")
     graph.add_conditional_edges(
@@ -287,7 +346,9 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
         "design_review",
         lambda state: "generation_request" if state.get("designs_confirmed") else "rag_design",
     )
-    graph.add_edge("generation_request", END)
+    graph.add_edge("generation_request", "generate_raw_benchmark")
+    graph.add_edge("generate_raw_benchmark", "finalize_benchmark")
+    graph.add_edge("finalize_benchmark", END)
     return graph.compile(checkpointer=checkpointer)
 
 
