@@ -16,7 +16,19 @@ external module. The versioned input contract is at
 
 Validated annotation text is cached by JSONL content hash and cache-format version
 under `benchmarks/dataset_cache/` as a DuckDB database with one `images` row per JSONL
-line and a deterministic annotation profile. CSV and XLSX inputs are not supported.
+line and a deterministic `task-capability-profile.v1`. The profile describes annotation
+structures and every scalar leaf field, but exposes raw values only for low-cardinality
+categorical fields; identifiers, DICOM metadata, numeric values, and coordinates are
+not included as examples. CSV and XLSX inputs are not supported.
+
+## Planning review
+
+The workflow computes the complete Task Plan in one model call, then presents it for
+review. Confirm it with `{"action": "confirm"}`, or revise exactly one task with
+`{"action": "revise", "task_id": "...", "feedback": "..."}`. Revisions regenerate
+only the selected task. The working Blueprint is updated only after confirmation;
+the resulting `task_plan_report.json` retains decisions for both retained and dropped
+tasks.
 
 ## Development
 

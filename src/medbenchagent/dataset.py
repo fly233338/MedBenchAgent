@@ -18,8 +18,24 @@ REQUIRED_RECORD_FIELDS = (
     "study_id",
     "annotation",
 )
-PROFILE_SCHEMA_VERSION = "annotation-profile.v2"
-CACHE_FORMAT_VERSION = "annotation-cache.v2"
+PROFILE_SCHEMA_VERSION = "task-capability-profile.v1"
+CACHE_FORMAT_VERSION = "annotation-cache.v3"
+
+MAX_TOP_VALUES = 10
+MAX_CATEGORICAL_DISTINCT_VALUES = 50
+TOP_VALUE_EXCLUDED_PREFIXES = (
+    "annotation.dicom_metadata.",
+)
+TOP_VALUE_EXCLUDED_SEGMENTS = {
+    "split",
+    "fold",
+    "partition",
+}
+IDENTIFIER_SUFFIXES = (
+    "_id",
+    "_uid",
+    "_uuid",
+)
 
 
 class AnnotationValidationError(ValueError):
@@ -108,66 +124,103 @@ def load_annotation_jsonl(annotation_path: str | Path) -> list[dict[str, Any]]:
     return records
 
 
+def _should_include_top_values(path: str, value_types: set[str], distinct_value_count: int) -> bool:
+    """Keep categorical values useful for task support without exposing sensitive/raw values."""
+    if path.startswith(TOP_VALUE_EXCLUDED_PREFIXES):
+        return False
+    segments = [segment.removesuffix("[*]") for segment in path.split(".")]
+    if any(segment in TOP_VALUE_EXCLUDED_SEGMENTS for segment in segments):
+        return False
+    if any(segment in {"id", "uid", "uuid"} or segment.endswith(IDENTIFIER_SUFFIXES) for segment in segments):
+        return False
+    if "boolean" in value_types and value_types <= {"boolean", "null"}:
+        return True
+    return "string" in value_types and distinct_value_count <= MAX_CATEGORICAL_DISTINCT_VALUES
+
+
 def _collect_profile_values(
     value: object,
     path: str,
     image_index: int,
-    stats: dict[str, dict[str, Any]],
+    fields: dict[str, dict[str, Any]],
+    structures: dict[str, dict[str, Any]],
 ) -> None:
-    item = stats.setdefault(
-        path,
-        {
-            "types": set(),
-            "covering_images": set(),
-            "non_empty_count": 0,
-            "values": Counter(),
-            "examples": [],
-        },
-    )
-    item["types"].add(_value_type(value))
-    item["covering_images"].add(image_index)
-    if _is_non_empty(value):
-        item["non_empty_count"] += 1
-        encoded = _canonical_value(value)
-        item["values"][encoded] += 1
-        if len(item["examples"]) < 3:
-            item["examples"].append(value)
     if isinstance(value, dict):
+        item = structures.setdefault(path, {"path": path, "kind": "object", "children": set()})
         for key, nested_value in value.items():
-            _collect_profile_values(nested_value, f"{path}.{key}", image_index, stats)
+            child_path = f"{path}.{key}"
+            item["children"].add(child_path)
+            _collect_profile_values(nested_value, child_path, image_index, fields, structures)
     elif isinstance(value, list):
+        item_path = f"{path}[*]"
+        item = structures.setdefault(
+            path,
+            {"path": path, "kind": "array", "item_path": item_path, "children": set()},
+        )
         for nested_value in value:
-            _collect_profile_values(nested_value, f"{path}[*]", image_index, stats)
+            if isinstance(nested_value, dict):
+                for key in nested_value:
+                    child_path = f"{item_path}.{key}"
+                    item["children"].add(child_path)
+                    _collect_profile_values(nested_value[key], child_path, image_index, fields, structures)
+            elif isinstance(nested_value, list):
+                item["children"].add(f"{item_path}[*]")
+                _collect_profile_values(nested_value, item_path, image_index, fields, structures)
+            else:
+                _collect_profile_values(nested_value, item_path, image_index, fields, structures)
+    else:
+        item = fields.setdefault(
+            path,
+            {
+                "types": set(),
+                "non_empty_images": set(),
+                "values": Counter(),
+            },
+        )
+        item["types"].add(_value_type(value))
+        if _is_non_empty(value):
+            item["non_empty_images"].add(image_index)
+            item["values"][_canonical_value(value)] += 1
 
 
 def build_dataset_profile(records: list[dict[str, Any]], content_hash: str) -> dict[str, Any]:
     """Summarize annotation paths deterministically without inferring medical semantics."""
-    stats: dict[str, dict[str, Any]] = {}
+    fields_stats: dict[str, dict[str, Any]] = {}
+    structures_stats: dict[str, dict[str, Any]] = {}
     for image_index, record in enumerate(records):
-        _collect_profile_values(record["annotation"], "annotation", image_index, stats)
+        _collect_profile_values(record["annotation"], "annotation", image_index, fields_stats, structures_stats)
 
     fields: dict[str, Any] = {}
-    for path in sorted(stats):
-        item = stats[path]
-        frequent_values = [
-            {"value": json.loads(value), "count": count}
-            for value, count in sorted(item["values"].items(), key=lambda pair: (-pair[1], pair[0]))[:10]
-        ]
-        fields[path] = {
-            "types": sorted(item["types"]),
-            "coverage_images": len(item["covering_images"]),
-            "coverage_rate": round(len(item["covering_images"]) / len(records), 4),
-            "non_empty_count": item["non_empty_count"],
-            "unique_value_count": len(item["values"]),
-            "examples": item["examples"],
-            "frequent_values": frequent_values,
+    for path in sorted(fields_stats):
+        item = fields_stats[path]
+        value_types = item["types"]
+        distinct_value_count = len(item["values"])
+        field = {
+            "path": path,
+            "types": sorted(value_types),
+            "non_empty_images": len(item["non_empty_images"]),
+            "distinct_value_count": distinct_value_count,
         }
+        if _should_include_top_values(path, value_types, distinct_value_count):
+            field["top_values"] = [
+                json.loads(value)
+                for value, _count in sorted(item["values"].items(), key=lambda pair: (-pair[1], pair[0]))[
+                    :MAX_TOP_VALUES
+                ]
+            ]
+        fields[path] = field
+
+    structures = []
+    for path in sorted(structures_stats):
+        structure = structures_stats[path]
+        rendered = {key: value for key, value in structure.items() if key != "children"}
+        rendered["children"] = sorted(structure["children"])
+        structures.append(rendered)
     return {
         "schema_version": PROFILE_SCHEMA_VERSION,
-        "annotation_sha256": content_hash,
         "total_images": len(records),
+        "structures": structures,
         "fields": fields,
-        "annotation_examples": [record["annotation"] for record in records[:3]],
     }
 
 

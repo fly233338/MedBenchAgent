@@ -10,21 +10,15 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
-from medbenchagent.benchmark_info import (
-    extract_benchmark_field,
-    extract_benchmark_info,
-    merge_info,
-    missing_fields,
-    write_working_blueprint,
-)
+from medbenchagent.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
 from medbenchagent.contracts import GenerationRequest
 from medbenchagent.dataset import AnnotationValidationError, prepare_annotation_dataset
-from medbenchagent.llm import ModelUnavailable
 from medbenchagent.pdf_rag import LocalPdfRag, RagUnavailable, design_questions
 from medbenchagent.task_screening import (
-    TaskScreeningReviewRequired,
-    apply_task_screening,
-    screen_tasks,
+    apply_task_plan,
+    generate_task_plan,
+    revise_task_plan,
+    task_plan_entries,
 )
 
 PROJECT_ROOT = Path(__file__).parents[3]
@@ -35,19 +29,21 @@ class BenchmarkState(MessagesState):
 
     benchmark_info: dict[str, Any]
     user_requirement: str
+    benchmark_feedback: str
     benchmark_confirmed: bool
     working_blueprint_path: str
     annotation_path: str
     dataset_profile: dict[str, Any]
     dataset_access_manifest: dict[str, Any]
+    draft_task_plan: dict[str, Any]
+    pending_task_feedback: dict[str, str] | None
+    task_plan_confirmed: bool
     task_screening_report_path: str
-    task_screening_overrides: dict[str, dict[str, Any]]
     task_plans: list[dict[str, Any]]
-    task_plans_confirmed: bool
     materials_root: str
     question_designs: list[dict[str, Any]]
-    designs_confirmed: bool
     question_design_feedback: str
+    designs_confirmed: bool
     generation_request: GenerationRequest
     ready_for_generation: bool
 
@@ -64,151 +60,182 @@ def _confirmed(answer: object) -> bool:
     return str(answer).strip().lower() in {"y", "yes", "confirm", "confirmed", "确认", "是", "同意"}
 
 
-def _benchmark_info_node(state: BenchmarkState) -> dict[str, Any]:
-    info = dict(state.get("benchmark_info", {}))
+def _benchmark_extract_node(state: BenchmarkState) -> dict[str, Any]:
+    """Compute BenchmarkInfo; user confirmation is deliberately a separate node."""
     requirement = state.get("user_requirement") or _latest_user_text(state)
     if not requirement:
-        requirement = str(interrupt({"kind": "benchmark_requirement", "question": "Please describe the benchmark you need."}))
-    while True:
-        try:
-            info = extract_benchmark_info(requirement, info)
-        except ModelUnavailable as exc:
-            interrupt({"kind": "model_configuration", "message": str(exc)})
-            continue
-        while missing := missing_fields(info):
-            field = missing[0]
-            answer = interrupt(
-                {"kind": "benchmark_info_missing", "field": field, "question": f"Please provide {field}."}
-            )
-            try:
-                value = extract_benchmark_field(field, str(answer))
-            except ModelUnavailable as exc:
-                interrupt({"kind": "model_configuration", "message": str(exc)})
-                continue
-            info = merge_info(info, {field: value})
-        answer = interrupt(
-            {
-                "kind": "benchmark_info_confirmation",
-                "benchmark_info": info,
-                "question": "Confirm this BenchmarkInfo, or describe the correction.",
-            }
+        raise ValueError("A benchmark requirement is required before BenchmarkInfo extraction.")
+    if feedback := state.get("benchmark_feedback"):
+        requirement = f"{requirement}\nRequested correction: {feedback}"
+    info = extract_benchmark_info(requirement, state.get("benchmark_info", {}))
+    if missing := missing_fields(info):
+        raise ValueError(f"BenchmarkInfo is missing required fields: {', '.join(missing)}")
+    return {"user_requirement": requirement, "benchmark_info": info, "benchmark_confirmed": False}
+
+
+def _benchmark_confirm_node(state: BenchmarkState) -> dict[str, Any]:
+    """Confirm an already computed BenchmarkInfo without making a model call."""
+    answer = interrupt(
+        {
+            "kind": "benchmark_info_confirmation",
+            "benchmark_info": state["benchmark_info"],
+            "question": "Confirm this BenchmarkInfo, or describe the correction.",
+        }
+    )
+    if _confirmed(answer):
+        working_blueprint_path = state.get("working_blueprint_path") or write_working_blueprint(
+            state["benchmark_info"], PROJECT_ROOT / "benchmarks" / "runs"
         )
-        if _confirmed(answer):
-            working_blueprint_path = state.get("working_blueprint_path") or write_working_blueprint(
-                info, PROJECT_ROOT / "benchmarks" / "runs"
-            )
-            return {
-                "benchmark_info": info,
-                "user_requirement": requirement,
-                "benchmark_confirmed": True,
-                "working_blueprint_path": working_blueprint_path,
-            }
-        requirement = f"{requirement}\nRequested correction: {answer}"
-        info = merge_info(info, {})
+        return {
+            "benchmark_confirmed": True,
+            "benchmark_feedback": "",
+            "working_blueprint_path": working_blueprint_path,
+        }
+    return {"benchmark_confirmed": False, "benchmark_feedback": str(answer).strip()}
 
 
-def _dataset_node(state: BenchmarkState) -> dict[str, Any]:
+def _dataset_profile_node(state: BenchmarkState) -> dict[str, Any]:
     annotation_path = state.get("annotation_path")
     if not annotation_path:
         annotation_path = str(
-            interrupt(
-                {
-                    "kind": "annotation_path",
-                    "question": "Provide the absolute path to annotation.jsonl.",
-                }
-            )
+            interrupt({"kind": "annotation_path", "question": "Provide the absolute path to annotation.jsonl."})
         ).strip()
     try:
         profile, manifest = prepare_annotation_dataset(
             annotation_path, PROJECT_ROOT / "benchmarks" / "dataset_cache"
         )
-        blueprint_path = state["working_blueprint_path"]
-        blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
-        plans = screen_tasks(blueprint, profile, state.get("task_screening_overrides"))
-        report_path = apply_task_screening(blueprint_path, plans)
-    except TaskScreeningReviewRequired as exc:
-        answer = interrupt(
-            {
-                "kind": "task_support_review",
-                "task_id": exc.task_id,
-                "model_response": exc.response,
-                "valid_annotation_paths": exc.valid_paths,
-                "question": "Provide a JSON task decision with task_id, decision, supporting_fields, and reason.",
-            }
-        )
-        try:
-            override = json.loads(str(answer))
-        except json.JSONDecodeError as parse_error:
-            raise ValueError("Task review response must be valid JSON.") from parse_error
-        return {
-            "annotation_path": annotation_path,
-            "task_screening_overrides": {**state.get("task_screening_overrides", {}), exc.task_id: override},
-        }
-    except ModelUnavailable as exc:
-        interrupt({"kind": "model_configuration", "message": str(exc)})
-        return {"annotation_path": annotation_path, "task_plans_confirmed": False}
     except (AnnotationValidationError, ValueError) as exc:
-        answer = interrupt({"kind": "dataset_error", "message": str(exc), "question": "Provide a corrected annotation.jsonl path."})
-        return {"annotation_path": str(answer).strip(), "task_screening_overrides": {}}
-    answer = interrupt(
-        {
-            "kind": "task_plan_confirmation",
-            "dataset_profile": profile,
-            "dataset_access_manifest": manifest,
-            "task_plans": plans,
-            "question": "Confirm the task retain/drop decisions and supporting fields.",
-        }
-    )
-    if not _confirmed(answer):
-        override_answer = interrupt(
-            {
-                "kind": "task_plan_change_required",
-                "question": "Provide a JSON task decision with task_id, decision, supporting_fields, and reason.",
-            }
+        answer = interrupt(
+            {"kind": "dataset_error", "message": str(exc), "question": "Provide a corrected annotation.jsonl path."}
         )
-        try:
-            override = json.loads(str(override_answer))
-        except json.JSONDecodeError as parse_error:
-            raise ValueError("Task-plan change must be valid JSON.") from parse_error
-        task_id = override.get("task_id")
-        if not isinstance(task_id, str):
-            raise ValueError("Task-plan change must include task_id.")
-        return {
-            "annotation_path": annotation_path,
-            "task_screening_overrides": {**state.get("task_screening_overrides", {}), task_id: override},
-        }
+        return {"annotation_path": str(answer).strip()}
     return {
         "annotation_path": annotation_path,
         "dataset_profile": profile,
         "dataset_access_manifest": manifest,
-        "task_screening_report_path": report_path,
-        "task_plans": plans,
-        "task_plans_confirmed": True,
+        "task_plan_confirmed": False,
     }
 
 
-def _rag_node(state: BenchmarkState) -> dict[str, Any]:
-    materials_root = state.get("materials_root")
-    if not materials_root:
-        materials_root = str(
-            interrupt({"kind": "materials_root", "question": "Provide the local directory containing PDF medical materials."})
-        ).strip()
-    retained = [plan for plan in state["task_plans"] if plan["decision"] == "retain"]
-    try:
-        rag = LocalPdfRag(materials_root, PROJECT_ROOT / "benchmarks" / "rag_cache")
-        designs = design_questions(rag, state["benchmark_info"], retained, state.get("question_design_feedback", ""))
-    except ModelUnavailable as exc:
-        interrupt({"kind": "model_configuration", "message": str(exc)})
-        return {"materials_root": materials_root, "designs_confirmed": False}
-    except RagUnavailable as exc:
-        answer = interrupt({"kind": "rag_unavailable", "message": str(exc), "question": "Correct the configuration or materials directory."})
-        return {"materials_root": str(answer).strip()}
-    answer = interrupt(
-        {"kind": "question_design_confirmation", "question_designs": designs, "question": "Confirm the question designs or describe a correction."}
+def _task_plan_generate_node(state: BenchmarkState) -> dict[str, Any]:
+    """Generate all decisions once; this model node never interrupts or edits Blueprint."""
+    blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
+    return {
+        "draft_task_plan": generate_task_plan(blueprint, state["dataset_profile"]),
+        "pending_task_feedback": None,
+        "task_plan_confirmed": False,
+    }
+
+
+def _review_action(answer: object) -> dict[str, str]:
+    if _confirmed(answer):
+        return {"action": "confirm"}
+    if not isinstance(answer, dict):
+        try:
+            answer = json.loads(str(answer))
+        except json.JSONDecodeError as exc:
+            raise ValueError("Task Plan review response must be JSON with action confirm or revise.") from exc
+    if answer == {"action": "confirm"}:
+        return {"action": "confirm"}
+    if (
+        isinstance(answer, dict)
+        and answer.get("action") == "revise"
+        and isinstance(answer.get("task_id"), str)
+        and answer["task_id"].strip()
+        and isinstance(answer.get("feedback"), str)
+        and answer["feedback"].strip()
+    ):
+        return {"action": "revise", "task_id": answer["task_id"].strip(), "feedback": answer["feedback"].strip()}
+    raise ValueError("Task Plan review response must be {'action': 'confirm'} or a revise action with task_id and feedback.")
+
+
+def _task_plan_review_node(state: BenchmarkState) -> dict[str, Any]:
+    """Show the persisted draft and receive one user action without calling a model."""
+    action = _review_action(
+        interrupt(
+            {
+                "kind": "task_plan_review",
+                "dataset_profile": state["dataset_profile"],
+                "task_plan": state["draft_task_plan"],
+                "question": "Confirm with {'action': 'confirm'}, or revise one task with action, task_id, and feedback.",
+            }
+        )
     )
-    if not _confirmed(answer):
-        return {"materials_root": materials_root, "question_design_feedback": str(answer), "designs_confirmed": False}
-    return {"materials_root": materials_root, "question_designs": designs, "designs_confirmed": True}
+    if action["action"] == "confirm":
+        return {"task_plan_confirmed": True, "pending_task_feedback": None}
+    if action["task_id"] not in state["draft_task_plan"]["tasks"]:
+        raise ValueError(f"Unknown task_id: {action['task_id']}")
+    return {"task_plan_confirmed": False, "pending_task_feedback": action}
+
+
+def _task_plan_revise_node(state: BenchmarkState) -> dict[str, Any]:
+    """Replace one reviewed entry; all other draft entries are retained verbatim."""
+    feedback = state.get("pending_task_feedback")
+    if not feedback:
+        raise ValueError("Task Plan revision requires pending task feedback.")
+    blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
+    return {
+        "draft_task_plan": revise_task_plan(
+            blueprint,
+            state["dataset_profile"],
+            state["draft_task_plan"],
+            feedback["task_id"],
+            feedback["feedback"],
+        ),
+        "pending_task_feedback": None,
+        "task_plan_confirmed": False,
+    }
+
+
+def _apply_task_plan_node(state: BenchmarkState) -> dict[str, Any]:
+    """Mutate the working Blueprint only after explicit Task Plan confirmation."""
+    report_path = apply_task_plan(
+        state["working_blueprint_path"], state["draft_task_plan"], state["dataset_profile"]
+    )
+    return {
+        "task_screening_report_path": report_path,
+        "task_plans": task_plan_entries(state["draft_task_plan"]),
+    }
+
+
+def _materials_root_node(state: BenchmarkState) -> dict[str, Any]:
+    if state.get("materials_root"):
+        return {}
+    answer = interrupt({"kind": "materials_root", "question": "Provide the local directory containing PDF medical materials."})
+    return {"materials_root": str(answer).strip()}
+
+
+def _rag_design_node(state: BenchmarkState) -> dict[str, Any]:
+    """Compute RAG question designs; user confirmation is deliberately a separate node."""
+    retained = [plan for plan in state["task_plans"] if plan["decision"] == "retain"]
+    if not retained:
+        raise ValueError("Task Plan must retain at least one task before RAG design.")
+    try:
+        rag = LocalPdfRag(state["materials_root"], PROJECT_ROOT / "benchmarks" / "rag_cache")
+    except RagUnavailable:
+        raise
+    return {
+        "question_designs": design_questions(
+            rag,
+            state["benchmark_info"],
+            retained,
+            state.get("question_design_feedback", ""),
+        ),
+        "designs_confirmed": False,
+    }
+
+
+def _design_review_node(state: BenchmarkState) -> dict[str, Any]:
+    answer = interrupt(
+        {
+            "kind": "question_design_confirmation",
+            "question_designs": state["question_designs"],
+            "question": "Confirm the question designs or describe a correction.",
+        }
+    )
+    if _confirmed(answer):
+        return {"designs_confirmed": True, "question_design_feedback": ""}
+    return {"designs_confirmed": False, "question_design_feedback": str(answer)}
 
 
 def _generation_request_node(state: BenchmarkState) -> dict[str, Any]:
@@ -224,21 +251,41 @@ def _generation_request_node(state: BenchmarkState) -> dict[str, Any]:
 
 
 def compile_benchmark_graph(*, checkpointer: Any = None):
-    """Build the three interactive planning stages and stop at ``GenerationRequest``."""
+    """Build planning stages whose model calls and confirmation interrupts never share a node."""
     graph = StateGraph(BenchmarkState)
-    graph.add_node("benchmark_info", _benchmark_info_node)
-    graph.add_node("dataset_exploration", _dataset_node)
-    graph.add_node("pdf_rag_design", _rag_node)
+    graph.add_node("benchmark_extract", _benchmark_extract_node)
+    graph.add_node("benchmark_confirm", _benchmark_confirm_node)
+    graph.add_node("dataset_profile", _dataset_profile_node)
+    graph.add_node("task_plan_generate", _task_plan_generate_node)
+    graph.add_node("task_plan_review", _task_plan_review_node)
+    graph.add_node("task_plan_revise", _task_plan_revise_node)
+    graph.add_node("apply_task_plan", _apply_task_plan_node)
+    graph.add_node("materials_root", _materials_root_node)
+    graph.add_node("rag_design", _rag_design_node)
+    graph.add_node("design_review", _design_review_node)
     graph.add_node("generation_request", _generation_request_node)
-    graph.add_edge(START, "benchmark_info")
-    graph.add_edge("benchmark_info", "dataset_exploration")
+    graph.add_edge(START, "benchmark_extract")
+    graph.add_edge("benchmark_extract", "benchmark_confirm")
     graph.add_conditional_edges(
-        "dataset_exploration",
-        lambda state: "pdf_rag_design" if state.get("task_plans_confirmed") else "dataset_exploration",
+        "benchmark_confirm",
+        lambda state: "dataset_profile" if state.get("benchmark_confirmed") else "benchmark_extract",
     )
     graph.add_conditional_edges(
-        "pdf_rag_design",
-        lambda state: "generation_request" if state.get("designs_confirmed") else "pdf_rag_design",
+        "dataset_profile",
+        lambda state: "task_plan_generate" if state.get("dataset_profile") else "dataset_profile",
+    )
+    graph.add_edge("task_plan_generate", "task_plan_review")
+    graph.add_conditional_edges(
+        "task_plan_review",
+        lambda state: "apply_task_plan" if state.get("task_plan_confirmed") else "task_plan_revise",
+    )
+    graph.add_edge("task_plan_revise", "task_plan_review")
+    graph.add_edge("apply_task_plan", "materials_root")
+    graph.add_edge("materials_root", "rag_design")
+    graph.add_edge("rag_design", "design_review")
+    graph.add_conditional_edges(
+        "design_review",
+        lambda state: "generation_request" if state.get("designs_confirmed") else "rag_design",
     )
     graph.add_edge("generation_request", END)
     return graph.compile(checkpointer=checkpointer)

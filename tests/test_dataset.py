@@ -54,12 +54,22 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(tmp_pa
     profile, manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
 
     assert profile["total_images"] == 2
-    assert profile["schema_version"] == "annotation-profile.v2"
-    assert profile["fields"]["annotation.findings[*].finding_type"]["coverage_images"] == 2
-    assert profile["fields"]["annotation.findings[*].finding_type"]["unique_value_count"] == 2
-    assert profile["fields"]["annotation.breast_birads"]["coverage_rate"] == 1.0
-    assert profile["fields"]["annotation.breast_birads"]["non_empty_count"] == 2
-    assert manifest["cache_format_version"] == "annotation-cache.v2"
+    assert profile["schema_version"] == "task-capability-profile.v1"
+    assert profile["fields"]["annotation.findings[*].finding_type"]["non_empty_images"] == 2
+    assert profile["fields"]["annotation.findings[*].finding_type"]["distinct_value_count"] == 2
+    assert profile["fields"]["annotation.breast_birads"]["top_values"] == ["BI-RADS 2", "BI-RADS 4"]
+    assert profile["fields"]["annotation.breast_birads"]["non_empty_images"] == 2
+    assert profile["structures"] == [
+        {"path": "annotation", "kind": "object", "children": ["annotation.breast_birads", "annotation.findings", "annotation.laterality"]},
+        {
+            "path": "annotation.findings",
+            "kind": "array",
+            "item_path": "annotation.findings[*]",
+            "children": ["annotation.findings[*].bbox", "annotation.findings[*].finding_type"],
+        },
+        {"path": "annotation.findings[*].bbox", "kind": "array", "item_path": "annotation.findings[*].bbox[*]", "children": []},
+    ]
+    assert manifest["cache_format_version"] == "annotation-cache.v3"
     connection = duckdb.connect(manifest["duckdb_path"])
     try:
         assert connection.execute("SELECT COUNT(*) FROM images").fetchone()[0] == 2
@@ -84,21 +94,56 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(tmp_pa
     assert cached_manifest == manifest
 
 
-def test_annotation_jsonl_accepts_unavailable_image_paths_and_profiles_non_empty_values(tmp_path: Path) -> None:
+def test_compact_profile_counts_non_empty_images_and_filters_raw_values(tmp_path: Path) -> None:
     records = [
         {
             **_records()[0],
             "image_path": "/unavailable/images/img-001.dicom",
-            "annotation": {"empty": "", "nested": {"values": [0, False, None, [], {}]}},
+            "annotation": {
+                "empty": "",
+                "nested": {"values": [0, False, None, [], {}]},
+                "finding_uid": "secret-uid",
+                "dicom_metadata": {"patient_age": "42"},
+            },
         }
     ]
     annotation_path = _write_annotation_dataset(tmp_path, records)
 
     profile, _manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
 
-    assert profile["fields"]["annotation.empty"]["non_empty_count"] == 0
-    assert profile["fields"]["annotation.nested.values[*]"]["non_empty_count"] == 2
-    assert profile["fields"]["annotation.nested.values[*]"]["examples"] == [0, False]
+    assert profile["fields"]["annotation.empty"]["non_empty_images"] == 0
+    assert profile["fields"]["annotation.nested.values[*]"]["non_empty_images"] == 1
+    assert "top_values" not in profile["fields"]["annotation.nested.values[*]"]
+    assert "top_values" not in profile["fields"]["annotation.finding_uid"]
+    assert "top_values" not in profile["fields"]["annotation.dicom_metadata.patient_age"]
+    assert "annotation_examples" not in profile
+
+
+def test_compact_profile_deduplicates_repeated_findings_and_limits_categorical_values(tmp_path: Path) -> None:
+    records = []
+    for index in range(12):
+        records.append(
+            {
+                "image_id": f"img-{index}",
+                "image_path": f"images/img-{index}.png",
+                "patient_id": None,
+                "case_id": None,
+                "study_id": None,
+                "annotation": {
+                    "flag": index % 2 == 0,
+                    "category": f"value-{index}",
+                    "findings": [{"kind": "mass"}, {"kind": "mass"}],
+                    "bbox": [index, index + 1],
+                },
+            }
+        )
+    profile, _manifest = prepare_annotation_dataset(_write_annotation_dataset(tmp_path, records), tmp_path / "cache")
+
+    assert profile["fields"]["annotation.findings[*].kind"]["non_empty_images"] == 12
+    assert profile["fields"]["annotation.flag"]["top_values"] == [False, True]
+    assert len(profile["fields"]["annotation.category"]["top_values"]) == 10
+    assert "top_values" not in profile["fields"]["annotation.bbox[*]"]
+    assert all("examples" not in field and "frequent_values" not in field for field in profile["fields"].values())
 
 
 @pytest.mark.parametrize(

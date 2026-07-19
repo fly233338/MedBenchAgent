@@ -25,19 +25,23 @@ def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, mon
             "sample_count": 2,
         },
     )
-    monkeypatch.setattr(
-        workflow,
-        "screen_tasks",
-        lambda _blueprint, _profile, _overrides: [
-            {
-                "task_id": "assessment_category",
-                "decision": "retain",
-                "supporting_fields": ["annotation.breast_birads"],
-                "reason": "BI-RADS is available.",
+    task_plan_calls = 0
+
+    def fake_generate_task_plan(_blueprint, _profile):
+        nonlocal task_plan_calls
+        task_plan_calls += 1
+        return {
+            "tasks": {
+                "assessment_category": {
+                    "decision": "retain",
+                    "supporting_fields": ["annotation.breast_birads"],
+                    "reason": "BI-RADS is available.",
+                }
             }
-        ],
-    )
-    monkeypatch.setattr(workflow, "apply_task_screening", lambda _path, _plans: str(tmp_path / "report.json"))
+        }
+
+    monkeypatch.setattr(workflow, "generate_task_plan", fake_generate_task_plan)
+    monkeypatch.setattr(workflow, "apply_task_plan", lambda _path, _plans, _profile: str(tmp_path / "report.json"))
 
     class FakeRag:
         def __init__(self, *_args):
@@ -67,3 +71,4 @@ def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, mon
     assert result["generation_request"]["approved_task_plans"][0]["supporting_fields"] == [
         "annotation.breast_birads"
     ]
+    assert task_plan_calls == 1
