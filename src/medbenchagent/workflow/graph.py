@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -14,9 +14,15 @@ from medbenchagent.benchmark_info import extract_benchmark_info, missing_fields,
 from medbenchagent.answer_balance import balance_jsonl
 from medbenchagent.contracts import GenerationRequest
 from medbenchagent.dataset import AnnotationValidationError, prepare_annotation_dataset
-from medbenchagent.generation import generate_raw_benchmark
+from medbenchagent.generation import (
+    advance_generation,
+    finalize_generation,
+    generation_done,
+    initialize_generation,
+)
 from medbenchagent.llm import complete_json
 from medbenchagent.pdf_rag import LocalPdfRag, RagUnavailable, design_task, write_task_design
+from medbenchagent.sample_counts import distribute_sample_counts, write_sample_counts
 from medbenchagent.task_screening import (
     apply_task_plan,
     generate_task_plan,
@@ -41,6 +47,8 @@ class BenchmarkState(MessagesState):
     pending_task_feedback: dict[str, str] | None
     task_plan_confirmed: bool
     task_screening_report_path: str
+    draft_sample_counts: dict[str, int]
+    sample_counts_confirmed: bool
     materials_root: str
     rag_task_queue: list[str]
     rag_task_feedback: dict[str, str]
@@ -55,10 +63,33 @@ class BenchmarkState(MessagesState):
     benchmark_output_path: str
     generated_item_count: int
     generated_task_counts: dict[str, int]
+    generation_target_counts: dict[str, int]
+    generation_completed_counts: dict[str, int]
+    generation_cursor: int
+    generation_progress_path: str
+    generation_rejections: dict[str, int]
+    generation_exhausted: bool
+    generation_shortfalls: dict[str, int]
     item_count: int
     task_counts: dict[str, int]
     seed: int
     balance_answer_positions: bool
+
+
+class GenerationGraphState(TypedDict):
+    generation_request: GenerationRequest
+    generation_target_counts: dict[str, int]
+    generation_completed_counts: dict[str, int]
+    generation_cursor: int
+    generation_progress_path: str
+    generation_rejections: dict[str, int]
+    generation_exhausted: bool
+    generation_shortfalls: dict[str, int]
+    raw_output_path: str
+    generated_item_count: int
+    generated_task_counts: dict[str, int]
+    item_count: int
+    task_counts: dict[str, int]
 
 
 def _latest_user_text(state: BenchmarkState) -> str:
@@ -235,6 +266,91 @@ def _apply_task_plan_node(state: BenchmarkState) -> dict[str, Any]:
     }
 
 
+def _sample_count_prepare_node(state: BenchmarkState) -> dict[str, Any]:
+    """Prepare a stable even allocation without mutating the working Blueprint."""
+    blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
+    tasks = blueprint.get("tasks")
+    total = blueprint.get("benchmark_info", {}).get("sample_count")
+    if not isinstance(tasks, dict) or not tasks:
+        raise ValueError("Working Blueprint must contain retained tasks for sample allocation.")
+    return {
+        "draft_sample_counts": distribute_sample_counts(list(tasks), total),
+        "sample_counts_confirmed": False,
+    }
+
+
+def _validate_sample_count_action(
+    response: object, task_ids: list[str]
+) -> dict[str, Any]:
+    if response == {"action": "confirm"}:
+        return {"action": "confirm"}
+    if not isinstance(response, dict) or set(response) != {"action", "counts"}:
+        raise ValueError("Sample-count review must confirm or provide counts.")
+    counts = response.get("counts")
+    if response.get("action") != "adjust" or not isinstance(counts, dict) or not counts:
+        raise ValueError("Sample-count adjustments must contain at least one task count.")
+    normalized: dict[str, int] = {}
+    for task_id, count in counts.items():
+        if task_id not in task_ids:
+            raise ValueError(f"Unknown task in sample-count adjustment: {task_id}.")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise ValueError("Adjusted sample counts must be non-negative integers.")
+        normalized[task_id] = count
+    return {"action": "adjust", "counts": normalized}
+
+
+def _sample_count_review_action(
+    answer: object,
+    current_counts: dict[str, int],
+    total: int,
+) -> dict[str, Any]:
+    task_ids = list(current_counts)
+    prompt = (
+        "Convert the user's sample-count review into exactly one JSON shape:\n"
+        '{"action":"confirm"}\n'
+        '{"action":"adjust","counts":{"exact task id":0}}\n'
+        "For adjust, include only tasks the user explicitly changes. Convert relative requests such as "
+        "'add two diagnosis questions' into the final integer for that task using the current allocation. "
+        "Do not distribute unspecified counts yourself. Counts must be non-negative integers.\n"
+        f"Benchmark total: {total}\n"
+        f"Current allocation: {json.dumps(current_counts, ensure_ascii=False)}\n"
+        f"User response: {answer}"
+    )
+    response = complete_json("Interpret a benchmark sample-count review. Return JSON only.", prompt)
+    try:
+        return _validate_sample_count_action(response, task_ids)
+    except ValueError as first_error:
+        repaired = complete_json(
+            "Repair a benchmark sample-count review action. Return JSON only.",
+            f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+            f"Contract error: {first_error}",
+        )
+        return _validate_sample_count_action(repaired, task_ids)
+
+
+def _sample_count_review_node(state: BenchmarkState) -> dict[str, Any]:
+    counts = state["draft_sample_counts"]
+    total = int(state["benchmark_info"]["sample_count"])
+    answer = interrupt(
+        {
+            "kind": "sample_count_confirmation",
+            "sample_counts": counts,
+            "total": total,
+            "question": "Confirm the per-task sample counts or describe adjustments.",
+        }
+    )
+    action = _sample_count_review_action(answer, counts, total)
+    if action["action"] == "confirm":
+        write_sample_counts(state["working_blueprint_path"], counts)
+        return {"sample_counts_confirmed": True}
+    return {
+        "draft_sample_counts": distribute_sample_counts(
+            list(counts), total, action["counts"]
+        ),
+        "sample_counts_confirmed": False,
+    }
+
+
 def _materials_root_node(state: BenchmarkState) -> dict[str, Any]:
     if state.get("materials_root"):
         return {}
@@ -248,12 +364,15 @@ def _rag_prepare_node(state: BenchmarkState) -> dict[str, Any]:
     tasks = blueprint.get("tasks")
     if not isinstance(tasks, dict) or not tasks:
         raise ValueError("Working Blueprint must retain at least one task before RAG design.")
+    queue = [task_id for task_id, task in tasks.items() if task.get("sample_count", 0) > 0]
+    if not queue:
+        raise ValueError("Working Blueprint must allocate samples to at least one task.")
     return {
-        "rag_task_queue": list(tasks),
+        "rag_task_queue": queue,
         "rag_task_feedback": {},
         "rag_current_task_id": "",
         "rag_completed_count": 0,
-        "rag_total_count": len(tasks),
+        "rag_total_count": len(queue),
         "rag_error": "",
         "designs_confirmed": False,
     }
@@ -342,7 +461,11 @@ def _design_review_action(answer: object, tasks: dict[str, Any]) -> dict[str, An
 
 def _design_review_node(state: BenchmarkState) -> dict[str, Any]:
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
-    tasks = blueprint.get("tasks", {})
+    tasks = {
+        task_id: task
+        for task_id, task in blueprint.get("tasks", {}).items()
+        if task.get("sample_count", 0) > 0
+    }
     answer = interrupt(
         {
             "kind": "question_design_confirmation",
@@ -386,12 +509,27 @@ def _generation_request_node(state: BenchmarkState) -> dict[str, Any]:
     return {"generation_request": request, "ready_for_generation": True}
 
 
-def _generate_raw_benchmark_node(state: BenchmarkState) -> dict[str, Any]:
-    result = generate_raw_benchmark(state["generation_request"])
+def _generation_initialize_node(state: GenerationGraphState) -> dict[str, Any]:
+    return initialize_generation(state["generation_request"])
+
+
+def _generation_step_node(state: GenerationGraphState) -> dict[str, Any]:
+    return advance_generation(state["generation_request"], state)
+
+
+def _generation_finalize_node(state: GenerationGraphState) -> dict[str, Any]:
+    result = finalize_generation(state["generation_request"], state)
+    targets = state["generation_target_counts"]
+    shortfalls = {
+        task_id: max(0, target - result.task_counts.get(task_id, 0))
+        for task_id, target in targets.items()
+    }
     return {
         "raw_output_path": result.raw_output_path,
         "generated_item_count": result.item_count,
         "generated_task_counts": result.task_counts,
+        "generation_completed_counts": result.task_counts,
+        "generation_shortfalls": shortfalls,
         "item_count": result.item_count,
         "task_counts": result.task_counts,
     }
@@ -405,6 +543,33 @@ def _finalize_benchmark_node(state: BenchmarkState) -> dict[str, Any]:
     return {"benchmark_output_path": balance_jsonl(raw_path, output_path, state["generation_request"]["seed"])}
 
 
+def compile_generation_subgraph(*, checkpointer: Any = None):
+    """Build the checkpointable record-by-record generation loop."""
+    graph = StateGraph(GenerationGraphState)
+    graph.add_node("generation_initialize", _generation_initialize_node)
+    graph.add_node("generation_step", _generation_step_node)
+    graph.add_node("generation_finalize", _generation_finalize_node)
+    graph.add_edge(START, "generation_initialize")
+    graph.add_conditional_edges(
+        "generation_initialize",
+        lambda state: "generation_finalize" if generation_done(state) else "generation_step",
+        {
+            "generation_step": "generation_step",
+            "generation_finalize": "generation_finalize",
+        },
+    )
+    graph.add_conditional_edges(
+        "generation_step",
+        lambda state: "generation_finalize" if generation_done(state) else "generation_step",
+        {
+            "generation_step": "generation_step",
+            "generation_finalize": "generation_finalize",
+        },
+    )
+    graph.add_edge("generation_finalize", END)
+    return graph.compile(checkpointer=checkpointer)
+
+
 def compile_benchmark_graph(*, checkpointer: Any = None):
     """Build the interactive planning and benchmark generation workflow."""
     graph = StateGraph(BenchmarkState)
@@ -415,12 +580,14 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_node("task_plan_review", _task_plan_review_node)
     graph.add_node("task_plan_revise", _task_plan_revise_node)
     graph.add_node("apply_task_plan", _apply_task_plan_node)
+    graph.add_node("sample_count_prepare", _sample_count_prepare_node)
+    graph.add_node("sample_count_review", _sample_count_review_node)
     graph.add_node("materials_root", _materials_root_node)
     graph.add_node("rag_prepare", _rag_prepare_node)
     graph.add_node("rag_design_task", _rag_design_task_node)
     graph.add_node("design_review", _design_review_node)
     graph.add_node("generation_request", _generation_request_node)
-    graph.add_node("generate_raw_benchmark", _generate_raw_benchmark_node)
+    graph.add_node("generate_raw_benchmark", compile_generation_subgraph())
     graph.add_node("finalize_benchmark", _finalize_benchmark_node)
     graph.add_edge(START, "benchmark_extract")
     graph.add_edge("benchmark_extract", "benchmark_confirm")
@@ -441,7 +608,13 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
         {"apply_task_plan": "apply_task_plan", "task_plan_revise": "task_plan_revise"},
     )
     graph.add_edge("task_plan_revise", "task_plan_review")
-    graph.add_edge("apply_task_plan", "materials_root")
+    graph.add_edge("apply_task_plan", "sample_count_prepare")
+    graph.add_edge("sample_count_prepare", "sample_count_review")
+    graph.add_conditional_edges(
+        "sample_count_review",
+        lambda state: "materials_root" if state.get("sample_counts_confirmed") else "sample_count_review",
+        {"materials_root": "materials_root", "sample_count_review": "sample_count_review"},
+    )
     graph.add_edge("materials_root", "rag_prepare")
     graph.add_edge("rag_prepare", "rag_design_task")
     graph.add_conditional_edges(

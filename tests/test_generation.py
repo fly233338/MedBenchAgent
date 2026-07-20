@@ -1,8 +1,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 import medbenchagent.generation as generation
 from medbenchagent.dataset import prepare_annotation_dataset
 
@@ -29,13 +27,14 @@ def _task(response_format: str, supporting_fields: list[str], **extra) -> dict:
         "dataset_support_reason": "Available.",
         "question_templates": ["Generate one question."],
         "generation_logic": "Use only the approved annotation.",
-        "medical_task_description": "This assesses recognition; references support the terminology.",
+        "medical_task_description": "This assesses recognition; references support terminology.",
         "citations": [],
         **extra,
     }
 
 
-def _request(tmp_path: Path, records: list[dict], tasks: dict, target: int) -> dict:
+def _request(tmp_path: Path, records: list[dict], tasks: dict, target: int, seed: int = 0) -> dict:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     annotation_path = tmp_path / "annotation.jsonl"
     annotation_path.write_text(
         "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
@@ -46,42 +45,43 @@ def _request(tmp_path: Path, records: list[dict], tasks: dict, target: int) -> d
         "dataset_access_manifest": manifest,
         "tasks": tasks,
         "target_sample_count": target,
-        "seed": 0,
+        "seed": seed,
         "balance_answer_positions": True,
         "output_directory": str(tmp_path / "run"),
     }
 
 
-def _generated(answer, field: str, question: str = "What is shown?", index=None) -> dict:
+def _item(task_id: str, answer, field: str, question: str = "What is shown?", index=None) -> dict:
     return {
-        "status": "generated",
+        "task_id": task_id,
         "question": question,
         "answer": answer,
         "source_refs": [{"field": field, "instance_index": index}],
     }
 
 
-def test_generation_normalizes_letter_answer_and_retries_next_candidate(
-    tmp_path: Path, monkeypatch
-) -> None:
+def _read_items(path: str) -> list[dict]:
+    return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()]
+
+
+def test_generation_routes_records_and_normalizes_letter_answer(tmp_path: Path, monkeypatch) -> None:
     request = _request(
         tmp_path,
         [_record(0, {"view": "craniocaudal"}), _record(1, {"view": "MLO"})],
         {"view": _task("letter", ["annotation.view"], options=["CC", "MLO"])},
         1,
     )
-    generation_calls = 0
 
-    def fake_complete_json(system: str, _prompt: str) -> dict:
-        nonlocal generation_calls
-        if system.startswith("Generate one"):
-            generation_calls += 1
-            return {} if generation_calls <= 3 else _generated("MLO", "annotation.view")
-        return {"approved": True, "reason": "Faithful."}
+    def fake_complete_json(system: str, prompt: str) -> dict:
+        if system.startswith("Independently"):
+            return {"approved": True, "reason": "Faithful."}
+        if '"view": "MLO"' in prompt:
+            return {"items": [_item("view", "MLO", "annotation.view")]}
+        return {"items": []}
 
     monkeypatch.setattr(generation, "complete_json", fake_complete_json)
     result = generation.generate_raw_benchmark(request)
-    item = json.loads(Path(result.raw_output_path).read_text(encoding="utf-8"))
+    item = _read_items(result.raw_output_path)[0]
 
     assert item["image_ids"] == ["img-1"]
     assert item["options"] == ["CC", "MLO"]
@@ -111,44 +111,63 @@ def test_project_supporting_annotation_preserves_alignment_and_excludes_fields()
     }
 
 
-def test_bbox_and_free_text_use_same_generate_and_review_flow(tmp_path: Path, monkeypatch) -> None:
+def test_one_record_can_generate_multiple_reviewed_task_items(tmp_path: Path, monkeypatch) -> None:
     request = _request(
         tmp_path,
-        [
-            _record(0, {"finding": {"kind": "mass", "bbox": [1, 2, 8, 9]}, "report": "Expert report."}),
-            _record(1, {"finding": {"kind": "mass", "bbox": [2, 3, 9, 10]}, "report": "Second report."}),
-        ],
+        [_record(0, {"finding": {"kind": "mass", "bbox": [1, 2, 8, 9]}, "report": "Expert report."})],
         {
             "detection": _task(
-                "bbox", ["annotation.finding.kind", "annotation.finding.bbox[*]"]
+                "bbox", ["annotation.finding.kind", "annotation.finding.bbox[*]"], sample_count=1
             ),
-            "report": _task("free_text", ["annotation.report"]),
+            "report": _task("free_text", ["annotation.report"], sample_count=1),
         },
         2,
     )
 
-    def fake_complete_json(system: str, prompt: str) -> dict:
+    def fake_complete_json(system: str, _prompt: str) -> dict:
         if system.startswith("Independently"):
             return {"approved": True, "reason": "Faithful."}
-        if "Task ID: detection" in prompt:
-            return _generated([1, 2, 8, 9], "annotation.finding.bbox[*]", "Locate the mass.")
-        return _generated("Expert report.", "annotation.report", "Generate a report.")
+        return {
+            "items": [
+                _item("detection", [1, 2, 8, 9], "annotation.finding.bbox[*]", "Locate the mass."),
+                _item("report", "Expert report.", "annotation.report", "Generate a report."),
+            ]
+        }
 
     monkeypatch.setattr(generation, "complete_json", fake_complete_json)
     result = generation.generate_raw_benchmark(request)
-    items = [
-        json.loads(line)
-        for line in Path(result.raw_output_path).read_text(encoding="utf-8").splitlines()
-    ]
+    items = _read_items(result.raw_output_path)
 
     assert result.task_counts == {"detection": 1, "report": 1}
     assert items[0]["answer"] == [1.0, 2.0, 8.0, 9.0]
     assert items[1]["answer"] == "Expert report."
 
 
-def test_generation_rejects_unreviewed_items_and_fails_atomically(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_generation_repairs_one_invalid_routed_response(tmp_path: Path, monkeypatch) -> None:
+    request = _request(
+        tmp_path,
+        [_record(0, {"status": "benign"})],
+        {"status": _task("letter", ["annotation.status"], options=["benign", "malignant"])},
+        1,
+    )
+    calls = []
+
+    def fake_complete_json(system: str, _prompt: str) -> dict:
+        calls.append(system)
+        if system.startswith("Select medically"):
+            return {}
+        if system.startswith("Repair one"):
+            return {"items": [_item("status", "benign", "annotation.status")]}
+        return {"approved": True, "reason": "Faithful."}
+
+    monkeypatch.setattr(generation, "complete_json", fake_complete_json)
+    result = generation.generate_raw_benchmark(request)
+
+    assert result.item_count == 1
+    assert sum(system.startswith("Repair one") for system in calls) == 1
+
+
+def test_reviewer_rejection_finishes_with_empty_best_effort_output(tmp_path: Path, monkeypatch) -> None:
     request = _request(
         tmp_path,
         [_record(0, {"status": "benign"})],
@@ -158,23 +177,79 @@ def test_generation_rejects_unreviewed_items_and_fails_atomically(
     monkeypatch.setattr(
         generation,
         "complete_json",
-        lambda system, _prompt: _generated("benign", "annotation.status")
-        if system.startswith("Generate one")
-        else {"approved": False, "reason": "Leaky."},
+        lambda system, _prompt: {"approved": False, "reason": "Leaky."}
+        if system.startswith("Independently")
+        else {"items": [_item("status", "benign", "annotation.status")]},
     )
 
-    with pytest.raises(ValueError, match="Unable to generate"):
-        generation.generate_raw_benchmark(request)
-    assert not (Path(request["output_directory"]) / "benchmark_items.raw.jsonl").exists()
+    result = generation.generate_raw_benchmark(request)
+
+    assert result.item_count == 0
+    assert Path(result.raw_output_path).read_text(encoding="utf-8") == ""
 
 
-def test_generation_fails_before_output_when_candidates_are_insufficient(tmp_path: Path) -> None:
+def test_dataset_exhaustion_returns_partial_output(tmp_path: Path, monkeypatch) -> None:
     request = _request(
         tmp_path,
         [_record(0, {"status": "benign"})],
         {"status": _task("letter", ["annotation.status"], options=["benign", "malignant"])},
         2,
     )
+    monkeypatch.setattr(
+        generation,
+        "complete_json",
+        lambda system, _prompt: {"approved": True, "reason": "Faithful."}
+        if system.startswith("Independently")
+        else {"items": [_item("status", "benign", "annotation.status")]},
+    )
 
-    with pytest.raises(ValueError, match="Insufficient valid candidates"):
-        generation.generate_raw_benchmark(request)
+    result = generation.generate_raw_benchmark(request)
+
+    assert result.item_count == 1
+    assert result.task_counts == {"status": 1}
+
+
+def test_seeded_record_order_is_reproducible_and_changes_with_seed(tmp_path: Path) -> None:
+    records = [_record(index, {"status": "benign"}) for index in range(5)]
+    task = _task("letter", ["annotation.status"], options=["benign", "malignant"])
+    request_zero = _request(tmp_path / "zero", records, {"status": task}, 1, seed=0)
+    request_one = _request(tmp_path / "one", records, {"status": task}, 1, seed=1)
+    tasks_zero, targets_zero = generation._validate_tasks(request_zero)
+    tasks_one, targets_one = generation._validate_tasks(request_one)
+
+    _, first_zero = generation._next_candidate_record(
+        request_zero, tasks_zero, targets_zero, {"status": 0}, 0
+    )
+    _, repeated_zero = generation._next_candidate_record(
+        request_zero, tasks_zero, targets_zero, {"status": 0}, 0
+    )
+    _, first_one = generation._next_candidate_record(
+        request_one, tasks_one, targets_one, {"status": 0}, 0
+    )
+
+    assert first_zero[0].source_row == repeated_zero[0].source_row
+    assert first_zero[0].source_row != first_one[0].source_row
+
+
+def test_progress_merge_is_idempotent(tmp_path: Path) -> None:
+    candidate = generation._Candidate(
+        "status",
+        0,
+        {
+            "image_id": "img-0",
+            "image_path": "images/0.png",
+            "annotation": {"status": "benign"},
+        },
+        {"status": "benign"},
+        _task("letter", ["annotation.status"], options=["benign", "malignant"]),
+    )
+    item = generation._build_item(
+        candidate,
+        {"question": "What is the status?", "answer": "benign", "source_refs": [{"field": "annotation.status", "instance_index": None}]},
+    )
+    path = tmp_path / "progress.jsonl"
+
+    generation._merge_progress(path, [item], {"status": 0})
+    merged = generation._merge_progress(path, [item], {"status": 0})
+
+    assert len(merged) == 1

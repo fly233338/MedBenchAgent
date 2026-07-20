@@ -5,7 +5,9 @@ image-level `annotation.jsonl` data, and PDF medical references. The workflow sc
 supported tasks, designs them with PDF RAG, and writes closed VQA, detection, finding
 description, and report items into one mixed JSONL. It first writes an immutable,
 unshuffled `benchmark_items.raw.jsonl`, then by default writes a separately finalized
-`benchmark_items.jsonl` copy. Both files contain exactly the requested `sample_count`.
+`benchmark_items.jsonl` copy. Per-task `sample_count` values are generation targets:
+the files contain the accepted items produced before all targets are met or the
+dataset is exhausted.
 
 ## Dataset input
 
@@ -34,12 +36,20 @@ after confirmation: dropped tasks are removed and retained tasks receive their a
 `supporting_fields`. The resulting `task_plan_report.json` retains decisions for both
 retained and dropped tasks.
 
+The retained tasks then receive a stable, even allocation of the benchmark target.
+The complete allocation is shown for natural-language review; named task adjustments
+are fixed and the remaining count is redistributed across unnamed tasks. Counts are
+written to the working Blueprint only after confirmation. A zero-count task remains in
+the Blueprint but skips RAG design and generation.
+
 ## Development
 
 Copy `.env.example` to `.env`. The default configuration targets the local vLLM
 deployment at `http://127.0.0.1:8005/v1` with model `deepseek-v4-flash`, plus the
 Qwen3 embedding and reranker models under `/public/home/rxa-jj-wzk/models/Qwen-RAG`.
 `DEEPSEEK_API_KEY` may remain empty when vLLM authentication is disabled.
+Model requests reuse one OpenAI-compatible client, default to a 120-second timeout,
+and disable SDK retries. Set `DEEPSEEK_TIMEOUT_SECONDS` to override the timeout.
 The reranker uses the Qwen3 causal-LM `yes`/`no` scoring procedure documented on
 ModelScope, so an original ModelScope checkpoint works without Sentence Transformers
 adapter metadata such as `modules.json` or `1_LogitScore/`. Embedding and reranking
@@ -64,12 +74,18 @@ working Blueprint task. The embedded fields are `question_templates`,
 Natural-language review can revise one or more task designs without changing other
 Blueprint tasks.
 
-For each task/image candidate, the generator projects only the task's approved
-`supporting_fields` from the annotation while preserving array source indices. DeepSeek
-uses that projection and the embedded task design to return one question, normalized
-answer, and source references. Code validates the response shape and an independent
-model reviews annotation fidelity, medical normalization, bbox alignment, and answer
-leakage before the item is accepted. Each task/image produces at most one item.
+The generator traverses source rows in a deterministic seeded order and projects only
+each unfinished task's approved `supporting_fields`, preserving array source indices.
+One DeepSeek call performs semantic routing and may return up to three items for three
+different tasks; the same task/image pair can produce at most one item. Code validates
+the response shape, answer, and source references, then an independent model reviews
+each valid item once before acceptance.
+
+Accepted items are merged idempotently into `benchmark_items.progress.jsonl` using
+deterministic item IDs. The generation subgraph checkpoints after every processed row,
+so replay after a checkpoint/file mismatch safely deduplicates accepted items. If the
+dataset is exhausted before every target is reached, generation still succeeds with
+the actual items and records the per-task shortfall in graph state.
 
 The raw file keeps task/source-row order and original closed-task option order. Every
 item records `task_type` and `response_format`; `answer` is a choice letter, reference

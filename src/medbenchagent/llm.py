@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import APIError, OpenAI
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_CLIENT: OpenAI | None = None
+_CLIENT_CONFIG: tuple[str, str | None, float] | None = None
 
 
 class ModelUnavailable(RuntimeError):
@@ -25,23 +27,58 @@ def load_project_env() -> None:
 load_project_env()
 
 
+def clear_client_cache() -> None:
+    """Drop the process-local client; intended for configuration changes and tests."""
+    global _CLIENT, _CLIENT_CONFIG
+    if _CLIENT is not None:
+        _CLIENT.close()
+    _CLIENT = None
+    _CLIENT_CONFIG = None
+
+
+def _client() -> OpenAI:
+    global _CLIENT, _CLIENT_CONFIG
+    api_key = os.getenv("DEEPSEEK_API_KEY") or "local-vllm"
+    base_url = os.getenv("DEEPSEEK_BASE_URL")
+    raw_timeout = os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "120")
+    try:
+        timeout = float(raw_timeout)
+    except ValueError as exc:
+        raise ModelUnavailable("DEEPSEEK_TIMEOUT_SECONDS must be a positive number.") from exc
+    if timeout <= 0:
+        raise ModelUnavailable("DEEPSEEK_TIMEOUT_SECONDS must be a positive number.")
+    config = (api_key, base_url, timeout)
+    if _CLIENT is None or _CLIENT_CONFIG != config:
+        if _CLIENT is not None:
+            _CLIENT.close()
+        _CLIENT = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=0,
+        )
+        _CLIENT_CONFIG = config
+    return _CLIENT
+
+
 def complete_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
     """Return a JSON object from the configured DeepSeek-compatible endpoint."""
-    api_key = os.getenv("DEEPSEEK_API_KEY") or "local-vllm"
     model = os.getenv("DEEPSEEK_MODEL")
     if not model:
         raise ModelUnavailable("DEEPSEEK_MODEL must be configured.")
 
-    client = OpenAI(api_key=api_key, base_url=os.getenv("DEEPSEEK_BASE_URL"))
-    response = client.chat.completions.create(
-        model=model,
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
+    try:
+        response = _client().chat.completions.create(
+            model=model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+    except APIError as exc:
+        raise ModelUnavailable(f"DeepSeek request failed: {type(exc).__name__}.") from exc
     content = response.choices[0].message.content
     if not content:
         raise ModelUnavailable("DeepSeek returned an empty response.")

@@ -1,11 +1,10 @@
-"""Model-driven benchmark generation from Blueprint tasks and approved annotations."""
+"""Resumable model-driven benchmark generation from approved Blueprint tasks."""
 
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,8 +13,10 @@ import duckdb
 
 from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
 from medbenchagent.llm import ModelUnavailable, complete_json
+from medbenchagent.sample_counts import distribute_sample_counts
 
-MAX_ATTEMPTS_PER_CANDIDATE = 3
+MAX_ITEMS_PER_RECORD = 3
+FETCH_BATCH_SIZE = 128
 _MISSING = object()
 
 
@@ -26,10 +27,6 @@ class _Candidate:
     record: dict[str, Any]
     supporting_annotation: dict[str, Any]
     task: BlueprintTask
-
-    @property
-    def key(self) -> tuple[str, int]:
-        return self.task_id, self.source_row
 
 
 def _merge_projection(left: object, right: object) -> object:
@@ -94,13 +91,34 @@ def project_supporting_annotation(
     return projected if isinstance(projected, dict) else {}
 
 
-def _validate_tasks(request: GenerationRequest) -> dict[str, BlueprintTask]:
+def _task_targets(request: GenerationRequest) -> dict[str, int]:
     tasks = request.get("tasks")
+    target = request.get("target_sample_count")
     if not isinstance(tasks, dict) or not tasks:
         raise ValueError("No Blueprint task is available for generation.")
+    if not isinstance(target, int) or target <= 0:
+        raise ValueError("target_sample_count must be a positive integer.")
+    raw_counts = [task.get("sample_count") for task in tasks.values() if isinstance(task, dict)]
+    if len(raw_counts) != len(tasks):
+        raise ValueError("Blueprint tasks must be objects.")
+    if all(count is None for count in raw_counts):
+        return distribute_sample_counts(list(tasks), target)
+    if any(
+        not isinstance(count, int) or isinstance(count, bool) or count < 0 for count in raw_counts
+    ):
+        raise ValueError("Every Blueprint task must have a non-negative integer sample_count.")
+    counts = {task_id: int(task["sample_count"]) for task_id, task in tasks.items()}
+    if sum(counts.values()) != target:
+        raise ValueError("Task sample counts must sum to target_sample_count.")
+    return counts
+
+
+def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask], dict[str, int]]:
+    tasks = request["tasks"]
+    targets = _task_targets(request)
     for task_id, task in tasks.items():
-        if not isinstance(task_id, str) or not task_id or not isinstance(task, dict):
-            raise ValueError("Blueprint tasks must use non-empty string IDs and object values.")
+        if targets[task_id] == 0:
+            continue
         response_format = task.get("response_format")
         if response_format not in {"letter", "bbox", "free_text"}:
             raise ValueError(f"{task_id}: unsupported response_format {response_format}.")
@@ -128,47 +146,7 @@ def _validate_tasks(request: GenerationRequest) -> dict[str, BlueprintTask]:
                 raise ValueError(f"{task_id}: letter tasks need 2-26 unique options.")
         elif options is not None:
             raise ValueError(f"{task_id}: options are allowed only for letter tasks.")
-    return tasks
-
-
-def _load_records(request: GenerationRequest) -> list[dict[str, Any]]:
-    database = request["dataset_access_manifest"].get("duckdb_path")
-    if not isinstance(database, str):
-        raise ValueError("Dataset access manifest lacks duckdb_path.")
-    connection = duckdb.connect(database, read_only=True)
-    try:
-        rows = connection.execute(
-            "SELECT image_id, image_path, patient_id, case_id, study_id, annotation, _source_row "
-            "FROM images ORDER BY _source_row"
-        ).fetchall()
-    finally:
-        connection.close()
-    return [
-        {
-            "image_id": row[0],
-            "image_path": row[1],
-            "patient_id": row[2],
-            "case_id": row[3],
-            "study_id": row[4],
-            "annotation": json.loads(row[5]) if isinstance(row[5], str) else row[5],
-            "_source_row": int(row[6]),
-        }
-        for row in rows
-    ]
-
-
-def _load_candidates(
-    request: GenerationRequest, tasks: dict[str, BlueprintTask]
-) -> dict[str, list[_Candidate]]:
-    candidates: dict[str, list[_Candidate]] = defaultdict(list)
-    for record in _load_records(request):
-        for task_id, task in tasks.items():
-            projected = project_supporting_annotation(record["annotation"], task["supporting_fields"])
-            if projected:
-                candidates[task_id].append(
-                    _Candidate(task_id, record["_source_row"], record, projected, task)
-                )
-    return candidates
+    return tasks, targets
 
 
 def _answer_schema(response_format: str) -> str:
@@ -189,38 +167,9 @@ def _has_source_index(value: object, index: int) -> bool:
     return False
 
 
-def _generation_prompt(candidate: _Candidate, benchmark_info: dict[str, object]) -> str:
-    task = candidate.task
-    response_format = task["response_format"]
-    return (
-        "Generate exactly one benchmark question and its answer from approved supporting annotation. "
-        "Return either "
-        '{"status":"generated","question":"...","answer":'
-        f"{_answer_schema(response_format)},"
-        '"source_refs":[{"field":"one approved supporting field","instance_index":null}]} '
-        'or {"status":"skip","reason":"..."}. '
-        "Follow the task generation_logic and question templates. Use only the supplied supporting "
-        "annotation, never invent facts, and do not reveal the answer in the question. For letter tasks, "
-        "normalize the annotation to exactly one supplied option. For bbox tasks, copy one valid xyxy "
-        "box associated with the target described by the question. For free-text tasks, copy or organize "
-        "only supplied annotation content. source_refs must identify the approved paths used; replace "
-        "instance_index null with the non-negative source index when the field belongs to an object array.\n\n"
-        f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
-        f"Task ID: {candidate.task_id}\n"
-        f"Task: {json.dumps(task, ensure_ascii=False)}\n"
-        f"Supporting annotation: {json.dumps(candidate.supporting_annotation, ensure_ascii=False)}"
-    )
-
-
-def _validate_generated(candidate: _Candidate, response: object) -> dict[str, Any] | None:
-    if not isinstance(response, dict) or response.get("status") not in {"generated", "skip"}:
-        raise ValueError("Generation response must have status generated or skip.")
-    if response["status"] == "skip":
-        if set(response) != {"status", "reason"} or not isinstance(response.get("reason"), str) or not response["reason"].strip():
-            raise ValueError("Skipped generation must contain one non-empty reason.")
-        return None
-    if set(response) != {"status", "question", "answer", "source_refs"}:
-        raise ValueError("Generated response has unexpected fields.")
+def _validate_generated(candidate: _Candidate, response: object) -> dict[str, Any]:
+    if not isinstance(response, dict) or set(response) != {"question", "answer", "source_refs"}:
+        raise ValueError("Generated item must contain question, answer, and source_refs.")
     question = response["question"]
     if not isinstance(question, str) or not question.strip():
         raise ValueError("Generated question must be a non-empty string.")
@@ -272,6 +221,62 @@ def _validate_generated(candidate: _Candidate, response: object) -> dict[str, An
     }
 
 
+def _routing_prompt(
+    candidates: list[_Candidate], benchmark_info: dict[str, object], remaining: dict[str, int]
+) -> tuple[str, str]:
+    offered = [
+        {
+            "task_id": candidate.task_id,
+            "remaining_count": remaining[candidate.task_id],
+            "task": candidate.task,
+            "supporting_annotation": candidate.supporting_annotation,
+            "answer_schema": _answer_schema(candidate.task["response_format"]),
+        }
+        for candidate in candidates
+    ]
+    system = (
+        "Select medically suitable tasks for one annotated image and generate benchmark items in one pass. "
+        "Return exactly {\"items\":[{\"task_id\":\"offered task\",\"question\":\"...\","
+        "\"answer\":...,\"source_refs\":[{\"field\":\"approved field\",\"instance_index\":null}]}]}. "
+        f"Return at most {MAX_ITEMS_PER_RECORD} items with unique task_id values, or an empty items list. "
+        "Use only each task's own supporting annotation and approved fields. Follow its templates and "
+        "generation_logic, never invent facts, and do not reveal the answer in the question. For letter "
+        "tasks use one exact supplied option. For bbox tasks copy one valid xyxy box and identify its "
+        "object-array source index. For free text copy or organize only supplied evidence."
+    )
+    user = (
+        f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
+        f"Image ID: {candidates[0].record['image_id']}\n"
+        f"Offered tasks: {json.dumps(offered, ensure_ascii=False)}"
+    )
+    return system, user
+
+
+def _validate_routed_response(
+    candidates: list[_Candidate], response: object
+) -> list[tuple[_Candidate, dict[str, Any]]]:
+    if not isinstance(response, dict) or set(response) != {"items"}:
+        raise ValueError("Routed generation response must contain only items.")
+    items = response["items"]
+    if not isinstance(items, list) or len(items) > MAX_ITEMS_PER_RECORD:
+        raise ValueError(f"Routed generation must return at most {MAX_ITEMS_PER_RECORD} items.")
+    by_task = {candidate.task_id: candidate for candidate in candidates}
+    seen: set[str] = set()
+    normalized: list[tuple[_Candidate, dict[str, Any]]] = []
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {"task_id", "question", "answer", "source_refs"}:
+            raise ValueError("Every routed item must contain task_id, question, answer, and source_refs.")
+        task_id = item["task_id"]
+        if task_id not in by_task or task_id in seen:
+            raise ValueError("Routed task IDs must be unique offered tasks.")
+        seen.add(task_id)
+        generated = _validate_generated(
+            by_task[task_id], {key: value for key, value in item.items() if key != "task_id"}
+        )
+        normalized.append((by_task[task_id], generated))
+    return normalized
+
+
 def _review(
     candidate: _Candidate,
     generated: dict[str, Any],
@@ -299,35 +304,6 @@ def _review(
     )
     reason = response.get("reason") if isinstance(response, dict) else "Invalid review response."
     return approved, str(reason)
-
-
-def _generate_candidate(
-    candidate: _Candidate, benchmark_info: dict[str, object]
-) -> dict[str, Any] | None:
-    prompt = _generation_prompt(candidate, benchmark_info)
-    retry_feedback = ""
-    for _attempt in range(MAX_ATTEMPTS_PER_CANDIDATE):
-        try:
-            response = complete_json(
-                "Generate one benchmark question and answer using only approved annotation evidence.",
-                prompt + retry_feedback,
-            )
-            generated = _validate_generated(candidate, response)
-        except ModelUnavailable:
-            retry_feedback = "\nPrevious attempt failed because the generation model was unavailable."
-            continue
-        except ValueError as exc:
-            retry_feedback = f"\nPrevious response violated the output contract: {exc}"
-            continue
-        if generated is None:
-            return None
-        approved, reason = _review(candidate, generated, benchmark_info)
-        if approved:
-            return generated
-        retry_feedback = (
-            "\nPrevious generated item was rejected by the independent reviewer: " + reason
-        )
-    return None
 
 
 def _item_identity(candidate: _Candidate) -> str:
@@ -368,75 +344,222 @@ def _build_item(candidate: _Candidate, generated: dict[str, Any]) -> BenchmarkIt
     return item
 
 
-def _generate_from_candidates(
-    candidates: list[_Candidate],
-    needed: int,
-    consumed: set[tuple[str, int]],
-    benchmark_info: dict[str, object],
-) -> list[BenchmarkItem]:
-    items: list[BenchmarkItem] = []
-    for candidate in candidates:
-        if candidate.key in consumed:
-            continue
-        consumed.add(candidate.key)
-        generated = _generate_candidate(candidate, benchmark_info)
-        if generated is None:
-            continue
-        items.append(_build_item(candidate, generated))
-        if len(items) == needed:
-            break
-    return items
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
-def generate_raw_benchmark(request: GenerationRequest) -> GenerationResult:
-    """Generate exactly target_sample_count reviewed benchmark items atomically."""
-    target = request["target_sample_count"]
-    if not isinstance(target, int) or target <= 0:
-        raise ValueError("target_sample_count must be a positive integer.")
-    tasks = _validate_tasks(request)
-    candidates = _load_candidates(request, tasks)
-    active_ids = [task_id for task_id in tasks if candidates[task_id]]
-    if not active_ids or sum(len(candidates[task_id]) for task_id in active_ids) < target:
-        raise ValueError("Insufficient valid candidates to reach target_sample_count.")
-
-    quotas = {task_id: target // len(active_ids) for task_id in active_ids}
-    for task_id in active_ids[: target % len(active_ids)]:
-        quotas[task_id] += 1
-    consumed: set[tuple[str, int]] = set()
-    items: list[BenchmarkItem] = []
-    benchmark_info = request["benchmark_info"]
-    for task_id in active_ids:
-        items.extend(
-            _generate_from_candidates(candidates[task_id], quotas[task_id], consumed, benchmark_info)
-        )
-    shortfall = target - len(items)
-    if shortfall:
-        for task_id in active_ids:
-            additions = _generate_from_candidates(
-                candidates[task_id], shortfall, consumed, benchmark_info
-            )
-            items.extend(additions)
-            shortfall -= len(additions)
-            if not shortfall:
-                break
-    if shortfall:
-        raise ValueError("Unable to generate target_sample_count reviewed benchmark items.")
-
-    task_order = {task_id: index for index, task_id in enumerate(tasks)}
-    items.sort(
-        key=lambda item: (task_order[item["task_id"]], item["source_refs"][0]["source_row"])
-    )
-    output_dir = Path(request["output_directory"])
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output = output_dir / "benchmark_items.raw.jsonl"
-    temporary = output.with_suffix(output.suffix + ".tmp")
+def _write_jsonl(path: Path, items: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as destination:
             for item in items:
                 destination.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
-        temporary.replace(output)
+        temporary.replace(path)
     finally:
         if temporary.exists():
             temporary.unlink()
-    counts = {task_id: sum(item["task_id"] == task_id for item in items) for task_id in tasks}
-    return GenerationResult(str(output), len(items), counts)
+
+
+def _progress_counts(items: list[dict[str, Any]], task_ids: list[str]) -> dict[str, int]:
+    return {task_id: sum(item.get("task_id") == task_id for item in items) for task_id in task_ids}
+
+
+def _merge_progress(
+    path: Path,
+    additions: list[BenchmarkItem],
+    task_order: dict[str, int],
+) -> list[dict[str, Any]]:
+    by_id = {str(item["id"]): item for item in _read_jsonl(path)}
+    by_id.update({item["id"]: item for item in additions})
+    items = list(by_id.values())
+    items.sort(
+        key=lambda item: (
+            task_order[str(item["task_id"])],
+            int(item["source_refs"][0]["source_row"]),
+        )
+    )
+    _write_jsonl(path, items)
+    return items
+
+
+def _row_record(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "image_id": row[0],
+        "image_path": row[1],
+        "patient_id": row[2],
+        "case_id": row[3],
+        "study_id": row[4],
+        "annotation": json.loads(row[5]) if isinstance(row[5], str) else row[5],
+        "_source_row": int(row[6]),
+    }
+
+
+def _next_candidate_record(
+    request: GenerationRequest,
+    tasks: dict[str, BlueprintTask],
+    targets: dict[str, int],
+    completed: dict[str, int],
+    cursor: int,
+) -> tuple[int, list[_Candidate] | None]:
+    database = request["dataset_access_manifest"].get("duckdb_path")
+    if not isinstance(database, str):
+        raise ValueError("Dataset access manifest lacks duckdb_path.")
+    seed = int(request.get("seed", 0))
+    connection = duckdb.connect(database, read_only=True)
+    try:
+        while True:
+            rows = connection.execute(
+                "SELECT image_id, image_path, patient_id, case_id, study_id, annotation, _source_row "
+                "FROM images ORDER BY hash(_source_row, ?), _source_row LIMIT ? OFFSET ?",
+                [seed, FETCH_BATCH_SIZE, cursor],
+            ).fetchall()
+            if not rows:
+                return cursor, None
+            for row in rows:
+                cursor += 1
+                record = _row_record(row)
+                candidates: list[_Candidate] = []
+                for task_id, task in tasks.items():
+                    if completed[task_id] >= targets[task_id]:
+                        continue
+                    projected = project_supporting_annotation(
+                        record["annotation"], task["supporting_fields"]
+                    )
+                    if projected:
+                        candidates.append(
+                            _Candidate(task_id, record["_source_row"], record, projected, task)
+                        )
+                if candidates:
+                    candidates.sort(
+                        key=lambda candidate: (
+                            -(targets[candidate.task_id] - completed[candidate.task_id]),
+                            list(tasks).index(candidate.task_id),
+                        )
+                    )
+                    return cursor, candidates
+            if len(rows) < FETCH_BATCH_SIZE:
+                return cursor, None
+    finally:
+        connection.close()
+
+
+def initialize_generation(request: GenerationRequest) -> dict[str, Any]:
+    """Validate a request and initialize compact resumable generation state."""
+    tasks, targets = _validate_tasks(request)
+    output_dir = Path(request["output_directory"])
+    progress_path = output_dir / "benchmark_items.progress.jsonl"
+    existing = _read_jsonl(progress_path)
+    completed = _progress_counts(existing, list(tasks))
+    return {
+        "generation_target_counts": targets,
+        "generation_completed_counts": completed,
+        "generation_cursor": 0,
+        "generation_progress_path": str(progress_path),
+        "generation_rejections": {},
+        "generation_exhausted": False,
+    }
+
+
+def generation_done(state: dict[str, Any]) -> bool:
+    targets = state["generation_target_counts"]
+    completed = state["generation_completed_counts"]
+    return bool(state.get("generation_exhausted")) or all(
+        completed[task_id] >= target for task_id, target in targets.items()
+    )
+
+
+def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dict[str, Any]:
+    """Process one model-worthy database record and return the next checkpoint state."""
+    tasks, targets = _validate_tasks(request)
+    progress_path = Path(state["generation_progress_path"])
+    progress = _read_jsonl(progress_path)
+    completed = _progress_counts(progress, list(tasks))
+    cursor, candidates = _next_candidate_record(
+        request, tasks, targets, completed, int(state["generation_cursor"])
+    )
+    rejections = dict(state.get("generation_rejections", {}))
+    if candidates is None:
+        return {
+            "generation_cursor": cursor,
+            "generation_completed_counts": completed,
+            "generation_rejections": rejections,
+            "generation_exhausted": True,
+        }
+
+    remaining = {task_id: targets[task_id] - completed[task_id] for task_id in tasks}
+    system, user = _routing_prompt(candidates, request["benchmark_info"], remaining)
+    try:
+        response = complete_json(system, user)
+    except ModelUnavailable:
+        rejections["generation_model_unavailable"] = rejections.get(
+            "generation_model_unavailable", 0
+        ) + 1
+        return {
+            "generation_cursor": cursor,
+            "generation_completed_counts": completed,
+            "generation_rejections": rejections,
+        }
+    try:
+        routed = _validate_routed_response(candidates, response)
+    except ValueError as first_error:
+        try:
+            repaired = complete_json(
+                "Repair one routed benchmark generation response. Return JSON only.",
+                f"{user}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+                f"Contract error: {first_error}\nRequired contract: {system}",
+            )
+            routed = _validate_routed_response(candidates, repaired)
+        except (ModelUnavailable, ValueError):
+            rejections["generation_contract"] = rejections.get("generation_contract", 0) + 1
+            return {
+                "generation_cursor": cursor,
+                "generation_completed_counts": completed,
+                "generation_rejections": rejections,
+            }
+
+    if not routed:
+        rejections["model_skip"] = rejections.get("model_skip", 0) + 1
+    accepted: list[BenchmarkItem] = []
+    for candidate, generated in routed:
+        approved, _reason = _review(candidate, generated, request["benchmark_info"])
+        if approved:
+            accepted.append(_build_item(candidate, generated))
+        else:
+            rejections["review_rejected"] = rejections.get("review_rejected", 0) + 1
+    if accepted:
+        progress = _merge_progress(
+            progress_path, accepted, {task_id: index for index, task_id in enumerate(tasks)}
+        )
+        completed = _progress_counts(progress, list(tasks))
+    return {
+        "generation_cursor": cursor,
+        "generation_completed_counts": completed,
+        "generation_rejections": rejections,
+    }
+
+
+def finalize_generation(request: GenerationRequest, state: dict[str, Any]) -> GenerationResult:
+    """Materialize the immutable raw JSONL from resumable progress."""
+    tasks, targets = _validate_tasks(request)
+    progress = _read_jsonl(Path(state["generation_progress_path"]))
+    kept: list[dict[str, Any]] = []
+    counts = {task_id: 0 for task_id in tasks}
+    for item in progress:
+        task_id = str(item.get("task_id"))
+        if task_id in targets and counts[task_id] < targets[task_id]:
+            kept.append(item)
+            counts[task_id] += 1
+    output = Path(request["output_directory"]) / "benchmark_items.raw.jsonl"
+    _write_jsonl(output, kept)
+    return GenerationResult(str(output), len(kept), counts)
+
+
+def generate_raw_benchmark(request: GenerationRequest) -> GenerationResult:
+    """Run the resumable generator synchronously for direct callers."""
+    state = initialize_generation(request)
+    while not generation_done(state):
+        state.update(advance_generation(request, state))
+    return finalize_generation(request, state)

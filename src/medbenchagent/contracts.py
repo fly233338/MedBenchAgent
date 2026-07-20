@@ -18,6 +18,7 @@ class BlueprintTask(TypedDict):
     generation_logic: str
     medical_task_description: str
     citations: list[dict[str, object]]
+    sample_count: int | None
     options: NotRequired[list[str]]
 
 
