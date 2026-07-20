@@ -1,10 +1,11 @@
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from medbenchagent.qwen_reranker import score_pairs
+from medbenchagent.qwen_reranker import clear_reranker_cache, score_pairs
 
 
 class _FakeTokenizer:
@@ -36,11 +37,13 @@ class _FakeTokenizer:
 
 class _FakeModel:
     loaded_path: str | None = None
+    load_count = 0
     device = torch.device("cpu")
 
     @classmethod
     def from_pretrained(cls, path: str):
         cls.loaded_path = path
+        cls.load_count += 1
         return cls()
 
     def eval(self):
@@ -54,6 +57,8 @@ class _FakeModel:
 
 
 def test_score_pairs_uses_qwen_causal_lm_yes_no_scoring(monkeypatch) -> None:
+    clear_reranker_cache()
+    _FakeModel.load_count = 0
     fake_transformers = SimpleNamespace(
         AutoModelForCausalLM=_FakeModel,
         AutoTokenizer=_FakeTokenizer,
@@ -63,10 +68,14 @@ def test_score_pairs_uses_qwen_causal_lm_yes_no_scoring(monkeypatch) -> None:
 
     scores = score_pairs("/models/qwen-reranker", [("query one", "doc one"), ("query two", "doc two")])
 
-    assert _FakeModel.loaded_path == "/models/qwen-reranker"
-    assert _FakeTokenizer.loaded == ("/models/qwen-reranker", {"padding_side": "left"})
+    expected_path = str(Path("/models/qwen-reranker").resolve())
+    assert _FakeModel.loaded_path == expected_path
+    assert _FakeTokenizer.loaded == (expected_path, {"padding_side": "left"})
     assert "<Query>: query one\n<Document>: doc one" in _FakeTokenizer.texts[0]
     assert scores == pytest.approx([0.880797, 0.119203])
+
+    score_pairs("/models/qwen-reranker", [("query one", "doc one")])
+    assert _FakeModel.load_count == 1
 
 
 def test_score_pairs_skips_model_loading_for_empty_input() -> None:

@@ -16,12 +16,11 @@ from medbenchagent.contracts import GenerationRequest
 from medbenchagent.dataset import AnnotationValidationError, prepare_annotation_dataset
 from medbenchagent.generation import generate_raw_benchmark
 from medbenchagent.llm import complete_json
-from medbenchagent.pdf_rag import LocalPdfRag, RagUnavailable, design_questions
+from medbenchagent.pdf_rag import LocalPdfRag, RagUnavailable, design_task, write_task_design
 from medbenchagent.task_screening import (
     apply_task_plan,
     generate_task_plan,
     revise_task_plan,
-    task_plan_entries,
 )
 
 PROJECT_ROOT = Path(__file__).parents[3]
@@ -42,10 +41,13 @@ class BenchmarkState(MessagesState):
     pending_task_feedback: dict[str, str] | None
     task_plan_confirmed: bool
     task_screening_report_path: str
-    task_plans: list[dict[str, Any]]
     materials_root: str
-    question_designs: list[dict[str, Any]]
-    question_design_feedback: str
+    rag_task_queue: list[str]
+    rag_task_feedback: dict[str, str]
+    rag_current_task_id: str
+    rag_completed_count: int
+    rag_total_count: int
+    rag_error: str
     designs_confirmed: bool
     generation_request: GenerationRequest
     ready_for_generation: bool
@@ -65,10 +67,6 @@ def _latest_user_text(state: BenchmarkState) -> str:
             content = message.content
             return content if isinstance(content, str) else str(content)
     return ""
-
-
-def _confirmed(answer: object) -> bool:
-    return str(answer).strip().lower() in {"y", "yes", "confirm", "confirmed", "确认", "是", "同意"}
 
 
 def _benchmark_extract_node(state: BenchmarkState) -> dict[str, Any]:
@@ -234,7 +232,6 @@ def _apply_task_plan_node(state: BenchmarkState) -> dict[str, Any]:
     )
     return {
         "task_screening_report_path": report_path,
-        "task_plans": task_plan_entries(state["draft_task_plan"]),
     }
 
 
@@ -245,84 +242,143 @@ def _materials_root_node(state: BenchmarkState) -> dict[str, Any]:
     return {"materials_root": str(answer).strip()}
 
 
-def _rag_design_node(state: BenchmarkState) -> dict[str, Any]:
-    """Compute RAG question designs; user confirmation is deliberately a separate node."""
+def _rag_prepare_node(state: BenchmarkState) -> dict[str, Any]:
+    """Initialize the ordered RAG queue from the current working Blueprint."""
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
-    retained = [
-        {"task_id": plan["task_id"], **blueprint["tasks"][plan["task_id"]], **plan}
-        for plan in state["task_plans"]
-        if plan["decision"] == "retain"
-    ]
-    if not retained:
-        raise ValueError("Task Plan must retain at least one task before RAG design.")
-    try:
-        rag = LocalPdfRag(state["materials_root"], PROJECT_ROOT / "benchmarks" / "rag_cache")
-    except RagUnavailable:
-        raise
+    tasks = blueprint.get("tasks")
+    if not isinstance(tasks, dict) or not tasks:
+        raise ValueError("Working Blueprint must retain at least one task before RAG design.")
     return {
-        "question_designs": design_questions(
-            rag,
-            state["benchmark_info"],
-            retained,
-            state.get("question_design_feedback", ""),
-        ),
+        "rag_task_queue": list(tasks),
+        "rag_task_feedback": {},
+        "rag_current_task_id": "",
+        "rag_completed_count": 0,
+        "rag_total_count": len(tasks),
+        "rag_error": "",
         "designs_confirmed": False,
     }
 
 
+def _rag_design_task_node(state: BenchmarkState) -> dict[str, Any]:
+    """Design and persist exactly one Blueprint task."""
+    queue = state.get("rag_task_queue", [])
+    if not queue:
+        raise ValueError("RAG task queue is empty.")
+    task_id = queue[0]
+    blueprint_path = Path(state["working_blueprint_path"])
+    blueprint = json.loads(blueprint_path.read_text(encoding="utf-8"))
+    task = blueprint.get("tasks", {}).get(task_id)
+    if not isinstance(task, dict):
+        raise ValueError(f"Working Blueprint does not contain queued task: {task_id}")
+    try:
+        rag = LocalPdfRag(state["materials_root"], PROJECT_ROOT / "benchmarks" / "rag_cache")
+    except RagUnavailable:
+        raise
+    design = design_task(
+        rag,
+        blueprint.get("benchmark_info", state["benchmark_info"]),
+        task_id,
+        task,
+        feedback=state.get("rag_task_feedback", {}).get(task_id, ""),
+    )
+    write_task_design(blueprint_path, task_id, design)
+    remaining = queue[1:]
+    return {
+        "rag_task_queue": remaining,
+        "rag_current_task_id": task_id,
+        "rag_completed_count": state.get("rag_completed_count", 0) + 1,
+        "rag_error": "",
+        "designs_confirmed": False,
+    }
+
+
+def _validate_design_review_action(response: object, task_ids: list[str]) -> dict[str, Any]:
+    if response == {"action": "confirm"}:
+        return {"action": "confirm"}
+    if not isinstance(response, dict) or set(response) != {"action", "revisions"}:
+        raise ValueError("Design review must confirm or provide revisions.")
+    revisions = response.get("revisions")
+    if response.get("action") != "revise" or not isinstance(revisions, list) or not revisions:
+        raise ValueError("Design revisions must be a non-empty list.")
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for revision in revisions:
+        if not isinstance(revision, dict) or set(revision) != {"task_id", "feedback"}:
+            raise ValueError("Each design revision must contain task_id and feedback.")
+        task_id = revision.get("task_id")
+        feedback = revision.get("feedback")
+        if task_id not in task_ids or task_id in seen:
+            raise ValueError("Design revisions must target unique current Blueprint tasks.")
+        if not isinstance(feedback, str) or not feedback.strip():
+            raise ValueError("Design revision feedback must be non-empty.")
+        seen.add(task_id)
+        normalized.append({"task_id": task_id, "feedback": feedback.strip()})
+    return {"action": "revise", "revisions": normalized}
+
+
+def _design_review_action(answer: object, tasks: dict[str, Any]) -> dict[str, Any]:
+    task_ids = list(tasks)
+    prompt = (
+        "Convert the user's review into exactly one of these JSON shapes:\n"
+        '{"action":"confirm"}\n'
+        '{"action":"revise","revisions":[{"task_id":"exact task id","feedback":"requested design change"}]}\n'
+        "Confirm only when the complete Blueprint task design is accepted. Support multiple task revisions "
+        "and expand a global request to every affected task. Revisions may change only question_templates, "
+        "options, generation_logic, or medical_task_description. They must not add or remove tasks or alter "
+        "supporting_fields, task_type, or response_format.\n"
+        f"Current tasks: {json.dumps(tasks, ensure_ascii=False)}\nUser response: {answer}"
+    )
+    response = complete_json("Interpret a Question Design review response. Return JSON only.", prompt)
+    try:
+        return _validate_design_review_action(response, task_ids)
+    except ValueError as first_error:
+        repaired = complete_json(
+            "Repair a Question Design review action. Return JSON only.",
+            f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+            f"Contract error: {first_error}",
+        )
+        return _validate_design_review_action(repaired, task_ids)
+
+
 def _design_review_node(state: BenchmarkState) -> dict[str, Any]:
+    blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
+    tasks = blueprint.get("tasks", {})
     answer = interrupt(
         {
             "kind": "question_design_confirmation",
-            "question_designs": state["question_designs"],
-            "question": "Confirm the question designs or describe a correction.",
+            "tasks": tasks,
+            "question": "Confirm the Blueprint task designs or describe one or more corrections.",
         }
     )
-    if _confirmed(answer):
-        return {"designs_confirmed": True, "question_design_feedback": ""}
-    return {"designs_confirmed": False, "question_design_feedback": str(answer)}
+    action = _design_review_action(answer, tasks)
+    if action["action"] == "confirm":
+        return {
+            "designs_confirmed": True,
+            "rag_task_queue": [],
+            "rag_task_feedback": {},
+        }
+    feedback = {revision["task_id"]: revision["feedback"] for revision in action["revisions"]}
+    return {
+        "designs_confirmed": False,
+        "rag_task_queue": list(feedback),
+        "rag_task_feedback": feedback,
+        "rag_current_task_id": "",
+        "rag_completed_count": 0,
+        "rag_total_count": len(feedback),
+    }
 
 
 def _generation_request_node(state: BenchmarkState) -> dict[str, Any]:
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
-    designs = {str(design.get("task_id")): design for design in state["question_designs"]}
-    task_specs: list[dict[str, Any]] = []
-    for plan in state["task_plans"]:
-        if plan["decision"] != "retain":
-            continue
-        task = blueprint["tasks"].get(plan["task_id"], {})
-        design = designs.get(plan["task_id"])
-        if design is None:
-            raise ValueError(f"Question Design is missing retained task: {plan['task_id']}")
-        spec = {
-            "task_id": plan["task_id"],
-            "task_type": task.get("task_type", ""),
-            "response_format": task.get("response_format", ""),
-            "description": task.get("description", ""),
-            "question_templates": design.get("question_templates", []),
-            "placeholder_bindings": design.get("placeholder_bindings", {}),
-            "validation_rules": design.get("validation_rules", []),
-            "citations": design.get("citations", []),
-        }
-        for source, destination in (
-            ("answer_list", "options"),
-            ("answer_field", "answer_field"),
-            ("answer_value_mapping", "answer_value_mapping"),
-            ("instance_path", "instance_path"),
-            ("target_text_field", "target_text_field"),
-            ("bbox_field", "bbox_field"),
-            ("bbox_format", "bbox_format"),
-        ):
-            if source in design:
-                spec[destination] = design[source]
-        task_specs.append(spec)
+    tasks = blueprint.get("tasks")
+    if not isinstance(tasks, dict) or not tasks:
+        raise ValueError("Working Blueprint contains no tasks for generation.")
+    benchmark_info = blueprint.get("benchmark_info", state["benchmark_info"])
     request: GenerationRequest = {
-        "benchmark_info": state["benchmark_info"],
+        "benchmark_info": benchmark_info,
         "dataset_access_manifest": state["dataset_access_manifest"],
-        "approved_task_plans": [plan for plan in state["task_plans"] if plan["decision"] == "retain"],
-        "question_designs": state["question_designs"],
-        "task_specs": task_specs,
-        "target_sample_count": int(state["benchmark_info"]["sample_count"]),
+        "tasks": tasks,
+        "target_sample_count": int(benchmark_info["sample_count"]),
         "seed": int(state.get("seed", 0)),
         "balance_answer_positions": bool(state.get("balance_answer_positions", True)),
         "output_directory": str(Path(state["working_blueprint_path"]).parent),
@@ -360,7 +416,8 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_node("task_plan_revise", _task_plan_revise_node)
     graph.add_node("apply_task_plan", _apply_task_plan_node)
     graph.add_node("materials_root", _materials_root_node)
-    graph.add_node("rag_design", _rag_design_node)
+    graph.add_node("rag_prepare", _rag_prepare_node)
+    graph.add_node("rag_design_task", _rag_design_task_node)
     graph.add_node("design_review", _design_review_node)
     graph.add_node("generation_request", _generation_request_node)
     graph.add_node("generate_raw_benchmark", _generate_raw_benchmark_node)
@@ -385,12 +442,17 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     )
     graph.add_edge("task_plan_revise", "task_plan_review")
     graph.add_edge("apply_task_plan", "materials_root")
-    graph.add_edge("materials_root", "rag_design")
-    graph.add_edge("rag_design", "design_review")
+    graph.add_edge("materials_root", "rag_prepare")
+    graph.add_edge("rag_prepare", "rag_design_task")
+    graph.add_conditional_edges(
+        "rag_design_task",
+        lambda state: "rag_design_task" if state.get("rag_task_queue") else "design_review",
+        {"rag_design_task": "rag_design_task", "design_review": "design_review"},
+    )
     graph.add_conditional_edges(
         "design_review",
-        lambda state: "generation_request" if state.get("designs_confirmed") else "rag_design",
-        {"generation_request": "generation_request", "rag_design": "rag_design"},
+        lambda state: "generation_request" if state.get("designs_confirmed") else "rag_design_task",
+        {"generation_request": "generation_request", "rag_design_task": "rag_design_task"},
     )
     graph.add_edge("generation_request", "generate_raw_benchmark")
     graph.add_edge("generate_raw_benchmark", "finalize_benchmark")

@@ -1,74 +1,174 @@
-"""Local, hash-cached PDF retrieval for question-design planning."""
+"""Local PDF retrieval and Blueprint-embedded task design."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-import string
+import re
 from pathlib import Path
+from threading import Lock
 from typing import Any
+
 from pypdf import PdfReader
 
-from medbenchagent.llm import ModelUnavailable, complete_json
+from medbenchagent.llm import complete_json
 from medbenchagent.qwen_reranker import score_pairs
+
+CHUNK_SIZE = 1_200
+CHUNK_OVERLAP = 200
+CACHE_SCHEMA_VERSION = "2"
+RAG_DESIGN_FIELDS = {
+    "question_templates",
+    "options",
+    "generation_logic",
+    "medical_task_description",
+    "citations",
+}
+LEGACY_DESIGN_FIELDS = {
+    "validation_rules",
+    "placeholder_bindings",
+    "answer_field",
+    "answer_value_mapping",
+    "instance_path",
+    "target_text_field",
+    "bbox_field",
+    "bbox_format",
+}
 
 
 class RagUnavailable(RuntimeError):
-    """Raised when local medical references or local BGE models are unavailable."""
+    """Raised when local medical references or retrieval models are unavailable."""
+
+
+class QuestionDesignError(ValueError):
+    """Raised after a task design violates its contract twice."""
 
 
 def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def extract_pdf_chunks(materials_root: str | Path, chunk_size: int = 1_200) -> tuple[str, list[dict[str, object]]]:
+def _page_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
+    if chunk_size <= 0 or overlap < 0 or overlap >= chunk_size:
+        raise ValueError("chunk_size must be positive and overlap must be smaller than it.")
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    if not paragraphs:
+        return []
+    chunks: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        pending = paragraph
+        while pending:
+            separator = "\n\n" if current else ""
+            available = chunk_size - len(current) - len(separator)
+            if available <= 0:
+                chunks.append(current)
+                current = current[-overlap:] if overlap else ""
+                continue
+            if len(pending) <= available:
+                current += separator + pending
+                pending = ""
+                continue
+            if current:
+                chunks.append(current)
+                current = current[-overlap:] if overlap else ""
+                continue
+            chunks.append(pending[:chunk_size])
+            pending = pending[chunk_size - overlap :]
+    if current and (not chunks or current != chunks[-1]):
+        chunks.append(current)
+    return [chunk.strip() for chunk in chunks if chunk.strip()]
+
+
+def extract_pdf_chunks(
+    materials_root: str | Path,
+    chunk_size: int = CHUNK_SIZE,
+    overlap: int = CHUNK_OVERLAP,
+) -> tuple[str, list[dict[str, object]]]:
+    """Extract page-local chunks and return a fingerprint of inputs and chunking rules."""
     root = Path(materials_root).expanduser().resolve()
     if not root.is_dir():
         raise RagUnavailable(f"Medical-material directory does not exist: {root}")
-    pdfs = sorted(root.rglob("*.pdf"))
-    other_files = [path for path in root.rglob("*") if path.is_file() and path.suffix.lower() != ".pdf"]
-    if other_files:
-        raise RagUnavailable("Medical materials only support PDF files in the first release.")
+    pdfs = sorted(path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf")
     if not pdfs:
         raise RagUnavailable("No PDF medical materials were found.")
+
+    fingerprint_items = [CACHE_SCHEMA_VERSION, str(chunk_size), str(overlap)]
     chunks: list[dict[str, object]] = []
-    hashes = []
     for pdf in pdfs:
-        hashes.append(_file_hash(pdf))
+        relative_path = pdf.relative_to(root).as_posix()
+        fingerprint_items.extend((relative_path, _file_hash(pdf)))
         try:
             reader = PdfReader(str(pdf))
         except Exception as exc:  # PyPDF exceptions are version-specific.
-            raise RagUnavailable(f"Cannot parse PDF: {pdf.name}") from exc
+            raise RagUnavailable(f"Cannot parse PDF: {relative_path}") from exc
+        path_key = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:12]
         for page_number, page in enumerate(reader.pages, start=1):
             text = (page.extract_text() or "").strip()
-            if not text:
-                continue
-            for offset in range(0, len(text), chunk_size):
-                chunk_id = f"{pdf.stem}-p{page_number}-c{offset // chunk_size}"
+            for index, chunk_text in enumerate(_page_chunks(text, chunk_size, overlap)):
                 chunks.append(
                     {
-                        "chunk_id": chunk_id,
-                        "text": text[offset : offset + chunk_size],
-                        "pdf": pdf.name,
+                        "chunk_id": f"{path_key}-p{page_number}-c{index}",
+                        "text": chunk_text,
+                        "pdf": relative_path,
                         "page": page_number,
                     }
                 )
     if not chunks:
         raise RagUnavailable("PDF materials contain no extractable text.")
-    return hashlib.sha256("".join(hashes).encode()).hexdigest(), chunks
+    fingerprint = hashlib.sha256("\0".join(fingerprint_items).encode("utf-8")).hexdigest()
+    return fingerprint, chunks
+
+
+_EMBEDDERS: dict[str, Any] = {}
+_EMBEDDER_LOCK = Lock()
+
+
+def _get_embedder(model_path: str) -> Any:
+    key = str(Path(model_path).resolve())
+    with _EMBEDDER_LOCK:
+        if key not in _EMBEDDERS:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as exc:
+                raise RagUnavailable("PDF RAG dependencies are not installed.") from exc
+            _EMBEDDERS[key] = SentenceTransformer(key)
+        return _EMBEDDERS[key]
+
+
+def clear_embedding_cache() -> None:
+    """Clear process-local embedding models; intended for isolated tests."""
+    with _EMBEDDER_LOCK:
+        _EMBEDDERS.clear()
+
+
+def _model_fingerprint(path: Path) -> str:
+    parts = [str(path.resolve())]
+    for name in ("config.json", "modules.json", "sentence_bert_config.json"):
+        config = path / name
+        if config.is_file():
+            parts.extend((name, _file_hash(config)))
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
 
 
 class LocalPdfRag:
-    """Chroma + local BGE embedding/reranking, persisted by source-PDF hash."""
+    """Chroma retrieval with process-cached embedding and reranking models."""
 
     def __init__(self, materials_root: str | Path, cache_root: str | Path) -> None:
-        self.source_hash, self.chunks = extract_pdf_chunks(materials_root)
-        embedding_path = Path(os.getenv("BGE_EMBEDDING_MODEL", ""))
-        reranker_path = Path(os.getenv("BGE_RERANKER_MODEL", ""))
+        source_hash, self.chunks = extract_pdf_chunks(materials_root)
+        embedding_value = os.getenv("BGE_EMBEDDING_MODEL")
+        reranker_value = os.getenv("BGE_RERANKER_MODEL")
+        if not embedding_value or not reranker_value:
+            raise RagUnavailable("Local embedding and reranker model directories must be configured.")
+        embedding_path = Path(embedding_value).expanduser().resolve()
+        reranker_path = Path(reranker_value).expanduser().resolve()
         if not embedding_path.is_dir() or not reranker_path.is_dir():
-            raise RagUnavailable("Local BGE embedding and reranker model directories must be configured.")
-        self.cache_dir = Path(cache_root) / self.source_hash
+            raise RagUnavailable("Local embedding and reranker model directories must be configured.")
+        cache_key = hashlib.sha256(
+            f"{source_hash}:{_model_fingerprint(embedding_path)}".encode("utf-8")
+        ).hexdigest()
+        self.cache_dir = Path(cache_root) / cache_key
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.embedding_path = str(embedding_path)
         self.reranker_path = str(reranker_path)
@@ -76,18 +176,20 @@ class LocalPdfRag:
     def retrieve(self, query: str, limit: int = 5) -> list[dict[str, object]]:
         try:
             import chromadb
-            from sentence_transformers import SentenceTransformer
         except ImportError as exc:
             raise RagUnavailable("PDF RAG dependencies are not installed.") from exc
-        embedder = SentenceTransformer(self.embedding_path)
+        embedder = _get_embedder(self.embedding_path)
         client = chromadb.PersistentClient(path=str(self.cache_dir))
         collection = client.get_or_create_collection("medical_references")
-        if collection.count() == 0:
+        if collection.count() != len(self.chunks):
             collection.upsert(
                 ids=[str(chunk["chunk_id"]) for chunk in self.chunks],
                 documents=[str(chunk["text"]) for chunk in self.chunks],
                 embeddings=embedder.encode([str(chunk["text"]) for chunk in self.chunks]).tolist(),
-                metadatas=[{"pdf": str(chunk["pdf"]), "page": int(chunk["page"])} for chunk in self.chunks],
+                metadatas=[
+                    {"pdf": str(chunk["pdf"]), "page": int(chunk["page"])}
+                    for chunk in self.chunks
+                ],
             )
         response = collection.query(
             query_embeddings=[embedder.encode(query).tolist()],
@@ -103,207 +205,187 @@ class LocalPdfRag:
                 "distance": distance,
             }
             for chunk_id, document, metadata, distance in zip(
-                response["ids"][0], response["documents"][0], response["metadatas"][0], response["distances"][0], strict=True
+                response["ids"][0],
+                response["documents"][0],
+                response["metadatas"][0],
+                response["distances"][0],
+                strict=True,
             )
         ]
         scores = score_pairs(
             self.reranker_path,
             [(query, str(candidate["text"])) for candidate in candidates],
         )
+        try:
+            threshold = float(os.getenv("RAG_MIN_RERANK_SCORE", "0.5"))
+        except ValueError as exc:
+            raise RagUnavailable("RAG_MIN_RERANK_SCORE must be a number between 0 and 1.") from exc
+        if not 0 <= threshold <= 1:
+            raise RagUnavailable("RAG_MIN_RERANK_SCORE must be between 0 and 1.")
+        accepted: list[dict[str, object]] = []
         for candidate, score in zip(candidates, scores, strict=True):
             candidate["rerank_score"] = float(score)
-        return sorted(candidates, key=lambda item: float(item["rerank_score"]), reverse=True)[:limit]
+            if float(score) >= threshold:
+                accepted.append(candidate)
+        return sorted(accepted, key=lambda item: float(item["rerank_score"]), reverse=True)[:limit]
 
 
-def _design_instruction(plan: dict[str, object]) -> str:
-    response_format = plan.get("response_format")
+def _design_schema(response_format: object) -> str:
     common = (
-        "Use only supporting annotation fields. question_templates must be non-empty strings; "
-        "placeholder_bindings maps simple placeholder names to supporting annotation fields. "
+        '{"question_templates":["non-empty template"],'
+        '"generation_logic":"non-empty instructions for using supporting annotation",'
+        '"medical_task_description":"one paragraph: assessed capability, then medical basis"}'
     )
     if response_format == "letter":
-        return common + (
-            "Return JSON with question_templates, placeholder_bindings, answer_list, answer_field, "
-            "answer_value_mapping, validation_rules. answer_list contains 2-26 fixed unique option strings. "
-            "answer_field is one supporting field. answer_value_mapping maps serialized source values "
-            "to answer_list values."
-        )
-    if response_format == "bbox":
-        return common + (
-            "Return JSON with question_templates, placeholder_bindings, instance_path, target_text_field, "
-            "bbox_field, bbox_format, validation_rules. instance_path identifies the annotation object array "
-            "containing each finding. target_text_field and bbox_field are fields under that same array. "
-            "bbox_field may be a four-coordinate scalar leaf path ending in [*]. bbox_format must be xyxy. "
-            "Every template must use {target_text}."
-        )
-    if response_format == "free_text":
-        return common + (
-            "Return JSON with question_templates, placeholder_bindings, answer_field, validation_rules. "
-            "answer_field must identify paired expert-written text. Do not synthesize the reference answer. "
-            "Use instance_path only when the paired text belongs to an object in an annotation array."
-        )
-    raise ValueError(f"Unsupported response_format for Question Design: {response_format}")
+        return common[:-1] + ',"options":["2 to 26 unique medical options"]}'
+    if response_format in {"bbox", "free_text"}:
+        return common
+    raise ValueError(f"Unsupported response_format for RAG design: {response_format}")
 
 
-def _template_fields(template: str) -> set[str]:
-    fields: set[str] = set()
-    for _literal, field_name, format_spec, conversion in string.Formatter().parse(template):
-        if field_name is None:
-            continue
-        if not field_name.isidentifier() or format_spec or conversion:
-            raise ValueError("Question templates support only simple {placeholder} fields.")
-        fields.add(field_name)
-    return fields
-
-
-def _field_in_scope(field: object, supporting_fields: set[str]) -> bool:
-    return isinstance(field, str) and field in supporting_fields
-
-
-def validate_question_designs(
-    task_plans: list[dict[str, object]], designs: list[dict[str, object]]
-) -> list[dict[str, object]]:
-    """Validate and normalize one task-type-aware design per retained task."""
-    retained = [plan for plan in task_plans if plan.get("decision") == "retain"]
-    expected = [str(plan["task_id"]) for plan in retained]
-    by_task: dict[str, dict[str, object]] = {}
-    for design in designs:
-        task_id = design.get("task_id")
-        if not isinstance(task_id, str) or task_id in by_task:
-            raise ValueError("Question Designs must have unique non-empty task_id values.")
-        by_task[task_id] = design
-    if set(by_task) != set(expected):
-        raise ValueError("Question Designs must contain exactly every retained task.")
-
-    normalized: list[dict[str, object]] = []
-    for plan in retained:
-        task_id = str(plan["task_id"])
-        design = by_task[task_id]
-        supporting = set(plan.get("supporting_fields", []))
-        templates = design.get("question_templates")
-        if not isinstance(templates, list) or not templates or not all(
-            isinstance(template, str) and template.strip() for template in templates
+def validate_task_design(task_id: str, task: dict[str, Any], response: object) -> dict[str, Any]:
+    """Validate one RAG contribution before embedding it in the Blueprint task."""
+    if not isinstance(response, dict):
+        raise ValueError(f"{task_id}: RAG design must be a JSON object.")
+    response_format = task.get("response_format")
+    if response_format not in {"letter", "bbox", "free_text"}:
+        raise ValueError(f"{task_id}: unsupported response_format {response_format}.")
+    expected = {"question_templates", "generation_logic", "medical_task_description"}
+    if response_format == "letter":
+        expected.add("options")
+    if set(response) != expected:
+        raise ValueError(f"{task_id}: RAG design must contain exactly {sorted(expected)}.")
+    templates = response["question_templates"]
+    if not isinstance(templates, list) or not templates or not all(
+        isinstance(template, str) and template.strip() for template in templates
+    ):
+        raise ValueError(f"{task_id}: question_templates must be non-empty strings.")
+    for field in ("generation_logic", "medical_task_description"):
+        if not isinstance(response[field], str) or not response[field].strip():
+            raise ValueError(f"{task_id}: {field} must be a non-empty string.")
+    normalized: dict[str, Any] = {
+        "question_templates": [template.strip() for template in templates],
+        "generation_logic": response["generation_logic"].strip(),
+        "medical_task_description": response["medical_task_description"].strip(),
+    }
+    if response_format == "letter":
+        options = response["options"]
+        normalized_options = [option.strip() for option in options] if isinstance(options, list) else []
+        if (
+            not isinstance(options, list)
+            or not 2 <= len(options) <= 26
+            or not all(isinstance(option, str) and option.strip() for option in options)
+            or len(set(normalized_options)) != len(normalized_options)
         ):
-            raise ValueError(f"{task_id}: question_templates must be non-empty strings.")
-        bindings = design.get("placeholder_bindings", {})
-        if not isinstance(bindings, dict) or not all(
-            isinstance(name, str) and name.isidentifier() and _field_in_scope(field, supporting)
-            for name, field in bindings.items()
-        ):
-            raise ValueError(f"{task_id}: placeholder_bindings must reference supporting fields.")
-        placeholders = set().union(*(_template_fields(template) for template in templates))
-        if placeholders - set(bindings):
-            raise ValueError(f"{task_id}: every template placeholder needs a binding.")
-        rules = design.get("validation_rules", [])
-        if not isinstance(rules, list) or not all(isinstance(rule, str) for rule in rules):
-            raise ValueError(f"{task_id}: validation_rules must be strings.")
-
-        item: dict[str, Any] = {
-            "task_id": task_id,
-            "question_templates": [template.strip() for template in templates],
-            "placeholder_bindings": dict(bindings),
-            "validation_rules": rules,
-            "citations": list(design.get("citations", [])),
-        }
-        response_format = plan.get("response_format")
-        if response_format == "letter":
-            options = design.get("answer_list")
-            answer_field = design.get("answer_field")
-            mapping = design.get("answer_value_mapping", {})
-            if (
-                not isinstance(options, list)
-                or not 2 <= len(options) <= 26
-                or not all(isinstance(option, str) and option for option in options)
-                or len(set(options)) != len(options)
-            ):
-                raise ValueError(f"{task_id}: answer_list must contain 2-26 unique strings.")
-            if not _field_in_scope(answer_field, supporting):
-                raise ValueError(f"{task_id}: answer_field must be a supporting field.")
-            if not isinstance(mapping, dict) or not all(
-                isinstance(key, str) and isinstance(value, str) and value in options
-                for key, value in mapping.items()
-            ):
-                raise ValueError(f"{task_id}: answer_value_mapping must map strings to answer_list.")
-            item.update(answer_list=options, answer_field=answer_field, answer_value_mapping=mapping)
-        elif response_format == "bbox":
-            instance_path = design.get("instance_path")
-            target_field = design.get("target_text_field")
-            bbox_field = design.get("bbox_field")
-            if not isinstance(instance_path, str) or not instance_path.endswith("[*]"):
-                raise ValueError(f"{task_id}: instance_path must identify an annotation array.")
-            if not _field_in_scope(target_field, supporting) or not _field_in_scope(bbox_field, supporting):
-                raise ValueError(f"{task_id}: detection fields must be supporting fields.")
-            prefix = instance_path + "."
-            if not str(target_field).startswith(prefix) or not str(bbox_field).startswith(prefix):
-                raise ValueError(f"{task_id}: detection fields must belong to instance_path.")
-            if design.get("bbox_format") != "xyxy":
-                raise ValueError(f"{task_id}: bbox_format must be xyxy.")
-            if bindings.get("target_text") != target_field or any(
-                "target_text" not in _template_fields(template) for template in templates
-            ):
-                raise ValueError(f"{task_id}: detection templates must bind {{target_text}}.")
-            item.update(
-                instance_path=instance_path,
-                target_text_field=target_field,
-                bbox_field=bbox_field,
-                bbox_format="xyxy",
-            )
-        elif response_format == "free_text":
-            answer_field = design.get("answer_field")
-            if not _field_in_scope(answer_field, supporting):
-                raise ValueError(f"{task_id}: answer_field must be a supporting field.")
-            if answer_field in bindings.values():
-                raise ValueError(f"{task_id}: a question placeholder must not expose the reference answer.")
-            item["answer_field"] = answer_field
-            instance_path = design.get("instance_path")
-            if instance_path is not None:
-                if not isinstance(instance_path, str) or not instance_path.endswith("[*]"):
-                    raise ValueError(f"{task_id}: instance_path must identify an annotation array.")
-                if not str(answer_field).startswith(instance_path + "."):
-                    raise ValueError(f"{task_id}: answer_field must belong to instance_path.")
-                item["instance_path"] = instance_path
-        else:
-            raise ValueError(f"{task_id}: unsupported response_format {response_format}.")
-        normalized.append(item)
+            raise ValueError(f"{task_id}: options must contain 2-26 unique non-empty strings.")
+        normalized["options"] = normalized_options
     return normalized
 
 
-def design_questions(
-    rag: LocalPdfRag, benchmark_info: dict[str, object], task_plans: list[dict[str, object]], feedback: str = ""
-) -> list[dict[str, object]]:
-    """Ask DeepSeek to design, but not generate, questions grounded in retrieved chunks."""
-    designs: list[dict[str, object]] = []
-    for plan in task_plans:
-        if plan["decision"] != "retain":
-            continue
-        query = " ".join(
-            str(value)
-            for value in (
-                benchmark_info.get("disease"),
-                benchmark_info.get("modality"),
-                plan["task_id"],
-                plan.get("supporting_fields", []),
-            )
+def _design_prompt(
+    benchmark_info: dict[str, object],
+    task_id: str,
+    task: dict[str, Any],
+    context: str,
+    feedback: str,
+    current_design: dict[str, Any] | None,
+) -> tuple[str, str]:
+    schema = _design_schema(task.get("response_format"))
+    system = (
+        "Design the medical-content portion of exactly one medical VLM benchmark task. "
+        f"Return exactly this JSON shape and no other fields: {schema}. "
+        "Use the requested benchmark language. Medical references may determine clinically standard "
+        "question wording, letter-task options, assessed capability, and medical basis. "
+        "generation_logic must explain how a later model should use only supporting annotation to "
+        "produce one question and answer without inventing facts. Do not return task_id, citations, "
+        "validation_rules, placeholder bindings, answer fields, mappings, instance paths, or bbox fields. "
+        "When no PDF excerpt is supplied, use generic wording and do not claim a specific guideline basis."
+    )
+    user = (
+        f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
+        f"Task ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n"
+        f"Requested revision: {feedback or 'none'}\n"
+        f"Current RAG fields: {json.dumps(current_design or {}, ensure_ascii=False)}\n"
+        f"PDF excerpts:\n{context or '[No sufficiently relevant PDF excerpt was retrieved.]'}"
+    )
+    return system, user
+
+
+def design_task(
+    rag: LocalPdfRag,
+    benchmark_info: dict[str, object],
+    task_id: str,
+    task: dict[str, Any],
+    *,
+    feedback: str = "",
+) -> dict[str, Any]:
+    """Retrieve medical material and produce one validated Blueprint task contribution."""
+    supporting_fields = task.get("supporting_fields")
+    if not isinstance(supporting_fields, list) or not supporting_fields:
+        raise ValueError(f"{task_id}: supporting_fields must be present before RAG design.")
+    query = " ".join(
+        str(value)
+        for value in (
+            benchmark_info.get("disease"),
+            benchmark_info.get("modality"),
+            task_id,
+            task.get("description"),
+            supporting_fields,
         )
-        citations = rag.retrieve(query)
-        context = "\n\n".join(
-            f"[{item['chunk_id']}, {item['pdf']} p.{item['page']}] {item['text']}" for item in citations
+    )
+    citations = rag.retrieve(query)
+    context = "\n\n".join(
+        f"[{item['chunk_id']}, {item['pdf']} p.{item['page']}] {item['text']}" for item in citations
+    )
+    current = {field: task[field] for field in RAG_DESIGN_FIELDS if field in task and field != "citations"}
+    system, user = _design_prompt(benchmark_info, task_id, task, context, feedback, current)
+    response = complete_json(system, user)
+    try:
+        normalized = validate_task_design(task_id, task, response)
+    except ValueError as first_error:
+        repair_system = (
+            f"{system}\nYour previous JSON violated the contract: {first_error}. "
+            "Return one corrected object using the exact required shape."
+        )
+        repaired = complete_json(
+            repair_system,
+            f"Previous response: {json.dumps(response, ensure_ascii=False)}\n\n{user}",
         )
         try:
-            design = complete_json(
-                "Design a medical benchmark question specification. Use only the supplied PDF excerpts for "
-                "medical phrasing. Do not alter or invent ground-truth labels. " + _design_instruction(plan),
-                f"Benchmark: {json.dumps(benchmark_info)}\nTask plan: {json.dumps(plan)}\n"
-                f"User design feedback: {feedback}\nPDF excerpts:\n{context}",
-            )
-        except ModelUnavailable:
-            raise
-        designs.append(
-            {
-                "task_id": plan["task_id"],
-                **design,
-                "answer_value_mapping": design.get("answer_value_mapping", design.get("source_value_mapping", {})),
-                "citations": [{key: item[key] for key in ("pdf", "page", "chunk_id")} for item in citations],
-            }
+            normalized = validate_task_design(task_id, task, repaired)
+        except ValueError as second_error:
+            preview = json.dumps(repaired, ensure_ascii=False)[:500]
+            raise QuestionDesignError(
+                f"{task_id}: RAG design remained invalid after repair: {second_error}; response={preview}"
+            ) from second_error
+    normalized["citations"] = [
+        {key: item[key] for key in ("pdf", "page", "chunk_id")} for item in citations
+    ]
+    return normalized
+
+
+def write_task_design(
+    blueprint_path: str | Path,
+    task_id: str,
+    design: dict[str, Any],
+) -> None:
+    """Atomically replace one task's embedded RAG fields in the working Blueprint."""
+    path = Path(blueprint_path)
+    blueprint = json.loads(path.read_text(encoding="utf-8"))
+    tasks = blueprint.get("tasks")
+    if not isinstance(tasks, dict) or not isinstance(tasks.get(task_id), dict):
+        raise ValueError(f"Working Blueprint does not contain task: {task_id}")
+    task = tasks[task_id]
+    for field in RAG_DESIGN_FIELDS | LEGACY_DESIGN_FIELDS:
+        task.pop(field, None)
+    task.update(design)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        temporary.write_text(
+            json.dumps(blueprint, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
-    return validate_question_designs(task_plans, designs)
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()

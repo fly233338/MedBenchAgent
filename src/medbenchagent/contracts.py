@@ -6,30 +6,25 @@ from dataclasses import dataclass
 from typing import NotRequired, Protocol, TypedDict
 
 
-class TaskGenerationSpec(TypedDict):
-    task_id: str
+class BlueprintTask(TypedDict):
     task_type: str
     response_format: str
     description: str
+    require: str
+    metric: str
+    supporting_fields: list[str]
+    dataset_support_reason: str
     question_templates: list[str]
-    placeholder_bindings: dict[str, str]
-    validation_rules: list[str]
+    generation_logic: str
+    medical_task_description: str
     citations: list[dict[str, object]]
     options: NotRequired[list[str]]
-    answer_field: NotRequired[str]
-    answer_value_mapping: NotRequired[dict[str, str]]
-    instance_path: NotRequired[str]
-    target_text_field: NotRequired[str]
-    bbox_field: NotRequired[str]
-    bbox_format: NotRequired[str]
 
 
 class GenerationRequest(TypedDict):
     benchmark_info: dict[str, object]
     dataset_access_manifest: dict[str, object]
-    approved_task_plans: list[dict[str, object]]
-    question_designs: list[dict[str, object]]
-    task_specs: list[TaskGenerationSpec]
+    tasks: dict[str, BlueprintTask]
     target_sample_count: int
     seed: int
     balance_answer_positions: bool

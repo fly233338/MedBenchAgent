@@ -29,9 +29,10 @@ not included as examples. CSV and XLSX inputs are not supported.
 The workflow computes the complete Task Plan in one model call, then presents it for
 review. Respond in natural language to confirm it or describe one task to revise;
 DeepSeek maps every response to a validated confirm/revise action. BenchmarkInfo review
-uses the same natural-language interpretation. Revisions regenerate only the selected
-task. The working Blueprint is updated only after confirmation; the resulting
-`task_plan_report.json` retains decisions for both retained and dropped tasks.
+uses the same natural-language interpretation. The working Blueprint is updated only
+after confirmation: dropped tasks are removed and retained tasks receive their approved
+`supporting_fields`. The resulting `task_plan_report.json` retains decisions for both
+retained and dropped tasks.
 
 ## Development
 
@@ -41,7 +42,9 @@ Qwen3 embedding and reranker models under `/public/home/rxa-jj-wzk/models/Qwen-R
 `DEEPSEEK_API_KEY` may remain empty when vLLM authentication is disabled.
 The reranker uses the Qwen3 causal-LM `yes`/`no` scoring procedure documented on
 ModelScope, so an original ModelScope checkpoint works without Sentence Transformers
-adapter metadata such as `modules.json` or `1_LogitScore/`.
+adapter metadata such as `modules.json` or `1_LogitScore/`. Embedding and reranking
+models are loaded lazily once per model path in each worker process and then reused.
+Set `RAG_MIN_RERANK_SCORE` to filter weak passages; the default is `0.5`.
 
 For Web VS Code, start the development server without browser launch and forward port
 8123 through the IDE:
@@ -54,12 +57,19 @@ The graph entry point is `medbenchagent.workflow.graph:compile_benchmark_graph`.
 
 ## Question design and benchmark outputs
 
-Every retained task receives a PDF-grounded Question Design before generation. Closed
-VQA designs define fixed options and an annotation-to-answer mapping; DeepSeek only
-generates and independently reviews question wording. Detection designs bind a target
-description and an `xyxy` box from the same annotation object, then instantiate an
-approved template. Finding-description and report tasks use paired expert text directly
-as the reference answer and never ask the model to synthesize ground truth.
+RAG processes retained tasks one at a time and writes its result directly into each
+working Blueprint task. The embedded fields are `question_templates`,
+`generation_logic`, `medical_task_description`, `citations`, and, for letter tasks,
+`options`. There is no separate Question Design artifact or duplicate generation spec.
+Natural-language review can revise one or more task designs without changing other
+Blueprint tasks.
+
+For each task/image candidate, the generator projects only the task's approved
+`supporting_fields` from the annotation while preserving array source indices. DeepSeek
+uses that projection and the embedded task design to return one question, normalized
+answer, and source references. Code validates the response shape and an independent
+model reviews annotation fidelity, medical normalization, bbox alignment, and answer
+leakage before the item is accepted. Each task/image produces at most one item.
 
 The raw file keeps task/source-row order and original closed-task option order. Every
 item records `task_type` and `response_format`; `answer` is a choice letter, reference

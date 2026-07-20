@@ -187,7 +187,21 @@ def apply_task_plan(
         else:
             tasks[task_id]["supporting_fields"] = decision["supporting_fields"]
             tasks[task_id]["dataset_support_reason"] = decision["reason"]
-    blueprint_path.write_text(json.dumps(blueprint, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary = blueprint_path.with_suffix(blueprint_path.suffix + ".tmp")
+    try:
+        temporary.write_text(
+            json.dumps(blueprint, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        temporary.replace(blueprint_path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    expected_retained = {
+        task_id for task_id, decision in validated["tasks"].items() if decision["decision"] == "retain"
+    }
+    written = json.loads(blueprint_path.read_text(encoding="utf-8"))
+    if set(written.get("tasks", {})) != expected_retained:
+        raise ValueError("Working Blueprint does not match the confirmed retained tasks")
     report_path = blueprint_path.with_name("task_plan_report.json")
     report_path.write_text(json.dumps(validated, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(report_path)

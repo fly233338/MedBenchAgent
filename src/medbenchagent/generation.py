@@ -1,7 +1,8 @@
-"""Mixed benchmark generation from annotations and approved Question Designs."""
+"""Model-driven benchmark generation from Blueprint tasks and approved annotations."""
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from collections import defaultdict
@@ -11,121 +12,123 @@ from typing import Any
 
 import duckdb
 
-from medbenchagent.contracts import BenchmarkItem, GenerationRequest, GenerationResult, TaskGenerationSpec
+from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
 from medbenchagent.llm import ModelUnavailable, complete_json
 
 MAX_ATTEMPTS_PER_CANDIDATE = 3
+_MISSING = object()
 
 
 @dataclass(frozen=True)
 class _Candidate:
     task_id: str
     source_row: int
-    instance_index: int | None
     record: dict[str, Any]
-    answer: str | list[float]
-    answer_value: str | None
-    bindings: dict[str, str]
-    spec: TaskGenerationSpec
+    supporting_annotation: dict[str, Any]
+    task: BlueprintTask
 
     @property
-    def key(self) -> tuple[str, int, int | None]:
-        return self.task_id, self.source_row, self.instance_index
+    def key(self) -> tuple[str, int]:
+        return self.task_id, self.source_row
 
 
-def _path_values(root: object, segments: list[str]) -> list[object]:
-    values = [root]
-    for segment in segments:
-        is_array = segment.endswith("[*]")
-        key = segment.removesuffix("[*]")
-        nested_values: list[object] = []
-        for value in values:
-            if not isinstance(value, dict) or key not in value:
+def _merge_projection(left: object, right: object) -> object:
+    if isinstance(left, dict) and isinstance(right, dict):
+        merged = copy.deepcopy(left)
+        for key, value in right.items():
+            merged[key] = _merge_projection(merged[key], value) if key in merged else copy.deepcopy(value)
+        return merged
+    if isinstance(left, list) and isinstance(right, list):
+        if all(isinstance(item, dict) and "_source_index" in item for item in left + right):
+            by_index = {int(item["_source_index"]): copy.deepcopy(item) for item in left}
+            for item in right:
+                index = int(item["_source_index"])
+                by_index[index] = (
+                    _merge_projection(by_index[index], item) if index in by_index else copy.deepcopy(item)
+                )
+            return [by_index[index] for index in sorted(by_index)]
+    return copy.deepcopy(right)
+
+
+def _project_value(value: object, segments: list[str]) -> object:
+    if not segments:
+        return copy.deepcopy(value)
+    if not isinstance(value, dict):
+        return _MISSING
+    segment = segments[0]
+    is_array = segment.endswith("[*]")
+    key = segment.removesuffix("[*]")
+    if key not in value:
+        return _MISSING
+    nested = value[key]
+    if is_array:
+        if not isinstance(nested, list):
+            return _MISSING
+        if len(segments) == 1:
+            return {key: copy.deepcopy(nested)}
+        projected_items: list[dict[str, Any]] = []
+        for index, item in enumerate(nested):
+            projected = _project_value(item, segments[1:])
+            if projected is _MISSING:
                 continue
-            nested = value[key]
-            if is_array:
-                if isinstance(nested, list):
-                    nested_values.extend(nested)
+            if isinstance(projected, dict):
+                projected_items.append({"_source_index": index, **projected})
             else:
-                nested_values.append(nested)
-        values = nested_values
-    return values
+                projected_items.append({"_source_index": index, "value": projected})
+        return {key: projected_items} if projected_items else _MISSING
+    projected = _project_value(nested, segments[1:])
+    return {key: projected} if projected is not _MISSING else _MISSING
 
 
-def _annotation_values(annotation: dict[str, Any], path: str) -> list[object]:
-    if not path.startswith("annotation."):
-        raise ValueError(f"Annotation field must start with annotation.: {path}")
-    return _path_values(annotation, path.split(".")[1:])
+def project_supporting_annotation(
+    annotation: dict[str, Any], supporting_fields: list[str]
+) -> dict[str, Any]:
+    """Project approved annotation paths while retaining array source indices."""
+    projected: object = {}
+    for path in supporting_fields:
+        if not isinstance(path, str) or not path.startswith("annotation."):
+            raise ValueError(f"Supporting field must start with annotation.: {path}")
+        value = _project_value(annotation, path.split(".")[1:])
+        if value is not _MISSING:
+            projected = _merge_projection(projected, value)
+    return projected if isinstance(projected, dict) else {}
 
 
-def _instances(annotation: dict[str, Any], instance_path: str) -> list[dict[str, Any]]:
-    if not instance_path.startswith("annotation.") or not instance_path.endswith("[*]"):
-        raise ValueError(f"instance_path must identify an annotation array: {instance_path}")
-    return [value for value in _annotation_values(annotation, instance_path) if isinstance(value, dict)]
-
-
-def _bound_values(
-    annotation: dict[str, Any], field: str, instance_path: str | None, instance: dict[str, Any] | None
-) -> list[object]:
-    if instance_path is not None and field.startswith(instance_path + "."):
-        if instance is None:
-            return []
-        relative = field[len(instance_path) + 1 :]
-        return _path_values(instance, relative.split("."))
-    return _annotation_values(annotation, field)
-
-
-def _one_scalar(values: list[object]) -> object | None:
-    non_empty = [value for value in values if value not in (None, "")]
-    if len(non_empty) != 1 or isinstance(non_empty[0], (dict, list)):
-        return None
-    return non_empty[0]
-
-
-def _serialized_value(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _validate_task_specs(request: GenerationRequest) -> list[TaskGenerationSpec]:
-    specs = request.get("task_specs")
-    if not isinstance(specs, list) or not specs:
-        raise ValueError("No retained task is available for generation.")
-    task_ids: set[str] = set()
-    for spec in specs:
-        task_id = spec.get("task_id")
-        response_format = spec.get("response_format")
-        templates = spec.get("question_templates")
-        if not isinstance(task_id, str) or not task_id or task_id in task_ids:
-            raise ValueError("Task generation specs must have unique non-empty task_id values.")
-        task_ids.add(task_id)
+def _validate_tasks(request: GenerationRequest) -> dict[str, BlueprintTask]:
+    tasks = request.get("tasks")
+    if not isinstance(tasks, dict) or not tasks:
+        raise ValueError("No Blueprint task is available for generation.")
+    for task_id, task in tasks.items():
+        if not isinstance(task_id, str) or not task_id or not isinstance(task, dict):
+            raise ValueError("Blueprint tasks must use non-empty string IDs and object values.")
+        response_format = task.get("response_format")
+        if response_format not in {"letter", "bbox", "free_text"}:
+            raise ValueError(f"{task_id}: unsupported response_format {response_format}.")
+        supporting = task.get("supporting_fields")
+        if not isinstance(supporting, list) or not supporting or not all(
+            isinstance(field, str) and field.startswith("annotation.") for field in supporting
+        ):
+            raise ValueError(f"{task_id}: supporting_fields must contain annotation paths.")
+        templates = task.get("question_templates")
         if not isinstance(templates, list) or not templates or not all(
-            isinstance(template, str) and template for template in templates
+            isinstance(template, str) and template.strip() for template in templates
         ):
             raise ValueError(f"{task_id}: question_templates must be non-empty strings.")
+        for field in ("generation_logic", "medical_task_description"):
+            if not isinstance(task.get(field), str) or not str(task[field]).strip():
+                raise ValueError(f"{task_id}: {field} must be a non-empty string.")
+        options = task.get("options")
         if response_format == "letter":
-            options = spec.get("options")
             if (
                 not isinstance(options, list)
                 or not 2 <= len(options) <= 26
-                or not all(isinstance(option, str) for option in options)
+                or not all(isinstance(option, str) and option for option in options)
                 or len(set(options)) != len(options)
-                or not isinstance(spec.get("answer_field"), str)
             ):
-                raise ValueError(f"{task_id}: letter tasks need a valid answer_field and fixed options.")
-        elif response_format == "bbox":
-            if (
-                not isinstance(spec.get("instance_path"), str)
-                or not isinstance(spec.get("target_text_field"), str)
-                or not isinstance(spec.get("bbox_field"), str)
-                or spec.get("bbox_format") != "xyxy"
-            ):
-                raise ValueError(f"{task_id}: bbox tasks need aligned target and xyxy fields.")
-        elif response_format == "free_text":
-            if not isinstance(spec.get("answer_field"), str):
-                raise ValueError(f"{task_id}: free_text tasks need an answer_field.")
-        else:
-            raise ValueError(f"{task_id}: unsupported response_format {response_format}.")
-    return specs
+                raise ValueError(f"{task_id}: letter tasks need 2-26 unique options.")
+        elif options is not None:
+            raise ValueError(f"{task_id}: options are allowed only for letter tasks.")
+    return tasks
 
 
 def _load_records(request: GenerationRequest) -> list[dict[str, Any]]:
@@ -154,281 +157,274 @@ def _load_records(request: GenerationRequest) -> list[dict[str, Any]]:
     ]
 
 
-def _template_bindings(
-    spec: TaskGenerationSpec,
-    annotation: dict[str, Any],
-    instance: dict[str, Any] | None = None,
-) -> dict[str, str] | None:
-    instance_path = spec.get("instance_path")
-    bindings: dict[str, str] = {}
-    for name, field in spec.get("placeholder_bindings", {}).items():
-        value = _one_scalar(_bound_values(annotation, field, instance_path, instance))
-        if value is None:
-            return None
-        bindings[name] = str(value)
-    return bindings
-
-
-def _closed_candidate(spec: TaskGenerationSpec, record: dict[str, Any]) -> _Candidate | None:
-    field = spec["answer_field"]
-    value = _one_scalar(_annotation_values(record["annotation"], field))
-    if value is None:
-        return None
-    mapping = spec.get("answer_value_mapping", {})
-    if not isinstance(mapping, dict):
-        raise ValueError(f"{spec['task_id']}: answer_value_mapping must be an object.")
-    answer_value = mapping.get(_serialized_value(value), mapping.get(str(value), value))
-    if not isinstance(answer_value, str) or answer_value not in spec["options"]:
-        return None
-    return _Candidate(
-        spec["task_id"], record["_source_row"], None, record, answer_value, answer_value, {}, spec
-    )
-
-
-def _free_text_candidates(spec: TaskGenerationSpec, record: dict[str, Any]) -> list[_Candidate]:
-    instance_path = spec.get("instance_path")
-    instances: list[dict[str, Any] | None] = (
-        list(_instances(record["annotation"], instance_path)) if instance_path else [None]
-    )
-    candidates: list[_Candidate] = []
-    for index, instance in enumerate(instances):
-        value = _one_scalar(
-            _bound_values(record["annotation"], spec["answer_field"], instance_path, instance)
-        )
-        bindings = _template_bindings(spec, record["annotation"], instance)
-        if not isinstance(value, str) or not value.strip() or bindings is None:
-            continue
-        candidates.append(
-            _Candidate(
-                spec["task_id"],
-                record["_source_row"],
-                index if instance_path else None,
-                record,
-                value.strip(),
-                None,
-                bindings,
-                spec,
-            )
-        )
-    return candidates
-
-
-def _bbox_value(value: object) -> list[float] | None:
-    if (
-        not isinstance(value, list)
-        or len(value) != 4
-        or not all(isinstance(number, (int, float)) and not isinstance(number, bool) for number in value)
-    ):
-        return None
-    bbox = [float(number) for number in value]
-    return bbox if bbox[2] > bbox[0] and bbox[3] > bbox[1] else None
-
-
-def _bbox_candidates(spec: TaskGenerationSpec, record: dict[str, Any]) -> list[_Candidate]:
-    instance_path = spec["instance_path"]
-    candidates: list[_Candidate] = []
-    for index, instance in enumerate(_instances(record["annotation"], instance_path)):
-        target = _one_scalar(
-            _bound_values(record["annotation"], spec["target_text_field"], instance_path, instance)
-        )
-        bbox_values = _bound_values(record["annotation"], spec["bbox_field"], instance_path, instance)
-        bbox = _bbox_value(bbox_values[0]) if len(bbox_values) == 1 else _bbox_value(bbox_values)
-        bindings = _template_bindings(spec, record["annotation"], instance)
-        if not isinstance(target, str) or not target.strip() or bbox is None or bindings is None:
-            continue
-        candidates.append(
-            _Candidate(
-                spec["task_id"], record["_source_row"], index, record, bbox, None, bindings, spec
-            )
-        )
-    return candidates
-
-
 def _load_candidates(
-    request: GenerationRequest, specs: list[TaskGenerationSpec]
+    request: GenerationRequest, tasks: dict[str, BlueprintTask]
 ) -> dict[str, list[_Candidate]]:
     candidates: dict[str, list[_Candidate]] = defaultdict(list)
     for record in _load_records(request):
-        for spec in specs:
-            if spec["response_format"] == "letter":
-                candidate = _closed_candidate(spec, record)
-                if candidate is not None:
-                    candidates[spec["task_id"]].append(candidate)
-            elif spec["response_format"] == "bbox":
-                candidates[spec["task_id"]].extend(_bbox_candidates(spec, record))
-            else:
-                candidates[spec["task_id"]].extend(_free_text_candidates(spec, record))
+        for task_id, task in tasks.items():
+            projected = project_supporting_annotation(record["annotation"], task["supporting_fields"])
+            if projected:
+                candidates[task_id].append(
+                    _Candidate(task_id, record["_source_row"], record, projected, task)
+                )
     return candidates
 
 
-def _safe_wording_design(spec: TaskGenerationSpec) -> dict[str, object]:
+def _answer_schema(response_format: str) -> str:
+    if response_format == "letter":
+        return '"one exact option string"'
+    if response_format == "bbox":
+        return "[x1,y1,x2,y2]"
+    return '"non-empty reference text"'
+
+
+def _has_source_index(value: object, index: int) -> bool:
+    if isinstance(value, dict):
+        if value.get("_source_index") == index:
+            return True
+        return any(_has_source_index(nested, index) for nested in value.values())
+    if isinstance(value, list):
+        return any(_has_source_index(nested, index) for nested in value)
+    return False
+
+
+def _generation_prompt(candidate: _Candidate, benchmark_info: dict[str, object]) -> str:
+    task = candidate.task
+    response_format = task["response_format"]
+    return (
+        "Generate exactly one benchmark question and its answer from approved supporting annotation. "
+        "Return either "
+        '{"status":"generated","question":"...","answer":'
+        f"{_answer_schema(response_format)},"
+        '"source_refs":[{"field":"one approved supporting field","instance_index":null}]} '
+        'or {"status":"skip","reason":"..."}. '
+        "Follow the task generation_logic and question templates. Use only the supplied supporting "
+        "annotation, never invent facts, and do not reveal the answer in the question. For letter tasks, "
+        "normalize the annotation to exactly one supplied option. For bbox tasks, copy one valid xyxy "
+        "box associated with the target described by the question. For free-text tasks, copy or organize "
+        "only supplied annotation content. source_refs must identify the approved paths used; replace "
+        "instance_index null with the non-negative source index when the field belongs to an object array.\n\n"
+        f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
+        f"Task ID: {candidate.task_id}\n"
+        f"Task: {json.dumps(task, ensure_ascii=False)}\n"
+        f"Supporting annotation: {json.dumps(candidate.supporting_annotation, ensure_ascii=False)}"
+    )
+
+
+def _validate_generated(candidate: _Candidate, response: object) -> dict[str, Any] | None:
+    if not isinstance(response, dict) or response.get("status") not in {"generated", "skip"}:
+        raise ValueError("Generation response must have status generated or skip.")
+    if response["status"] == "skip":
+        if set(response) != {"status", "reason"} or not isinstance(response.get("reason"), str) or not response["reason"].strip():
+            raise ValueError("Skipped generation must contain one non-empty reason.")
+        return None
+    if set(response) != {"status", "question", "answer", "source_refs"}:
+        raise ValueError("Generated response has unexpected fields.")
+    question = response["question"]
+    if not isinstance(question, str) or not question.strip():
+        raise ValueError("Generated question must be a non-empty string.")
+    refs = response["source_refs"]
+    supporting = set(candidate.task["supporting_fields"])
+    if not isinstance(refs, list) or not refs:
+        raise ValueError("Generated source_refs must be a non-empty list.")
+    normalized_refs: list[dict[str, object]] = []
+    for ref in refs:
+        if not isinstance(ref, dict) or set(ref) != {"field", "instance_index"}:
+            raise ValueError("Each source ref must contain field and instance_index.")
+        field = ref["field"]
+        index = ref["instance_index"]
+        if field not in supporting or (index is not None and (not isinstance(index, int) or index < 0)):
+            raise ValueError("Source refs must use approved fields and non-negative indices.")
+        field_projection = _project_value(candidate.record["annotation"], field.split(".")[1:])
+        if field_projection is _MISSING:
+            raise ValueError("Source refs must identify fields present in this annotation.")
+        has_parent_array = any(segment.endswith("[*]") for segment in field.split(".")[1:-1])
+        if has_parent_array and index is None:
+            raise ValueError("Source refs for object-array fields require instance_index.")
+        if isinstance(index, int) and not _has_source_index(field_projection, index):
+            raise ValueError("Source ref instance_index does not exist in supporting annotation.")
+        normalized_refs.append({"field": field, "instance_index": index})
+    answer = response["answer"]
+    response_format = candidate.task["response_format"]
+    if response_format == "letter":
+        if not isinstance(answer, str) or answer not in candidate.task["options"]:
+            raise ValueError("Letter answer must be one exact option.")
+        normalized_answer: str | list[float] = answer
+    elif response_format == "bbox":
+        if (
+            not isinstance(answer, list)
+            or len(answer) != 4
+            or not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in answer)
+        ):
+            raise ValueError("Bbox answer must contain four numbers.")
+        normalized_answer = [float(value) for value in answer]
+        if normalized_answer[2] <= normalized_answer[0] or normalized_answer[3] <= normalized_answer[1]:
+            raise ValueError("Bbox answer must be valid xyxy coordinates.")
+    else:
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("Free-text answer must be a non-empty string.")
+        normalized_answer = answer.strip()
     return {
-        "question_templates": spec["question_templates"],
-        "placeholder_bindings": spec.get("placeholder_bindings", {}),
-        "validation_rules": spec.get("validation_rules", []),
-        "citations": spec.get("citations", []),
+        "question": question.strip(),
+        "answer": normalized_answer,
+        "source_refs": normalized_refs,
     }
 
 
-def _closed_question(candidate: _Candidate) -> str | None:
-    prompt = (
-        "Generate one concise closed medical VQA question. Return JSON only as {\"question\":\"...\"}. "
-        "Do not state, alter, infer, or mention the answer, answer options, or label.\n\n"
-        f"Task: {candidate.task_id}\nDescription: {candidate.spec.get('description', '')}\n"
-        f"Question design: {json.dumps(_safe_wording_design(candidate.spec), ensure_ascii=False)}"
-    )
-    try:
-        response = complete_json("You write only the question wording for a benchmark item.", prompt)
-    except ModelUnavailable:
-        return None
-    if set(response) != {"question"} or not isinstance(response["question"], str):
-        return None
-    question = response["question"].strip()
-    return question or None
-
-
-def _approved(question: str, candidate: _Candidate) -> bool:
+def _review(
+    candidate: _Candidate,
+    generated: dict[str, Any],
+    benchmark_info: dict[str, object],
+) -> tuple[bool, str]:
     try:
         response = complete_json(
-            "Independently review benchmark question wording. Return JSON only as {\"approved\":true|false}.",
-            f"Task: {candidate.task_id}\nDescription: {candidate.spec.get('description', '')}\n"
-            f"Question design: {json.dumps(_safe_wording_design(candidate.spec), ensure_ascii=False)}\n"
-            f"Question: {question}\nApprove only if it is clear, follows the design, and does not expose an answer.",
+            "Independently audit one generated medical benchmark item. Return exactly "
+            '{"approved":true,"reason":"..."}, using false when rejected. Approve only when the question follows the '
+            "task templates and generation logic, the answer is fully supported by the supplied annotation, "
+            "normalization is medically faithful, bbox target and coordinates refer to the same finding, "
+            "no unsupported content is added, and the question does not reveal its answer.",
+            f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
+            f"Task: {json.dumps(candidate.task, ensure_ascii=False)}\n"
+            f"Supporting annotation: {json.dumps(candidate.supporting_annotation, ensure_ascii=False)}\n"
+            f"Generated item: {json.dumps(generated, ensure_ascii=False)}",
         )
     except ModelUnavailable:
-        return False
-    return set(response) == {"approved"} and response["approved"] is True
+        return False, "Review model was unavailable."
+    approved = (
+        isinstance(response, dict)
+        and set(response) == {"approved", "reason"}
+        and response.get("approved") is True
+        and isinstance(response.get("reason"), str)
+    )
+    reason = response.get("reason") if isinstance(response, dict) else "Invalid review response."
+    return approved, str(reason)
+
+
+def _generate_candidate(
+    candidate: _Candidate, benchmark_info: dict[str, object]
+) -> dict[str, Any] | None:
+    prompt = _generation_prompt(candidate, benchmark_info)
+    retry_feedback = ""
+    for _attempt in range(MAX_ATTEMPTS_PER_CANDIDATE):
+        try:
+            response = complete_json(
+                "Generate one benchmark question and answer using only approved annotation evidence.",
+                prompt + retry_feedback,
+            )
+            generated = _validate_generated(candidate, response)
+        except ModelUnavailable:
+            retry_feedback = "\nPrevious attempt failed because the generation model was unavailable."
+            continue
+        except ValueError as exc:
+            retry_feedback = f"\nPrevious response violated the output contract: {exc}"
+            continue
+        if generated is None:
+            return None
+        approved, reason = _review(candidate, generated, benchmark_info)
+        if approved:
+            return generated
+        retry_feedback = (
+            "\nPrevious generated item was rejected by the independent reviewer: " + reason
+        )
+    return None
 
 
 def _item_identity(candidate: _Candidate) -> str:
-    raw = (
-        f"{candidate.task_id}:{candidate.record['image_id']}:{candidate.source_row}:"
-        f"{candidate.instance_index if candidate.instance_index is not None else ''}"
-    )
+    raw = f"{candidate.task_id}:{candidate.record['image_id']}:{candidate.source_row}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
-def _template_question(candidate: _Candidate, seed: int) -> str:
-    templates = candidate.spec["question_templates"]
-    digest = hashlib.sha256(f"{seed}:{_item_identity(candidate)}".encode("utf-8")).digest()
-    template = templates[int.from_bytes(digest[:8], "big") % len(templates)]
-    try:
-        question = template.format_map(candidate.bindings).strip()
-    except (KeyError, ValueError) as exc:
-        raise ValueError(f"{candidate.task_id}: cannot instantiate Question Design template.") from exc
-    if not question:
-        raise ValueError(f"{candidate.task_id}: instantiated question is empty.")
-    return question
-
-
-def _build_item(candidate: _Candidate, question: str) -> BenchmarkItem:
-    response_format = candidate.spec["response_format"]
-    source_ref: dict[str, object] = {
-        "image_id": candidate.record["image_id"],
-        "source_row": candidate.source_row,
-    }
-    if candidate.instance_index is not None:
-        source_ref["instance_index"] = candidate.instance_index
+def _build_item(candidate: _Candidate, generated: dict[str, Any]) -> BenchmarkItem:
+    response_format = candidate.task["response_format"]
+    refs = [
+        {
+            "image_id": candidate.record["image_id"],
+            "source_row": candidate.source_row,
+            **ref,
+        }
+        for ref in generated["source_refs"]
+    ]
     item: BenchmarkItem = {
         "id": _item_identity(candidate),
         "task_id": candidate.task_id,
-        "task_type": candidate.spec["task_type"],
+        "task_type": candidate.task["task_type"],
         "response_format": response_format,
         "image_ids": [candidate.record["image_id"]],
         "image_paths": [candidate.record["image_path"]],
-        "question": question,
+        "question": generated["question"],
         "options": None,
-        "answer": candidate.answer,
-        "source_refs": [source_ref],
-        "medical_sources": list(candidate.spec.get("citations", [])),
+        "answer": generated["answer"],
+        "source_refs": refs,
+        "medical_sources": list(candidate.task.get("citations", [])),
     }
     if response_format == "letter":
-        options = list(candidate.spec["options"])
-        assert candidate.answer_value is not None
+        answer_value = generated["answer"]
+        options = list(candidate.task["options"])
+        assert isinstance(answer_value, str)
         item["options"] = options
-        item["answer"] = chr(ord("A") + options.index(candidate.answer_value))
-        item["answer_value"] = candidate.answer_value
-        source_ref["answer_field"] = candidate.spec["answer_field"]
-    elif response_format == "bbox":
-        source_ref["target_text_field"] = candidate.spec["target_text_field"]
-        source_ref["bbox_field"] = candidate.spec["bbox_field"]
-        source_ref["bbox_format"] = "xyxy"
-    else:
-        source_ref["answer_field"] = candidate.spec["answer_field"]
+        item["answer"] = chr(ord("A") + options.index(answer_value))
+        item["answer_value"] = answer_value
     return item
 
 
 def _generate_from_candidates(
     candidates: list[_Candidate],
     needed: int,
-    consumed: set[tuple[str, int, int | None]],
-    seed: int,
+    consumed: set[tuple[str, int]],
+    benchmark_info: dict[str, object],
 ) -> list[BenchmarkItem]:
     items: list[BenchmarkItem] = []
     for candidate in candidates:
         if candidate.key in consumed:
             continue
         consumed.add(candidate.key)
-        if candidate.spec["response_format"] == "letter":
-            question = None
-            for _attempt in range(MAX_ATTEMPTS_PER_CANDIDATE):
-                generated = _closed_question(candidate)
-                if generated and _approved(generated, candidate):
-                    question = generated
-                    break
-            if question is None:
-                continue
-        else:
-            question = _template_question(candidate, seed)
-        items.append(_build_item(candidate, question))
+        generated = _generate_candidate(candidate, benchmark_info)
+        if generated is None:
+            continue
+        items.append(_build_item(candidate, generated))
         if len(items) == needed:
             break
     return items
 
 
 def generate_raw_benchmark(request: GenerationRequest) -> GenerationResult:
-    """Generate exactly target_sample_count mixed benchmark items atomically."""
+    """Generate exactly target_sample_count reviewed benchmark items atomically."""
     target = request["target_sample_count"]
     if not isinstance(target, int) or target <= 0:
         raise ValueError("target_sample_count must be a positive integer.")
-    specs = _validate_task_specs(request)
-    candidates = _load_candidates(request, specs)
-    active_specs = [spec for spec in specs if candidates[spec["task_id"]]]
-    if not active_specs or sum(len(candidates[spec["task_id"]]) for spec in active_specs) < target:
+    tasks = _validate_tasks(request)
+    candidates = _load_candidates(request, tasks)
+    active_ids = [task_id for task_id in tasks if candidates[task_id]]
+    if not active_ids or sum(len(candidates[task_id]) for task_id in active_ids) < target:
         raise ValueError("Insufficient valid candidates to reach target_sample_count.")
 
-    quotas = {spec["task_id"]: target // len(active_specs) for spec in active_specs}
-    for spec in active_specs[: target % len(active_specs)]:
-        quotas[spec["task_id"]] += 1
-    consumed: set[tuple[str, int, int | None]] = set()
+    quotas = {task_id: target // len(active_ids) for task_id in active_ids}
+    for task_id in active_ids[: target % len(active_ids)]:
+        quotas[task_id] += 1
+    consumed: set[tuple[str, int]] = set()
     items: list[BenchmarkItem] = []
-    seed = request["seed"]
-    for spec in active_specs:
+    benchmark_info = request["benchmark_info"]
+    for task_id in active_ids:
         items.extend(
-            _generate_from_candidates(
-                candidates[spec["task_id"]], quotas[spec["task_id"]], consumed, seed
-            )
+            _generate_from_candidates(candidates[task_id], quotas[task_id], consumed, benchmark_info)
         )
     shortfall = target - len(items)
     if shortfall:
-        for spec in active_specs:
+        for task_id in active_ids:
             additions = _generate_from_candidates(
-                candidates[spec["task_id"]], shortfall, consumed, seed
+                candidates[task_id], shortfall, consumed, benchmark_info
             )
             items.extend(additions)
             shortfall -= len(additions)
             if not shortfall:
                 break
     if shortfall:
-        raise ValueError("Unable to generate target_sample_count validated benchmark items.")
+        raise ValueError("Unable to generate target_sample_count reviewed benchmark items.")
 
-    task_order = {spec["task_id"]: index for index, spec in enumerate(specs)}
+    task_order = {task_id: index for index, task_id in enumerate(tasks)}
     items.sort(
-        key=lambda item: (
-            task_order[item["task_id"]],
-            item["source_refs"][0]["source_row"],
-            item["source_refs"][0].get("instance_index", -1),
-        )
+        key=lambda item: (task_order[item["task_id"]], item["source_refs"][0]["source_row"])
     )
     output_dir = Path(request["output_directory"])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -442,7 +438,5 @@ def generate_raw_benchmark(request: GenerationRequest) -> GenerationResult:
     finally:
         if temporary.exists():
             temporary.unlink()
-    counts = {
-        spec["task_id"]: sum(item["task_id"] == spec["task_id"] for item in items) for spec in specs
-    }
+    counts = {task_id: sum(item["task_id"] == task_id for item in items) for task_id in tasks}
     return GenerationResult(str(output), len(items), counts)
