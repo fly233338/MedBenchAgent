@@ -1,0 +1,4 @@
+interface:
+  display_name: "Convert Medical Images to PNG"
+  short_description: "Convert supported 2D medical images to PNG"
+  default_prompt: "Use $convert-medical-images-to-png to convert supported 2D medical images into validated PNG files and a mapping manifest."

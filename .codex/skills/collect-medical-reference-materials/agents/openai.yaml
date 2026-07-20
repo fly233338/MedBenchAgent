@@ -1,0 +1,4 @@
+interface:
+  display_name: "Collect Medical Reference Materials"
+  short_description: "Find and download disease-specific medical references"
+  default_prompt: "Use $collect-medical-reference-materials to find and download authoritative references for a specified disease."
