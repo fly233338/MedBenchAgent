@@ -15,6 +15,7 @@ from medbenchagent.answer_balance import balance_jsonl
 from medbenchagent.contracts import GenerationRequest
 from medbenchagent.dataset import AnnotationValidationError, prepare_annotation_dataset
 from medbenchagent.generation import generate_raw_benchmark
+from medbenchagent.llm import complete_json
 from medbenchagent.pdf_rag import LocalPdfRag, RagUnavailable, design_questions
 from medbenchagent.task_screening import (
     apply_task_plan,
@@ -137,44 +138,59 @@ def _task_plan_generate_node(state: BenchmarkState) -> dict[str, Any]:
     }
 
 
-def _review_action(answer: object) -> dict[str, str]:
+def _review_action(answer: object, task_ids: list[str]) -> dict[str, str]:
     if _confirmed(answer):
         return {"action": "confirm"}
-    if not isinstance(answer, dict):
+    action = answer
+    if not isinstance(action, dict):
         try:
-            answer = json.loads(str(answer))
-        except json.JSONDecodeError as exc:
-            raise ValueError("Task Plan review response must be JSON with action confirm or revise.") from exc
-    if answer == {"action": "confirm"}:
+            parsed = json.loads(str(answer))
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            action = parsed
+        else:
+            action = complete_json(
+                "Interpret a Task Plan review response. Return JSON only. Do not make task decisions yourself.",
+                "Convert the user's natural-language response into exactly one of these shapes:\n"
+                '{"action":"confirm"}\n'
+                '{"action":"revise","task_id":"one exact available task id","feedback":"the requested change"}\n'
+                "A revise action may target only one task. Preserve the user's requested change in feedback. "
+                f"Available task ids: {json.dumps(task_ids, ensure_ascii=False)}\n"
+                f"User response: {answer}",
+            )
+    if action == {"action": "confirm"}:
         return {"action": "confirm"}
     if (
-        isinstance(answer, dict)
-        and answer.get("action") == "revise"
-        and isinstance(answer.get("task_id"), str)
-        and answer["task_id"].strip()
-        and isinstance(answer.get("feedback"), str)
-        and answer["feedback"].strip()
+        isinstance(action, dict)
+        and action.get("action") == "revise"
+        and isinstance(action.get("task_id"), str)
+        and action["task_id"].strip() in task_ids
+        and isinstance(action.get("feedback"), str)
+        and action["feedback"].strip()
     ):
-        return {"action": "revise", "task_id": answer["task_id"].strip(), "feedback": answer["feedback"].strip()}
-    raise ValueError("Task Plan review response must be {'action': 'confirm'} or a revise action with task_id and feedback.")
+        return {
+            "action": "revise",
+            "task_id": action["task_id"].strip(),
+            "feedback": action["feedback"].strip(),
+        }
+    raise ValueError("Task Plan review response could not be mapped to one valid confirm or revise action.")
 
 
 def _task_plan_review_node(state: BenchmarkState) -> dict[str, Any]:
-    """Show the persisted draft and receive one user action without calling a model."""
-    action = _review_action(
-        interrupt(
-            {
-                "kind": "task_plan_review",
-                "dataset_profile": state["dataset_profile"],
-                "task_plan": state["draft_task_plan"],
-                "question": "Confirm with {'action': 'confirm'}, or revise one task with action, task_id, and feedback.",
-            }
-        )
+    """Receive one review action, interpreting natural language only when needed."""
+    answer = interrupt(
+        {
+            "kind": "task_plan_review",
+            "dataset_profile": state["dataset_profile"],
+            "task_plan": state["draft_task_plan"],
+            "question": "Confirm the Task Plan, or describe one task that should be revised and how.",
+        }
     )
+    task_ids = list(state["draft_task_plan"]["tasks"])
+    action = _review_action(answer, task_ids)
     if action["action"] == "confirm":
         return {"task_plan_confirmed": True, "pending_task_feedback": None}
-    if action["task_id"] not in state["draft_task_plan"]["tasks"]:
-        raise ValueError(f"Unknown task_id: {action['task_id']}")
     return {"task_plan_confirmed": False, "pending_task_feedback": action}
 
 
@@ -320,7 +336,7 @@ def _finalize_benchmark_node(state: BenchmarkState) -> dict[str, Any]:
 
 
 def compile_benchmark_graph(*, checkpointer: Any = None):
-    """Build planning stages whose model calls and confirmation interrupts never share a node."""
+    """Build the interactive planning and benchmark generation workflow."""
     graph = StateGraph(BenchmarkState)
     graph.add_node("benchmark_extract", _benchmark_extract_node)
     graph.add_node("benchmark_confirm", _benchmark_confirm_node)

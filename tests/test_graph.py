@@ -167,3 +167,29 @@ def test_generation_request_keeps_non_closed_tasks(tmp_path: Path) -> None:
         "bbox",
         "free_text",
     ]
+
+
+def test_task_plan_review_accepts_natural_language(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_complete_json(system: str, prompt: str) -> dict:
+        captured["system"] = system
+        captured["prompt"] = prompt
+        return {
+            "action": "revise",
+            "task_id": "detection",
+            "feedback": "Use the finding label and bounding box fields.",
+        }
+
+    monkeypatch.setattr(workflow, "complete_json", fake_complete_json)
+    result = workflow._review_action(
+        "检测任务保留，但要使用病灶标签和框字段",
+        ["detection", "report_generation"],
+    )
+
+    assert result == {
+        "action": "revise",
+        "task_id": "detection",
+        "feedback": "Use the finding label and bounding box fields.",
+    }
+    assert 'Available task ids: ["detection", "report_generation"]' in captured["prompt"]

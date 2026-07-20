@@ -27,11 +27,11 @@ not included as examples. CSV and XLSX inputs are not supported.
 ## Planning review
 
 The workflow computes the complete Task Plan in one model call, then presents it for
-review. Confirm it with `{"action": "confirm"}`, or revise exactly one task with
-`{"action": "revise", "task_id": "...", "feedback": "..."}`. Revisions regenerate
-only the selected task. The working Blueprint is updated only after confirmation;
-the resulting `task_plan_report.json` retains decisions for both retained and dropped
-tasks.
+review. Respond in natural language to confirm it or describe one task to revise;
+DeepSeek maps that response to a validated confirm/revise action. The original JSON
+forms remain supported. Revisions regenerate only the selected task. The working
+Blueprint is updated only after confirmation; the resulting `task_plan_report.json`
+retains decisions for both retained and dropped tasks.
 
 ## Development
 
