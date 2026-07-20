@@ -11,6 +11,7 @@ def _item(index: int, answer_value: str) -> dict:
     options = ["benign", "malignant", "indeterminate"]
     return {
         "id": str(index), "task_id": "pathology", "image_ids": [str(index)], "image_paths": [str(index)],
+        "task_type": "close_vqa", "response_format": "letter",
         "question": "What is the status?", "options": options, "answer": chr(ord("A") + options.index(answer_value)),
         "answer_value": answer_value, "source_refs": [], "medical_sources": [],
     }
@@ -54,3 +55,23 @@ def test_balance_rejects_invalid_option_sets_and_same_path(tmp_path: Path) -> No
         balance_jsonl(raw, tmp_path / "balanced.jsonl")
     with pytest.raises(ValueError, match="must differ"):
         balance_jsonl(raw, raw)
+
+
+def test_balance_passes_through_bbox_and_free_text_items() -> None:
+    records = [
+        {
+            "id": "bbox", "task_id": "detection", "task_type": "open_vqa", "response_format": "bbox",
+            "image_ids": ["img"], "image_paths": ["img.png"], "question": "Locate the mass.",
+            "options": None, "answer": [1.0, 2.0, 3.0, 4.0], "source_refs": [], "medical_sources": [],
+        },
+        {
+            "id": "report", "task_id": "report_generation", "task_type": "open_vqa",
+            "response_format": "free_text", "image_ids": ["img"], "image_paths": ["img.png"],
+            "question": "Generate a report.", "options": None, "answer": "Normal study.",
+            "source_refs": [], "medical_sources": [],
+        },
+    ]
+
+    from medbenchagent.answer_balance import balance_items
+
+    assert balance_items(records, seed=5) == records

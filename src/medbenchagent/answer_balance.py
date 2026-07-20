@@ -42,18 +42,20 @@ def _validate_group(task_id: str, items: list[dict[str, Any]]) -> tuple[str, ...
 
 
 def balance_items(items: list[dict[str, Any]], seed: int = 0) -> list[dict[str, Any]]:
-    """Return a copy with per-task correct positions differing by at most one."""
+    """Balance letter-answer positions and pass through other response formats."""
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in items:
         task_id = item.get("task_id")
         if not isinstance(task_id, str) or not task_id:
             raise ValueError("Every item must have a non-empty task_id.")
-        grouped[task_id].append(item)
+        if item.get("response_format") == "letter":
+            grouped[task_id].append(item)
 
     balanced = [dict(item) for item in items]
     copies_by_task: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in balanced:
-        copies_by_task[item["task_id"]].append(item)
+        if item.get("response_format") == "letter":
+            copies_by_task[item["task_id"]].append(item)
 
     for task_id, task_items in grouped.items():
         options = _validate_group(task_id, task_items)

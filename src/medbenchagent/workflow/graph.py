@@ -217,7 +217,12 @@ def _materials_root_node(state: BenchmarkState) -> dict[str, Any]:
 
 def _rag_design_node(state: BenchmarkState) -> dict[str, Any]:
     """Compute RAG question designs; user confirmation is deliberately a separate node."""
-    retained = [plan for plan in state["task_plans"] if plan["decision"] == "retain"]
+    blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
+    retained = [
+        {"task_id": plan["task_id"], **blueprint["tasks"][plan["task_id"]], **plan}
+        for plan in state["task_plans"]
+        if plan["decision"] == "retain"
+    ]
     if not retained:
         raise ValueError("Task Plan must retain at least one task before RAG design.")
     try:
@@ -251,35 +256,42 @@ def _design_review_node(state: BenchmarkState) -> dict[str, Any]:
 def _generation_request_node(state: BenchmarkState) -> dict[str, Any]:
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
     designs = {str(design.get("task_id")): design for design in state["question_designs"]}
-    closed_tasks: list[dict[str, Any]] = []
+    task_specs: list[dict[str, Any]] = []
     for plan in state["task_plans"]:
         if plan["decision"] != "retain":
             continue
         task = blueprint["tasks"].get(plan["task_id"], {})
-        if task.get("task_type") != "close_vqa":
-            continue
         design = designs.get(plan["task_id"])
         if design is None:
             raise ValueError(f"Question Design is missing retained task: {plan['task_id']}")
-        answer_field = design.get("answer_field")
-        if answer_field is None and len(plan.get("supporting_fields", [])) == 1:
-            answer_field = plan["supporting_fields"][0]
-        closed_tasks.append(
-            {
-                "task_id": plan["task_id"],
-                "task_type": "close_vqa",
-                "description": task.get("description", ""),
-                "answer_field": answer_field,
-                "answer_value_mapping": design.get("answer_value_mapping", {}),
-                "options": design.get("answer_list", []),
-            }
-        )
+        spec = {
+            "task_id": plan["task_id"],
+            "task_type": task.get("task_type", ""),
+            "response_format": task.get("response_format", ""),
+            "description": task.get("description", ""),
+            "question_templates": design.get("question_templates", []),
+            "placeholder_bindings": design.get("placeholder_bindings", {}),
+            "validation_rules": design.get("validation_rules", []),
+            "citations": design.get("citations", []),
+        }
+        for source, destination in (
+            ("answer_list", "options"),
+            ("answer_field", "answer_field"),
+            ("answer_value_mapping", "answer_value_mapping"),
+            ("instance_path", "instance_path"),
+            ("target_text_field", "target_text_field"),
+            ("bbox_field", "bbox_field"),
+            ("bbox_format", "bbox_format"),
+        ):
+            if source in design:
+                spec[destination] = design[source]
+        task_specs.append(spec)
     request: GenerationRequest = {
         "benchmark_info": state["benchmark_info"],
         "dataset_access_manifest": state["dataset_access_manifest"],
         "approved_task_plans": [plan for plan in state["task_plans"] if plan["decision"] == "retain"],
         "question_designs": state["question_designs"],
-        "closed_tasks": closed_tasks,
+        "task_specs": task_specs,
         "target_sample_count": int(state["benchmark_info"]["sample_count"]),
         "seed": int(state.get("seed", 0)),
         "balance_answer_positions": bool(state.get("balance_answer_positions", True)),

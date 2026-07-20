@@ -1,9 +1,10 @@
 # MedBenchAgent
 
-MedBenchAgent plans medical VLM benchmark generation from a natural-language brief,
-image-level `annotation.jsonl` data, and PDF medical references. The first release
-creates closed VQA benchmark items after an approved Question Design. It writes an immutable,
-unshuffled `benchmark_items.raw.jsonl`, then by default writes a separately balanced
+MedBenchAgent builds medical VLM benchmarks from a natural-language brief,
+image-level `annotation.jsonl` data, and PDF medical references. The workflow screens
+supported tasks, designs them with PDF RAG, and writes closed VQA, detection, finding
+description, and report items into one mixed JSONL. It first writes an immutable,
+unshuffled `benchmark_items.raw.jsonl`, then by default writes a separately finalized
 `benchmark_items.jsonl` copy. Both files contain exactly the requested `sample_count`.
 
 ## Dataset input
@@ -48,15 +49,22 @@ uv run langgraph dev --host 127.0.0.1 --port 8123 --no-browser --allow-blocking
 
 The graph entry point is `medbenchagent.workflow.graph:compile_benchmark_graph`.
 
-## Benchmark outputs
+## Question design and benchmark outputs
 
-Only retained `close_vqa` tasks are generated. Their fixed option lists and answers are
-resolved from annotations; DeepSeek generates and independently reviews only question wording.
-The raw file keeps task/source-row order and the original option order. The final copy balances
-the correct option positions inside each task while retaining all other item content.
+Every retained task receives a PDF-grounded Question Design before generation. Closed
+VQA designs define fixed options and an annotation-to-answer mapping; DeepSeek only
+generates and independently reviews question wording. Detection designs bind a target
+description and an `xyxy` box from the same annotation object, then instantiate an
+approved template. Finding-description and report tasks use paired expert text directly
+as the reference answer and never ask the model to synthesize ground truth.
+
+The raw file keeps task/source-row order and original closed-task option order. Every
+item records `task_type` and `response_format`; `answer` is a choice letter, reference
+text, or an `xyxy` box. The final copy balances correct option positions inside each
+closed task while detection and free-text items pass through unchanged.
 
 Balance an existing raw file without modifying it:
 
-```bash
+```powershell
 uv run medbenchagent balance-answers --input RAW --output COPY --seed 0
 ```

@@ -55,9 +55,12 @@ def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, mon
         lambda _rag, _info, plans, _feedback: [
             {
                 "task_id": plan["task_id"],
+                "question_templates": ["What is the BI-RADS category?"],
+                "placeholder_bindings": {},
                 "answer_list": ["BI-RADS 2", "BI-RADS 4"],
                 "answer_field": "annotation.breast_birads",
                 "answer_value_mapping": {},
+                "validation_rules": [],
                 "citations": [],
             }
             for plan in plans
@@ -89,6 +92,7 @@ def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, mon
     assert result["generation_request"]["approved_task_plans"][0]["supporting_fields"] == [
         "annotation.breast_birads"
     ]
+    assert result["generation_request"]["task_specs"][0]["response_format"] == "letter"
     assert result["raw_output_path"] == str(raw_path)
     assert result["benchmark_output_path"].endswith("benchmark_items.jsonl")
     assert task_plan_calls == 1
@@ -104,3 +108,44 @@ def test_finalize_uses_raw_file_when_balancing_is_disabled(tmp_path: Path, monke
     )
 
     assert result == {"benchmark_output_path": str(raw_path)}
+
+
+def test_generation_request_keeps_non_closed_tasks(tmp_path: Path) -> None:
+    blueprint_path = tmp_path / "blueprint.json"
+    blueprint_path.write_text(
+        '{"tasks":{'
+        '"detection":{"task_type":"open_vqa","response_format":"bbox","description":"Locate"},'
+        '"report_generation":{"task_type":"open_vqa","response_format":"free_text","description":"Report"}'
+        '}}',
+        encoding="utf-8",
+    )
+    state = {
+        "working_blueprint_path": str(blueprint_path),
+        "benchmark_info": {"sample_count": 2},
+        "dataset_access_manifest": {},
+        "task_plans": [
+            {"task_id": "detection", "decision": "retain", "supporting_fields": []},
+            {"task_id": "report_generation", "decision": "retain", "supporting_fields": []},
+        ],
+        "question_designs": [
+            {
+                "task_id": "detection", "question_templates": ["Locate {target_text}."],
+                "placeholder_bindings": {"target_text": "annotation.findings[*].kind"},
+                "validation_rules": [], "citations": [], "instance_path": "annotation.findings[*]",
+                "target_text_field": "annotation.findings[*].kind",
+                "bbox_field": "annotation.findings[*].bbox[*]", "bbox_format": "xyxy",
+            },
+            {
+                "task_id": "report_generation", "question_templates": ["Generate a report."],
+                "placeholder_bindings": {}, "validation_rules": [], "citations": [],
+                "answer_field": "annotation.report",
+            },
+        ],
+    }
+
+    result = workflow._generation_request_node(state)
+
+    assert [spec["response_format"] for spec in result["generation_request"]["task_specs"]] == [
+        "bbox",
+        "free_text",
+    ]
