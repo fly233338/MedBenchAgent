@@ -67,6 +67,7 @@ def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, mon
             pass
 
     monkeypatch.setattr(workflow, "LocalPdfRag", FakeRag)
+    monkeypatch.setattr(workflow, "complete_json", lambda _system, _prompt: {"action": "confirm"})
     monkeypatch.setattr(
         workflow,
         "design_questions",
@@ -193,3 +194,21 @@ def test_task_plan_review_accepts_natural_language(monkeypatch) -> None:
         "feedback": "Use the finding label and bounding box fields.",
     }
     assert 'Available task ids: ["detection", "report_generation"]' in captured["prompt"]
+
+
+def test_benchmark_review_uses_model_for_natural_language(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_complete_json(system: str, prompt: str) -> dict:
+        captured["system"] = system
+        captured["prompt"] = prompt
+        return {"action": "revise", "feedback": "Change sample_count to 100."}
+
+    monkeypatch.setattr(workflow, "complete_json", fake_complete_json)
+    result = workflow._benchmark_review_action(
+        "其他都没问题，但题目数量改成100",
+        {"disease": "breast cancer", "sample_count": 20},
+    )
+
+    assert result == {"action": "revise", "feedback": "Change sample_count to 100."}
+    assert '"sample_count": 20' in captured["prompt"]

@@ -28,10 +28,10 @@ not included as examples. CSV and XLSX inputs are not supported.
 
 The workflow computes the complete Task Plan in one model call, then presents it for
 review. Respond in natural language to confirm it or describe one task to revise;
-DeepSeek maps that response to a validated confirm/revise action. The original JSON
-forms remain supported. Revisions regenerate only the selected task. The working
-Blueprint is updated only after confirmation; the resulting `task_plan_report.json`
-retains decisions for both retained and dropped tasks.
+DeepSeek maps every response to a validated confirm/revise action. BenchmarkInfo review
+uses the same natural-language interpretation. Revisions regenerate only the selected
+task. The working Blueprint is updated only after confirmation; the resulting
+`task_plan_report.json` retains decisions for both retained and dropped tasks.
 
 ## Development
 

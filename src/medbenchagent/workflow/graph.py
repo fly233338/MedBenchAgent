@@ -85,7 +85,7 @@ def _benchmark_extract_node(state: BenchmarkState) -> dict[str, Any]:
 
 
 def _benchmark_confirm_node(state: BenchmarkState) -> dict[str, Any]:
-    """Confirm an already computed BenchmarkInfo without making a model call."""
+    """Interpret a natural-language confirmation or correction for BenchmarkInfo."""
     answer = interrupt(
         {
             "kind": "benchmark_info_confirmation",
@@ -93,7 +93,8 @@ def _benchmark_confirm_node(state: BenchmarkState) -> dict[str, Any]:
             "question": "Confirm this BenchmarkInfo, or describe the correction.",
         }
     )
-    if _confirmed(answer):
+    action = _benchmark_review_action(answer, state["benchmark_info"])
+    if action["action"] == "confirm":
         working_blueprint_path = state.get("working_blueprint_path") or write_working_blueprint(
             state["benchmark_info"], PROJECT_ROOT / "benchmarks" / "runs"
         )
@@ -102,7 +103,30 @@ def _benchmark_confirm_node(state: BenchmarkState) -> dict[str, Any]:
             "benchmark_feedback": "",
             "working_blueprint_path": working_blueprint_path,
         }
-    return {"benchmark_confirmed": False, "benchmark_feedback": str(answer).strip()}
+    return {"benchmark_confirmed": False, "benchmark_feedback": action["feedback"]}
+
+
+def _benchmark_review_action(answer: object, benchmark_info: dict[str, Any]) -> dict[str, str]:
+    action = complete_json(
+        "Interpret a BenchmarkInfo review response. Return JSON only and do not change values yourself.",
+        "Convert the user's response into exactly one of these shapes:\n"
+        '{"action":"confirm"}\n'
+        '{"action":"revise","feedback":"the requested correction"}\n'
+        "Confirm only when the user accepts the complete BenchmarkInfo. For revise, preserve every requested "
+        "correction in feedback.\n"
+        f"Current BenchmarkInfo: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
+        f"User response: {answer}",
+    )
+    if action == {"action": "confirm"}:
+        return {"action": "confirm"}
+    if (
+        set(action) == {"action", "feedback"}
+        and action.get("action") == "revise"
+        and isinstance(action.get("feedback"), str)
+        and action["feedback"].strip()
+    ):
+        return {"action": "revise", "feedback": action["feedback"].strip()}
+    raise ValueError("BenchmarkInfo review response could not be mapped to one valid confirm or revise action.")
 
 
 def _dataset_profile_node(state: BenchmarkState) -> dict[str, Any]:
@@ -139,30 +163,20 @@ def _task_plan_generate_node(state: BenchmarkState) -> dict[str, Any]:
 
 
 def _review_action(answer: object, task_ids: list[str]) -> dict[str, str]:
-    if _confirmed(answer):
-        return {"action": "confirm"}
-    action = answer
-    if not isinstance(action, dict):
-        try:
-            parsed = json.loads(str(answer))
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, dict):
-            action = parsed
-        else:
-            action = complete_json(
-                "Interpret a Task Plan review response. Return JSON only. Do not make task decisions yourself.",
-                "Convert the user's natural-language response into exactly one of these shapes:\n"
-                '{"action":"confirm"}\n'
-                '{"action":"revise","task_id":"one exact available task id","feedback":"the requested change"}\n'
-                "A revise action may target only one task. Preserve the user's requested change in feedback. "
-                f"Available task ids: {json.dumps(task_ids, ensure_ascii=False)}\n"
-                f"User response: {answer}",
-            )
+    action = complete_json(
+        "Interpret a Task Plan review response. Return JSON only. Do not make task decisions yourself.",
+        "Convert the user's response into exactly one of these shapes:\n"
+        '{"action":"confirm"}\n'
+        '{"action":"revise","task_id":"one exact available task id","feedback":"the requested change"}\n'
+        "Confirm only when the user accepts the complete Task Plan. A revise action may target only one task. "
+        "Preserve the user's requested change in feedback. "
+        f"Available task ids: {json.dumps(task_ids, ensure_ascii=False)}\n"
+        f"User response: {answer}",
+    )
     if action == {"action": "confirm"}:
         return {"action": "confirm"}
     if (
-        isinstance(action, dict)
+        set(action) == {"action", "task_id", "feedback"}
         and action.get("action") == "revise"
         and isinstance(action.get("task_id"), str)
         and action["task_id"].strip() in task_ids
