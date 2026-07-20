@@ -39,6 +39,9 @@ Copy `.env.example` to `.env`. The default configuration targets the local vLLM
 deployment at `http://127.0.0.1:8005/v1` with model `deepseek-v4-flash`, plus the
 Qwen3 embedding and reranker models under `/public/home/rxa-jj-wzk/models/Qwen-RAG`.
 `DEEPSEEK_API_KEY` may remain empty when vLLM authentication is disabled.
+The reranker uses the Qwen3 causal-LM `yes`/`no` scoring procedure documented on
+ModelScope, so an original ModelScope checkpoint works without Sentence Transformers
+adapter metadata such as `modules.json` or `1_LogitScore/`.
 
 For Web VS Code, start the development server without browser launch and forward port
 8123 through the IDE:

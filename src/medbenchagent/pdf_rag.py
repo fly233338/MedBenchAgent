@@ -11,6 +11,7 @@ from typing import Any
 from pypdf import PdfReader
 
 from medbenchagent.llm import ModelUnavailable, complete_json
+from medbenchagent.qwen_reranker import score_pairs
 
 
 class RagUnavailable(RuntimeError):
@@ -75,7 +76,7 @@ class LocalPdfRag:
     def retrieve(self, query: str, limit: int = 5) -> list[dict[str, object]]:
         try:
             import chromadb
-            from sentence_transformers import CrossEncoder, SentenceTransformer
+            from sentence_transformers import SentenceTransformer
         except ImportError as exc:
             raise RagUnavailable("PDF RAG dependencies are not installed.") from exc
         embedder = SentenceTransformer(self.embedding_path)
@@ -105,8 +106,10 @@ class LocalPdfRag:
                 response["ids"][0], response["documents"][0], response["metadatas"][0], response["distances"][0], strict=True
             )
         ]
-        reranker = CrossEncoder(self.reranker_path)
-        scores = reranker.predict([(query, str(candidate["text"])) for candidate in candidates])
+        scores = score_pairs(
+            self.reranker_path,
+            [(query, str(candidate["text"])) for candidate in candidates],
+        )
         for candidate, score in zip(candidates, scores, strict=True):
             candidate["rerank_score"] = float(score)
         return sorted(candidates, key=lambda item: float(item["rerank_score"]), reverse=True)[:limit]
