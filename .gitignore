@@ -34,6 +34,10 @@ Thumbs.db
 .agent/
 .codex/
 
+# Local architecture diagrams
+docs/architecture/medbenchagent-agent-architecture-preview.svg
+docs/architecture/medbenchagent-agent-architecture.drawio
+
 datasets/
 materials/
 models/

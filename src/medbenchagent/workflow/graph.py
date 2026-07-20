@@ -340,15 +340,18 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_conditional_edges(
         "benchmark_confirm",
         lambda state: "dataset_profile" if state.get("benchmark_confirmed") else "benchmark_extract",
+        {"dataset_profile": "dataset_profile", "benchmark_extract": "benchmark_extract"},
     )
     graph.add_conditional_edges(
         "dataset_profile",
         lambda state: "task_plan_generate" if state.get("dataset_profile") else "dataset_profile",
+        {"task_plan_generate": "task_plan_generate", "dataset_profile": "dataset_profile"},
     )
     graph.add_edge("task_plan_generate", "task_plan_review")
     graph.add_conditional_edges(
         "task_plan_review",
         lambda state: "apply_task_plan" if state.get("task_plan_confirmed") else "task_plan_revise",
+        {"apply_task_plan": "apply_task_plan", "task_plan_revise": "task_plan_revise"},
     )
     graph.add_edge("task_plan_revise", "task_plan_review")
     graph.add_edge("apply_task_plan", "materials_root")
@@ -357,6 +360,7 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_conditional_edges(
         "design_review",
         lambda state: "generation_request" if state.get("designs_confirmed") else "rag_design",
+        {"generation_request": "generation_request", "rag_design": "rag_design"},
     )
     graph.add_edge("generation_request", "generate_raw_benchmark")
     graph.add_edge("generate_raw_benchmark", "finalize_benchmark")

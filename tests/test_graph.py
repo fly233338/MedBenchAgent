@@ -8,6 +8,24 @@ from langgraph.types import Command
 import medbenchagent.workflow.graph as workflow
 
 
+def test_compiled_graph_exposes_all_conditional_edges() -> None:
+    graph = workflow.compile_benchmark_graph().get_graph()
+    conditional_edges = {
+        (edge.source, edge.target) for edge in graph.edges if edge.conditional
+    }
+
+    assert conditional_edges == {
+        ("benchmark_confirm", "dataset_profile"),
+        ("benchmark_confirm", "benchmark_extract"),
+        ("dataset_profile", "task_plan_generate"),
+        ("dataset_profile", "dataset_profile"),
+        ("task_plan_review", "apply_task_plan"),
+        ("task_plan_review", "task_plan_revise"),
+        ("design_review", "generation_request"),
+        ("design_review", "rag_design"),
+    }
+
+
 def test_graph_reaches_generation_request_with_confirmations(tmp_path: Path, monkeypatch) -> None:
     annotation_path = tmp_path / "annotation.jsonl"
     annotation_path.write_text(
