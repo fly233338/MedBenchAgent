@@ -78,8 +78,9 @@ The generator traverses source rows in a deterministic seeded order and projects
 each unfinished task's approved `supporting_fields`, preserving array source indices.
 One DeepSeek call performs semantic routing and may return up to three items for three
 different tasks; the same task/image pair can produce at most one item. Code validates
-the response shape, answer, and source references, then an independent model reviews
-each valid item once before acceptance.
+the response shape, answer, and source references. Bbox items pass a deterministic
+check that their answer exactly matches one unambiguous referenced annotation box;
+letter and free-text items are reviewed once by an independent model before acceptance.
 
 Accepted items are merged idempotently into `benchmark_items.progress.jsonl` using
 deterministic item IDs. The generation subgraph checkpoints after every processed row,

@@ -167,6 +167,69 @@ def _has_source_index(value: object, index: int) -> bool:
     return False
 
 
+def _resolve_source_value(
+    annotation: dict[str, Any], field: str, instance_index: int | None
+) -> object:
+    """Resolve one approved annotation field using its object-array instance index."""
+    current: object = annotation
+    parent_array_seen = False
+    segments = field.split(".")[1:]
+    for position, segment in enumerate(segments):
+        if not isinstance(current, dict):
+            return _MISSING
+        is_array = segment.endswith("[*]")
+        key = segment.removesuffix("[*]")
+        if key not in current:
+            return _MISSING
+        current = current[key]
+        if not is_array or position == len(segments) - 1:
+            continue
+        if (
+            parent_array_seen
+            or instance_index is None
+            or not isinstance(current, list)
+            or instance_index >= len(current)
+        ):
+            return _MISSING
+        current = current[instance_index]
+        parent_array_seen = True
+    return current
+
+
+def _normalized_bbox(value: object) -> list[float] | None:
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or not all(
+            isinstance(coordinate, (int, float)) and not isinstance(coordinate, bool)
+            for coordinate in value
+        )
+    ):
+        return None
+    bbox = [float(coordinate) for coordinate in value]
+    if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+        return None
+    return bbox
+
+
+def _review_bbox(candidate: _Candidate, generated: dict[str, Any]) -> tuple[bool, str]:
+    referenced_boxes: list[list[float]] = []
+    for ref in generated["source_refs"]:
+        value = _resolve_source_value(
+            candidate.record["annotation"],
+            str(ref["field"]),
+            ref["instance_index"] if isinstance(ref["instance_index"], int) else None,
+        )
+        bbox = _normalized_bbox(value)
+        if bbox is not None:
+            referenced_boxes.append(bbox)
+    if len(referenced_boxes) != 1:
+        return False, "Detection requires exactly one unambiguous bbox source reference."
+    if referenced_boxes[0] != generated["answer"]:
+        return False, "Detection answer does not match its referenced annotation bbox."
+    return True, "Detection answer matches its referenced annotation bbox."
+
+
 def _validate_generated(candidate: _Candidate, response: object) -> dict[str, Any]:
     if not isinstance(response, dict) or set(response) != {"question", "answer", "source_refs"}:
         raise ValueError("Generated item must contain question, answer, and source_refs.")
@@ -282,6 +345,8 @@ def _review(
     generated: dict[str, Any],
     benchmark_info: dict[str, object],
 ) -> tuple[bool, str]:
+    if candidate.task["response_format"] == "bbox":
+        return _review_bbox(candidate, generated)
     try:
         response = complete_json(
             "Independently audit one generated medical benchmark item. Return exactly "

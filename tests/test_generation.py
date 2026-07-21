@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 import medbenchagent.generation as generation
 from medbenchagent.dataset import prepare_annotation_dataset
 
@@ -111,6 +113,100 @@ def test_project_supporting_annotation_preserves_alignment_and_excludes_fields()
     }
 
 
+@pytest.mark.parametrize(
+    ("annotation", "field", "index"),
+    [
+        ({"bbox": [1, 2, 8, 9]}, "annotation.bbox", None),
+        ({"bbox": [1, 2, 8, 9]}, "annotation.bbox[*]", None),
+        (
+            {"findings": [{"bbox": [1, 2, 8, 9]}, {"bbox": [10, 11, 20, 21]}]},
+            "annotation.findings[*].bbox",
+            1,
+        ),
+        (
+            {"findings": [{"bbox": [1, 2, 8, 9]}, {"bbox": [10, 11, 20, 21]}]},
+            "annotation.findings[*].bbox[*]",
+            1,
+        ),
+    ],
+)
+def test_bbox_review_accepts_exact_referenced_coordinates_without_model(
+    annotation: dict, field: str, index: int | None, monkeypatch
+) -> None:
+    expected = [10.0, 11.0, 20.0, 21.0] if index == 1 else [1.0, 2.0, 8.0, 9.0]
+    candidate = generation._Candidate(
+        "detection",
+        0,
+        {"image_id": "img-0", "image_path": "0.png", "annotation": annotation},
+        generation.project_supporting_annotation(annotation, [field]),
+        _task("bbox", [field]),
+    )
+    monkeypatch.setattr(
+        generation,
+        "complete_json",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("bbox reviewer called the model")),
+    )
+
+    approved, _reason = generation._review(
+        candidate,
+        {
+            "question": "Locate the finding.",
+            "answer": expected,
+            "source_refs": [{"field": field, "instance_index": index}],
+        },
+        {"language": "en"},
+    )
+
+    assert approved is True
+
+
+@pytest.mark.parametrize(
+    "source_refs",
+    [
+        [{"field": "annotation.findings[*].kind", "instance_index": 1}],
+        [{"field": "annotation.findings[*].bbox[*]", "instance_index": 0}],
+        [
+            {"field": "annotation.findings[*].bbox[*]", "instance_index": 0},
+            {"field": "annotation.findings[*].bbox[*]", "instance_index": 1},
+        ],
+    ],
+)
+def test_bbox_review_rejects_missing_mismatched_or_ambiguous_bbox_reference(
+    source_refs: list[dict],
+) -> None:
+    annotation = {
+        "findings": [
+            {"kind": "mass", "bbox": [1, 2, 8, 9]},
+            {"kind": "calcification", "bbox": [10, 11, 20, 21]},
+        ]
+    }
+    candidate = generation._Candidate(
+        "detection",
+        0,
+        {"image_id": "img-0", "image_path": "0.png", "annotation": annotation},
+        generation.project_supporting_annotation(
+            annotation,
+            ["annotation.findings[*].kind", "annotation.findings[*].bbox[*]"],
+        ),
+        _task(
+            "bbox",
+            ["annotation.findings[*].kind", "annotation.findings[*].bbox[*]"],
+        ),
+    )
+
+    approved, _reason = generation._review(
+        candidate,
+        {
+            "question": "Locate the calcification.",
+            "answer": [10.0, 11.0, 20.0, 21.0],
+            "source_refs": source_refs,
+        },
+        {"language": "en"},
+    )
+
+    assert approved is False
+
+
 def test_one_record_can_generate_multiple_reviewed_task_items(tmp_path: Path, monkeypatch) -> None:
     request = _request(
         tmp_path,
@@ -124,8 +220,12 @@ def test_one_record_can_generate_multiple_reviewed_task_items(tmp_path: Path, mo
         2,
     )
 
+    reviewer_calls = 0
+
     def fake_complete_json(system: str, _prompt: str) -> dict:
+        nonlocal reviewer_calls
         if system.startswith("Independently"):
+            reviewer_calls += 1
             return {"approved": True, "reason": "Faithful."}
         return {
             "items": [
@@ -141,6 +241,7 @@ def test_one_record_can_generate_multiple_reviewed_task_items(tmp_path: Path, mo
     assert result.task_counts == {"detection": 1, "report": 1}
     assert items[0]["answer"] == [1.0, 2.0, 8.0, 9.0]
     assert items[1]["answer"] == "Expert report."
+    assert reviewer_calls == 1
 
 
 def test_generation_repairs_one_invalid_routed_response(tmp_path: Path, monkeypatch) -> None:
