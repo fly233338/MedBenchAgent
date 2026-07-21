@@ -30,7 +30,7 @@ from medbenchagent.generation import (
     initialize_generation,
 )
 from medbenchagent.llm import complete_json
-from medbenchagent.pdf_rag import LocalPdfRag, RagUnavailable, design_task, write_task_design
+from medbenchagent.pdf_rag import LocalPdfRag, design_task, write_task_design
 from medbenchagent.sample_counts import distribute_sample_counts, write_sample_counts
 from medbenchagent.task_screening import (
     apply_task_plan,
@@ -41,7 +41,17 @@ from medbenchagent.task_screening import (
 PROJECT_ROOT = Path(__file__).parents[3]
 
 
-class BenchmarkState(MessagesState):
+class BenchmarkInputState(TypedDict, total=False):
+    """Values accepted when starting or resuming the root graph."""
+
+    messages: list[Any]
+    user_requirement: str
+    materials_root: str
+    seed: int
+    balance_answer_positions: bool
+
+
+class BenchmarkState(MessagesState, total=False):
     """Only compact summaries and artifact paths are checkpointed, never table rows."""
 
     benchmark_info: dict[str, Any]
@@ -66,28 +76,38 @@ class BenchmarkState(MessagesState):
     rag_current_task_id: str
     rag_completed_count: int
     rag_total_count: int
-    rag_error: str
     designs_confirmed: bool
     generation_request: GenerationRequest
-    ready_for_generation: bool
     raw_output_path: str
     benchmark_output_path: str
-    generated_item_count: int
-    generated_task_counts: dict[str, int]
-    generation_target_counts: dict[str, int]
-    generation_completed_counts: dict[str, int]
-    generation_cursor: int
-    generation_progress_path: str
-    generation_rejections: dict[str, int]
-    generation_exhausted: bool
     generation_shortfalls: dict[str, int]
     item_count: int
     task_counts: dict[str, int]
-    seed: int
-    balance_answer_positions: bool
 
 
-class GenerationGraphState(TypedDict):
+class BenchmarkOutputState(TypedDict):
+    """Stable result returned by the root benchmark graph."""
+
+    benchmark_info: dict[str, Any]
+    selected_dataset_id: str
+    working_blueprint_path: str
+    task_screening_report_path: str
+    raw_output_path: str
+    benchmark_output_path: str
+    item_count: int
+    task_counts: dict[str, int]
+    generation_shortfalls: dict[str, int]
+
+
+class GenerationInputState(TypedDict):
+    """The fixed planning snapshot accepted by the generation subgraph."""
+
+    generation_request: GenerationRequest
+
+
+class GenerationGraphState(TypedDict, total=False):
+    """Private, checkpointed state for the record-by-record generation loop."""
+
     generation_request: GenerationRequest
     generation_target_counts: dict[str, int]
     generation_completed_counts: dict[str, int]
@@ -97,10 +117,17 @@ class GenerationGraphState(TypedDict):
     generation_exhausted: bool
     generation_shortfalls: dict[str, int]
     raw_output_path: str
-    generated_item_count: int
-    generated_task_counts: dict[str, int]
     item_count: int
     task_counts: dict[str, int]
+
+
+class GenerationOutputState(TypedDict):
+    """Stable result returned from the generation subgraph to the root graph."""
+
+    raw_output_path: str
+    item_count: int
+    task_counts: dict[str, int]
+    generation_shortfalls: dict[str, int]
 
 
 def _latest_user_text(state: BenchmarkState) -> str:
@@ -451,7 +478,6 @@ def _rag_prepare_node(state: BenchmarkState) -> dict[str, Any]:
         "rag_current_task_id": "",
         "rag_completed_count": 0,
         "rag_total_count": len(queue),
-        "rag_error": "",
         "designs_confirmed": False,
     }
 
@@ -467,10 +493,7 @@ def _rag_design_task_node(state: BenchmarkState) -> dict[str, Any]:
     task = blueprint.get("tasks", {}).get(task_id)
     if not isinstance(task, dict):
         raise ValueError(f"Working Blueprint does not contain queued task: {task_id}")
-    try:
-        rag = LocalPdfRag(state["materials_root"], PROJECT_ROOT / "benchmarks" / "rag_cache")
-    except RagUnavailable:
-        raise
+    rag = LocalPdfRag(state["materials_root"], PROJECT_ROOT / "benchmarks" / "rag_cache")
     design = design_task(
         rag,
         blueprint.get("benchmark_info", state["benchmark_info"]),
@@ -484,7 +507,6 @@ def _rag_design_task_node(state: BenchmarkState) -> dict[str, Any]:
         "rag_task_queue": remaining,
         "rag_current_task_id": task_id,
         "rag_completed_count": state.get("rag_completed_count", 0) + 1,
-        "rag_error": "",
         "designs_confirmed": False,
     }
 
@@ -584,7 +606,7 @@ def _generation_request_node(state: BenchmarkState) -> dict[str, Any]:
         "balance_answer_positions": bool(state.get("balance_answer_positions", True)),
         "output_directory": str(Path(state["working_blueprint_path"]).parent),
     }
-    return {"generation_request": request, "ready_for_generation": True}
+    return {"generation_request": request}
 
 
 def _generation_initialize_node(state: GenerationGraphState) -> dict[str, Any]:
@@ -604,8 +626,6 @@ def _generation_finalize_node(state: GenerationGraphState) -> dict[str, Any]:
     }
     return {
         "raw_output_path": result.raw_output_path,
-        "generated_item_count": result.item_count,
-        "generated_task_counts": result.task_counts,
         "generation_completed_counts": result.task_counts,
         "generation_shortfalls": shortfalls,
         "item_count": result.item_count,
@@ -623,7 +643,11 @@ def _finalize_benchmark_node(state: BenchmarkState) -> dict[str, Any]:
 
 def compile_generation_subgraph(*, checkpointer: Any = None):
     """Build the checkpointable record-by-record generation loop."""
-    graph = StateGraph(GenerationGraphState)
+    graph = StateGraph(
+        GenerationGraphState,
+        input_schema=GenerationInputState,
+        output_schema=GenerationOutputState,
+    )
     graph.add_node("generation_initialize", _generation_initialize_node)
     graph.add_node("generation_step", _generation_step_node)
     graph.add_node("generation_finalize", _generation_finalize_node)
@@ -650,7 +674,11 @@ def compile_generation_subgraph(*, checkpointer: Any = None):
 
 def compile_benchmark_graph(*, checkpointer: Any = None):
     """Build the interactive planning and benchmark generation workflow."""
-    graph = StateGraph(BenchmarkState)
+    graph = StateGraph(
+        BenchmarkState,
+        input_schema=BenchmarkInputState,
+        output_schema=BenchmarkOutputState,
+    )
     graph.add_node("benchmark_extract", _benchmark_extract_node)
     graph.add_node("benchmark_confirm", _benchmark_confirm_node)
     graph.add_node("dataset_recommend", _dataset_recommend_node)

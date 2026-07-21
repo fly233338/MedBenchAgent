@@ -27,9 +27,15 @@ LangGraph 入口是 `medbenchagent.workflow.graph:benchmark_graph`，主链路�
 
 ## 状态、契约与产物
 
-`BenchmarkState` 和 `GenerationGraphState` 只保存紧凑摘要、计数、游标及产物路径，不保存数据集
-行。稳定类型位于 `contracts.py`：`BlueprintTask` 是规划到生成的任务快照，
-`GenerationRequest` 是生成边界，`BenchmarkItem` 是输出题目契约。输入记录契约由
+根图以 `BenchmarkInputState` 接收可选的 `messages`、`user_requirement`、`materials_root`、
+`seed` 和 `balance_answer_positions`。`BenchmarkState` 是渐进填充的内部 checkpoint 状态，只保存
+紧凑摘要和产物路径，不保存数据集行；`BenchmarkOutputState` 则只返回 BenchmarkInfo、选择的数据集
+ID、Blueprint/Task Plan 报告/raw/final 路径，以及最终题目计数、任务计数和 shortfall。
+
+生成子图以只包含 `generation_request` 的输入契约开始，并只向根图返回 raw 路径、题目计数、任务
+计数和 shortfall。游标、目标/完成计数、progress 路径、拒绝计数和耗尽标记属于生成子图私有
+checkpoint，不进入根图状态或公共输出。稳定类型位于 `contracts.py`：`BlueprintTask` 是规划到生成
+的任务快照，`GenerationRequest` 是生成边界，`BenchmarkItem` 是输出题目契约。输入记录契约由
 `schemas/annotation.v1.schema.json` 定义。
 
 每次运行的核心产物是 working `blueprint.json`、`task_plan_report.json`、

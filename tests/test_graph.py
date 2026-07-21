@@ -55,6 +55,31 @@ def test_compiled_graph_exposes_rag_task_loop() -> None:
     }
 
 
+def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
+    graph = workflow.compile_benchmark_graph()
+
+    assert graph.builder.input_schema is workflow.BenchmarkInputState
+    assert set(graph.builder.input_schema.__annotations__) == {
+        "messages",
+        "user_requirement",
+        "materials_root",
+        "seed",
+        "balance_answer_positions",
+    }
+    assert graph.builder.output_schema is workflow.BenchmarkOutputState
+    assert set(graph.builder.output_schema.__annotations__) == {
+        "benchmark_info",
+        "selected_dataset_id",
+        "working_blueprint_path",
+        "task_screening_report_path",
+        "raw_output_path",
+        "benchmark_output_path",
+        "item_count",
+        "task_counts",
+        "generation_shortfalls",
+    }
+
+
 def _datasets() -> list[dict]:
     return [
         {
@@ -372,6 +397,23 @@ def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, m
     history = list(graph.get_state_history(config))
 
     assert calls == 2
-    assert result["generated_item_count"] == 2
-    assert result["generation_shortfalls"] == {"view": 0}
+    assert result == {
+        "raw_output_path": str(tmp_path / "benchmark_items.raw.jsonl"),
+        "item_count": 2,
+        "task_counts": {"view": 2},
+        "generation_shortfalls": {"view": 0},
+    }
+    private_states = [
+        snapshot.values
+        for snapshot in history
+        if snapshot.values.get("generation_cursor") == 2
+        and snapshot.values.get("generation_completed_counts") == {"view": 2}
+    ]
+    assert private_states
+    assert private_states[0]["generation_progress_path"] == str(
+        tmp_path / "benchmark_items.progress.jsonl"
+    )
+    assert private_states[0]["generation_target_counts"] == {"view": 2}
+    assert private_states[0]["generation_rejections"] == {}
+    assert private_states[0]["generation_exhausted"] is False
     assert len(history) >= 5
