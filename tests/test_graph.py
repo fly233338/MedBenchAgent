@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 import medbenchagent.workflow.graph as workflow
@@ -37,8 +38,10 @@ def test_compiled_graph_exposes_rag_task_loop() -> None:
     conditional_edges = {(edge.source, edge.target) for edge in graph.edges if edge.conditional}
 
     assert conditional_edges == {
-        ("benchmark_confirm", "dataset_profile"),
         ("benchmark_confirm", "benchmark_extract"),
+        ("benchmark_confirm", "dataset_recommend"),
+        ("dataset_review", "dataset_profile"),
+        ("dataset_review", "dataset_review"),
         ("dataset_profile", "task_plan_generate"),
         ("dataset_profile", "dataset_profile"),
         ("task_plan_review", "apply_task_plan"),
@@ -50,6 +53,115 @@ def test_compiled_graph_exposes_rag_task_loop() -> None:
         ("design_review", "generation_request"),
         ("design_review", "rag_design_task"),
     }
+
+
+def _datasets() -> list[dict]:
+    return [
+        {
+            "id": "vindr-mammo",
+            "name": "VinDr-Mammo",
+            "description": "Mammography annotations.",
+            "annotation_path": "datasets/Mammography/Vin-Dr-normalized/annotation.jsonl",
+            "available": True,
+        },
+        {
+            "id": "future",
+            "name": "Future Dataset",
+            "description": "Not normalized yet.",
+            "annotation_path": "datasets/future/annotation.jsonl",
+            "available": False,
+        },
+    ]
+
+
+def test_dataset_recommendation_enriches_selection_without_path(monkeypatch) -> None:
+    monkeypatch.setattr(workflow, "load_dataset_catalog", _datasets)
+    monkeypatch.setattr(
+        workflow,
+        "recommend_dataset",
+        lambda _benchmark_info, _datasets: {"dataset_id": "vindr-mammo", "reason": "Matches."},
+    )
+
+    result = workflow._dataset_recommend_node({"benchmark_info": {"modality": "mammography"}})
+
+    assert result["dataset_recommendation"] == {
+        "dataset_id": "vindr-mammo",
+        "name": "VinDr-Mammo",
+        "description": "Mammography annotations.",
+        "reason": "Matches.",
+    }
+    assert "annotation_path" not in result["dataset_recommendation"]
+    assert result["dataset_confirmed"] is False
+
+
+def test_dataset_review_supports_confirm_and_available_reselection(monkeypatch) -> None:
+    monkeypatch.setattr(workflow, "complete_json", lambda *_args: {"action": "confirm"})
+    assert workflow._dataset_review_action("确认", _datasets()) == {"action": "confirm"}
+
+    monkeypatch.setattr(
+        workflow,
+        "complete_json",
+        lambda *_args: {"action": "select", "dataset_id": "vindr-mammo"},
+    )
+    assert workflow._dataset_review_action("使用 VinDr", _datasets()) == {
+        "action": "select",
+        "dataset_id": "vindr-mammo",
+    }
+
+
+def test_dataset_review_rejects_unavailable_reselection(monkeypatch) -> None:
+    monkeypatch.setattr(
+        workflow,
+        "complete_json",
+        lambda *_args: {"action": "select", "dataset_id": "future"},
+    )
+
+    with pytest.raises(workflow.DatasetCatalogError, match="not available"):
+        workflow._dataset_review_action("使用 Future Dataset", _datasets())
+
+
+def test_dataset_review_requires_confirmation_after_reselection(monkeypatch) -> None:
+    monkeypatch.setattr(workflow, "load_dataset_catalog", _datasets)
+    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "使用 VinDr")
+    monkeypatch.setattr(
+        workflow,
+        "complete_json",
+        lambda *_args: {"action": "select", "dataset_id": "vindr-mammo"},
+    )
+    state = {
+        "dataset_recommendation": {
+            "dataset_id": "vindr-mammo",
+            "name": "VinDr-Mammo",
+            "description": "Mammography annotations.",
+            "reason": "Matches.",
+        }
+    }
+
+    result = workflow._dataset_review_node(state)
+
+    assert result["dataset_confirmed"] is False
+    assert result["selected_dataset_id"] == ""
+
+
+def test_dataset_profile_resolves_confirmed_id_internally(tmp_path: Path, monkeypatch) -> None:
+    expected_path = tmp_path / "annotation.jsonl"
+    monkeypatch.setattr(workflow, "load_dataset_catalog", _datasets)
+    monkeypatch.setattr(workflow, "resolve_annotation_path", lambda _dataset: expected_path)
+
+    def prepare(path, _cache_root):
+        assert path == expected_path
+        return {"total_images": 1}, {
+            "annotation_path": str(expected_path),
+            "duckdb_path": "dataset.duckdb",
+        }
+
+    monkeypatch.setattr(workflow, "prepare_annotation_dataset", prepare)
+
+    result = workflow._dataset_profile_node({"selected_dataset_id": "vindr-mammo"})
+
+    assert result["dataset_profile"] == {"total_images": 1}
+    assert result["dataset_access_manifest"] == {"duckdb_path": "dataset.duckdb"}
+    assert "annotation_path" not in result
 
 
 def test_apply_task_plan_updates_blueprint_as_single_task_source(tmp_path: Path) -> None:

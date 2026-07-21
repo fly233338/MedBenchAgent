@@ -1,7 +1,7 @@
 # MedBenchAgent
 
 MedBenchAgent builds medical VLM benchmarks from a natural-language brief,
-image-level `annotation.jsonl` data, and PDF medical references. The workflow screens
+catalog-selected image-level `annotation.jsonl` data, and PDF medical references. The workflow screens
 supported tasks, designs them with PDF RAG, and writes closed VQA, detection, finding
 description, and report items into one mixed JSONL. It first writes an immutable,
 unshuffled `benchmark_items.raw.jsonl`, then by default writes a separately finalized
@@ -11,7 +11,21 @@ dataset is exhausted.
 
 ## Dataset input
 
-The workflow accepts only an `annotation.jsonl` file. Each line represents one image
+The workflow selects datasets from the repository-level `dataset_catalog.json`. After
+BenchmarkInfo confirmation, DeepSeek compares the confirmed benchmark request with every
+catalog entry's `id`, `name`, `description`, and `available` status. It recommends one
+available dataset for natural-language confirmation or reselection. Catalog paths are
+never included in model prompts or user review. After confirmation, code resolves the
+selected ID to its `annotation_path` and continues automatically.
+
+Each catalog entry must contain exactly `id`, `name`, `description`, `annotation_path`,
+and boolean `available` fields. Relative annotation paths are resolved from the project
+root; absolute paths are also accepted. A dataset should be marked available only after
+its path contains a valid normalized `annotation.jsonl`. Invalid catalog entries or
+selected annotation files are treated as configuration errors rather than falling back
+to manual path input.
+
+The downstream workflow accepts only an `annotation.jsonl` file. Each line represents one image
 and must contain `image_id`, `image_path`, `patient_id`, `case_id`, `study_id`, and an
 object-valued `annotation`. `image_path` is stored as opaque metadata: dataset
 exploration does not resolve it or check whether an image file exists. Benchmark items

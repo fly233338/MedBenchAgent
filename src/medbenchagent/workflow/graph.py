@@ -14,6 +14,15 @@ from medbenchagent.benchmark_info import extract_benchmark_info, missing_fields,
 from medbenchagent.answer_balance import balance_jsonl
 from medbenchagent.contracts import GenerationRequest
 from medbenchagent.dataset import AnnotationValidationError, prepare_annotation_dataset
+from medbenchagent.dataset_catalog import (
+    DatasetCatalogError,
+    DatasetEntry,
+    dataset_by_id,
+    load_dataset_catalog,
+    public_dataset_entries,
+    recommend_dataset,
+    resolve_annotation_path,
+)
 from medbenchagent.generation import (
     advance_generation,
     finalize_generation,
@@ -40,7 +49,9 @@ class BenchmarkState(MessagesState):
     benchmark_feedback: str
     benchmark_confirmed: bool
     working_blueprint_path: str
-    annotation_path: str
+    dataset_recommendation: dict[str, str]
+    selected_dataset_id: str
+    dataset_confirmed: bool
     dataset_profile: dict[str, Any]
     dataset_access_manifest: dict[str, Any]
     draft_task_plan: dict[str, Any]
@@ -158,25 +169,92 @@ def _benchmark_review_action(answer: object, benchmark_info: dict[str, Any]) -> 
     raise ValueError("BenchmarkInfo review response could not be mapped to one valid confirm or revise action.")
 
 
+def _dataset_recommend_node(state: BenchmarkState) -> dict[str, Any]:
+    datasets = load_dataset_catalog()
+    recommendation = recommend_dataset(state["benchmark_info"], datasets)
+    dataset = dataset_by_id(datasets, recommendation["dataset_id"])
+    return {
+        "dataset_recommendation": {
+            **recommendation,
+            "name": dataset["name"],
+            "description": dataset["description"],
+        },
+        "selected_dataset_id": "",
+        "dataset_confirmed": False,
+    }
+
+
+def _dataset_review_action(answer: object, datasets: list[DatasetEntry]) -> dict[str, str]:
+    response = complete_json(
+        "Interpret a medical dataset selection review. Return JSON only.",
+        "Convert the user's response into exactly one of these shapes:\n"
+        '{"action":"confirm"}\n'
+        '{"action":"select","dataset_id":"one exact available dataset id"}\n'
+        "Confirm only when the user accepts the current recommendation. Select only when the user "
+        "explicitly requests another available dataset.\n"
+        f"Dataset catalog: {json.dumps(public_dataset_entries(datasets), ensure_ascii=False)}\n"
+        f"User response: {answer}",
+    )
+    if response == {"action": "confirm"}:
+        return {"action": "confirm"}
+    if (
+        isinstance(response, dict)
+        and set(response) == {"action", "dataset_id"}
+        and response.get("action") == "select"
+        and isinstance(response.get("dataset_id"), str)
+    ):
+        dataset = dataset_by_id(datasets, response["dataset_id"].strip())
+        return {"action": "select", "dataset_id": dataset["id"]}
+    raise ValueError("Dataset review response could not be mapped to one valid confirm or select action.")
+
+
+def _dataset_review_node(state: BenchmarkState) -> dict[str, Any]:
+    datasets = load_dataset_catalog()
+    recommendation = state["dataset_recommendation"]
+    answer = interrupt(
+        {
+            "kind": "dataset_selection_confirmation",
+            "recommendation": recommendation,
+            "datasets": public_dataset_entries(datasets),
+            "question": "Confirm the recommended dataset, or name another available dataset.",
+        }
+    )
+    action = _dataset_review_action(answer, datasets)
+    if action["action"] == "confirm":
+        dataset = dataset_by_id(datasets, recommendation["dataset_id"])
+        return {"selected_dataset_id": dataset["id"], "dataset_confirmed": True}
+    dataset = dataset_by_id(datasets, action["dataset_id"])
+    return {
+        "dataset_recommendation": {
+            "dataset_id": dataset["id"],
+            "name": dataset["name"],
+            "description": dataset["description"],
+            "reason": "Selected by the user during dataset review.",
+        },
+        "selected_dataset_id": "",
+        "dataset_confirmed": False,
+    }
+
+
 def _dataset_profile_node(state: BenchmarkState) -> dict[str, Any]:
-    annotation_path = state.get("annotation_path")
-    if not annotation_path:
-        annotation_path = str(
-            interrupt({"kind": "annotation_path", "question": "Provide the absolute path to annotation.jsonl."})
-        ).strip()
+    dataset_id = state.get("selected_dataset_id")
+    if not dataset_id:
+        raise DatasetCatalogError("A confirmed dataset is required before profiling.")
+    dataset = dataset_by_id(load_dataset_catalog(), dataset_id)
+    annotation_path = resolve_annotation_path(dataset)
     try:
         profile, manifest = prepare_annotation_dataset(
             annotation_path, PROJECT_ROOT / "benchmarks" / "dataset_cache"
         )
     except (AnnotationValidationError, ValueError) as exc:
-        answer = interrupt(
-            {"kind": "dataset_error", "message": str(exc), "question": "Provide a corrected annotation.jsonl path."}
-        )
-        return {"annotation_path": str(answer).strip()}
+        raise DatasetCatalogError(
+            f"Selected dataset {dataset_id} could not be prepared: {exc}"
+        ) from exc
     return {
-        "annotation_path": annotation_path,
         "dataset_profile": profile,
-        "dataset_access_manifest": manifest,
+        "dataset_access_manifest": {
+            key: value for key, value in manifest.items() if key != "annotation_path"
+        },
         "task_plan_confirmed": False,
     }
 
@@ -575,6 +653,8 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph = StateGraph(BenchmarkState)
     graph.add_node("benchmark_extract", _benchmark_extract_node)
     graph.add_node("benchmark_confirm", _benchmark_confirm_node)
+    graph.add_node("dataset_recommend", _dataset_recommend_node)
+    graph.add_node("dataset_review", _dataset_review_node)
     graph.add_node("dataset_profile", _dataset_profile_node)
     graph.add_node("task_plan_generate", _task_plan_generate_node)
     graph.add_node("task_plan_review", _task_plan_review_node)
@@ -593,8 +673,14 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_edge("benchmark_extract", "benchmark_confirm")
     graph.add_conditional_edges(
         "benchmark_confirm",
-        lambda state: "dataset_profile" if state.get("benchmark_confirmed") else "benchmark_extract",
-        {"dataset_profile": "dataset_profile", "benchmark_extract": "benchmark_extract"},
+        lambda state: "dataset_recommend" if state.get("benchmark_confirmed") else "benchmark_extract",
+        {"dataset_recommend": "dataset_recommend", "benchmark_extract": "benchmark_extract"},
+    )
+    graph.add_edge("dataset_recommend", "dataset_review")
+    graph.add_conditional_edges(
+        "dataset_review",
+        lambda state: "dataset_profile" if state.get("dataset_confirmed") else "dataset_review",
+        {"dataset_profile": "dataset_profile", "dataset_review": "dataset_review"},
     )
     graph.add_conditional_edges(
         "dataset_profile",
