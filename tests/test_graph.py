@@ -33,7 +33,7 @@ def _rag_fields(response_format: str = "letter") -> dict:
     return fields
 
 
-def test_compiled_graph_exposes_rag_task_loop() -> None:
+def test_compiled_graph_groups_rag_and_generation_as_root_stages() -> None:
     graph = workflow.compile_benchmark_graph().get_graph()
     conditional_edges = {(edge.source, edge.target) for edge in graph.edges if edge.conditional}
 
@@ -49,12 +49,16 @@ def test_compiled_graph_exposes_rag_task_loop() -> None:
         ("sample_count_review", "materials_choose"),
         ("sample_count_review", "sample_count_review"),
         ("materials_choose", "materials_choose"),
-        ("materials_choose", "rag_prepare"),
-        ("rag_design_task", "rag_design_task"),
-        ("rag_design_task", "design_review"),
-        ("design_review", "generation_request"),
-        ("design_review", "rag_design_task"),
+        ("materials_choose", "rag_designs"),
     }
+    root_nodes = set(graph.nodes)
+    assert {"rag_designs", "generate_raw_benchmark"} <= root_nodes
+    assert not {"rag_prepare", "rag_design_task", "design_review"} & root_nodes
+
+    rag_graph = workflow.compile_rag_designs_subgraph()
+    assert rag_graph.builder.input_schema is workflow.RagDesignInputState
+    assert rag_graph.builder.output_schema is workflow.RagDesignOutputState
+    assert set(rag_graph.builder.output_schema.__annotations__) == {"working_blueprint_path"}
 
 
 def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
@@ -79,6 +83,14 @@ def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
         "task_counts",
         "generation_shortfalls",
     }
+    assert not {
+        "rag_task_queue",
+        "rag_task_feedback",
+        "rag_current_task_id",
+        "rag_completed_count",
+        "rag_total_count",
+        "designs_confirmed",
+    } & set(workflow.BenchmarkState.__annotations__)
 
 
 def _datasets() -> list[dict]:
@@ -449,3 +461,132 @@ def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, m
     assert private_states[0]["generation_rejections"] == {}
     assert private_states[0]["generation_exhausted"] is False
     assert len(history) >= 5
+
+
+def test_rag_subgraph_checkpoints_private_queue_state(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "blueprint.json"
+    path.write_text(
+        json.dumps(
+            {
+                "benchmark_info": {"language": "en"},
+                "tasks": {"view": _task() | {"sample_count": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(workflow, "LocalPdfRag", lambda *_args: object())
+    monkeypatch.setattr(
+        workflow,
+        "design_task",
+        lambda _rag, _info, _task_id, _task, feedback="": _rag_fields(),
+    )
+    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "确认")
+    monkeypatch.setattr(workflow, "complete_json", lambda *_args: {"action": "confirm"})
+    checkpointer = MemorySaver()
+    graph = workflow.compile_rag_designs_subgraph(checkpointer=checkpointer)
+    config = {"configurable": {"thread_id": "rag-test"}, "recursion_limit": 20}
+
+    result = graph.invoke(
+        {
+            "benchmark_info": {"language": "en"},
+            "working_blueprint_path": str(path),
+            "selected_material_files": ["imaging_reporting_and_classification/guide.pdf"],
+        },
+        config,
+    )
+    history = list(graph.get_state_history(config))
+
+    assert result == {"working_blueprint_path": str(path)}
+    private_states = [
+        snapshot.values
+        for snapshot in history
+        if snapshot.values.get("rag_current_task_id") == "view"
+    ]
+    assert private_states
+    assert private_states[0]["rag_completed_count"] == 1
+    assert private_states[0]["rag_task_queue"] == []
+
+
+def test_rag_subgraph_streams_custom_progress(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "blueprint.json"
+    path.write_text(
+        json.dumps(
+            {
+                "benchmark_info": {"language": "en"},
+                "tasks": {"view": _task() | {"sample_count": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(workflow, "LocalPdfRag", lambda *_args: object())
+    monkeypatch.setattr(
+        workflow,
+        "design_task",
+        lambda _rag, _info, _task_id, _task, feedback="": _rag_fields(),
+    )
+    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "确认")
+    monkeypatch.setattr(workflow, "complete_json", lambda *_args: {"action": "confirm"})
+
+    events = list(
+        workflow.compile_rag_designs_subgraph().stream(
+            {
+                "benchmark_info": {"language": "en"},
+                "working_blueprint_path": str(path),
+                "selected_material_files": ["imaging_reporting_and_classification/guide.pdf"],
+            },
+            stream_mode="custom",
+        )
+    )
+
+    assert events == [
+        {
+            "kind": "rag_progress",
+            "task_id": "view",
+            "completed": 1,
+            "total": 1,
+            "remaining": 0,
+        }
+    ]
+
+
+def test_generation_subgraph_streams_custom_progress(tmp_path: Path, monkeypatch) -> None:
+    def initialize(_request: dict) -> dict:
+        return {
+            "generation_target_counts": {"view": 1},
+            "generation_completed_counts": {"view": 0},
+            "generation_cursor": 0,
+            "generation_progress_path": str(tmp_path / "benchmark_items.progress.jsonl"),
+            "generation_rejections": {"view": 0},
+            "generation_exhausted": False,
+        }
+
+    def advance(_request: dict, _state: dict) -> dict:
+        return {"generation_completed_counts": {"view": 1}, "generation_cursor": 1}
+
+    def finalize(_request: dict, _state: dict) -> GenerationResult:
+        return GenerationResult(
+            raw_output_path=str(tmp_path / "benchmark_items.raw.jsonl"),
+            item_count=1,
+            task_counts={"view": 1},
+        )
+
+    monkeypatch.setattr(workflow, "initialize_generation", initialize)
+    monkeypatch.setattr(workflow, "advance_generation", advance)
+    monkeypatch.setattr(workflow, "finalize_generation", finalize)
+
+    events = list(
+        workflow.compile_generation_subgraph().stream(
+            {"generation_request": {}}, stream_mode="custom"
+        )
+    )
+
+    assert events == [
+        {
+            "kind": "generation_progress",
+            "cursor": 1,
+            "completed_counts": {"view": 1},
+            "target_counts": {"view": 1},
+            "rejections": {"view": 0},
+            "exhausted": False,
+        }
+    ]

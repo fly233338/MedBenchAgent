@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from langsmith.wrappers import wrap_openai
 from openai import APIError, OpenAI
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -51,12 +52,13 @@ def _client() -> OpenAI:
     if _CLIENT is None or _CLIENT_CONFIG != config:
         if _CLIENT is not None:
             _CLIENT.close()
-        _CLIENT = OpenAI(
+        raw_client = OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
             max_retries=0,
         )
+        _CLIENT = wrap_openai(raw_client, chat_name="DeepSeek")
         _CLIENT_CONFIG = config
     return _CLIENT
 

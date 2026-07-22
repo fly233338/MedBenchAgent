@@ -79,6 +79,11 @@ adapter metadata such as `modules.json` or `1_LogitScore/`. Embedding and rerank
 models are loaded lazily once per model path in each worker process and then reused.
 Set `RAG_MIN_RERANK_SCORE` to filter weak passages; the default is `0.5`.
 
+To trace model calls in LangSmith, set `LANGSMITH_TRACING=true` with a valid
+`LANGSMITH_API_KEY` (and optionally `LANGSMITH_PROJECT`). The OpenAI-compatible DeepSeek
+client is wrapped so RAG design, generation routing, and review calls appear as nested
+LLM spans. The workflow still runs normally when tracing is disabled.
+
 For Web VS Code, start the development server without browser launch and forward port
 8123 through the IDE:
 
@@ -111,6 +116,16 @@ deterministic item IDs. The generation subgraph checkpoints after every processe
 so replay after a checkpoint/file mismatch safely deduplicates accepted items. If the
 dataset is exhausted before every target is reached, generation still succeeds with
 the actual items and records the per-task shortfall in graph state.
+
+## Progress and trace display
+
+RAG design and raw generation are each a single expandable root stage. Their internal
+queue/loop checkpoints remain private to their subgraphs, so LangSmith shows a compact
+root run that can be expanded to inspect individual RAG tasks or generation steps.
+Clients can consume live progress with `stream_mode=["updates", "custom"]` and
+`subgraphs=True`: RAG emits the completed/total task count and remaining queue length;
+generation emits its cursor, completed and target task counts, rejection counts, and
+exhaustion status after each processed record.
 
 The raw file keeps original closed-task option order. Each item contains only `id`,
 `task_id`, `image_id`, `image_path`, `question`, `options`, and `answer`; `answer` is a

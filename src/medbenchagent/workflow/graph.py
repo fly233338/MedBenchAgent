@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
@@ -72,12 +74,6 @@ class BenchmarkState(MessagesState, total=False):
     sample_counts_confirmed: bool
     selected_material_files: list[str]
     material_selection_error: str
-    rag_task_queue: list[str]
-    rag_task_feedback: dict[str, str]
-    rag_current_task_id: str
-    rag_completed_count: int
-    rag_total_count: int
-    designs_confirmed: bool
     generation_request: GenerationRequest
     raw_output_path: str
     generation_shortfalls: dict[str, int]
@@ -127,6 +123,40 @@ class GenerationOutputState(TypedDict):
     item_count: int
     task_counts: dict[str, int]
     generation_shortfalls: dict[str, int]
+
+
+class RagDesignInputState(TypedDict):
+    """The fixed inputs accepted by the private RAG-design subgraph."""
+
+    benchmark_info: dict[str, Any]
+    working_blueprint_path: str
+    selected_material_files: list[str]
+
+
+class RagDesignState(RagDesignInputState, total=False):
+    """Private, checkpointed state for the RAG design and review loop."""
+
+    rag_task_queue: list[str]
+    rag_task_feedback: dict[str, str]
+    rag_current_task_id: str
+    rag_completed_count: int
+    rag_total_count: int
+    designs_confirmed: bool
+
+
+class RagDesignOutputState(TypedDict):
+    """Stable result returned from the RAG-design subgraph to the root graph."""
+
+    working_blueprint_path: str
+
+
+def _emit_custom_event(event: dict[str, Any]) -> None:
+    """Publish live progress when the current invocation is streamed."""
+    try:
+        get_stream_writer()(event)
+    except RuntimeError:
+        # Direct node calls remain useful in unit tests and local diagnostics.
+        return
 
 
 def _latest_user_text(state: BenchmarkState) -> str:
@@ -511,7 +541,7 @@ def _materials_choose_node(state: BenchmarkState) -> dict[str, Any]:
     return {"selected_material_files": selected_files, "material_selection_error": ""}
 
 
-def _rag_prepare_node(state: BenchmarkState) -> dict[str, Any]:
+def _rag_prepare_node(state: RagDesignState) -> dict[str, Any]:
     """Initialize the ordered RAG queue from the current working Blueprint."""
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
     tasks = blueprint.get("tasks")
@@ -530,7 +560,7 @@ def _rag_prepare_node(state: BenchmarkState) -> dict[str, Any]:
     }
 
 
-def _rag_design_task_node(state: BenchmarkState) -> dict[str, Any]:
+def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
     """Design and persist exactly one Blueprint task."""
     queue = state.get("rag_task_queue", [])
     if not queue:
@@ -555,10 +585,20 @@ def _rag_design_task_node(state: BenchmarkState) -> dict[str, Any]:
     )
     write_task_design(blueprint_path, task_id, design)
     remaining = queue[1:]
+    completed = state.get("rag_completed_count", 0) + 1
+    _emit_custom_event(
+        {
+            "kind": "rag_progress",
+            "task_id": task_id,
+            "completed": completed,
+            "total": state.get("rag_total_count", len(queue)),
+            "remaining": len(remaining),
+        }
+    )
     return {
         "rag_task_queue": remaining,
         "rag_current_task_id": task_id,
-        "rag_completed_count": state.get("rag_completed_count", 0) + 1,
+        "rag_completed_count": completed,
         "designs_confirmed": False,
     }
 
@@ -611,7 +651,7 @@ def _design_review_action(answer: object, tasks: dict[str, Any]) -> dict[str, An
         return _validate_design_review_action(repaired, task_ids)
 
 
-def _design_review_node(state: BenchmarkState) -> dict[str, Any]:
+def _design_review_node(state: RagDesignState) -> dict[str, Any]:
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
     tasks = {
         task_id: task
@@ -667,7 +707,19 @@ def _generation_initialize_node(state: GenerationGraphState) -> dict[str, Any]:
 
 
 def _generation_step_node(state: GenerationGraphState) -> dict[str, Any]:
-    return advance_generation(state["generation_request"], state)
+    update = advance_generation(state["generation_request"], state)
+    completed_counts = update.get("generation_completed_counts", state["generation_completed_counts"])
+    _emit_custom_event(
+        {
+            "kind": "generation_progress",
+            "cursor": update.get("generation_cursor", state["generation_cursor"]),
+            "completed_counts": completed_counts,
+            "target_counts": state["generation_target_counts"],
+            "rejections": update.get("generation_rejections", state["generation_rejections"]),
+            "exhausted": update.get("generation_exhausted", state["generation_exhausted"]),
+        }
+    )
+    return update
 
 
 def _generation_finalize_node(state: GenerationGraphState) -> dict[str, Any]:
@@ -684,6 +736,44 @@ def _generation_finalize_node(state: GenerationGraphState) -> dict[str, Any]:
         "item_count": result.item_count,
         "task_counts": result.task_counts,
     }
+
+
+def compile_rag_designs_subgraph(*, checkpointer: Any = None):
+    """Build the checkpointable RAG design and review loop."""
+    graph = StateGraph(
+        RagDesignState,
+        input_schema=RagDesignInputState,
+        output_schema=RagDesignOutputState,
+    )
+    graph.add_node("rag_prepare", _rag_prepare_node)
+    graph.add_node("rag_design_task", _rag_design_task_node)
+    graph.add_node("design_review", _design_review_node)
+    graph.add_edge(START, "rag_prepare")
+    graph.add_edge("rag_prepare", "rag_design_task")
+    graph.add_conditional_edges(
+        "rag_design_task",
+        lambda state: "rag_design_task" if state.get("rag_task_queue") else "design_review",
+        {"rag_design_task": "rag_design_task", "design_review": "design_review"},
+    )
+    graph.add_conditional_edges(
+        "design_review",
+        lambda state: END if state.get("designs_confirmed") else "rag_design_task",
+        {END: END, "rag_design_task": "rag_design_task"},
+    )
+    return graph.compile(checkpointer=checkpointer, name="rag_designs")
+
+
+def _rag_designs_node(state: BenchmarkState, config: RunnableConfig) -> dict[str, Any]:
+    """Run RAG as one expandable root stage while preserving child checkpoints."""
+    compile_rag_designs_subgraph().invoke(
+        {
+            "benchmark_info": state["benchmark_info"],
+            "working_blueprint_path": state["working_blueprint_path"],
+            "selected_material_files": state["selected_material_files"],
+        },
+        config,
+    )
+    return {}
 
 
 def compile_generation_subgraph(*, checkpointer: Any = None):
@@ -714,7 +804,14 @@ def compile_generation_subgraph(*, checkpointer: Any = None):
         },
     )
     graph.add_edge("generation_finalize", END)
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile(checkpointer=checkpointer, name="generate_raw_benchmark")
+
+
+def _generate_raw_benchmark_node(state: BenchmarkState, config: RunnableConfig) -> dict[str, Any]:
+    """Run generation as one expandable root stage while preserving child checkpoints."""
+    return compile_generation_subgraph().invoke(
+        {"generation_request": state["generation_request"]}, config
+    )
 
 
 def compile_benchmark_graph(*, checkpointer: Any = None):
@@ -736,11 +833,9 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_node("sample_count_prepare", _sample_count_prepare_node)
     graph.add_node("sample_count_review", _sample_count_review_node)
     graph.add_node("materials_choose", _materials_choose_node)
-    graph.add_node("rag_prepare", _rag_prepare_node)
-    graph.add_node("rag_design_task", _rag_design_task_node)
-    graph.add_node("design_review", _design_review_node)
+    graph.add_node("rag_designs", _rag_designs_node)
     graph.add_node("generation_request", _generation_request_node)
-    graph.add_node("generate_raw_benchmark", compile_generation_subgraph())
+    graph.add_node("generate_raw_benchmark", _generate_raw_benchmark_node)
     graph.add_edge(START, "benchmark_extract")
     graph.add_edge("benchmark_extract", "benchmark_confirm")
     graph.add_conditional_edges(
@@ -775,20 +870,10 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     )
     graph.add_conditional_edges(
         "materials_choose",
-        lambda state: "rag_prepare" if state.get("selected_material_files") else "materials_choose",
-        {"rag_prepare": "rag_prepare", "materials_choose": "materials_choose"},
+        lambda state: "rag_designs" if state.get("selected_material_files") else "materials_choose",
+        {"rag_designs": "rag_designs", "materials_choose": "materials_choose"},
     )
-    graph.add_edge("rag_prepare", "rag_design_task")
-    graph.add_conditional_edges(
-        "rag_design_task",
-        lambda state: "rag_design_task" if state.get("rag_task_queue") else "design_review",
-        {"rag_design_task": "rag_design_task", "design_review": "design_review"},
-    )
-    graph.add_conditional_edges(
-        "design_review",
-        lambda state: "generation_request" if state.get("designs_confirmed") else "rag_design_task",
-        {"generation_request": "generation_request", "rag_design_task": "rag_design_task"},
-    )
+    graph.add_edge("rag_designs", "generation_request")
     graph.add_edge("generation_request", "generate_raw_benchmark")
     graph.add_edge("generate_raw_benchmark", END)
     return graph.compile(checkpointer=checkpointer)

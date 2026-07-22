@@ -18,6 +18,7 @@ def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypa
 def test_complete_json_uses_placeholder_key_for_unauthenticated_vllm(monkeypatch) -> None:
     captured = {}
     instances = 0
+    wrapped_clients = []
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
@@ -38,6 +39,11 @@ def test_complete_json_uses_placeholder_key_for_unauthenticated_vllm(monkeypatch
     monkeypatch.setenv("DEEPSEEK_API_KEY", "")
     monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     monkeypatch.setattr(llm, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(
+        llm,
+        "wrap_openai",
+        lambda client, **kwargs: wrapped_clients.append((client, kwargs)) or client,
+    )
     llm.clear_client_cache()
 
     assert llm.complete_json("system", "user") == {}
@@ -46,6 +52,8 @@ def test_complete_json_uses_placeholder_key_for_unauthenticated_vllm(monkeypatch
     assert captured["timeout"] == 120.0
     assert captured["max_retries"] == 0
     assert instances == 1
+    assert len(wrapped_clients) == 1
+    assert wrapped_clients[0][1] == {"chat_name": "DeepSeek"}
     llm.clear_client_cache()
 
 
