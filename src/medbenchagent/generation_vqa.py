@@ -21,7 +21,7 @@ Context:
 - Supporting annotation: {supporting_annotation}
 
 Requirements:
-1. Write one substantial semantic paraphrase of the canonical question, not a trivial word substitution.
+1. Write one substantial semantic paraphrase of the canonical question, not a trivial word substitution; avoid following its template verbatim and naturally vary wording, syntax, and word order.
 2. The question must preserve the task meaning and be answerable from the image and candidate options only.
 3. Do not mention reports, annotations, labels, or unsupported clinical details.
 4. Do not reveal or hint at the correct answer.

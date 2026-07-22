@@ -20,7 +20,7 @@ Context:
 - Supporting annotation: {supporting_annotation}
 
 Requirements:
-1. Ask for the location of the annotated target; the question may name its finding category.
+1. Ask for the location of the annotated target; the question may name its finding category, but avoid following the canonical template verbatim and naturally vary wording, syntax, and word order.
 2. Do not include coordinates, reports, annotations, labels, or unsupported details in the question.
 3. Copy the exact annotated xyxy bounding box as the answer. Do not infer a new box.
 

@@ -20,7 +20,7 @@ Context:
 - Reference text: {reference_text}
 
 Requirements:
-1. Write one substantial semantic paraphrase of the canonical question.
+1. Write one substantial semantic paraphrase of the canonical question; avoid following its template verbatim and naturally vary wording, syntax, and word order.
 2. Do not reveal or clearly hint at the reference text in the question.
 3. Copy the reference text exactly as the answer. Do not summarize, rewrite, or add medical inference.
 
