@@ -4,6 +4,9 @@ from pathlib import Path
 import pytest
 
 import medbenchagent.generation as generation
+import medbenchagent.generation_free_text as free_text
+import medbenchagent.generation_grounding as grounding
+import medbenchagent.generation_vqa as vqa
 from medbenchagent.dataset import prepare_annotation_dataset
 
 
@@ -18,22 +21,24 @@ def _record(index: int, annotation: dict) -> dict:
     }
 
 
-def _task(field: str, **extra) -> dict:
-    return {
-        "task_type": "close_vqa",
-        "response_format": "letter",
-        "description": "Identify the status",
-        "require": "Use the approved annotation",
+def _task(response_format: str, fields: list[str], **extra) -> dict:
+    task = {
+        "task_type": "close_vqa" if response_format == "letter" else "open_vqa",
+        "response_format": response_format,
+        "description": f"{response_format} task",
+        "require": "Use approved annotation",
         "metric": "accuracy",
-        "supporting_fields": [field],
+        "supporting_fields": fields,
         "dataset_support_reason": "Available.",
-        "question_templates": ["What is the status shown in this image?"],
-        "generation_logic": "Normalize only the approved annotation.",
+        "question_templates": ["What is shown in this image?"],
+        "generation_logic": "Use only the approved annotation.",
         "medical_task_description": "Recognition task.",
         "citations": [],
-        "options": ["benign", "malignant"],
-        **extra,
     }
+    if response_format == "letter":
+        task["options"] = ["benign", "malignant"]
+    task.update(extra)
+    return task
 
 
 def _request(tmp_path: Path, records: list[dict], tasks: dict, target: int, seed: int = 0) -> dict:
@@ -57,168 +62,234 @@ def _read_items(path: str) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()]
 
 
-def test_letter_generation_uses_single_task_prompt_temperature_and_compact_raw(
-    tmp_path: Path, monkeypatch
-) -> None:
-    request = _request(
-        tmp_path,
-        [_record(0, {"status": "benign"})],
-        {"status": _task("annotation.status", options=["A. benign", "B) malignant"])},
-        1,
-    )
-    calls: list[tuple[str, str, float]] = []
-
-    def fake_complete_json(system: str, user: str, *, temperature: float = 0) -> dict:
-        calls.append((system, user, temperature))
-        if system.startswith("Review one"):
+def _fake_model(calls: list[tuple[str, float]]):
+    def complete_json(system: str, _user: str, *, temperature: float = 0) -> dict:
+        calls.append((system, temperature))
+        if "Review one" in system:
             return {"approved": True, "reason": "Faithful."}
+        if system.startswith("Generate one grounding"):
+            return {"question": "Locate the finding.", "answer": [1, 2, 8, 9]}
+        if system.startswith("Generate one free-text"):
+            return {"question": "What is the report?", "answer": "Normal study."}
         return {"question": "Which status best describes this image?", "answer": "benign"}
 
-    monkeypatch.setattr(generation, "complete_json", fake_complete_json)
+    return complete_json
+
+
+def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeypatch) -> None:
+    request = _request(
+        tmp_path,
+        [_record(0, {"status": "benign", "bbox": [1, 2, 8, 9], "report": "Normal study."})],
+        {
+            "vqa": _task("letter", ["annotation.status"], sample_count=1),
+            "grounding": _task("bbox", ["annotation.bbox[*]"], sample_count=1),
+            "report": _task("free_text", ["annotation.report"], sample_count=1),
+        },
+        3,
+    )
+    calls: list[tuple[str, float]] = []
+    fake = _fake_model(calls)
+    monkeypatch.setattr(vqa, "complete_json", fake)
+    monkeypatch.setattr(grounding, "complete_json", fake)
+    monkeypatch.setattr(free_text, "complete_json", fake)
+
     result = generation.generate_raw_benchmark(request)
-    item = _read_items(result.raw_output_path)[0]
+    items = _read_items(result.raw_output_path)
 
-    prompt, user, temperature = calls[0]
-    assert "Task ID: status" in prompt
-    assert "Candidate options: [\"benign\", \"malignant\"]" in prompt
-    assert "Supporting annotation: {\"status\": \"benign\"}" in prompt
-    assert "citations" not in prompt.lower()
-    assert user == ""
-    assert temperature == 0.7
-    assert calls[1][2] == 0
-    assert item == {
-        "id": item["id"],
-        "task_id": "status",
-        "image_id": "img-0",
-        "image_path": "images/0.dicom",
-        "question": "Which status best describes this image?",
-        "options": ["benign", "malignant"],
-        "answer": "A",
+    generation_prompts = [prompt for prompt, _temperature in calls if prompt.startswith("Generate one")]
+    assert [prompt.splitlines()[0] for prompt in generation_prompts] == [
+        "Generate one letter-choice question for a medical image VQA benchmark.",
+        "Generate one grounding question for a medical image benchmark.",
+        "Generate one free-text medical image benchmark item.",
+    ]
+    assert [item["task_id"] for item in items] == ["vqa", "grounding", "report"]
+    assert items[0]["answer"] == "A"
+    assert items[1]["answer"] == [1.0, 2.0, 8.0, 9.0]
+    assert items[2]["answer"] == "Normal study."
+    assert all(set(item) == {"id", "task_id", "image_id", "image_path", "question", "options", "answer"} for item in items)
+    assert not list(Path(request["output_directory"]).glob("benchmark_items.*.progress.jsonl"))
+    assert all(temperature == 0.7 for prompt, temperature in calls if prompt.startswith("Generate one"))
+    assert all(temperature == 0 for prompt, temperature in calls if "Review one" in prompt)
+
+
+def test_stages_restart_database_cursor_and_keep_independent_limits(tmp_path: Path, monkeypatch) -> None:
+    records = [_record(index, {"status": "benign", "bbox": [1, 2, 8, 9]}) for index in range(2)]
+    request = _request(
+        tmp_path,
+        records,
+        {
+            "vqa": _task("letter", ["annotation.status"], sample_count=1),
+            "grounding": _task("bbox", ["annotation.bbox[*]"], sample_count=1),
+        },
+        2,
+    )
+    calls: list[tuple[str, float]] = []
+    fake = _fake_model(calls)
+    monkeypatch.setattr(vqa, "complete_json", fake)
+    monkeypatch.setattr(grounding, "complete_json", fake)
+    cursors: list[tuple[str, int]] = []
+    original = generation._next_candidate_record
+
+    def wrapped(request, tasks, targets, completed, cursor, handler):
+        cursors.append((handler.__name__, cursor))
+        return original(request, tasks, targets, completed, cursor, handler)
+
+    monkeypatch.setattr(generation, "_next_candidate_record", wrapped)
+    generation.generate_raw_benchmark(request)
+
+    assert ("medbenchagent.generation_vqa", 0) in cursors
+    assert ("medbenchagent.generation_grounding", 0) in cursors
+
+
+def test_each_stage_applies_its_own_three_task_image_limit(tmp_path: Path, monkeypatch) -> None:
+    annotation = {
+        **{f"status_{index}": "benign" for index in range(4)},
+        **{f"bbox_{index}": [1, 2, 8, 9] for index in range(4)},
     }
+    tasks = {
+        **{
+            f"vqa_{index}": _task("letter", [f"annotation.status_{index}"], sample_count=1)
+            for index in range(4)
+        },
+        **{
+            f"grounding_{index}": _task("bbox", [f"annotation.bbox_{index}[*]"], sample_count=1)
+            for index in range(4)
+        },
+    }
+    request = _request(tmp_path, [_record(0, annotation)], tasks, 8)
+    calls: list[tuple[str, float]] = []
+    fake = _fake_model(calls)
+    monkeypatch.setattr(vqa, "complete_json", fake)
+    monkeypatch.setattr(grounding, "complete_json", fake)
+
+    result = generation.generate_raw_benchmark(request)
+    items = _read_items(result.raw_output_path)
+
+    assert len([item for item in items if item["task_id"].startswith("vqa_")]) == 3
+    assert len([item for item in items if item["task_id"].startswith("grounding_")]) == 3
+    assert result.item_count == 6
 
 
-def test_rag_and_generation_require_one_template_and_clean_options() -> None:
-    task = _task("annotation.status", question_templates=["one", "two"])
+def test_grounding_requires_exactly_one_bbox_and_repairs_once(tmp_path: Path, monkeypatch) -> None:
+    task = _task("bbox", ["annotation.bbox[*]"], sample_count=1)
+    request = _request(tmp_path, [_record(0, {"bbox": [1, 2, 8, 9]})], {"grounding": task}, 1)
+    responses = iter(
+        [
+            {"question": "Locate the finding.", "answer": [0, 0, 1, 1]},
+            {"question": "Locate the finding.", "answer": [1, 2, 8, 9]},
+            {"approved": True, "reason": "Faithful."},
+        ]
+    )
+    temperatures: list[float] = []
+
+    def fake(_system: str, _user: str, *, temperature: float = 0) -> dict:
+        temperatures.append(temperature)
+        return next(responses)
+
+    monkeypatch.setattr(grounding, "complete_json", fake)
+    item = _read_items(generation.generate_raw_benchmark(request).raw_output_path)[0]
+
+    assert item["answer"] == [1.0, 2.0, 8.0, 9.0]
+    assert temperatures == [0.7, 0.7, 0]
+
+    multi = _request(
+        tmp_path / "multi",
+        [_record(0, {"boxes": [[1, 2, 8, 9], [10, 11, 20, 21]]})],
+        {"grounding": _task("bbox", ["annotation.boxes[*]"], sample_count=1)},
+        1,
+    )
+    monkeypatch.setattr(grounding, "complete_json", lambda *_args, **_kwargs: pytest.fail("model called"))
+    result = generation.generate_raw_benchmark(multi)
+    assert result.task_counts == {"grounding": 0}
+
+
+def test_stage_shortfall_does_not_block_later_stage(tmp_path: Path, monkeypatch) -> None:
+    request = _request(
+        tmp_path,
+        [_record(0, {"bbox": [1, 2, 8, 9]})],
+        {
+            "vqa": _task("letter", ["annotation.status"], sample_count=1),
+            "grounding": _task("bbox", ["annotation.bbox[*]"], sample_count=1),
+        },
+        2,
+    )
+    monkeypatch.setattr(vqa, "complete_json", lambda *_args, **_kwargs: pytest.fail("VQA model called"))
+    responses = iter(
+        [
+            {"question": "Locate the finding.", "answer": [1, 2, 8, 9]},
+            {"approved": True, "reason": "Faithful."},
+        ]
+    )
+    monkeypatch.setattr(grounding, "complete_json", lambda *_args, **_kwargs: next(responses))
+
+    result = generation.generate_raw_benchmark(request)
+
+    assert result.task_counts == {"vqa": 0, "grounding": 1}
+
+
+def test_free_text_requires_exact_unique_reference_text_and_repairs_once(tmp_path: Path, monkeypatch) -> None:
+    task = _task("free_text", ["annotation.report"], sample_count=1)
+    request = _request(tmp_path, [_record(0, {"report": "Normal study."})], {"report": task}, 1)
+    responses = iter(
+        [
+            {"question": "What is the report?", "answer": "Normal."},
+            {"question": "What is the report?", "answer": "Normal study."},
+            {"approved": True, "reason": "Faithful."},
+        ]
+    )
+    monkeypatch.setattr(free_text, "complete_json", lambda *_args, **_kwargs: next(responses))
+    item = _read_items(generation.generate_raw_benchmark(request).raw_output_path)[0]
+    assert item["answer"] == "Normal study."
+
+    missing = _request(
+        tmp_path / "missing",
+        [_record(0, {"report": ""})],
+        {"report": task},
+        1,
+    )
+    monkeypatch.setattr(free_text, "complete_json", lambda *_args, **_kwargs: pytest.fail("model called"))
+    assert generation.generate_raw_benchmark(missing).item_count == 0
+
+
+def test_all_supporting_fields_must_be_nonempty_and_vqa_options_remain_normalized() -> None:
+    task = _task("letter", ["annotation.status", "annotation.laterality"], options=["A. benign", "B) malignant"])
     request = {
-        "tasks": {"status": task},
+        "tasks": {"vqa": task},
         "target_sample_count": 1,
         "max_tasks_per_image": 3,
         "question_temperature": 0.7,
     }
-    with pytest.raises(ValueError, match="exactly one"):
-        generation._validate_tasks(request)
-
-    task["question_templates"] = ["one"]
-    task["options"] = ["A. benign", "B) malignant"]
     generation._validate_tasks(request)
     assert task["options"] == ["benign", "malignant"]
+    assert not generation._all_supporting_fields_present({"status": "benign", "laterality": ""}, task["supporting_fields"])
+    assert generation._all_supporting_fields_present({"status": "benign", "laterality": False}, task["supporting_fields"])
 
 
-def test_supporting_annotation_requires_meaningful_values() -> None:
-    assert not generation._has_meaningful_value({"status": None})
-    assert not generation._has_meaningful_value({"status": ""})
-    assert not generation._has_meaningful_value({"findings": []})
-    assert not generation._has_meaningful_value({"finding": {}})
-    assert generation._has_meaningful_value({"status": 0})
-    assert generation._has_meaningful_value({"status": False})
-
-
-def test_seeded_candidate_order_is_stable_and_varies_with_seed(tmp_path: Path) -> None:
-    records = [_record(index, {"a": "benign", "b": "benign", "c": "benign"}) for index in range(5)]
-    tasks = {task_id: _task(f"annotation.{task_id}") for task_id in ("a", "b", "c")}
-    zero = _request(tmp_path / "zero", records, tasks, 3, seed=0)
-    one = _request(tmp_path / "one", records, tasks, 3, seed=1)
-    zero_tasks, zero_targets = generation._validate_tasks(zero)
-    one_tasks, one_targets = generation._validate_tasks(one)
-
-    _, first_zero = generation._next_candidate_record(zero, zero_tasks, zero_targets, {key: 0 for key in tasks}, 0)
-    _, second_zero = generation._next_candidate_record(zero, zero_tasks, zero_targets, {key: 0 for key in tasks}, 0)
-    _, first_one = generation._next_candidate_record(one, one_tasks, one_targets, {key: 0 for key in tasks}, 0)
-
-    assert [candidate.task_id for candidate in first_zero] == [candidate.task_id for candidate in second_zero]
-    assert [candidate.task_id for candidate in first_zero] != [candidate.task_id for candidate in first_one]
-
-
-def test_completed_tasks_do_not_enter_candidate_queue(tmp_path: Path) -> None:
-    records = [_record(0, {"a": "benign", "b": "benign"})]
-    tasks = {task_id: _task(f"annotation.{task_id}", sample_count=1) for task_id in ("a", "b")}
-    request = _request(tmp_path, records, tasks, 2)
-    validated, targets = generation._validate_tasks(request)
-
-    _, candidates = generation._next_candidate_record(request, validated, targets, {"a": 1, "b": 0}, 0)
-
-    assert [candidate.task_id for candidate in candidates] == ["b"]
-
-
-def test_failed_or_rejected_candidate_is_replaced_before_image_limit(tmp_path: Path, monkeypatch) -> None:
-    fields = ("a", "b", "c", "failed")
-    tasks = {
-        field: _task(f"annotation.{field}", description=field, sample_count=1)
-        for field in fields
-    }
-    request = _request(tmp_path, [_record(0, {field: "benign" for field in fields})], tasks, 4)
-
-    def fake_complete_json(system: str, _user: str, *, temperature: float = 0) -> dict:
-        if "Task ID: failed" in system or '"description": "failed"' in system:
-            return {"invalid": True}
-        if system.startswith("Review one"):
-            return {"approved": True, "reason": "Faithful."}
-        return {"question": "Which status best describes this image?", "answer": "benign"}
-
-    monkeypatch.setattr(generation, "complete_json", fake_complete_json)
-    result = generation.generate_raw_benchmark(request)
-    items = _read_items(result.raw_output_path)
-
-    assert result.item_count == 3
-    assert {item["task_id"] for item in items} == {"a", "b", "c"}
-
-
-def test_bbox_review_remains_deterministic() -> None:
-    annotation = {"finding": {"bbox": [1, 2, 8, 9]}}
-    candidate = generation._Candidate(
-        "detection",
-        0,
-        {"image_id": "img", "image_path": "img.dicom", "annotation": annotation},
-        generation.project_supporting_annotation(annotation, ["annotation.finding.bbox[*]"]),
-        _task(
-            "annotation.finding.bbox[*]",
-            task_type="open_vqa",
-            response_format="bbox",
-            options=None,
-        ),
+def test_stage_progress_is_resumed_and_cleaned_only_after_raw_merge(tmp_path: Path) -> None:
+    task = _task("letter", ["annotation.status"], sample_count=1)
+    request = _request(tmp_path, [_record(0, {"status": "benign"})], {"vqa": task}, 1)
+    output_dir = Path(request["output_directory"])
+    output_dir.mkdir(parents=True)
+    progress = output_dir / "benchmark_items.vqa.progress.jsonl"
+    progress.write_text(
+        json.dumps(
+            {
+                "id": "existing",
+                "task_id": "vqa",
+                "image_id": "img-0",
+                "image_path": "images/0.dicom",
+                "question": "Which status?",
+                "options": ["benign", "malignant"],
+                "answer": "A",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
     )
-    approved, _reason = generation._review(
-        candidate,
-        {
-            "question": "Locate the finding.",
-            "answer": [1.0, 2.0, 8.0, 9.0],
-            "source_refs": [{"field": "annotation.finding.bbox[*]", "instance_index": None}],
-        },
-        {"language": "en"},
-    )
-    assert approved
 
+    state = generation.initialize_generation(request)
+    assert generation.generation_done(state)
+    result = generation.finalize_generation(request, state)
 
-def test_free_text_generation_retains_annotation_reference_validation(tmp_path: Path, monkeypatch) -> None:
-    task = _task(
-        "annotation.report",
-        task_type="open_vqa",
-        response_format="free_text",
-        options=None,
-    )
-    request = _request(tmp_path, [_record(0, {"report": "Normal study."})], {"report": task}, 1)
-
-    def fake_complete_json(system: str, _user: str, *, temperature: float = 0) -> dict:
-        if system.startswith("Independently"):
-            return {"approved": True, "reason": "Faithful."}
-        return {
-            "question": "Generate the report.",
-            "answer": "Normal study.",
-            "source_refs": [{"field": "annotation.report", "instance_index": None}],
-        }
-
-    monkeypatch.setattr(generation, "complete_json", fake_complete_json)
-    item = _read_items(generation.generate_raw_benchmark(request).raw_output_path)[0]
-
-    assert item["options"] is None
-    assert item["answer"] == "Normal study."
+    assert _read_items(result.raw_output_path)[0]["id"] == "existing"
+    assert not progress.exists()

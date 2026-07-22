@@ -102,20 +102,21 @@ working Blueprint task. The embedded fields are `question_templates`,
 Natural-language review can revise one or more task designs without changing other
 Blueprint tasks.
 
-The generator traverses source rows in a deterministic seeded order and projects only
-each unfinished task's approved `supporting_fields`, preserving array source indices.
-For each image, code removes completed or unsupported tasks, deterministically shuffles
-the rest from the seed and image ID, and attempts them one at a time until three are
-accepted. Letter VQA generation receives only its task context and projected annotation;
-it returns one question and one exact option, then receives an independent review.
-Bbox items retain their deterministic coordinate check, while free-text items retain one
-model review. Failed attempts do not consume the per-image acceptance limit.
+The generator runs three independent seeded scans in a fixed order: letter VQA,
+Grounding bbox, then direct-reference free text. Each stage begins from the database
+start, projects only unfinished tasks' approved `supporting_fields`, and independently
+accepts up to three tasks per image after a stable seed/image-ID shuffle. Letter VQA
+normalizes one exact option; Grounding accepts only candidates with one valid annotated
+box; free text accepts only one direct reference string. Each stage has its own prompt,
+validator, review, and temporary progress file; failures do not consume the per-image
+acceptance limit.
 
-Accepted items are merged idempotently into `benchmark_items.progress.jsonl` using
+Accepted items are merged idempotently into a stage-specific progress JSONL using
 deterministic item IDs. The generation subgraph checkpoints after every processed row,
-so replay after a checkpoint/file mismatch safely deduplicates accepted items. If the
-dataset is exhausted before every target is reached, generation still succeeds with
-the actual items and records the per-task shortfall in graph state.
+so replay resumes the active stage safely. After all stages finish, their progress is
+merged in stage order into raw JSONL and the temporary files are removed. If a dataset
+is exhausted before every target is reached, generation still succeeds with the actual
+items and records per-task shortfalls in graph state.
 
 ## Progress and trace display
 

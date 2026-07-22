@@ -409,6 +409,8 @@ def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, m
         return {
             "generation_target_counts": {"view": 2},
             "generation_completed_counts": {"view": 0},
+            "generation_stage_index": 0,
+            "generation_stage": "vqa",
             "generation_cursor": 0,
             "generation_progress_path": str(tmp_path / "benchmark_items.progress.jsonl"),
             "generation_rejections": {},
@@ -418,10 +420,13 @@ def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, m
     def advance(_request: dict, state: dict) -> dict:
         nonlocal calls
         calls += 1
-        return {
+        update = {
             "generation_completed_counts": {"view": calls},
             "generation_cursor": state["generation_cursor"] + 1,
         }
+        if calls == 2:
+            update |= {"generation_stage_index": 3, "generation_stage": "", "generation_exhausted": True}
+        return update
 
     def finalize(_request: dict, state: dict) -> GenerationResult:
         return GenerationResult(
@@ -458,8 +463,9 @@ def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, m
         tmp_path / "benchmark_items.progress.jsonl"
     )
     assert private_states[0]["generation_target_counts"] == {"view": 2}
+    assert private_states[0]["generation_stage"] == ""
     assert private_states[0]["generation_rejections"] == {}
-    assert private_states[0]["generation_exhausted"] is False
+    assert private_states[0]["generation_exhausted"] is True
     assert len(history) >= 5
 
 
@@ -554,6 +560,8 @@ def test_generation_subgraph_streams_custom_progress(tmp_path: Path, monkeypatch
         return {
             "generation_target_counts": {"view": 1},
             "generation_completed_counts": {"view": 0},
+            "generation_stage_index": 0,
+            "generation_stage": "vqa",
             "generation_cursor": 0,
             "generation_progress_path": str(tmp_path / "benchmark_items.progress.jsonl"),
             "generation_rejections": {"view": 0},
@@ -561,7 +569,13 @@ def test_generation_subgraph_streams_custom_progress(tmp_path: Path, monkeypatch
         }
 
     def advance(_request: dict, _state: dict) -> dict:
-        return {"generation_completed_counts": {"view": 1}, "generation_cursor": 1}
+        return {
+            "generation_completed_counts": {"view": 1},
+            "generation_stage_index": 3,
+            "generation_stage": "",
+            "generation_cursor": 1,
+            "generation_exhausted": True,
+        }
 
     def finalize(_request: dict, _state: dict) -> GenerationResult:
         return GenerationResult(
@@ -583,10 +597,11 @@ def test_generation_subgraph_streams_custom_progress(tmp_path: Path, monkeypatch
     assert events == [
         {
             "kind": "generation_progress",
+            "stage": "",
             "cursor": 1,
             "completed_counts": {"view": 1},
             "target_counts": {"view": 1},
             "rejections": {"view": 0},
-            "exhausted": False,
+            "exhausted": True,
         }
     ]

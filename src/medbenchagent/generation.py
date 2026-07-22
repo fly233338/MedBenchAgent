@@ -1,4 +1,4 @@
-"""Resumable model-driven benchmark generation from approved Blueprint tasks."""
+"""Shared resumable orchestration for staged benchmark generation."""
 
 from __future__ import annotations
 
@@ -13,57 +13,20 @@ from typing import Any
 
 import duckdb
 
+from medbenchagent import generation_free_text, generation_grounding, generation_vqa
 from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
-from medbenchagent.llm import ModelUnavailable, complete_json
+from medbenchagent.llm import ModelUnavailable
 from medbenchagent.sample_counts import distribute_sample_counts
 
 DEFAULT_MAX_TASKS_PER_IMAGE = 3
 DEFAULT_QUESTION_TEMPERATURE = 0.7
 FETCH_BATCH_SIZE = 128
 _MISSING = object()
-
-VQA_GENERATION_PROMPT = """
-Generate one letter-choice question for a medical image VQA benchmark.
-
-Context:
-- Language: {language}
-- Modality: {modality}
-- Task ID: {task_id}
-- Task definition: {task_definition}
-- Generation logic: {generation_logic}
-- Canonical question: {canonical_question}
-- Candidate options: {candidate_options}
-- Supporting annotation: {supporting_annotation}
-
-Requirements:
-1. Write one substantial semantic paraphrase of the canonical question, not a trivial word substitution.
-2. The question must preserve the task meaning and be answerable from the image and candidate options only.
-3. Do not mention reports, annotations, labels, or unsupported clinical details.
-4. Do not reveal or hint at the correct answer.
-5. Normalize the annotation-supported answer to one exact candidate option; do not infer beyond the annotation.
-
-Return JSON only:
-{{"question": "question stem", "answer": "one exact candidate option"}}
-""".strip()
-
-VQA_REVIEW_PROMPT = """
-Review one generated letter-choice VQA item.
-
-Context:
-- Task definition: {task_definition}
-- Generation logic: {generation_logic}
-- Candidate options: {candidate_options}
-- Supporting annotation: {supporting_annotation}
-- Question: {question}
-- Answer: {answer}
-
-Approve only when:
-1. The question does not reveal or clearly hint at the answer.
-2. The answer is exactly supported by the annotation.
-
-Return JSON only:
-{{"approved": true, "reason": "short reason"}}
-""".strip()
+_STAGES = (
+    ("vqa", "letter", generation_vqa),
+    ("grounding", "bbox", generation_grounding),
+    ("free_text", "free_text", generation_free_text),
+)
 
 
 @dataclass(frozen=True)
@@ -162,7 +125,12 @@ def _task_targets(request: GenerationRequest) -> dict[str, int]:
 def _normalized_options(options: object) -> list[str]:
     if not isinstance(options, list):
         return []
-    return [re.sub(r"^\s*[A-Za-z]\s*[.)]\s*", "", option).strip() if isinstance(option, str) else "" for option in options]
+    return [
+        re.sub(r"^\s*[A-Za-z]\s*[.)]\s*", "", option).strip()
+        if isinstance(option, str)
+        else ""
+        for option in options
+    ]
 
 
 def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask], dict[str, int]]:
@@ -189,11 +157,7 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
                 raise ValueError(f"{task_id}: {field} must be a non-empty string.")
         options = _normalized_options(task.get("options"))
         if response_format == "letter":
-            if (
-                not 2 <= len(options) <= 26
-                or not all(options)
-                or len(set(options)) != len(options)
-            ):
+            if not 2 <= len(options) <= 26 or not all(options) or len(set(options)) != len(options):
                 raise ValueError(f"{task_id}: letter tasks need 2-26 unique options.")
             task["options"] = options
         elif task.get("options") is not None:
@@ -202,269 +166,13 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
     if not isinstance(max_tasks, int) or isinstance(max_tasks, bool) or max_tasks <= 0:
         raise ValueError("max_tasks_per_image must be a positive integer.")
     temperature = request.get("question_temperature", DEFAULT_QUESTION_TEMPERATURE)
-    if not isinstance(temperature, (int, float)) or isinstance(temperature, bool) or not 0 <= temperature <= 2:
+    if (
+        not isinstance(temperature, (int, float))
+        or isinstance(temperature, bool)
+        or not 0 <= temperature <= 2
+    ):
         raise ValueError("question_temperature must be between 0 and 2.")
     return tasks, targets
-
-
-def _has_source_index(value: object, index: int) -> bool:
-    if isinstance(value, dict):
-        if value.get("_source_index") == index:
-            return True
-        return any(_has_source_index(nested, index) for nested in value.values())
-    if isinstance(value, list):
-        return any(_has_source_index(nested, index) for nested in value)
-    return False
-
-
-def _resolve_source_value(
-    annotation: dict[str, Any], field: str, instance_index: int | None
-) -> object:
-    """Resolve one approved annotation field using its object-array instance index."""
-    current: object = annotation
-    parent_array_seen = False
-    segments = field.split(".")[1:]
-    for position, segment in enumerate(segments):
-        if not isinstance(current, dict):
-            return _MISSING
-        is_array = segment.endswith("[*]")
-        key = segment.removesuffix("[*]")
-        if key not in current:
-            return _MISSING
-        current = current[key]
-        if not is_array or position == len(segments) - 1:
-            continue
-        if (
-            parent_array_seen
-            or instance_index is None
-            or not isinstance(current, list)
-            or instance_index >= len(current)
-        ):
-            return _MISSING
-        current = current[instance_index]
-        parent_array_seen = True
-    return current
-
-
-def _normalized_bbox(value: object) -> list[float] | None:
-    if (
-        not isinstance(value, list)
-        or len(value) != 4
-        or not all(
-            isinstance(coordinate, (int, float)) and not isinstance(coordinate, bool)
-            for coordinate in value
-        )
-    ):
-        return None
-    bbox = [float(coordinate) for coordinate in value]
-    if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
-        return None
-    return bbox
-
-
-def _review_bbox(candidate: _Candidate, generated: dict[str, Any]) -> tuple[bool, str]:
-    referenced_boxes: list[list[float]] = []
-    for ref in generated["source_refs"]:
-        value = _resolve_source_value(
-            candidate.record["annotation"],
-            str(ref["field"]),
-            ref["instance_index"] if isinstance(ref["instance_index"], int) else None,
-        )
-        bbox = _normalized_bbox(value)
-        if bbox is not None:
-            referenced_boxes.append(bbox)
-    if len(referenced_boxes) != 1:
-        return False, "Detection requires exactly one unambiguous bbox source reference."
-    if referenced_boxes[0] != generated["answer"]:
-        return False, "Detection answer does not match its referenced annotation bbox."
-    return True, "Detection answer matches its referenced annotation bbox."
-
-
-def _validate_generated(candidate: _Candidate, response: object) -> dict[str, Any]:
-    if not isinstance(response, dict) or set(response) != {"question", "answer", "source_refs"}:
-        raise ValueError("Generated item must contain question, answer, and source_refs.")
-    question = response["question"]
-    if not isinstance(question, str) or not question.strip():
-        raise ValueError("Generated question must be a non-empty string.")
-    refs = response["source_refs"]
-    supporting = set(candidate.task["supporting_fields"])
-    if not isinstance(refs, list) or not refs:
-        raise ValueError("Generated source_refs must be a non-empty list.")
-    normalized_refs: list[dict[str, object]] = []
-    for ref in refs:
-        if not isinstance(ref, dict) or set(ref) != {"field", "instance_index"}:
-            raise ValueError("Each source ref must contain field and instance_index.")
-        field = ref["field"]
-        index = ref["instance_index"]
-        if field not in supporting or (index is not None and (not isinstance(index, int) or index < 0)):
-            raise ValueError("Source refs must use approved fields and non-negative indices.")
-        field_projection = _project_value(candidate.record["annotation"], field.split(".")[1:])
-        if field_projection is _MISSING:
-            raise ValueError("Source refs must identify fields present in this annotation.")
-        has_parent_array = any(segment.endswith("[*]") for segment in field.split(".")[1:-1])
-        if has_parent_array and index is None:
-            raise ValueError("Source refs for object-array fields require instance_index.")
-        if isinstance(index, int) and not _has_source_index(field_projection, index):
-            raise ValueError("Source ref instance_index does not exist in supporting annotation.")
-        normalized_refs.append({"field": field, "instance_index": index})
-    answer = response["answer"]
-    response_format = candidate.task["response_format"]
-    if response_format == "letter":
-        if not isinstance(answer, str) or answer not in candidate.task["options"]:
-            raise ValueError("Letter answer must be one exact option.")
-        normalized_answer: str | list[float] = answer
-    elif response_format == "bbox":
-        if (
-            not isinstance(answer, list)
-            or len(answer) != 4
-            or not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in answer)
-        ):
-            raise ValueError("Bbox answer must contain four numbers.")
-        normalized_answer = [float(value) for value in answer]
-        if normalized_answer[2] <= normalized_answer[0] or normalized_answer[3] <= normalized_answer[1]:
-            raise ValueError("Bbox answer must be valid xyxy coordinates.")
-    else:
-        if not isinstance(answer, str) or not answer.strip():
-            raise ValueError("Free-text answer must be a non-empty string.")
-        normalized_answer = answer.strip()
-    return {
-        "question": question.strip(),
-        "answer": normalized_answer,
-        "source_refs": normalized_refs,
-    }
-
-
-def _task_definition(candidate: _Candidate) -> str:
-    return json.dumps(
-        {
-            "description": candidate.task["description"],
-            "require": candidate.task["require"],
-        },
-        ensure_ascii=False,
-    )
-
-
-def _letter_generation_prompt(candidate: _Candidate, benchmark_info: dict[str, object]) -> str:
-    return VQA_GENERATION_PROMPT.format(
-        language=benchmark_info.get("language", ""),
-        modality=benchmark_info.get("modality", ""),
-        task_id=candidate.task_id,
-        task_definition=_task_definition(candidate),
-        generation_logic=candidate.task["generation_logic"],
-        canonical_question=candidate.task["question_templates"][0],
-        candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
-        supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
-    )
-
-
-def _validate_letter_response(candidate: _Candidate, response: object) -> dict[str, Any]:
-    if not isinstance(response, dict) or set(response) != {"question", "answer"}:
-        raise ValueError("Letter generation must contain only question and answer.")
-    question = response["question"]
-    answer = response["answer"]
-    if not isinstance(question, str) or not question.strip():
-        raise ValueError("Generated question must be a non-empty string.")
-    if not isinstance(answer, str) or answer not in candidate.task["options"]:
-        raise ValueError("Letter answer must be one exact option.")
-    return {"question": question.strip(), "answer": answer}
-
-
-def _legacy_generation_prompt(candidate: _Candidate, benchmark_info: dict[str, object]) -> tuple[str, str]:
-    system = (
-        "Generate one medical benchmark item. Return exactly "
-        '{"question":"...","answer":...,"source_refs":[{"field":"approved field",'
-        '"instance_index":null}]}. Use only the supplied task and supporting annotation. Do not reveal '
-        "the answer or invent facts. For bbox tasks copy one valid xyxy box and identify its object-array "
-        "source index. For free text copy or organize only supplied evidence."
-    )
-    user = (
-        f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
-        f"Task ID: {candidate.task_id}\nTask: {json.dumps(candidate.task, ensure_ascii=False)}\n"
-        f"Supporting annotation: {json.dumps(candidate.supporting_annotation, ensure_ascii=False)}"
-    )
-    return system, user
-
-
-def _generate_candidate(
-    candidate: _Candidate, benchmark_info: dict[str, object], question_temperature: float
-) -> dict[str, Any]:
-    if candidate.task["response_format"] == "letter":
-        system = _letter_generation_prompt(candidate, benchmark_info)
-        try:
-            response = complete_json(system, "", temperature=question_temperature)
-            return _validate_letter_response(candidate, response)
-        except ValueError as first_error:
-            repaired = complete_json(
-                "Repair one letter-choice VQA response. Return JSON only.\n"
-                f"{system}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
-                f"Contract error: {first_error}",
-                "",
-                temperature=question_temperature,
-            )
-            return _validate_letter_response(candidate, repaired)
-
-    system, user = _legacy_generation_prompt(candidate, benchmark_info)
-    try:
-        response = complete_json(system, user)
-        return _validate_generated(candidate, response)
-    except ValueError as first_error:
-        repaired = complete_json(
-            "Repair one benchmark generation response. Return JSON only.",
-            f"{user}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
-            f"Contract error: {first_error}\nRequired contract: {system}",
-        )
-        return _validate_generated(candidate, repaired)
-
-
-def _review(
-    candidate: _Candidate,
-    generated: dict[str, Any],
-    benchmark_info: dict[str, object],
-) -> tuple[bool, str]:
-    if candidate.task["response_format"] == "bbox":
-        return _review_bbox(candidate, generated)
-    if candidate.task["response_format"] == "letter":
-        response = complete_json(
-            VQA_REVIEW_PROMPT.format(
-                task_definition=_task_definition(candidate),
-                generation_logic=candidate.task["generation_logic"],
-                candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
-                supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
-                question=generated["question"],
-                answer=generated["answer"],
-            ),
-            "",
-        )
-        approved = (
-            isinstance(response, dict)
-            and set(response) == {"approved", "reason"}
-            and response.get("approved") is True
-            and isinstance(response.get("reason"), str)
-        )
-        reason = response.get("reason") if isinstance(response, dict) else "Invalid review response."
-        return approved, str(reason)
-    try:
-        response = complete_json(
-            "Independently audit one generated medical benchmark item. Return exactly "
-            '{"approved":true,"reason":"..."}, using false when rejected. Approve only when the question follows the '
-            "task templates and generation logic, the answer is fully supported by the supplied annotation, "
-            "normalization is medically faithful, bbox target and coordinates refer to the same finding, "
-            "no unsupported content is added, and the question does not reveal its answer.",
-            f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
-            f"Task: {json.dumps(candidate.task, ensure_ascii=False)}\n"
-            f"Supporting annotation: {json.dumps(candidate.supporting_annotation, ensure_ascii=False)}\n"
-            f"Generated item: {json.dumps(generated, ensure_ascii=False)}",
-        )
-    except ModelUnavailable:
-        return False, "Review model was unavailable."
-    approved = (
-        isinstance(response, dict)
-        and set(response) == {"approved", "reason"}
-        and response.get("approved") is True
-        and isinstance(response.get("reason"), str)
-    )
-    reason = response.get("reason") if isinstance(response, dict) else "Invalid review response."
-    return approved, str(reason)
 
 
 def _item_identity(candidate: _Candidate) -> str:
@@ -472,24 +180,17 @@ def _item_identity(candidate: _Candidate) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
-def _build_item(candidate: _Candidate, generated: dict[str, Any]) -> BenchmarkItem:
-    response_format = candidate.task["response_format"]
-    item: BenchmarkItem = {
+def _build_item(candidate: _Candidate, generated: dict[str, Any], handler: Any) -> BenchmarkItem:
+    options, answer = handler.encode_answer(candidate, generated)
+    return {
         "id": _item_identity(candidate),
         "task_id": candidate.task_id,
         "image_id": candidate.record["image_id"],
         "image_path": candidate.record["image_path"],
         "question": generated["question"],
-        "options": None,
-        "answer": generated["answer"],
+        "options": options,
+        "answer": answer,
     }
-    if response_format == "letter":
-        answer_value = generated["answer"]
-        options = list(candidate.task["options"])
-        assert isinstance(answer_value, str)
-        item["options"] = options
-        item["answer"] = chr(ord("A") + options.index(answer_value))
-    return item
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -516,9 +217,7 @@ def _progress_counts(items: list[dict[str, Any]], task_ids: list[str]) -> dict[s
 
 
 def _merge_progress(
-    path: Path,
-    additions: list[BenchmarkItem],
-    task_order: dict[str, int],
+    path: Path, additions: list[BenchmarkItem], task_order: dict[str, int]
 ) -> list[dict[str, Any]]:
     by_id = {str(item["id"]): item for item in _read_jsonl(path)}
     by_id.update({item["id"]: item for item in additions})
@@ -561,12 +260,20 @@ def _shuffle_candidates(candidates: list[_Candidate], seed: int, image_id: str) 
     random.Random(int.from_bytes(digest, "big")).shuffle(candidates)
 
 
+def _all_supporting_fields_present(annotation: dict[str, Any], supporting_fields: list[str]) -> bool:
+    return all(
+        _has_meaningful_value(project_supporting_annotation(annotation, [field]))
+        for field in supporting_fields
+    )
+
+
 def _next_candidate_record(
     request: GenerationRequest,
     tasks: dict[str, BlueprintTask],
     targets: dict[str, int],
     completed: dict[str, int],
     cursor: int,
+    handler: Any,
 ) -> tuple[int, list[_Candidate] | None]:
     database = request["dataset_access_manifest"].get("duckdb_path")
     if not isinstance(database, str):
@@ -589,13 +296,12 @@ def _next_candidate_record(
                 for task_id, task in tasks.items():
                     if completed[task_id] >= targets[task_id]:
                         continue
-                    projected = project_supporting_annotation(
-                        record["annotation"], task["supporting_fields"]
-                    )
-                    if _has_meaningful_value(projected):
-                        candidates.append(
-                            _Candidate(task_id, record["_source_row"], record, projected, task)
-                        )
+                    if not _all_supporting_fields_present(record["annotation"], task["supporting_fields"]):
+                        continue
+                    projected = project_supporting_annotation(record["annotation"], task["supporting_fields"])
+                    candidate = _Candidate(task_id, record["_source_row"], record, projected, task)
+                    if _has_meaningful_value(projected) and handler.supports(candidate):
+                        candidates.append(candidate)
                 if candidates:
                     _shuffle_candidates(candidates, seed, str(record["image_id"]))
                     return cursor, candidates
@@ -605,48 +311,107 @@ def _next_candidate_record(
         connection.close()
 
 
-def initialize_generation(request: GenerationRequest) -> dict[str, Any]:
-    """Validate a request and initialize compact resumable generation state."""
-    tasks, targets = _validate_tasks(request)
-    output_dir = Path(request["output_directory"])
-    progress_path = output_dir / "benchmark_items.progress.jsonl"
-    existing = _read_jsonl(progress_path)
-    completed = _progress_counts(existing, list(tasks))
+def _stage_progress_path(output_dir: Path, phase: str) -> Path:
+    return output_dir / f"benchmark_items.{phase}.progress.jsonl"
+
+
+def _stage_tasks(
+    tasks: dict[str, BlueprintTask], targets: dict[str, int], response_format: str
+) -> dict[str, BlueprintTask]:
     return {
-        "generation_target_counts": targets,
-        "generation_completed_counts": completed,
-        "generation_cursor": 0,
-        "generation_progress_path": str(progress_path),
-        "generation_rejections": {},
-        "generation_exhausted": False,
+        task_id: task
+        for task_id, task in tasks.items()
+        if task["response_format"] == response_format and targets[task_id] > 0
     }
 
 
+def _all_completed_counts(
+    output_dir: Path, tasks: dict[str, BlueprintTask], targets: dict[str, int]
+) -> dict[str, int]:
+    counts = {task_id: 0 for task_id in tasks}
+    for phase, response_format, _handler in _STAGES:
+        stage_tasks = _stage_tasks(tasks, targets, response_format)
+        for task_id, count in _progress_counts(
+            _read_jsonl(_stage_progress_path(output_dir, phase)), list(stage_tasks)
+        ).items():
+            counts[task_id] = count
+    return counts
+
+
+def _enter_stage(
+    request: GenerationRequest,
+    tasks: dict[str, BlueprintTask],
+    targets: dict[str, int],
+    completed: dict[str, int],
+    stage_index: int,
+    rejections: dict[str, int],
+) -> dict[str, Any]:
+    output_dir = Path(request["output_directory"])
+    while stage_index < len(_STAGES):
+        phase, response_format, _handler = _STAGES[stage_index]
+        stage_tasks = _stage_tasks(tasks, targets, response_format)
+        if stage_tasks and not all(completed[task_id] >= targets[task_id] for task_id in stage_tasks):
+            return {
+                "generation_stage_index": stage_index,
+                "generation_stage": phase,
+                "generation_cursor": 0,
+                "generation_progress_path": str(_stage_progress_path(output_dir, phase)),
+                "generation_completed_counts": completed,
+                "generation_rejections": rejections,
+                "generation_exhausted": False,
+            }
+        stage_index += 1
+    return {
+        "generation_stage_index": len(_STAGES),
+        "generation_stage": "",
+        "generation_cursor": 0,
+        "generation_progress_path": "",
+        "generation_completed_counts": completed,
+        "generation_rejections": rejections,
+        "generation_exhausted": True,
+    }
+
+
+def initialize_generation(request: GenerationRequest) -> dict[str, Any]:
+    """Validate a request and initialize the first resumable generation stage."""
+    tasks, targets = _validate_tasks(request)
+    completed = _all_completed_counts(Path(request["output_directory"]), tasks, targets)
+    state = {
+        "generation_target_counts": targets,
+        "generation_completed_counts": completed,
+        "generation_rejections": {},
+    }
+    return state | _enter_stage(request, tasks, targets, completed, 0, {})
+
+
 def generation_done(state: dict[str, Any]) -> bool:
-    targets = state["generation_target_counts"]
-    completed = state["generation_completed_counts"]
-    return bool(state.get("generation_exhausted")) or all(
-        completed[task_id] >= target for task_id, target in targets.items()
+    return bool(state.get("generation_exhausted")) and int(state.get("generation_stage_index", 0)) >= len(
+        _STAGES
     )
 
 
 def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dict[str, Any]:
-    """Process one model-worthy database record and return the next checkpoint state."""
+    """Process one record in the active format stage, then advance stages as needed."""
     tasks, targets = _validate_tasks(request)
-    progress_path = Path(state["generation_progress_path"])
-    progress = _read_jsonl(progress_path)
-    completed = _progress_counts(progress, list(tasks))
-    cursor, candidates = _next_candidate_record(
-        request, tasks, targets, completed, int(state["generation_cursor"])
-    )
+    output_dir = Path(request["output_directory"])
+    completed = _all_completed_counts(output_dir, tasks, targets)
     rejections = dict(state.get("generation_rejections", {}))
+    stage_index = int(state["generation_stage_index"])
+    if stage_index >= len(_STAGES):
+        return _enter_stage(request, tasks, targets, completed, stage_index, rejections)
+
+    phase, response_format, handler = _STAGES[stage_index]
+    stage_tasks = _stage_tasks(tasks, targets, response_format)
+    cursor, candidates = _next_candidate_record(
+        request,
+        stage_tasks,
+        targets,
+        completed,
+        int(state["generation_cursor"]),
+        handler,
+    )
     if candidates is None:
-        return {
-            "generation_cursor": cursor,
-            "generation_completed_counts": completed,
-            "generation_rejections": rejections,
-            "generation_exhausted": True,
-        }
+        return _enter_stage(request, tasks, targets, completed, stage_index + 1, rejections)
 
     accepted: list[BenchmarkItem] = []
     max_tasks = int(request.get("max_tasks_per_image", DEFAULT_MAX_TASKS_PER_IMAGE))
@@ -655,54 +420,74 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
         if len(accepted) >= max_tasks:
             break
         try:
-            generated = _generate_candidate(candidate, request["benchmark_info"], temperature)
+            generated = handler.generate(candidate, request["benchmark_info"], temperature)
         except ModelUnavailable:
-            rejections["generation_model_unavailable"] = rejections.get(
-                "generation_model_unavailable", 0
+            rejections[f"{phase}_generation_model_unavailable"] = rejections.get(
+                f"{phase}_generation_model_unavailable", 0
             ) + 1
             continue
         except ValueError:
-            rejections["generation_contract"] = rejections.get("generation_contract", 0) + 1
+            rejections[f"{phase}_generation_contract"] = rejections.get(
+                f"{phase}_generation_contract", 0
+            ) + 1
             continue
         try:
-            approved, _reason = _review(candidate, generated, request["benchmark_info"])
+            approved, _reason = handler.review(candidate, generated, request["benchmark_info"])
         except ModelUnavailable:
-            rejections["review_model_unavailable"] = rejections.get("review_model_unavailable", 0) + 1
+            rejections[f"{phase}_review_model_unavailable"] = rejections.get(
+                f"{phase}_review_model_unavailable", 0
+            ) + 1
             continue
         if approved:
-            accepted.append(_build_item(candidate, generated))
+            accepted.append(_build_item(candidate, generated, handler))
         else:
-            rejections["review_rejected"] = rejections.get("review_rejected", 0) + 1
+            rejections[f"{phase}_review_rejected"] = rejections.get(
+                f"{phase}_review_rejected", 0
+            ) + 1
+
+    progress_path = _stage_progress_path(output_dir, phase)
     if accepted:
-        progress = _merge_progress(
-            progress_path, accepted, {task_id: index for index, task_id in enumerate(tasks)}
-        )
-        completed = _progress_counts(progress, list(tasks))
+        _merge_progress(progress_path, accepted, {task_id: index for index, task_id in enumerate(stage_tasks)})
+        completed = _all_completed_counts(output_dir, tasks, targets)
+    if all(completed[task_id] >= targets[task_id] for task_id in stage_tasks):
+        return _enter_stage(request, tasks, targets, completed, stage_index + 1, rejections)
     return {
+        "generation_stage_index": stage_index,
+        "generation_stage": phase,
         "generation_cursor": cursor,
+        "generation_progress_path": str(progress_path),
         "generation_completed_counts": completed,
         "generation_rejections": rejections,
+        "generation_exhausted": False,
     }
 
 
 def finalize_generation(request: GenerationRequest, state: dict[str, Any]) -> GenerationResult:
-    """Materialize the immutable raw JSONL from resumable progress."""
+    """Atomically merge staged progress into raw JSONL and remove temporary files."""
     tasks, targets = _validate_tasks(request)
-    progress = _read_jsonl(Path(state["generation_progress_path"]))
+    output_dir = Path(request["output_directory"])
     kept: list[dict[str, Any]] = []
     counts = {task_id: 0 for task_id in tasks}
-    for item in progress:
-        task_id = str(item.get("task_id"))
-        if task_id in targets and counts[task_id] < targets[task_id]:
-            kept.append(item)
-            counts[task_id] += 1
-    output = Path(request["output_directory"]) / "benchmark_items.raw.jsonl"
+    progress_paths: list[Path] = []
+    for phase, response_format, _handler in _STAGES:
+        progress_path = _stage_progress_path(output_dir, phase)
+        progress_paths.append(progress_path)
+        stage_tasks = _stage_tasks(tasks, targets, response_format)
+        for item in _read_jsonl(progress_path):
+            task_id = str(item.get("task_id"))
+            if task_id in stage_tasks and counts[task_id] < targets[task_id]:
+                kept.append(item)
+                counts[task_id] += 1
+    output = output_dir / "benchmark_items.raw.jsonl"
     _write_jsonl(output, kept)
+    for progress_path in progress_paths:
+        if progress_path.exists():
+            progress_path.unlink()
     return GenerationResult(str(output), len(kept), counts)
 
 
 def generate_raw_benchmark(request: GenerationRequest) -> GenerationResult:
-    """Run the resumable generator synchronously for direct callers."""
+    """Run the resumable three-stage generator synchronously for direct callers."""
     state = initialize_generation(request)
     while not generation_done(state):
         state.update(advance_generation(request, state))

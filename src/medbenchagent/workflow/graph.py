@@ -106,6 +106,8 @@ class GenerationGraphState(TypedDict, total=False):
     generation_request: GenerationRequest
     generation_target_counts: dict[str, int]
     generation_completed_counts: dict[str, int]
+    generation_stage_index: int
+    generation_stage: str
     generation_cursor: int
     generation_progress_path: str
     generation_rejections: dict[str, int]
@@ -712,6 +714,7 @@ def _generation_step_node(state: GenerationGraphState) -> dict[str, Any]:
     _emit_custom_event(
         {
             "kind": "generation_progress",
+            "stage": update.get("generation_stage", state.get("generation_stage", "")),
             "cursor": update.get("generation_cursor", state["generation_cursor"]),
             "completed_counts": completed_counts,
             "target_counts": state["generation_target_counts"],
