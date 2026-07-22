@@ -34,6 +34,11 @@ def test_validate_task_design_accepts_only_embedded_rag_fields() -> None:
         pdf_rag.validate_task_design("view", _task(), _design() | {"validation_rules": []})
     with pytest.raises(ValueError, match="options"):
         pdf_rag.validate_task_design("view", _task(), _design() | {"options": ["CC"]})
+    with pytest.raises(ValueError, match="exactly one"):
+        pdf_rag.validate_task_design("view", _task(), _design() | {"question_templates": ["one", "two"]})
+    assert pdf_rag.validate_task_design(
+        "view", _task(), _design() | {"options": ["A. CC", "B) MLO"]}
+    )["options"] == ["CC", "MLO"]
 
 
 def test_write_task_design_replaces_only_rag_fields_atomically(tmp_path: Path) -> None:

@@ -10,7 +10,7 @@ from medbenchagent.dataset import prepare_annotation_dataset
 def _record(index: int, annotation: dict) -> dict:
     return {
         "image_id": f"img-{index}",
-        "image_path": f"images/{index}.png",
+        "image_path": f"images/{index}.dicom",
         "patient_id": None,
         "case_id": None,
         "study_id": None,
@@ -18,19 +18,20 @@ def _record(index: int, annotation: dict) -> dict:
     }
 
 
-def _task(response_format: str, supporting_fields: list[str], **extra) -> dict:
+def _task(field: str, **extra) -> dict:
     return {
-        "task_type": "close_vqa" if response_format == "letter" else "open_vqa",
-        "response_format": response_format,
-        "description": "Test task",
-        "require": "Approved annotation",
+        "task_type": "close_vqa",
+        "response_format": "letter",
+        "description": "Identify the status",
+        "require": "Use the approved annotation",
         "metric": "accuracy",
-        "supporting_fields": supporting_fields,
+        "supporting_fields": [field],
         "dataset_support_reason": "Available.",
-        "question_templates": ["Generate one question."],
-        "generation_logic": "Use only the approved annotation.",
-        "medical_task_description": "This assesses recognition; references support terminology.",
+        "question_templates": ["What is the status shown in this image?"],
+        "generation_logic": "Normalize only the approved annotation.",
+        "medical_task_description": "Recognition task.",
         "citations": [],
+        "options": ["benign", "malignant"],
         **extra,
     }
 
@@ -38,27 +39,17 @@ def _task(response_format: str, supporting_fields: list[str], **extra) -> dict:
 def _request(tmp_path: Path, records: list[dict], tasks: dict, target: int, seed: int = 0) -> dict:
     tmp_path.mkdir(parents=True, exist_ok=True)
     annotation_path = tmp_path / "annotation.jsonl"
-    annotation_path.write_text(
-        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
-    )
+    annotation_path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
     _profile, manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
     return {
-        "benchmark_info": {"language": "en"},
+        "benchmark_info": {"language": "en", "modality": "mammography"},
         "dataset_access_manifest": manifest,
         "tasks": tasks,
         "target_sample_count": target,
         "seed": seed,
-        "balance_answer_positions": True,
+        "max_tasks_per_image": 3,
+        "question_temperature": 0.7,
         "output_directory": str(tmp_path / "run"),
-    }
-
-
-def _item(task_id: str, answer, field: str, question: str = "What is shown?", index=None) -> dict:
-    return {
-        "task_id": task_id,
-        "question": question,
-        "answer": answer,
-        "source_refs": [{"field": field, "instance_index": index}],
     }
 
 
@@ -66,291 +57,168 @@ def _read_items(path: str) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()]
 
 
-def test_generation_routes_records_and_normalizes_letter_answer(tmp_path: Path, monkeypatch) -> None:
+def test_letter_generation_uses_single_task_prompt_temperature_and_compact_raw(
+    tmp_path: Path, monkeypatch
+) -> None:
     request = _request(
         tmp_path,
-        [_record(0, {"view": "craniocaudal"}), _record(1, {"view": "MLO"})],
-        {"view": _task("letter", ["annotation.view"], options=["CC", "MLO"])},
+        [_record(0, {"status": "benign"})],
+        {"status": _task("annotation.status", options=["A. benign", "B) malignant"])},
         1,
     )
+    calls: list[tuple[str, str, float]] = []
 
-    def fake_complete_json(system: str, prompt: str) -> dict:
-        if system.startswith("Independently"):
+    def fake_complete_json(system: str, user: str, *, temperature: float = 0) -> dict:
+        calls.append((system, user, temperature))
+        if system.startswith("Review one"):
             return {"approved": True, "reason": "Faithful."}
-        if '"view": "MLO"' in prompt:
-            return {"items": [_item("view", "MLO", "annotation.view")]}
-        return {"items": []}
+        return {"question": "Which status best describes this image?", "answer": "benign"}
 
     monkeypatch.setattr(generation, "complete_json", fake_complete_json)
     result = generation.generate_raw_benchmark(request)
     item = _read_items(result.raw_output_path)[0]
 
-    assert item["image_ids"] == ["img-1"]
-    assert item["options"] == ["CC", "MLO"]
-    assert item["answer"] == "B"
-    assert item["answer_value"] == "MLO"
-
-
-def test_project_supporting_annotation_preserves_alignment_and_excludes_fields() -> None:
-    annotation = {
-        "findings": [
-            {"kind": "mass", "bbox": [1, 2, 8, 9], "private": "omit"},
-            {"kind": "calcification", "bbox": [10, 11, 20, 21], "private": "omit"},
-        ],
-        "report": "omit",
-    }
-
-    projected = generation.project_supporting_annotation(
-        annotation,
-        ["annotation.findings[*].kind", "annotation.findings[*].bbox[*]"],
-    )
-
-    assert projected == {
-        "findings": [
-            {"_source_index": 0, "kind": "mass", "bbox": [1, 2, 8, 9]},
-            {"_source_index": 1, "kind": "calcification", "bbox": [10, 11, 20, 21]},
-        ]
+    prompt, user, temperature = calls[0]
+    assert "Task ID: status" in prompt
+    assert "Candidate options: [\"benign\", \"malignant\"]" in prompt
+    assert "Supporting annotation: {\"status\": \"benign\"}" in prompt
+    assert "citations" not in prompt.lower()
+    assert user == ""
+    assert temperature == 0.7
+    assert calls[1][2] == 0
+    assert item == {
+        "id": item["id"],
+        "task_id": "status",
+        "image_id": "img-0",
+        "image_path": "images/0.dicom",
+        "question": "Which status best describes this image?",
+        "options": ["benign", "malignant"],
+        "answer": "A",
     }
 
 
-@pytest.mark.parametrize(
-    ("annotation", "field", "index"),
-    [
-        ({"bbox": [1, 2, 8, 9]}, "annotation.bbox", None),
-        ({"bbox": [1, 2, 8, 9]}, "annotation.bbox[*]", None),
-        (
-            {"findings": [{"bbox": [1, 2, 8, 9]}, {"bbox": [10, 11, 20, 21]}]},
-            "annotation.findings[*].bbox",
-            1,
-        ),
-        (
-            {"findings": [{"bbox": [1, 2, 8, 9]}, {"bbox": [10, 11, 20, 21]}]},
-            "annotation.findings[*].bbox[*]",
-            1,
-        ),
-    ],
-)
-def test_bbox_review_accepts_exact_referenced_coordinates_without_model(
-    annotation: dict, field: str, index: int | None, monkeypatch
-) -> None:
-    expected = [10.0, 11.0, 20.0, 21.0] if index == 1 else [1.0, 2.0, 8.0, 9.0]
-    candidate = generation._Candidate(
-        "detection",
-        0,
-        {"image_id": "img-0", "image_path": "0.png", "annotation": annotation},
-        generation.project_supporting_annotation(annotation, [field]),
-        _task("bbox", [field]),
-    )
-    monkeypatch.setattr(
-        generation,
-        "complete_json",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("bbox reviewer called the model")),
-    )
-
-    approved, _reason = generation._review(
-        candidate,
-        {
-            "question": "Locate the finding.",
-            "answer": expected,
-            "source_refs": [{"field": field, "instance_index": index}],
-        },
-        {"language": "en"},
-    )
-
-    assert approved is True
-
-
-@pytest.mark.parametrize(
-    "source_refs",
-    [
-        [{"field": "annotation.findings[*].kind", "instance_index": 1}],
-        [{"field": "annotation.findings[*].bbox[*]", "instance_index": 0}],
-        [
-            {"field": "annotation.findings[*].bbox[*]", "instance_index": 0},
-            {"field": "annotation.findings[*].bbox[*]", "instance_index": 1},
-        ],
-    ],
-)
-def test_bbox_review_rejects_missing_mismatched_or_ambiguous_bbox_reference(
-    source_refs: list[dict],
-) -> None:
-    annotation = {
-        "findings": [
-            {"kind": "mass", "bbox": [1, 2, 8, 9]},
-            {"kind": "calcification", "bbox": [10, 11, 20, 21]},
-        ]
+def test_rag_and_generation_require_one_template_and_clean_options() -> None:
+    task = _task("annotation.status", question_templates=["one", "two"])
+    request = {
+        "tasks": {"status": task},
+        "target_sample_count": 1,
+        "max_tasks_per_image": 3,
+        "question_temperature": 0.7,
     }
-    candidate = generation._Candidate(
-        "detection",
-        0,
-        {"image_id": "img-0", "image_path": "0.png", "annotation": annotation},
-        generation.project_supporting_annotation(
-            annotation,
-            ["annotation.findings[*].kind", "annotation.findings[*].bbox[*]"],
-        ),
-        _task(
-            "bbox",
-            ["annotation.findings[*].kind", "annotation.findings[*].bbox[*]"],
-        ),
-    )
+    with pytest.raises(ValueError, match="exactly one"):
+        generation._validate_tasks(request)
 
-    approved, _reason = generation._review(
-        candidate,
-        {
-            "question": "Locate the calcification.",
-            "answer": [10.0, 11.0, 20.0, 21.0],
-            "source_refs": source_refs,
-        },
-        {"language": "en"},
-    )
-
-    assert approved is False
+    task["question_templates"] = ["one"]
+    task["options"] = ["A. benign", "B) malignant"]
+    generation._validate_tasks(request)
+    assert task["options"] == ["benign", "malignant"]
 
 
-def test_one_record_can_generate_multiple_reviewed_task_items(tmp_path: Path, monkeypatch) -> None:
-    request = _request(
-        tmp_path,
-        [_record(0, {"finding": {"kind": "mass", "bbox": [1, 2, 8, 9]}, "report": "Expert report."})],
-        {
-            "detection": _task(
-                "bbox", ["annotation.finding.kind", "annotation.finding.bbox[*]"], sample_count=1
-            ),
-            "report": _task("free_text", ["annotation.report"], sample_count=1),
-        },
-        2,
-    )
+def test_supporting_annotation_requires_meaningful_values() -> None:
+    assert not generation._has_meaningful_value({"status": None})
+    assert not generation._has_meaningful_value({"status": ""})
+    assert not generation._has_meaningful_value({"findings": []})
+    assert not generation._has_meaningful_value({"finding": {}})
+    assert generation._has_meaningful_value({"status": 0})
+    assert generation._has_meaningful_value({"status": False})
 
-    reviewer_calls = 0
 
-    def fake_complete_json(system: str, _prompt: str) -> dict:
-        nonlocal reviewer_calls
-        if system.startswith("Independently"):
-            reviewer_calls += 1
+def test_seeded_candidate_order_is_stable_and_varies_with_seed(tmp_path: Path) -> None:
+    records = [_record(index, {"a": "benign", "b": "benign", "c": "benign"}) for index in range(5)]
+    tasks = {task_id: _task(f"annotation.{task_id}") for task_id in ("a", "b", "c")}
+    zero = _request(tmp_path / "zero", records, tasks, 3, seed=0)
+    one = _request(tmp_path / "one", records, tasks, 3, seed=1)
+    zero_tasks, zero_targets = generation._validate_tasks(zero)
+    one_tasks, one_targets = generation._validate_tasks(one)
+
+    _, first_zero = generation._next_candidate_record(zero, zero_tasks, zero_targets, {key: 0 for key in tasks}, 0)
+    _, second_zero = generation._next_candidate_record(zero, zero_tasks, zero_targets, {key: 0 for key in tasks}, 0)
+    _, first_one = generation._next_candidate_record(one, one_tasks, one_targets, {key: 0 for key in tasks}, 0)
+
+    assert [candidate.task_id for candidate in first_zero] == [candidate.task_id for candidate in second_zero]
+    assert [candidate.task_id for candidate in first_zero] != [candidate.task_id for candidate in first_one]
+
+
+def test_completed_tasks_do_not_enter_candidate_queue(tmp_path: Path) -> None:
+    records = [_record(0, {"a": "benign", "b": "benign"})]
+    tasks = {task_id: _task(f"annotation.{task_id}", sample_count=1) for task_id in ("a", "b")}
+    request = _request(tmp_path, records, tasks, 2)
+    validated, targets = generation._validate_tasks(request)
+
+    _, candidates = generation._next_candidate_record(request, validated, targets, {"a": 1, "b": 0}, 0)
+
+    assert [candidate.task_id for candidate in candidates] == ["b"]
+
+
+def test_failed_or_rejected_candidate_is_replaced_before_image_limit(tmp_path: Path, monkeypatch) -> None:
+    fields = ("a", "b", "c", "failed")
+    tasks = {
+        field: _task(f"annotation.{field}", description=field, sample_count=1)
+        for field in fields
+    }
+    request = _request(tmp_path, [_record(0, {field: "benign" for field in fields})], tasks, 4)
+
+    def fake_complete_json(system: str, _user: str, *, temperature: float = 0) -> dict:
+        if "Task ID: failed" in system or '"description": "failed"' in system:
+            return {"invalid": True}
+        if system.startswith("Review one"):
             return {"approved": True, "reason": "Faithful."}
-        return {
-            "items": [
-                _item("detection", [1, 2, 8, 9], "annotation.finding.bbox[*]", "Locate the mass."),
-                _item("report", "Expert report.", "annotation.report", "Generate a report."),
-            ]
-        }
+        return {"question": "Which status best describes this image?", "answer": "benign"}
 
     monkeypatch.setattr(generation, "complete_json", fake_complete_json)
     result = generation.generate_raw_benchmark(request)
     items = _read_items(result.raw_output_path)
 
-    assert result.task_counts == {"detection": 1, "report": 1}
-    assert items[0]["answer"] == [1.0, 2.0, 8.0, 9.0]
-    assert items[1]["answer"] == "Expert report."
-    assert reviewer_calls == 1
+    assert result.item_count == 3
+    assert {item["task_id"] for item in items} == {"a", "b", "c"}
 
 
-def test_generation_repairs_one_invalid_routed_response(tmp_path: Path, monkeypatch) -> None:
-    request = _request(
-        tmp_path,
-        [_record(0, {"status": "benign"})],
-        {"status": _task("letter", ["annotation.status"], options=["benign", "malignant"])},
-        1,
+def test_bbox_review_remains_deterministic() -> None:
+    annotation = {"finding": {"bbox": [1, 2, 8, 9]}}
+    candidate = generation._Candidate(
+        "detection",
+        0,
+        {"image_id": "img", "image_path": "img.dicom", "annotation": annotation},
+        generation.project_supporting_annotation(annotation, ["annotation.finding.bbox[*]"]),
+        _task(
+            "annotation.finding.bbox[*]",
+            task_type="open_vqa",
+            response_format="bbox",
+            options=None,
+        ),
     )
-    calls = []
+    approved, _reason = generation._review(
+        candidate,
+        {
+            "question": "Locate the finding.",
+            "answer": [1.0, 2.0, 8.0, 9.0],
+            "source_refs": [{"field": "annotation.finding.bbox[*]", "instance_index": None}],
+        },
+        {"language": "en"},
+    )
+    assert approved
 
-    def fake_complete_json(system: str, _prompt: str) -> dict:
-        calls.append(system)
-        if system.startswith("Select medically"):
-            return {}
-        if system.startswith("Repair one"):
-            return {"items": [_item("status", "benign", "annotation.status")]}
-        return {"approved": True, "reason": "Faithful."}
+
+def test_free_text_generation_retains_annotation_reference_validation(tmp_path: Path, monkeypatch) -> None:
+    task = _task(
+        "annotation.report",
+        task_type="open_vqa",
+        response_format="free_text",
+        options=None,
+    )
+    request = _request(tmp_path, [_record(0, {"report": "Normal study."})], {"report": task}, 1)
+
+    def fake_complete_json(system: str, _user: str, *, temperature: float = 0) -> dict:
+        if system.startswith("Independently"):
+            return {"approved": True, "reason": "Faithful."}
+        return {
+            "question": "Generate the report.",
+            "answer": "Normal study.",
+            "source_refs": [{"field": "annotation.report", "instance_index": None}],
+        }
 
     monkeypatch.setattr(generation, "complete_json", fake_complete_json)
-    result = generation.generate_raw_benchmark(request)
+    item = _read_items(generation.generate_raw_benchmark(request).raw_output_path)[0]
 
-    assert result.item_count == 1
-    assert sum(system.startswith("Repair one") for system in calls) == 1
-
-
-def test_reviewer_rejection_finishes_with_empty_best_effort_output(tmp_path: Path, monkeypatch) -> None:
-    request = _request(
-        tmp_path,
-        [_record(0, {"status": "benign"})],
-        {"status": _task("letter", ["annotation.status"], options=["benign", "malignant"])},
-        1,
-    )
-    monkeypatch.setattr(
-        generation,
-        "complete_json",
-        lambda system, _prompt: {"approved": False, "reason": "Leaky."}
-        if system.startswith("Independently")
-        else {"items": [_item("status", "benign", "annotation.status")]},
-    )
-
-    result = generation.generate_raw_benchmark(request)
-
-    assert result.item_count == 0
-    assert Path(result.raw_output_path).read_text(encoding="utf-8") == ""
-
-
-def test_dataset_exhaustion_returns_partial_output(tmp_path: Path, monkeypatch) -> None:
-    request = _request(
-        tmp_path,
-        [_record(0, {"status": "benign"})],
-        {"status": _task("letter", ["annotation.status"], options=["benign", "malignant"])},
-        2,
-    )
-    monkeypatch.setattr(
-        generation,
-        "complete_json",
-        lambda system, _prompt: {"approved": True, "reason": "Faithful."}
-        if system.startswith("Independently")
-        else {"items": [_item("status", "benign", "annotation.status")]},
-    )
-
-    result = generation.generate_raw_benchmark(request)
-
-    assert result.item_count == 1
-    assert result.task_counts == {"status": 1}
-
-
-def test_seeded_record_order_is_reproducible_and_changes_with_seed(tmp_path: Path) -> None:
-    records = [_record(index, {"status": "benign"}) for index in range(5)]
-    task = _task("letter", ["annotation.status"], options=["benign", "malignant"])
-    request_zero = _request(tmp_path / "zero", records, {"status": task}, 1, seed=0)
-    request_one = _request(tmp_path / "one", records, {"status": task}, 1, seed=1)
-    tasks_zero, targets_zero = generation._validate_tasks(request_zero)
-    tasks_one, targets_one = generation._validate_tasks(request_one)
-
-    _, first_zero = generation._next_candidate_record(
-        request_zero, tasks_zero, targets_zero, {"status": 0}, 0
-    )
-    _, repeated_zero = generation._next_candidate_record(
-        request_zero, tasks_zero, targets_zero, {"status": 0}, 0
-    )
-    _, first_one = generation._next_candidate_record(
-        request_one, tasks_one, targets_one, {"status": 0}, 0
-    )
-
-    assert first_zero[0].source_row == repeated_zero[0].source_row
-    assert first_zero[0].source_row != first_one[0].source_row
-
-
-def test_progress_merge_is_idempotent(tmp_path: Path) -> None:
-    candidate = generation._Candidate(
-        "status",
-        0,
-        {
-            "image_id": "img-0",
-            "image_path": "images/0.png",
-            "annotation": {"status": "benign"},
-        },
-        {"status": "benign"},
-        _task("letter", ["annotation.status"], options=["benign", "malignant"]),
-    )
-    item = generation._build_item(
-        candidate,
-        {"question": "What is the status?", "answer": "benign", "source_refs": [{"field": "annotation.status", "instance_index": None}]},
-    )
-    path = tmp_path / "progress.jsonl"
-
-    generation._merge_progress(path, [item], {"status": 0})
-    merged = generation._merge_progress(path, [item], {"status": 0})
-
-    assert len(merged) == 1
+    assert item["options"] is None
+    assert item["answer"] == "Normal study."

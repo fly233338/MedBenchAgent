@@ -65,7 +65,8 @@ def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
         "messages",
         "user_requirement",
         "seed",
-        "balance_answer_positions",
+        "max_tasks_per_image",
+        "question_temperature",
     }
     assert graph.builder.output_schema is workflow.BenchmarkOutputState
     assert set(graph.builder.output_schema.__annotations__) == {
@@ -74,7 +75,6 @@ def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
         "working_blueprint_path",
         "task_screening_report_path",
         "raw_output_path",
-        "benchmark_output_path",
         "item_count",
         "task_counts",
         "generation_shortfalls",
@@ -377,7 +377,8 @@ def test_generation_request_uses_blueprint_task_snapshot_without_design_duplicat
         "benchmark_info": {"sample_count": 2},
         "dataset_access_manifest": {"duckdb_path": "dataset.duckdb"},
         "seed": 3,
-        "balance_answer_positions": True,
+        "max_tasks_per_image": 2,
+        "question_temperature": 0.4,
     }
 
     result = workflow._generation_request_node(state)

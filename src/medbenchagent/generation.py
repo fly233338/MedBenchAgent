@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,9 +17,53 @@ from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequ
 from medbenchagent.llm import ModelUnavailable, complete_json
 from medbenchagent.sample_counts import distribute_sample_counts
 
-MAX_ITEMS_PER_RECORD = 3
+DEFAULT_MAX_TASKS_PER_IMAGE = 3
+DEFAULT_QUESTION_TEMPERATURE = 0.7
 FETCH_BATCH_SIZE = 128
 _MISSING = object()
+
+VQA_GENERATION_PROMPT = """
+Generate one letter-choice question for a medical image VQA benchmark.
+
+Context:
+- Language: {language}
+- Modality: {modality}
+- Task ID: {task_id}
+- Task definition: {task_definition}
+- Generation logic: {generation_logic}
+- Canonical question: {canonical_question}
+- Candidate options: {candidate_options}
+- Supporting annotation: {supporting_annotation}
+
+Requirements:
+1. Write one substantial semantic paraphrase of the canonical question, not a trivial word substitution.
+2. The question must preserve the task meaning and be answerable from the image and candidate options only.
+3. Do not mention reports, annotations, labels, or unsupported clinical details.
+4. Do not reveal or hint at the correct answer.
+5. Normalize the annotation-supported answer to one exact candidate option; do not infer beyond the annotation.
+
+Return JSON only:
+{{"question": "question stem", "answer": "one exact candidate option"}}
+""".strip()
+
+VQA_REVIEW_PROMPT = """
+Review one generated letter-choice VQA item.
+
+Context:
+- Task definition: {task_definition}
+- Generation logic: {generation_logic}
+- Candidate options: {candidate_options}
+- Supporting annotation: {supporting_annotation}
+- Question: {question}
+- Answer: {answer}
+
+Approve only when:
+1. The question does not reveal or clearly hint at the answer.
+2. The answer is exactly supported by the annotation.
+
+Return JSON only:
+{{"approved": true, "reason": "short reason"}}
+""".strip()
 
 
 @dataclass(frozen=True)
@@ -113,6 +159,12 @@ def _task_targets(request: GenerationRequest) -> dict[str, int]:
     return counts
 
 
+def _normalized_options(options: object) -> list[str]:
+    if not isinstance(options, list):
+        return []
+    return [re.sub(r"^\s*[A-Za-z]\s*[.)]\s*", "", option).strip() if isinstance(option, str) else "" for option in options]
+
+
 def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask], dict[str, int]]:
     tasks = request["tasks"]
     targets = _task_targets(request)
@@ -128,33 +180,31 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
         ):
             raise ValueError(f"{task_id}: supporting_fields must contain annotation paths.")
         templates = task.get("question_templates")
-        if not isinstance(templates, list) or not templates or not all(
+        if not isinstance(templates, list) or len(templates) != 1 or not all(
             isinstance(template, str) and template.strip() for template in templates
         ):
-            raise ValueError(f"{task_id}: question_templates must be non-empty strings.")
+            raise ValueError(f"{task_id}: question_templates must contain exactly one non-empty string.")
         for field in ("generation_logic", "medical_task_description"):
             if not isinstance(task.get(field), str) or not str(task[field]).strip():
                 raise ValueError(f"{task_id}: {field} must be a non-empty string.")
-        options = task.get("options")
+        options = _normalized_options(task.get("options"))
         if response_format == "letter":
             if (
-                not isinstance(options, list)
-                or not 2 <= len(options) <= 26
-                or not all(isinstance(option, str) and option for option in options)
+                not 2 <= len(options) <= 26
+                or not all(options)
                 or len(set(options)) != len(options)
             ):
                 raise ValueError(f"{task_id}: letter tasks need 2-26 unique options.")
-        elif options is not None:
+            task["options"] = options
+        elif task.get("options") is not None:
             raise ValueError(f"{task_id}: options are allowed only for letter tasks.")
+    max_tasks = request.get("max_tasks_per_image", DEFAULT_MAX_TASKS_PER_IMAGE)
+    if not isinstance(max_tasks, int) or isinstance(max_tasks, bool) or max_tasks <= 0:
+        raise ValueError("max_tasks_per_image must be a positive integer.")
+    temperature = request.get("question_temperature", DEFAULT_QUESTION_TEMPERATURE)
+    if not isinstance(temperature, (int, float)) or isinstance(temperature, bool) or not 0 <= temperature <= 2:
+        raise ValueError("question_temperature must be between 0 and 2.")
     return tasks, targets
-
-
-def _answer_schema(response_format: str) -> str:
-    if response_format == "letter":
-        return '"one exact option string"'
-    if response_format == "bbox":
-        return "[x1,y1,x2,y2]"
-    return '"non-empty reference text"'
 
 
 def _has_source_index(value: object, index: int) -> bool:
@@ -284,60 +334,86 @@ def _validate_generated(candidate: _Candidate, response: object) -> dict[str, An
     }
 
 
-def _routing_prompt(
-    candidates: list[_Candidate], benchmark_info: dict[str, object], remaining: dict[str, int]
-) -> tuple[str, str]:
-    offered = [
+def _task_definition(candidate: _Candidate) -> str:
+    return json.dumps(
         {
-            "task_id": candidate.task_id,
-            "remaining_count": remaining[candidate.task_id],
-            "task": candidate.task,
-            "supporting_annotation": candidate.supporting_annotation,
-            "answer_schema": _answer_schema(candidate.task["response_format"]),
-        }
-        for candidate in candidates
-    ]
+            "description": candidate.task["description"],
+            "require": candidate.task["require"],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _letter_generation_prompt(candidate: _Candidate, benchmark_info: dict[str, object]) -> str:
+    return VQA_GENERATION_PROMPT.format(
+        language=benchmark_info.get("language", ""),
+        modality=benchmark_info.get("modality", ""),
+        task_id=candidate.task_id,
+        task_definition=_task_definition(candidate),
+        generation_logic=candidate.task["generation_logic"],
+        canonical_question=candidate.task["question_templates"][0],
+        candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
+        supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
+    )
+
+
+def _validate_letter_response(candidate: _Candidate, response: object) -> dict[str, Any]:
+    if not isinstance(response, dict) or set(response) != {"question", "answer"}:
+        raise ValueError("Letter generation must contain only question and answer.")
+    question = response["question"]
+    answer = response["answer"]
+    if not isinstance(question, str) or not question.strip():
+        raise ValueError("Generated question must be a non-empty string.")
+    if not isinstance(answer, str) or answer not in candidate.task["options"]:
+        raise ValueError("Letter answer must be one exact option.")
+    return {"question": question.strip(), "answer": answer}
+
+
+def _legacy_generation_prompt(candidate: _Candidate, benchmark_info: dict[str, object]) -> tuple[str, str]:
     system = (
-        "Select medically suitable tasks for one annotated image and generate benchmark items in one pass. "
-        "Return exactly {\"items\":[{\"task_id\":\"offered task\",\"question\":\"...\","
-        "\"answer\":...,\"source_refs\":[{\"field\":\"approved field\",\"instance_index\":null}]}]}. "
-        f"Return at most {MAX_ITEMS_PER_RECORD} items with unique task_id values, or an empty items list. "
-        "Use only each task's own supporting annotation and approved fields. Follow its templates and "
-        "generation_logic, never invent facts, and do not reveal the answer in the question. For letter "
-        "tasks use one exact supplied option. For bbox tasks copy one valid xyxy box and identify its "
-        "object-array source index. For free text copy or organize only supplied evidence."
+        "Generate one medical benchmark item. Return exactly "
+        '{"question":"...","answer":...,"source_refs":[{"field":"approved field",'
+        '"instance_index":null}]}. Use only the supplied task and supporting annotation. Do not reveal '
+        "the answer or invent facts. For bbox tasks copy one valid xyxy box and identify its object-array "
+        "source index. For free text copy or organize only supplied evidence."
     )
     user = (
         f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
-        f"Image ID: {candidates[0].record['image_id']}\n"
-        f"Offered tasks: {json.dumps(offered, ensure_ascii=False)}"
+        f"Task ID: {candidate.task_id}\nTask: {json.dumps(candidate.task, ensure_ascii=False)}\n"
+        f"Supporting annotation: {json.dumps(candidate.supporting_annotation, ensure_ascii=False)}"
     )
     return system, user
 
 
-def _validate_routed_response(
-    candidates: list[_Candidate], response: object
-) -> list[tuple[_Candidate, dict[str, Any]]]:
-    if not isinstance(response, dict) or set(response) != {"items"}:
-        raise ValueError("Routed generation response must contain only items.")
-    items = response["items"]
-    if not isinstance(items, list) or len(items) > MAX_ITEMS_PER_RECORD:
-        raise ValueError(f"Routed generation must return at most {MAX_ITEMS_PER_RECORD} items.")
-    by_task = {candidate.task_id: candidate for candidate in candidates}
-    seen: set[str] = set()
-    normalized: list[tuple[_Candidate, dict[str, Any]]] = []
-    for item in items:
-        if not isinstance(item, dict) or set(item) != {"task_id", "question", "answer", "source_refs"}:
-            raise ValueError("Every routed item must contain task_id, question, answer, and source_refs.")
-        task_id = item["task_id"]
-        if task_id not in by_task or task_id in seen:
-            raise ValueError("Routed task IDs must be unique offered tasks.")
-        seen.add(task_id)
-        generated = _validate_generated(
-            by_task[task_id], {key: value for key, value in item.items() if key != "task_id"}
+def _generate_candidate(
+    candidate: _Candidate, benchmark_info: dict[str, object], question_temperature: float
+) -> dict[str, Any]:
+    if candidate.task["response_format"] == "letter":
+        system = _letter_generation_prompt(candidate, benchmark_info)
+        try:
+            response = complete_json(system, "", temperature=question_temperature)
+            return _validate_letter_response(candidate, response)
+        except ValueError as first_error:
+            repaired = complete_json(
+                "Repair one letter-choice VQA response. Return JSON only.\n"
+                f"{system}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+                f"Contract error: {first_error}",
+                "",
+                temperature=question_temperature,
+            )
+            return _validate_letter_response(candidate, repaired)
+
+    system, user = _legacy_generation_prompt(candidate, benchmark_info)
+    try:
+        response = complete_json(system, user)
+        return _validate_generated(candidate, response)
+    except ValueError as first_error:
+        repaired = complete_json(
+            "Repair one benchmark generation response. Return JSON only.",
+            f"{user}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+            f"Contract error: {first_error}\nRequired contract: {system}",
         )
-        normalized.append((by_task[task_id], generated))
-    return normalized
+        return _validate_generated(candidate, repaired)
 
 
 def _review(
@@ -347,6 +423,26 @@ def _review(
 ) -> tuple[bool, str]:
     if candidate.task["response_format"] == "bbox":
         return _review_bbox(candidate, generated)
+    if candidate.task["response_format"] == "letter":
+        response = complete_json(
+            VQA_REVIEW_PROMPT.format(
+                task_definition=_task_definition(candidate),
+                generation_logic=candidate.task["generation_logic"],
+                candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
+                supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
+                question=generated["question"],
+                answer=generated["answer"],
+            ),
+            "",
+        )
+        approved = (
+            isinstance(response, dict)
+            and set(response) == {"approved", "reason"}
+            and response.get("approved") is True
+            and isinstance(response.get("reason"), str)
+        )
+        reason = response.get("reason") if isinstance(response, dict) else "Invalid review response."
+        return approved, str(reason)
     try:
         response = complete_json(
             "Independently audit one generated medical benchmark item. Return exactly "
@@ -378,26 +474,14 @@ def _item_identity(candidate: _Candidate) -> str:
 
 def _build_item(candidate: _Candidate, generated: dict[str, Any]) -> BenchmarkItem:
     response_format = candidate.task["response_format"]
-    refs = [
-        {
-            "image_id": candidate.record["image_id"],
-            "source_row": candidate.source_row,
-            **ref,
-        }
-        for ref in generated["source_refs"]
-    ]
     item: BenchmarkItem = {
         "id": _item_identity(candidate),
         "task_id": candidate.task_id,
-        "task_type": candidate.task["task_type"],
-        "response_format": response_format,
-        "image_ids": [candidate.record["image_id"]],
-        "image_paths": [candidate.record["image_path"]],
+        "image_id": candidate.record["image_id"],
+        "image_path": candidate.record["image_path"],
         "question": generated["question"],
         "options": None,
         "answer": generated["answer"],
-        "source_refs": refs,
-        "medical_sources": list(candidate.task.get("citations", [])),
     }
     if response_format == "letter":
         answer_value = generated["answer"]
@@ -405,7 +489,6 @@ def _build_item(candidate: _Candidate, generated: dict[str, Any]) -> BenchmarkIt
         assert isinstance(answer_value, str)
         item["options"] = options
         item["answer"] = chr(ord("A") + options.index(answer_value))
-        item["answer_value"] = answer_value
     return item
 
 
@@ -443,7 +526,8 @@ def _merge_progress(
     items.sort(
         key=lambda item: (
             task_order[str(item["task_id"])],
-            int(item["source_refs"][0]["source_row"]),
+            str(item["image_id"]),
+            str(item["id"]),
         )
     )
     _write_jsonl(path, items)
@@ -460,6 +544,21 @@ def _row_record(row: tuple[Any, ...]) -> dict[str, Any]:
         "annotation": json.loads(row[5]) if isinstance(row[5], str) else row[5],
         "_source_row": int(row[6]),
     }
+
+
+def _has_meaningful_value(value: object) -> bool:
+    if value is None or value == "":
+        return False
+    if isinstance(value, dict):
+        return any(key != "_source_index" and _has_meaningful_value(item) for key, item in value.items())
+    if isinstance(value, list):
+        return any(_has_meaningful_value(item) for item in value)
+    return True
+
+
+def _shuffle_candidates(candidates: list[_Candidate], seed: int, image_id: str) -> None:
+    digest = hashlib.sha256(f"{seed}:{image_id}".encode("utf-8")).digest()
+    random.Random(int.from_bytes(digest, "big")).shuffle(candidates)
 
 
 def _next_candidate_record(
@@ -493,17 +592,12 @@ def _next_candidate_record(
                     projected = project_supporting_annotation(
                         record["annotation"], task["supporting_fields"]
                     )
-                    if projected:
+                    if _has_meaningful_value(projected):
                         candidates.append(
                             _Candidate(task_id, record["_source_row"], record, projected, task)
                         )
                 if candidates:
-                    candidates.sort(
-                        key=lambda candidate: (
-                            -(targets[candidate.task_id] - completed[candidate.task_id]),
-                            list(tasks).index(candidate.task_id),
-                        )
-                    )
+                    _shuffle_candidates(candidates, seed, str(record["image_id"]))
                     return cursor, candidates
             if len(rows) < FETCH_BATCH_SIZE:
                 return cursor, None
@@ -554,42 +648,27 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
             "generation_exhausted": True,
         }
 
-    remaining = {task_id: targets[task_id] - completed[task_id] for task_id in tasks}
-    system, user = _routing_prompt(candidates, request["benchmark_info"], remaining)
-    try:
-        response = complete_json(system, user)
-    except ModelUnavailable:
-        rejections["generation_model_unavailable"] = rejections.get(
-            "generation_model_unavailable", 0
-        ) + 1
-        return {
-            "generation_cursor": cursor,
-            "generation_completed_counts": completed,
-            "generation_rejections": rejections,
-        }
-    try:
-        routed = _validate_routed_response(candidates, response)
-    except ValueError as first_error:
-        try:
-            repaired = complete_json(
-                "Repair one routed benchmark generation response. Return JSON only.",
-                f"{user}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
-                f"Contract error: {first_error}\nRequired contract: {system}",
-            )
-            routed = _validate_routed_response(candidates, repaired)
-        except (ModelUnavailable, ValueError):
-            rejections["generation_contract"] = rejections.get("generation_contract", 0) + 1
-            return {
-                "generation_cursor": cursor,
-                "generation_completed_counts": completed,
-                "generation_rejections": rejections,
-            }
-
-    if not routed:
-        rejections["model_skip"] = rejections.get("model_skip", 0) + 1
     accepted: list[BenchmarkItem] = []
-    for candidate, generated in routed:
-        approved, _reason = _review(candidate, generated, request["benchmark_info"])
+    max_tasks = int(request.get("max_tasks_per_image", DEFAULT_MAX_TASKS_PER_IMAGE))
+    temperature = float(request.get("question_temperature", DEFAULT_QUESTION_TEMPERATURE))
+    for candidate in candidates:
+        if len(accepted) >= max_tasks:
+            break
+        try:
+            generated = _generate_candidate(candidate, request["benchmark_info"], temperature)
+        except ModelUnavailable:
+            rejections["generation_model_unavailable"] = rejections.get(
+                "generation_model_unavailable", 0
+            ) + 1
+            continue
+        except ValueError:
+            rejections["generation_contract"] = rejections.get("generation_contract", 0) + 1
+            continue
+        try:
+            approved, _reason = _review(candidate, generated, request["benchmark_info"])
+        except ModelUnavailable:
+            rejections["review_model_unavailable"] = rejections.get("review_model_unavailable", 0) + 1
+            continue
         if approved:
             accepted.append(_build_item(candidate, generated))
         else:

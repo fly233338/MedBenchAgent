@@ -61,7 +61,7 @@ def _client() -> OpenAI:
     return _CLIENT
 
 
-def complete_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
+def complete_json(system_prompt: str, user_prompt: str, *, temperature: float = 0) -> dict[str, Any]:
     """Return a JSON object from the configured DeepSeek-compatible endpoint."""
     model = os.getenv("DEEPSEEK_MODEL")
     if not model:
@@ -70,7 +70,7 @@ def complete_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
     try:
         response = _client().chat.completions.create(
             model=model,
-            temperature=0,
+            temperature=temperature,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},

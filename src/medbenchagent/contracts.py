@@ -28,24 +28,19 @@ class GenerationRequest(TypedDict):
     tasks: dict[str, BlueprintTask]
     target_sample_count: int
     seed: int
-    balance_answer_positions: bool
+    max_tasks_per_image: int
+    question_temperature: float
     output_directory: str
 
 
 class BenchmarkItem(TypedDict):
     id: str
     task_id: str
-    task_type: str
-    response_format: str
-    image_ids: list[str]
-    image_paths: list[str]
+    image_id: str
+    image_path: str
     question: str
     options: list[str] | None
     answer: str | list[float]
-    answer_value: NotRequired[str]
-    source_refs: list[dict[str, object]]
-    medical_sources: list[dict[str, object]]
-    metadata: NotRequired[dict[str, object]]
 
 
 @dataclass(frozen=True)

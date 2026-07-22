@@ -315,10 +315,10 @@ def validate_task_design(task_id: str, task: dict[str, Any], response: object) -
     if set(response) != expected:
         raise ValueError(f"{task_id}: RAG design must contain exactly {sorted(expected)}.")
     templates = response["question_templates"]
-    if not isinstance(templates, list) or not templates or not all(
+    if not isinstance(templates, list) or len(templates) != 1 or not all(
         isinstance(template, str) and template.strip() for template in templates
     ):
-        raise ValueError(f"{task_id}: question_templates must be non-empty strings.")
+        raise ValueError(f"{task_id}: question_templates must contain exactly one non-empty string.")
     for field in ("generation_logic", "medical_task_description"):
         if not isinstance(response[field], str) or not response[field].strip():
             raise ValueError(f"{task_id}: {field} must be a non-empty string.")
@@ -329,11 +329,14 @@ def validate_task_design(task_id: str, task: dict[str, Any], response: object) -
     }
     if response_format == "letter":
         options = response["options"]
-        normalized_options = [option.strip() for option in options] if isinstance(options, list) else []
+        normalized_options = [
+            re.sub(r"^\s*[A-Za-z]\s*[.)]\s*", "", option).strip()
+            for option in options
+        ] if isinstance(options, list) else []
         if (
             not isinstance(options, list)
             or not 2 <= len(options) <= 26
-            or not all(isinstance(option, str) and option.strip() for option in options)
+            or not all(normalized_options)
             or len(set(normalized_options)) != len(normalized_options)
         ):
             raise ValueError(f"{task_id}: options must contain 2-26 unique non-empty strings.")
@@ -358,6 +361,8 @@ def _design_prompt(
         "generation_logic must explain how a later model should use only supporting annotation to "
         "produce one question and answer without inventing facts. Do not return task_id, citations, "
         "validation_rules, placeholder bindings, answer fields, mappings, instance paths, or bbox fields. "
+        "For letter tasks, return exactly one canonical question template and options without A/B-style "
+        "position labels. "
         "When no PDF excerpt is supplied, use generic wording and do not claim a specific guideline basis."
     )
     user = (

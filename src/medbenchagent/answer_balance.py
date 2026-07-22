@@ -19,7 +19,6 @@ def _validate_group(task_id: str, items: list[dict[str, Any]]) -> tuple[str, ...
     first_options: tuple[str, ...] | None = None
     for item in items:
         options = item.get("options")
-        answer_value = item.get("answer_value")
         if not isinstance(options, list) or not options or not all(isinstance(option, str) for option in options):
             raise ValueError(f"{task_id}: options must be a non-empty list of strings.")
         option_tuple = tuple(options)
@@ -29,14 +28,12 @@ def _validate_group(task_id: str, items: list[dict[str, Any]]) -> tuple[str, ...
             first_options = option_tuple
         elif option_tuple != first_options:
             raise ValueError(f"{task_id}: every item must use the same option collection.")
-        if not isinstance(answer_value, str) or options.count(answer_value) != 1:
-            raise ValueError(f"{task_id}: answer_value must occur exactly once in options.")
         answer = item.get("answer")
         if not isinstance(answer, str) or len(answer) != 1 or not answer.isalpha():
             raise ValueError(f"{task_id}: answer must be a single option letter.")
         answer_index = ord(answer.upper()) - ord("A")
-        if answer_index < 0 or answer_index >= len(options) or options[answer_index] != answer_value:
-            raise ValueError(f"{task_id}: answer must point to answer_value.")
+        if answer_index < 0 or answer_index >= len(options):
+            raise ValueError(f"{task_id}: answer must point to an option.")
     assert first_options is not None
     return first_options
 
@@ -48,13 +45,13 @@ def balance_items(items: list[dict[str, Any]], seed: int = 0) -> list[dict[str, 
         task_id = item.get("task_id")
         if not isinstance(task_id, str) or not task_id:
             raise ValueError("Every item must have a non-empty task_id.")
-        if item.get("response_format") == "letter":
+        if isinstance(item.get("options"), list):
             grouped[task_id].append(item)
 
     balanced = [dict(item) for item in items]
     copies_by_task: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in balanced:
-        if item.get("response_format") == "letter":
+        if isinstance(item.get("options"), list):
             copies_by_task[item["task_id"]].append(item)
 
     for task_id, task_items in grouped.items():
@@ -67,7 +64,7 @@ def balance_items(items: list[dict[str, Any]], seed: int = 0) -> list[dict[str, 
         positions.extend(remainder[: count % option_count])
         generator.shuffle(positions)
         for item, position in zip(copies_by_task[task_id], positions, strict=True):
-            answer_value = item["answer_value"]
+            answer_value = item["options"][ord(item["answer"].upper()) - ord("A")]
             wrong_options = [option for option in options if option != answer_value]
             generator.shuffle(wrong_options)
             reordered = wrong_options[:]

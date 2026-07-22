@@ -11,7 +11,6 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
 from medbenchagent.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
-from medbenchagent.answer_balance import balance_jsonl
 from medbenchagent.contracts import GenerationRequest
 from medbenchagent.dataset import AnnotationValidationError, prepare_annotation_dataset
 from medbenchagent.dataset_catalog import (
@@ -48,7 +47,8 @@ class BenchmarkInputState(TypedDict, total=False):
     messages: list[Any]
     user_requirement: str
     seed: int
-    balance_answer_positions: bool
+    max_tasks_per_image: int
+    question_temperature: float
 
 
 class BenchmarkState(MessagesState, total=False):
@@ -80,7 +80,6 @@ class BenchmarkState(MessagesState, total=False):
     designs_confirmed: bool
     generation_request: GenerationRequest
     raw_output_path: str
-    benchmark_output_path: str
     generation_shortfalls: dict[str, int]
     item_count: int
     task_counts: dict[str, int]
@@ -94,7 +93,6 @@ class BenchmarkOutputState(TypedDict):
     working_blueprint_path: str
     task_screening_report_path: str
     raw_output_path: str
-    benchmark_output_path: str
     item_count: int
     task_counts: dict[str, int]
     generation_shortfalls: dict[str, int]
@@ -657,7 +655,8 @@ def _generation_request_node(state: BenchmarkState) -> dict[str, Any]:
         "tasks": tasks,
         "target_sample_count": int(benchmark_info["sample_count"]),
         "seed": int(state.get("seed", 0)),
-        "balance_answer_positions": bool(state.get("balance_answer_positions", True)),
+        "max_tasks_per_image": int(state.get("max_tasks_per_image", 3)),
+        "question_temperature": float(state.get("question_temperature", 0.7)),
         "output_directory": str(Path(state["working_blueprint_path"]).parent),
     }
     return {"generation_request": request}
@@ -685,14 +684,6 @@ def _generation_finalize_node(state: GenerationGraphState) -> dict[str, Any]:
         "item_count": result.item_count,
         "task_counts": result.task_counts,
     }
-
-
-def _finalize_benchmark_node(state: BenchmarkState) -> dict[str, Any]:
-    raw_path = state["raw_output_path"]
-    if not state["generation_request"]["balance_answer_positions"]:
-        return {"benchmark_output_path": raw_path}
-    output_path = str(Path(raw_path).with_name("benchmark_items.jsonl"))
-    return {"benchmark_output_path": balance_jsonl(raw_path, output_path, state["generation_request"]["seed"])}
 
 
 def compile_generation_subgraph(*, checkpointer: Any = None):
@@ -750,7 +741,6 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_node("design_review", _design_review_node)
     graph.add_node("generation_request", _generation_request_node)
     graph.add_node("generate_raw_benchmark", compile_generation_subgraph())
-    graph.add_node("finalize_benchmark", _finalize_benchmark_node)
     graph.add_edge(START, "benchmark_extract")
     graph.add_edge("benchmark_extract", "benchmark_confirm")
     graph.add_conditional_edges(
@@ -800,8 +790,7 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
         {"generation_request": "generation_request", "rag_design_task": "rag_design_task"},
     )
     graph.add_edge("generation_request", "generate_raw_benchmark")
-    graph.add_edge("generate_raw_benchmark", "finalize_benchmark")
-    graph.add_edge("finalize_benchmark", END)
+    graph.add_edge("generate_raw_benchmark", END)
     return graph.compile(checkpointer=checkpointer)
 
 

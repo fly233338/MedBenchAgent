@@ -3,9 +3,8 @@
 MedBenchAgent builds medical VLM benchmarks from a natural-language brief,
 catalog-selected image-level `annotation.jsonl` data, and PDF medical references. The workflow screens
 supported tasks, designs them with PDF RAG, and writes closed VQA, detection, finding
-description, and report items into one mixed JSONL. It first writes an immutable,
-unshuffled `benchmark_items.raw.jsonl`, then by default writes a separately finalized
-`benchmark_items.jsonl` copy. Per-task `sample_count` values are generation targets:
+description, and report items into one mixed JSONL. It writes an immutable,
+unshuffled `benchmark_items.raw.jsonl`. Per-task `sample_count` values are generation targets:
 the files contain the accepted items produced before all targets are met or the
 dataset is exhausted.
 
@@ -100,11 +99,12 @@ Blueprint tasks.
 
 The generator traverses source rows in a deterministic seeded order and projects only
 each unfinished task's approved `supporting_fields`, preserving array source indices.
-One DeepSeek call performs semantic routing and may return up to three items for three
-different tasks; the same task/image pair can produce at most one item. Code validates
-the response shape, answer, and source references. Bbox items pass a deterministic
-check that their answer exactly matches one unambiguous referenced annotation box;
-letter and free-text items are reviewed once by an independent model before acceptance.
+For each image, code removes completed or unsupported tasks, deterministically shuffles
+the rest from the seed and image ID, and attempts them one at a time until three are
+accepted. Letter VQA generation receives only its task context and projected annotation;
+it returns one question and one exact option, then receives an independent review.
+Bbox items retain their deterministic coordinate check, while free-text items retain one
+model review. Failed attempts do not consume the per-image acceptance limit.
 
 Accepted items are merged idempotently into `benchmark_items.progress.jsonl` using
 deterministic item IDs. The generation subgraph checkpoints after every processed row,
@@ -112,10 +112,11 @@ so replay after a checkpoint/file mismatch safely deduplicates accepted items. I
 dataset is exhausted before every target is reached, generation still succeeds with
 the actual items and records the per-task shortfall in graph state.
 
-The raw file keeps task/source-row order and original closed-task option order. Every
-item records `task_type` and `response_format`; `answer` is a choice letter, reference
-text, or an `xyxy` box. The final copy balances correct option positions inside each
-closed task while detection and free-text items pass through unchanged.
+The raw file keeps original closed-task option order. Each item contains only `id`,
+`task_id`, `image_id`, `image_path`, `question`, `options`, and `answer`; `answer` is a
+choice letter, reference text, or an `xyxy` box. Run the balance command manually to
+write a separate balanced copy; it recovers the correct semantic option from raw's
+letter and option order, while detection and free-text items pass through unchanged.
 
 Balance an existing raw file without modifying it:
 
