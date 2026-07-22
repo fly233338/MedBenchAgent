@@ -12,6 +12,7 @@ venv/
 
 # Local coding-agent instructions
 AGENTS.md
+ARCHITECTURE.md
 
 # Tool caches and reports
 .pytest_cache/
