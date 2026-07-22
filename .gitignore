@@ -40,5 +40,6 @@ docs/architecture/medbenchagent-agent-architecture-preview.svg
 docs/architecture/medbenchagent-agent-architecture.drawio
 
 datasets/
-materials/
+# Medical PDFs require source-specific redistribution permission.
+materials/**/*.pdf
 models/
