@@ -56,6 +56,16 @@ are fixed and the remaining count is redistributed across unnamed tasks. Counts 
 written to the working Blueprint only after confirmation. A zero-count task remains in
 the Blueprint but skips RAG design and generation.
 
+## Medical references
+
+The workflow always scans the repository `materials/` directory after sample-count confirmation.
+Store extractable PDFs in one of these top-level categories: `clinical_guidelines`,
+`imaging_reporting_and_classification`, `imaging_acquisition_and_quality`,
+`consensus_statements`, `evidence_reviews`, or `regulations_and_policy`. The user is shown
+every categorized PDF and can select one or more files in natural language. DeepSeek maps that
+response to exact relative paths, code validates the selection, and only the selected PDFs enter
+RAG retrieval, indexing, and citations. PDFs outside these categories are configuration errors.
+
 ## Development
 
 Copy `.env.example` to `.env`. The default configuration targets the local vLLM

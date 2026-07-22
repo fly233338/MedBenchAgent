@@ -103,6 +103,62 @@ def test_extract_pdf_chunks_accepts_uppercase_and_ignores_auxiliary_files(
     assert len({chunk["chunk_id"] for chunk in chunks}) == len(chunks)
 
 
+def test_discover_and_extract_selected_categorized_medical_pdfs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    selected = tmp_path / "imaging_reporting_and_classification" / "selected.pdf"
+    unselected = tmp_path / "clinical_guidelines" / "unselected.pdf"
+    selected.parent.mkdir()
+    unselected.parent.mkdir()
+    selected.write_bytes(b"selected")
+    unselected.write_bytes(b"unselected")
+
+    class FakeReader:
+        def __init__(self, path: str) -> None:
+            self.pages = [SimpleNamespace(extract_text=lambda: f"{Path(path).stem} paragraph " * 40)]
+
+    monkeypatch.setattr(pdf_rag, "PdfReader", FakeReader)
+    materials = pdf_rag.discover_medical_materials(tmp_path)
+    fingerprint, chunks = pdf_rag.extract_pdf_chunks(
+        tmp_path,
+        ["imaging_reporting_and_classification/selected.pdf"],
+        chunk_size=120,
+        overlap=20,
+    )
+    unselected.write_bytes(b"changed unselected content")
+    unchanged_fingerprint, _ = pdf_rag.extract_pdf_chunks(
+        tmp_path,
+        ["imaging_reporting_and_classification/selected.pdf"],
+        chunk_size=120,
+        overlap=20,
+    )
+
+    assert materials == [
+        {
+            "category": "clinical_guidelines",
+            "category_label": "临床指南",
+            "file": "clinical_guidelines/unselected.pdf",
+        },
+        {
+            "category": "imaging_reporting_and_classification",
+            "category_label": "影像报告与分类标准",
+            "file": "imaging_reporting_and_classification/selected.pdf",
+        },
+    ]
+    assert len(fingerprint) == 64
+    assert unchanged_fingerprint == fingerprint
+    assert {chunk["pdf"] for chunk in chunks} == {
+        "imaging_reporting_and_classification/selected.pdf"
+    }
+
+
+def test_discover_medical_materials_rejects_uncategorized_pdf(tmp_path: Path) -> None:
+    (tmp_path / "guide.pdf").write_bytes(b"guide")
+
+    with pytest.raises(pdf_rag.RagUnavailable, match="supported category"):
+        pdf_rag.discover_medical_materials(tmp_path)
+
+
 def test_embedding_model_loads_once_per_resolved_path(tmp_path: Path, monkeypatch) -> None:
     loaded: list[str] = []
 

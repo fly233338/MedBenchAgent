@@ -30,7 +30,7 @@ from medbenchagent.generation import (
     initialize_generation,
 )
 from medbenchagent.llm import complete_json
-from medbenchagent.pdf_rag import LocalPdfRag, design_task, write_task_design
+from medbenchagent.pdf_rag import LocalPdfRag, design_task, discover_medical_materials, write_task_design
 from medbenchagent.sample_counts import distribute_sample_counts, write_sample_counts
 from medbenchagent.task_screening import (
     apply_task_plan,
@@ -39,6 +39,7 @@ from medbenchagent.task_screening import (
 )
 
 PROJECT_ROOT = Path(__file__).parents[3]
+MATERIALS_ROOT = PROJECT_ROOT / "materials"
 
 
 class BenchmarkInputState(TypedDict, total=False):
@@ -46,7 +47,6 @@ class BenchmarkInputState(TypedDict, total=False):
 
     messages: list[Any]
     user_requirement: str
-    materials_root: str
     seed: int
     balance_answer_positions: bool
 
@@ -70,7 +70,8 @@ class BenchmarkState(MessagesState, total=False):
     task_screening_report_path: str
     draft_sample_counts: dict[str, int]
     sample_counts_confirmed: bool
-    materials_root: str
+    selected_material_files: list[str]
+    material_selection_error: str
     rag_task_queue: list[str]
     rag_task_feedback: dict[str, str]
     rag_current_task_id: str
@@ -456,11 +457,60 @@ def _sample_count_review_node(state: BenchmarkState) -> dict[str, Any]:
     }
 
 
-def _materials_root_node(state: BenchmarkState) -> dict[str, Any]:
-    if state.get("materials_root"):
-        return {}
-    answer = interrupt({"kind": "materials_root", "question": "Provide the local directory containing PDF medical materials."})
-    return {"materials_root": str(answer).strip()}
+def _validate_material_selection(
+    response: object, materials: list[dict[str, str]]
+) -> list[str]:
+    if not isinstance(response, dict) or set(response) != {"selected_files"}:
+        raise ValueError('Material selection must be {"selected_files": ["exact relative PDF path"]}.')
+    selected_files = response.get("selected_files")
+    if not isinstance(selected_files, list) or not selected_files:
+        raise ValueError("Select at least one medical PDF.")
+    if not all(isinstance(file, str) for file in selected_files):
+        raise ValueError("Selected medical PDF paths must be strings.")
+    if len(selected_files) != len(set(selected_files)):
+        raise ValueError("Selected medical PDF paths must not repeat.")
+    available_files = {material["file"] for material in materials}
+    unknown_files = [file for file in selected_files if file not in available_files]
+    if unknown_files:
+        raise ValueError(f"Unknown medical PDF selection: {', '.join(unknown_files)}.")
+    return selected_files
+
+
+def _material_selection_action(answer: object, materials: list[dict[str, str]]) -> list[str]:
+    prompt = (
+        'Convert the user request into exactly {"selected_files":["exact relative PDF path"]}.\n'
+        "Select one or more files only from the scanned medical references. Use exact paths from the list, "
+        "including their category directory. Do not select directories or invent filenames.\n"
+        f"Scanned medical references: {json.dumps(materials, ensure_ascii=False)}\n"
+        f"User response: {answer}"
+    )
+    response = complete_json("Interpret a medical-reference selection. Return JSON only.", prompt)
+    try:
+        return _validate_material_selection(response, materials)
+    except ValueError as first_error:
+        repaired = complete_json(
+            "Repair a medical-reference selection. Return JSON only.",
+            f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+            f"Contract error: {first_error}",
+        )
+        return _validate_material_selection(repaired, materials)
+
+
+def _materials_choose_node(state: BenchmarkState) -> dict[str, Any]:
+    materials = discover_medical_materials(MATERIALS_ROOT)
+    answer = interrupt(
+        {
+            "kind": "materials_choose",
+            "materials": materials,
+            "error": state.get("material_selection_error", ""),
+            "question": "Choose one or more medical PDF references by filename or describe the references you need.",
+        }
+    )
+    try:
+        selected_files = _material_selection_action(answer, materials)
+    except ValueError as exc:
+        return {"selected_material_files": [], "material_selection_error": str(exc)}
+    return {"selected_material_files": selected_files, "material_selection_error": ""}
 
 
 def _rag_prepare_node(state: BenchmarkState) -> dict[str, Any]:
@@ -493,7 +543,11 @@ def _rag_design_task_node(state: BenchmarkState) -> dict[str, Any]:
     task = blueprint.get("tasks", {}).get(task_id)
     if not isinstance(task, dict):
         raise ValueError(f"Working Blueprint does not contain queued task: {task_id}")
-    rag = LocalPdfRag(state["materials_root"], PROJECT_ROOT / "benchmarks" / "rag_cache")
+    rag = LocalPdfRag(
+        MATERIALS_ROOT,
+        PROJECT_ROOT / "benchmarks" / "rag_cache",
+        state["selected_material_files"],
+    )
     design = design_task(
         rag,
         blueprint.get("benchmark_info", state["benchmark_info"]),
@@ -690,7 +744,7 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_node("apply_task_plan", _apply_task_plan_node)
     graph.add_node("sample_count_prepare", _sample_count_prepare_node)
     graph.add_node("sample_count_review", _sample_count_review_node)
-    graph.add_node("materials_root", _materials_root_node)
+    graph.add_node("materials_choose", _materials_choose_node)
     graph.add_node("rag_prepare", _rag_prepare_node)
     graph.add_node("rag_design_task", _rag_design_task_node)
     graph.add_node("design_review", _design_review_node)
@@ -726,10 +780,14 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_edge("sample_count_prepare", "sample_count_review")
     graph.add_conditional_edges(
         "sample_count_review",
-        lambda state: "materials_root" if state.get("sample_counts_confirmed") else "sample_count_review",
-        {"materials_root": "materials_root", "sample_count_review": "sample_count_review"},
+        lambda state: "materials_choose" if state.get("sample_counts_confirmed") else "sample_count_review",
+        {"materials_choose": "materials_choose", "sample_count_review": "sample_count_review"},
     )
-    graph.add_edge("materials_root", "rag_prepare")
+    graph.add_conditional_edges(
+        "materials_choose",
+        lambda state: "rag_prepare" if state.get("selected_material_files") else "materials_choose",
+        {"rag_prepare": "rag_prepare", "materials_choose": "materials_choose"},
+    )
     graph.add_edge("rag_prepare", "rag_design_task")
     graph.add_conditional_edges(
         "rag_design_task",

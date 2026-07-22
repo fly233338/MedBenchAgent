@@ -46,8 +46,10 @@ def test_compiled_graph_exposes_rag_task_loop() -> None:
         ("dataset_profile", "dataset_profile"),
         ("task_plan_review", "apply_task_plan"),
         ("task_plan_review", "task_plan_revise"),
-        ("sample_count_review", "materials_root"),
+        ("sample_count_review", "materials_choose"),
         ("sample_count_review", "sample_count_review"),
+        ("materials_choose", "materials_choose"),
+        ("materials_choose", "rag_prepare"),
         ("rag_design_task", "rag_design_task"),
         ("rag_design_task", "design_review"),
         ("design_review", "generation_request"),
@@ -62,7 +64,6 @@ def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
     assert set(graph.builder.input_schema.__annotations__) == {
         "messages",
         "user_requirement",
-        "materials_root",
         "seed",
         "balance_answer_positions",
     }
@@ -231,7 +232,7 @@ def test_rag_processes_one_blueprint_task_and_persists_it(tmp_path: Path, monkey
     state = {
         "working_blueprint_path": str(path),
         "benchmark_info": {"language": "en"},
-        "materials_root": str(tmp_path),
+        "selected_material_files": ["imaging_reporting_and_classification/guide.pdf"],
         "rag_task_queue": ["view"],
         "rag_task_feedback": {},
         "rag_completed_count": 0,
@@ -243,6 +244,36 @@ def test_rag_processes_one_blueprint_task_and_persists_it(tmp_path: Path, monkey
     assert written["question_templates"] == ["Which view is shown?"]
     assert result["rag_task_queue"] == []
     assert result["rag_completed_count"] == 1
+
+
+def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_choice(
+    monkeypatch
+) -> None:
+    materials = [
+        {
+            "category": "imaging_reporting_and_classification",
+            "category_label": "影像报告与分类标准",
+            "file": "imaging_reporting_and_classification/guide.pdf",
+        }
+    ]
+    monkeypatch.setattr(workflow, "discover_medical_materials", lambda _root: materials)
+    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "选择指南")
+    monkeypatch.setattr(
+        workflow, "complete_json", lambda *_args: {"selected_files": [materials[0]["file"]]}
+    )
+
+    selected = workflow._materials_choose_node({})
+
+    assert selected == {
+        "selected_material_files": [materials[0]["file"]],
+        "material_selection_error": "",
+    }
+
+    monkeypatch.setattr(workflow, "complete_json", lambda *_args: {"selected_files": ["missing.pdf"]})
+    invalid = workflow._materials_choose_node({})
+
+    assert invalid["selected_material_files"] == []
+    assert "Unknown medical PDF selection" in invalid["material_selection_error"]
 
 
 def test_sample_counts_are_evenly_prepared_and_written_only_after_confirmation(

@@ -18,6 +18,14 @@ from medbenchagent.qwen_reranker import score_pairs
 CHUNK_SIZE = 1_200
 CHUNK_OVERLAP = 200
 CACHE_SCHEMA_VERSION = "2"
+MATERIAL_CATEGORIES = {
+    "clinical_guidelines": "临床指南",
+    "imaging_reporting_and_classification": "影像报告与分类标准",
+    "imaging_acquisition_and_quality": "影像采集与质量控制",
+    "consensus_statements": "专家共识",
+    "evidence_reviews": "证据综述",
+    "regulations_and_policy": "法规与政策",
+}
 RAG_DESIGN_FIELDS = {
     "question_templates",
     "options",
@@ -43,6 +51,31 @@ class RagUnavailable(RuntimeError):
 
 class QuestionDesignError(ValueError):
     """Raised after a task design violates its contract twice."""
+
+
+def discover_medical_materials(materials_root: str | Path) -> list[dict[str, str]]:
+    """List categorized PDF references relative to the fixed materials directory."""
+    root = Path(materials_root).expanduser().resolve()
+    if not root.is_dir():
+        raise RagUnavailable(f"Medical-material directory does not exist: {root}")
+    materials: list[dict[str, str]] = []
+    for pdf in sorted(path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"):
+        relative_path = pdf.relative_to(root)
+        category = relative_path.parts[0] if len(relative_path.parts) > 1 else ""
+        if category not in MATERIAL_CATEGORIES:
+            raise RagUnavailable(
+                f"Medical PDF must be stored in a supported category directory: {relative_path.as_posix()}"
+            )
+        materials.append(
+            {
+                "category": category,
+                "category_label": MATERIAL_CATEGORIES[category],
+                "file": relative_path.as_posix(),
+            }
+        )
+    if not materials:
+        raise RagUnavailable("No categorized PDF medical materials were found.")
+    return materials
 
 
 def _file_hash(path: Path) -> str:
@@ -83,6 +116,7 @@ def _page_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 def extract_pdf_chunks(
     materials_root: str | Path,
+    selected_files: list[str] | None = None,
     chunk_size: int = CHUNK_SIZE,
     overlap: int = CHUNK_OVERLAP,
 ) -> tuple[str, list[dict[str, object]]]:
@@ -90,7 +124,27 @@ def extract_pdf_chunks(
     root = Path(materials_root).expanduser().resolve()
     if not root.is_dir():
         raise RagUnavailable(f"Medical-material directory does not exist: {root}")
-    pdfs = sorted(path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf")
+    if selected_files is None:
+        pdfs = sorted(
+            path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"
+        )
+    else:
+        if not selected_files or len(selected_files) != len(set(selected_files)):
+            raise RagUnavailable("Selected medical materials must be a non-empty unique file list.")
+        pdfs = []
+        for selected_file in selected_files:
+            if not isinstance(selected_file, str):
+                raise RagUnavailable("Selected medical material paths must be strings.")
+            pdf = (root / selected_file).resolve()
+            if (
+                not pdf.is_relative_to(root)
+                or not pdf.is_file()
+                or pdf.suffix.lower() != ".pdf"
+                or pdf.relative_to(root).as_posix() != selected_file
+            ):
+                raise RagUnavailable(f"Selected medical material is unavailable: {selected_file}")
+            pdfs.append(pdf)
+        pdfs.sort()
     if not pdfs:
         raise RagUnavailable("No PDF medical materials were found.")
 
@@ -155,8 +209,13 @@ def _model_fingerprint(path: Path) -> str:
 class LocalPdfRag:
     """Chroma retrieval with process-cached embedding and reranking models."""
 
-    def __init__(self, materials_root: str | Path, cache_root: str | Path) -> None:
-        source_hash, self.chunks = extract_pdf_chunks(materials_root)
+    def __init__(
+        self,
+        materials_root: str | Path,
+        cache_root: str | Path,
+        selected_files: list[str] | None = None,
+    ) -> None:
+        source_hash, self.chunks = extract_pdf_chunks(materials_root, selected_files)
         embedding_value = os.getenv("BGE_EMBEDDING_MODEL")
         reranker_value = os.getenv("BGE_RERANKER_MODEL")
         if not embedding_value or not reranker_value:
