@@ -26,7 +26,9 @@ def _task_plan_prompt(blueprint: dict[str, Any], profile: dict[str, Any]) -> str
         '"reason":"..."}}}. The tasks object must contain exactly every Blueprint task. '
         "A retain decision needs at least one supporting field. A drop decision needs no supporting "
         "fields. Supporting fields must exist in dataset_profile.fields. Do not invent fields or infer "
-        "values from field names. At least one task must be retained.\n\n"
+        "values from field names. For array-valued fields, inspect the `[*]` leaf path before deciding a "
+        "parent field is unsupported; a parent path may be null for missing annotations while its array leaf "
+        "contains valid values. At least one task must be retained.\n\n"
         f"Blueprint tasks: {json.dumps(blueprint['tasks'], ensure_ascii=False)}\n\n"
         f"Dataset profile: {json.dumps(profile, ensure_ascii=False)}"
     )

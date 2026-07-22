@@ -21,7 +21,7 @@ Context:
 - Supporting annotation: {supporting_annotation}
 
 Requirements:
-1. Write one substantial semantic paraphrase of the canonical question, not a trivial word substitution; avoid following its template verbatim and naturally vary wording, syntax, and word order.
+1. Rewrite the canonical question with a distinctly different grammatical structure, not just synonyms. Do not begin with generic image-reference lead-ins such as “Based on…”, “In this image…”, or “Given the image…”. Prefer starting with the clinical target or a direct interrogative construction, and vary the placement of the target within the sentence.
 2. The question must preserve the task meaning and be answerable from the image and candidate options only.
 3. Do not mention reports, annotations, labels, or unsupported clinical details.
 4. Do not reveal or hint at the correct answer.

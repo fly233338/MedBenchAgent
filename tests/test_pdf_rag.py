@@ -183,3 +183,16 @@ def test_embedding_model_loads_once_per_resolved_path(tmp_path: Path, monkeypatc
 
     assert first is second
     assert loaded == [str(tmp_path.resolve())]
+
+def test_design_prompt_keeps_letter_candidate_sets_compact() -> None:
+    system, _ = pdf_rag._design_prompt(
+        {"language": "en"},
+        "view_identification",
+        _task(),
+        "",
+        "",
+        None,
+    )
+
+    assert "most appropriate compact candidate set" in system
+    assert "merely to add distractors" in system

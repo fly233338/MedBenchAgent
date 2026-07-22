@@ -362,7 +362,9 @@ def _design_prompt(
         "produce one question and answer without inventing facts. Do not return task_id, citations, "
         "validation_rules, placeholder bindings, answer fields, mappings, instance paths, or bbox fields. "
         "For letter tasks, return exactly one canonical question template and options without A/B-style "
-        "position labels. "
+        "position labels. For letter tasks, use the available annotation support and retrieved medical "
+        "knowledge to design the most appropriate compact candidate set; do not broaden the option space "
+        "merely to add distractors. "
         "When no PDF excerpt is supplied, use generic wording and do not claim a specific guideline basis."
     )
     user = (

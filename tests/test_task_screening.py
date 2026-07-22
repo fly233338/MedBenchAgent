@@ -130,3 +130,9 @@ def test_task_plan_rejects_unknown_tasks_and_all_dropped_tasks() -> None:
     all_dropped = {"tasks": {task_id: {"decision": "drop", "supporting_fields": [], "reason": "No."} for task_id in _blueprint()["tasks"]}}
     _validated, errors = screening.validate_task_plan(_blueprint(), _profile(), all_dropped)
     assert errors == ["at least one task must be retained"]
+
+def test_task_plan_prompt_checks_array_leaf_paths() -> None:
+    prompt = screening._task_plan_prompt(_blueprint(), _profile())
+
+    assert "For array-valued fields" in prompt
+    assert "`[*]` leaf path" in prompt

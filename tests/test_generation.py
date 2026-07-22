@@ -293,3 +293,8 @@ def test_stage_progress_is_resumed_and_cleaned_only_after_raw_merge(tmp_path: Pa
 
     assert _read_items(result.raw_output_path)[0]["id"] == "existing"
     assert not progress.exists()
+
+def test_vqa_prompt_requires_distinct_question_structure() -> None:
+    assert "distinctly different grammatical structure" in vqa.VQA_GENERATION_PROMPT
+    assert "Based on…" in vqa.VQA_GENERATION_PROMPT
+    assert "On this mammogram" not in vqa.VQA_GENERATION_PROMPT
