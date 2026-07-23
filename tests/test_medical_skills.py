@@ -28,6 +28,8 @@ FETCH_SCRIPT = (
     / "scripts"
     / "fetch_sources.py"
 )
+NORMALIZE_SCHEMA = PROJECT_ROOT / ".codex" / "skills" / "normalize-medical-image-dataset" / "schema.json"
+PROJECT_SCHEMA = PROJECT_ROOT / "src" / "medbenchagent" / "schemas" / "annotation.v1.schema.json"
 
 
 def _load_module(name: str, path: Path):
@@ -66,6 +68,16 @@ def _manifest_row(source: str, png: str) -> dict:
         "status": "converted",
         "png_relative_path": png,
     }
+
+
+def test_normalization_schema_uses_direct_annotation_modality_and_anatomy() -> None:
+    skill_schema = json.loads(NORMALIZE_SCHEMA.read_text(encoding="utf-8"))
+    project_schema = json.loads(PROJECT_SCHEMA.read_text(encoding="utf-8"))
+
+    annotation_properties = skill_schema["properties"]["annotation"]["properties"]
+    assert skill_schema == project_schema
+    assert {"modality", "anatomy"} <= set(annotation_properties)
+    assert "metadata" not in annotation_properties
 
 
 def test_normalization_validator_checks_schema_manifest_and_files(tmp_path: Path) -> None:

@@ -50,11 +50,8 @@
     }
   ],
   "annotation_mapping": {
-    "annotation.modality": "Constant 'X-ray' from the source imaging representation and mammography dataset documentation.",
-    "annotation.metadata": {
-      "modality": "Constant 'Mammography' from dataset documentation.",
-      "anatomy": "Constant 'Breast' from dataset documentation."
-    },
+    "annotation.modality": "Constant 'Mammography' from dataset documentation.",
+    "annotation.anatomy": "Constant 'Breast' from dataset documentation.",
     "annotation.breast": {
       "source_row_entity": "one breast-level row per image",
       "columns": [

@@ -34,7 +34,7 @@ Detailed inventory is recorded in `source_inventory.json`.
 - `annotation.breast`: breast-level image fields from `breast-level_annotations.csv`.
 - `annotation.dicom_metadata`: metadata fields from `metadata.csv`, with numeric and
   list-like DICOM values parsed into JSON-compatible numbers/lists where unambiguous.
-- `annotation.metadata`: fixed `Mammography` modality and `Breast` anatomy from the
+- `annotation.modality` and `annotation.anatomy`: fixed `Mammography` modality and `Breast` anatomy from the
   dataset documentation because these values are not supplied as source annotation fields.
 - `annotation.findings`: one object per source finding row, preserving row grouping with
   `finding_categories`, `finding_birads`, and `bbox`. Empty finding BI-RADS and empty
@@ -52,7 +52,7 @@ The complete plan is recorded in `conversion_plan.json`.
 - `uv run python datasets/Mammography/Vin-Dr-normalized/convert_vindr.py`: exit 0; wrote 20,000
   records.
 - Second identical conversion command: exit 0; annotation SHA-256 remained
-  `e049b8d63b315c82cc2a13e9e1f981f00c4115dd5a3b60fb2097f7c960b24087`.
+  `09ff392c7b4f31300f10ec0a7ad31f0b84db79839b816138e7bb45799698f41c`.
 - Independent logical validation: exit 0; verified 20,000 records, 20,000 unique image
   IDs, sorted output order, non-empty relative image paths, and all 20,486 finding rows
   accounted for.
@@ -60,15 +60,14 @@ The complete plan is recorded in `conversion_plan.json`.
   `uv run python .codex\skills\normalize-medical-image-dataset\scripts\validate_annotation.py --annotation datasets\Mammography\Vin-Dr-normalized\annotation.jsonl`
   exited 0; it verified 20,000 structurally valid records and schema parity.
 - Repository loader/profile validation command exited 0; it verified 20,000 records and
-  exposed `annotation.metadata.modality=Mammography` and `annotation.metadata.anatomy=Breast`.
-- `uv run ruff check .`: exit 0.
+  exposed `annotation.modality=Mammography` and `annotation.anatomy=Breast`.
 - `uv run ruff check .`: exit 0.
 - `uv run pytest`: exit 0; 88 passed, 1 skipped.
 
 ## Hashes
 
 - `annotation.jsonl`:
-  `e049b8d63b315c82cc2a13e9e1f981f00c4115dd5a3b60fb2097f7c960b24087`
+  `09ff392c7b4f31300f10ec0a7ad31f0b84db79839b816138e7bb45799698f41c`
 - `breast-level_annotations.csv`:
   `8e5369dbd5cbd52a0fa9a4567a27cd04658611a55387dd751dc01473d5723f41`
 - `finding_annotations.csv`:

@@ -13,15 +13,8 @@
     "annotation": {
       "type": "object",
       "properties": {
-        "metadata": {
-          "type": "object",
-          "description": "Dataset-level metadata. Populate modality and anatomy from source annotations when available; otherwise use documented dataset information.",
-          "properties": {
-            "modality": {"type": "string"},
-            "anatomy": {"type": "string"}
-          },
-          "additionalProperties": true
-        }
+        "modality": {"type": "string"},
+        "anatomy": {"type": "string"}
       },
       "additionalProperties": true
     }

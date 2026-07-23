@@ -289,11 +289,8 @@ def build_record(
         "case_id": None,
         "study_id": breast_row["study_id"],
         "annotation": {
-            "modality": "X-ray",
-            "metadata": {
-                "modality": "Mammography",
-                "anatomy": "Breast",
-            },
+            "modality": "Mammography",
+            "anatomy": "Breast",
             "breast": {
                 "series_id": breast_row["series_id"],
                 "laterality": breast_row["laterality"],

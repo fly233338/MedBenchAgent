@@ -3,15 +3,15 @@
   "source_dir": "D:\\Code\\Agent\\medbenchagent\\datasets\\Mammography\\Vin-Dr",
   "output_annotation": "D:\\Code\\Agent\\medbenchagent\\datasets\\Mammography\\Vin-Dr-normalized\\annotation.jsonl",
   "schema_path": "D:\\Code\\Agent\\medbenchagent\\.codex\\skills\\normalize-medical-image-dataset\\schema.json",
-  "schema_sha256": "181d9d61b6e2e815aaaf15d2ed623f1d7268cc8ad1807ff299ca57ffcce33702",
+  "schema_sha256": "9ab3cd74911ab74d23a25c6c190f60bcb513e30a2ef02d974a1188da24f2b223",
   "source_hashes": {
     "breast-level_annotations.csv": "8e5369dbd5cbd52a0fa9a4567a27cd04658611a55387dd751dc01473d5723f41",
     "finding_annotations.csv": "59cae3a856026b8b5822ed545e5150efce43f8f2f8aca991ce69d1fd221e4cbc",
     "metadata.csv": "44ec668cb1a43b526a4c9ab341ae748edbd26b451d7ad72a139e070d13020206",
     "SHA256SUMS.txt": "221bd57f7d45fbc25f642fdb676b306b3246380677ac2afebc62b4f298cc2c08"
   },
-  "converter_sha256": "47dd52cbef5aebea94d43542e61247ae01691751b2fd0a2e5e23b9c2ffa5fb75",
-  "annotation_sha256": "e049b8d63b315c82cc2a13e9e1f981f00c4115dd5a3b60fb2097f7c960b24087",
+  "converter_sha256": "0b0824888fe419dd7b5d173b7de00c7c82f7cd06d32d1b9390133258191fb695",
+  "annotation_sha256": "09ff392c7b4f31300f10ec0a7ad31f0b84db79839b816138e7bb45799698f41c",
   "validation": {
     "required_top_level_fields": [
       "image_id",

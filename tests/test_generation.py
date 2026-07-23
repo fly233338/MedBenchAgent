@@ -86,11 +86,11 @@ def _candidate(task_id: str, annotation: dict, supporting_annotation: dict, task
     )
 
 
-def test_generation_prompts_use_annotation_metadata_modality() -> None:
+def test_generation_prompts_use_annotation_modality() -> None:
     task = _task("letter", ["annotation.status"])
     candidate = _candidate(
         "vqa",
-        {"metadata": {"modality": "Mammography"}},
+        {"modality": "Mammography"},
         {"status": "benign"},
         task,
     )
@@ -98,21 +98,21 @@ def test_generation_prompts_use_annotation_metadata_modality() -> None:
     prompt = vqa._prompt(candidate, {"language": "en", "modality": "CT"})
 
     assert "- Modality: Mammography" in prompt
-    missing_metadata = _candidate("vqa", {}, {"status": "benign"}, task)
-    assert "- Modality: " in vqa._prompt(missing_metadata, {"language": "en", "modality": "CT"})
-    assert "- Modality: CT" not in vqa._prompt(missing_metadata, {"language": "en", "modality": "CT"})
+    missing_modality = _candidate("vqa", {}, {"status": "benign"}, task)
+    assert "- Modality: " in vqa._prompt(missing_modality, {"language": "en", "modality": "CT"})
+    assert "- Modality: CT" not in vqa._prompt(missing_modality, {"language": "en", "modality": "CT"})
 
 
 def test_grounding_modes_require_different_annotation_context() -> None:
     detection = _candidate(
         "detection",
-        {"metadata": {"modality": "Mammography"}},
+        {"modality": "Mammography"},
         {"bbox": [1, 2, 8, 9]},
         _task("bbox", ["annotation.bbox[*]"]),
     )
     visual = _candidate(
         "visual_grounding",
-        {"metadata": {"modality": "Mammography"}},
+        {"modality": "Mammography"},
         {"findings": [{"finding_categories": ["Mass"], "bbox": [1, 2, 8, 9]}]},
         _task(
             "bbox",
@@ -121,7 +121,7 @@ def test_grounding_modes_require_different_annotation_context() -> None:
     )
     unnamed_visual = _candidate(
         "visual_grounding",
-        {"metadata": {"modality": "Mammography"}},
+        {"modality": "Mammography"},
         {"bbox": [1, 2, 8, 9]},
         _task("bbox", ["annotation.bbox[*]"]),
     )
