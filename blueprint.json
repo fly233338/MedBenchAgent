@@ -49,7 +49,7 @@
     },
 
     "anatomy_identification": {
-      "description": "Identify the primary anatomical structure, organ, or tissue shown in the image.",
+      "description": "Identify the dominant anatomical region or primary body structure represented in the image.",
       "require": "This task applies whenever the depicted anatomy can be reliably determined from the annotation, image metadata, or dataset description. A dataset containing only one anatomical category is still sufficient for generating this task.",
       "task_type": "close_vqa",
       "response_format": "letter",
@@ -59,7 +59,7 @@
     },
 
     "anatomy_attribute": {
-      "description": "Determine a global anatomical or tissue-level characteristic that is not specific to a focal finding.",
+      "description": "Determine a structured attribute describing the composition, morphology, or global characteristic of the target anatomy.",
       "require": "This task requires a structured anatomy-attribute field such as breast density, organ size, tissue composition, parenchymal pattern, or anatomical development stage.",
       "task_type": "close_vqa",
       "response_format": "letter",

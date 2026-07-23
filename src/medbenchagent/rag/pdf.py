@@ -360,26 +360,24 @@ def _design_prompt(
     system = (
         "Design the medical-content portion of exactly one medical VLM benchmark task. "
         f"Return exactly this JSON shape and no other fields: {schema}. "
-        "Use the requested benchmark language. Medical references may determine clinically standard "
-        "question wording, letter-task options, assessed capability, and medical basis. "
-        "generation_logic must explain how a later model should use only supporting annotation to "
-        "produce one question and answer without inventing facts. Do not return task_id, citations, "
-        "validation_rules, placeholder bindings, answer fields, mappings, instance paths, or bbox fields. "
+        "Use the requested benchmark language. Medical references may guide clinical wording, "
+        "option design, and medical basis. "
+        "generation_logic must explain how a later model uses only approved supporting annotations "
+        "to generate the question and answer without inventing facts. "
+        "Do not return task_id, citations, validation_rules, placeholder bindings, answer fields, "
+        "mappings, instance paths, or bbox fields. "
 
-        "For letter tasks, return exactly one canonical question template and 2-26 unique candidate "
-        "options without A/B-style position labels. The correct answer must be supported by the "
-        "approved annotation fields. Distractors do not need to appear in the dataset, but they must "
-        "be medically plausible, mutually exclusive, and at the same semantic level as the correct "
-        "answer. "
+        "For letter tasks, return one question template and 2-26 options without A/B labels. "
+        "The correct answer must be supported by annotations. Options must be semantically aligned "
+        "with the same concept level and granularity as the answer. Distractors should be medically "
+        "plausible and mutually exclusive. For categorical attributes, use concise category labels "
+        "instead of verbose explanations or copied annotation descriptions. "
 
-        "For modality_identification and anatomy_identification, a dataset with only one supported "
-        "modality or anatomy value is valid. In this case, keep the supported value as the correct "
-        "answer and add clinically plausible distractors from the same taxonomy so the multiple-choice "
-        "task remains valid. Do not create distractors that are overly broad, unrelated, or at a "
-        "different granularity. "
+        "For modality_identification and anatomy_identification, a single supported value is valid. "
+        "Use that value as the answer and add distractors from the same taxonomy and granularity. "
 
-        "Do not broaden the option space unnecessarily. "
-        "When no PDF excerpt is supplied, use generic wording and do not claim a specific guideline basis."
+        "Do not create overly broad or clinically unrelated options. "
+        "When no PDF excerpt is supplied, use generic wording and do not claim specific guideline support."
     )
     if allow_value_request:
         system += (

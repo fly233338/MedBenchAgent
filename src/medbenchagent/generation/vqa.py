@@ -10,24 +10,30 @@ from medbenchagent.llm import complete_json
 
 VQA_GENERATION_PROMPT = """
 Generate one letter-choice question for a medical image VQA benchmark.
-
 Context:
 - Language: {language}
 - Modality: {modality}
-- Task ID: {task_id}
 - Task definition: {task_definition}
 - Generation logic: {generation_logic}
-- Canonical question: {canonical_question}
+- Question anchor: {question_anchor}
 - Candidate options: {candidate_options}
 - Supporting annotation: {supporting_annotation}
-
 Requirements:
-1. Rewrite the canonical question with a distinctly different grammatical structure, not just synonyms. Do not begin with generic image-reference lead-ins such as “Based on…”, “In this image…”, or “Given the image…”. Prefer starting with the clinical target or a direct interrogative construction, and vary the placement of the target within the sentence.
-2. The question must preserve the task meaning and be answerable from the image and candidate options only.
-3. Do not mention reports, annotations, labels, or unsupported clinical details.
-4. Do not reveal or hint at the correct answer.
-5. Normalize the annotation-supported answer to one exact candidate option; do not infer beyond the annotation.
-
+1. Generate a controlled linguistic variation of the question anchor while preserving the
+   exact medical meaning and task intent. Do not modify, generalize, replace, remove, or
+   reinterpret medical concepts, including anatomical structures, organs, tissues,
+   imaging modalities, pathology terms, clinical attributes, and task-specific concepts.
+   Do not change the capability being evaluated or introduce new interpretations.
+2. Apply only surface-level linguistic changes to create variation. You may adjust sentence
+   structure, word order, question formulation, function words, prepositions, or general
+   phrasing. The generated question should be linguistically different but semantically
+   equivalent to the question anchor. Keep modality-specific and medical terminology
+   explicit when they appear in the anchor.
+3. The question must be answerable from the image and candidate options only.
+   Do not mention reports, annotations, labels, metadata, or unsupported clinical details.
+4. Do not reveal, describe, or hint at the correct answer in the question.
+5. Normalize the annotation-supported answer to exactly one candidate option.
+   Do not infer beyond the supporting annotation.
 Return JSON only:
 {{"question": "question stem", "answer": "one exact candidate option"}}
 """.strip()
