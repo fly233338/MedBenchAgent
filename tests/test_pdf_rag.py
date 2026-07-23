@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import medbenchagent.pdf_rag as pdf_rag
+import medbenchagent.rag.pdf as pdf_rag
 
 
 def _task(response_format: str = "letter") -> dict:
@@ -26,6 +26,21 @@ def _design(response_format: str = "letter") -> dict:
     if response_format == "letter":
         design["options"] = ["CC", "MLO"]
     return design
+
+
+def _profile(*paths: str) -> dict:
+    return {
+        "fields": {
+            path: {
+                "path": path,
+                "types": ["string"],
+                "non_empty_images": 10,
+                "distinct_value_count": 2,
+                "top_values": ["CC", "MLO"],
+            }
+            for path in paths
+        }
+    }
 
 
 def test_validate_task_design_accepts_only_embedded_rag_fields() -> None:
@@ -77,10 +92,66 @@ def test_design_task_repairs_one_invalid_response(monkeypatch) -> None:
         ]
     )
 
-    result = pdf_rag.design_task(rag, {"language": "en"}, "view", _task())
+    result = pdf_rag.design_task(
+        rag, {"language": "en"}, "view", _task(), dataset_profile=_profile("annotation.view")
+    )
 
     assert result["options"] == ["CC", "MLO"]
     assert result["citations"] == [{"pdf": "guide.pdf", "page": 1, "chunk_id": "guide-p1-c0"}]
+
+
+def test_design_task_requests_safe_field_values_only_when_needed(monkeypatch) -> None:
+    responses = iter([{"requested_field_values": ["annotation.view"]}, _design()])
+    calls: list[str] = []
+
+    def complete(system: str, _user: str) -> dict:
+        calls.append(system)
+        return next(responses)
+
+    monkeypatch.setattr(pdf_rag, "complete_json", complete)
+    rag = SimpleNamespace(retrieve=lambda _query: [])
+
+    result = pdf_rag.design_task(
+        rag, {"language": "en"}, "view", _task(), dataset_profile=_profile("annotation.view")
+    )
+
+    assert result["options"] == ["CC", "MLO"]
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("requested_path", "task", "profile", "message"),
+    [
+        (
+            "annotation.dicom_metadata.view_position",
+            _task() | {"supporting_fields": ["annotation.dicom_metadata.view_position"]},
+            _profile("annotation.dicom_metadata.view_position"),
+            "not eligible",
+        ),
+        (
+            "annotation.findings[*].bbox[*]",
+            _task() | {"supporting_fields": ["annotation.findings[*].bbox[*]"]},
+            _profile("annotation.findings[*].bbox[*]"),
+            "not eligible",
+        ),
+        ("annotation.other", _task(), _profile("annotation.other"), "not a supporting field"),
+        (
+            "annotation.view",
+            _task(),
+            {"fields": {"annotation.view": {"path": "annotation.view"}}},
+            "no safe top_values",
+        ),
+    ],
+)
+def test_design_task_rejects_unsafe_field_value_requests(
+    monkeypatch, requested_path: str, task: dict, profile: dict, message: str
+) -> None:
+    monkeypatch.setattr(
+        pdf_rag, "complete_json", lambda *_args: {"requested_field_values": [requested_path]}
+    )
+
+    with pytest.raises(ValueError, match=message):
+        pdf_rag.design_task(SimpleNamespace(retrieve=lambda _query: []), {"language": "en"}, "view", task, dataset_profile=profile)
 
 
 def test_extract_pdf_chunks_accepts_uppercase_and_ignores_auxiliary_files(

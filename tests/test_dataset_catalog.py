@@ -6,6 +6,11 @@ import pytest
 import medbenchagent.dataset_catalog as catalog
 
 
+def test_default_catalog_is_the_dataset_local_runtime_catalog() -> None:
+    assert catalog.DATASET_CATALOG_PATH == catalog.PROJECT_ROOT / "datasets" / "dataset_catalog.json"
+    assert catalog.load_dataset_catalog()[0]["id"] == "vindr-mammo"
+
+
 def _entry(dataset_id: str, *, available: bool = True) -> dict:
     return {
         "id": dataset_id,

@@ -13,6 +13,7 @@ venv/
 # Local coding-agent instructions
 AGENTS.md
 ARCHITECTURE.md
+!docs/ARCHITECTURE.md
 TODO.md
 
 # Tool caches and reports
@@ -40,7 +41,8 @@ Thumbs.db
 docs/architecture/medbenchagent-agent-architecture-preview.svg
 docs/architecture/medbenchagent-agent-architecture.drawio
 
-datasets/
+datasets/*
+!datasets/dataset_catalog.json
 # Medical PDFs require source-specific redistribution permission.
 materials/**/*.pdf
 models/

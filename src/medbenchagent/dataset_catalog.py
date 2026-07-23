@@ -9,7 +9,7 @@ from typing import Any, TypedDict
 from medbenchagent.llm import complete_json
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATASET_CATALOG_PATH = PROJECT_ROOT / "dataset_catalog.json"
+DATASET_CATALOG_PATH = PROJECT_ROOT / "datasets" / "dataset_catalog.json"
 
 
 class DatasetCatalogError(ValueError):

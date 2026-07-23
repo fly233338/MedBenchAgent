@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 
-import medbenchagent.generation as generation
-import medbenchagent.generation_free_text as free_text
-import medbenchagent.generation_grounding as grounding
-import medbenchagent.generation_vqa as vqa
+import medbenchagent.generation.engine as generation
+import medbenchagent.generation.free_text as free_text
+import medbenchagent.generation.grounding as grounding
+import medbenchagent.generation.vqa as vqa
 from medbenchagent.dataset import prepare_annotation_dataset
 
 
@@ -137,8 +137,8 @@ def test_stages_restart_database_cursor_and_keep_independent_limits(tmp_path: Pa
     monkeypatch.setattr(generation, "_next_candidate_record", wrapped)
     generation.generate_raw_benchmark(request)
 
-    assert ("medbenchagent.generation_vqa", 0) in cursors
-    assert ("medbenchagent.generation_grounding", 0) in cursors
+    assert ("medbenchagent.generation.vqa", 0) in cursors
+    assert ("medbenchagent.generation.grounding", 0) in cursors
 
 
 def test_each_stage_applies_its_own_three_task_image_limit(tmp_path: Path, monkeypatch) -> None:

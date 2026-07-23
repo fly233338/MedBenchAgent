@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from medbenchagent.qwen_reranker import clear_reranker_cache, score_pairs
+from medbenchagent.rag.reranker import clear_reranker_cache, score_pairs
 
 
 class _FakeTokenizer:

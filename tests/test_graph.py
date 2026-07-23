@@ -6,6 +6,8 @@ from langgraph.checkpoint.memory import MemorySaver
 
 import medbenchagent.workflow.graph as workflow
 from medbenchagent.contracts import GenerationResult
+from medbenchagent.generation import graph as generation_workflow
+from medbenchagent.rag import graph as rag_workflow
 
 
 def _task(response_format: str = "letter") -> dict:
@@ -33,7 +35,7 @@ def _rag_fields(response_format: str = "letter") -> dict:
     return fields
 
 
-def test_compiled_graph_groups_rag_and_generation_as_root_stages() -> None:
+def test_compiled_graph_exposes_rag_and_generation_as_expandable_subgraphs() -> None:
     graph = workflow.compile_benchmark_graph().get_graph()
     conditional_edges = {(edge.source, edge.target) for edge in graph.edges if edge.conditional}
 
@@ -55,9 +57,13 @@ def test_compiled_graph_groups_rag_and_generation_as_root_stages() -> None:
     assert {"rag_designs", "generate_raw_benchmark"} <= root_nodes
     assert not {"rag_prepare", "rag_design_task", "design_review"} & root_nodes
 
-    rag_graph = workflow.compile_rag_designs_subgraph()
-    assert rag_graph.builder.input_schema is workflow.RagDesignInputState
-    assert rag_graph.builder.output_schema is workflow.RagDesignOutputState
+    expanded = workflow.compile_benchmark_graph().get_graph(xray=True)
+    assert any("rag_prepare" in node for node in expanded.nodes)
+    assert any("generation_initialize" in node for node in expanded.nodes)
+
+    rag_graph = rag_workflow.compile_rag_designs_subgraph()
+    assert rag_graph.builder.input_schema is rag_workflow.RagDesignInputState
+    assert rag_graph.builder.output_schema is rag_workflow.RagDesignOutputState
     assert set(rag_graph.builder.output_schema.__annotations__) == {"working_blueprint_path"}
 
 
@@ -235,22 +241,23 @@ def test_rag_processes_one_blueprint_task_and_persists_it(tmp_path: Path, monkey
         json.dumps({"benchmark_info": {"language": "en"}, "tasks": {"view": _task()}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(workflow, "LocalPdfRag", lambda *_args: object())
+    monkeypatch.setattr(rag_workflow, "LocalPdfRag", lambda *_args: object())
     monkeypatch.setattr(
-        workflow,
+        rag_workflow,
         "design_task",
-        lambda _rag, _info, _task_id, _task, feedback="": _rag_fields(),
+        lambda _rag, _info, _task_id, _task, dataset_profile, feedback="": _rag_fields(),
     )
     state = {
         "working_blueprint_path": str(path),
         "benchmark_info": {"language": "en"},
         "selected_material_files": ["imaging_reporting_and_classification/guide.pdf"],
+        "dataset_profile": {"fields": {}},
         "rag_task_queue": ["view"],
         "rag_task_feedback": {},
         "rag_completed_count": 0,
     }
 
-    result = workflow._rag_design_task_node(state)
+    result = rag_workflow._rag_design_task_node(state)
 
     written = json.loads(path.read_text(encoding="utf-8"))["tasks"]["view"]
     assert written["question_templates"] == ["Which view is shown?"]
@@ -351,7 +358,7 @@ def test_zero_count_tasks_are_skipped_by_rag_queue(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = workflow._rag_prepare_node({"working_blueprint_path": str(path)})
+    result = rag_workflow._rag_prepare_node({"working_blueprint_path": str(path)})
 
     assert result["rag_task_queue"] == ["view"]
     assert result["rag_total_count"] == 1
@@ -359,7 +366,7 @@ def test_zero_count_tasks_are_skipped_by_rag_queue(tmp_path: Path) -> None:
 
 def test_design_review_action_supports_multiple_targeted_revisions(monkeypatch) -> None:
     monkeypatch.setattr(
-        workflow,
+        rag_workflow,
         "complete_json",
         lambda *_args: {
             "action": "revise",
@@ -370,7 +377,7 @@ def test_design_review_action_supports_multiple_targeted_revisions(monkeypatch) 
         },
     )
 
-    result = workflow._design_review_action("修改两个任务", {"view": {}, "report": {}})
+    result = rag_workflow._design_review_action("修改两个任务", {"view": {}, "report": {}})
 
     assert [revision["task_id"] for revision in result["revisions"]] == ["view", "report"]
 
@@ -435,11 +442,11 @@ def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, m
             task_counts=state["generation_completed_counts"],
         )
 
-    monkeypatch.setattr(workflow, "initialize_generation", initialize)
-    monkeypatch.setattr(workflow, "advance_generation", advance)
-    monkeypatch.setattr(workflow, "finalize_generation", finalize)
+    monkeypatch.setattr(generation_workflow, "initialize_generation", initialize)
+    monkeypatch.setattr(generation_workflow, "advance_generation", advance)
+    monkeypatch.setattr(generation_workflow, "finalize_generation", finalize)
     checkpointer = MemorySaver()
-    graph = workflow.compile_generation_subgraph(checkpointer=checkpointer)
+    graph = generation_workflow.compile_generation_subgraph(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": "generation-test"}, "recursion_limit": 20}
 
     result = graph.invoke({"generation_request": {}}, config)
@@ -480,16 +487,16 @@ def test_rag_subgraph_checkpoints_private_queue_state(tmp_path: Path, monkeypatc
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(workflow, "LocalPdfRag", lambda *_args: object())
+    monkeypatch.setattr(rag_workflow, "LocalPdfRag", lambda *_args: object())
     monkeypatch.setattr(
-        workflow,
+        rag_workflow,
         "design_task",
-        lambda _rag, _info, _task_id, _task, feedback="": _rag_fields(),
+        lambda _rag, _info, _task_id, _task, dataset_profile, feedback="": _rag_fields(),
     )
-    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "确认")
-    monkeypatch.setattr(workflow, "complete_json", lambda *_args: {"action": "confirm"})
+    monkeypatch.setattr(rag_workflow, "interrupt", lambda _payload: "确认")
+    monkeypatch.setattr(rag_workflow, "complete_json", lambda *_args: {"action": "confirm"})
     checkpointer = MemorySaver()
-    graph = workflow.compile_rag_designs_subgraph(checkpointer=checkpointer)
+    graph = rag_workflow.compile_rag_designs_subgraph(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": "rag-test"}, "recursion_limit": 20}
 
     result = graph.invoke(
@@ -497,6 +504,7 @@ def test_rag_subgraph_checkpoints_private_queue_state(tmp_path: Path, monkeypatc
             "benchmark_info": {"language": "en"},
             "working_blueprint_path": str(path),
             "selected_material_files": ["imaging_reporting_and_classification/guide.pdf"],
+            "dataset_profile": {"fields": {}},
         },
         config,
     )
@@ -524,21 +532,22 @@ def test_rag_subgraph_streams_custom_progress(tmp_path: Path, monkeypatch) -> No
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(workflow, "LocalPdfRag", lambda *_args: object())
+    monkeypatch.setattr(rag_workflow, "LocalPdfRag", lambda *_args: object())
     monkeypatch.setattr(
-        workflow,
+        rag_workflow,
         "design_task",
-        lambda _rag, _info, _task_id, _task, feedback="": _rag_fields(),
+        lambda _rag, _info, _task_id, _task, dataset_profile, feedback="": _rag_fields(),
     )
-    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "确认")
-    monkeypatch.setattr(workflow, "complete_json", lambda *_args: {"action": "confirm"})
+    monkeypatch.setattr(rag_workflow, "interrupt", lambda _payload: "确认")
+    monkeypatch.setattr(rag_workflow, "complete_json", lambda *_args: {"action": "confirm"})
 
     events = list(
-        workflow.compile_rag_designs_subgraph().stream(
+        rag_workflow.compile_rag_designs_subgraph().stream(
             {
                 "benchmark_info": {"language": "en"},
                 "working_blueprint_path": str(path),
                 "selected_material_files": ["imaging_reporting_and_classification/guide.pdf"],
+                "dataset_profile": {"fields": {}},
             },
             stream_mode="custom",
         )
@@ -584,12 +593,12 @@ def test_generation_subgraph_streams_custom_progress(tmp_path: Path, monkeypatch
             task_counts={"view": 1},
         )
 
-    monkeypatch.setattr(workflow, "initialize_generation", initialize)
-    monkeypatch.setattr(workflow, "advance_generation", advance)
-    monkeypatch.setattr(workflow, "finalize_generation", finalize)
+    monkeypatch.setattr(generation_workflow, "initialize_generation", initialize)
+    monkeypatch.setattr(generation_workflow, "advance_generation", advance)
+    monkeypatch.setattr(generation_workflow, "finalize_generation", finalize)
 
     events = list(
-        workflow.compile_generation_subgraph().stream(
+        generation_workflow.compile_generation_subgraph().stream(
             {"generation_request": {}}, stream_mode="custom"
         )
     )

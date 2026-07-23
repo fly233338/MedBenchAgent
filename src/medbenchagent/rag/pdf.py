@@ -13,7 +13,7 @@ from typing import Any
 from pypdf import PdfReader
 
 from medbenchagent.llm import complete_json
-from medbenchagent.qwen_reranker import score_pairs
+from medbenchagent.rag.reranker import score_pairs
 
 CHUNK_SIZE = 1_200
 CHUNK_OVERLAP = 200
@@ -43,6 +43,7 @@ LEGACY_DESIGN_FIELDS = {
     "bbox_field",
     "bbox_format",
 }
+_VALUE_REQUEST_KEY = "requested_field_values"
 
 
 class RagUnavailable(RuntimeError):
@@ -351,6 +352,9 @@ def _design_prompt(
     context: str,
     feedback: str,
     current_design: dict[str, Any] | None,
+    field_value_summaries: dict[str, dict[str, object]] | None = None,
+    *,
+    allow_value_request: bool = True,
 ) -> tuple[str, str]:
     schema = _design_schema(task.get("response_format"))
     system = (
@@ -367,14 +371,64 @@ def _design_prompt(
         "merely to add distractors. "
         "When no PDF excerpt is supplied, use generic wording and do not claim a specific guideline basis."
     )
+    if allow_value_request:
+        system += (
+            " If the supplied task and supporting-field paths are insufficient to choose medically accurate "
+            "wording or options, return instead exactly "
+            '{"requested_field_values":["one supporting annotation path"]}. '
+            "Request only fields whose categorical values are necessary; do not request DICOM metadata, "
+            "bounding-box fields, raw annotations, or identifiers."
+        )
     user = (
         f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
         f"Task ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n"
         f"Requested revision: {feedback or 'none'}\n"
         f"Current RAG fields: {json.dumps(current_design or {}, ensure_ascii=False)}\n"
+        f"Requested field value summaries: {json.dumps(field_value_summaries or {}, ensure_ascii=False)}\n"
         f"PDF excerpts:\n{context or '[No sufficiently relevant PDF excerpt was retrieved.]'}"
     )
     return system, user
+
+
+def _field_value_summaries(
+    task_id: str,
+    task: dict[str, Any],
+    dataset_profile: dict[str, Any],
+    response: object,
+) -> dict[str, dict[str, object]] | None:
+    """Validate an optional on-demand request for safe categorical field summaries."""
+    if not isinstance(response, dict) or _VALUE_REQUEST_KEY not in response:
+        return None
+    if set(response) != {_VALUE_REQUEST_KEY}:
+        raise ValueError(f"{task_id}: field-value request must contain only {_VALUE_REQUEST_KEY}.")
+    requested = response[_VALUE_REQUEST_KEY]
+    if not isinstance(requested, list) or not requested or not all(isinstance(path, str) for path in requested):
+        raise ValueError(f"{task_id}: field-value request must be a non-empty list of paths.")
+    if len(requested) != len(set(requested)):
+        raise ValueError(f"{task_id}: field-value request must not repeat paths.")
+    supporting_fields = task.get("supporting_fields")
+    if not isinstance(supporting_fields, list):
+        raise ValueError(f"{task_id}: supporting_fields must be present before requesting values.")
+    fields = dataset_profile.get("fields")
+    if not isinstance(fields, dict):
+        raise ValueError(f"{task_id}: dataset profile must contain fields before requesting values.")
+
+    summaries: dict[str, dict[str, object]] = {}
+    for path in requested:
+        segments = [segment.removesuffix("[*]") for segment in path.split(".")]
+        if path not in supporting_fields:
+            raise ValueError(f"{task_id}: requested field is not a supporting field: {path}")
+        if path.startswith("annotation.dicom_metadata.") or "bbox" in segments:
+            raise ValueError(f"{task_id}: requested field is not eligible for value summaries: {path}")
+        profile_field = fields.get(path)
+        if not isinstance(profile_field, dict) or not isinstance(profile_field.get("top_values"), list):
+            raise ValueError(f"{task_id}: requested field has no safe top_values summary: {path}")
+        summaries[path] = {
+            key: profile_field[key]
+            for key in ("path", "types", "non_empty_images", "distinct_value_count", "top_values")
+            if key in profile_field
+        }
+    return summaries
 
 
 def design_task(
@@ -383,6 +437,7 @@ def design_task(
     task_id: str,
     task: dict[str, Any],
     *,
+    dataset_profile: dict[str, Any],
     feedback: str = "",
 ) -> dict[str, Any]:
     """Retrieve medical material and produce one validated Blueprint task contribution."""
@@ -406,6 +461,19 @@ def design_task(
     current = {field: task[field] for field in RAG_DESIGN_FIELDS if field in task and field != "citations"}
     system, user = _design_prompt(benchmark_info, task_id, task, context, feedback, current)
     response = complete_json(system, user)
+    field_value_summaries = _field_value_summaries(task_id, task, dataset_profile, response)
+    if field_value_summaries is not None:
+        system, user = _design_prompt(
+            benchmark_info,
+            task_id,
+            task,
+            context,
+            feedback,
+            current,
+            field_value_summaries,
+            allow_value_request=False,
+        )
+        response = complete_json(system, user)
     try:
         normalized = validate_task_design(task_id, task, response)
     except ValueError as first_error:

@@ -13,7 +13,7 @@ from typing import Any
 
 import duckdb
 
-from medbenchagent import generation_free_text, generation_grounding, generation_vqa
+from medbenchagent.generation import free_text, grounding, vqa
 from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
 from medbenchagent.llm import ModelUnavailable
 from medbenchagent.sample_counts import distribute_sample_counts
@@ -23,9 +23,9 @@ DEFAULT_QUESTION_TEMPERATURE = 0.7
 FETCH_BATCH_SIZE = 128
 _MISSING = object()
 _STAGES = (
-    ("vqa", "letter", generation_vqa),
-    ("grounding", "bbox", generation_grounding),
-    ("free_text", "free_text", generation_free_text),
+    ("vqa", "letter", vqa),
+    ("grounding", "bbox", grounding),
+    ("free_text", "free_text", free_text),
 )
 
 
