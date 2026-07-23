@@ -15,7 +15,7 @@ Context:
 - Modality: {modality}
 - Task definition: {task_definition}
 - Generation logic: {generation_logic}
-- Canonical question: {candidate_question}
+- Canonical question: {canonical_question}
 - Candidate options: {candidate_options}
 - Supporting annotation: {supporting_annotation}
 Requirements:
