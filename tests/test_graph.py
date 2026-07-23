@@ -10,13 +10,17 @@ from medbenchagent.generation import graph as generation_workflow
 from medbenchagent.rag import graph as rag_workflow
 
 
-def _task(response_format: str = "letter") -> dict:
+def _task(
+    response_format: str = "letter",
+    category: str = "image_acquisition_and_basic_information",
+) -> dict:
     task = {
         "description": "Identify view",
         "require": "View annotation",
         "task_type": "close_vqa",
         "response_format": response_format,
         "metric": "accuracy",
+        "category": category,
         "supporting_fields": ["annotation.view"],
         "dataset_support_reason": "Available.",
     }
@@ -295,7 +299,7 @@ def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_ch
     assert "Unknown medical PDF selection" in invalid["material_selection_error"]
 
 
-def test_sample_counts_are_evenly_prepared_and_written_only_after_confirmation(
+def test_sample_counts_are_weighted_prepared_and_written_only_after_confirmation(
     tmp_path: Path, monkeypatch
 ) -> None:
     path = tmp_path / "blueprint.json"
@@ -303,7 +307,10 @@ def test_sample_counts_are_evenly_prepared_and_written_only_after_confirmation(
         json.dumps(
             {
                 "benchmark_info": {"sample_count": 5},
-                "tasks": {"view": _task(), "diagnosis": _task()},
+                "tasks": {
+                    "view": _task(category="image_acquisition_and_basic_information"),
+                    "diagnosis": _task(category="clinical_assessment_and_diagnosis"),
+                },
             }
         ),
         encoding="utf-8",
@@ -314,7 +321,7 @@ def test_sample_counts_are_evenly_prepared_and_written_only_after_confirmation(
     }
 
     prepared = workflow._sample_count_prepare_node(state)
-    assert prepared["draft_sample_counts"] == {"view": 3, "diagnosis": 2}
+    assert prepared["draft_sample_counts"] == {"view": 2, "diagnosis": 3}
     assert "sample_count" not in json.loads(path.read_text(encoding="utf-8"))["tasks"]["view"]
 
     monkeypatch.setattr(workflow, "interrupt", lambda _payload: "确认")
@@ -324,8 +331,8 @@ def test_sample_counts_are_evenly_prepared_and_written_only_after_confirmation(
     assert reviewed["sample_counts_confirmed"] is True
     tasks = json.loads(path.read_text(encoding="utf-8"))["tasks"]
     assert {task_id: task["sample_count"] for task_id, task in tasks.items()} == {
-        "view": 3,
-        "diagnosis": 2,
+        "view": 2,
+        "diagnosis": 3,
     }
 
 
@@ -336,12 +343,17 @@ def test_partial_sample_count_adjustment_redistributes_unspecified_tasks(monkeyp
         lambda *_args: {"action": "adjust", "counts": {"view": 4}},
     )
 
-    action = workflow._sample_count_review_action("view 改为 4", {"view": 2, "report": 2}, 5)
+    tasks = {
+        "view": _task(category="image_acquisition_and_basic_information"),
+        "report": _task("free_text", category="report_generation"),
+    }
+    action = workflow._sample_count_review_action("view 改为 4", {"view": 2, "report": 2}, 5, tasks)
 
     assert action == {"action": "adjust", "counts": {"view": 4}}
-    assert workflow.distribute_sample_counts(
-        ["view", "report"], 5, action["counts"]
-    ) == {"view": 4, "report": 1}
+    assert workflow.distribute_weighted_sample_counts(tasks, 5, action["counts"]) == {
+        "view": 4,
+        "report": 1,
+    }
 
 
 def test_zero_count_tasks_are_skipped_by_rag_queue(tmp_path: Path) -> None:

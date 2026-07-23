@@ -50,11 +50,14 @@ after confirmation: dropped tasks are removed and retained tasks receive their a
 `supporting_fields`. The resulting `task_plan_report.json` retains decisions for both
 retained and dropped tasks.
 
-The retained tasks then receive a stable, even allocation of the benchmark target.
-The complete allocation is shown for natural-language review; named task adjustments
-are fixed and the remaining count is redistributed across unnamed tasks. Counts are
-written to the working Blueprint only after confirmation. A zero-count task remains in
-the Blueprint but skips RAG design and generation.
+The retained tasks then receive a stable category-weighted allocation of the benchmark
+target. The six task-category weights are normalized across categories that retain at
+least one task, then distributed by largest remainder; tasks within each category split
+that category's integer allocation evenly. The complete allocation is shown for
+natural-language review; named task adjustments are fixed and the remaining count is
+redistributed across unnamed tasks with the same weighting. Counts are written to the
+working Blueprint only after confirmation. A zero-count task remains in the Blueprint
+but skips RAG design and generation.
 
 ## Medical references
 
@@ -108,7 +111,9 @@ Grounding bbox, then direct-reference free text. Each stage begins from the data
 start, projects only unfinished tasks' approved `supporting_fields`, and independently
 accepts up to three tasks per image after a stable seed/image-ID shuffle. Letter VQA
 normalizes one exact option; Grounding accepts only candidates with one valid annotated
-box; free text accepts only one direct reference string. Each stage has its own prompt,
+box. Detection asks only for a generic lesion or abnormal region, while visual grounding
+requires a named finding paired with that same box; the two tasks are mutually exclusive.
+Free text accepts only one direct reference string. Each stage has its own prompt,
 validator, review, and temporary progress file; failures do not consume the per-image
 acceptance limit.
 

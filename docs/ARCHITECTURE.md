@@ -19,7 +19,7 @@ LangGraph 入口是 `medbenchagent.workflow.graph:benchmark_graph`，主链路�
    内容寻址的 DuckDB、dataset profile 和 access manifest。
 3. DeepSeek 根据 profile 为全部预定义任务生成 Task Plan；人工可逐项修订。确认后，代码删除
    不支持的任务并写入 `supporting_fields`，同时保留完整 `task_plan_report.json`。
-4. 代码稳定分配各任务样本数；自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
+4. 代码按任务 category 稳定加权分配样本数：仅在保留类别间归一化默认权重，以最大余数法分配类别整数总数，再在类别内均分任务；自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
 5. `rag_designs` 子图对每个非零任务使用医学 PDF 做 RAG，逐项把设计和引用写入 Blueprint，再由
    人工整体确认或定向重做。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
 6. 从确认后的 Blueprint 构造 `GenerationRequest`。生成子图按 letter、bbox、free_text 三个阶段
@@ -37,7 +37,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 当前 supporting field 的安全 `top_values` 摘要，DICOM metadata、bbox 和原始 annotation 行不会进入提示。
 其任务队列、定向重做反馈、当前任务和完成计数只保存在子图 checkpoint。生成子图以只包含 `generation_request` 的输入契约开始，
 并只向根图返回 raw 路径、题目计数、任务计数和 shortfall。阶段、游标、目标/完成计数、progress 路径、
-拒绝计数和耗尽标记属于生成子图私有 checkpoint，不进入根图状态或公共输出。稳定类型位于 `contracts.py`：`BlueprintTask` 是规划到生成
+拒绝计数和耗尽标记属于生成子图私有 checkpoint，不进入根图状态或公共输出。稳定类型位于 `contracts.py`：`BlueprintTask`（包含稳定 `category`）是规划到生成
 的任务快照，`GenerationRequest` 是生成边界，`BenchmarkItem` 是输出题目契约。输入记录契约由
 `schemas/annotation.v1.schema.json` 定义。
 
@@ -52,7 +52,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 - 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准 annotation 投影。
 - Task Plan 与样本分配只在确认后改变 Blueprint；RAG 设计先逐项持久化，再通过确认/修订闭环收敛。
 - 同一 task/image 最多生成一题；默认每阶段每图最多接受三题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
-- bbox 仅接受恰有一个合法标注框的候选；选择题、bbox 与自由文本均使用独立的 question/answer 生成和审核契约。
+- bbox 仅接受恰有一个合法标注框的候选；`visual_grounding` 还必须有与该框配对的 finding 文本，并确定性优先于 `detection`。`detection` 仅定位泛化 lesion/abnormal region，不能泄露 finding 名称；选择题、bbox 与自由文本均使用独立的 question/answer 生成和审核契约。
 - 数据耗尽是带 per-task shortfall 的成功结果；答案平衡不覆盖 raw 文件，也不改 bbox/自由文本题。
 - RAG 与生成是直接挂载在根图上的编译子图，因此 xray 图、LangSmith 与使用 `stream_mode=["updates", "custom"]` 和
   `subgraphs=True` 可接收每个 RAG 任务与每条生成记录的进度；启用 LangSmith 后，DeepSeek 调用显示为

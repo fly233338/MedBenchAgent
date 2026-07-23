@@ -4,6 +4,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
+
+
+DEFAULT_CATEGORY_WEIGHTS = {
+    "image_acquisition_and_basic_information": 0.10,
+    "anatomy_and_global_tissue_characteristics": 0.20,
+    "finding_recognition_and_characterization": 0.20,
+    "clinical_assessment_and_diagnosis": 0.20,
+    "report_generation": 0.10,
+    "spatial_localization": 0.20,
+}
 
 
 def distribute_sample_counts(
@@ -36,6 +47,67 @@ def distribute_sample_counts(
     return {task_id: distributed[task_id] for task_id in task_ids}
 
 
+def _validate_weighted_tasks(tasks: dict[str, dict[str, Any]]) -> None:
+    if not tasks:
+        raise ValueError("Blueprint tasks must be non-empty.")
+    for task_id, task in tasks.items():
+        category = task.get("category") if isinstance(task, dict) else None
+        if category not in DEFAULT_CATEGORY_WEIGHTS:
+            raise ValueError(f"{task_id}: unsupported task category: {category!r}.")
+
+
+def _largest_remainder(total: int, weights: dict[str, float]) -> dict[str, int]:
+    weight_total = sum(weights.values())
+    if weight_total <= 0:
+        raise ValueError("Category weights must sum to a positive value.")
+    quotas = {category: total * weight / weight_total for category, weight in weights.items()}
+    allocated = {category: int(quota) for category, quota in quotas.items()}
+    for category in sorted(
+        weights,
+        key=lambda category: (-(quotas[category] - allocated[category]), list(weights).index(category)),
+    )[: total - sum(allocated.values())]:
+        allocated[category] += 1
+    return allocated
+
+
+def distribute_weighted_sample_counts(
+    tasks: dict[str, dict[str, Any]], total: int, fixed_counts: dict[str, int] | None = None
+) -> dict[str, int]:
+    """Allocate remaining samples by active category weight, then evenly within each category."""
+    if not isinstance(total, int) or total <= 0:
+        raise ValueError("Benchmark sample_count must be a positive integer.")
+    _validate_weighted_tasks(tasks)
+    fixed = dict(fixed_counts or {})
+    if unknown := set(fixed) - set(tasks):
+        raise ValueError(f"Unknown task IDs in sample counts: {', '.join(sorted(unknown))}.")
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in fixed.values()):
+        raise ValueError("Task sample counts must be non-negative integers.")
+    remaining_total = total - sum(fixed.values())
+    if remaining_total < 0:
+        raise ValueError("Fixed task sample counts exceed the benchmark sample_count.")
+    remaining_by_category: dict[str, list[str]] = {}
+    for task_id, task in tasks.items():
+        if task_id not in fixed:
+            remaining_by_category.setdefault(task["category"], []).append(task_id)
+    if not remaining_by_category:
+        if remaining_total:
+            raise ValueError("Complete task sample counts must sum to the benchmark sample_count.")
+        return {task_id: fixed[task_id] for task_id in tasks}
+
+    active_weights = {
+        category: DEFAULT_CATEGORY_WEIGHTS[category]
+        for category in DEFAULT_CATEGORY_WEIGHTS
+        if category in remaining_by_category
+    }
+    category_counts = _largest_remainder(remaining_total, active_weights)
+    distributed = dict(fixed)
+    for category, task_ids in remaining_by_category.items():
+        quotient, remainder = divmod(category_counts[category], len(task_ids))
+        for index, task_id in enumerate(task_ids):
+            distributed[task_id] = quotient + (index < remainder)
+    return {task_id: distributed[task_id] for task_id in tasks}
+
+
 def write_sample_counts(blueprint_path: str | Path, counts: dict[str, int]) -> None:
     """Atomically persist confirmed task counts in the working Blueprint."""
     path = Path(blueprint_path)
@@ -44,7 +116,7 @@ def write_sample_counts(blueprint_path: str | Path, counts: dict[str, int]) -> N
     if not isinstance(tasks, dict) or set(tasks) != set(counts):
         raise ValueError("Sample counts must contain exactly every retained Blueprint task.")
     total = blueprint.get("benchmark_info", {}).get("sample_count")
-    normalized = distribute_sample_counts(list(tasks), total, counts)
+    normalized = distribute_weighted_sample_counts(tasks, total, counts)
     for task_id, count in normalized.items():
         task = tasks[task_id]
         if not isinstance(task, dict):

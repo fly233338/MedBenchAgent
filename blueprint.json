@@ -10,10 +10,11 @@
   "tasks": {
     "modality_identification": {
       "description": "Identify the medical imaging modality shown in the image.",
-      "require": "This task requires a modality field containing at least two distinct values, such as CT, MRI, X-ray, ultrasound, mammography, or pathology.",
+      "require": "This task applies whenever the imaging modality can be reliably determined from the annotation, image metadata, or dataset description. A dataset containing only one modality is still sufficient for generating this task.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
+      "category": "image_acquisition_and_basic_information",
       "sample_count": null
     },
 
@@ -23,6 +24,7 @@
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
+      "category": "image_acquisition_and_basic_information",
       "sample_count": null
     },
 
@@ -32,6 +34,7 @@
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
+      "category": "image_acquisition_and_basic_information",
       "sample_count": null
     },
 
@@ -41,15 +44,17 @@
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
+      "category": "image_acquisition_and_basic_information",
       "sample_count": null
     },
 
     "anatomy_identification": {
-      "description": "Identify the anatomical structure, organ, or tissue shown in the image.",
-      "require": "This task requires an anatomy field containing at least two meaningful values, such as breast, lung, liver, brain, retina, or bone.",
+      "description": "Identify the primary anatomical structure, organ, or tissue shown in the image.",
+      "require": "This task applies whenever the depicted anatomy can be reliably determined from the annotation, image metadata, or dataset description. A dataset containing only one anatomical category is still sufficient for generating this task.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
+      "category": "anatomy_and_global_tissue_characteristics",
       "sample_count": null
     },
 
@@ -59,15 +64,17 @@
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
+      "category": "anatomy_and_global_tissue_characteristics",
       "sample_count": null
     },
 
     "finding_presence": {
-      "description": "Determine whether an abnormal imaging finding is present.",
-      "require": "This task requires a finding-presence or abnormality field with values such as present and absent, or normal and abnormal.",
+      "description": "Determine whether a specified imaging finding or abnormality is present in the image.",
+      "require": "This task requires an explicit finding-presence label, abnormality label, or reliable positive and negative case annotation. Missing bounding boxes, masks, or finding annotations must not be interpreted as absence.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
+      "category": "finding_recognition_and_characterization",
       "sample_count": null
     },
 
@@ -77,6 +84,7 @@
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
+      "category": "finding_recognition_and_characterization",
       "sample_count": null
     },
 
@@ -86,6 +94,7 @@
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
+      "category": "finding_recognition_and_characterization",
       "sample_count": null
     },
 
@@ -95,6 +104,7 @@
       "task_type": "open_vqa",
       "response_format": "free_text",
       "metric": "bleu",
+      "category": "finding_recognition_and_characterization",
       "sample_count": null
     },
 
@@ -104,6 +114,7 @@
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "macro_f1",
+      "category": "clinical_assessment_and_diagnosis",
       "sample_count": null
     },
 
@@ -113,6 +124,7 @@
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "macro_f1",
+      "category": "clinical_assessment_and_diagnosis",
       "sample_count": null
     },
 
@@ -122,15 +134,17 @@
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
+      "category": "clinical_assessment_and_diagnosis",
       "sample_count": null
     },
 
     "pathology_status": {
-      "description": "Determine the pathological or malignancy status associated with the imaging finding.",
-      "require": "This task requires a pathology or malignancy-status field with values such as benign, malignant, atypical, high-risk, in situ, or invasive.",
+      "description": "Determine the benign, malignant, or other pathological status associated with the imaging finding or case.",
+      "require": "This task requires an explicit pathology or malignancy-status field with values such as benign, malignant, atypical, high-risk, in situ, or invasive. The label may describe the target lesion or the corresponding case, but it must be explicitly provided rather than inferred from the diagnosis name.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "macro_f1",
+      "category": "clinical_assessment_and_diagnosis",
       "sample_count": null
     },
 
@@ -140,15 +154,27 @@
       "task_type": "open_vqa",
       "response_format": "free_text",
       "metric": "bleu",
+      "category": "report_generation",
       "sample_count": null
     },
 
     "detection": {
-      "description": "Locate the imaging finding specified by an accompanying textual description.",
-      "require": "This task requires a finding label or textual finding description paired with a correct bounding-box field for the corresponding target.",
+      "description": "Locate a lesion or abnormal region directly from the image without being given a specific finding name or textual description that identifies the target.",
+      "require": "This task requires a lesion-level bounding box or mask defining the target abnormal region. The spatial annotation may be accompanied by generic lesion-presence labels or case-level labels such as benign or malignant, but it must not rely on a paired region-level finding name or textual description to specify what should be localized. A mask may be converted into a bounding box.",
       "task_type": "open_vqa",
       "response_format": "bbox",
       "metric": "miou",
+      "category": "spatial_localization",
+      "sample_count": null
+    },
+
+    "visual_grounding": {
+      "description": "Locate the image region corresponding to a finding explicitly named or described in the question.",
+      "require": "This task requires a region-level finding name or textual finding description paired with the bounding box or mask of that same finding. The paired text must identify which specific finding the model should localize. A mask may be converted into a bounding box.",
+      "task_type": "open_vqa",
+      "response_format": "bbox",
+      "metric": "miou",
+      "category": "spatial_localization",
       "sample_count": null
     }
   }

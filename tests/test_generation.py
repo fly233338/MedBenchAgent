@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,6 +75,62 @@ def _fake_model(calls: list[tuple[str, float]]):
         return {"question": "Which status best describes this image?", "answer": "benign"}
 
     return complete_json
+
+
+def _candidate(task_id: str, annotation: dict, supporting_annotation: dict, task: dict):
+    return SimpleNamespace(
+        task_id=task_id,
+        record={"annotation": annotation},
+        supporting_annotation=supporting_annotation,
+        task=task,
+    )
+
+
+def test_generation_prompts_use_annotation_metadata_modality() -> None:
+    task = _task("letter", ["annotation.status"])
+    candidate = _candidate(
+        "vqa",
+        {"metadata": {"modality": "Mammography"}},
+        {"status": "benign"},
+        task,
+    )
+
+    prompt = vqa._prompt(candidate, {"language": "en", "modality": "CT"})
+
+    assert "- Modality: Mammography" in prompt
+    missing_metadata = _candidate("vqa", {}, {"status": "benign"}, task)
+    assert "- Modality: " in vqa._prompt(missing_metadata, {"language": "en", "modality": "CT"})
+    assert "- Modality: CT" not in vqa._prompt(missing_metadata, {"language": "en", "modality": "CT"})
+
+
+def test_grounding_modes_require_different_annotation_context() -> None:
+    detection = _candidate(
+        "detection",
+        {"metadata": {"modality": "Mammography"}},
+        {"bbox": [1, 2, 8, 9]},
+        _task("bbox", ["annotation.bbox[*]"]),
+    )
+    visual = _candidate(
+        "visual_grounding",
+        {"metadata": {"modality": "Mammography"}},
+        {"findings": [{"finding_categories": ["Mass"], "bbox": [1, 2, 8, 9]}]},
+        _task(
+            "bbox",
+            ["annotation.findings[*].finding_categories[*]", "annotation.findings[*].bbox[*]"],
+        ),
+    )
+    unnamed_visual = _candidate(
+        "visual_grounding",
+        {"metadata": {"modality": "Mammography"}},
+        {"bbox": [1, 2, 8, 9]},
+        _task("bbox", ["annotation.bbox[*]"]),
+    )
+
+    assert grounding.supports(detection)
+    assert grounding.supports(visual)
+    assert not grounding.supports(unnamed_visual)
+    assert "Do not name, describe" in grounding._prompt(detection, {"language": "en"})
+    assert "explicitly named finding 'Mass'" in grounding._prompt(visual, {"language": "en"})
 
 
 def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeypatch) -> None:

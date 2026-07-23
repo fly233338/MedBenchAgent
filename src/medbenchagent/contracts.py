@@ -12,6 +12,7 @@ class BlueprintTask(TypedDict):
     description: str
     require: str
     metric: str
+    category: str
     supporting_fields: list[str]
     dataset_support_reason: str
     question_templates: list[str]

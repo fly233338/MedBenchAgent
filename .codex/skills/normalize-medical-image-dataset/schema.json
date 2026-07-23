@@ -10,7 +10,21 @@
     "patient_id": {"type": ["string", "null"]},
     "case_id": {"type": ["string", "null"]},
     "study_id": {"type": ["string", "null"]},
-    "annotation": {"type": "object"}
+    "annotation": {
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "type": "object",
+          "description": "Dataset-level metadata. Populate modality and anatomy from source annotations when available; otherwise use documented dataset information.",
+          "properties": {
+            "modality": {"type": "string"},
+            "anatomy": {"type": "string"}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
   },
   "additionalProperties": true
 }

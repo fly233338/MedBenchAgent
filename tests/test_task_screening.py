@@ -131,6 +131,44 @@ def test_task_plan_rejects_unknown_tasks_and_all_dropped_tasks() -> None:
     _validated, errors = screening.validate_task_plan(_blueprint(), _profile(), all_dropped)
     assert errors == ["at least one task must be retained"]
 
+
+def test_visual_grounding_deterministically_replaces_detection() -> None:
+    blueprint = {
+        "tasks": {
+            "detection": {"response_format": "bbox"},
+            "visual_grounding": {"response_format": "bbox"},
+        }
+    }
+    profile = {"fields": {"annotation.findings[*].bbox[*]": {}, "annotation.findings[*].label": {}}}
+    response = {
+        "tasks": {
+            "detection": {
+                "decision": "retain",
+                "supporting_fields": ["annotation.findings[*].bbox[*]"],
+                "reason": "Has a box.",
+            },
+            "visual_grounding": {
+                "decision": "retain",
+                "supporting_fields": [
+                    "annotation.findings[*].bbox[*]",
+                    "annotation.findings[*].label",
+                ],
+                "reason": "Has a paired label and box.",
+            },
+        }
+    }
+
+    plan, errors = screening.validate_task_plan(blueprint, profile, response)
+
+    assert errors == []
+    assert plan is not None
+    assert plan["tasks"]["visual_grounding"]["decision"] == "retain"
+    assert plan["tasks"]["detection"] == {
+        "decision": "drop",
+        "supporting_fields": [],
+        "reason": screening.VISUAL_GROUNDING_PRECEDENCE_REASON,
+    }
+
 def test_task_plan_prompt_checks_array_leaf_paths() -> None:
     prompt = screening._task_plan_prompt(_blueprint(), _profile())
 

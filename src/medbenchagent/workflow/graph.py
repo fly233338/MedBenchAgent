@@ -36,7 +36,11 @@ from medbenchagent.rag.graph import (
     compile_rag_designs_subgraph,
 )
 from medbenchagent.rag.pdf import discover_medical_materials
-from medbenchagent.sample_counts import distribute_sample_counts, write_sample_counts
+from medbenchagent.sample_counts import (
+    DEFAULT_CATEGORY_WEIGHTS,
+    distribute_weighted_sample_counts,
+    write_sample_counts,
+)
 from medbenchagent.task_screening import (
     apply_task_plan,
     generate_task_plan,
@@ -356,14 +360,14 @@ def _apply_task_plan_node(state: BenchmarkState) -> dict[str, Any]:
 
 
 def _sample_count_prepare_node(state: BenchmarkState) -> dict[str, Any]:
-    """Prepare a stable even allocation without mutating the working Blueprint."""
+    """Prepare a stable category-weighted allocation without mutating the working Blueprint."""
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
     tasks = blueprint.get("tasks")
     total = blueprint.get("benchmark_info", {}).get("sample_count")
     if not isinstance(tasks, dict) or not tasks:
         raise ValueError("Working Blueprint must contain retained tasks for sample allocation.")
     return {
-        "draft_sample_counts": distribute_sample_counts(list(tasks), total),
+        "draft_sample_counts": distribute_weighted_sample_counts(tasks, total),
         "sample_counts_confirmed": False,
     }
 
@@ -392,8 +396,16 @@ def _sample_count_review_action(
     answer: object,
     current_counts: dict[str, int],
     total: int,
+    tasks: dict[str, Any],
 ) -> dict[str, Any]:
     task_ids = list(current_counts)
+    task_categories = {task_id: tasks[task_id]["category"] for task_id in task_ids}
+    active_categories = list(dict.fromkeys(task_categories.values()))
+    active_weight_total = sum(DEFAULT_CATEGORY_WEIGHTS[category] for category in active_categories)
+    normalized_weights = {
+        category: DEFAULT_CATEGORY_WEIGHTS[category] / active_weight_total
+        for category in active_categories
+    }
     prompt = (
         "Convert the user's sample-count review into exactly one JSON shape:\n"
         '{"action":"confirm"}\n'
@@ -402,6 +414,8 @@ def _sample_count_review_action(
         "'add two diagnosis questions' into the final integer for that task using the current allocation. "
         "Do not distribute unspecified counts yourself. Counts must be non-negative integers.\n"
         f"Benchmark total: {total}\n"
+        f"Task categories: {json.dumps(task_categories, ensure_ascii=False)}\n"
+        f"Normalized active category weights: {json.dumps(normalized_weights, ensure_ascii=False)}\n"
         f"Current allocation: {json.dumps(current_counts, ensure_ascii=False)}\n"
         f"User response: {answer}"
     )
@@ -420,6 +434,10 @@ def _sample_count_review_action(
 def _sample_count_review_node(state: BenchmarkState) -> dict[str, Any]:
     counts = state["draft_sample_counts"]
     total = int(state["benchmark_info"]["sample_count"])
+    blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
+    tasks = blueprint.get("tasks")
+    if not isinstance(tasks, dict):
+        raise ValueError("Working Blueprint must contain tasks for sample-count review.")
     answer = interrupt(
         {
             "kind": "sample_count_confirmation",
@@ -428,14 +446,12 @@ def _sample_count_review_node(state: BenchmarkState) -> dict[str, Any]:
             "question": "Confirm the per-task sample counts or describe adjustments.",
         }
     )
-    action = _sample_count_review_action(answer, counts, total)
+    action = _sample_count_review_action(answer, counts, total, tasks)
     if action["action"] == "confirm":
         write_sample_counts(state["working_blueprint_path"], counts)
         return {"sample_counts_confirmed": True}
     return {
-        "draft_sample_counts": distribute_sample_counts(
-            list(counts), total, action["counts"]
-        ),
+        "draft_sample_counts": distribute_weighted_sample_counts(tasks, total, action["counts"]),
         "sample_counts_confirmed": False,
     }
 

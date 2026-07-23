@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from medbenchagent.generation.context import annotation_modality
 from medbenchagent.llm import complete_json
 
 GROUNDING_GENERATION_PROMPT = """
@@ -20,7 +21,7 @@ Context:
 - Supporting annotation: {supporting_annotation}
 
 Requirements:
-1. Ask for the location of the annotated target; the question may name its finding category, but avoid following the canonical template verbatim and naturally vary wording, syntax, and word order.
+1. {task_requirement}
 2. Do not include coordinates, reports, annotations, labels, or unsupported details in the question.
 3. Copy the exact annotated xyxy bounding box as the answer. Do not infer a new box.
 
@@ -39,7 +40,7 @@ Context:
 - Answer: {answer}
 
 Approve only when:
-1. The question identifies the same annotated target as the answer box.
+1. {review_requirement}
 2. The question does not reveal coordinates or clearly hint at the answer.
 3. The answer exactly matches the supplied annotation box.
 
@@ -75,8 +76,46 @@ def _target_bbox(candidate: Any) -> list[float] | None:
     return boxes[0] if len(boxes) == 1 else None
 
 
+def _strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, dict):
+        return [
+            text
+            for key, item in value.items()
+            if key not in {"_source_index", "bbox"}
+            for text in _strings(item)
+        ]
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    return []
+
+
+def _named_region_text(value: object, target: list[float]) -> str | None:
+    if isinstance(value, dict):
+        if _boxes(value) == [target] and (texts := _strings(value)):
+            return texts[0]
+        for item in value.values():
+            if text := _named_region_text(item, target):
+                return text
+    elif isinstance(value, list):
+        for item in value:
+            if text := _named_region_text(item, target):
+                return text
+    return None
+
+
+def _visual_target_text(candidate: Any) -> str | None:
+    target = _target_bbox(candidate)
+    if target is None:
+        return None
+    return _named_region_text(candidate.supporting_annotation, target)
+
+
 def supports(candidate: Any) -> bool:
-    return _target_bbox(candidate) is not None
+    if _target_bbox(candidate) is None:
+        return False
+    return candidate.task_id != "visual_grounding" or _visual_target_text(candidate) is not None
 
 
 def _task_definition(candidate: Any) -> str:
@@ -87,14 +126,26 @@ def _task_definition(candidate: Any) -> str:
 
 
 def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
+    visual_text = _visual_target_text(candidate)
+    if candidate.task_id == "visual_grounding":
+        task_requirement = (
+            f"Ask for the location of the explicitly named finding {visual_text!r}. Do not use a different "
+            "finding name, and vary wording from the canonical template."
+        )
+    else:
+        task_requirement = (
+            "Ask only for the location of a lesion or abnormal region. Do not name, describe, or otherwise "
+            "identify the finding category, and vary wording from the canonical template."
+        )
     return GROUNDING_GENERATION_PROMPT.format(
         language=benchmark_info.get("language", ""),
-        modality=benchmark_info.get("modality", ""),
+        modality=annotation_modality(candidate),
         task_id=candidate.task_id,
         task_definition=_task_definition(candidate),
         generation_logic=candidate.task["generation_logic"],
         canonical_question=candidate.task["question_templates"][0],
         supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
+        task_requirement=task_requirement,
     )
 
 
@@ -131,6 +182,11 @@ def generate(
 def review(
     candidate: Any, generated: dict[str, Any], _benchmark_info: dict[str, object]
 ) -> tuple[bool, str]:
+    review_requirement = (
+        "The question identifies the same named finding as the answer box."
+        if candidate.task_id == "visual_grounding"
+        else "The question requests only a generic lesion or abnormal region and does not name a finding."
+    )
     response = complete_json(
         GROUNDING_REVIEW_PROMPT.format(
             task_definition=_task_definition(candidate),
@@ -138,6 +194,7 @@ def review(
             supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
             question=generated["question"],
             answer=json.dumps(generated["answer"]),
+            review_requirement=review_requirement,
         ),
         "",
     )

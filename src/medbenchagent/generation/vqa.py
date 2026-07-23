@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from medbenchagent.generation.context import annotation_modality
 from medbenchagent.llm import complete_json
 
 VQA_GENERATION_PROMPT = """
@@ -65,7 +66,7 @@ def _task_definition(candidate: Any) -> str:
 def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
     return VQA_GENERATION_PROMPT.format(
         language=benchmark_info.get("language", ""),
-        modality=benchmark_info.get("modality", ""),
+        modality=annotation_modality(candidate),
         task_id=candidate.task_id,
         task_definition=_task_definition(candidate),
         generation_logic=candidate.task["generation_logic"],
