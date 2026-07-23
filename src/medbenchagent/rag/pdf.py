@@ -365,10 +365,20 @@ def _design_prompt(
         "generation_logic must explain how a later model should use only supporting annotation to "
         "produce one question and answer without inventing facts. Do not return task_id, citations, "
         "validation_rules, placeholder bindings, answer fields, mappings, instance paths, or bbox fields. "
-        "For letter tasks, return exactly one canonical question template and options without A/B-style "
-        "position labels. For letter tasks, use the available annotation support and retrieved medical "
-        "knowledge to design the most appropriate compact candidate set; do not broaden the option space "
-        "merely to add distractors. "
+
+        "For letter tasks, return exactly one canonical question template and 2-26 unique candidate "
+        "options without A/B-style position labels. The correct answer must be supported by the "
+        "approved annotation fields. Distractors do not need to appear in the dataset, but they must "
+        "be medically plausible, mutually exclusive, and at the same semantic level as the correct "
+        "answer. "
+
+        "For modality_identification and anatomy_identification, a dataset with only one supported "
+        "modality or anatomy value is valid. In this case, keep the supported value as the correct "
+        "answer and add clinically plausible distractors from the same taxonomy so the multiple-choice "
+        "task remains valid. Do not create distractors that are overly broad, unrelated, or at a "
+        "different granularity. "
+
+        "Do not broaden the option space unnecessarily. "
         "When no PDF excerpt is supplied, use generic wording and do not claim a specific guideline basis."
     )
     if allow_value_request:
