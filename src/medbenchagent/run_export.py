@@ -63,6 +63,7 @@ def finalize_run(
     construction_events_path: str | Path,
     task_counts: dict[str, int],
     shortfalls: dict[str, int],
+    audit_artifacts: dict[str, str] | None = None,
 ) -> tuple[str, str, str]:
     run_dir = Path(run_directory)
     blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
@@ -97,6 +98,8 @@ def finalize_run(
         "construction_events": Path(construction_events_path),
         "construction_report": report_path,
     }
+    if audit_artifacts:
+        paths.update({name: Path(path) for name, path in audit_artifacts.items()})
     manifest_path = run_dir / "benchmark_manifest.json"
     atomic_write_json(
         manifest_path,

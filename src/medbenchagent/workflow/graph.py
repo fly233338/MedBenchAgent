@@ -36,6 +36,7 @@ from medbenchagent.run_artifacts import (
     update_blueprint_dataset,
 )
 from medbenchagent.run_export import export_rag_designs, finalize_run
+from medbenchagent.audit import audit_run
 from medbenchagent.rag.graph import (
     RagDesignInputState,
     RagDesignOutputState,
@@ -115,6 +116,7 @@ class BenchmarkState(MessagesState, total=False):
     construction_report_path: str
     manifest_path: str
     benchmark_id: str
+    audit_artifacts: dict[str, str]
     generation_shortfalls: dict[str, int]
     item_count: int
     task_counts: dict[str, int]
@@ -135,6 +137,7 @@ class BenchmarkOutputState(TypedDict):
     construction_report_path: str
     manifest_path: str
     benchmark_id: str
+    audit_artifacts: dict[str, str]
     item_count: int
     task_counts: dict[str, int]
     generation_shortfalls: dict[str, int]
@@ -598,9 +601,21 @@ def _run_finalize_node(state: BenchmarkState) -> dict[str, Any]:
         blueprint_path=state["working_blueprint_path"], raw_output_path=state["raw_output_path"],
         provenance_output_path=state["provenance_output_path"], rag_designs_path=state["rag_designs_path"],
         construction_events_path=state["construction_events_path"], task_counts=state["task_counts"],
-        shortfalls=state["generation_shortfalls"],
+        shortfalls=state["generation_shortfalls"], audit_artifacts=state.get("audit_artifacts"),
     )
     return {"benchmark_id": identifier, "construction_report_path": report_path, "manifest_path": manifest_path}
+
+
+def _audit_node(state: BenchmarkState) -> dict[str, Any]:
+    dataset = dataset_by_id(load_dataset_catalog(), state["selected_dataset_id"])
+    annotation_path = resolve_annotation_path(dataset)
+    result = audit_run(
+        raw_path=state["raw_output_path"], blueprint_path=state["working_blueprint_path"],
+        provenance_path=state["provenance_output_path"], events_path=state["construction_events_path"],
+        manifest_path=annotation_path.parent / "image_manifest.jsonl", output_directory=state["run_directory"],
+        run_id=state["run_id"], seed=int(state.get("seed", 0)),
+    )
+    return {"audit_artifacts": {key.removesuffix("_path"): value for key, value in result.items() if key.endswith("_path")}}
 
 
 def compile_benchmark_graph(*, checkpointer: Any = None):
@@ -628,6 +643,7 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_node("generation_request", _generation_request_node)
     graph.add_node("generate_raw_benchmark", compile_generation_subgraph())
     graph.add_node("run_finalize", _run_finalize_node)
+    graph.add_node("audit", _audit_node)
     graph.add_edge(START, "run_initialize")
     graph.add_edge("run_initialize", "benchmark_extract")
     graph.add_edge("benchmark_extract", "benchmark_confirm")
@@ -669,7 +685,8 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_edge("rag_designs", "rag_design_export")
     graph.add_edge("rag_design_export", "generation_request")
     graph.add_edge("generation_request", "generate_raw_benchmark")
-    graph.add_edge("generate_raw_benchmark", "run_finalize")
+    graph.add_edge("generate_raw_benchmark", "audit")
+    graph.add_edge("audit", "run_finalize")
     graph.add_edge("run_finalize", END)
     return graph.compile(checkpointer=checkpointer)
 

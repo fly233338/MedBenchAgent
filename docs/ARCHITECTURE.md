@@ -24,7 +24,7 @@ LangGraph 入口是 `medbenchagent.workflow.graph:benchmark_graph`，主链路�
    人工整体确认或定向重做。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
 6. 从确认后的 Blueprint 构造 `GenerationRequest`。生成子图按 letter、bbox、free_text 三个阶段
    独立读取 DuckDB；每阶段仅投影任务获准字段、稳定随机排序候选并逐任务生成/审核，写入各自可恢复进度文件。
-7. 完成或数据耗尽后生成 raw JSONL；选择题位置平衡由独立 CLI 手工执行。
+7. 完成或数据耗尽后生成 raw JSONL；确定性 AuditAgent 仅通过 `image_id → image_manifest.jsonl → PNG` 校验图像完整性、题目契约、provenance 和重复项，随后平衡通过的选择题位置。
 
 ## 状态、契约与产物
 
@@ -58,6 +58,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
   `subgraphs=True` 可接收每个 RAG 任务与每条生成记录的进度；启用 LangSmith 后，DeepSeek 调用显示为
   对应子图内可展开的 LLM span。
 - `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。事件不保存 prompt、模型响应、原始 annotation 或检索段落；缺失 provider usage 时 token 记为 0 并标记不可用。
+- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变，审计输出与报告写入运行目录。
 
 ## 维护边界
 

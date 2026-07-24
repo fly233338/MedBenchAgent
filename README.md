@@ -10,6 +10,8 @@ construction events/report, confirmed RAG designs, and a SHA-256 manifest. Per-t
 the files contain the accepted items produced before all targets are met or the
 dataset is exhausted.
 
+生成后会执行确定性 Audit：PNG 仅由 `image_id` 经同目录 `image_manifest.jsonl` 定位；audit 不读取源 DICOM、不以 `image_path` 定位 PNG，也不判断医学答案正确性。
+
 ## Dataset input
 
 The workflow selects datasets from `datasets/dataset_catalog.json`; the repository-level

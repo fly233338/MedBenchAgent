@@ -100,6 +100,7 @@ def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
         "construction_report_path",
         "manifest_path",
         "benchmark_id",
+        "audit_artifacts",
     }
     assert not {
         "rag_task_queue",

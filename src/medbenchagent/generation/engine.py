@@ -478,9 +478,11 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
             item = _build_item(candidate, generated, handler, request["dataset_id"])
             provenance = {
                 "item_id": item["id"], "run_id": request["run_id"], "dataset_id": request["dataset_id"],
-                "task_id": candidate.task_id, "source_row": candidate.source_row,
+                "task_id": candidate.task_id, "image_id": item["image_id"], "source_row": candidate.source_row,
+                "supporting_fields": candidate.task["supporting_fields"],
                 "generation_call_ids": generation_call_ids, "review_call_ids": review_call_ids,
-                "generation_attempt_count": len(generation_call_ids), "blueprint_hash": request["blueprint_sha256"],
+                "generation_attempt_count": len(generation_call_ids), "review_attempt_count": len(review_call_ids),
+                "blueprint_hash": request["blueprint_sha256"],
             }
             accepted.append({"item": item, "provenance": provenance})
             record_event(request["construction_events_path"], "review_accept", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=phase, operation="review", status="success")
