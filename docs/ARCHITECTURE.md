@@ -13,7 +13,7 @@ VLM；`image_path` 仅作为不透明元数据随题目输出，题目事实必�
 
 LangGraph 入口是 `medbenchagent.workflow.graph:benchmark_graph`，主链路为：
 
-1. DeepSeek 将自然语言需求提取为 BenchmarkInfo，经人工确认后创建 working Blueprint。
+1. 首次 DeepSeek 调用前创建 UUID `run_id` 和 `benchmarks/runs/<run_id>/`；DeepSeek 将自然语言需求提取为 BenchmarkInfo，经人工确认后创建 working Blueprint。
 2. 从 `datasets/dataset_catalog.json` 推荐并确认数据集；根目录 `dataset_catalog.json` 仅作为模板。
    代码解析路径、校验 `annotation.jsonl`，再生成
    内容寻址的 DuckDB、dataset profile 和 access manifest。
@@ -42,7 +42,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 `schemas/annotation.v1.schema.json` 定义。
 
 每次运行的核心产物是 working `blueprint.json`、`task_plan_report.json`、
-阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark_items.raw.jsonl`；raw 写入成功后删除临时 progress 文件。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
+阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、只含元数据的 append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json` 和 `benchmark_manifest.json`。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、数据集快照及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
 `dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。
 
 ## 不变量与失败语义
@@ -57,6 +57,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 - RAG 与生成是直接挂载在根图上的编译子图，因此 xray 图、LangSmith 与使用 `stream_mode=["updates", "custom"]` 和
   `subgraphs=True` 可接收每个 RAG 任务与每条生成记录的进度；启用 LangSmith 后，DeepSeek 调用显示为
   对应子图内可展开的 LLM span。
+- `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。事件不保存 prompt、模型响应、原始 annotation 或检索段落；缺失 provider usage 时 token 记为 0 并标记不可用。
 
 ## 维护边界
 

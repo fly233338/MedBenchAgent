@@ -28,7 +28,8 @@ Requirements:
 2. Apply only surface-level linguistic changes to create variation. You may adjust sentence
    structure, word order, question formulation, function words, prepositions, or general
    phrasing. The generated question should be linguistically different but semantically
-   equivalent to the question anchor. Keep modality-specific and medical terminology
+   equivalent to the question anchor; use a distinctly different grammatical structure when possible.
+   Avoid stock openers such as Based on…. Keep modality-specific and medical terminology
    explicit when they appear in the anchor.
 3. The question must be answerable from the image and candidate options only.
    Do not mention reports, annotations, labels, metadata, or unsupported clinical details.

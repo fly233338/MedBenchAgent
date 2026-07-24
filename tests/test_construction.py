@@ -30,3 +30,5 @@ def test_construction_events_are_append_only_metadata_and_report_missing_usage(t
     assert report["llm_calls"] == 1
     assert report["token_usage_complete"] is False
     assert report["retention"] == 1.0
+    assert report["generation"]["target"] == 0
+    assert report["human_stages"]["audit_override"]["modified_objects"] == 0

@@ -1,0 +1,72 @@
+import json
+from pathlib import Path
+
+from medbenchagent.run_export import benchmark_id, export_rag_designs, finalize_run
+
+
+def _blueprint() -> dict:
+    return {
+        "benchmark_info": {"disease": "breast cancer", "sample_count": 1},
+        "dataset": {
+            "dataset_id": "vindr-mammo",
+            "dataset_name": "VinDr-Mammo",
+            "description": "Mammography.",
+            "annotation_sha256": "a" * 64,
+            "profile_schema_version": "profile.v1",
+            "cache_schema_version": "cache.v1",
+            "total_images": 1,
+        },
+        "tasks": {
+            "view": {
+                "category": "image_acquisition_and_basic_information",
+                "response_format": "letter",
+                "supporting_fields": ["annotation.view"],
+                "sample_count": 1,
+                "metric": "accuracy",
+                "question_templates": ["Which view?"],
+                "generation_logic": "Use annotation.",
+                "medical_task_description": "Recognition.",
+                "citations": [],
+            },
+            "zero": {
+                "category": "report_generation",
+                "response_format": "free_text",
+                "supporting_fields": ["annotation.report"],
+                "sample_count": 0,
+                "metric": "bleu",
+            },
+        },
+    }
+
+
+def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: Path) -> None:
+    blueprint_path = tmp_path / "blueprint.json"
+    blueprint_path.write_text(json.dumps(_blueprint()), encoding="utf-8")
+    raw = tmp_path / "benchmark.vindr-mammo.raw.jsonl"
+    provenance = tmp_path / "item_provenance.jsonl"
+    events = tmp_path / "construction_events.jsonl"
+    raw.write_text("{}\n", encoding="utf-8")
+    provenance.write_text("{}\n", encoding="utf-8")
+    events.touch()
+    rag = export_rag_designs(_blueprint(), "run-1", ["guide.pdf"], tmp_path / "rag_designs.json")
+
+    identifier, report, manifest = finalize_run(
+        run_directory=tmp_path, run_id="run-1", blueprint_path=blueprint_path, raw_output_path=raw,
+        provenance_output_path=provenance, rag_designs_path=rag, construction_events_path=events,
+        task_counts={"view": 1, "zero": 0}, shortfalls={"view": 0, "zero": 0},
+    )
+
+    payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    assert identifier == benchmark_id(_blueprint())
+    assert payload["tasks"]["zero"]["metrics"] == ["bleu"]
+    assert payload["artifacts"]["raw"]["path"] == raw.name
+    assert payload["artifacts"]["manifest"] == {"path": "benchmark_manifest.json"}
+    assert json.loads(Path(rag).read_text(encoding="utf-8"))["tasks"] == {
+        "view": {
+            "question_templates": ["Which view?"],
+            "generation_logic": "Use annotation.",
+            "medical_task_description": "Recognition.",
+            "citations": [],
+        }
+    }
+    assert Path(report).is_file()

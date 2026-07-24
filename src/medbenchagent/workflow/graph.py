@@ -35,6 +35,7 @@ from medbenchagent.run_artifacts import (
     initialize_run,
     update_blueprint_dataset,
 )
+from medbenchagent.run_export import export_rag_designs, finalize_run
 from medbenchagent.rag.graph import (
     RagDesignInputState,
     RagDesignOutputState,
@@ -109,6 +110,11 @@ class BenchmarkState(MessagesState, total=False):
     material_selection_error: str
     generation_request: GenerationRequest
     raw_output_path: str
+    provenance_output_path: str
+    rag_designs_path: str
+    construction_report_path: str
+    manifest_path: str
+    benchmark_id: str
     generation_shortfalls: dict[str, int]
     item_count: int
     task_counts: dict[str, int]
@@ -123,6 +129,12 @@ class BenchmarkOutputState(TypedDict):
     working_blueprint_path: str
     task_screening_report_path: str
     raw_output_path: str
+    provenance_output_path: str
+    rag_designs_path: str
+    construction_events_path: str
+    construction_report_path: str
+    manifest_path: str
+    benchmark_id: str
     item_count: int
     task_counts: dict[str, int]
     generation_shortfalls: dict[str, int]
@@ -570,6 +582,27 @@ def _generation_request_node(state: BenchmarkState) -> dict[str, Any]:
     return {"generation_request": request}
 
 
+def _rag_design_export_node(state: BenchmarkState) -> dict[str, Any]:
+    blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
+    path = Path(state["run_directory"]) / "rag_designs.json"
+    return {
+        "rag_designs_path": export_rag_designs(
+            blueprint, state["run_id"], state["selected_material_files"], path
+        )
+    }
+
+
+def _run_finalize_node(state: BenchmarkState) -> dict[str, Any]:
+    identifier, report_path, manifest_path = finalize_run(
+        run_directory=state["run_directory"], run_id=state["run_id"],
+        blueprint_path=state["working_blueprint_path"], raw_output_path=state["raw_output_path"],
+        provenance_output_path=state["provenance_output_path"], rag_designs_path=state["rag_designs_path"],
+        construction_events_path=state["construction_events_path"], task_counts=state["task_counts"],
+        shortfalls=state["generation_shortfalls"],
+    )
+    return {"benchmark_id": identifier, "construction_report_path": report_path, "manifest_path": manifest_path}
+
+
 def compile_benchmark_graph(*, checkpointer: Any = None):
     """Build the interactive planning and benchmark generation workflow."""
     graph = StateGraph(
@@ -591,8 +624,10 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_node("sample_count_review", _sample_count_review_node)
     graph.add_node("materials_choose", _materials_choose_node)
     graph.add_node("rag_designs", compile_rag_designs_subgraph())
+    graph.add_node("rag_design_export", _rag_design_export_node)
     graph.add_node("generation_request", _generation_request_node)
     graph.add_node("generate_raw_benchmark", compile_generation_subgraph())
+    graph.add_node("run_finalize", _run_finalize_node)
     graph.add_edge(START, "run_initialize")
     graph.add_edge("run_initialize", "benchmark_extract")
     graph.add_edge("benchmark_extract", "benchmark_confirm")
@@ -631,9 +666,11 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
         lambda state: "rag_designs" if state.get("selected_material_files") else "materials_choose",
         {"rag_designs": "rag_designs", "materials_choose": "materials_choose"},
     )
-    graph.add_edge("rag_designs", "generation_request")
+    graph.add_edge("rag_designs", "rag_design_export")
+    graph.add_edge("rag_design_export", "generation_request")
     graph.add_edge("generation_request", "generate_raw_benchmark")
-    graph.add_edge("generate_raw_benchmark", END)
+    graph.add_edge("generate_raw_benchmark", "run_finalize")
+    graph.add_edge("run_finalize", END)
     return graph.compile(checkpointer=checkpointer)
 
 

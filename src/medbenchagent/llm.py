@@ -68,11 +68,12 @@ def _client() -> OpenAI:
 
 def complete_json(system_prompt: str, user_prompt: str, *, temperature: float = 0) -> dict[str, Any]:
     """Return a JSON object from the configured DeepSeek-compatible endpoint."""
+    started = time.perf_counter()
     model = os.getenv("DEEPSEEK_MODEL")
     if not model:
+        record_llm_call(status="failure", started=started, error_type="model_not_configured")
         raise ModelUnavailable("DEEPSEEK_MODEL must be configured.")
 
-    started = time.perf_counter()
     try:
         response = _client().chat.completions.create(
             model=model,

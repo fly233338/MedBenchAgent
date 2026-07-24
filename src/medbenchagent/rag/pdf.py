@@ -370,7 +370,8 @@ def _design_prompt(
         "For letter tasks, return one question template and 2-26 options without A/B labels. "
         "The correct answer must be supported by annotations. Options must be semantically aligned "
         "with the same concept level and granularity as the answer. Distractors should be medically "
-        "plausible and mutually exclusive. For categorical attributes, use concise category labels "
+        "plausible and mutually exclusive. Choose the most appropriate compact candidate set, not options "
+        "merely to add distractors. For categorical attributes, use concise category labels "
         "instead of verbose explanations or copied annotation descriptions. "
 
         "For modality_identification and anatomy_identification, a single supported value is valid. "

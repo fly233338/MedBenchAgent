@@ -3,8 +3,10 @@
 MedBenchAgent builds medical VLM benchmarks from a natural-language brief,
 catalog-selected image-level `annotation.jsonl` data, and PDF medical references. The workflow screens
 supported tasks, designs them with PDF RAG, and writes closed VQA, detection, finding
-description, and report items into one mixed JSONL. It writes an immutable,
-unshuffled `benchmark_items.raw.jsonl`. Per-task `sample_count` values are generation targets:
+description, and report items into one mixed JSONL. Each run is initialized at
+`benchmarks/runs/<run_id>/` before the first model call and writes an immutable,
+unshuffled `benchmark.<dataset_id>.raw.jsonl`. The same directory contains provenance,
+construction events/report, confirmed RAG designs, and a SHA-256 manifest. Per-task `sample_count` values are generation targets:
 the files contain the accepted items produced before all targets are met or the
 dataset is exhausted.
 

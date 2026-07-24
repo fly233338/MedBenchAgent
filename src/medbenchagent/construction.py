@@ -97,6 +97,19 @@ def construction_report(events_path: str | Path) -> dict[str, object]:
     counts = Counter(str(event.get("event_type")) for event in events)
     complete_usage = all(event.get("token_usage_available") is True for event in llm)
     accepted_count = len(accepted)
+    summary = next((event for event in reversed(events) if event.get("event_type") == "generation_summary"), {})
+    task_counts = summary.get("task_counts", {}) if isinstance(summary.get("task_counts"), dict) else {}
+    shortfalls = summary.get("shortfalls", {}) if isinstance(summary.get("shortfalls"), dict) else {}
+    raw_items = sum(value for value in task_counts.values() if isinstance(value, int))
+    shortfall = sum(value for value in shortfalls.values() if isinstance(value, int))
+    target = raw_items + shortfall
+    human_stages = {
+        stage: {"confirmed": 0, "revised": 0, "revision_rounds": 0, "modified_objects": 0}
+        for stage in (
+            "benchmark_info", "dataset", "task_plan", "sample_count", "materials", "rag_design",
+            "generation_review_override", "audit_override",
+        )
+    }
     return {
         "schema_version": "construction-report.v1",
         "wall_clock_seconds": elapsed,
@@ -111,4 +124,17 @@ def construction_report(events_path: str | Path) -> dict[str, object]:
         },
         "counts": dict(counts),
         "retention": 1.0 if accepted_count else None,
+        "generation": {
+            "target": target,
+            "raw_items": raw_items,
+            "reviewer_accepted": accepted_count,
+            "review_rejections": counts["review_reject"],
+            "contract_failures": counts["generation_failure"],
+            "repairs": sum(event.get("operation") == "repair" for event in llm),
+            "model_failures": sum(event.get("error_type") == "model_unavailable" for event in events),
+            "dataset_exhaustion": counts["dataset_exhaustion"],
+            "task_shortfall": shortfall,
+            "retention": 1.0 if accepted_count else None,
+        },
+        "human_stages": human_stages,
     }

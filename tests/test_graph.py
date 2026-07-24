@@ -93,6 +93,12 @@ def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
         "item_count",
         "task_counts",
         "generation_shortfalls",
+        "provenance_output_path",
+        "rag_designs_path",
+        "construction_events_path",
+        "construction_report_path",
+        "manifest_path",
+        "benchmark_id",
     }
     assert not {
         "rag_task_queue",

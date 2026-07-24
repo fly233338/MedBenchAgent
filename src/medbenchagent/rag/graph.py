@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from medbenchagent.llm import complete_json
+from medbenchagent.construction import event_context, record_event
 from medbenchagent.rag.pdf import LocalPdfRag, design_task, write_task_design
 
 PROJECT_ROOT = Path(__file__).parents[3]
@@ -24,6 +25,9 @@ class RagDesignInputState(TypedDict):
     working_blueprint_path: str
     selected_material_files: list[str]
     dataset_profile: dict[str, Any]
+    run_id: str
+    selected_dataset_id: str
+    construction_events_path: str
 
 
 class RagDesignState(RagDesignInputState, total=False):
@@ -83,14 +87,29 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
         PROJECT_ROOT / "benchmarks" / "rag_cache",
         state["selected_material_files"],
     )
-    design = design_task(
-        rag,
-        blueprint.get("benchmark_info", state["benchmark_info"]),
-        task_id,
-        task,
-        dataset_profile=state["dataset_profile"],
-        feedback=state.get("rag_task_feedback", {}).get(task_id, ""),
-    )
+    event_values = {
+        "construction_events_path": state.get("construction_events_path"),
+        "run_id": state.get("run_id"),
+        "dataset_id": state.get("selected_dataset_id"),
+        "task_id": task_id,
+        "agent": "rag",
+        "operation": "rag_design",
+    }
+    with event_context(**event_values):
+        design = design_task(
+            rag,
+            blueprint.get("benchmark_info", state["benchmark_info"]),
+            task_id,
+            task,
+            dataset_profile=state["dataset_profile"],
+            feedback=state.get("rag_task_feedback", {}).get(task_id, ""),
+        )
+    if state.get("construction_events_path"):
+        record_event(
+            state["construction_events_path"], "rag_retrieval", run_id=state.get("run_id"),
+            dataset_id=state.get("selected_dataset_id"), task_id=task_id, agent="rag",
+            operation="retrieve", status="success"
+        )
     write_task_design(blueprint_path, task_id, design)
     remaining = queue[1:]
     completed = state.get("rag_completed_count", 0) + 1
