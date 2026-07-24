@@ -495,6 +495,7 @@ def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, m
     assert calls == 2
     assert result == {
         "raw_output_path": str(tmp_path / "benchmark_items.raw.jsonl"),
+        "provenance_output_path": "",
         "item_count": 2,
         "task_counts": {"view": 2},
         "generation_shortfalls": {"view": 0},

@@ -156,6 +156,7 @@ def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeyp
 
     result = generation.generate_raw_benchmark(request)
     items = _read_items(result.raw_output_path)
+    provenance = _read_items(str(Path(request["output_directory"]) / "item_provenance.jsonl"))
 
     generation_prompts = [prompt for prompt, _temperature in calls if prompt.startswith("Generate one")]
     assert [prompt.splitlines()[0] for prompt in generation_prompts] == [
@@ -164,6 +165,8 @@ def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeyp
         "Generate one free-text medical image benchmark item.",
     ]
     assert [item["task_id"] for item in items] == ["vqa", "grounding", "report"]
+    assert [entry["item_id"] for entry in provenance] == [item["id"] for item in items]
+    assert all(entry["source_row"] == 1 for entry in provenance)
     assert items[0]["answer"] == "A"
     assert items[1]["answer"] == [1.0, 2.0, 8.0, 9.0]
     assert items[2]["answer"] == "Normal study."

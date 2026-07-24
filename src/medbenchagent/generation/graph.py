@@ -36,6 +36,7 @@ class GenerationGraphState(TypedDict, total=False):
     generation_exhausted: bool
     generation_shortfalls: dict[str, int]
     raw_output_path: str
+    provenance_output_path: str
     item_count: int
     task_counts: dict[str, int]
 
@@ -44,6 +45,7 @@ class GenerationOutputState(TypedDict):
     """Stable result returned from the generation subgraph to the root graph."""
 
     raw_output_path: str
+    provenance_output_path: str
     item_count: int
     task_counts: dict[str, int]
     generation_shortfalls: dict[str, int]
@@ -86,6 +88,7 @@ def _generation_finalize_node(state: GenerationGraphState) -> dict[str, Any]:
     }
     return {
         "raw_output_path": result.raw_output_path,
+        "provenance_output_path": result.provenance_output_path,
         "generation_completed_counts": result.task_counts,
         "generation_shortfalls": shortfalls,
         "item_count": result.item_count,

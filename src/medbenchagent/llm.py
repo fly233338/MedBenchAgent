@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 from langsmith.wrappers import wrap_openai
 from openai import APIError, OpenAI
+
+from medbenchagent.construction import record_llm_call
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _CLIENT: OpenAI | None = None
@@ -69,6 +72,7 @@ def complete_json(system_prompt: str, user_prompt: str, *, temperature: float = 
     if not model:
         raise ModelUnavailable("DEEPSEEK_MODEL must be configured.")
 
+    started = time.perf_counter()
     try:
         response = _client().chat.completions.create(
             model=model,
@@ -80,14 +84,19 @@ def complete_json(system_prompt: str, user_prompt: str, *, temperature: float = 
             ],
         )
     except APIError as exc:
+        record_llm_call(status="failure", started=started, error_type=type(exc).__name__)
         raise ModelUnavailable(f"DeepSeek request failed: {type(exc).__name__}.") from exc
     content = response.choices[0].message.content
     if not content:
+        record_llm_call(status="failure", started=started, error_type="empty_response", response=response)
         raise ModelUnavailable("DeepSeek returned an empty response.")
     try:
         result = json.loads(content)
     except json.JSONDecodeError as exc:
+        record_llm_call(status="failure", started=started, error_type="invalid_json", response=response)
         raise ModelUnavailable("DeepSeek did not return valid JSON.") from exc
     if not isinstance(result, dict):
+        record_llm_call(status="failure", started=started, error_type="invalid_json_object", response=response)
         raise ModelUnavailable("DeepSeek JSON response must be an object.")
+    record_llm_call(status="success", started=started, response=response)
     return result

@@ -54,6 +54,7 @@ class GenerationResult:
     raw_output_path: str
     item_count: int
     task_counts: dict[str, int]
+    provenance_output_path: str = ""
 
 
 class BenchmarkGenerator(Protocol):

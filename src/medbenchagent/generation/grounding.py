@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from medbenchagent.generation.context import annotation_modality
+from medbenchagent.construction import event_operation
 from medbenchagent.llm import complete_json
 
 GROUNDING_GENERATION_PROMPT = """
@@ -169,13 +170,14 @@ def generate(
         response = complete_json(prompt, "", temperature=question_temperature)
         return _validate(candidate, response)
     except ValueError as first_error:
-        repaired = complete_json(
-            "Repair one grounding VQA response. Return JSON only.\n"
-            f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
-            f"Contract error: {first_error}",
-            "",
-            temperature=question_temperature,
-        )
+        with event_operation("repair"):
+            repaired = complete_json(
+                "Repair one grounding VQA response. Return JSON only.\n"
+                f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+                f"Contract error: {first_error}",
+                "",
+                temperature=question_temperature,
+            )
         return _validate(candidate, repaired)
 
 
