@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
 import hashlib
 import json
@@ -36,7 +37,10 @@ def read_rows(path: Path) -> list[dict[str, str]]:
 
 def parse_categories(value: str) -> list[str]:
     # VinDr stores a Python-like list in this CSV column; retain each stated label.
-    return [part.strip() for part in value.strip().strip("[]").split(",") if part.strip()]
+    parsed = ast.literal_eval(value)
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        raise ValueError(f"Invalid finding_categories value: {value!r}")
+    return parsed
 
 
 def optional_float(value: str) -> float | None:
