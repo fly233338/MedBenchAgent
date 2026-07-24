@@ -50,7 +50,7 @@ During mapping design, define each `image_path` relative to the source-image roo
 ## 2. Prepare images
 
 1. Write `<artifact_output_dir>/scripts/prepare_images.py`. It must accept the source-image root, artifact output directory, and processed-image root.
-2. The script must be a thin deterministic orchestrator. It must invoke this skill's vendored converter at `.codex/skills/medical-dataset-preparation/scripts/convert_images.py` via `sys.executable` and `subprocess.run(..., check=True)`; it must not copy, rewrite, or reimplement pixel conversion.
+2. The script must be a thin deterministic orchestrator. It must invoke this skill's vendored converter at `.codex/skills/medical-dataset-preparation/scripts/convert_images.py` with `uv run --script` through `subprocess.run(..., check=True)`; it must not copy, rewrite, or reimplement pixel conversion. This preserves the converter's declared image-decoding dependencies.
 3. Resolve and verify the converter path before running. Allow an optional `--converter-script` override for environments where the repository is installed elsewhere, but default to this skill's repository-relative copy. Record the resolved converter path and SHA-256 in the image-stage report.
 4. Invoke it as `--input <source-image-root> --output <processed-image-root>`. Do not request resize or apply crop, flip, rotation, or another spatial transform.
 5. Preserve the converter-generated `images/`, `image_conversion_manifest.jsonl`, mapping CSV, and conversion report under the processed-image root. Treat any recognized-image conversion failure as a failed preparation run.
