@@ -106,6 +106,10 @@ uv run langgraph dev --host 127.0.0.1 --port 8123 --no-browser --allow-blocking
 ```
 
 The graph entry point is `medbenchagent.workflow.graph:compile_benchmark_graph`.
+The deterministic root graph runs `SpecificationAgent`, `CapabilityAgent`,
+`ClinicalDesignAgent`, `GenerationAgent`, and `AuditAgent` in that fixed order, with
+only run initialization/finalization and artifact adapters between them. Agent-internal
+confirmation, revision, RAG, and generation loops are visible with `xray=True`.
 
 ## Question design and benchmark outputs
 
@@ -136,9 +140,10 @@ items and records per-task shortfalls in graph state.
 
 ## Progress and trace display
 
-RAG design and raw generation are each a single expandable root stage. Their internal
-queue/loop checkpoints remain private to their subgraphs, so LangSmith shows a compact
-root run that can be expanded to inspect individual RAG tasks or generation steps.
+The root graph exposes five expandable role stages. Specification and capability review
+loops, RAG queue state, the private `GenerationRequest`, and generation record state remain
+inside their owning Agent checkpoints, so LangSmith shows a compact root run that can be
+expanded to inspect each role and its model calls or deterministic steps.
 Clients can consume live progress with `stream_mode=["updates", "custom"]` and
 `subgraphs=True`: RAG emits the completed/total task count and remaining queue length;
 generation emits its cursor, completed and target task counts, rejection counts, and
@@ -158,6 +163,7 @@ with their operation, logical `DEEPSEEK_MODEL` value, token usage, and latency; 
 Audit events use `AuditAgent`. Validated human confirmations and revisions are recorded without
 their natural-language input. `construction_report.json` reduces these events to total and
 per-agent LLM usage, generation/audit item counts, wall-clock time, and per-stage human counts.
+Run lifecycle events use the `orchestrator` component and are not attributed to a sixth Agent.
 
 Audit verifies the image-manifest mapping, streams PNG hashes, decodes 8-bit grayscale PNGs,
 and preserves the existing contract and provenance checks. It rejects repeated item IDs and

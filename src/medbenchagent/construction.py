@@ -14,6 +14,19 @@ from typing import Any, Iterator
 
 _CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("construction_context", default=None)
 
+SPECIFICATION_AGENT = "SpecificationAgent"
+CAPABILITY_AGENT = "CapabilityAgent"
+CLINICAL_DESIGN_AGENT = "ClinicalDesignAgent"
+GENERATION_AGENT = "GenerationAgent"
+AUDIT_AGENT = "AuditAgent"
+AGENT_NAMES = (
+    SPECIFICATION_AGENT,
+    CAPABILITY_AGENT,
+    CLINICAL_DESIGN_AGENT,
+    GENERATION_AGENT,
+    AUDIT_AGENT,
+)
+
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -140,13 +153,6 @@ def construction_report(events_path: str | Path) -> dict[str, object]:
         audited = raw_items
     if not isinstance(rejected, int) or rejected < 0:
         rejected = 0
-    agent_names = (
-        "SpecificationAgent",
-        "CapabilityAgent",
-        "ClinicalDesignAgent",
-        "GenerationAgent",
-        "AuditAgent",
-    )
     agent_metrics = {
         name: {
             "calls": sum(event.get("agent") == name for event in llm),
@@ -154,7 +160,7 @@ def construction_report(events_path: str | Path) -> dict[str, object]:
             "output_tokens": sum(int(event.get("output_tokens", 0)) for event in llm if event.get("agent") == name),
             "latency_ms": sum(float(event.get("latency_ms", 0)) for event in llm if event.get("agent") == name),
         }
-        for name in agent_names
+        for name in AGENT_NAMES
     }
     human_stages = {
         stage: {"confirmed": 0, "revised": 0, "revision_rounds": 0, "modified_objects": 0}

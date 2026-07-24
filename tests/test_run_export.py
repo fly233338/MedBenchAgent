@@ -82,3 +82,19 @@ def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: 
         }
     }
     assert Path(report).is_file()
+    completed = [
+        json.loads(line)
+        for line in events.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["event_type"] == "run_completed"
+    ]
+    assert completed == [
+        {
+            "timestamp": completed[0]["timestamp"],
+            "event_type": "run_completed",
+            "run_id": "run-1",
+            "dataset_id": "vindr-mammo",
+            "operation": "finalize",
+            "component": "orchestrator",
+            "status": "complete",
+        }
+    ]

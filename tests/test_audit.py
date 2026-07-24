@@ -6,6 +6,7 @@ from PIL import Image
 
 from medbenchagent.audit import audit_run
 from medbenchagent.run_artifacts import blueprint_sha256
+from medbenchagent.workflow.graph import _generation_summary_node
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -57,6 +58,15 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
         ],
     )
     events.touch()
+    _generation_summary_node(
+        {
+            "construction_events_path": str(events),
+            "run_id": "run",
+            "selected_dataset_id": "set",
+            "task_counts": {"view": 4},
+            "generation_shortfalls": {"view": 0},
+        }
+    )
     _write_jsonl(
         manifest,
         [
@@ -99,6 +109,17 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
         "question_repetition_rate": 0.5,
     }
     assert "retention" not in report
+    event_types = [
+        json.loads(line)["event_type"]
+        for line in events.read_text(encoding="utf-8").splitlines()
+    ]
+    assert event_types[0] == "generation_summary"
+    first_audit_item = next(
+        index
+        for index, event_type in enumerate(event_types)
+        if event_type in {"audit_accept", "audit_reject"}
+    )
+    assert event_types.index("generation_summary") < first_audit_item
 
 
 def test_audit_accepts_readable_color_images_and_rejects_constant_thumbnails(tmp_path: Path) -> None:

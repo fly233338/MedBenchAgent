@@ -14,7 +14,7 @@ from typing import Any
 from PIL import Image
 
 from medbenchagent.answer_balance import balance_items
-from medbenchagent.construction import record_event
+from medbenchagent.construction import AUDIT_AGENT, record_event
 from medbenchagent.run_artifacts import blueprint_sha256
 
 
@@ -204,7 +204,7 @@ def audit_run(
             dataset_id=item.get("dataset"),
             task_id=item.get("task_id"),
             item_id=item.get("id"),
-            agent="AuditAgent",
+            agent=AUDIT_AGENT,
             operation="deterministic",
             status=status,
         )
@@ -243,7 +243,7 @@ def audit_run(
         "audit_summary",
         run_id=run_id,
         dataset_id=blueprint["dataset"]["dataset_id"],
-        agent="AuditAgent",
+        agent=AUDIT_AGENT,
         operation="deterministic",
         status="complete",
         input=len(candidates),

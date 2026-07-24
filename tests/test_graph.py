@@ -3,8 +3,26 @@ from pathlib import Path
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
+import medbenchagent.agents.capability as capability_agent
+import medbenchagent.agents.generation as generation_agent
+import medbenchagent.agents.specification as specification_agent
 import medbenchagent.workflow.graph as workflow
+from medbenchagent.agents import (
+    compile_audit_agent,
+    compile_capability_agent,
+    compile_clinical_design_agent,
+    compile_generation_agent,
+    compile_specification_agent,
+)
+from medbenchagent.agents.contracts import (
+    AUDIT_AGENT,
+    CAPABILITY_AGENT,
+    CLINICAL_DESIGN_AGENT,
+    GENERATION_AGENT,
+    SPECIFICATION_AGENT,
+)
 from medbenchagent.contracts import GenerationResult
 from medbenchagent.generation import graph as generation_workflow
 from medbenchagent.rag import graph as rag_workflow
@@ -44,32 +62,69 @@ def test_compiled_graph_exposes_rag_and_generation_as_expandable_subgraphs() -> 
     graph = workflow.compile_benchmark_graph().get_graph()
     conditional_edges = {(edge.source, edge.target) for edge in graph.edges if edge.conditional}
 
-    assert conditional_edges == {
-        ("benchmark_confirm", "benchmark_extract"),
-        ("benchmark_confirm", "dataset_recommend"),
-        ("dataset_review", "dataset_profile"),
-        ("dataset_review", "dataset_review"),
-        ("dataset_profile", "task_plan_generate"),
-        ("dataset_profile", "dataset_profile"),
-        ("task_plan_review", "apply_task_plan"),
-        ("task_plan_review", "task_plan_revise"),
-        ("sample_count_review", "materials_choose"),
-        ("sample_count_review", "sample_count_review"),
-        ("materials_choose", "materials_choose"),
-        ("materials_choose", "rag_designs"),
+    assert conditional_edges == set()
+    assert set(graph.nodes) == {
+        "__start__",
+        "__end__",
+        "run_initialize",
+        SPECIFICATION_AGENT,
+        CAPABILITY_AGENT,
+        CLINICAL_DESIGN_AGENT,
+        "rag_design_export",
+        GENERATION_AGENT,
+        "generation_summary",
+        AUDIT_AGENT,
+        "run_finalize",
     }
-    root_nodes = set(graph.nodes)
-    assert {"rag_designs", "generate_raw_benchmark"} <= root_nodes
-    assert not {"rag_prepare", "rag_design_task", "design_review"} & root_nodes
 
     expanded = workflow.compile_benchmark_graph().get_graph(xray=True)
+    assert any("benchmark_extract" in node for node in expanded.nodes)
+    assert any("dataset_recommend" in node for node in expanded.nodes)
     assert any("rag_prepare" in node for node in expanded.nodes)
+    assert any("generation_request" in node for node in expanded.nodes)
     assert any("generation_initialize" in node for node in expanded.nodes)
+    assert any("audit" in node for node in expanded.nodes)
 
     rag_graph = rag_workflow.compile_rag_designs_subgraph()
     assert rag_graph.builder.input_schema is rag_workflow.RagDesignInputState
     assert rag_graph.builder.output_schema is rag_workflow.RagDesignOutputState
     assert set(rag_graph.builder.output_schema.__annotations__) == {"working_blueprint_path"}
+
+
+def test_role_agents_expose_strict_input_and_output_contracts() -> None:
+    agents = (
+        compile_specification_agent(),
+        compile_capability_agent(),
+        compile_clinical_design_agent(),
+        compile_generation_agent(),
+        compile_audit_agent(),
+    )
+    for agent in agents:
+        assert agent.builder.input_schema is not agent.builder.state_schema
+        assert agent.builder.output_schema is not agent.builder.state_schema
+
+    assert set(agents[0].builder.output_schema.__annotations__) == {
+        "user_requirement",
+        "benchmark_info",
+        "working_blueprint_path",
+    }
+    assert set(agents[1].builder.output_schema.__annotations__) == {
+        "working_blueprint_path",
+        "selected_dataset_id",
+        "dataset_profile",
+        "dataset_access_manifest",
+        "task_screening_report_path",
+        "selected_material_files",
+    }
+    assert set(agents[2].builder.output_schema.__annotations__) == {"working_blueprint_path"}
+    assert set(agents[3].builder.output_schema.__annotations__) == {
+        "raw_output_path",
+        "provenance_output_path",
+        "item_count",
+        "task_counts",
+        "generation_shortfalls",
+    }
+    assert set(agents[4].builder.output_schema.__annotations__) == {"audit_artifacts"}
 
 
 def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
@@ -103,12 +158,28 @@ def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
         "audit_artifacts",
     }
     assert not {
+        "benchmark_feedback",
+        "benchmark_confirmed",
+        "dataset_recommendation",
+        "dataset_confirmed",
+        "draft_task_plan",
+        "pending_task_feedback",
+        "task_plan_confirmed",
+        "draft_sample_counts",
+        "sample_counts_confirmed",
+        "material_selection_error",
         "rag_task_queue",
         "rag_task_feedback",
         "rag_current_task_id",
         "rag_completed_count",
         "rag_total_count",
         "designs_confirmed",
+        "generation_request",
+        "generation_stage",
+        "generation_cursor",
+        "generation_progress_path",
+        "generation_rejections",
+        "generation_exhausted",
     } & set(workflow.BenchmarkState.__annotations__)
 
 
@@ -133,10 +204,14 @@ def _datasets() -> list[dict]:
 
 def test_confirmed_benchmark_writes_preallocated_blueprint_path(tmp_path: Path, monkeypatch) -> None:
     run = initialize_run(tmp_path / "runs")
-    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "confirm")
-    monkeypatch.setattr(workflow, "_benchmark_review_action", lambda *_args: {"action": "confirm"})
+    monkeypatch.setattr(specification_agent, "interrupt", lambda _payload: "confirm")
+    monkeypatch.setattr(
+        specification_agent,
+        "_benchmark_review_action",
+        lambda *_args: {"action": "confirm"},
+    )
 
-    result = workflow._benchmark_confirm_node(
+    result = specification_agent._benchmark_confirm_node(
         {
             "benchmark_info": {"disease": "breast cancer", "sample_count": 1},
             "working_blueprint_path": run["working_blueprint_path"],
@@ -151,15 +226,59 @@ def test_confirmed_benchmark_writes_preallocated_blueprint_path(tmp_path: Path, 
     }
 
 
-def test_dataset_recommendation_enriches_selection_without_path(monkeypatch) -> None:
-    monkeypatch.setattr(workflow, "load_dataset_catalog", _datasets)
+def test_specification_agent_preserves_interrupt_payload_and_resume(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run = initialize_run(tmp_path / "runs")
+    benchmark_info = {"disease": "breast cancer", "sample_count": 1}
     monkeypatch.setattr(
-        workflow,
+        specification_agent,
+        "extract_benchmark_info",
+        lambda *_args: benchmark_info,
+    )
+    monkeypatch.setattr(specification_agent, "missing_fields", lambda _info: [])
+    monkeypatch.setattr(
+        specification_agent,
+        "_benchmark_review_action",
+        lambda *_args: {"action": "confirm"},
+    )
+    graph = compile_specification_agent(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "specification-resume"}}
+
+    interrupted = graph.invoke(
+        {
+            "user_requirement": "Build a benchmark.",
+            "run_id": run["run_id"],
+            "construction_events_path": run["construction_events_path"],
+            "working_blueprint_path": run["working_blueprint_path"],
+        },
+        config,
+    )
+
+    assert interrupted["__interrupt__"][0].value == {
+        "kind": "benchmark_info_confirmation",
+        "benchmark_info": benchmark_info,
+        "question": "Confirm this BenchmarkInfo, or describe the correction.",
+    }
+    resumed = graph.invoke(Command(resume="confirm"), config)
+    assert resumed == {
+        "user_requirement": "Build a benchmark.",
+        "benchmark_info": benchmark_info,
+        "working_blueprint_path": run["working_blueprint_path"],
+    }
+
+
+def test_dataset_recommendation_enriches_selection_without_path(monkeypatch) -> None:
+    monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
+    monkeypatch.setattr(
+        capability_agent,
         "recommend_dataset",
         lambda _benchmark_info, _datasets: {"dataset_id": "vindr-mammo", "reason": "Matches."},
     )
 
-    result = workflow._dataset_recommend_node({"benchmark_info": {"modality": "mammography"}})
+    result = capability_agent._dataset_recommend_node(
+        {"benchmark_info": {"modality": "mammography"}}
+    )
 
     assert result["dataset_recommendation"] == {
         "dataset_id": "vindr-mammo",
@@ -175,10 +294,14 @@ def test_dataset_profile_keeps_blueprint_dataset_id_only(tmp_path: Path, monkeyp
     blueprint_path = tmp_path / "blueprint.json"
     blueprint = {"dataset": {"dataset_id": "vindr-mammo"}, "tasks": {}}
     blueprint_path.write_text(json.dumps(blueprint), encoding="utf-8")
-    monkeypatch.setattr(workflow, "load_dataset_catalog", _datasets)
-    monkeypatch.setattr(workflow, "resolve_annotation_path", lambda _dataset: tmp_path / "annotation.jsonl")
+    monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
     monkeypatch.setattr(
-        workflow,
+        capability_agent,
+        "resolve_annotation_path",
+        lambda _dataset: tmp_path / "annotation.jsonl",
+    )
+    monkeypatch.setattr(
+        capability_agent,
         "prepare_annotation_dataset",
         lambda *_args: (
             {"schema_version": "task-capability-profile.v1", "total_images": 2},
@@ -190,7 +313,7 @@ def test_dataset_profile_keeps_blueprint_dataset_id_only(tmp_path: Path, monkeyp
         ),
     )
 
-    result = workflow._dataset_profile_node(
+    result = capability_agent._dataset_profile_node(
         {"selected_dataset_id": "vindr-mammo", "working_blueprint_path": str(blueprint_path)}
     )
 
@@ -200,15 +323,15 @@ def test_dataset_profile_keeps_blueprint_dataset_id_only(tmp_path: Path, monkeyp
 
 
 def test_dataset_review_supports_confirm_and_available_reselection(monkeypatch) -> None:
-    monkeypatch.setattr(workflow, "complete_json", lambda *_args: {"action": "confirm"})
-    assert workflow._dataset_review_action("确认", _datasets()) == {"action": "confirm"}
+    monkeypatch.setattr(capability_agent, "complete_json", lambda *_args: {"action": "confirm"})
+    assert capability_agent._dataset_review_action("确认", _datasets()) == {"action": "confirm"}
 
     monkeypatch.setattr(
-        workflow,
+        capability_agent,
         "complete_json",
         lambda *_args: {"action": "select", "dataset_id": "vindr-mammo"},
     )
-    assert workflow._dataset_review_action("使用 VinDr", _datasets()) == {
+    assert capability_agent._dataset_review_action("使用 VinDr", _datasets()) == {
         "action": "select",
         "dataset_id": "vindr-mammo",
     }
@@ -216,20 +339,20 @@ def test_dataset_review_supports_confirm_and_available_reselection(monkeypatch) 
 
 def test_dataset_review_rejects_unavailable_reselection(monkeypatch) -> None:
     monkeypatch.setattr(
-        workflow,
+        capability_agent,
         "complete_json",
         lambda *_args: {"action": "select", "dataset_id": "future"},
     )
 
-    with pytest.raises(workflow.DatasetCatalogError, match="not available"):
-        workflow._dataset_review_action("使用 Future Dataset", _datasets())
+    with pytest.raises(capability_agent.DatasetCatalogError, match="not available"):
+        capability_agent._dataset_review_action("使用 Future Dataset", _datasets())
 
 
 def test_dataset_review_requires_confirmation_after_reselection(monkeypatch) -> None:
-    monkeypatch.setattr(workflow, "load_dataset_catalog", _datasets)
-    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "使用 VinDr")
+    monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
+    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "使用 VinDr")
     monkeypatch.setattr(
-        workflow,
+        capability_agent,
         "complete_json",
         lambda *_args: {"action": "select", "dataset_id": "vindr-mammo"},
     )
@@ -242,7 +365,7 @@ def test_dataset_review_requires_confirmation_after_reselection(monkeypatch) -> 
         }
     }
 
-    result = workflow._dataset_review_node(state)
+    result = capability_agent._dataset_review_node(state)
 
     assert result["dataset_confirmed"] is False
     assert result["selected_dataset_id"] == ""
@@ -250,8 +373,8 @@ def test_dataset_review_requires_confirmation_after_reselection(monkeypatch) -> 
 
 def test_dataset_profile_resolves_confirmed_id_internally(tmp_path: Path, monkeypatch) -> None:
     expected_path = tmp_path / "annotation.jsonl"
-    monkeypatch.setattr(workflow, "load_dataset_catalog", _datasets)
-    monkeypatch.setattr(workflow, "resolve_annotation_path", lambda _dataset: expected_path)
+    monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
+    monkeypatch.setattr(capability_agent, "resolve_annotation_path", lambda _dataset: expected_path)
 
     def prepare(path, _cache_root):
         assert path == expected_path
@@ -262,7 +385,7 @@ def test_dataset_profile_resolves_confirmed_id_internally(tmp_path: Path, monkey
             "cache_format_version": "annotation-cache.v3",
         }
 
-    monkeypatch.setattr(workflow, "prepare_annotation_dataset", prepare)
+    monkeypatch.setattr(capability_agent, "prepare_annotation_dataset", prepare)
 
     blueprint_path = tmp_path / "blueprint.json"
     blueprint_path.write_text(
@@ -277,7 +400,7 @@ def test_dataset_profile_resolves_confirmed_id_internally(tmp_path: Path, monkey
         ),
         encoding="utf-8",
     )
-    result = workflow._dataset_profile_node(
+    result = capability_agent._dataset_profile_node(
         {"selected_dataset_id": "vindr-mammo", "working_blueprint_path": str(blueprint_path)}
     )
 
@@ -313,7 +436,7 @@ def test_apply_task_plan_updates_blueprint_as_single_task_source(tmp_path: Path)
         },
     }
 
-    workflow._apply_task_plan_node(state)
+    capability_agent._apply_task_plan_node(state)
 
     tasks = json.loads(path.read_text(encoding="utf-8"))["tasks"]
     assert list(tasks) == ["view"]
@@ -360,21 +483,27 @@ def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_ch
             "file": "imaging_reporting_and_classification/guide.pdf",
         }
     ]
-    monkeypatch.setattr(workflow, "discover_medical_materials", lambda _root: materials)
-    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "选择指南")
+    monkeypatch.setattr(capability_agent, "discover_medical_materials", lambda _root: materials)
+    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "选择指南")
     monkeypatch.setattr(
-        workflow, "complete_json", lambda *_args: {"selected_files": [materials[0]["file"]]}
+        capability_agent,
+        "complete_json",
+        lambda *_args: {"selected_files": [materials[0]["file"]]},
     )
 
-    selected = workflow._materials_choose_node({})
+    selected = capability_agent._materials_choose_node({})
 
     assert selected == {
         "selected_material_files": [materials[0]["file"]],
         "material_selection_error": "",
     }
 
-    monkeypatch.setattr(workflow, "complete_json", lambda *_args: {"selected_files": ["missing.pdf"]})
-    invalid = workflow._materials_choose_node({})
+    monkeypatch.setattr(
+        capability_agent,
+        "complete_json",
+        lambda *_args: {"selected_files": ["missing.pdf"]},
+    )
+    invalid = capability_agent._materials_choose_node({})
 
     assert invalid["selected_material_files"] == []
     assert "Unknown medical PDF selection" in invalid["material_selection_error"]
@@ -401,13 +530,13 @@ def test_sample_counts_are_weighted_prepared_and_written_only_after_confirmation
         "benchmark_info": {"sample_count": 5},
     }
 
-    prepared = workflow._sample_count_prepare_node(state)
+    prepared = capability_agent._sample_count_prepare_node(state)
     assert prepared["draft_sample_counts"] == {"view": 2, "diagnosis": 3}
     assert "sample_count" not in json.loads(path.read_text(encoding="utf-8"))["tasks"]["view"]
 
-    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "确认")
-    monkeypatch.setattr(workflow, "complete_json", lambda *_args: {"action": "confirm"})
-    reviewed = workflow._sample_count_review_node(state | prepared)
+    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "确认")
+    monkeypatch.setattr(capability_agent, "complete_json", lambda *_args: {"action": "confirm"})
+    reviewed = capability_agent._sample_count_review_node(state | prepared)
 
     assert reviewed["sample_counts_confirmed"] is True
     tasks = json.loads(path.read_text(encoding="utf-8"))["tasks"]
@@ -419,7 +548,7 @@ def test_sample_counts_are_weighted_prepared_and_written_only_after_confirmation
 
 def test_partial_sample_count_adjustment_redistributes_unspecified_tasks(monkeypatch) -> None:
     monkeypatch.setattr(
-        workflow,
+        capability_agent,
         "complete_json",
         lambda *_args: {"action": "adjust", "counts": {"view": 4}},
     )
@@ -428,10 +557,15 @@ def test_partial_sample_count_adjustment_redistributes_unspecified_tasks(monkeyp
         "view": _task(category="image_acquisition_and_basic_information"),
         "report": _task("free_text", category="report_generation"),
     }
-    action = workflow._sample_count_review_action("view 改为 4", {"view": 2, "report": 2}, 5, tasks)
+    action = capability_agent._sample_count_review_action(
+        "view 改为 4",
+        {"view": 2, "report": 2},
+        5,
+        tasks,
+    )
 
     assert action == {"action": "adjust", "counts": {"view": 4}}
-    assert workflow.distribute_weighted_sample_counts(tasks, 5, action["counts"]) == {
+    assert capability_agent.distribute_weighted_sample_counts(tasks, 5, action["counts"]) == {
         "view": 4,
         "report": 1,
     }
@@ -496,13 +630,75 @@ def test_generation_request_uses_blueprint_task_snapshot_without_design_duplicat
         "question_temperature": 0.4,
     }
 
-    result = workflow._generation_request_node(state)
+    result = generation_agent._generation_request_node(state)
     request = result["generation_request"]
 
     assert request["tasks"] == {"view": task}
     assert "task_specs" not in request
     assert "question_designs" not in request
     assert "approved_task_plans" not in request
+
+
+def test_generation_request_is_private_to_generation_agent_checkpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "blueprint.json"
+    task = _task() | _rag_fields() | {"sample_count": 1}
+    path.write_text(
+        json.dumps({"benchmark_info": {"sample_count": 1}, "tasks": {"view": task}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        generation_workflow,
+        "initialize_generation",
+        lambda _request: {
+            "generation_target_counts": {"view": 1},
+            "generation_completed_counts": {"view": 1},
+            "generation_stage_index": 3,
+            "generation_stage": "",
+            "generation_cursor": 1,
+            "generation_progress_path": str(tmp_path / "progress.jsonl"),
+            "generation_rejections": {},
+            "generation_exhausted": False,
+        },
+    )
+    monkeypatch.setattr(
+        generation_workflow,
+        "finalize_generation",
+        lambda _request, _state: GenerationResult(
+            raw_output_path=str(tmp_path / "raw.jsonl"),
+            provenance_output_path=str(tmp_path / "provenance.jsonl"),
+            item_count=1,
+            task_counts={"view": 1},
+        ),
+    )
+    graph = compile_generation_agent(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "generation-agent-private"}}
+    result = graph.invoke(
+        {
+            "working_blueprint_path": str(path),
+            "benchmark_info": {"sample_count": 1},
+            "run_id": "run",
+            "selected_dataset_id": "vindr-mammo",
+            "construction_events_path": str(tmp_path / "events.jsonl"),
+            "dataset_access_manifest": {"duckdb_path": "dataset.duckdb"},
+        },
+        config,
+    )
+
+    assert set(result) == {
+        "raw_output_path",
+        "provenance_output_path",
+        "item_count",
+        "task_counts",
+        "generation_shortfalls",
+    }
+    assert "generation_request" not in result
+    assert any(
+        "generation_request" in snapshot.values
+        for snapshot in graph.get_state_history(config)
+    )
 
 
 def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, monkeypatch) -> None:
