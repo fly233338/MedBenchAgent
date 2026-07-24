@@ -1,6 +1,6 @@
 import importlib.util
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -31,6 +31,20 @@ def test_build_image_manifest_is_ordered_and_deterministic(tmp_path: Path) -> No
     assert first == second
     assert [row["image_id"] for row in first] == ["b", "a"]
     assert first[0]["conversion_status"] == "success"
+
+
+def test_build_image_manifest_prefixes_a_nested_png_root(tmp_path: Path) -> None:
+    annotation, conversion = tmp_path / "annotation.jsonl", tmp_path / "conversion.jsonl"
+    _jsonl(annotation, [{"image_id": "a", "image_path": "source/a.dcm"}])
+    _jsonl(conversion, [_conversion()])
+
+    rows = manifest_skill.build(
+        annotation,
+        conversion,
+        png_root_relative_to_manifest=PurePosixPath("png_images"),
+    )
+
+    assert rows[0]["png_path"] == "png_images/images/a.png"
 
 
 @pytest.mark.parametrize(

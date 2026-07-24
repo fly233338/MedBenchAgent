@@ -1,4 +1,4 @@
 interface:
   display_name: "Medical Dataset Preparation"
-  short_description: "Prepare normalized annotations and deterministic PNG mappings."
-  default_prompt: "Use $medical-dataset-preparation to prepare separate normalized annotations, deterministic PNG images, and an image-ID mapping."
+  short_description: "Prepare annotations, PNGs, mappings, and reusable scripts."
+  default_prompt: "Use $medical-dataset-preparation with my annotation source, image root, artifact directory, and PNG output directory."

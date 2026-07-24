@@ -30,7 +30,12 @@ def _rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def build(annotation_path: Path, conversion_path: Path) -> list[dict[str, object]]:
+def build(
+    annotation_path: Path,
+    conversion_path: Path,
+    *,
+    png_root_relative_to_manifest: PurePosixPath = PurePosixPath("."),
+) -> list[dict[str, object]]:
     converted: dict[str, dict[str, Any]] = {}
     for row in _rows(conversion_path):
         source = _relative(row.get("source_relative_path"), "source_relative_path")
@@ -59,7 +64,8 @@ def build(annotation_path: Path, conversion_path: Path) -> list[dict[str, object
             raise ValueError(f"Invalid PNG dimensions for: {source}")
         if not isinstance(digest, str) or len(digest) != 64:
             raise ValueError(f"Invalid PNG SHA-256 for: {source}")
-        output.append({"image_id": image_id, "source_path": source, "png_path": png, "width": width,
+        manifest_png = png_root_relative_to_manifest / png
+        output.append({"image_id": image_id, "source_path": source, "png_path": manifest_png.as_posix(), "width": width,
                        "height": height, "sha256": digest, "conversion_status": "success",
                        "transform": {"spatial": "none"}})
         image_ids.add(image_id)
@@ -72,9 +78,20 @@ def main() -> None:
     parser.add_argument("--annotation", type=Path, required=True)
     parser.add_argument("--conversion-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--png-root", type=Path)
     args = parser.parse_args()
-    rows = build(args.annotation, args.conversion_manifest)
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    png_root = args.png_root.resolve() if args.png_root else args.output.parent.resolve()
+    manifest_root = args.output.parent.resolve()
+    try:
+        png_root_relative = PurePosixPath(png_root.relative_to(manifest_root).as_posix())
+    except ValueError as exc:
+        raise ValueError("--png-root must be inside the image manifest directory.") from exc
+    rows = build(
+        args.annotation,
+        args.conversion_manifest,
+        png_root_relative_to_manifest=png_root_relative,
+    )
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")
     temporary.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows), encoding="utf-8")
     temporary.replace(args.output)
