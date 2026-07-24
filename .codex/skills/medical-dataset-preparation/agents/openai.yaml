@@ -1,0 +1,4 @@
+interface:
+  display_name: "Medical Dataset Preparation"
+  short_description: "Prepare normalized annotations and deterministic PNG mappings."
+  default_prompt: "Prepare this medical imaging dataset with normalized annotations, PNG conversion, and an image manifest."
