@@ -85,6 +85,7 @@ def test_root_graph_exposes_only_declared_input_and_output_fields() -> None:
     assert graph.builder.output_schema is workflow.BenchmarkOutputState
     assert set(graph.builder.output_schema.__annotations__) == {
         "benchmark_info",
+        "run_id",
         "selected_dataset_id",
         "working_blueprint_path",
         "task_screening_report_path",
@@ -198,17 +199,41 @@ def test_dataset_profile_resolves_confirmed_id_internally(tmp_path: Path, monkey
 
     def prepare(path, _cache_root):
         assert path == expected_path
-        return {"total_images": 1}, {
+        return {"total_images": 1, "schema_version": "task-capability-profile.v1"}, {
             "annotation_path": str(expected_path),
             "duckdb_path": "dataset.duckdb",
+            "annotation_sha256": "a" * 64,
+            "cache_format_version": "annotation-cache.v3",
         }
 
     monkeypatch.setattr(workflow, "prepare_annotation_dataset", prepare)
 
-    result = workflow._dataset_profile_node({"selected_dataset_id": "vindr-mammo"})
+    blueprint_path = tmp_path / "blueprint.json"
+    blueprint_path.write_text(
+        json.dumps(
+            {
+                "dataset": {
+                    "dataset_id": "vindr-mammo",
+                    "dataset_name": "VinDr-Mammo",
+                    "description": "Mammography annotations.",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = workflow._dataset_profile_node(
+        {"selected_dataset_id": "vindr-mammo", "working_blueprint_path": str(blueprint_path)}
+    )
 
-    assert result["dataset_profile"] == {"total_images": 1}
-    assert result["dataset_access_manifest"] == {"duckdb_path": "dataset.duckdb"}
+    assert result["dataset_profile"] == {
+        "total_images": 1,
+        "schema_version": "task-capability-profile.v1",
+    }
+    assert result["dataset_access_manifest"] == {
+        "duckdb_path": "dataset.duckdb",
+        "annotation_sha256": "a" * 64,
+        "cache_format_version": "annotation-cache.v3",
+    }
     assert "annotation_path" not in result
 
 
@@ -406,6 +431,9 @@ def test_generation_request_uses_blueprint_task_snapshot_without_design_duplicat
     state = {
         "working_blueprint_path": str(path),
         "benchmark_info": {"sample_count": 2},
+        "run_id": "00000000-0000-0000-0000-000000000000",
+        "selected_dataset_id": "vindr-mammo",
+        "construction_events_path": str(tmp_path / "construction_events.jsonl"),
         "dataset_access_manifest": {"duckdb_path": "dataset.duckdb"},
         "seed": 3,
         "max_tasks_per_image": 2,

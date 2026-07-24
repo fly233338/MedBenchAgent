@@ -134,6 +134,9 @@ def _normalized_options(options: object) -> list[str]:
 
 
 def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask], dict[str, int]]:
+    dataset_id = request.get("dataset_id")
+    if not isinstance(dataset_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", dataset_id):
+        raise ValueError("dataset_id must be a stable lowercase slug.")
     tasks = request["tasks"]
     targets = _task_targets(request)
     for task_id, task in tasks.items():
@@ -180,11 +183,14 @@ def _item_identity(candidate: _Candidate) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
-def _build_item(candidate: _Candidate, generated: dict[str, Any], handler: Any) -> BenchmarkItem:
+def _build_item(
+    candidate: _Candidate, generated: dict[str, Any], handler: Any, dataset_id: str
+) -> BenchmarkItem:
     options, answer = handler.encode_answer(candidate, generated)
     return {
         "id": _item_identity(candidate),
         "task_id": candidate.task_id,
+        "dataset": dataset_id,
         "image_id": candidate.record["image_id"],
         "image_path": candidate.record["image_path"],
         "question": generated["question"],
@@ -439,7 +445,7 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
             ) + 1
             continue
         if approved:
-            accepted.append(_build_item(candidate, generated, handler))
+            accepted.append(_build_item(candidate, generated, handler, request["dataset_id"]))
         else:
             rejections[f"{phase}_review_rejected"] = rejections.get(
                 f"{phase}_review_rejected", 0
@@ -478,7 +484,7 @@ def finalize_generation(request: GenerationRequest, state: dict[str, Any]) -> Ge
             if task_id in stage_tasks and counts[task_id] < targets[task_id]:
                 kept.append(item)
                 counts[task_id] += 1
-    output = output_dir / "benchmark_items.raw.jsonl"
+    output = output_dir / f"benchmark.{request['dataset_id']}.raw.jsonl"
     _write_jsonl(output, kept)
     for progress_path in progress_paths:
         if progress_path.exists():

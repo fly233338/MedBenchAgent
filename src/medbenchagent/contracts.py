@@ -25,6 +25,10 @@ class BlueprintTask(TypedDict):
 
 class GenerationRequest(TypedDict):
     benchmark_info: dict[str, object]
+    run_id: str
+    dataset_id: str
+    blueprint_sha256: str
+    construction_events_path: str
     dataset_access_manifest: dict[str, object]
     tasks: dict[str, BlueprintTask]
     target_sample_count: int
@@ -37,6 +41,7 @@ class GenerationRequest(TypedDict):
 class BenchmarkItem(TypedDict):
     id: str
     task_id: str
+    dataset: str
     image_id: str
     image_path: str
     question: str

@@ -49,6 +49,10 @@ def _request(tmp_path: Path, records: list[dict], tasks: dict, target: int, seed
     _profile, manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
     return {
         "benchmark_info": {"language": "en", "modality": "mammography"},
+        "run_id": "00000000-0000-0000-0000-000000000000",
+        "dataset_id": "test-dataset",
+        "blueprint_sha256": "a" * 64,
+        "construction_events_path": str(tmp_path / "run" / "construction_events.jsonl"),
         "dataset_access_manifest": manifest,
         "tasks": tasks,
         "target_sample_count": target,
@@ -163,7 +167,7 @@ def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeyp
     assert items[0]["answer"] == "A"
     assert items[1]["answer"] == [1.0, 2.0, 8.0, 9.0]
     assert items[2]["answer"] == "Normal study."
-    assert all(set(item) == {"id", "task_id", "image_id", "image_path", "question", "options", "answer"} for item in items)
+    assert all(set(item) == {"id", "task_id", "dataset", "image_id", "image_path", "question", "options", "answer"} for item in items)
     assert not list(Path(request["output_directory"]).glob("benchmark_items.*.progress.jsonl"))
     assert all(temperature == 0.7 for prompt, temperature in calls if prompt.startswith("Generate one"))
     assert all(temperature == 0 for prompt, temperature in calls if "Review one" in prompt)
@@ -311,6 +315,7 @@ def test_free_text_requires_exact_unique_reference_text_and_repairs_once(tmp_pat
 def test_all_supporting_fields_must_be_nonempty_and_vqa_options_remain_normalized() -> None:
     task = _task("letter", ["annotation.status", "annotation.laterality"], options=["A. benign", "B) malignant"])
     request = {
+        "dataset_id": "test-dataset",
         "tasks": {"vqa": task},
         "target_sample_count": 1,
         "max_tasks_per_image": 3,

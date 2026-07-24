@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import re
 import json
-import uuid
 from pathlib import Path
 from typing import Any
 
 from medbenchagent.llm import complete_json
+from medbenchagent.run_artifacts import atomic_write_json
 
 REQUIRED_FIELDS = ("disease", "modality", "description", "language", "sample_count")
 TEMPLATE_BLUEPRINT_PATH = Path(__file__).parents[2] / "blueprint.json"
@@ -91,13 +91,13 @@ BenchmarkInfo fields. Return valid JSON only.""",
 
 
 def write_working_blueprint(
-    benchmark_info: dict[str, Any], runs_root: str | Path, template_path: Path = TEMPLATE_BLUEPRINT_PATH
+    benchmark_info: dict[str, Any], output_path: str | Path, template_path: Path = TEMPLATE_BLUEPRINT_PATH
 ) -> str:
     """Copy the immutable blueprint template and replace only its benchmark-info section."""
     blueprint = json.loads(template_path.read_text(encoding="utf-8"))
     blueprint["benchmark_info"] = benchmark_info
-    run_dir = Path(runs_root) / uuid.uuid4().hex
-    run_dir.mkdir(parents=True, exist_ok=True)
-    output_path = run_dir / "blueprint.json"
-    output_path.write_text(json.dumps(blueprint, ensure_ascii=False, indent=2), encoding="utf-8")
-    return str(output_path)
+    destination = Path(output_path)
+    if destination.suffix != ".json":
+        destination = destination / "blueprint.json"
+    atomic_write_json(destination, blueprint)
+    return str(destination)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -10,6 +11,7 @@ from medbenchagent.llm import complete_json
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATASET_CATALOG_PATH = PROJECT_ROOT / "datasets" / "dataset_catalog.json"
+DATASET_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 
 class DatasetCatalogError(ValueError):
@@ -51,6 +53,10 @@ def load_dataset_catalog(catalog_path: str | Path | None = None) -> list[Dataset
             if not isinstance(raw[field], str) or not raw[field].strip():
                 raise DatasetCatalogError(f"Dataset catalog entry {index} has an invalid {field}.")
         dataset_id = raw["id"].strip()
+        if not DATASET_ID_PATTERN.fullmatch(dataset_id):
+            raise DatasetCatalogError(
+                f"Dataset catalog entry {index} has an unsafe id; use a lowercase stable slug."
+            )
         if dataset_id in seen_ids:
             raise DatasetCatalogError(f"Dataset catalog contains duplicate id: {dataset_id}.")
         if not isinstance(raw["available"], bool):

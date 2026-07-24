@@ -44,6 +44,7 @@ def test_catalog_loads_and_resolves_project_relative_paths(tmp_path: Path, monke
         ([_entry("same"), _entry("same")], "duplicate id"),
         ([_entry("future", available=False)], "at least one available"),
         ([{**_entry("vindr-mammo"), "available": "yes"}], "invalid available"),
+        ([_entry("unsafe id")], "unsafe id"),
     ],
 )
 def test_catalog_rejects_invalid_entries(

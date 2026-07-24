@@ -29,6 +29,12 @@ from medbenchagent.generation.graph import (
     compile_generation_subgraph,
 )
 from medbenchagent.llm import complete_json
+from medbenchagent.run_artifacts import (
+    RUNS_ROOT,
+    blueprint_sha256,
+    initialize_run,
+    update_blueprint_dataset,
+)
 from medbenchagent.rag.graph import (
     RagDesignInputState,
     RagDesignOutputState,
@@ -81,6 +87,9 @@ class BenchmarkState(MessagesState, total=False):
     """Only compact summaries and artifact paths are checkpointed, never table rows."""
 
     benchmark_info: dict[str, Any]
+    run_id: str
+    run_directory: str
+    construction_events_path: str
     user_requirement: str
     benchmark_feedback: str
     benchmark_confirmed: bool
@@ -109,6 +118,7 @@ class BenchmarkOutputState(TypedDict):
     """Stable result returned by the root benchmark graph."""
 
     benchmark_info: dict[str, Any]
+    run_id: str
     selected_dataset_id: str
     working_blueprint_path: str
     task_screening_report_path: str
@@ -124,6 +134,11 @@ def _latest_user_text(state: BenchmarkState) -> str:
             content = message.content
             return content if isinstance(content, str) else str(content)
     return ""
+
+
+def _run_initialize_node(state: BenchmarkState) -> dict[str, Any]:
+    """Create persistent run artifacts before any LLM-backed workflow node."""
+    return {} if state.get("run_id") else initialize_run(RUNS_ROOT)
 
 
 def _benchmark_extract_node(state: BenchmarkState) -> dict[str, Any]:
@@ -151,7 +166,7 @@ def _benchmark_confirm_node(state: BenchmarkState) -> dict[str, Any]:
     action = _benchmark_review_action(answer, state["benchmark_info"])
     if action["action"] == "confirm":
         working_blueprint_path = state.get("working_blueprint_path") or write_working_blueprint(
-            state["benchmark_info"], PROJECT_ROOT / "benchmarks" / "runs"
+            state["benchmark_info"], state["working_blueprint_path"]
         )
         return {
             "benchmark_confirmed": True,
@@ -237,6 +252,14 @@ def _dataset_review_node(state: BenchmarkState) -> dict[str, Any]:
     action = _dataset_review_action(answer, datasets)
     if action["action"] == "confirm":
         dataset = dataset_by_id(datasets, recommendation["dataset_id"])
+        update_blueprint_dataset(
+            state["working_blueprint_path"],
+            {
+                "dataset_id": dataset["id"],
+                "dataset_name": dataset["name"],
+                "description": dataset["description"],
+            },
+        )
         return {"selected_dataset_id": dataset["id"], "dataset_confirmed": True}
     dataset = dataset_by_id(datasets, action["dataset_id"])
     return {
@@ -265,6 +288,18 @@ def _dataset_profile_node(state: BenchmarkState) -> dict[str, Any]:
         raise DatasetCatalogError(
             f"Selected dataset {dataset_id} could not be prepared: {exc}"
         ) from exc
+    blueprint_path = state["working_blueprint_path"]
+    blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
+    dataset_snapshot = dict(blueprint["dataset"])
+    dataset_snapshot.update(
+        {
+            "annotation_sha256": manifest["annotation_sha256"],
+            "profile_schema_version": profile["schema_version"],
+            "cache_schema_version": manifest["cache_format_version"],
+            "total_images": profile["total_images"],
+        }
+    )
+    update_blueprint_dataset(blueprint_path, dataset_snapshot)
     return {
         "dataset_profile": profile,
         "dataset_access_manifest": {
@@ -520,6 +555,10 @@ def _generation_request_node(state: BenchmarkState) -> dict[str, Any]:
     benchmark_info = blueprint.get("benchmark_info", state["benchmark_info"])
     request: GenerationRequest = {
         "benchmark_info": benchmark_info,
+        "run_id": state["run_id"],
+        "dataset_id": state["selected_dataset_id"],
+        "blueprint_sha256": blueprint_sha256(state["working_blueprint_path"]),
+        "construction_events_path": state["construction_events_path"],
         "dataset_access_manifest": state["dataset_access_manifest"],
         "tasks": tasks,
         "target_sample_count": int(benchmark_info["sample_count"]),
@@ -539,6 +578,7 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
         output_schema=BenchmarkOutputState,
     )
     graph.add_node("benchmark_extract", _benchmark_extract_node)
+    graph.add_node("run_initialize", _run_initialize_node)
     graph.add_node("benchmark_confirm", _benchmark_confirm_node)
     graph.add_node("dataset_recommend", _dataset_recommend_node)
     graph.add_node("dataset_review", _dataset_review_node)
@@ -553,7 +593,8 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_node("rag_designs", compile_rag_designs_subgraph())
     graph.add_node("generation_request", _generation_request_node)
     graph.add_node("generate_raw_benchmark", compile_generation_subgraph())
-    graph.add_edge(START, "benchmark_extract")
+    graph.add_edge(START, "run_initialize")
+    graph.add_edge("run_initialize", "benchmark_extract")
     graph.add_edge("benchmark_extract", "benchmark_confirm")
     graph.add_conditional_edges(
         "benchmark_confirm",
