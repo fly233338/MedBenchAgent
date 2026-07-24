@@ -177,9 +177,9 @@ def _benchmark_confirm_node(state: BenchmarkState) -> dict[str, Any]:
     )
     action = _benchmark_review_action(answer, state["benchmark_info"])
     if action["action"] == "confirm":
-        working_blueprint_path = state.get("working_blueprint_path") or write_working_blueprint(
-            state["benchmark_info"], state["working_blueprint_path"]
-        )
+        working_blueprint_path = state["working_blueprint_path"]
+        if not Path(working_blueprint_path).is_file():
+            write_working_blueprint(state["benchmark_info"], working_blueprint_path)
         return {
             "benchmark_confirmed": True,
             "benchmark_feedback": "",

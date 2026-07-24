@@ -8,6 +8,7 @@ import medbenchagent.workflow.graph as workflow
 from medbenchagent.contracts import GenerationResult
 from medbenchagent.generation import graph as generation_workflow
 from medbenchagent.rag import graph as rag_workflow
+from medbenchagent.run_artifacts import initialize_run
 
 
 def _task(
@@ -127,6 +128,26 @@ def _datasets() -> list[dict]:
             "available": False,
         },
     ]
+
+
+def test_confirmed_benchmark_writes_preallocated_blueprint_path(tmp_path: Path, monkeypatch) -> None:
+    run = initialize_run(tmp_path / "runs")
+    monkeypatch.setattr(workflow, "interrupt", lambda _payload: "confirm")
+    monkeypatch.setattr(workflow, "_benchmark_review_action", lambda *_args: {"action": "confirm"})
+
+    result = workflow._benchmark_confirm_node(
+        {
+            "benchmark_info": {"disease": "breast cancer", "sample_count": 1},
+            "working_blueprint_path": run["working_blueprint_path"],
+        }
+    )
+
+    path = Path(result["working_blueprint_path"])
+    assert path.is_file()
+    assert json.loads(path.read_text(encoding="utf-8"))["benchmark_info"] == {
+        "disease": "breast cancer",
+        "sample_count": 1,
+    }
 
 
 def test_dataset_recommendation_enriches_selection_without_path(monkeypatch) -> None:
