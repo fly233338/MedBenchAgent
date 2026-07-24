@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -11,7 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from medbenchagent.llm import complete_json
-from medbenchagent.construction import event_context, record_event
+from medbenchagent.construction import event_context, event_operation, record_event, record_human_action
 from medbenchagent.rag.pdf import LocalPdfRag, design_task, write_task_design
 
 PROJECT_ROOT = Path(__file__).parents[3]
@@ -92,8 +93,9 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
         "run_id": state.get("run_id"),
         "dataset_id": state.get("selected_dataset_id"),
         "task_id": task_id,
-        "agent": "rag",
+        "agent": "ClinicalDesignAgent",
         "operation": "rag_design",
+        "model": os.getenv("DEEPSEEK_MODEL"),
     }
     with event_context(**event_values):
         design = design_task(
@@ -107,7 +109,7 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
     if state.get("construction_events_path"):
         record_event(
             state["construction_events_path"], "rag_retrieval", run_id=state.get("run_id"),
-            dataset_id=state.get("selected_dataset_id"), task_id=task_id, agent="rag",
+            dataset_id=state.get("selected_dataset_id"), task_id=task_id, agent="ClinicalDesignAgent",
             operation="retrieve", status="success"
         )
     write_task_design(blueprint_path, task_id, design)
@@ -170,11 +172,12 @@ def _design_review_action(answer: object, tasks: dict[str, Any]) -> dict[str, An
     try:
         return _validate_design_review_action(response, task_ids)
     except ValueError as first_error:
-        repaired = complete_json(
-            "Repair a Question Design review action. Return JSON only.",
-            f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
-            f"Contract error: {first_error}",
-        )
+        with event_operation("repair"):
+            repaired = complete_json(
+                "Repair a Question Design review action. Return JSON only.",
+                f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+                f"Contract error: {first_error}",
+            )
         return _validate_design_review_action(repaired, task_ids)
 
 
@@ -192,10 +195,38 @@ def _design_review_node(state: RagDesignState) -> dict[str, Any]:
             "question": "Confirm the Blueprint task designs or describe one or more corrections.",
         }
     )
-    action = _design_review_action(answer, tasks)
+    with event_context(
+        construction_events_path=state.get("construction_events_path"),
+        run_id=state.get("run_id"),
+        dataset_id=state.get("selected_dataset_id"),
+        agent="ClinicalDesignAgent",
+        operation="rag_design_review",
+        model=os.getenv("DEEPSEEK_MODEL"),
+    ):
+        action = _design_review_action(answer, tasks)
     if action["action"] == "confirm":
+        if state.get("construction_events_path") and state.get("run_id"):
+            record_human_action(
+                state["construction_events_path"],
+                run_id=state["run_id"],
+                dataset_id=state.get("selected_dataset_id"),
+                agent="ClinicalDesignAgent",
+                stage="rag_design",
+                action="confirm",
+                modified_objects=0,
+            )
         return {"designs_confirmed": True, "rag_task_queue": [], "rag_task_feedback": {}}
     feedback = {revision["task_id"]: revision["feedback"] for revision in action["revisions"]}
+    if state.get("construction_events_path") and state.get("run_id"):
+        record_human_action(
+            state["construction_events_path"],
+            run_id=state["run_id"],
+            dataset_id=state.get("selected_dataset_id"),
+            agent="ClinicalDesignAgent",
+            stage="rag_design",
+            action="revise",
+            modified_objects=len(feedback),
+        )
     return {
         "designs_confirmed": False,
         "rag_task_queue": list(feedback),

@@ -29,6 +29,12 @@ its path contains a valid normalized `annotation.jsonl`. Invalid catalog entries
 selected annotation files are treated as configuration errors rather than falling back
 to manual path input.
 
+The working Blueprint keeps only `dataset.dataset_id`; it never embeds catalog metadata,
+cache details, hashes, or local paths. `benchmark_manifest.json` carries the final dataset
+record assembled from the catalog, profile, access manifest, and adjacent
+`image_manifest.jsonl`, including annotation/image-manifest hashes and the fixed
+`8bit_grayscale_png` image-format contract.
+
 The downstream workflow accepts only an `annotation.jsonl` file. Each line represents one image
 and must contain `image_id`, `image_path`, `patient_id`, `case_id`, `study_id`, and an
 object-valued `annotation`. `image_path` is stored as opaque metadata: dataset
@@ -143,6 +149,20 @@ The raw file keeps original closed-task option order. Each item contains only `i
 choice letter, reference text, or an `xyxy` box. Run the balance command manually to
 write a separate balanced copy; it recovers the correct semantic option from raw's
 letter and option order, while detection and free-text items pass through unchanged.
+
+## Construction records and Audit
+
+`construction_events.jsonl` records only metadata. LLM calls use the fixed agent names
+`SpecificationAgent`, `CapabilityAgent`, `ClinicalDesignAgent`, and `GenerationAgent`,
+with their operation, logical `DEEPSEEK_MODEL` value, token usage, and latency; deterministic
+Audit events use `AuditAgent`. Validated human confirmations and revisions are recorded without
+their natural-language input. `construction_report.json` reduces these events to total and
+per-agent LLM usage, generation/audit item counts, wall-clock time, and per-stage human counts.
+
+Audit verifies the image-manifest mapping, streams PNG hashes, decodes 8-bit grayscale PNGs,
+and preserves the existing contract and provenance checks. It rejects repeated item IDs and
+canonical-identical items while retaining repeated question text; `audit_report.json` reports
+normalized-question repetition separately in `duplicate_statistics`.
 
 Balance an existing raw file without modifying it:
 

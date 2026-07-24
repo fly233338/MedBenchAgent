@@ -13,6 +13,7 @@ from typing import Any
 from pypdf import PdfReader
 
 from medbenchagent.llm import complete_json
+from medbenchagent.construction import event_operation
 from medbenchagent.rag.reranker import score_pairs
 
 CHUNK_SIZE = 1_200
@@ -490,10 +491,11 @@ def design_task(
             f"{system}\nYour previous JSON violated the contract: {first_error}. "
             "Return one corrected object using the exact required shape."
         )
-        repaired = complete_json(
-            repair_system,
-            f"Previous response: {json.dumps(response, ensure_ascii=False)}\n\n{user}",
-        )
+        with event_operation("repair"):
+            repaired = complete_json(
+                repair_system,
+                f"Previous response: {json.dumps(response, ensure_ascii=False)}\n\n{user}",
+            )
         try:
             normalized = validate_task_design(task_id, task, repaired)
         except ValueError as second_error:

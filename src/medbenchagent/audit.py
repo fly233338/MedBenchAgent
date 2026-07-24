@@ -33,6 +33,14 @@ def _normal(text: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text).casefold()).strip()
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while block := source.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _image_errors(entry: dict[str, Any], root: Path) -> list[str]:
     png = entry.get("png_path")
     if not isinstance(png, str):
@@ -43,7 +51,7 @@ def _image_errors(entry: dict[str, Any], root: Path) -> list[str]:
     image_path = root.joinpath(*path.parts)
     if not image_path.is_file() or image_path.stat().st_size == 0:
         return ["image_missing"]
-    if hashlib.sha256(image_path.read_bytes()).hexdigest() != entry.get("sha256"):
+    if _sha256(image_path) != entry.get("sha256"):
         return ["image_hash"]
     try:
         with Image.open(image_path) as image:
@@ -52,8 +60,8 @@ def _image_errors(entry: dict[str, Any], root: Path) -> list[str]:
                 return ["image_format"]
             if image.width != entry.get("width") or image.height != entry.get("height"):
                 return ["image_dimensions"]
-            values = list(image.getdata())
-            if not values or len(set(values)) == 1:
+            minimum, maximum = image.getextrema()
+            if minimum == maximum:
                 return ["image_pixels"]
     except (OSError, ValueError):
         return ["image_decode"]
@@ -153,31 +161,36 @@ def audit_run(
         ):
             errors.append("provenance_calls")
         candidates.append((item, errors))
-    seen: set[tuple[object, ...]] = set()
+    seen_ids: set[object] = set()
+    seen_items: set[str] = set()
+    seen_questions: set[str] = set()
+    duplicate_item_id_count = 0
+    exact_item_duplicate_count = 0
+    repeated_question_count = 0
     audited = []
     rejected = []
     for item, errors in candidates:
-        key_set = [
-            ("id", item.get("id")),
-            ("question", item.get("question")),
-            ("normalized_question", _normal(item.get("question", ""))),
-            ("task_image", item.get("dataset"), item.get("task_id"), item.get("image_id")),
-            (
-                "image_question_answer",
-                item.get("image_id"),
-                item.get("question"),
-                json.dumps(item.get("answer"), sort_keys=True),
-            ),
-        ]
-        if not errors and any(key in seen for key in key_set):
+        item_id = item.get("id")
+        canonical_item = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        question = item.get("question")
+        normalized_question = _normal(question) if isinstance(question, str) else ""
+        duplicate_id = item_id in seen_ids
+        exact_duplicate = canonical_item in seen_items
+        repeated_question = normalized_question in seen_questions
+        duplicate_item_id_count += duplicate_id
+        exact_item_duplicate_count += exact_duplicate
+        repeated_question_count += repeated_question
+        if not errors and (duplicate_id or exact_duplicate):
             errors.append("duplicate")
         if errors:
             rejected.append(item)
             status = "reject"
         else:
             audited.append(item)
-            seen.update(key_set)
             status = "accept"
+        seen_ids.add(item_id)
+        seen_items.add(canonical_item)
+        seen_questions.add(normalized_question)
         records.append({"item_id": item.get("id"), "status": status, "reasons": errors})
         record_event(
             events_path,
@@ -186,7 +199,7 @@ def audit_run(
             dataset_id=item.get("dataset"),
             task_id=item.get("task_id"),
             item_id=item.get("id"),
-            agent="audit",
+            agent="AuditAgent",
             operation="deterministic",
             status=status,
         )
@@ -213,8 +226,27 @@ def audit_run(
         "reason_counts": dict(
             Counter(reason for record in records for reason in record["reasons"])
         ),
+        "duplicate_statistics": {
+            "duplicate_item_id_count": duplicate_item_id_count,
+            "exact_item_duplicate_count": exact_item_duplicate_count,
+            "repeated_question_count": repeated_question_count,
+            "question_repetition_rate": repeated_question_count / len(candidates) if candidates else 0,
+        },
     }
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    record_event(
+        events_path,
+        "audit_summary",
+        run_id=run_id,
+        dataset_id=blueprint["dataset"]["dataset_id"],
+        agent="AuditAgent",
+        operation="deterministic",
+        status="complete",
+        input=len(candidates),
+        audited=len(audited),
+        rejected=len(rejected),
+        duplicate_statistics=report["duplicate_statistics"],
+    )
     return {
         "audited_path": str(audited_path),
         "flagged_path": str(flagged_path),

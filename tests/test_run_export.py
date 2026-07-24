@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -9,12 +10,6 @@ def _blueprint() -> dict:
         "benchmark_info": {"disease": "breast cancer", "sample_count": 1},
         "dataset": {
             "dataset_id": "vindr-mammo",
-            "dataset_name": "VinDr-Mammo",
-            "description": "Mammography.",
-            "annotation_sha256": "a" * 64,
-            "profile_schema_version": "profile.v1",
-            "cache_schema_version": "cache.v1",
-            "total_images": 1,
         },
         "tasks": {
             "view": {
@@ -48,17 +43,34 @@ def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: 
     raw.write_text("{}\n", encoding="utf-8")
     provenance.write_text("{}\n", encoding="utf-8")
     events.touch()
+    image_manifest = tmp_path / "image_manifest.jsonl"
+    image_manifest.write_text("{}\n", encoding="utf-8")
     rag = export_rag_designs(_blueprint(), "run-1", ["guide.pdf"], tmp_path / "rag_designs.json")
 
     identifier, report, manifest = finalize_run(
         run_directory=tmp_path, run_id="run-1", blueprint_path=blueprint_path, raw_output_path=raw,
         provenance_output_path=provenance, rag_designs_path=rag, construction_events_path=events,
         task_counts={"view": 1, "zero": 0}, shortfalls={"view": 0, "zero": 0},
+        dataset_catalog_entry={"id": "vindr-mammo", "name": "VinDr-Mammo", "description": "Mammography."},
+        dataset_profile={"schema_version": "profile.v1", "total_images": 1},
+        dataset_access_manifest={"annotation_sha256": "a" * 64, "cache_format_version": "cache.v1"},
+        image_manifest_path=image_manifest,
     )
 
     payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
     assert identifier == benchmark_id(_blueprint())
     assert payload["tasks"]["zero"]["metrics"] == ["bleu"]
+    assert payload["dataset"] == {
+        "dataset_id": "vindr-mammo",
+        "dataset_name": "VinDr-Mammo",
+        "description": "Mammography.",
+        "annotation_sha256": "a" * 64,
+        "image_manifest_sha256": hashlib.sha256(image_manifest.read_bytes()).hexdigest(),
+        "profile_schema_version": "profile.v1",
+        "cache_schema_version": "cache.v1",
+        "total_images": 1,
+        "image_format": "8bit_grayscale_png",
+    }
     assert payload["artifacts"]["raw"]["path"] == raw.name
     assert payload["artifacts"]["manifest"] == {"path": "benchmark_manifest.json"}
     assert json.loads(Path(rag).read_text(encoding="utf-8"))["tasks"] == {

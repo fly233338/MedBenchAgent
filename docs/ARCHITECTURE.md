@@ -42,7 +42,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 `schemas/annotation.v1.schema.json` 定义。
 
 每次运行的核心产物是 working `blueprint.json`、`task_plan_report.json`、
-阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、只含元数据的 append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json` 和 `benchmark_manifest.json`。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、数据集快照及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
+阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、只含元数据的 append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json` 和 `benchmark_manifest.json`。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
 `dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。
 
 ## 不变量与失败语义
@@ -57,8 +57,8 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 - RAG 与生成是直接挂载在根图上的编译子图，因此 xray 图、LangSmith 与使用 `stream_mode=["updates", "custom"]` 和
   `subgraphs=True` 可接收每个 RAG 任务与每条生成记录的进度；启用 LangSmith 后，DeepSeek 调用显示为
   对应子图内可展开的 LLM span。
-- `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。事件不保存 prompt、模型响应、原始 annotation 或检索段落；缺失 provider usage 时 token 记为 0 并标记不可用。
-- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变，审计输出与报告写入运行目录。
+- `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。LLM 事件只使用 `SpecificationAgent`、`CapabilityAgent`、`ClinicalDesignAgent` 或 `GenerationAgent`，记录 operation、模型逻辑名称、token 与 latency；确定性审计使用 `AuditAgent`。人类事件仅在自然语言被成功解析并通过代码校验后记录，不保存输入内容。
+- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变，审计输出与报告写入运行目录。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
 
 ## 维护边界
 

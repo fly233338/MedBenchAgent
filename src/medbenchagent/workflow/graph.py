@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -29,6 +30,7 @@ from medbenchagent.generation.graph import (
     compile_generation_subgraph,
 )
 from medbenchagent.llm import complete_json
+from medbenchagent.construction import event_context, event_operation, record_event, record_human_action
 from medbenchagent.run_artifacts import (
     RUNS_ROOT,
     blueprint_sha256,
@@ -151,6 +153,33 @@ def _latest_user_text(state: BenchmarkState) -> str:
     return ""
 
 
+def _llm_context(state: BenchmarkState, agent: str, operation: str):
+    return event_context(
+        construction_events_path=state.get("construction_events_path"),
+        run_id=state.get("run_id"),
+        dataset_id=state.get("selected_dataset_id") or None,
+        agent=agent,
+        operation=operation,
+        model=os.getenv("DEEPSEEK_MODEL"),
+    )
+
+
+def _human_action(
+    state: BenchmarkState, *, agent: str, stage: str, action: str, modified_objects: int
+) -> None:
+    if not state.get("construction_events_path") or not state.get("run_id"):
+        return
+    record_human_action(
+        state["construction_events_path"],
+        run_id=state["run_id"],
+        dataset_id=state.get("selected_dataset_id") or None,
+        agent=agent,
+        stage=stage,
+        action=action,
+        modified_objects=modified_objects,
+    )
+
+
 def _run_initialize_node(state: BenchmarkState) -> dict[str, Any]:
     """Create persistent run artifacts before any LLM-backed workflow node."""
     return {} if state.get("run_id") else initialize_run(RUNS_ROOT)
@@ -163,7 +192,8 @@ def _benchmark_extract_node(state: BenchmarkState) -> dict[str, Any]:
         raise ValueError("A benchmark requirement is required before BenchmarkInfo extraction.")
     if feedback := state.get("benchmark_feedback"):
         requirement = f"{requirement}\nRequested correction: {feedback}"
-    info = extract_benchmark_info(requirement, state.get("benchmark_info", {}))
+    with _llm_context(state, "SpecificationAgent", "benchmark_info_extract"):
+        info = extract_benchmark_info(requirement, state.get("benchmark_info", {}))
     if missing := missing_fields(info):
         raise ValueError(f"BenchmarkInfo is missing required fields: {', '.join(missing)}")
     return {"user_requirement": requirement, "benchmark_info": info, "benchmark_confirmed": False}
@@ -178,16 +208,23 @@ def _benchmark_confirm_node(state: BenchmarkState) -> dict[str, Any]:
             "question": "Confirm this BenchmarkInfo, or describe the correction.",
         }
     )
-    action = _benchmark_review_action(answer, state["benchmark_info"])
+    with _llm_context(state, "SpecificationAgent", "benchmark_info_review"):
+        action = _benchmark_review_action(answer, state["benchmark_info"])
     if action["action"] == "confirm":
         working_blueprint_path = state["working_blueprint_path"]
         if not Path(working_blueprint_path).is_file():
             write_working_blueprint(state["benchmark_info"], working_blueprint_path)
+        _human_action(
+            state, agent="SpecificationAgent", stage="benchmark_info", action="confirm", modified_objects=0
+        )
         return {
             "benchmark_confirmed": True,
             "benchmark_feedback": "",
             "working_blueprint_path": working_blueprint_path,
         }
+    _human_action(
+        state, agent="SpecificationAgent", stage="benchmark_info", action="revise", modified_objects=1
+    )
     return {"benchmark_confirmed": False, "benchmark_feedback": action["feedback"]}
 
 
@@ -216,7 +253,8 @@ def _benchmark_review_action(answer: object, benchmark_info: dict[str, Any]) -> 
 
 def _dataset_recommend_node(state: BenchmarkState) -> dict[str, Any]:
     datasets = load_dataset_catalog()
-    recommendation = recommend_dataset(state["benchmark_info"], datasets)
+    with _llm_context(state, "CapabilityAgent", "dataset_recommend"):
+        recommendation = recommend_dataset(state["benchmark_info"], datasets)
     dataset = dataset_by_id(datasets, recommendation["dataset_id"])
     return {
         "dataset_recommendation": {
@@ -264,19 +302,19 @@ def _dataset_review_node(state: BenchmarkState) -> dict[str, Any]:
             "question": "Confirm the recommended dataset, or name another available dataset.",
         }
     )
-    action = _dataset_review_action(answer, datasets)
+    with _llm_context(state, "CapabilityAgent", "dataset_review"):
+        action = _dataset_review_action(answer, datasets)
     if action["action"] == "confirm":
         dataset = dataset_by_id(datasets, recommendation["dataset_id"])
-        update_blueprint_dataset(
-            state["working_blueprint_path"],
-            {
-                "dataset_id": dataset["id"],
-                "dataset_name": dataset["name"],
-                "description": dataset["description"],
-            },
+        update_blueprint_dataset(state["working_blueprint_path"], dataset["id"])
+        _human_action(
+            state, agent="CapabilityAgent", stage="dataset", action="confirm", modified_objects=0
         )
         return {"selected_dataset_id": dataset["id"], "dataset_confirmed": True}
     dataset = dataset_by_id(datasets, action["dataset_id"])
+    _human_action(
+        state, agent="CapabilityAgent", stage="dataset", action="revise", modified_objects=1
+    )
     return {
         "dataset_recommendation": {
             "dataset_id": dataset["id"],
@@ -303,18 +341,6 @@ def _dataset_profile_node(state: BenchmarkState) -> dict[str, Any]:
         raise DatasetCatalogError(
             f"Selected dataset {dataset_id} could not be prepared: {exc}"
         ) from exc
-    blueprint_path = state["working_blueprint_path"]
-    blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
-    dataset_snapshot = dict(blueprint["dataset"])
-    dataset_snapshot.update(
-        {
-            "annotation_sha256": manifest["annotation_sha256"],
-            "profile_schema_version": profile["schema_version"],
-            "cache_schema_version": manifest["cache_format_version"],
-            "total_images": profile["total_images"],
-        }
-    )
-    update_blueprint_dataset(blueprint_path, dataset_snapshot)
     return {
         "dataset_profile": profile,
         "dataset_access_manifest": {
@@ -327,8 +353,10 @@ def _dataset_profile_node(state: BenchmarkState) -> dict[str, Any]:
 def _task_plan_generate_node(state: BenchmarkState) -> dict[str, Any]:
     """Generate all decisions once; this model node never interrupts or edits Blueprint."""
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
+    with _llm_context(state, "CapabilityAgent", "task_plan_generate"):
+        task_plan = generate_task_plan(blueprint, state["dataset_profile"])
     return {
-        "draft_task_plan": generate_task_plan(blueprint, state["dataset_profile"]),
+        "draft_task_plan": task_plan,
         "pending_task_feedback": None,
         "task_plan_confirmed": False,
     }
@@ -374,9 +402,16 @@ def _task_plan_review_node(state: BenchmarkState) -> dict[str, Any]:
         }
     )
     task_ids = list(state["draft_task_plan"]["tasks"])
-    action = _review_action(answer, task_ids)
+    with _llm_context(state, "CapabilityAgent", "task_plan_revise"):
+        action = _review_action(answer, task_ids)
     if action["action"] == "confirm":
+        _human_action(
+            state, agent="CapabilityAgent", stage="task_plan", action="confirm", modified_objects=0
+        )
         return {"task_plan_confirmed": True, "pending_task_feedback": None}
+    _human_action(
+        state, agent="CapabilityAgent", stage="task_plan", action="revise", modified_objects=1
+    )
     return {"task_plan_confirmed": False, "pending_task_feedback": action}
 
 
@@ -386,14 +421,16 @@ def _task_plan_revise_node(state: BenchmarkState) -> dict[str, Any]:
     if not feedback:
         raise ValueError("Task Plan revision requires pending task feedback.")
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
-    return {
-        "draft_task_plan": revise_task_plan(
+    with _llm_context(state, "CapabilityAgent", "task_plan_revise"):
+        revised_task_plan = revise_task_plan(
             blueprint,
             state["dataset_profile"],
             state["draft_task_plan"],
             feedback["task_id"],
             feedback["feedback"],
-        ),
+        )
+    return {
+        "draft_task_plan": revised_task_plan,
         "pending_task_feedback": None,
         "task_plan_confirmed": False,
     }
@@ -473,11 +510,12 @@ def _sample_count_review_action(
     try:
         return _validate_sample_count_action(response, task_ids)
     except ValueError as first_error:
-        repaired = complete_json(
-            "Repair a benchmark sample-count review action. Return JSON only.",
-            f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
-            f"Contract error: {first_error}",
-        )
+        with event_operation("repair"):
+            repaired = complete_json(
+                "Repair a benchmark sample-count review action. Return JSON only.",
+                f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+                f"Contract error: {first_error}",
+            )
         return _validate_sample_count_action(repaired, task_ids)
 
 
@@ -496,10 +534,21 @@ def _sample_count_review_node(state: BenchmarkState) -> dict[str, Any]:
             "question": "Confirm the per-task sample counts or describe adjustments.",
         }
     )
-    action = _sample_count_review_action(answer, counts, total, tasks)
+    with _llm_context(state, "CapabilityAgent", "sample_count_review"):
+        action = _sample_count_review_action(answer, counts, total, tasks)
     if action["action"] == "confirm":
         write_sample_counts(state["working_blueprint_path"], counts)
+        _human_action(
+            state, agent="CapabilityAgent", stage="sample_count", action="confirm", modified_objects=0
+        )
         return {"sample_counts_confirmed": True}
+    _human_action(
+        state,
+        agent="CapabilityAgent",
+        stage="sample_count",
+        action="revise",
+        modified_objects=len(action["counts"]),
+    )
     return {
         "draft_sample_counts": distribute_weighted_sample_counts(tasks, total, action["counts"]),
         "sample_counts_confirmed": False,
@@ -537,11 +586,12 @@ def _material_selection_action(answer: object, materials: list[dict[str, str]]) 
     try:
         return _validate_material_selection(response, materials)
     except ValueError as first_error:
-        repaired = complete_json(
-            "Repair a medical-reference selection. Return JSON only.",
-            f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
-            f"Contract error: {first_error}",
-        )
+        with event_operation("repair"):
+            repaired = complete_json(
+                "Repair a medical-reference selection. Return JSON only.",
+                f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+                f"Contract error: {first_error}",
+            )
         return _validate_material_selection(repaired, materials)
 
 
@@ -556,9 +606,17 @@ def _materials_choose_node(state: BenchmarkState) -> dict[str, Any]:
         }
     )
     try:
-        selected_files = _material_selection_action(answer, materials)
+        with _llm_context(state, "CapabilityAgent", "material_selection"):
+            selected_files = _material_selection_action(answer, materials)
     except ValueError as exc:
         return {"selected_material_files": [], "material_selection_error": str(exc)}
+    _human_action(
+        state,
+        agent="CapabilityAgent",
+        stage="materials",
+        action="confirm",
+        modified_objects=len(selected_files),
+    )
     return {"selected_material_files": selected_files, "material_selection_error": ""}
 
 
@@ -601,7 +659,14 @@ def _run_finalize_node(state: BenchmarkState) -> dict[str, Any]:
         blueprint_path=state["working_blueprint_path"], raw_output_path=state["raw_output_path"],
         provenance_output_path=state["provenance_output_path"], rag_designs_path=state["rag_designs_path"],
         construction_events_path=state["construction_events_path"], task_counts=state["task_counts"],
-        shortfalls=state["generation_shortfalls"], audit_artifacts=state.get("audit_artifacts"),
+        shortfalls=state["generation_shortfalls"],
+        dataset_catalog_entry=dataset_by_id(load_dataset_catalog(), state["selected_dataset_id"]),
+        dataset_profile=state["dataset_profile"],
+        dataset_access_manifest=state["dataset_access_manifest"],
+        image_manifest_path=resolve_annotation_path(
+            dataset_by_id(load_dataset_catalog(), state["selected_dataset_id"])
+        ).parent / "image_manifest.jsonl",
+        audit_artifacts=state.get("audit_artifacts"),
     )
     return {"benchmark_id": identifier, "construction_report_path": report_path, "manifest_path": manifest_path}
 
@@ -609,6 +674,17 @@ def _run_finalize_node(state: BenchmarkState) -> dict[str, Any]:
 def _audit_node(state: BenchmarkState) -> dict[str, Any]:
     dataset = dataset_by_id(load_dataset_catalog(), state["selected_dataset_id"])
     annotation_path = resolve_annotation_path(dataset)
+    record_event(
+        state["construction_events_path"],
+        "generation_summary",
+        run_id=state["run_id"],
+        dataset_id=state["selected_dataset_id"],
+        agent="GenerationAgent",
+        operation="summary",
+        status="complete",
+        task_counts=state["task_counts"],
+        shortfalls=state["generation_shortfalls"],
+    )
     result = audit_run(
         raw_path=state["raw_output_path"], blueprint_path=state["working_blueprint_path"],
         provenance_path=state["provenance_output_path"], events_path=state["construction_events_path"],

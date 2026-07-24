@@ -13,17 +13,15 @@ def test_initialize_run_prepares_uuid_directory_and_event_file(tmp_path: Path) -
     assert Path(run["working_blueprint_path"]).parent == tmp_path / "runs" / run["run_id"]
 
 
-def test_dataset_snapshot_is_replaced_atomically(tmp_path: Path) -> None:
+def test_dataset_id_is_replaced_atomically(tmp_path: Path) -> None:
     blueprint_path = tmp_path / "blueprint.json"
     blueprint_path.write_text(json.dumps({"tasks": {}}), encoding="utf-8")
 
     update_blueprint_dataset(
         blueprint_path,
-        {"dataset_id": "vindr-mammo", "dataset_name": "VinDr-Mammo", "description": "Mammography."},
+        "vindr-mammo",
     )
 
     assert json.loads(blueprint_path.read_text(encoding="utf-8"))["dataset"] == {
         "dataset_id": "vindr-mammo",
-        "dataset_name": "VinDr-Mammo",
-        "description": "Mammography.",
     }

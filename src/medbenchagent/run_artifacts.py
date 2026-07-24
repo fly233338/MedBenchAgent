@@ -7,6 +7,8 @@ import json
 import uuid
 from pathlib import Path
 
+from medbenchagent.construction import record_event
+
 
 RUNS_ROOT = Path(__file__).resolve().parents[2] / "benchmarks" / "runs"
 
@@ -31,6 +33,7 @@ def initialize_run(runs_root: str | Path = RUNS_ROOT) -> dict[str, str]:
     run_directory.mkdir(parents=True, exist_ok=False)
     events_path = run_directory / "construction_events.jsonl"
     events_path.touch(exist_ok=False)
+    record_event(events_path, "run_started", run_id=run_id, status="started")
     return {
         "run_id": run_id,
         "run_directory": str(run_directory),
@@ -39,11 +42,13 @@ def initialize_run(runs_root: str | Path = RUNS_ROOT) -> dict[str, str]:
     }
 
 
-def update_blueprint_dataset(blueprint_path: str | Path, dataset: dict[str, object]) -> None:
-    """Replace the top-level public dataset snapshot in a working Blueprint."""
+def update_blueprint_dataset(blueprint_path: str | Path, dataset_id: str) -> None:
+    """Persist the selected dataset identifier as the complete Blueprint dataset section."""
+    if not isinstance(dataset_id, str) or not dataset_id.strip():
+        raise ValueError("dataset_id must be a non-empty string.")
     path = Path(blueprint_path)
     blueprint = json.loads(path.read_text(encoding="utf-8"))
-    blueprint["dataset"] = dataset
+    blueprint["dataset"] = {"dataset_id": dataset_id.strip()}
     atomic_write_json(path, blueprint)
 
 

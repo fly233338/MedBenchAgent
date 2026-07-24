@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from medbenchagent.llm import complete_json
+from medbenchagent.construction import event_operation
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATASET_CATALOG_PATH = PROJECT_ROOT / "datasets" / "dataset_catalog.json"
@@ -141,11 +142,12 @@ def recommend_dataset(
     recommendation, error = _validate_recommendation(response, datasets)
     if recommendation is not None:
         return recommendation
-    repaired = complete_json(
-        "Repair a medical dataset recommendation. Return JSON only.",
-        f"{prompt}\n\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
-        f"Contract error: {error}",
-    )
+    with event_operation("repair"):
+        repaired = complete_json(
+            "Repair a medical dataset recommendation. Return JSON only.",
+            f"{prompt}\n\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+            f"Contract error: {error}",
+        )
     recommendation, error = _validate_recommendation(repaired, datasets)
     if recommendation is None:
         raise DatasetCatalogError(f"Dataset recommendation is invalid: {error}.")

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from medbenchagent.llm import complete_json
+from medbenchagent.construction import event_operation
 
 VISUAL_GROUNDING_PRECEDENCE_REASON = (
     "Dropped because visual_grounding has priority when paired region-level finding text and spatial "
@@ -170,10 +171,11 @@ def generate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any]) -> di
     plan, errors = validate_task_plan(blueprint, profile, response)
     if plan is not None:
         return plan
-    repaired = complete_json(
-        f"{prompt}\n\nYour previous response violated this contract: {errors}. Retry once with a valid complete Task Plan.",
-        "Return the corrected complete Task Plan.",
-    )
+    with event_operation("repair"):
+        repaired = complete_json(
+            f"{prompt}\n\nYour previous response violated this contract: {errors}. Retry once with a valid complete Task Plan.",
+            "Return the corrected complete Task Plan.",
+        )
     plan, errors = validate_task_plan(blueprint, profile, repaired)
     if plan is None:
         raise TaskPlanReviewRequired(repaired, errors)

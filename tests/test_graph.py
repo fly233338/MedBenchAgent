@@ -171,6 +171,34 @@ def test_dataset_recommendation_enriches_selection_without_path(monkeypatch) -> 
     assert result["dataset_confirmed"] is False
 
 
+def test_dataset_profile_keeps_blueprint_dataset_id_only(tmp_path: Path, monkeypatch) -> None:
+    blueprint_path = tmp_path / "blueprint.json"
+    blueprint = {"dataset": {"dataset_id": "vindr-mammo"}, "tasks": {}}
+    blueprint_path.write_text(json.dumps(blueprint), encoding="utf-8")
+    monkeypatch.setattr(workflow, "load_dataset_catalog", _datasets)
+    monkeypatch.setattr(workflow, "resolve_annotation_path", lambda _dataset: tmp_path / "annotation.jsonl")
+    monkeypatch.setattr(
+        workflow,
+        "prepare_annotation_dataset",
+        lambda *_args: (
+            {"schema_version": "task-capability-profile.v1", "total_images": 2},
+            {
+                "annotation_path": str(tmp_path / "annotation.jsonl"),
+                "annotation_sha256": "a" * 64,
+                "cache_format_version": "annotation-cache.v3",
+            },
+        ),
+    )
+
+    result = workflow._dataset_profile_node(
+        {"selected_dataset_id": "vindr-mammo", "working_blueprint_path": str(blueprint_path)}
+    )
+
+    assert json.loads(blueprint_path.read_text(encoding="utf-8")) == blueprint
+    assert result["dataset_profile"]["total_images"] == 2
+    assert "annotation_path" not in result["dataset_access_manifest"]
+
+
 def test_dataset_review_supports_confirm_and_available_reselection(monkeypatch) -> None:
     monkeypatch.setattr(workflow, "complete_json", lambda *_args: {"action": "confirm"})
     assert workflow._dataset_review_action("确认", _datasets()) == {"action": "confirm"}

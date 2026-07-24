@@ -5,9 +5,9 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import json
+import os
 import time
 import uuid
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
@@ -75,6 +75,8 @@ def record_llm_call(*, status: str, started: float, error_type: str | None = Non
         item_id=context.get("item_id"),
         agent=context.get("agent", "deepseek"),
         operation=context.get("operation", "llm"),
+        component=context.get("component"),
+        model=context.get("model") or os.getenv("DEEPSEEK_MODEL"),
         status=status,
         latency_ms=round((time.perf_counter() - started) * 1000, 3),
         input_tokens=prompt_tokens if available else 0,
@@ -86,23 +88,74 @@ def record_llm_call(*, status: str, started: float, error_type: str | None = Non
     )
 
 
+def record_human_action(
+    path: str | Path,
+    *,
+    run_id: str,
+    dataset_id: str | None,
+    agent: str,
+    stage: str,
+    action: str,
+    modified_objects: int,
+) -> None:
+    """Record one validated human decision without retaining the original input."""
+    record_event(
+        path,
+        "human_action",
+        run_id=run_id,
+        dataset_id=dataset_id,
+        agent=agent,
+        stage=stage,
+        action=action,
+        modified_objects=modified_objects,
+    )
+
+
 def construction_report(events_path: str | Path) -> dict[str, object]:
     events = [json.loads(line) for line in Path(events_path).read_text(encoding="utf-8").splitlines() if line]
     llm = [event for event in events if event.get("event_type") == "llm_call"]
-    accepted = [event for event in events if event.get("event_type") == "review_accept"]
-    timestamps = [event["timestamp"] for event in events if isinstance(event.get("timestamp"), str)]
+    started = next((event for event in events if event.get("event_type") == "run_started"), {})
+    completed = next((event for event in reversed(events) if event.get("event_type") == "run_completed"), {})
     elapsed = None
-    if len(timestamps) >= 2:
-        elapsed = round((datetime.fromisoformat(max(timestamps).replace("Z", "+00:00")) - datetime.fromisoformat(min(timestamps).replace("Z", "+00:00"))).total_seconds(), 3)
-    counts = Counter(str(event.get("event_type")) for event in events)
-    complete_usage = all(event.get("token_usage_available") is True for event in llm)
-    accepted_count = len(accepted)
+    if isinstance(started.get("timestamp"), str) and isinstance(completed.get("timestamp"), str):
+        elapsed = round(
+            (
+                datetime.fromisoformat(completed["timestamp"].replace("Z", "+00:00"))
+                - datetime.fromisoformat(started["timestamp"].replace("Z", "+00:00"))
+            ).total_seconds(),
+            3,
+        )
     summary = next((event for event in reversed(events) if event.get("event_type") == "generation_summary"), {})
     task_counts = summary.get("task_counts", {}) if isinstance(summary.get("task_counts"), dict) else {}
     shortfalls = summary.get("shortfalls", {}) if isinstance(summary.get("shortfalls"), dict) else {}
     raw_items = sum(value for value in task_counts.values() if isinstance(value, int))
     shortfall = sum(value for value in shortfalls.values() if isinstance(value, int))
     target = raw_items + shortfall
+    audit_summary = next(
+        (event for event in reversed(events) if event.get("event_type") == "audit_summary"), {}
+    )
+    audited = audit_summary.get("audited", raw_items)
+    rejected = audit_summary.get("rejected", 0)
+    if not isinstance(audited, int) or audited < 0:
+        audited = raw_items
+    if not isinstance(rejected, int) or rejected < 0:
+        rejected = 0
+    agent_names = (
+        "SpecificationAgent",
+        "CapabilityAgent",
+        "ClinicalDesignAgent",
+        "GenerationAgent",
+        "AuditAgent",
+    )
+    agent_metrics = {
+        name: {
+            "calls": sum(event.get("agent") == name for event in llm),
+            "input_tokens": sum(int(event.get("input_tokens", 0)) for event in llm if event.get("agent") == name),
+            "output_tokens": sum(int(event.get("output_tokens", 0)) for event in llm if event.get("agent") == name),
+            "latency_ms": sum(float(event.get("latency_ms", 0)) for event in llm if event.get("agent") == name),
+        }
+        for name in agent_names
+    }
     human_stages = {
         stage: {"confirmed": 0, "revised": 0, "revision_rounds": 0, "modified_objects": 0}
         for stage in (
@@ -110,31 +163,40 @@ def construction_report(events_path: str | Path) -> dict[str, object]:
             "generation_review_override", "audit_override",
         )
     }
+    for event in events:
+        if event.get("event_type") != "human_action" or event.get("stage") not in human_stages:
+            continue
+        stage = human_stages[event["stage"]]
+        if event.get("action") == "confirm":
+            stage["confirmed"] += 1
+        elif event.get("action") == "revise":
+            stage["revised"] += 1
+            stage["revision_rounds"] += 1
+        modified = event.get("modified_objects", 0)
+        if isinstance(modified, int) and modified >= 0:
+            stage["modified_objects"] += modified
+    input_tokens = sum(int(event.get("input_tokens", 0)) for event in llm)
+    output_tokens = sum(int(event.get("output_tokens", 0)) for event in llm)
     return {
         "schema_version": "construction-report.v1",
         "wall_clock_seconds": elapsed,
-        "llm_calls": len(llm),
-        "input_tokens": sum(int(event.get("input_tokens", 0)) for event in llm),
-        "output_tokens": sum(int(event.get("output_tokens", 0)) for event in llm),
-        "token_usage_complete": complete_usage,
-        "accepted_item_averages": {
-            "llm_calls": (len(llm) / accepted_count) if accepted_count else None,
-            "tokens": ((sum(int(event.get("input_tokens", 0)) + int(event.get("output_tokens", 0)) for event in llm)) / accepted_count) if accepted_count else None,
-            "llm_latency_ms": (sum(float(event.get("latency_ms", 0)) for event in llm) / accepted_count) if accepted_count else None,
+        "llm": {
+            "calls": len(llm),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "latency_ms": sum(float(event.get("latency_ms", 0)) for event in llm),
+            "per_audited_item": {
+                "calls": len(llm) / audited if audited else None,
+                "tokens": (input_tokens + output_tokens) / audited if audited else None,
+            },
         },
-        "counts": dict(counts),
-        "retention": 1.0 if accepted_count else None,
-        "generation": {
+        "items": {
             "target": target,
-            "raw_items": raw_items,
-            "reviewer_accepted": accepted_count,
-            "review_rejections": counts["review_reject"],
-            "contract_failures": counts["generation_failure"],
-            "repairs": sum(event.get("operation") == "repair" for event in llm),
-            "model_failures": sum(event.get("error_type") == "model_unavailable" for event in events),
-            "dataset_exhaustion": counts["dataset_exhaustion"],
-            "task_shortfall": shortfall,
-            "retention": 1.0 if accepted_count else None,
+            "raw": raw_items,
+            "audited": audited,
+            "rejected": rejected,
+            "shortfall": shortfall,
         },
+        "agents": agent_metrics,
         "human_stages": human_stages,
     }
