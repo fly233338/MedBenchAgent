@@ -98,3 +98,44 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
         "repeated_question_count": 2,
         "question_repetition_rate": 0.5,
     }
+    assert "retention" not in report
+
+
+def test_audit_accepts_readable_color_images_and_rejects_constant_thumbnails(tmp_path: Path) -> None:
+    color_path = tmp_path / "color.png"
+    color = Image.new("RGB", (2, 2), "white")
+    color.putpixel((0, 0), (0, 0, 0))
+    color.save(color_path)
+    black_path = tmp_path / "black.png"
+    Image.new("RGB", (2, 2), "black").save(black_path)
+
+    from medbenchagent.audit import _image_errors
+
+    assert _image_errors(
+        {
+            "png_path": color_path.name,
+            "width": 2,
+            "height": 2,
+            "sha256": hashlib.sha256(color_path.read_bytes()).hexdigest(),
+        },
+        tmp_path,
+    ) == []
+    assert _image_errors(
+        {
+            "png_path": black_path.name,
+            "width": 2,
+            "height": 2,
+            "sha256": hashlib.sha256(black_path.read_bytes()).hexdigest(),
+        },
+        tmp_path,
+    ) == ["image_pixels"]
+
+
+def test_letter_contract_rejects_unhashable_options() -> None:
+    from medbenchagent.audit import _contract
+
+    assert _contract(
+        {"question": "Which view?", "options": [["CC"], "MLO"], "answer": "A"},
+        {"response_format": "letter"},
+        (1, 1),
+    ) == ["letter_answer"]

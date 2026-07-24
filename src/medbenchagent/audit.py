@@ -56,11 +56,15 @@ def _image_errors(entry: dict[str, Any], root: Path) -> list[str]:
     try:
         with Image.open(image_path) as image:
             image.load()
-            if image.mode != "L" or image.width <= 0 or image.height <= 0:
-                return ["image_format"]
-            if image.width != entry.get("width") or image.height != entry.get("height"):
+            if (
+                image.width <= 0
+                or image.height <= 0
+                or image.width != entry.get("width")
+                or image.height != entry.get("height")
+            ):
                 return ["image_dimensions"]
-            minimum, maximum = image.getextrema()
+            thumbnail = image.convert("L").resize((256, 256))
+            minimum, maximum = thumbnail.getextrema()
             if minimum == maximum:
                 return ["image_pixels"]
     except (OSError, ValueError):
@@ -77,6 +81,7 @@ def _contract(item: dict[str, Any], task: dict[str, Any], dimensions: tuple[int,
         options, answer = item.get("options"), item.get("answer")
         if (
             not isinstance(options, list)
+            or not all(isinstance(option, str) and option.strip() for option in options)
             or len(set(options)) != len(options)
             or not isinstance(answer, str)
             or len(answer) != 1
@@ -222,7 +227,6 @@ def audit_run(
         "pass": len(audited),
         "flag": 0,
         "reject": len(rejected),
-        "retention": len(audited) / len(candidates) if candidates else None,
         "reason_counts": dict(
             Counter(reason for record in records for reason in record["reasons"])
         ),
