@@ -23,27 +23,45 @@ class TaskPlanReviewRequired(ValueError):
         super().__init__(f"Task Plan requires human review: {', '.join(errors)}")
 
 
-def _task_plan_prompt(blueprint: dict[str, Any], profile: dict[str, Any]) -> str:
+def _task_plan_prompt(
+    blueprint: dict[str, Any],
+    profile: dict[str, Any],
+) -> str:
     return (
-        "Decide whether every predefined medical VLM benchmark task is supported by an image-level "
-        "annotation dataset. Return JSON only in this exact shape: "
-        '{"tasks":{"task_id":{"decision":"retain|drop","supporting_fields":["annotation.path"],'
-        '"reason":"..."}}}. The tasks object must contain exactly every Blueprint task. '
-        "You should use each task's description and require fields as the authoritative support criteria."
-        "A retain decision needs at least one supporting field. A drop decision needs no supporting "
-        "fields. Supporting fields must exist in dataset_profile.fields. Use each task's description and "
-        "require fields as the authoritative support criteria. Do not invent fields or infer values from "
-        "field names. A single available value may support modality_identification or anatomy_identification. "
-        "finding_presence needs explicit positive/negative evidence; missing finding, bbox, or mask values "
-        "never establish absence. pathology_status needs an explicit pathology or malignancy field and cannot "
-        "be inferred from diagnosis. visual_grounding needs region-level finding text paired with that same "
-        "region's bbox or mask. detection needs a bbox or mask without such a paired region-level finding text. "
-        "When visual_grounding is supported, retain it and drop detection. For array-valued fields, inspect the `[*]` leaf path before deciding a "
-        "parent field is unsupported; a parent path may be null for missing annotations while its array leaf "
-        "contains valid values. Do not retain both detection and visual_grounding. If neither has reliable "
-        "lesion-level spatial annotation, drop both. At least one task must be retained.\n\n"
-        f"Blueprint tasks: {json.dumps(blueprint['tasks'], ensure_ascii=False)}\n\n"
-        f"Dataset profile: {json.dumps(profile, ensure_ascii=False)}"
+        "Determine which predefined medical VLM benchmark tasks are supported by the dataset's "
+        "image-level annotations.\n\n"
+
+        "Return JSON only, using exactly this schema:\n"
+        '{"tasks":{"task_id":{"decision":"retain|drop",'
+        '"supporting_fields":["annotation.path"],"reason":"..."}}}\n\n'
+
+        "Rules:\n"
+        "1. `tasks` must contain every task in the Blueprint, and no others.\n"
+        "2. Treat each task's `description` and required fields as the authoritative support criteria.\n"
+        "3. `supporting_fields` must contain only paths that exist in `dataset_profile.fields`.\n"
+        "4. Do not invent fields or infer annotation values from field names.\n"
+        "5. `retain` requires at least one supporting field; `drop` requires an empty list.\n"
+        "6. At least one task must be retained.\n\n"
+
+        "Task-specific criteria:\n"
+        "- `modality_identification` and `anatomy_identification`: one valid annotated value is sufficient.\n"
+        "- `finding_presence`: requires explicit positive or negative evidence. Missing finding, bbox, or "
+        "mask values do not establish absence.\n"
+        "- `pathology_status`: requires an explicit pathology or malignancy field; diagnosis alone is "
+        "insufficient.\n"
+        "- `visual_grounding`: requires region-level finding text paired with the bbox or mask of the same "
+        "region.\n"
+        "- `detection`: requires a bbox or mask without paired region-level finding text.\n\n"
+
+        "Additional rules:\n"
+        "- For array-valued fields, inspect the `[*]` leaf path before rejecting the parent field. A parent "
+        "path may be null for records with missing annotations while its array leaf still contains valid values.\n"
+        "- Never retain both `visual_grounding` and `detection`.\n"
+        "- If `visual_grounding` is supported, retain it and drop `detection`.\n"
+        "- If neither task has reliable bbox or mask annotations, drop both.\n\n"
+
+        f"Blueprint tasks:\n{json.dumps(blueprint['tasks'], ensure_ascii=False)}\n\n"
+        f"Dataset profile:\n{json.dumps(profile, ensure_ascii=False)}"
     )
 
 
