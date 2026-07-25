@@ -12,7 +12,6 @@ from medbenchagent.construction import event_operation
 from medbenchagent.settings import get_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATASET_CATALOG_PATH = PROJECT_ROOT / "datasets" / "dataset_catalog.json"
 DATASET_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 

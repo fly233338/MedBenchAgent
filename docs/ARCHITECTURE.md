@@ -19,7 +19,7 @@ role-specialized agents + deterministic orchestration：
 各角色内部保留自己的确认、修订和逐项处理循环，根图不做动态路由：
 
 1. `SpecificationAgent` 在首次 DeepSeek 调用前取得已预分配的 run 路径，将自然语言需求提取为 BenchmarkInfo，经人工确认后创建 working Blueprint。
-2. `CapabilityAgent` 从 `datasets/dataset_catalog.json` 推荐并确认数据集；根目录 `dataset_catalog.json` 仅作为模板。
+2. `CapabilityAgent` 从 `datasets/dataset_catalog.json` 推荐并确认数据集。
    代码解析路径、校验 `annotation.jsonl`，再生成
    内容寻址的 DuckDB、dataset profile 和 access manifest。
 3. `CapabilityAgent` 根据 profile 为全部预定义任务生成 Task Plan；人工可逐项修订。确认后，代码删除

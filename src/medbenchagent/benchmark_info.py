@@ -12,7 +12,6 @@ from medbenchagent.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_settings
 
 REQUIRED_FIELDS = ("disease", "modality", "description", "language", "sample_count")
-TEMPLATE_BLUEPRINT_PATH = Path(__file__).parents[2] / "blueprint.json"
 
 EXTRACTION_PROMPT = """Extract a medical VLM benchmark request into one JSON object.
 Return exactly these five keys and no wrapper object:

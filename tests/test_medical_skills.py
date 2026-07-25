@@ -31,6 +31,9 @@ FETCH_SCRIPT = (
 NORMALIZE_SCHEMA = PROJECT_ROOT / ".codex" / "skills" / "normalize-medical-image-dataset" / "schema.json"
 PROJECT_SCHEMA = PROJECT_ROOT / "src" / "medbenchagent" / "schemas" / "annotation.v1.schema.json"
 
+if not all(path.is_file() for path in (NORMALIZE_SCRIPT, FETCH_SCRIPT, NORMALIZE_SCHEMA)):
+    pytest.skip("optional local Codex medical skills are not installed", allow_module_level=True)
+
 
 def _load_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)

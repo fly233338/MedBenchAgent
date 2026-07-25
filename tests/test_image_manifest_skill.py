@@ -6,6 +6,10 @@ import pytest
 
 
 SCRIPT = Path(__file__).parents[1] / ".codex" / "skills" / "medical-dataset-preparation" / "scripts" / "build_image_manifest.py"
+
+if not SCRIPT.is_file():
+    pytest.skip("optional local Codex dataset-preparation skill is not installed", allow_module_level=True)
+
 SPEC = importlib.util.spec_from_file_location("image_manifest_skill", SCRIPT)
 assert SPEC and SPEC.loader
 manifest_skill = importlib.util.module_from_spec(SPEC)

@@ -1,9 +1,10 @@
 import json
-from pathlib import Path
+
+from medbenchagent.settings import get_settings
 
 
 def test_blueprint_defines_all_categories_and_spatial_tasks() -> None:
-    blueprint = json.loads((Path(__file__).parents[1] / "blueprint.json").read_text(encoding="utf-8"))
+    blueprint = json.loads(get_settings().paths.blueprint_template.read_text(encoding="utf-8"))
     tasks = blueprint["tasks"]
 
     assert tasks["visual_grounding"]["response_format"] == "bbox"

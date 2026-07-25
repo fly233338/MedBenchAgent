@@ -3,6 +3,7 @@ from pathlib import Path
 
 import medbenchagent.task_screening as screening
 import pytest
+from medbenchagent.settings import get_settings
 
 
 def _blueprint() -> dict:
@@ -64,7 +65,7 @@ def test_task_plan_retries_one_invalid_complete_response_and_applies_only_after_
 
 
 def test_complete_blueprint_task_plan_uses_one_model_call(monkeypatch) -> None:
-    blueprint = json.loads(Path("blueprint.json").read_text(encoding="utf-8"))
+    blueprint = json.loads(get_settings().paths.blueprint_template.read_text(encoding="utf-8"))
     task_ids = list(blueprint["tasks"])
     plan = {
         "tasks": {

@@ -36,10 +36,7 @@ benchmarks/dataset_cache/
 Thumbs.db
 .agent/
 .codex/
-!.codex/
-!.codex/skills/
-!.codex/skills/medical-dataset-preparation/
-!.codex/skills/medical-dataset-preparation/**
+
 
 # Local architecture diagrams
 docs/architecture/medbenchagent-agent-architecture-preview.svg

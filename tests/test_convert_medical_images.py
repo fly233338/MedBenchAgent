@@ -28,6 +28,9 @@ SCRIPT = (
     / "convert_images.py"
 )
 
+if not SCRIPT.is_file():
+    pytest.skip("optional local Codex image-conversion skill is not installed", allow_module_level=True)
+
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("convert_medical_images_skill", SCRIPT)

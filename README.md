@@ -15,8 +15,7 @@ dataset is exhausted.
 
 ## Dataset input
 
-The workflow selects datasets from `datasets/dataset_catalog.json`; the repository-level
-`dataset_catalog.json` remains a template. After
+The workflow selects datasets from `datasets/dataset_catalog.json`. After
 BenchmarkInfo confirmation, DeepSeek compares the confirmed benchmark request with every
 catalog entry's `id`, `name`, `description`, and `available` status. It recommends one
 available dataset for natural-language confirmation or reselection. Catalog paths are

@@ -4,10 +4,11 @@ from pathlib import Path
 import pytest
 
 import medbenchagent.dataset_catalog as catalog
+from medbenchagent.settings import get_settings
 
 
 def test_default_catalog_is_the_dataset_local_runtime_catalog() -> None:
-    assert catalog.DATASET_CATALOG_PATH == catalog.PROJECT_ROOT / "datasets" / "dataset_catalog.json"
+    assert get_settings().paths.dataset_catalog == catalog.PROJECT_ROOT / "datasets" / "dataset_catalog.json"
     assert catalog.load_dataset_catalog()[0]["id"] == "vindr-mammo"
 
 
