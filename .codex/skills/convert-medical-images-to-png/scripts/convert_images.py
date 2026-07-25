@@ -190,7 +190,7 @@ def _array_to_rgb(array: Any) -> tuple[Any, str]:
     values = np.asarray(array)
     if values.ndim == 2:
         gray, normalization = _normalize_numeric(values)
-        return Image.fromarray(gray, mode="L").convert("RGB"), normalization
+        return Image.fromarray(gray, mode="L"), normalization
     if values.ndim == 3 and values.shape[-1] in {3, 4}:
         if values.dtype != np.uint8:
             values, normalization = _normalize_numeric(values)
@@ -281,7 +281,7 @@ def _convert_dicom(path: Path) -> tuple[Any, str]:
         steps.append("inverse")
     from PIL import Image
 
-    return Image.fromarray(gray, mode="L").convert("RGB"), "+".join(steps)
+    return Image.fromarray(gray, mode="L"), "+".join(steps)
 
 
 def _convert_nifti(path: Path) -> tuple[Any, str]:
