@@ -12,7 +12,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from medbenchagent.llm import complete_json
-from medbenchagent.construction import event_context, event_operation, record_event, record_human_action
+from medbenchagent.construction import (
+    CLINICAL_DESIGN_AGENT,
+    event_context,
+    event_operation,
+    record_event,
+    record_human_action,
+)
 from medbenchagent.rag.pdf import LocalPdfRag, design_task, write_task_design
 
 PROJECT_ROOT = Path(__file__).parents[3]
@@ -93,7 +99,7 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
         "run_id": state.get("run_id"),
         "dataset_id": state.get("selected_dataset_id"),
         "task_id": task_id,
-        "agent": "ClinicalDesignAgent",
+        "agent": CLINICAL_DESIGN_AGENT,
         "operation": "rag_design",
         "model": os.getenv("DEEPSEEK_MODEL"),
     }
@@ -109,7 +115,7 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
     if state.get("construction_events_path"):
         record_event(
             state["construction_events_path"], "rag_retrieval", run_id=state.get("run_id"),
-            dataset_id=state.get("selected_dataset_id"), task_id=task_id, agent="ClinicalDesignAgent",
+            dataset_id=state.get("selected_dataset_id"), task_id=task_id, agent=CLINICAL_DESIGN_AGENT,
             operation="retrieve", status="success"
         )
     write_task_design(blueprint_path, task_id, design)
@@ -199,7 +205,7 @@ def _design_review_node(state: RagDesignState) -> dict[str, Any]:
         construction_events_path=state.get("construction_events_path"),
         run_id=state.get("run_id"),
         dataset_id=state.get("selected_dataset_id"),
-        agent="ClinicalDesignAgent",
+        agent=CLINICAL_DESIGN_AGENT,
         operation="rag_design_review",
         model=os.getenv("DEEPSEEK_MODEL"),
     ):
@@ -210,7 +216,7 @@ def _design_review_node(state: RagDesignState) -> dict[str, Any]:
                 state["construction_events_path"],
                 run_id=state["run_id"],
                 dataset_id=state.get("selected_dataset_id"),
-                agent="ClinicalDesignAgent",
+                agent=CLINICAL_DESIGN_AGENT,
                 stage="rag_design",
                 action="confirm",
                 modified_objects=0,
@@ -222,7 +228,7 @@ def _design_review_node(state: RagDesignState) -> dict[str, Any]:
             state["construction_events_path"],
             run_id=state["run_id"],
             dataset_id=state.get("selected_dataset_id"),
-            agent="ClinicalDesignAgent",
+            agent=CLINICAL_DESIGN_AGENT,
             stage="rag_design",
             action="revise",
             modified_objects=len(feedback),

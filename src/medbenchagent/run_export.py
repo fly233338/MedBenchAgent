@@ -87,8 +87,8 @@ def finalize_run(
         "run_completed",
         run_id=run_id,
         dataset_id=dataset_id,
-        agent="CapabilityAgent",
         operation="finalize",
+        component="orchestrator",
         status="complete",
     )
     report_path = run_dir / "construction_report.json"

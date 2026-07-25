@@ -10,6 +10,7 @@ Convert one source file or directory without modifying it. Use the bundled scrip
 ## Boundaries
 
 - Accept only two-dimensional images. Allow singleton dimensions that squeeze to 2D.
+- Save scalar two-dimensional inputs as single-channel 8-bit grayscale (`L`) PNGs; retain RGB only for genuinely color inputs.
 - Reject multi-frame DICOM, true volumes, WSI, and pyramidal or multi-page TIFF before publishing output.
 - Preserve source width and height unless the user explicitly requests `--max-edge`.
 - Treat the PNG as a display representation, not a diagnostic or quantitative substitute for the source.

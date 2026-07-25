@@ -33,7 +33,14 @@ def initialize_run(runs_root: str | Path = RUNS_ROOT) -> dict[str, str]:
     run_directory.mkdir(parents=True, exist_ok=False)
     events_path = run_directory / "construction_events.jsonl"
     events_path.touch(exist_ok=False)
-    record_event(events_path, "run_started", run_id=run_id, status="started")
+    record_event(
+        events_path,
+        "run_started",
+        run_id=run_id,
+        operation="initialize",
+        component="orchestrator",
+        status="started",
+    )
     return {
         "run_id": run_id,
         "run_directory": str(run_directory),

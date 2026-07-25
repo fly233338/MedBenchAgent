@@ -16,7 +16,7 @@ import duckdb
 
 from medbenchagent.generation import free_text, grounding, vqa
 from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
-from medbenchagent.construction import event_context, record_event
+from medbenchagent.construction import GENERATION_AGENT, event_context, record_event
 from medbenchagent.llm import ModelUnavailable
 from medbenchagent.sample_counts import distribute_sample_counts
 
@@ -427,7 +427,7 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
     if candidates is None:
         record_event(
             request["construction_events_path"], "dataset_exhaustion", run_id=request["run_id"],
-            dataset_id=request["dataset_id"], agent="GenerationAgent", operation="generate", component=phase,
+            dataset_id=request["dataset_id"], agent=GENERATION_AGENT, operation="generate", component=phase,
             status="complete"
         )
         return _enter_stage(request, tasks, targets, completed, stage_index + 1, rejections)
@@ -442,12 +442,12 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
         record_event(
             request["construction_events_path"], "generation_attempt", run_id=request["run_id"],
             dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id,
-            agent="GenerationAgent", operation="generate", component=phase, status="started"
+            agent=GENERATION_AGENT, operation="generate", component=phase, status="started"
         )
         with event_context(
             construction_events_path=request["construction_events_path"], run_id=request["run_id"],
             dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id,
-            agent="GenerationAgent", operation="generate", component=phase,
+            agent=GENERATION_AGENT, operation="generate", component=phase,
             model=os.getenv("DEEPSEEK_MODEL"),
         ) as generation_call_ids:
             try:
@@ -456,18 +456,18 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
                 rejections[f"{phase}_generation_model_unavailable"] = rejections.get(
                     f"{phase}_generation_model_unavailable", 0
                 ) + 1
-                record_event(request["construction_events_path"], "generation_failure", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent="GenerationAgent", operation="generate", component=phase, status="failure", error_type="model_unavailable")
+                record_event(request["construction_events_path"], "generation_failure", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="generate", component=phase, status="failure", error_type="model_unavailable")
                 continue
             except ValueError:
                 rejections[f"{phase}_generation_contract"] = rejections.get(
                     f"{phase}_generation_contract", 0
                 ) + 1
-                record_event(request["construction_events_path"], "generation_failure", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent="GenerationAgent", operation="generate", component=phase, status="failure", error_type="contract")
+                record_event(request["construction_events_path"], "generation_failure", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="generate", component=phase, status="failure", error_type="contract")
                 continue
         with event_context(
             construction_events_path=request["construction_events_path"], run_id=request["run_id"],
             dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id,
-            agent="GenerationAgent", operation="review", component=phase,
+            agent=GENERATION_AGENT, operation="review", component=phase,
             model=os.getenv("DEEPSEEK_MODEL"),
         ) as review_call_ids:
             try:
@@ -476,7 +476,7 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
                 rejections[f"{phase}_review_model_unavailable"] = rejections.get(
                     f"{phase}_review_model_unavailable", 0
                 ) + 1
-                record_event(request["construction_events_path"], "review_failure", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent="GenerationAgent", operation="review", component=phase, status="failure", error_type="model_unavailable")
+                record_event(request["construction_events_path"], "review_failure", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="review", component=phase, status="failure", error_type="model_unavailable")
                 continue
         if approved:
             item = _build_item(candidate, generated, handler, request["dataset_id"])
@@ -489,12 +489,12 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
                 "blueprint_hash": request["blueprint_sha256"],
             }
             accepted.append({"item": item, "provenance": provenance})
-            record_event(request["construction_events_path"], "review_accept", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent="GenerationAgent", operation="review", component=phase, status="success")
+            record_event(request["construction_events_path"], "review_accept", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="review", component=phase, status="success")
         else:
             rejections[f"{phase}_review_rejected"] = rejections.get(
                 f"{phase}_review_rejected", 0
             ) + 1
-            record_event(request["construction_events_path"], "review_reject", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent="GenerationAgent", operation="review", component=phase, status="rejected")
+            record_event(request["construction_events_path"], "review_reject", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="review", component=phase, status="rejected")
 
     progress_path = _stage_progress_path(output_dir, phase)
     if accepted:
