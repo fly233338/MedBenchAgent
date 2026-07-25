@@ -6,15 +6,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from medbenchagent.settings import get_settings
 
-DEFAULT_CATEGORY_WEIGHTS = {
-    "image_acquisition_and_basic_information": 0.10,
-    "anatomy_and_global_tissue_characteristics": 0.20,
-    "finding_recognition_and_characterization": 0.20,
-    "clinical_assessment_and_diagnosis": 0.20,
-    "report_generation": 0.10,
-    "spatial_localization": 0.20,
-}
+
+def _category_weights() -> dict[str, float]:
+    return dict(get_settings().category_weights)
 
 
 def distribute_sample_counts(
@@ -48,11 +44,12 @@ def distribute_sample_counts(
 
 
 def _validate_weighted_tasks(tasks: dict[str, dict[str, Any]]) -> None:
+    weights = _category_weights()
     if not tasks:
         raise ValueError("Blueprint tasks must be non-empty.")
     for task_id, task in tasks.items():
         category = task.get("category") if isinstance(task, dict) else None
-        if category not in DEFAULT_CATEGORY_WEIGHTS:
+        if category not in weights:
             raise ValueError(f"{task_id}: unsupported task category: {category!r}.")
 
 
@@ -94,9 +91,10 @@ def distribute_weighted_sample_counts(
             raise ValueError("Complete task sample counts must sum to the benchmark sample_count.")
         return {task_id: fixed[task_id] for task_id in tasks}
 
+    weights = _category_weights()
     active_weights = {
-        category: DEFAULT_CATEGORY_WEIGHTS[category]
-        for category in DEFAULT_CATEGORY_WEIGHTS
+        category: weights[category]
+        for category in weights
         if category in remaining_by_category
     }
     category_counts = _largest_remainder(remaining_total, active_weights)

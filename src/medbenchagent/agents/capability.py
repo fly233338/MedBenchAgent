@@ -30,16 +30,9 @@ from medbenchagent.dataset_catalog import (
 from medbenchagent.llm import complete_json
 from medbenchagent.rag.pdf import discover_medical_materials
 from medbenchagent.run_artifacts import update_blueprint_dataset
-from medbenchagent.sample_counts import (
-    DEFAULT_CATEGORY_WEIGHTS,
-    distribute_weighted_sample_counts,
-    write_sample_counts,
-)
+from medbenchagent.sample_counts import distribute_weighted_sample_counts, write_sample_counts
+from medbenchagent.settings import get_settings
 from medbenchagent.task_screening import apply_task_plan, generate_task_plan, revise_task_plan
-
-PROJECT_ROOT = Path(__file__).parents[3]
-MATERIALS_ROOT = PROJECT_ROOT / "materials"
-
 
 def _dataset_recommend_node(state: CapabilityAgentState) -> dict[str, Any]:
     datasets = load_dataset_catalog()
@@ -133,7 +126,7 @@ def _dataset_profile_node(state: CapabilityAgentState) -> dict[str, Any]:
     annotation_path = resolve_annotation_path(dataset)
     try:
         profile, manifest = prepare_annotation_dataset(
-            annotation_path, PROJECT_ROOT / "benchmarks" / "dataset_cache"
+            annotation_path, get_settings().paths.dataset_cache_root
         )
     except (AnnotationValidationError, ValueError) as exc:
         raise DatasetCatalogError(
@@ -290,9 +283,10 @@ def _sample_count_review_action(
     task_ids = list(current_counts)
     task_categories = {task_id: tasks[task_id]["category"] for task_id in task_ids}
     active_categories = list(dict.fromkeys(task_categories.values()))
-    active_weight_total = sum(DEFAULT_CATEGORY_WEIGHTS[category] for category in active_categories)
+    weights = dict(get_settings().category_weights)
+    active_weight_total = sum(weights[category] for category in active_categories)
     normalized_weights = {
-        category: DEFAULT_CATEGORY_WEIGHTS[category] / active_weight_total
+        category: weights[category] / active_weight_total
         for category in active_categories
     }
     prompt = (
@@ -402,7 +396,7 @@ def _material_selection_action(answer: object, materials: list[dict[str, str]]) 
 
 
 def _materials_choose_node(state: CapabilityAgentState) -> dict[str, Any]:
-    materials = discover_medical_materials(MATERIALS_ROOT)
+    materials = discover_medical_materials(get_settings().paths.materials_root)
     answer = interrupt(
         {
             "kind": "materials_choose",

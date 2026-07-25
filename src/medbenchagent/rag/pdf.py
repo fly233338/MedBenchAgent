@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 from pathlib import Path
 from threading import Lock
@@ -15,9 +14,8 @@ from pypdf import PdfReader
 from medbenchagent.llm import complete_json
 from medbenchagent.construction import event_operation
 from medbenchagent.rag.reranker import score_pairs
+from medbenchagent.settings import get_settings
 
-CHUNK_SIZE = 1_200
-CHUNK_OVERLAP = 200
 CACHE_SCHEMA_VERSION = "2"
 MATERIAL_CATEGORIES = {
     "clinical_guidelines": "临床指南",
@@ -119,11 +117,14 @@ def _page_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
 def extract_pdf_chunks(
     materials_root: str | Path,
     selected_files: list[str] | None = None,
-    chunk_size: int = CHUNK_SIZE,
-    overlap: int = CHUNK_OVERLAP,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> tuple[str, list[dict[str, object]]]:
     """Extract page-local chunks and return a fingerprint of inputs and chunking rules."""
     root = Path(materials_root).expanduser().resolve()
+    settings = get_settings().rag
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    overlap = settings.chunk_overlap if overlap is None else overlap
     if not root.is_dir():
         raise RagUnavailable(f"Medical-material directory does not exist: {root}")
     if selected_files is None:
@@ -218,12 +219,11 @@ class LocalPdfRag:
         selected_files: list[str] | None = None,
     ) -> None:
         source_hash, self.chunks = extract_pdf_chunks(materials_root, selected_files)
-        embedding_value = os.getenv("BGE_EMBEDDING_MODEL")
-        reranker_value = os.getenv("BGE_RERANKER_MODEL")
-        if not embedding_value or not reranker_value:
+        settings = get_settings().rag
+        if not settings.embedding_model or not settings.reranker_model:
             raise RagUnavailable("Local embedding and reranker model directories must be configured.")
-        embedding_path = Path(embedding_value).expanduser().resolve()
-        reranker_path = Path(reranker_value).expanduser().resolve()
+        embedding_path = settings.embedding_model
+        reranker_path = settings.reranker_model
         if not embedding_path.is_dir() or not reranker_path.is_dir():
             raise RagUnavailable("Local embedding and reranker model directories must be configured.")
         cache_key = hashlib.sha256(
@@ -234,7 +234,7 @@ class LocalPdfRag:
         self.embedding_path = str(embedding_path)
         self.reranker_path = str(reranker_path)
 
-    def retrieve(self, query: str, limit: int = 5) -> list[dict[str, object]]:
+    def retrieve(self, query: str, limit: int | None = None) -> list[dict[str, object]]:
         try:
             import chromadb
         except ImportError as exc:
@@ -252,9 +252,10 @@ class LocalPdfRag:
                     for chunk in self.chunks
                 ],
             )
+        settings = get_settings().rag
         response = collection.query(
             query_embeddings=[embedder.encode(query).tolist()],
-            n_results=min(12, collection.count()),
+            n_results=min(settings.candidate_count, collection.count()),
             include=["documents", "metadatas", "distances"],
         )
         candidates = [
@@ -276,19 +277,15 @@ class LocalPdfRag:
         scores = score_pairs(
             self.reranker_path,
             [(query, str(candidate["text"])) for candidate in candidates],
+            max_length=settings.reranker_max_length,
         )
-        try:
-            threshold = float(os.getenv("RAG_MIN_RERANK_SCORE", "0.5"))
-        except ValueError as exc:
-            raise RagUnavailable("RAG_MIN_RERANK_SCORE must be a number between 0 and 1.") from exc
-        if not 0 <= threshold <= 1:
-            raise RagUnavailable("RAG_MIN_RERANK_SCORE must be between 0 and 1.")
+        threshold = settings.min_rerank_score
         accepted: list[dict[str, object]] = []
         for candidate, score in zip(candidates, scores, strict=True):
             candidate["rerank_score"] = float(score)
             if float(score) >= threshold:
                 accepted.append(candidate)
-        return sorted(accepted, key=lambda item: float(item["rerank_score"]), reverse=True)[:limit]
+        return sorted(accepted, key=lambda item: float(item["rerank_score"]), reverse=True)[: limit or settings.result_limit]
 
 
 def _design_schema(response_format: object) -> str:

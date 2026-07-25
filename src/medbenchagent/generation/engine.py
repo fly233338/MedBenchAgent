@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
 import random
 import re
 from dataclasses import dataclass
@@ -19,10 +18,8 @@ from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequ
 from medbenchagent.construction import GENERATION_AGENT, event_context, record_event
 from medbenchagent.llm import ModelUnavailable
 from medbenchagent.sample_counts import distribute_sample_counts
+from medbenchagent.settings import get_settings
 
-DEFAULT_MAX_TASKS_PER_IMAGE = 3
-DEFAULT_QUESTION_TEMPERATURE = 0.7
-FETCH_BATCH_SIZE = 128
 _MISSING = object()
 _STAGES = (
     ("vqa", "letter", vqa),
@@ -167,10 +164,10 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
             task["options"] = options
         elif task.get("options") is not None:
             raise ValueError(f"{task_id}: options are allowed only for letter tasks.")
-    max_tasks = request.get("max_tasks_per_image", DEFAULT_MAX_TASKS_PER_IMAGE)
+    max_tasks = request.get("max_tasks_per_image")
     if not isinstance(max_tasks, int) or isinstance(max_tasks, bool) or max_tasks <= 0:
         raise ValueError("max_tasks_per_image must be a positive integer.")
-    temperature = request.get("question_temperature", DEFAULT_QUESTION_TEMPERATURE)
+    temperature = request.get("question_temperature")
     if (
         not isinstance(temperature, (int, float))
         or isinstance(temperature, bool)
@@ -292,14 +289,15 @@ def _next_candidate_record(
     database = request["dataset_access_manifest"].get("duckdb_path")
     if not isinstance(database, str):
         raise ValueError("Dataset access manifest lacks duckdb_path.")
-    seed = int(request.get("seed", 0))
+    seed = int(request.get("seed", get_settings().generation.seed))
+    fetch_batch_size = get_settings().generation.fetch_batch_size
     connection = duckdb.connect(database, read_only=True)
     try:
         while True:
             rows = connection.execute(
                 "SELECT image_id, image_path, patient_id, case_id, study_id, annotation, _source_row "
                 "FROM images ORDER BY hash(_source_row, ?), _source_row LIMIT ? OFFSET ?",
-                [seed, FETCH_BATCH_SIZE, cursor],
+                [seed, fetch_batch_size, cursor],
             ).fetchall()
             if not rows:
                 return cursor, None
@@ -319,7 +317,7 @@ def _next_candidate_record(
                 if candidates:
                     _shuffle_candidates(candidates, seed, str(record["image_id"]))
                     return cursor, candidates
-            if len(rows) < FETCH_BATCH_SIZE:
+            if len(rows) < fetch_batch_size:
                 return cursor, None
     finally:
         connection.close()
@@ -433,8 +431,8 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
         return _enter_stage(request, tasks, targets, completed, stage_index + 1, rejections)
 
     accepted: list[dict[str, Any]] = []
-    max_tasks = int(request.get("max_tasks_per_image", DEFAULT_MAX_TASKS_PER_IMAGE))
-    temperature = float(request.get("question_temperature", DEFAULT_QUESTION_TEMPERATURE))
+    max_tasks = int(request["max_tasks_per_image"])
+    temperature = float(request["question_temperature"])
     for candidate in candidates:
         if len(accepted) >= max_tasks:
             break
@@ -448,7 +446,7 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
             construction_events_path=request["construction_events_path"], run_id=request["run_id"],
             dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id,
             agent=GENERATION_AGENT, operation="generate", component=phase,
-            model=os.getenv("DEEPSEEK_MODEL"),
+            model=get_settings().llm.model,
         ) as generation_call_ids:
             try:
                 generated = handler.generate(candidate, request["benchmark_info"], temperature)
@@ -468,7 +466,7 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
             construction_events_path=request["construction_events_path"], run_id=request["run_id"],
             dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id,
             agent=GENERATION_AGENT, operation="review", component=phase,
-            model=os.getenv("DEEPSEEK_MODEL"),
+            model=get_settings().llm.model,
         ) as review_call_ids:
             try:
                 approved, _reason = handler.review(candidate, generated, request["benchmark_info"])

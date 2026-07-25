@@ -6,7 +6,8 @@ supported tasks, designs them with PDF RAG, and writes closed VQA, detection, fi
 description, and report items into one mixed JSONL. Each run is initialized at
 `benchmarks/runs/<run_id>/` before the first model call and writes an immutable,
 unshuffled `benchmark.<dataset_id>.raw.jsonl`. The same directory contains provenance,
-construction events/report, confirmed RAG designs, and a SHA-256 manifest. Per-task `sample_count` values are generation targets:
+construction events/report, confirmed RAG designs, an `effective_config.json` provenance snapshot,
+and a SHA-256 manifest. Per-task `sample_count` values are generation targets:
 the files contain the accepted items produced before all targets are met or the
 dataset is exhausted.
 
@@ -79,11 +80,25 @@ every categorized PDF and can select one or more files in natural language. Deep
 response to exact relative paths, code validates the selection, and only the selected PDFs enter
 RAG retrieval, indexing, and citations. PDFs outside these categories are configuration errors.
 
+## Configuration
+
+Configuration uses four ordered layers: immutable code fallbacks, committed
+`config/default.toml`, one explicit local TOML file (`MEDBENCH_CONFIG` or
+`load_settings(config_path=...)`), and non-empty environment-variable overrides.
+Relative paths are resolved from the project root. `config/local.toml` is never discovered
+implicitly; copy `config/local.toml.example` and set `MEDBENCH_CONFIG` to use it.
+
+`seed`, `max_tasks_per_image`, and `question_temperature` in a LangGraph input override
+the configured generation defaults for that one run. The run directory records the resulting
+non-sensitive values, configuration-file paths and SHA-256 hashes, and applied override keys in
+`effective_config.json`; the final manifest records its hash. API and LangSmith keys are never
+written to this snapshot.
+
 ## Development
 
-Copy `.env.example` to `.env`. The default configuration targets the local vLLM
-deployment at `http://127.0.0.1:8005/v1` with model `deepseek-v4-flash`, plus the
-Qwen3 embedding and reranker models under `/public/home/rxa-jj-wzk/models/Qwen-RAG`.
+Copy `.env.example` to `.env`. The committed default configuration targets the local vLLM
+deployment at `http://127.0.0.1:8005/v1` with model `deepseek-v4-flash`; put local model
+directories in an explicit local TOML file.
 `DEEPSEEK_API_KEY` may remain empty when vLLM authentication is disabled.
 Model requests reuse one OpenAI-compatible client, default to a 120-second timeout,
 and disable SDK retries. Set `DEEPSEEK_TIMEOUT_SECONDS` to override the timeout.

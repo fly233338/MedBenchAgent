@@ -5,12 +5,13 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import json
-import os
 import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
+
+from medbenchagent.settings import get_settings
 
 _CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("construction_context", default=None)
 
@@ -89,7 +90,7 @@ def record_llm_call(*, status: str, started: float, error_type: str | None = Non
         agent=context.get("agent", "deepseek"),
         operation=context.get("operation", "llm"),
         component=context.get("component"),
-        model=context.get("model") or os.getenv("DEEPSEEK_MODEL"),
+        model=context.get("model") or get_settings().llm.model,
         status=status,
         latency_ms=round((time.perf_counter() - started) * 1000, 3),
         input_tokens=prompt_tokens if available else 0,

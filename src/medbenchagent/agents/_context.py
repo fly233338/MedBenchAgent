@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from medbenchagent.construction import event_context, record_human_action
+from medbenchagent.settings import get_settings
 
 
 def llm_context(state: dict[str, Any], agent: str, operation: str):
@@ -15,7 +15,7 @@ def llm_context(state: dict[str, Any], agent: str, operation: str):
         dataset_id=state.get("selected_dataset_id") or None,
         agent=agent,
         operation=operation,
-        model=os.getenv("DEEPSEEK_MODEL"),
+        model=get_settings().llm.model,
     )
 
 

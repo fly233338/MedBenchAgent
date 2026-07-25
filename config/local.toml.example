@@ -1,0 +1,6 @@
+# Copy this file to a location of your choice and set MEDBENCH_CONFIG to its path.
+# Values here override config/default.toml. Keep credentials in environment variables.
+
+[rag]
+embedding_model = "/path/to/Qwen3-Embedding-0.6B"
+reranker_model = "/path/to/Qwen3-Reranker-0.6B"

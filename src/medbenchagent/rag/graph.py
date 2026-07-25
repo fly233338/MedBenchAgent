@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -20,9 +19,7 @@ from medbenchagent.construction import (
     record_human_action,
 )
 from medbenchagent.rag.pdf import LocalPdfRag, design_task, write_task_design
-
-PROJECT_ROOT = Path(__file__).parents[3]
-MATERIALS_ROOT = PROJECT_ROOT / "materials"
+from medbenchagent.settings import get_settings
 
 
 class RagDesignInputState(TypedDict):
@@ -89,9 +86,10 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
     task = blueprint.get("tasks", {}).get(task_id)
     if not isinstance(task, dict):
         raise ValueError(f"Working Blueprint does not contain queued task: {task_id}")
+    settings = get_settings()
     rag = LocalPdfRag(
-        MATERIALS_ROOT,
-        PROJECT_ROOT / "benchmarks" / "rag_cache",
+        settings.paths.materials_root,
+        settings.paths.rag_cache_root,
         state["selected_material_files"],
     )
     event_values = {
@@ -101,7 +99,7 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
         "task_id": task_id,
         "agent": CLINICAL_DESIGN_AGENT,
         "operation": "rag_design",
-        "model": os.getenv("DEEPSEEK_MODEL"),
+        "model": settings.llm.model,
     }
     with event_context(**event_values):
         design = design_task(
@@ -207,7 +205,7 @@ def _design_review_node(state: RagDesignState) -> dict[str, Any]:
         dataset_id=state.get("selected_dataset_id"),
         agent=CLINICAL_DESIGN_AGENT,
         operation="rag_design_review",
-        model=os.getenv("DEEPSEEK_MODEL"),
+        model=get_settings().llm.model,
     ):
         action = _design_review_action(answer, tasks)
     if action["action"] == "confirm":

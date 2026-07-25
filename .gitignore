@@ -50,3 +50,4 @@ datasets/*
 # Medical PDFs require source-specific redistribution permission.
 materials/**/*.pdf
 models/
+config/local.toml

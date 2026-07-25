@@ -40,8 +40,9 @@ from medbenchagent.rag.graph import (
     RagDesignState,
     compile_rag_designs_subgraph,
 )
-from medbenchagent.run_artifacts import RUNS_ROOT, initialize_run
+from medbenchagent.run_artifacts import initialize_run
 from medbenchagent.run_export import export_rag_designs, finalize_run
+from medbenchagent.settings import get_settings
 
 __all__ = [
     "BenchmarkInputState",
@@ -122,7 +123,14 @@ class BenchmarkOutputState(TypedDict):
 
 def _run_initialize_node(state: BenchmarkState) -> dict[str, Any]:
     """Create persistent run artifacts before any LLM-backed Agent."""
-    return {} if state.get("run_id") else initialize_run(RUNS_ROOT)
+    if state.get("run_id"):
+        return {}
+    overrides = {
+        key: state[key]
+        for key in ("seed", "max_tasks_per_image", "question_temperature")
+        if key in state
+    }
+    return initialize_run(settings=get_settings(), graph_overrides=overrides)
 
 
 def _rag_design_export_node(state: BenchmarkState) -> dict[str, Any]:

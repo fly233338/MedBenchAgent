@@ -1,18 +1,20 @@
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import medbenchagent.llm as llm
+from medbenchagent.settings import clear_settings_cache
 
 
 def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / ".env").write_text("DEEPSEEK_MODEL=from-file\n", encoding="utf-8")
-    monkeypatch.setattr(llm, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("medbenchagent.settings.PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("DEEPSEEK_MODEL", "from-process")
 
     llm.load_project_env()
 
-    assert llm.os.environ["DEEPSEEK_MODEL"] == "from-process"
+    assert os.environ["DEEPSEEK_MODEL"] == "from-process"
 
 
 def test_complete_json_uses_placeholder_key_for_unauthenticated_vllm(monkeypatch) -> None:
@@ -44,6 +46,7 @@ def test_complete_json_uses_placeholder_key_for_unauthenticated_vllm(monkeypatch
         "wrap_openai",
         lambda client, **kwargs: wrapped_clients.append((client, kwargs)) or client,
     )
+    clear_settings_cache()
     llm.clear_client_cache()
 
     assert llm.complete_json("system", "user") == {}
@@ -55,19 +58,23 @@ def test_complete_json_uses_placeholder_key_for_unauthenticated_vllm(monkeypatch
     assert len(wrapped_clients) == 1
     assert wrapped_clients[0][1] == {"chat_name": "DeepSeek"}
     llm.clear_client_cache()
+    clear_settings_cache()
 
 
 def test_complete_json_rejects_invalid_timeout_before_request(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     monkeypatch.setenv("DEEPSEEK_TIMEOUT_SECONDS", "0")
+    clear_settings_cache()
     llm.clear_client_cache()
 
     try:
         llm.complete_json("system", "user")
-    except llm.ModelUnavailable as exc:
-        assert "positive number" in str(exc)
+    except ValueError as exc:
+        assert "llm.timeout_seconds" in str(exc)
     else:
         raise AssertionError("Invalid timeout should fail before a request.")
+    finally:
+        clear_settings_cache()
 
 
 def test_langgraph_server_loads_project_env_file() -> None:

@@ -101,6 +101,9 @@ def finalize_run(
         "construction_events": Path(construction_events_path),
         "construction_report": report_path,
     }
+    effective_config = run_dir / "effective_config.json"
+    if effective_config.is_file():
+        paths["effective_config"] = effective_config
     if audit_artifacts:
         paths.update({name: Path(path) for name, path in audit_artifacts.items()})
     manifest_path = run_dir / "benchmark_manifest.json"

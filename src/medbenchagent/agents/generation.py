@@ -17,6 +17,7 @@ from medbenchagent.agents.contracts import (
 from medbenchagent.contracts import GenerationRequest
 from medbenchagent.generation.graph import compile_generation_subgraph
 from medbenchagent.run_artifacts import blueprint_sha256
+from medbenchagent.settings import get_settings
 
 
 def _generation_request_node(state: GenerationAgentState) -> dict[str, Any]:
@@ -25,6 +26,7 @@ def _generation_request_node(state: GenerationAgentState) -> dict[str, Any]:
     if not isinstance(tasks, dict) or not tasks:
         raise ValueError("Working Blueprint contains no tasks for generation.")
     benchmark_info = blueprint.get("benchmark_info", state["benchmark_info"])
+    defaults = get_settings().generation
     request: GenerationRequest = {
         "benchmark_info": benchmark_info,
         "run_id": state["run_id"],
@@ -34,9 +36,9 @@ def _generation_request_node(state: GenerationAgentState) -> dict[str, Any]:
         "dataset_access_manifest": state["dataset_access_manifest"],
         "tasks": tasks,
         "target_sample_count": int(benchmark_info["sample_count"]),
-        "seed": int(state.get("seed", 0)),
-        "max_tasks_per_image": int(state.get("max_tasks_per_image", 3)),
-        "question_temperature": float(state.get("question_temperature", 0.7)),
+        "seed": int(state.get("seed", defaults.seed)),
+        "max_tasks_per_image": int(state.get("max_tasks_per_image", defaults.max_tasks_per_image)),
+        "question_temperature": float(state.get("question_temperature", defaults.question_temperature)),
         "output_directory": str(Path(state["working_blueprint_path"]).parent),
     }
     return {"generation_request": request}

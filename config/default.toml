@@ -1,0 +1,43 @@
+[paths]
+dataset_catalog = "datasets/dataset_catalog.json"
+blueprint_template = "blueprint.json"
+materials_root = "materials"
+runs_root = "benchmarks/runs"
+dataset_cache_root = "benchmarks/dataset_cache"
+rag_cache_root = "benchmarks/rag_cache"
+
+[llm]
+model = "deepseek-v4-flash"
+base_url = "http://127.0.0.1:8005/v1"
+timeout_seconds = 120
+max_retries = 0
+default_temperature = 0.0
+trace_name = "DeepSeek"
+
+[rag]
+embedding_model = ""
+reranker_model = ""
+chunk_size = 1200
+chunk_overlap = 200
+candidate_count = 12
+result_limit = 5
+min_rerank_score = 0.5
+reranker_max_length = 8192
+
+[generation]
+seed = 0
+max_tasks_per_image = 3
+question_temperature = 0.7
+fetch_batch_size = 128
+
+[dataset_profile]
+max_top_values = 10
+max_categorical_distinct_values = 50
+
+[sample_allocation.category_weights]
+image_acquisition_and_basic_information = 0.10
+anatomy_and_global_tissue_characteristics = 0.20
+finding_recognition_and_characterization = 0.20
+clinical_assessment_and_diagnosis = 0.20
+report_generation = 0.10
+spatial_localization = 0.20

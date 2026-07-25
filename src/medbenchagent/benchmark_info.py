@@ -9,6 +9,7 @@ from typing import Any
 
 from medbenchagent.llm import complete_json
 from medbenchagent.run_artifacts import atomic_write_json
+from medbenchagent.settings import get_settings
 
 REQUIRED_FIELDS = ("disease", "modality", "description", "language", "sample_count")
 TEMPLATE_BLUEPRINT_PATH = Path(__file__).parents[2] / "blueprint.json"
@@ -91,10 +92,10 @@ BenchmarkInfo fields. Return valid JSON only.""",
 
 
 def write_working_blueprint(
-    benchmark_info: dict[str, Any], output_path: str | Path, template_path: Path = TEMPLATE_BLUEPRINT_PATH
+    benchmark_info: dict[str, Any], output_path: str | Path, template_path: Path | None = None
 ) -> str:
     """Copy the immutable blueprint template and replace only its benchmark-info section."""
-    blueprint = json.loads(template_path.read_text(encoding="utf-8"))
+    blueprint = json.loads((template_path or get_settings().paths.blueprint_template).read_text(encoding="utf-8"))
     blueprint["benchmark_info"] = benchmark_info
     destination = Path(output_path)
     if destination.suffix != ".json":

@@ -10,6 +10,8 @@ from typing import Any
 
 import duckdb
 
+from medbenchagent.settings import get_settings
+
 REQUIRED_RECORD_FIELDS = (
     "image_id",
     "image_path",
@@ -21,8 +23,6 @@ REQUIRED_RECORD_FIELDS = (
 PROFILE_SCHEMA_VERSION = "task-capability-profile.v1"
 CACHE_FORMAT_VERSION = "annotation-cache.v3"
 
-MAX_TOP_VALUES = 10
-MAX_CATEGORICAL_DISTINCT_VALUES = 50
 TOP_VALUE_EXCLUDED_PREFIXES = (
     "annotation.dicom_metadata.",
 )
@@ -135,7 +135,10 @@ def _should_include_top_values(path: str, value_types: set[str], distinct_value_
         return False
     if "boolean" in value_types and value_types <= {"boolean", "null"}:
         return True
-    return "string" in value_types and distinct_value_count <= MAX_CATEGORICAL_DISTINCT_VALUES
+    return (
+        "string" in value_types
+        and distinct_value_count <= get_settings().dataset_profile.max_categorical_distinct_values
+    )
 
 
 def _collect_profile_values(
@@ -205,7 +208,7 @@ def build_dataset_profile(records: list[dict[str, Any]], content_hash: str) -> d
             field["top_values"] = [
                 json.loads(value)
                 for value, _count in sorted(item["values"].items(), key=lambda pair: (-pair[1], pair[0]))[
-                    :MAX_TOP_VALUES
+                    : get_settings().dataset_profile.max_top_values
                 ]
             ]
         fields[path] = field
@@ -265,7 +268,12 @@ def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Pa
     if not source_path.is_file():
         raise AnnotationValidationError(f"annotation.jsonl does not exist: {source_path}")
     content_hash = _content_hash(source_path)
-    cache_dir = Path(cache_root) / CACHE_FORMAT_VERSION / content_hash
+    profile_settings = get_settings().dataset_profile
+    profile_key = (
+        f"top-{profile_settings.max_top_values}-"
+        f"categorical-{profile_settings.max_categorical_distinct_values}"
+    )
+    cache_dir = Path(cache_root) / CACHE_FORMAT_VERSION / profile_key / content_hash
     database_path = cache_dir / "dataset.duckdb"
     profile_path = cache_dir / "dataset_profile.json"
     manifest_path = cache_dir / "dataset_access_manifest.json"

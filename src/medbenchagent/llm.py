@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 import time
-from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 from langsmith.wrappers import wrap_openai
 from openai import APIError, OpenAI
 
 from medbenchagent.construction import record_llm_call
+from medbenchagent.settings import get_llm_api_key, get_settings, load_project_env as _load_project_env
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _CLIENT: OpenAI | None = None
-_CLIENT_CONFIG: tuple[str, str | None, float] | None = None
+_CLIENT_CONFIG: tuple[str, str, float, int, str] | None = None
 
 
 class ModelUnavailable(RuntimeError):
@@ -24,11 +21,8 @@ class ModelUnavailable(RuntimeError):
 
 
 def load_project_env() -> None:
-    """Load the repository's optional .env without overriding process-level settings."""
-    load_dotenv(PROJECT_ROOT / ".env", override=False)
-
-
-load_project_env()
+    """Compatibility wrapper for the centralized environment loader."""
+    _load_project_env()
 
 
 def clear_client_cache() -> None:
@@ -42,42 +36,35 @@ def clear_client_cache() -> None:
 
 def _client() -> OpenAI:
     global _CLIENT, _CLIENT_CONFIG
-    api_key = os.getenv("DEEPSEEK_API_KEY") or "local-vllm"
-    base_url = os.getenv("DEEPSEEK_BASE_URL")
-    raw_timeout = os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "120")
-    try:
-        timeout = float(raw_timeout)
-    except ValueError as exc:
-        raise ModelUnavailable("DEEPSEEK_TIMEOUT_SECONDS must be a positive number.") from exc
-    if timeout <= 0:
-        raise ModelUnavailable("DEEPSEEK_TIMEOUT_SECONDS must be a positive number.")
-    config = (api_key, base_url, timeout)
+    settings = get_settings().llm
+    api_key = get_llm_api_key() or "local-vllm"
+    config = (api_key, settings.base_url, settings.timeout_seconds, settings.max_retries, settings.trace_name)
     if _CLIENT is None or _CLIENT_CONFIG != config:
         if _CLIENT is not None:
             _CLIENT.close()
         raw_client = OpenAI(
             api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
-            max_retries=0,
+            base_url=settings.base_url,
+            timeout=settings.timeout_seconds,
+            max_retries=settings.max_retries,
         )
-        _CLIENT = wrap_openai(raw_client, chat_name="DeepSeek")
+        _CLIENT = wrap_openai(raw_client, chat_name=settings.trace_name)
         _CLIENT_CONFIG = config
     return _CLIENT
 
 
-def complete_json(system_prompt: str, user_prompt: str, *, temperature: float = 0) -> dict[str, Any]:
+def complete_json(
+    system_prompt: str, user_prompt: str, *, temperature: float | None = None
+) -> dict[str, Any]:
     """Return a JSON object from the configured DeepSeek-compatible endpoint."""
     started = time.perf_counter()
-    model = os.getenv("DEEPSEEK_MODEL")
-    if not model:
-        record_llm_call(status="failure", started=started, error_type="model_not_configured")
-        raise ModelUnavailable("DEEPSEEK_MODEL must be configured.")
+    settings = get_settings().llm
+    model = settings.model
 
     try:
         response = _client().chat.completions.create(
             model=model,
-            temperature=temperature,
+            temperature=settings.default_temperature if temperature is None else temperature,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},

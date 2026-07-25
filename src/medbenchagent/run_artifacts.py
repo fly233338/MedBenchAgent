@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from medbenchagent.construction import record_event
+from medbenchagent.settings import AppSettings, get_settings
 
 
 RUNS_ROOT = Path(__file__).resolve().parents[2] / "benchmarks" / "runs"
@@ -26,10 +27,17 @@ def atomic_write_json(path: str | Path, value: object) -> None:
             temporary.unlink()
 
 
-def initialize_run(runs_root: str | Path = RUNS_ROOT) -> dict[str, str]:
+def initialize_run(
+    runs_root: str | Path | None = None,
+    *,
+    settings: AppSettings | None = None,
+    graph_overrides: dict[str, object] | None = None,
+) -> dict[str, str]:
     """Create one UUID-named run directory before the first model call."""
+    active_settings = settings or get_settings()
     run_id = str(uuid.uuid4())
-    run_directory = Path(runs_root) / run_id
+    run_directory = Path(runs_root) if runs_root is not None else active_settings.paths.runs_root
+    run_directory = run_directory / run_id
     run_directory.mkdir(parents=True, exist_ok=False)
     events_path = run_directory / "construction_events.jsonl"
     events_path.touch(exist_ok=False)
@@ -41,11 +49,14 @@ def initialize_run(runs_root: str | Path = RUNS_ROOT) -> dict[str, str]:
         component="orchestrator",
         status="started",
     )
+    effective_config_path = run_directory / "effective_config.json"
+    atomic_write_json(effective_config_path, active_settings.snapshot(graph_overrides))
     return {
         "run_id": run_id,
         "run_directory": str(run_directory),
         "working_blueprint_path": str(run_directory / "blueprint.json"),
         "construction_events_path": str(events_path),
+        "effective_config_path": str(effective_config_path),
     }
 
 
