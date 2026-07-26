@@ -217,9 +217,9 @@ def _convert_raster(path: Path) -> tuple[Any, str]:
         source.load()
         if source.mode in {"I", "I;16", "I;16B", "I;16L", "F"}:
             return _array_to_rgb(np.asarray(source))
-        if source.mode in {"RGBA", "LA"} or (
-            source.mode == "P" and "transparency" in source.info
-        ):
+        if source.mode in {"1", "L"}:
+            return source.convert("L"), "preserved_display_values"
+        if source.mode in {"RGBA", "LA"} or (source.mode == "P" and "transparency" in source.info):
             foreground = source.convert("RGBA")
             background = Image.new("RGBA", foreground.size, (0, 0, 0, 255))
             return Image.alpha_composite(background, foreground).convert("RGB"), "alpha_on_black"
@@ -273,9 +273,10 @@ def _convert_dicom(path: Path) -> tuple[Any, str]:
         steps.append("voi_lut_or_window_0")
     gray, normalization = _normalize_numeric(transformed)
     steps.append(normalization)
-    inverse = photometric == "MONOCHROME1" or str(
-        getattr(dataset, "PresentationLUTShape", "")
-    ).upper() == "INVERSE"
+    inverse = (
+        photometric == "MONOCHROME1"
+        or str(getattr(dataset, "PresentationLUTShape", "")).upper() == "INVERSE"
+    )
     if inverse:
         gray = 255 - gray
         steps.append("inverse")
@@ -325,7 +326,9 @@ def _resize(image: Any, max_edge: int | None) -> tuple[Any, str]:
     return image.resize(size, Image.Resampling.LANCZOS), f"+resized_max_edge_{max_edge}"
 
 
-def convert_one(path: Path, detected_format: str, output_path: Path, max_edge: int | None) -> dict[str, Any]:
+def convert_one(
+    path: Path, detected_format: str, output_path: Path, max_edge: int | None
+) -> dict[str, Any]:
     handlers = {
         "dicom": _convert_dicom,
         "itk": _convert_itk,
@@ -363,7 +366,12 @@ def _source_files(input_path: Path, output_path: Path) -> tuple[Path, list[Path]
         except ValueError:
             pass
         files.append(path)
-    files.sort(key=lambda path: path.relative_to(input_path).as_posix().casefold())
+    files.sort(
+        key=lambda path: (
+            path.relative_to(input_path).as_posix().casefold(),
+            path.relative_to(input_path).as_posix(),
+        )
+    )
     return input_path, files
 
 
@@ -461,7 +469,6 @@ def convert(input_path: Path, output_path: Path, max_edge: int | None = None) ->
             raise ConversionError("no supported 2D medical images were found")
         counts = Counter(str(row["status"]) for row in rows)
         report = {
-            "input": str(source),
             "source_file_count": len(rows),
             "converted_count": converted_count,
             "skipped_unsupported_count": counts.get("skipped_unsupported", 0),
@@ -472,14 +479,14 @@ def convert(input_path: Path, output_path: Path, max_edge: int | None = None) ->
 
         if output.exists() and any(output.iterdir()):
             if _trees_equal(staging, output):
-                return {**report, "output": str(output), "reused_identical_output": True}
+                return {**report, "reused_identical_output": True}
             raise ConversionError(
                 f"output directory is non-empty and differs from this run: {output}"
             )
         if output.exists():
             output.rmdir()
         os.replace(staging, output)
-        return {**report, "output": str(output), "reused_identical_output": False}
+        return {**report, "reused_identical_output": False}
     finally:
         if staging.exists():
             shutil.rmtree(staging)
