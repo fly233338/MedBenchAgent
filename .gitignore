@@ -35,7 +35,11 @@ benchmarks/dataset_cache/
 .DS_Store
 Thumbs.db
 .agent/
-.codex/
+.codex/*
+!.codex/skills/
+!.codex/skills/**
+.codex/skills/**/__pycache__/
+.codex/skills/**/*.py[cod]
 
 
 # Local architecture diagrams

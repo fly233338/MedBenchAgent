@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://medbenchagent.local/schemas/annotation.v1.schema.json",
+  "title": "Image Annotation JSONL record v1",
+  "type": "object",
+  "required": ["image_id", "image_path", "patient_id", "case_id", "study_id", "annotation"],
+  "properties": {
+    "image_id": {"type": "string", "minLength": 1},
+    "image_path": {"type": "string", "minLength": 1},
+    "patient_id": {"type": ["string", "null"]},
+    "case_id": {"type": ["string", "null"]},
+    "study_id": {"type": ["string", "null"]},
+    "annotation": {
+      "type": "object",
+      "properties": {
+        "modality": {"type": "string"},
+        "anatomy": {"type": "string"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
