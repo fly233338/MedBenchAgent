@@ -137,6 +137,7 @@ class AuditAgentInputState(TypedDict, total=False):
     run_directory: str
     run_id: str
     seed: int
+    dataset_access_manifest: dict[str, Any]
 
 
 class AuditAgentState(AuditAgentInputState, total=False):

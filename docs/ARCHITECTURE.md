@@ -29,7 +29,7 @@ role-specialized agents + deterministic orchestration：
    人工整体确认或定向重做。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
 6. `GenerationAgent` 在私有状态中从确认后的 Blueprint 构造 `GenerationRequest`。现有生成子图按 letter、bbox、free_text 三个阶段
    独立读取 DuckDB；每阶段仅投影任务获准字段、稳定随机排序候选并逐任务生成/审核，写入各自可恢复进度文件。
-7. 完成或数据耗尽后生成 raw JSONL；根图先记录 generation summary，再由确定性 `AuditAgent` 通过 `image_id → image_manifest.jsonl → PNG` 校验图像完整性、题目契约、provenance 和重复项，随后平衡通过的选择题位置。
+7. 完成或数据耗尽后生成 raw JSONL；根图先记录 generation summary，再由 `AuditAgent` 硬审计图像完整性、题目契约、annotation witness、provenance 和重复项，平衡通过的选择题位置，最后按 task 稳定抽样进行 fail-open 的宽松 LLM 语义筛查。
 
 ## 状态、契约与产物
 
@@ -49,7 +49,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 `schemas/annotation.v1.schema.json` 定义。
 
 每次运行的核心产物是 working `blueprint.json`、`task_plan_report.json`、
-阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、只含元数据的 append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。配置按代码回退值、`config/default.toml`、显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖；Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
+阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、只含元数据的 append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。配置按代码回退值、`config/default.toml`、显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖；Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
 `dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。
 
 ## 不变量与失败语义
@@ -59,13 +59,14 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 - 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准 annotation 投影。
 - Task Plan 与样本分配只在确认后改变 Blueprint；RAG 设计先逐项持久化，再通过确认/修订闭环收敛。
 - 同一 task/image 最多生成一题；默认每阶段每图最多接受三题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
-- bbox 仅接受恰有一个合法标注框的候选；`visual_grounding` 还必须有与该框配对的 finding 文本，并确定性优先于 `detection`。`detection` 仅定位泛化 lesion/abnormal region，不能泄露 finding 名称；选择题、bbox 与自由文本均使用独立的 question/answer 生成和审核契约。
+- letter VQA 除 question/answer 外临时返回一个由 supporting-field path、每层原数组索引和原样 scalar value 组成的 evidence witness；代码在 Reviewer 前精确验证，raw item 不保留 witness，provenance 只保存 path、indices 和覆盖完整 witness 的 hash。
+- bbox 仅接受恰有一个合法标注框的候选；`visual_grounding` 还必须有与该框配对的 finding 文本，并确定性优先于 `detection`。`detection` 仅定位泛化 lesion/abnormal region，不能泄露 finding 名称；bbox 与自由文本保持各自的直接 annotation 答案契约。
 - 数据耗尽是带 per-task shortfall 的成功结果；答案平衡不覆盖 raw 文件，也不改 bbox/自由文本题。
 - 根图默认只展示五个角色及确定性适配节点；xray 图、LangSmith 与使用
   `stream_mode=["updates", "custom"]`、`subgraphs=True` 仍可展开角色子图并接收每个 RAG 任务与每条生成记录的进度。启用 LangSmith 后，DeepSeek 调用显示为所属 Agent 下可展开的 LLM span。
-- `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。LLM 事件只使用 `SpecificationAgent`、`CapabilityAgent`、`ClinicalDesignAgent` 或 `GenerationAgent`，记录 operation、模型逻辑名称、token 与 latency；确定性审计使用 `AuditAgent`。人类事件仅在自然语言被成功解析并通过代码校验后记录，不保存输入内容。
+- `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。LLM 事件使用五个固定 Agent 名称并记录 operation、模型逻辑名称、token 与 latency；`AuditAgent` 只有抽样语义筛查产生 LLM 调用，硬审计仍为确定性。人类事件仅在自然语言被成功解析并通过代码校验后记录，不保存输入内容。
 - `run_started` 和 `run_completed` 使用 `orchestrator` component，不归属任何业务 Agent，也不进入五角色的 LLM 统计。
-- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变，审计输出与报告写入运行目录。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
+- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变。硬审计使用 source row 回溯同一 annotation 文件并重算 letter witness hash，随后平衡答案位置。语义层每 task 最多稳定抽取十题，只宽松检查明显任务偏移、答案泄露、歧义/选项重叠及语义近重复/模板塌缩；失败时 fail-open，flag 不会 reject。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
 
 ## 维护边界
 

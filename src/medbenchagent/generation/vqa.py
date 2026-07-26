@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from medbenchagent.generation.context import annotation_modality
 from medbenchagent.construction import event_operation
+from medbenchagent.generation.context import (
+    annotation_modality,
+    annotation_values,
+    validate_evidence,
+)
 from medbenchagent.llm import complete_json
 
 VQA_GENERATION_PROMPT = """
@@ -18,6 +22,7 @@ Context:
 - Generation logic: {generation_logic}
 - Canonical question: {canonical_question}
 - Candidate options: {candidate_options}
+- Supporting fields: {supporting_fields}
 - Supporting annotation: {supporting_annotation}
 Requirements:
 1. Generate a controlled linguistic variation of the question anchor while preserving the
@@ -36,8 +41,13 @@ Requirements:
 4. Do not reveal, describe, or hint at the correct answer in the question.
 5. Normalize the annotation-supported answer to exactly one candidate option.
    Do not infer beyond the supporting annotation.
+6. Copy exactly one raw scalar annotation value that supports the answer. Use one exact
+   supporting-field path. For every [*] in that path, provide its original source-array
+   index in order. Use `_source_index` for projected object-array entries and zero-based
+   positions for scalar arrays. Copy the value exactly without changing case, spelling, or type.
 Return JSON only:
-{{"question": "question stem", "answer": "one exact candidate option"}}
+{{"question": "question stem", "answer": "one exact candidate option",
+  "evidence": {{"path": "one exact supporting field", "indices": [0], "value": "exact raw value"}}}}
 """.strip()
 
 VQA_REVIEW_PROMPT = """
@@ -50,10 +60,15 @@ Context:
 - Supporting annotation: {supporting_annotation}
 - Question: {question}
 - Answer: {answer}
+- Answer evidence: {evidence}
 
 Approve only when:
 1. The question does not reveal or clearly hint at the answer.
-2. The answer is exactly supported by the annotation.
+2. The raw evidence value reasonably maps to the selected answer option.
+3. The question asks for the concept represented by that evidence and is consistent
+   with the supporting annotation.
+4. When several findings or values are present, the question and selected evidence do
+   not create an obviously arbitrary or ambiguous target.
 
 Return JSON only:
 {{"approved": true, "reason": "short reason"}}
@@ -80,25 +95,31 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
         generation_logic=candidate.task["generation_logic"],
         canonical_question=candidate.task["question_templates"][0],
         candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
+        supporting_fields=json.dumps(candidate.task["supporting_fields"], ensure_ascii=False),
         supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
     )
 
 
-def _validate(candidate: Any, response: object) -> dict[str, str]:
-    if not isinstance(response, dict) or set(response) != {"question", "answer"}:
-        raise ValueError("Letter generation must contain only question and answer.")
+def _validate(candidate: Any, response: object) -> dict[str, Any]:
+    if not isinstance(response, dict) or set(response) != {"question", "answer", "evidence"}:
+        raise ValueError("Letter generation must contain only question, answer, and evidence.")
     question = response["question"]
     answer = response["answer"]
     if not isinstance(question, str) or not question.strip():
         raise ValueError("Generated question must be a non-empty string.")
     if not isinstance(answer, str) or answer not in candidate.task["options"]:
         raise ValueError("Letter answer must be one exact option.")
-    return {"question": question.strip(), "answer": answer}
+    evidence = validate_evidence(
+        annotation_values(candidate),
+        candidate.task.get("supporting_fields"),
+        response["evidence"],
+    )
+    return {"question": question.strip(), "answer": answer, "evidence": evidence}
 
 
 def generate(
     candidate: Any, benchmark_info: dict[str, object], question_temperature: float
-) -> dict[str, str]:
+) -> dict[str, Any]:
     prompt = _prompt(candidate, benchmark_info)
     try:
         response = complete_json(prompt, "", temperature=question_temperature)
@@ -116,7 +137,7 @@ def generate(
 
 
 def review(
-    candidate: Any, generated: dict[str, str], _benchmark_info: dict[str, object]
+    candidate: Any, generated: dict[str, Any], _benchmark_info: dict[str, object]
 ) -> tuple[bool, str]:
     response = complete_json(
         VQA_REVIEW_PROMPT.format(
@@ -126,6 +147,7 @@ def review(
             supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
             question=generated["question"],
             answer=generated["answer"],
+            evidence=json.dumps(generated["evidence"], ensure_ascii=False),
         ),
         "",
     )
@@ -139,6 +161,6 @@ def review(
     return approved, str(reason)
 
 
-def encode_answer(candidate: Any, generated: dict[str, str]) -> tuple[list[str], str]:
+def encode_answer(candidate: Any, generated: dict[str, Any]) -> tuple[list[str], str]:
     options = list(candidate.task["options"])
     return options, chr(ord("A") + options.index(generated["answer"]))

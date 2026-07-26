@@ -14,6 +14,7 @@ from typing import Any
 import duckdb
 
 from medbenchagent.generation import free_text, grounding, vqa
+from medbenchagent.generation.context import evidence_provenance
 from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
 from medbenchagent.construction import GENERATION_AGENT, event_context, record_event
 from medbenchagent.llm import ModelUnavailable
@@ -486,6 +487,8 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
                 "generation_attempt_count": len(generation_call_ids), "review_attempt_count": len(review_call_ids),
                 "blueprint_hash": request["blueprint_sha256"],
             }
+            if phase == "vqa":
+                provenance["answer_evidence"] = evidence_provenance(generated["evidence"])
             accepted.append({"item": item, "provenance": provenance})
             record_event(request["construction_events_path"], "review_accept", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="review", component=phase, status="success")
         else:

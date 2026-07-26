@@ -15,6 +15,9 @@ from PIL import Image
 
 from medbenchagent.answer_balance import balance_items
 from medbenchagent.construction import AUDIT_AGENT, record_event
+from medbenchagent.dataset import load_annotation_jsonl
+from medbenchagent.generation.context import evidence_sha256, evidence_value
+from medbenchagent.generation.engine import project_supporting_annotation
 from medbenchagent.run_artifacts import blueprint_sha256
 
 
@@ -31,6 +34,16 @@ def _write(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def _normal(text: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text).casefold()).strip()
+
+
+def _meaningful(value: object) -> bool:
+    if value is None or value == "":
+        return False
+    if isinstance(value, dict):
+        return any(key != "_source_index" and _meaningful(item) for key, item in value.items())
+    if isinstance(value, list):
+        return any(_meaningful(item) for item in value)
+    return True
 
 
 def _sha256(path: Path) -> str:
@@ -113,12 +126,19 @@ def audit_run(
     provenance_path: str | Path,
     events_path: str | Path,
     manifest_path: str | Path,
+    annotation_path: str | Path,
+    annotation_sha256: str,
     output_directory: str | Path,
     run_id: str,
     seed: int = 0,
 ) -> dict[str, str | int]:
     blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
     tasks = blueprint["tasks"]
+    annotation_source = Path(annotation_path)
+    annotation_hash_matches = _sha256(annotation_source) == annotation_sha256
+    annotation_rows = {
+        record["_source_row"]: record for record in load_annotation_jsonl(annotation_source)
+    }
     manifest = {
         row["image_id"]: row
         for row in _rows(Path(manifest_path))
@@ -165,6 +185,55 @@ def audit_run(
             <= call_ids
         ):
             errors.append("provenance_calls")
+        if not annotation_hash_matches:
+            errors.append("annotation_hash")
+        if isinstance(source, dict):
+            source_row = source.get("source_row")
+            annotation_record = (
+                annotation_rows.get(source_row)
+                if isinstance(source_row, int) and not isinstance(source_row, bool)
+                else None
+            )
+            if (
+                not isinstance(annotation_record, dict)
+                or annotation_record.get("image_id") != image_id
+            ):
+                errors.append("annotation_source")
+            elif isinstance(task, dict):
+                annotation = annotation_record.get("annotation")
+                supporting_fields = task.get("supporting_fields")
+                if (
+                    not isinstance(annotation, dict)
+                    or not isinstance(supporting_fields, list)
+                    or not all(
+                        _meaningful(project_supporting_annotation(annotation, [field]))
+                        for field in supporting_fields
+                    )
+                ):
+                    errors.append("annotation_evidence")
+                elif task.get("response_format") == "letter":
+                    witness = source.get("answer_evidence")
+                    if not isinstance(witness, dict) or set(witness) != {
+                        "path",
+                        "indices",
+                        "evidence_sha256",
+                    }:
+                        errors.append("answer_evidence")
+                    else:
+                        path = witness.get("path")
+                        indices = witness.get("indices")
+                        try:
+                            if not isinstance(path, str) or path not in supporting_fields:
+                                raise ValueError("Evidence path is not a supporting field.")
+                            if not isinstance(indices, list):
+                                raise ValueError("Evidence indices must be a list.")
+                            value = evidence_value(annotation, path, indices)
+                            if evidence_sha256(path, indices, value) != witness.get(
+                                "evidence_sha256"
+                            ):
+                                raise ValueError("Evidence hash mismatch.")
+                        except (TypeError, ValueError):
+                            errors.append("answer_evidence")
         candidates.append((item, errors))
     seen_ids: set[object] = set()
     seen_items: set[str] = set()

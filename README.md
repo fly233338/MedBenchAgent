@@ -11,10 +11,11 @@ and a SHA-256 manifest. Per-task `sample_count` values are generation targets:
 the files contain the accepted items produced before all targets are met or the
 dataset is exhausted.
 
-After generation, the deterministic audit resolves PNG files only through
+After generation, the hard audit resolves PNG files only through
 `image_id` and the adjacent `image_manifest.jsonl`. It does not read source
 DICOM files, locate PNGs through `image_path`, or reassess medical answer
-correctness.
+correctness. A separate fail-open semantic screen samples up to ten final items
+per task and flags only clear language-level issues.
 
 ## Quick start
 
@@ -226,7 +227,10 @@ The generator runs three independent seeded scans in a fixed order: letter VQA,
 Grounding bbox, then direct-reference free text. Each stage begins from the database
 start, projects only unfinished tasks' approved `supporting_fields`, and independently
 accepts up to three tasks per image after a stable seed/image-ID shuffle. Letter VQA
-normalizes one exact option; Grounding accepts only candidates with one valid annotated
+normalizes one exact option and copies one exact scalar evidence value with source
+indices for every wildcard in its supporting-field path. Code verifies that witness
+against the original annotation before review; only its path, indices, and hash enter
+provenance. Grounding accepts only candidates with one valid annotated
 box. Detection asks only for a generic lesion or abnormal region, while visual grounding
 requires a named finding paired with that same box; the two tasks are mutually exclusive.
 Free text accepts only one direct reference string. Each stage has its own prompt,
@@ -259,18 +263,25 @@ letter and option order, while detection and free-text items pass through unchan
 
 ## Construction records and Audit
 
-`construction_events.jsonl` records only metadata. LLM calls use the fixed agent names
-`SpecificationAgent`, `CapabilityAgent`, `ClinicalDesignAgent`, and `GenerationAgent`,
-with their operation, logical `DEEPSEEK_MODEL` value, token usage, and latency; deterministic
-Audit events use `AuditAgent`. Validated human confirmations and revisions are recorded without
+`construction_events.jsonl` records only metadata. LLM calls use the fixed agent names,
+including the sampled semantic portion of `AuditAgent`, with their operation, logical model
+value, token usage, and latency. Hard Audit events use `AuditAgent` without an LLM call.
+Validated human confirmations and revisions are recorded without
 their natural-language input. `construction_report.json` reduces these events to total and
 per-agent LLM usage, generation/audit item counts, wall-clock time, and per-stage human counts.
 Run lifecycle events use the `orchestrator` component and are not attributed to a sixth Agent.
 
-Audit verifies the image-manifest mapping, streams PNG hashes, decodes 8-bit grayscale PNGs,
-and preserves the existing contract and provenance checks. It rejects repeated item IDs and
+Hard Audit verifies the image-manifest mapping, streams PNG hashes, decodes 8-bit grayscale PNGs,
+and checks every item's source row against the exact annotation file used by Generation. For
+letter items it replays the evidence path and source indices, then verifies the witness hash; it
+does not reinterpret that evidence or judge its mapping to an option. It rejects repeated item IDs and
 canonical-identical items while retaining repeated question text; `audit_report.json` reports
-normalized-question repetition separately in `duplicate_statistics`.
+normalized-question repetition separately in `duplicate_statistics`. After answer balancing,
+Audit deterministically samples at most ten items per task for one permissive semantic call per
+task. Clear task drift, answer leakage, ambiguity/option overlap, and semantic duplication/template
+collapse are copied to `benchmark.<dataset_id>.flagged.jsonl` and
+`semantic_audit_records.jsonl`. Model or response failures are recorded as not-run and never
+remove items from the audited output.
 
 Balance an existing raw file without modifying it:
 

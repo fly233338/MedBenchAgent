@@ -9,6 +9,7 @@ import medbenchagent.generation.free_text as free_text
 import medbenchagent.generation.grounding as grounding
 import medbenchagent.generation.vqa as vqa
 from medbenchagent.dataset import prepare_annotation_dataset
+from medbenchagent.generation.context import evidence_provenance, validate_evidence
 
 
 def _record(index: int, annotation: dict) -> dict:
@@ -76,7 +77,22 @@ def _fake_model(calls: list[tuple[str, float]]):
             return {"question": "Locate the finding.", "answer": [1, 2, 8, 9]}
         if system.startswith("Generate one free-text"):
             return {"question": "What is the report?", "answer": "Normal study."}
-        return {"question": "Which status best describes this image?", "answer": "benign"}
+        field_line = next(
+            line for line in system.splitlines() if line.startswith("- Supporting fields: ")
+        )
+        annotation_line = next(
+            line for line in system.splitlines() if line.startswith("- Supporting annotation: ")
+        )
+        path = json.loads(field_line.removeprefix("- Supporting fields: "))[0]
+        annotation = json.loads(
+            annotation_line.removeprefix("- Supporting annotation: ")
+        )
+        key = path.split(".")[-1]
+        return {
+            "question": "Which status best describes this image?",
+            "answer": "benign",
+            "evidence": {"path": path, "indices": [], "value": annotation[key]},
+        }
 
     return complete_json
 
@@ -105,6 +121,80 @@ def test_generation_prompts_use_annotation_modality() -> None:
     missing_modality = _candidate("vqa", {}, {"status": "benign"}, task)
     assert "- Modality: " in vqa._prompt(missing_modality, {"language": "en", "modality": "CT"})
     assert "- Modality: CT" not in vqa._prompt(missing_modality, {"language": "en", "modality": "CT"})
+
+
+def test_vqa_evidence_requires_exact_scalar_source_location() -> None:
+    annotation = {
+        "findings": [
+            {"categories": ["mass", "asymmetry"]},
+            {"categories": ["mass"]},
+        ]
+    }
+    fields = ["annotation.findings[*].categories[*]"]
+    valid = {
+        "path": fields[0],
+        "indices": [1, 0],
+        "value": "mass",
+    }
+
+    assert validate_evidence(annotation, fields, valid) == valid
+    provenance = evidence_provenance(valid)
+    assert provenance == {
+        "path": fields[0],
+        "indices": [1, 0],
+        "evidence_sha256": provenance["evidence_sha256"],
+    }
+    assert "value" not in provenance
+
+    invalid = [
+        valid | {"path": "annotation.other"},
+        valid | {"indices": [1]},
+        valid | {"indices": [2, 0]},
+        valid | {"indices": [True, 0]},
+        valid | {"value": "Mass"},
+    ]
+    for evidence in invalid:
+        with pytest.raises(ValueError):
+            validate_evidence(annotation, fields, evidence)
+
+    with pytest.raises(ValueError, match="scalar"):
+        validate_evidence(
+            {"findings": [{"categories": [["mass"]]}]},
+            fields,
+            valid | {"indices": [0, 0], "value": ["mass"]},
+        )
+
+
+def test_vqa_repairs_invalid_evidence_before_review(monkeypatch) -> None:
+    task = _task("letter", ["annotation.status"])
+    candidate = _candidate("vqa", {"status": "BENIGN"}, {"status": "BENIGN"}, task)
+    responses = iter(
+        [
+            {
+                "question": "Which status?",
+                "answer": "benign",
+                "evidence": {
+                    "path": "annotation.status",
+                    "indices": [],
+                    "value": "Benign",
+                },
+            },
+            {
+                "question": "Which status?",
+                "answer": "benign",
+                "evidence": {
+                    "path": "annotation.status",
+                    "indices": [],
+                    "value": "BENIGN",
+                },
+            },
+        ]
+    )
+    monkeypatch.setattr(vqa, "complete_json", lambda *_args, **_kwargs: next(responses))
+
+    generated = vqa.generate(candidate, {"language": "en"}, 0.7)
+
+    assert generated["evidence"]["value"] == "BENIGN"
 
 
 def test_grounding_modes_require_different_annotation_context() -> None:
