@@ -1,4 +1,0 @@
-interface:
-  display_name: "Medical Dataset Preparation"
-  short_description: "Prepare annotations, PNGs, mappings, and reusable scripts."
-  default_prompt: "Use $medical-dataset-preparation with my annotation source, image root, artifact directory, and PNG output directory."

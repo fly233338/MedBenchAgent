@@ -1,4 +1,4 @@
-"""Validate canonical annotations and their prepared PNG manifest."""
+"""Validate the exact annotation-to-PNG manifest."""
 
 from __future__ import annotations
 
@@ -51,18 +51,7 @@ def _rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def validate(
-    annotation_path: Path,
-    manifest_path: Path,
-    schema_path: Path,
-) -> dict[str, object]:
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    required_fields = schema.get("required")
-    if not isinstance(required_fields, list) or not all(
-        isinstance(field, str) for field in required_fields
-    ):
-        raise ValueError("Annotation schema has an invalid required-field contract.")
-    required = set(required_fields)
+def validate(annotation_path: Path, manifest_path: Path) -> dict[str, object]:
     annotations = _rows(annotation_path)
     manifest = _rows(manifest_path)
     if len(annotations) != len(manifest):
@@ -74,17 +63,9 @@ def validate(
     seen_pngs: set[str] = set()
     modes: Counter[str] = Counter()
     for index, (annotation, entry) in enumerate(zip(annotations, manifest, strict=True), start=1):
-        if not required <= set(annotation):
-            raise ValueError(f"Annotation row {index} is missing canonical fields.")
         image_id = annotation.get("image_id")
         if not isinstance(image_id, str) or not image_id.strip() or image_id in seen_ids:
             raise ValueError(f"Annotation row {index} has an invalid image_id.")
-        if not isinstance(annotation.get("annotation"), dict):
-            raise ValueError(f"Annotation row {index} has a non-object annotation.")
-        for field in ("patient_id", "case_id", "study_id"):
-            value = annotation.get(field)
-            if value is not None and (not isinstance(value, str) or not value.strip()):
-                raise ValueError(f"Annotation row {index} has an invalid {field}.")
         source_path = _relative(annotation.get("image_path"), f"annotation row {index} image_path")
         if source_path in seen_sources:
             raise ValueError(f"Annotation row {index} has a duplicate image_path.")
@@ -144,19 +125,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--annotation", type=Path, required=True)
     parser.add_argument("--image-manifest", type=Path, required=True)
-    parser.add_argument(
-        "--schema",
-        type=Path,
-        default=Path(__file__).resolve().parents[4]
-        / "src"
-        / "medbenchagent"
-        / "schemas"
-        / "annotation.v1.schema.json",
-    )
     args = parser.parse_args()
     print(
         json.dumps(
-            validate(args.annotation, args.image_manifest, args.schema),
+            validate(args.annotation, args.image_manifest),
             separators=(",", ":"),
         )
     )

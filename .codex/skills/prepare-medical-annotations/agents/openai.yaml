@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Medical Annotations"
+  short_description: "Normalize source annotations into canonical image records."
+  default_prompt: "Use $prepare-medical-annotations to normalize my source annotations into annotation.jsonl."

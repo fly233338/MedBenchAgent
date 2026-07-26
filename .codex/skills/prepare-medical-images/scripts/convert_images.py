@@ -11,7 +11,7 @@
 #   "SimpleITK>=2.4,<3",
 # ]
 # ///
-"""Convert supported 2D medical images into deterministic PNG files."""
+"""Convert annotation-referenced 2D medical images into deterministic PNG files."""
 
 from __future__ import annotations
 
@@ -27,8 +27,7 @@ import struct
 import sys
 import tempfile
 import unicodedata
-from collections import Counter
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 WSI_SUFFIXES = {".bif", ".mrxs", ".ndpi", ".scn", ".svs"}
@@ -83,7 +82,7 @@ def output_relative_path(source_relative_path: str) -> str:
     else:
         stem = PurePosixPath(stem).stem
     path_hash = hashlib.sha256(source_relative_path.encode("utf-8")).hexdigest()[:10]
-    return f"images/{_slug(stem)}__{path_hash}.png"
+    return f"{_slug(stem)}__{path_hash}.png"
 
 
 def _read_header(path: Path, size: int = 560) -> bytes:
@@ -351,28 +350,60 @@ def convert_one(
     }
 
 
-def _source_files(input_path: Path, output_path: Path) -> tuple[Path, list[Path]]:
-    if input_path.is_file():
-        return input_path.parent, [input_path]
+def _relative(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConversionError(f"{field} must be a non-empty relative path")
+    rendered = value.strip().replace("\\", "/")
+    windows = PureWindowsPath(rendered)
+    posix = PurePosixPath(rendered)
+    if (
+        windows.is_absolute()
+        or bool(windows.drive)
+        or posix.is_absolute()
+        or ".." in posix.parts
+        or str(posix) == "."
+    ):
+        raise ConversionError(f"{field} must be a non-escaping relative path: {value}")
+    return posix.as_posix()
+
+
+def _annotation_paths(annotation_path: Path) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    with annotation_path.open("r", encoding="utf-8") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                raise ConversionError(f"annotation line {line_number} is blank")
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ConversionError(f"annotation line {line_number} is not JSON") from exc
+            if not isinstance(row, dict):
+                raise ConversionError(f"annotation line {line_number} must be an object")
+            relative = _relative(row.get("image_path"), f"annotation line {line_number} image_path")
+            if relative in seen:
+                raise ConversionError(f"annotation has duplicate image_path: {relative}")
+            seen.add(relative)
+            paths.append(relative)
+    if not paths:
+        raise ConversionError("annotation contains no records")
+    return paths
+
+
+def _source_files(input_path: Path, relative_paths: list[str]) -> list[tuple[str, Path]]:
     if not input_path.is_dir():
-        raise ConversionError(f"input does not exist: {input_path}")
-    files: list[Path] = []
-    for path in input_path.rglob("*"):
-        if not path.is_file():
-            continue
+        raise ConversionError(f"source-image root does not exist: {input_path}")
+    files: list[tuple[str, Path]] = []
+    for relative in relative_paths:
+        path = input_path.joinpath(*PurePosixPath(relative).parts).resolve()
         try:
-            path.resolve().relative_to(output_path)
-            continue
-        except ValueError:
-            pass
-        files.append(path)
-    files.sort(
-        key=lambda path: (
-            path.relative_to(input_path).as_posix().casefold(),
-            path.relative_to(input_path).as_posix(),
-        )
-    )
-    return input_path, files
+            path.relative_to(input_path)
+        except ValueError as exc:
+            raise ConversionError(f"source path escapes its root: {relative}") from exc
+        if not path.is_file():
+            raise ConversionError(f"referenced source image does not exist: {relative}")
+        files.append((relative, path))
+    return files
 
 
 def _write_outputs(staging: Path, rows: list[dict[str, Any]], report: dict[str, Any]) -> None:
@@ -401,7 +432,12 @@ def _trees_equal(left: Path, right: Path) -> bool:
     return all(sha256_file(left / rel) == sha256_file(right / rel) for rel in left_files)
 
 
-def convert(input_path: Path, output_path: Path, max_edge: int | None = None) -> dict[str, Any]:
+def convert(
+    input_path: Path,
+    annotation_path: Path,
+    output_path: Path,
+    max_edge: int | None = None,
+) -> dict[str, Any]:
     source = input_path.expanduser().resolve()
     output = output_path.expanduser().resolve()
     if max_edge is not None and max_edge <= 0:
@@ -411,16 +447,14 @@ def convert(input_path: Path, output_path: Path, max_edge: int | None = None) ->
     if output.exists() and not output.is_dir():
         raise ConversionError(f"output exists and is not a directory: {output}")
 
-    source_root, files = _source_files(source, output)
-    if not files:
-        raise ConversionError("input contains no files")
+    relative_paths = _annotation_paths(annotation_path.resolve())
+    files = _source_files(source, relative_paths)
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))
     rows: list[dict[str, Any]] = []
     fatal_errors: list[str] = []
     try:
-        for path in files:
-            source_relative = path.relative_to(source_root).as_posix()
+        for source_relative, path in files:
             row: dict[str, Any] = {
                 "source_relative_path": source_relative,
                 "source_filename": path.name,
@@ -440,8 +474,7 @@ def convert(input_path: Path, output_path: Path, max_edge: int | None = None) ->
                 detected = detect_format(path)
                 row["detected_format"] = detected
                 if detected is None:
-                    rows.append(row)
-                    continue
+                    raise ConversionError("unrecognized image format")
                 png_relative = output_relative_path(source_relative)
                 png_path = staging.joinpath(*PurePosixPath(png_relative).parts)
                 details = convert_one(path, detected, png_path, max_edge)
@@ -467,11 +500,9 @@ def convert(input_path: Path, output_path: Path, max_edge: int | None = None) ->
         converted_count = sum(row["status"] == "converted" for row in rows)
         if not converted_count:
             raise ConversionError("no supported 2D medical images were found")
-        counts = Counter(str(row["status"]) for row in rows)
         report = {
-            "source_file_count": len(rows),
+            "referenced_image_count": len(rows),
             "converted_count": converted_count,
-            "skipped_unsupported_count": counts.get("skipped_unsupported", 0),
             "max_edge": max_edge,
             "valid": True,
         }
@@ -495,6 +526,7 @@ def convert(input_path: Path, output_path: Path, max_edge: int | None = None) ->
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path, dest="input_path")
+    parser.add_argument("--annotation", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path, dest="output_path")
     parser.add_argument("--max-edge", type=int)
     return parser.parse_args()
@@ -503,7 +535,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     try:
-        report = convert(args.input_path, args.output_path, args.max_edge)
+        report = convert(args.input_path, args.annotation, args.output_path, args.max_edge)
     except ConversionError as exc:
         print(f"conversion failed: {exc}", file=sys.stderr)
         return 1
