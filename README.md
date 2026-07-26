@@ -189,3 +189,8 @@ Balance an existing raw file without modifying it:
 ```powershell
 uv run medbenchagent balance-answers --input RAW --output COPY --seed 0
 ```
+
+## License
+
+MedBenchAgent is licensed under the [Apache License 2.0](LICENSE). See
+[NOTICE](NOTICE) for copyright information.
