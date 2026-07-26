@@ -2,7 +2,7 @@ import json
 import re
 from pathlib import Path
 
-from medbenchagent.run_artifacts import initialize_run, update_blueprint_dataset
+from medbenchagent.run_artifacts import initialize_run
 
 
 def test_initialize_run_prepares_uuid_directory_and_event_file(tmp_path: Path) -> None:
@@ -15,17 +15,3 @@ def test_initialize_run_prepares_uuid_directory_and_event_file(tmp_path: Path) -
     assert event["event_type"] == "run_started"
     assert event["component"] == "orchestrator"
     assert "agent" not in event
-
-
-def test_dataset_id_is_replaced_atomically(tmp_path: Path) -> None:
-    blueprint_path = tmp_path / "blueprint.json"
-    blueprint_path.write_text(json.dumps({"tasks": {}}), encoding="utf-8")
-
-    update_blueprint_dataset(
-        blueprint_path,
-        "vindr-mammo",
-    )
-
-    assert json.loads(blueprint_path.read_text(encoding="utf-8"))["dataset"] == {
-        "dataset_id": "vindr-mammo",
-    }

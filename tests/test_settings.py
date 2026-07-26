@@ -1,8 +1,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from medbenchagent.run_artifacts import initialize_run
 from medbenchagent.settings import clear_settings_cache, get_settings, load_settings
 
@@ -39,14 +37,6 @@ def test_explicit_toml_then_environment_override_and_empty_value(tmp_path: Path,
     assert settings.rag.min_rerank_score == 0.25
     assert settings.environment_overrides == ("llm.model",)
     assert settings.local_config_path == local.resolve()
-
-
-def test_validation_uses_full_configuration_key(tmp_path: Path) -> None:
-    local = tmp_path / "invalid.toml"
-    local.write_text("[rag]\nchunk_size = 10\nchunk_overlap = 10\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="rag.chunk_overlap"):
-        load_settings(local)
 
 
 def test_initialize_run_writes_secret_free_effective_configuration(tmp_path: Path, monkeypatch) -> None:

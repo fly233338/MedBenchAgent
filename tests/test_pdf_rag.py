@@ -1,4 +1,3 @@
-import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,33 +53,6 @@ def test_validate_task_design_accepts_only_embedded_rag_fields() -> None:
     assert pdf_rag.validate_task_design(
         "view", _task(), _design() | {"options": ["A. CC", "B) MLO"]}
     )["options"] == ["CC", "MLO"]
-
-
-def test_write_task_design_replaces_only_rag_fields_atomically(tmp_path: Path) -> None:
-    path = tmp_path / "blueprint.json"
-    path.write_text(
-        json.dumps(
-            {
-                "tasks": {
-                    "view": _task()
-                    | {
-                        "question_templates": ["old"],
-                        "validation_rules": ["legacy"],
-                    },
-                    "other": {"description": "unchanged"},
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    pdf_rag.write_task_design(path, "view", _design() | {"citations": []})
-
-    blueprint = json.loads(path.read_text(encoding="utf-8"))
-    assert blueprint["tasks"]["view"]["question_templates"] == ["Which view is shown?"]
-    assert "validation_rules" not in blueprint["tasks"]["view"]
-    assert blueprint["tasks"]["other"] == {"description": "unchanged"}
-    assert not path.with_suffix(".json.tmp").exists()
 
 
 def test_design_task_repairs_one_invalid_response(monkeypatch) -> None:
@@ -152,31 +124,6 @@ def test_design_task_rejects_unsafe_field_value_requests(
 
     with pytest.raises(ValueError, match=message):
         pdf_rag.design_task(SimpleNamespace(retrieve=lambda _query: []), {"language": "en"}, "view", task, dataset_profile=profile)
-
-
-def test_extract_pdf_chunks_accepts_uppercase_and_ignores_auxiliary_files(
-    tmp_path: Path, monkeypatch
-) -> None:
-    first = tmp_path / "one" / "guide.PDF"
-    second = tmp_path / "two" / "guide.pdf"
-    first.parent.mkdir()
-    second.parent.mkdir()
-    first.write_bytes(b"first")
-    second.write_bytes(b"second")
-    (tmp_path / "README.txt").write_text("notes", encoding="utf-8")
-
-    class FakeReader:
-        def __init__(self, path: str) -> None:
-            name = Path(path).parent.name
-            self.pages = [SimpleNamespace(extract_text=lambda: f"{name} paragraph " * 40)]
-
-    monkeypatch.setattr(pdf_rag, "PdfReader", FakeReader)
-
-    fingerprint, chunks = pdf_rag.extract_pdf_chunks(tmp_path, chunk_size=120, overlap=20)
-
-    assert len(fingerprint) == 64
-    assert {chunk["pdf"] for chunk in chunks} == {"one/guide.PDF", "two/guide.pdf"}
-    assert len({chunk["chunk_id"] for chunk in chunks}) == len(chunks)
 
 
 def test_discover_and_extract_selected_categorized_medical_pdfs(

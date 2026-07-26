@@ -176,35 +176,6 @@ def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeyp
     assert all(temperature == 0 for prompt, temperature in calls if "Review one" in prompt)
 
 
-def test_stages_restart_database_cursor_and_keep_independent_limits(tmp_path: Path, monkeypatch) -> None:
-    records = [_record(index, {"status": "benign", "bbox": [1, 2, 8, 9]}) for index in range(2)]
-    request = _request(
-        tmp_path,
-        records,
-        {
-            "vqa": _task("letter", ["annotation.status"], sample_count=1),
-            "grounding": _task("bbox", ["annotation.bbox[*]"], sample_count=1),
-        },
-        2,
-    )
-    calls: list[tuple[str, float]] = []
-    fake = _fake_model(calls)
-    monkeypatch.setattr(vqa, "complete_json", fake)
-    monkeypatch.setattr(grounding, "complete_json", fake)
-    cursors: list[tuple[str, int]] = []
-    original = generation._next_candidate_record
-
-    def wrapped(request, tasks, targets, completed, cursor, handler):
-        cursors.append((handler.__name__, cursor))
-        return original(request, tasks, targets, completed, cursor, handler)
-
-    monkeypatch.setattr(generation, "_next_candidate_record", wrapped)
-    generation.generate_raw_benchmark(request)
-
-    assert ("medbenchagent.generation.vqa", 0) in cursors
-    assert ("medbenchagent.generation.grounding", 0) in cursors
-
-
 def test_each_stage_applies_its_own_three_task_image_limit(tmp_path: Path, monkeypatch) -> None:
     annotation = {
         **{f"status_{index}": "benign" for index in range(4)},

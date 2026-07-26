@@ -6,7 +6,6 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 import medbenchagent.agents.capability as capability_agent
-import medbenchagent.agents.generation as generation_agent
 import medbenchagent.agents.specification as specification_agent
 import medbenchagent.workflow.graph as workflow
 from medbenchagent.agents import (
@@ -202,30 +201,6 @@ def _datasets() -> list[dict]:
     ]
 
 
-def test_confirmed_benchmark_writes_preallocated_blueprint_path(tmp_path: Path, monkeypatch) -> None:
-    run = initialize_run(tmp_path / "runs")
-    monkeypatch.setattr(specification_agent, "interrupt", lambda _payload: "confirm")
-    monkeypatch.setattr(
-        specification_agent,
-        "_benchmark_review_action",
-        lambda *_args: {"action": "confirm"},
-    )
-
-    result = specification_agent._benchmark_confirm_node(
-        {
-            "benchmark_info": {"disease": "breast cancer", "sample_count": 1},
-            "working_blueprint_path": run["working_blueprint_path"],
-        }
-    )
-
-    path = Path(result["working_blueprint_path"])
-    assert path.is_file()
-    assert json.loads(path.read_text(encoding="utf-8"))["benchmark_info"] == {
-        "disease": "breast cancer",
-        "sample_count": 1,
-    }
-
-
 def test_specification_agent_preserves_interrupt_payload_and_resume(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -266,9 +241,14 @@ def test_specification_agent_preserves_interrupt_payload_and_resume(
         "benchmark_info": benchmark_info,
         "working_blueprint_path": run["working_blueprint_path"],
     }
+    blueprint_path = Path(resumed["working_blueprint_path"])
+    assert blueprint_path.is_file()
+    assert json.loads(blueprint_path.read_text(encoding="utf-8"))["benchmark_info"] == benchmark_info
 
 
-def test_dataset_recommendation_enriches_selection_without_path(monkeypatch) -> None:
+def test_dataset_recommendation_and_profile_keep_paths_private(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
     monkeypatch.setattr(
         capability_agent,
@@ -289,96 +269,19 @@ def test_dataset_recommendation_enriches_selection_without_path(monkeypatch) -> 
     assert "annotation_path" not in result["dataset_recommendation"]
     assert result["dataset_confirmed"] is False
 
-
-def test_dataset_profile_keeps_blueprint_dataset_id_only(tmp_path: Path, monkeypatch) -> None:
     blueprint_path = tmp_path / "blueprint.json"
     blueprint = {"dataset": {"dataset_id": "vindr-mammo"}, "tasks": {}}
     blueprint_path.write_text(json.dumps(blueprint), encoding="utf-8")
-    monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
+    expected_path = tmp_path / "annotation.jsonl"
     monkeypatch.setattr(
         capability_agent,
         "resolve_annotation_path",
-        lambda _dataset: tmp_path / "annotation.jsonl",
+        lambda _dataset: expected_path,
     )
-    monkeypatch.setattr(
-        capability_agent,
-        "prepare_annotation_dataset",
-        lambda *_args: (
-            {"schema_version": "task-capability-profile.v1", "total_images": 2},
-            {
-                "annotation_path": str(tmp_path / "annotation.jsonl"),
-                "annotation_sha256": "a" * 64,
-                "cache_format_version": "annotation-cache.v3",
-            },
-        ),
-    )
-
-    result = capability_agent._dataset_profile_node(
-        {"selected_dataset_id": "vindr-mammo", "working_blueprint_path": str(blueprint_path)}
-    )
-
-    assert json.loads(blueprint_path.read_text(encoding="utf-8")) == blueprint
-    assert result["dataset_profile"]["total_images"] == 2
-    assert "annotation_path" not in result["dataset_access_manifest"]
-
-
-def test_dataset_review_supports_confirm_and_available_reselection(monkeypatch) -> None:
-    monkeypatch.setattr(capability_agent, "complete_json", lambda *_args: {"action": "confirm"})
-    assert capability_agent._dataset_review_action("确认", _datasets()) == {"action": "confirm"}
-
-    monkeypatch.setattr(
-        capability_agent,
-        "complete_json",
-        lambda *_args: {"action": "select", "dataset_id": "vindr-mammo"},
-    )
-    assert capability_agent._dataset_review_action("使用 VinDr", _datasets()) == {
-        "action": "select",
-        "dataset_id": "vindr-mammo",
-    }
-
-
-def test_dataset_review_rejects_unavailable_reselection(monkeypatch) -> None:
-    monkeypatch.setattr(
-        capability_agent,
-        "complete_json",
-        lambda *_args: {"action": "select", "dataset_id": "future"},
-    )
-
-    with pytest.raises(capability_agent.DatasetCatalogError, match="not available"):
-        capability_agent._dataset_review_action("使用 Future Dataset", _datasets())
-
-
-def test_dataset_review_requires_confirmation_after_reselection(monkeypatch) -> None:
-    monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
-    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "使用 VinDr")
-    monkeypatch.setattr(
-        capability_agent,
-        "complete_json",
-        lambda *_args: {"action": "select", "dataset_id": "vindr-mammo"},
-    )
-    state = {
-        "dataset_recommendation": {
-            "dataset_id": "vindr-mammo",
-            "name": "VinDr-Mammo",
-            "description": "Mammography annotations.",
-            "reason": "Matches.",
-        }
-    }
-
-    result = capability_agent._dataset_review_node(state)
-
-    assert result["dataset_confirmed"] is False
-    assert result["selected_dataset_id"] == ""
-
-
-def test_dataset_profile_resolves_confirmed_id_internally(tmp_path: Path, monkeypatch) -> None:
-    expected_path = tmp_path / "annotation.jsonl"
-    monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
-    monkeypatch.setattr(capability_agent, "resolve_annotation_path", lambda _dataset: expected_path)
 
     def prepare(path, _cache_root):
         assert path == expected_path
-        return {"total_images": 1, "schema_version": "task-capability-profile.v1"}, {
+        return {"schema_version": "task-capability-profile.v1", "total_images": 2}, {
             "annotation_path": str(expected_path),
             "duckdb_path": "dataset.duckdb",
             "annotation_sha256": "a" * 64,
@@ -387,90 +290,63 @@ def test_dataset_profile_resolves_confirmed_id_internally(tmp_path: Path, monkey
 
     monkeypatch.setattr(capability_agent, "prepare_annotation_dataset", prepare)
 
-    blueprint_path = tmp_path / "blueprint.json"
-    blueprint_path.write_text(
-        json.dumps(
-            {
-                "dataset": {
-                    "dataset_id": "vindr-mammo",
-                    "dataset_name": "VinDr-Mammo",
-                    "description": "Mammography annotations.",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    result = capability_agent._dataset_profile_node(
+    profile_result = capability_agent._dataset_profile_node(
         {"selected_dataset_id": "vindr-mammo", "working_blueprint_path": str(blueprint_path)}
     )
 
-    assert result["dataset_profile"] == {
-        "total_images": 1,
+    assert json.loads(blueprint_path.read_text(encoding="utf-8")) == blueprint
+    assert profile_result["dataset_profile"] == {
         "schema_version": "task-capability-profile.v1",
+        "total_images": 2,
     }
-    assert result["dataset_access_manifest"] == {
+    assert profile_result["dataset_access_manifest"] == {
         "duckdb_path": "dataset.duckdb",
         "annotation_sha256": "a" * 64,
         "cache_format_version": "annotation-cache.v3",
     }
-    assert "annotation_path" not in result
+    assert "annotation_path" not in profile_result
 
 
-def test_apply_task_plan_updates_blueprint_as_single_task_source(tmp_path: Path) -> None:
-    path = tmp_path / "blueprint.json"
-    path.write_text(
-        json.dumps({"tasks": {"view": _task(), "diagnosis": _task()}}), encoding="utf-8"
-    )
+def test_dataset_review_confirms_reselects_and_rejects_unavailable_datasets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    blueprint_path = tmp_path / "blueprint.json"
+    blueprint_path.write_text(json.dumps({"tasks": {}}), encoding="utf-8")
     state = {
-        "working_blueprint_path": str(path),
-        "dataset_profile": {"fields": {"annotation.view": {}}},
-        "draft_task_plan": {
-            "tasks": {
-                "view": {
-                    "decision": "retain",
-                    "supporting_fields": ["annotation.view"],
-                    "reason": "Available.",
-                },
-                "diagnosis": {"decision": "drop", "supporting_fields": [], "reason": "Missing."},
-            }
+        "working_blueprint_path": str(blueprint_path),
+        "dataset_recommendation": {
+            "dataset_id": "vindr-mammo",
+            "name": "VinDr-Mammo",
+            "description": "Mammography annotations.",
+            "reason": "Matches.",
         },
     }
-
-    capability_agent._apply_task_plan_node(state)
-
-    tasks = json.loads(path.read_text(encoding="utf-8"))["tasks"]
-    assert list(tasks) == ["view"]
-    assert tasks["view"]["supporting_fields"] == ["annotation.view"]
-
-
-def test_rag_processes_one_blueprint_task_and_persists_it(tmp_path: Path, monkeypatch) -> None:
-    path = tmp_path / "blueprint.json"
-    path.write_text(
-        json.dumps({"benchmark_info": {"language": "en"}, "tasks": {"view": _task()}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(rag_workflow, "LocalPdfRag", lambda *_args: object())
-    monkeypatch.setattr(
-        rag_workflow,
-        "design_task",
-        lambda _rag, _info, _task_id, _task, dataset_profile, feedback="": _rag_fields(),
-    )
-    state = {
-        "working_blueprint_path": str(path),
-        "benchmark_info": {"language": "en"},
-        "selected_material_files": ["imaging_reporting_and_classification/guide.pdf"],
-        "dataset_profile": {"fields": {}},
-        "rag_task_queue": ["view"],
-        "rag_task_feedback": {},
-        "rag_completed_count": 0,
+    monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
+    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "确认")
+    monkeypatch.setattr(capability_agent, "complete_json", lambda *_args: {"action": "confirm"})
+    confirmed = capability_agent._dataset_review_node(state)
+    assert confirmed == {"selected_dataset_id": "vindr-mammo", "dataset_confirmed": True}
+    assert json.loads(blueprint_path.read_text(encoding="utf-8"))["dataset"] == {
+        "dataset_id": "vindr-mammo"
     }
 
-    result = rag_workflow._rag_design_task_node(state)
+    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "使用 VinDr")
+    monkeypatch.setattr(
+        capability_agent,
+        "complete_json",
+        lambda *_args: {"action": "select", "dataset_id": "vindr-mammo"},
+    )
+    reselected = capability_agent._dataset_review_node(state)
+    assert reselected["dataset_confirmed"] is False
+    assert reselected["selected_dataset_id"] == ""
 
-    written = json.loads(path.read_text(encoding="utf-8"))["tasks"]["view"]
-    assert written["question_templates"] == ["Which view is shown?"]
-    assert result["rag_task_queue"] == []
-    assert result["rag_completed_count"] == 1
+    monkeypatch.setattr(
+        capability_agent,
+        "complete_json",
+        lambda *_args: {"action": "select", "dataset_id": "future"},
+    )
+    with pytest.raises(capability_agent.DatasetCatalogError, match="not available"):
+        capability_agent._dataset_review_action("使用 Future Dataset", _datasets())
 
 
 def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_choice(
@@ -571,26 +447,6 @@ def test_partial_sample_count_adjustment_redistributes_unspecified_tasks(monkeyp
     }
 
 
-def test_zero_count_tasks_are_skipped_by_rag_queue(tmp_path: Path) -> None:
-    path = tmp_path / "blueprint.json"
-    path.write_text(
-        json.dumps(
-            {
-                "tasks": {
-                    "view": _task() | {"sample_count": 2},
-                    "report": _task("free_text") | {"sample_count": 0},
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    result = rag_workflow._rag_prepare_node({"working_blueprint_path": str(path)})
-
-    assert result["rag_task_queue"] == ["view"]
-    assert result["rag_total_count"] == 1
-
-
 def test_design_review_action_supports_multiple_targeted_revisions(monkeypatch) -> None:
     monkeypatch.setattr(
         rag_workflow,
@@ -609,37 +465,7 @@ def test_design_review_action_supports_multiple_targeted_revisions(monkeypatch) 
     assert [revision["task_id"] for revision in result["revisions"]] == ["view", "report"]
 
 
-def test_generation_request_uses_blueprint_task_snapshot_without_design_duplicates(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "blueprint.json"
-    task = _task() | _rag_fields() | {"sample_count": 2}
-    path.write_text(
-        json.dumps({"benchmark_info": {"sample_count": 2}, "tasks": {"view": task}}),
-        encoding="utf-8",
-    )
-    state = {
-        "working_blueprint_path": str(path),
-        "benchmark_info": {"sample_count": 2},
-        "run_id": "00000000-0000-0000-0000-000000000000",
-        "selected_dataset_id": "vindr-mammo",
-        "construction_events_path": str(tmp_path / "construction_events.jsonl"),
-        "dataset_access_manifest": {"duckdb_path": "dataset.duckdb"},
-        "seed": 3,
-        "max_tasks_per_image": 2,
-        "question_temperature": 0.4,
-    }
-
-    result = generation_agent._generation_request_node(state)
-    request = result["generation_request"]
-
-    assert request["tasks"] == {"view": task}
-    assert "task_specs" not in request
-    assert "question_designs" not in request
-    assert "approved_task_plans" not in request
-
-
-def test_generation_request_is_private_to_generation_agent_checkpoint(
+def test_generation_agent_keeps_request_snapshot_private(
     tmp_path: Path, monkeypatch
 ) -> None:
     path = tmp_path / "blueprint.json"
@@ -695,13 +521,19 @@ def test_generation_request_is_private_to_generation_agent_checkpoint(
         "generation_shortfalls",
     }
     assert "generation_request" not in result
-    assert any(
-        "generation_request" in snapshot.values
+    requests = [
+        snapshot.values["generation_request"]
         for snapshot in graph.get_state_history(config)
-    )
+        if "generation_request" in snapshot.values
+    ]
+    assert requests
+    assert requests[0]["tasks"] == {"view": task}
+    assert not {"task_specs", "question_designs", "approved_task_plans"} & requests[0].keys()
 
 
-def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, monkeypatch) -> None:
+def test_generation_subgraph_checkpoints_and_streams_progress(
+    tmp_path: Path, monkeypatch
+) -> None:
     calls = 0
 
     def initialize(_request: dict) -> dict:
@@ -741,17 +573,36 @@ def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, m
     graph = generation_workflow.compile_generation_subgraph(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": "generation-test"}, "recursion_limit": 20}
 
-    result = graph.invoke({"generation_request": {}}, config)
+    events = list(
+        graph.stream(
+            {"generation_request": {}},
+            config,
+            stream_mode="custom",
+        )
+    )
     history = list(graph.get_state_history(config))
 
     assert calls == 2
-    assert result == {
-        "raw_output_path": str(tmp_path / "benchmark_items.raw.jsonl"),
-        "provenance_output_path": "",
-        "item_count": 2,
-        "task_counts": {"view": 2},
-        "generation_shortfalls": {"view": 0},
-    }
+    assert events == [
+        {
+            "kind": "generation_progress",
+            "stage": "vqa",
+            "cursor": 1,
+            "completed_counts": {"view": 1},
+            "target_counts": {"view": 2},
+            "rejections": {},
+            "exhausted": False,
+        },
+        {
+            "kind": "generation_progress",
+            "stage": "",
+            "cursor": 2,
+            "completed_counts": {"view": 2},
+            "target_counts": {"view": 2},
+            "rejections": {},
+            "exhausted": True,
+        },
+    ]
     private_states = [
         snapshot.values
         for snapshot in history
@@ -769,13 +620,18 @@ def test_generation_subgraph_checkpoints_each_completed_record(tmp_path: Path, m
     assert len(history) >= 5
 
 
-def test_rag_subgraph_checkpoints_private_queue_state(tmp_path: Path, monkeypatch) -> None:
+def test_rag_subgraph_persists_design_and_checkpoints_streamed_progress(
+    tmp_path: Path, monkeypatch
+) -> None:
     path = tmp_path / "blueprint.json"
     path.write_text(
         json.dumps(
             {
                 "benchmark_info": {"language": "en"},
-                "tasks": {"view": _task() | {"sample_count": 1}},
+                "tasks": {
+                    "view": _task() | {"sample_count": 1},
+                    "report": _task("free_text") | {"sample_count": 0},
+                },
             }
         ),
         encoding="utf-8",
@@ -792,59 +648,19 @@ def test_rag_subgraph_checkpoints_private_queue_state(tmp_path: Path, monkeypatc
     graph = rag_workflow.compile_rag_designs_subgraph(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": "rag-test"}, "recursion_limit": 20}
 
-    result = graph.invoke(
-        {
-            "benchmark_info": {"language": "en"},
-            "working_blueprint_path": str(path),
-            "selected_material_files": ["imaging_reporting_and_classification/guide.pdf"],
-            "dataset_profile": {"fields": {}},
-        },
-        config,
-    )
-    history = list(graph.get_state_history(config))
-
-    assert result == {"working_blueprint_path": str(path)}
-    private_states = [
-        snapshot.values
-        for snapshot in history
-        if snapshot.values.get("rag_current_task_id") == "view"
-    ]
-    assert private_states
-    assert private_states[0]["rag_completed_count"] == 1
-    assert private_states[0]["rag_task_queue"] == []
-
-
-def test_rag_subgraph_streams_custom_progress(tmp_path: Path, monkeypatch) -> None:
-    path = tmp_path / "blueprint.json"
-    path.write_text(
-        json.dumps(
-            {
-                "benchmark_info": {"language": "en"},
-                "tasks": {"view": _task() | {"sample_count": 1}},
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(rag_workflow, "LocalPdfRag", lambda *_args: object())
-    monkeypatch.setattr(
-        rag_workflow,
-        "design_task",
-        lambda _rag, _info, _task_id, _task, dataset_profile, feedback="": _rag_fields(),
-    )
-    monkeypatch.setattr(rag_workflow, "interrupt", lambda _payload: "确认")
-    monkeypatch.setattr(rag_workflow, "complete_json", lambda *_args: {"action": "confirm"})
-
     events = list(
-        rag_workflow.compile_rag_designs_subgraph().stream(
+        graph.stream(
             {
                 "benchmark_info": {"language": "en"},
                 "working_blueprint_path": str(path),
                 "selected_material_files": ["imaging_reporting_and_classification/guide.pdf"],
                 "dataset_profile": {"fields": {}},
             },
+            config,
             stream_mode="custom",
         )
     )
+    history = list(graph.get_state_history(config))
 
     assert events == [
         {
@@ -855,55 +671,14 @@ def test_rag_subgraph_streams_custom_progress(tmp_path: Path, monkeypatch) -> No
             "remaining": 0,
         }
     ]
-
-
-def test_generation_subgraph_streams_custom_progress(tmp_path: Path, monkeypatch) -> None:
-    def initialize(_request: dict) -> dict:
-        return {
-            "generation_target_counts": {"view": 1},
-            "generation_completed_counts": {"view": 0},
-            "generation_stage_index": 0,
-            "generation_stage": "vqa",
-            "generation_cursor": 0,
-            "generation_progress_path": str(tmp_path / "benchmark_items.progress.jsonl"),
-            "generation_rejections": {"view": 0},
-            "generation_exhausted": False,
-        }
-
-    def advance(_request: dict, _state: dict) -> dict:
-        return {
-            "generation_completed_counts": {"view": 1},
-            "generation_stage_index": 3,
-            "generation_stage": "",
-            "generation_cursor": 1,
-            "generation_exhausted": True,
-        }
-
-    def finalize(_request: dict, _state: dict) -> GenerationResult:
-        return GenerationResult(
-            raw_output_path=str(tmp_path / "benchmark_items.raw.jsonl"),
-            item_count=1,
-            task_counts={"view": 1},
-        )
-
-    monkeypatch.setattr(generation_workflow, "initialize_generation", initialize)
-    monkeypatch.setattr(generation_workflow, "advance_generation", advance)
-    monkeypatch.setattr(generation_workflow, "finalize_generation", finalize)
-
-    events = list(
-        generation_workflow.compile_generation_subgraph().stream(
-            {"generation_request": {}}, stream_mode="custom"
-        )
-    )
-
-    assert events == [
-        {
-            "kind": "generation_progress",
-            "stage": "",
-            "cursor": 1,
-            "completed_counts": {"view": 1},
-            "target_counts": {"view": 1},
-            "rejections": {"view": 0},
-            "exhausted": True,
-        }
+    written = json.loads(path.read_text(encoding="utf-8"))["tasks"]
+    assert written["view"]["question_templates"] == ["Which view is shown?"]
+    assert "question_templates" not in written["report"]
+    private_states = [
+        snapshot.values
+        for snapshot in history
+        if snapshot.values.get("rag_current_task_id") == "view"
     ]
+    assert private_states
+    assert private_states[0]["rag_completed_count"] == 1
+    assert private_states[0]["rag_task_queue"] == []

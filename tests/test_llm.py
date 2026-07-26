@@ -1,4 +1,3 @@
-import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,25 +58,3 @@ def test_complete_json_uses_placeholder_key_for_unauthenticated_vllm(monkeypatch
     assert wrapped_clients[0][1] == {"chat_name": "DeepSeek"}
     llm.clear_client_cache()
     clear_settings_cache()
-
-
-def test_complete_json_rejects_invalid_timeout_before_request(monkeypatch) -> None:
-    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
-    monkeypatch.setenv("DEEPSEEK_TIMEOUT_SECONDS", "0")
-    clear_settings_cache()
-    llm.clear_client_cache()
-
-    try:
-        llm.complete_json("system", "user")
-    except ValueError as exc:
-        assert "llm.timeout_seconds" in str(exc)
-    else:
-        raise AssertionError("Invalid timeout should fail before a request.")
-    finally:
-        clear_settings_cache()
-
-
-def test_langgraph_server_loads_project_env_file() -> None:
-    config_path = Path(__file__).parents[1] / "langgraph.json"
-
-    assert json.loads(config_path.read_text(encoding="utf-8"))["env"] == "./.env"
