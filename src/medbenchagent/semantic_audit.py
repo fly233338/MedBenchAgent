@@ -219,13 +219,14 @@ def semantic_audit_run(
     violation_counts = Counter(
         violation for record in completed for violation in record["violations"]
     )
-    report["flag"] = len(flagged)
-    report["semantic"] = {
+    report["semantic_audit"] = {
         "eligible": len(audited),
         "sampled": len(records),
-        "pass": sum(record["decision"] == "pass" for record in completed),
-        "flag": len(flagged),
+        "completed": len(completed),
+        "passed": sum(record["decision"] == "pass" for record in completed),
+        "flagged": len(flagged),
         "not_run": len(records) - len(completed),
+        "not_sampled": len(audited) - len(records),
         "violation_counts": dict(violation_counts),
     }
     report_file.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -237,7 +238,7 @@ def semantic_audit_run(
         agent=AUDIT_AGENT,
         operation="semantic_screen",
         status="complete",
-        **report["semantic"],
+        **report["semantic_audit"],
     )
     return {
         "semantic_records_path": str(semantic_records_path),

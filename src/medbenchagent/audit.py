@@ -292,18 +292,32 @@ def audit_run(
     _write(rejected_path, rejected)
     _write(records_path, records)
     report = {
+        "schema_version": "audit-report.v1",
         "input": len(candidates),
-        "pass": len(audited),
-        "flag": 0,
-        "reject": len(rejected),
-        "reason_counts": dict(
-            Counter(reason for record in records for reason in record["reasons"])
-        ),
-        "duplicate_statistics": {
-            "duplicate_item_id_count": duplicate_item_id_count,
-            "exact_item_duplicate_count": exact_item_duplicate_count,
-            "repeated_question_count": repeated_question_count,
-            "question_repetition_rate": repeated_question_count / len(candidates) if candidates else 0,
+        "hard_audit": {
+            "accepted": len(audited),
+            "rejected": len(rejected),
+            "reason_counts": dict(
+                Counter(reason for record in records for reason in record["reasons"])
+            ),
+            "duplicate_statistics": {
+                "duplicate_item_id_count": duplicate_item_id_count,
+                "exact_item_duplicate_count": exact_item_duplicate_count,
+                "repeated_question_count": repeated_question_count,
+                "question_repetition_rate": (
+                    repeated_question_count / len(candidates) if candidates else 0
+                ),
+            },
+        },
+        "semantic_audit": {
+            "eligible": len(audited),
+            "sampled": 0,
+            "completed": 0,
+            "passed": 0,
+            "flagged": 0,
+            "not_run": 0,
+            "not_sampled": len(audited),
+            "violation_counts": {},
         },
     }
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -318,7 +332,7 @@ def audit_run(
         input=len(candidates),
         audited=len(audited),
         rejected=len(rejected),
-        duplicate_statistics=report["duplicate_statistics"],
+        duplicate_statistics=report["hard_audit"]["duplicate_statistics"],
     )
     return {
         "audited_path": str(audited_path),

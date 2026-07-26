@@ -281,7 +281,9 @@ Audit deterministically samples at most ten items per task for one permissive se
 task. Clear task drift, answer leakage, ambiguity/option overlap, and semantic duplication/template
 collapse are copied to `benchmark.<dataset_id>.flagged.jsonl` and
 `semantic_audit_records.jsonl`. Model or response failures are recorded as not-run and never
-remove items from the audited output.
+remove items from the audited output; flagged items are therefore an observation-only subset of
+the audited JSONL. `audit_report.json` uses the versioned `audit-report.v1` structure with separate
+`hard_audit` and `semantic_audit` sections so their counts are not treated as competing outcomes.
 
 Balance an existing raw file without modifying it:
 

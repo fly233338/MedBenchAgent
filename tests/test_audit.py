@@ -16,6 +16,59 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
 
+def _initial_report(accepted: int, rejected: int = 0) -> dict:
+    return {
+        "schema_version": "audit-report.v1",
+        "input": accepted + rejected,
+        "hard_audit": {
+            "accepted": accepted,
+            "rejected": rejected,
+            "reason_counts": {},
+            "duplicate_statistics": {},
+        },
+        "semantic_audit": {
+            "eligible": accepted,
+            "sampled": 0,
+            "completed": 0,
+            "passed": 0,
+            "flagged": 0,
+            "not_run": 0,
+            "not_sampled": accepted,
+            "violation_counts": {},
+        },
+    }
+
+
+def _jsonl_ids(path: Path) -> set[str]:
+    return {
+        str(json.loads(line)["id"])
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line
+    }
+
+
+def _jsonl_items(path: Path) -> set[str]:
+    return {
+        json.dumps(json.loads(line), sort_keys=True, separators=(",", ":"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line
+    }
+
+
+def _assert_report_invariants(report: dict, audited_path: Path, flagged_path: Path) -> None:
+    hard = report["hard_audit"]
+    semantic = report["semantic_audit"]
+    assert report["schema_version"] == "audit-report.v1"
+    assert report["input"] == hard["accepted"] + hard["rejected"]
+    assert semantic["eligible"] == hard["accepted"]
+    assert semantic["eligible"] == semantic["sampled"] + semantic["not_sampled"]
+    assert semantic["sampled"] == semantic["completed"] + semantic["not_run"]
+    assert semantic["completed"] == semantic["passed"] + semantic["flagged"]
+    assert len(_jsonl_ids(audited_path)) == hard["accepted"]
+    assert _jsonl_items(flagged_path) <= _jsonl_items(audited_path)
+    assert len(_jsonl_ids(flagged_path)) == semantic["flagged"]
+
+
 def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Path, monkeypatch) -> None:
     image_path = tmp_path / "images" / "a.png"
     image_path.parent.mkdir()
@@ -128,12 +181,17 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
     assert result["item_count"] == 2
     assert len((Path(result["rejected_path"])).read_text(encoding="utf-8").splitlines()) == 2
     report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
-    assert report["duplicate_statistics"] == {
+    assert report["hard_audit"]["duplicate_statistics"] == {
         "duplicate_item_id_count": 2,
         "exact_item_duplicate_count": 1,
         "repeated_question_count": 2,
         "question_repetition_rate": 0.5,
     }
+    _assert_report_invariants(
+        report,
+        Path(result["audited_path"]),
+        Path(result["flagged_path"]),
+    )
     assert "retention" not in report
     event_types = [
         json.loads(line)["event_type"]
@@ -175,7 +233,12 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
         Path(tampered_result["report_path"]).read_text(encoding="utf-8")
     )
     assert tampered_result["item_count"] == 0
-    assert tampered_report["reason_counts"]["answer_evidence"] == 4
+    assert tampered_report["hard_audit"]["reason_counts"]["answer_evidence"] == 4
+    _assert_report_invariants(
+        tampered_report,
+        Path(tampered_result["audited_path"]),
+        Path(tampered_result["flagged_path"]),
+    )
 
 
 def test_audit_accepts_readable_color_images_and_rejects_constant_thumbnails(tmp_path: Path) -> None:
@@ -250,7 +313,7 @@ def test_semantic_audit_samples_once_per_task_and_flags_without_rejecting(
     _write_jsonl(audited_path, audited)
     _write_jsonl(flagged_path, [])
     report_path.write_text(
-        json.dumps({"input": len(audited), "pass": len(audited), "flag": 0, "reject": 0}),
+        json.dumps(_initial_report(len(audited))),
         encoding="utf-8",
     )
     blueprint_path.write_text(
@@ -316,14 +379,17 @@ def test_semantic_audit_samples_once_per_task_and_flags_without_rejecting(
     assert len(flagged_path.read_text(encoding="utf-8").splitlines()) == 2
     assert len(audited_path.read_text(encoding="utf-8").splitlines()) == 14
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["semantic"] == {
+    assert report["semantic_audit"] == {
         "eligible": 14,
         "sampled": 12,
-        "pass": 10,
-        "flag": 2,
+        "completed": 12,
+        "passed": 10,
+        "flagged": 2,
         "not_run": 0,
+        "not_sampled": 2,
         "violation_counts": {"answer_leakage": 2},
     }
+    _assert_report_invariants(report, audited_path, flagged_path)
 
 
 def test_semantic_audit_invalid_or_unavailable_is_fail_open(tmp_path: Path, monkeypatch) -> None:
@@ -346,7 +412,7 @@ def test_semantic_audit_invalid_or_unavailable_is_fail_open(tmp_path: Path, monk
     _write_jsonl(audited_path, items)
     _write_jsonl(flagged_path, [])
     report_path.write_text(
-        json.dumps({"input": 2, "pass": 2, "flag": 0, "reject": 0}),
+        json.dumps(_initial_report(2)),
         encoding="utf-8",
     )
     blueprint_path.write_text(
@@ -401,4 +467,7 @@ def test_semantic_audit_invalid_or_unavailable_is_fail_open(tmp_path: Path, monk
     }
     assert flagged_path.read_text(encoding="utf-8") == ""
     assert len(audited_path.read_text(encoding="utf-8").splitlines()) == 2
-    assert json.loads(report_path.read_text(encoding="utf-8"))["semantic"]["not_run"] == 2
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["semantic_audit"]["not_run"] == 2
+    assert report["semantic_audit"]["not_sampled"] == 0
+    _assert_report_invariants(report, audited_path, flagged_path)
