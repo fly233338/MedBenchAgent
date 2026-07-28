@@ -170,11 +170,47 @@
     "orphan_masks": [],
     "ambiguous_matches": []
   },
+  "bbox_format_analysis": {
+    "reason": "The project requires xyxy boxes, while no supplied local data dictionary defines BBOX coordinates.",
+    "method": "With user authorization to determine the format, compare every source BBOX against the tight nonzero bounds of its exactly matched mask.",
+    "source_as_xyxy": {
+      "valid_in_bounds_count": 893,
+      "invalid_or_out_of_bounds_count": 982,
+      "conclusion": "the source values are not xyxy"
+    },
+    "source_as_matlab_rectangle": {
+      "format": "one-based [x, y, width, height], where width and height are coordinate extents",
+      "exact_tight_mask_matches": 1874,
+      "non_tight_but_mask_containing_matches": 1,
+      "converted_boxes_in_bounds": 1875,
+      "converted_boxes_containing_all_nonzero_mask_pixels": 1875,
+      "xyxy_zero_based_inclusive_formula": "[x - 1, y - 1, x + width - 1, y + height - 1]",
+      "conclusion": "deterministically convert the source rectangle to zero-based inclusive xyxy"
+    },
+    "non_tight_source_box": {
+      "ID": "bus_0845-s",
+      "source_BBOX": "[214,77,164,100]",
+      "converted_xyxy": [213, 76, 377, 176],
+      "tight_mask_xyxy": [291, 107, 377, 176],
+      "handling": "preserve and convert the supplied source BBOX; do not replace it with a mask-derived box"
+    }
+  },
+  "dimension_reconciliation": {
+    "mask_shape_matches_table_Height_Width": 1871,
+    "mismatch_count": 4,
+    "mismatches": [
+      {"ID": "bus_0856-l", "table_height": 405, "png_height": 353, "width": 387},
+      {"ID": "bus_0857-r", "table_height": 409, "png_height": 393, "width": 384},
+      {"ID": "bus_0912-l", "table_height": 354, "png_height": 352, "width": 360},
+      {"ID": "bus_0990-l", "table_height": 354, "png_height": 352, "width": 540}
+    ],
+    "handling": "record the discrepancy and preserve source Width and Height without correction; all converted boxes remain within the actual PNG bounds"
+  },
   "observations": [
     "All IDs match bus_<four digits>-<l|r|s>; the numeric portion equals Case.",
     "ID suffix l/r/s agrees with Side left/right/single for every row.",
     "All BBOX source values are unique strings matching four comma-separated non-negative integers in square brackets.",
-    "No local data dictionary defines whether BBOX is xyxy, xywh, or another coordinate convention.",
-    "Image dimensions and masks were not decoded during annotation inventory."
+    "The official article and experiment code do not define or consume the CSV BBOX field; the format was therefore established by exhaustive consistency checks against the supplied masks.",
+    "Masks were decoded only after the user requested a format determination; four source images were decoded solely to reconcile table-height discrepancies."
   ]
 }

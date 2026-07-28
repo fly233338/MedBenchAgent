@@ -55,7 +55,8 @@
       "width": "Width, preserving source integer",
       "height": "Height, preserving source integer",
       "side": "Side, preserving source string",
-      "bbox_source": "BBOX preserved exactly as its source string; no coordinate interpretation or numeric conversion"
+      "bbox_source": "BBOX preserved exactly as its source string",
+      "bbox": "zero-based inclusive integer xyxy array converted from one-based source [x, y, width, height] using [x - 1, y - 1, x + width - 1, y + height - 1]"
     },
     "excluded_fields": [
       {
@@ -91,25 +92,45 @@
       "orphan_masks": 0,
       "duplicate_image_keys": 0,
       "cross_image_BIRADS_differences_within_case": 1,
-      "conflict_handling": "do not merge rows; preserve each image row's BIRADS, including the two distinct values in Case 856"
+      "conflict_handling": "do not merge rows; preserve each image row's BIRADS, including the two distinct values in Case 856",
+      "bbox_source_values_invalid_if_interpreted_as_xyxy": 982,
+      "bbox_converted_to_valid_in_bounds_xyxy": 1875,
+      "bbox_converted_boxes_containing_source_mask": 1875,
+      "bbox_converted_boxes_equal_to_tight_mask_bounds": 1874,
+      "bbox_non_tight_source_boxes": 1,
+      "source_height_png_mismatches": 4,
+      "dimension_mismatch_handling": "preserve source Width and Height values; do not replace them with decoded PNG metadata"
     },
+    "bbox_format_evidence": {
+      "official_article": "The Medical Physics dataset article documents PNG segmentations and CSV metadata but does not define the BBOX tuple.",
+      "official_experiment_code": "The official MATLAB code reads masks and does not consume bus_data.csv.BBOX.",
+      "local_exhaustive_check": "1,874 of 1,875 source rectangles exactly match mask bounds under MATLAB one-based rectangle semantics; the remaining source rectangle contains its entire mask and is intentionally preserved rather than tightened."
+    },
+    "resolved_decisions": [
+      {
+        "id": "cross_validation_metadata",
+        "resolution": "Exclude all 5-fold and 10-fold experimental split metadata from benchmark annotations.",
+        "confirmed_by_user": true
+      }
+    ],
     "unresolved_decisions": [
       {
-        "id": "bbox_coordinate_semantics",
-        "question": "Should BBOX remain an exact source string, or can a documented coordinate convention be supplied so it can be mapped to a numeric bbox?",
-        "proposed_resolution": "Keep BBOX as bbox_source string because no local source defines its coordinate convention.",
+        "id": "bbox_xyxy_conversion_approval",
+        "question": "Approve preserving bbox_source and adding the deterministically converted zero-based inclusive xyxy bbox array?",
+        "proposed_resolution": "Yes. Apply [x - 1, y - 1, x + width - 1, y + height - 1] to every source BBOX.",
         "blocks_conversion": true
       },
       {
-        "id": "cross_validation_metadata",
-        "question": "Should the 5-fold and 10-fold experimental split metadata remain excluded from benchmark annotations?",
-        "proposed_resolution": "Yes. Exclude it because it is experimental partition metadata rather than a medical fact.",
+        "id": "source_height_mismatch_approval",
+        "question": "Approve preserving the four source Height values that differ from PNG height while recording the discrepancy?",
+        "proposed_resolution": "Yes. Preserve source table values and do not add inferred PNG metadata.",
         "blocks_conversion": true
       }
     ]
   },
   "review": {
     "status": "pending",
+    "revision": 2,
     "approved_mapping_sha256": null
   }
 }

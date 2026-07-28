@@ -90,17 +90,18 @@
       "other_mask_source_rows": 7,
       "other_mask_files": 14
     },
-    "unresolved_decisions": [
+    "resolved_decisions": [
       {
         "id": "derive_bbox_from_masks",
-        "question": "May the converter decode supplied mask PNGs to derive tight axis-aligned bounding boxes around nonzero pixels?",
-        "proposed_resolution": "No. Preserve mask paths only and do not create bounding boxes unless the user explicitly permits mask decoding.",
-        "blocks_conversion": true
+        "resolution": "Do not decode BrEaST masks and do not derive bounding boxes. Preserve mask paths only.",
+        "confirmed_by_user": true
       }
-    ]
+    ],
+    "unresolved_decisions": []
   },
   "review": {
     "status": "pending",
+    "revision": 2,
     "approved_mapping_sha256": null
   }
 }
