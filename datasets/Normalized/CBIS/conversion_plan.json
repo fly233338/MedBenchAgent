@@ -1,8 +1,9 @@
 {
   "plan_version": "1.0",
   "dataset": "CBIS-DDSM",
-  "source_root": "datasets/Mammography/CBIS",
-  "artifact_root": "datasets/Mammography/CBIS-normalized",
+  "annotation_source_root": "datasets/Mammography/CBIS",
+  "source_image_root": "E:\\BreastData\\Xray\\CBIS",
+  "artifact_root": "datasets/Normalized/CBIS",
   "source_inputs": [
     "calc_case_description_test_set.csv",
     "calc_case_description_train_set.csv",
@@ -10,8 +11,8 @@
     "mass_case_description_train_set.csv",
     "CBIS-DDSM-All-doiJNLP-zzWs5zfZ-nbia-digest.xlsx#Metadata",
     "info.md",
-    "dcm_example/*/*.dcm",
-    "dcm_example/*/LICENSE"
+    "E:/BreastData/Xray/CBIS/*/*.dcm",
+    "E:/BreastData/Xray/CBIS/*/LICENSE"
   ],
   "authoritative_image_population": {
     "rule": "Use every unique full mammogram referenced by the four CSV image file path columns; group all source rows sharing that full-image Series Instance UID into one output record.",
@@ -19,7 +20,7 @@
     "expected_images": 3103,
     "expected_finding_rows": 3568,
     "source_row_granularity": "one abnormality on one mammography view",
-    "local_asset_status": "blocked: only 2 of 3103 authoritative full-image series are locally present"
+    "local_asset_status": "complete: all 3103 authoritative full-image series have exactly one local DICOM"
   },
   "stable_ordering": {
     "records": "Lexicographic ascending order by full-image Series Instance UID.",
@@ -29,12 +30,12 @@
   "identifier_and_path_derivation": {
     "image_id": "Use the full-image Series Instance UID exactly as supplied by the CSV path and matched 1:1 to Metadata.Series Instance UID.",
     "image_path": {
-      "status": "pending source-image root",
-      "rule": "Inventory the approved complete source-image root, match each full-image Series Instance UID to exactly one DICOM file, and write that actual file path relative to the approved source-image root.",
+      "status": "resolved",
+      "rule": "Match the full-image Series Instance UID to the same-named directory under E:/BreastData/Xray/CBIS and use <Series Instance UID>/1-1.dcm relative to that source-image root.",
       "constraints": [
-        "Do not emit the non-resolving logical CSV path as image_path.",
-        "Reject missing or multiple local DICOM matches for any authoritative full-image Series Instance UID.",
-        "Ensure every normalized path remains beneath the approved source-image root."
+        "Require exactly one DICOM in every authoritative full-image series directory.",
+        "Reject missing or multiple local DICOM matches.",
+        "Ensure every normalized path remains beneath E:/BreastData/Xray/CBIS and resolves to a file."
       ]
     },
     "patient_id": "Use CSV patient_id exactly as a string.",
@@ -64,17 +65,17 @@
     },
     {
       "left": "authoritative full-image Series Instance UID",
-      "right": "local DICOM inventory beneath approved source-image root",
-      "cardinality": "required 1:1",
-      "currently_exact_series_matches": 2,
-      "currently_missing_series_matches": 3101,
-      "currently_ambiguous_series_matches": 0,
-      "status": "unresolved"
+      "right": "same-named directory beneath E:/BreastData/Xray/CBIS containing one DICOM",
+      "cardinality": "1:1",
+      "exact_series_matches": 3103,
+      "missing_series_matches": 0,
+      "ambiguous_series_matches": 0,
+      "status": "resolved"
     }
   ],
   "top_level_mapping": {
     "image_id": "full-image Series Instance UID",
-    "image_path": "actual matched DICOM path relative to the approved complete source-image root",
+    "image_path": "<full-image Series Instance UID>/1-1.dcm relative to E:/BreastData/Xray/CBIS",
     "patient_id": "CSV patient_id",
     "case_id": "split:abnormality_type:patient_id:laterality",
     "study_id": "Metadata.Study Instance UID"
@@ -82,8 +83,8 @@
   "annotation_mapping": {
     "modality": {
       "target": "annotation.modality",
-      "value": "MG",
-      "provenance": "Metadata.Modality after the full-image Series Instance UID join",
+      "value": "Mammography",
+      "provenance": "User-approved canonical normalization of Metadata.Modality value MG after the full-image Series Instance UID join",
       "scope": "all 3103 authoritative full images"
     },
     "anatomy": {
@@ -109,7 +110,6 @@
         "abnormality_id": "abnormality id, integer",
         "abnormality_type": "abnormality type, string",
         "assessment": "assessment, integer",
-        "pathology": "pathology, string",
         "subtlety": "subtlety, integer"
       },
       "calcification_fields": {
@@ -120,19 +120,9 @@
         "mass_shape": "mass shape, source string or null",
         "mass_margins": "mass margins, source string or null"
       },
-      "source_image_references": {
-        "cropped_image": "Preserve the source logical path plus its embedded Study Instance UID, Series Instance UID, and filename in the same finding object.",
-        "roi_mask": "Preserve the source logical path plus its embedded Study Instance UID, Series Instance UID, and filename in the same finding object."
-      },
       "bbox": {
-        "status": "pending explicit approval and complete mask assets",
-        "proposed_rule": "Decode only the CSV-designated ROI mask for the same source row and derive the tight axis-aligned [xmin, ymin, xmax, ymax] box enclosing all nonzero pixels in full-mammogram pixel coordinates.",
-        "validation_requirements": [
-          "Resolve the downloaded local DICOM instance corresponding exactly to the CSV ROI mask filename.",
-          "Confirm the mask dimensions and coordinate space match the associated full mammogram.",
-          "Reject empty masks, multi-valued role ambiguity, dimension mismatches, or unresolved downloaded-filename mappings.",
-          "Do not infer a box from a cropped image or image appearance."
-        ]
+        "status": "excluded",
+        "rule": "Do not decode ROI masks and do not emit bbox."
       }
     }
   },
@@ -149,11 +139,8 @@
       "mass shape",
       "mass margins",
       "assessment",
-      "pathology",
       "subtlety",
-      "image file path",
-      "cropped image file path",
-      "ROI mask file path"
+      "image file path"
     ],
     "metadata_workbook": [
       "Study Instance UID",
@@ -215,6 +202,19 @@
         "Patient Name"
       ],
       "reason": "These workbook fields are series-level collection labels such as a view or ROI series name; canonical patient_id comes from the CSV patient_id field."
+    },
+    "pathology": {
+      "columns": [
+        "pathology"
+      ],
+      "reason": "Explicitly excluded from canonical annotations; values remain accounted for in the source inventory but are not emitted."
+    },
+    "auxiliary_crop_and_mask_paths": {
+      "columns": [
+        "cropped image file path",
+        "ROI mask file path"
+      ],
+      "reason": "Auxiliary image references are reconciled during inventory but are not canonical labels. Mask decoding and bbox derivation are disabled, so these paths are not emitted."
     }
   },
   "conflict_and_grouping_policy": {
@@ -223,7 +223,6 @@
     "cross_view_policy": "Use the documented lesion identity only for finding_id. Do not merge CC and MLO source rows or select one view's values for the other view.",
     "cross_view_conflicts": {
       "assessment": 55,
-      "pathology": 6,
       "subtlety": 184,
       "calc_type": 51,
       "calc_distribution": 15,
@@ -232,7 +231,7 @@
     },
     "series_description_role_conflicts": {
       "roi_mask_paths_joining_to_cropped_images_description": 4,
-      "policy": "Preserve the CSV field designation and workbook description without silently rewriting either. Bounding-box derivation must stop for any instance whose local file role cannot be proven."
+      "policy": "Accounted for in source_inventory.json; crop and mask paths are excluded, and no bbox is derived."
     }
   },
   "reconciliation": {
@@ -243,6 +242,14 @@
     "metadata_series_referenced_by_csv": 6775,
     "metadata_series_orphans": 0,
     "csv_series_missing_from_metadata": 0,
+    "local_series_directories": 6775,
+    "local_dicom_files": 10239,
+    "local_series_missing_from_metadata": 0,
+    "metadata_series_missing_locally": 0,
+    "metadata_image_count_mismatches": 0,
+    "authoritative_full_images_with_exact_local_path": 3103,
+    "authoritative_full_images_missing_locally": 0,
+    "authoritative_full_images_ambiguous_locally": 0,
     "duplicate_full_image_groups": 293,
     "exact_duplicate_source_rows": 0,
     "train_test_patient_overlap": {
@@ -250,27 +257,11 @@
       "mass": 0
     }
   },
-  "unresolved_decisions": [
-    {
-      "id": "complete_source_image_root",
-      "question": "Which directory contains the complete downloaded CBIS-DDSM DICOM population?",
-      "impact": "The current dataset root has only 2 of 3103 authoritative full images, so canonical image_path values cannot all resolve and conversion cannot pass validation."
-    },
-    {
-      "id": "downloaded_instance_mapping",
-      "question": "What authoritative manifest or DICOM identifier mapping should relate downloaded filenames such as 1-1.dcm and 1-2.dcm to the CSV filenames 000000.dcm and 000001.dcm?",
-      "impact": "This is required to identify crop versus mask instances in 3464 shared two-image series without inference."
-    },
-    {
-      "id": "mask_to_bbox_approval",
-      "question": "Do you explicitly approve decoding the CSV-designated ROI mask DICOMs to derive tight axis-aligned bounding boxes after exact instance mapping and coordinate-space validation?",
-      "impact": "Without approval, findings will preserve mask references but will not contain derived bbox values."
-    }
-  ],
+  "unresolved_decisions": [],
   "implementation_gate": {
     "conversion_code_written": false,
     "annotation_jsonl_written": false,
-    "reason": "The selected skill requires explicit mapping approval, and the complete source-image population plus exact downloaded-instance mapping are unresolved."
+    "reason": "The selected skill requires explicit approval of this revised mapping before implementation."
   },
   "review": {
     "status": "pending",

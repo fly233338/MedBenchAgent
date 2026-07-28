@@ -1,8 +1,9 @@
 {
   "inventory_version": "1.0",
   "dataset": "CBIS-DDSM",
-  "source_root": "datasets/Mammography/CBIS",
-  "artifact_root": "datasets/Mammography/CBIS-normalized",
+  "annotation_source_root": "datasets/Mammography/CBIS",
+  "source_image_root": "E:\\BreastData\\Xray\\CBIS",
+  "artifact_root": "datasets/Normalized/CBIS",
   "source_files": [
     {
       "path": "calc_case_description_test_set.csv",
@@ -475,7 +476,7 @@
       "observations": [
         "Defines the semantic meaning of all CSV fields.",
         "States that PatientID + laterality + abnormality ID identifies a lesion entity.",
-        "States that masks may be used to generate bounding boxes; conversion approval is still required by the selected skill."
+        "States that masks may be used to generate bounding boxes; the approved target policy excludes mask decoding and bounding-box derivation."
       ]
     },
     {
@@ -673,54 +674,38 @@
     }
   },
   "source_image_inventory": {
-    "candidate_source_image_root": "datasets/Mammography/CBIS",
-    "local_dicom_files": 4,
-    "local_dicom_series": 3,
-    "series": [
-      {
-        "relative_directory": "dcm_example/1.3.6.1.4.1.9590.100.1.2.100018879311824535125115145152454291132",
-        "files": [
-          "1-1.dcm",
-          "1-2.dcm"
-        ],
-        "metadata_series_matches": 1,
-        "metadata_series_description": "ROI mask images",
-        "metadata_image_count": 2,
-        "csv_role": "one cropped image path and one ROI mask path from calc_case_description_train_set.csv row 888"
-      },
-      {
-        "relative_directory": "dcm_example/1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547",
-        "files": [
-          "1-1.dcm"
-        ],
-        "metadata_series_matches": 1,
-        "metadata_series_description": "full mammogram images",
-        "metadata_image_count": 1,
-        "csv_role": "image file path from calc_case_description_train_set.csv row 875"
-      },
-      {
-        "relative_directory": "dcm_example/1.3.6.1.4.1.9590.100.1.2.191134379411008523532752949014193653088",
-        "files": [
-          "1-1.dcm"
-        ],
-        "metadata_series_matches": 1,
-        "metadata_series_description": "full mammogram images",
-        "metadata_image_count": 1,
-        "csv_role": "image file path from calc_case_description_train_set.csv row 888"
-      }
-    ],
-    "exact_logical_csv_paths_resolving_under_candidate_root": {
-      "full_image_paths": 0,
-      "cropped_image_paths": 0,
-      "roi_mask_paths": 0
+    "source_image_root": "E:\\BreastData\\Xray\\CBIS",
+    "layout": "<Series Instance UID>/<downloaded instance filename>",
+    "series_directories": 6775,
+    "dicom_files": 10239,
+    "license_files": 6775,
+    "dicom_filename_counts": {
+      "1-1.dcm": 6775,
+      "1-2.dcm": 3464
     },
-    "full_image_series_with_a_local_example": 2,
-    "full_image_series_missing_locally": 3101,
-    "ambiguous_local_correspondence": [
-      "The downloaded examples use filenames such as 1-1.dcm and 1-2.dcm, while CSV paths use 000000.dcm and 000001.dcm.",
-      "For the two-file example series, the available workbook identifies only the series and does not map the downloaded filenames to the two original CSV filenames.",
-      "No DICOM parser is available in the bundled workspace or project environment, so header-level identifiers were not inspected during this read-only inventory."
-    ]
+    "series_dicom_count_distribution": {
+      "1": 3311,
+      "2": 3464
+    },
+    "metadata_series": 6775,
+    "directory_metadata_exact_matches": 6775,
+    "directory_series_missing_from_metadata": 0,
+    "metadata_series_missing_from_directory": 0,
+    "metadata_image_count_mismatches": 0,
+    "csv_referenced_series": 6775,
+    "referenced_series_exact_directory_matches": 6775,
+    "referenced_series_missing_directories": 0,
+    "authoritative_full_image_series": 3103,
+    "full_image_series_with_exactly_one_dicom": 3103,
+    "full_image_series_missing": 0,
+    "full_image_series_with_multiple_dicoms": 0,
+    "unique_full_image_relative_paths": 3103,
+    "image_path_rule": "<full-image Series Instance UID>/1-1.dcm",
+    "representative_full_image_relative_paths": [
+      "1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547/1-1.dcm",
+      "1.3.6.1.4.1.9590.100.1.2.100522099512256189513864912954167862869/1-1.dcm"
+    ],
+    "inspection_scope": "Directory names, file names, extensions, counts, and source-table joins were inspected without decoding DICOM pixels."
   },
   "consistency_and_conflicts": {
     "full_image_groups_with_conflicting_patient_id": 0,
@@ -746,10 +731,12 @@
     },
     "interpretation": "Cross-view values must remain attached to their source image-view row; they cannot be collapsed into one lesion-level value without discarding source-supported conflicts."
   },
+  "accounted_source_issues": [
+    "Four CSV ROI mask references join to metadata rows described as cropped images; both crop and mask references are excluded from canonical annotations because bounding-box derivation is disabled.",
+    "Downloaded two-instance series use 1-1.dcm and 1-2.dcm rather than the CSV logical filenames; exact crop-versus-mask instance correspondence is unnecessary because those auxiliary paths are excluded.",
+    "Pathology is present and non-null in every CSV source row but is intentionally excluded from canonical annotations.",
+    "DICOM pixels were not decoded, and no bounding boxes were derived."
+  ],
   "unresolved_inventory_issues": [
-    "The complete authoritative full-image population is not present under the candidate source-image root.",
-    "The current local download naming cannot be mapped exactly to original CSV filenames for multi-image series using the supplied files alone.",
-    "Four CSV ROI mask references join to metadata rows described as cropped images; the CSV field role and workbook series description disagree.",
-    "Mask pixels were not decoded, and no bounding boxes were derived during inventory."
   ]
 }
