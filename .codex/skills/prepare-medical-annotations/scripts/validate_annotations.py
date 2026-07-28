@@ -106,11 +106,7 @@ def main() -> None:
     parser.add_argument(
         "--schema",
         type=Path,
-        default=Path(__file__).resolve().parents[4]
-        / "src"
-        / "medbenchagent"
-        / "schemas"
-        / "annotation.v1.schema.json",
+        default=Path(__file__).resolve().parents[1] / "annotation.v1.schema.json",
     )
     args = parser.parse_args()
     print(
