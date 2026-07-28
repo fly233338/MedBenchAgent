@@ -100,8 +100,8 @@
     "unresolved_decisions": []
   },
   "review": {
-    "status": "pending",
+    "status": "approved",
     "revision": 2,
-    "approved_mapping_sha256": null
+    "approved_mapping_sha256": "818bf44d94826249996e94d54c3fcc9570f59ea21c85286bc4fa1677f4f9fa14"
   }
 }

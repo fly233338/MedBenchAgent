@@ -111,26 +111,23 @@
         "id": "cross_validation_metadata",
         "resolution": "Exclude all 5-fold and 10-fold experimental split metadata from benchmark annotations.",
         "confirmed_by_user": true
-      }
-    ],
-    "unresolved_decisions": [
-      {
-        "id": "bbox_xyxy_conversion_approval",
-        "question": "Approve preserving bbox_source and adding the deterministically converted zero-based inclusive xyxy bbox array?",
-        "proposed_resolution": "Yes. Apply [x - 1, y - 1, x + width - 1, y + height - 1] to every source BBOX.",
-        "blocks_conversion": true
       },
       {
-        "id": "source_height_mismatch_approval",
-        "question": "Approve preserving the four source Height values that differ from PNG height while recording the discrepancy?",
-        "proposed_resolution": "Yes. Preserve source table values and do not add inferred PNG metadata.",
-        "blocks_conversion": true
+        "id": "bbox_xyxy_conversion",
+        "resolution": "Preserve bbox_source and add zero-based inclusive xyxy using [x - 1, y - 1, x + width - 1, y + height - 1].",
+        "confirmed_by_user": true
+      },
+      {
+        "id": "source_height_mismatch",
+        "resolution": "Preserve the four differing source Height values, record the discrepancy, and do not add inferred PNG metadata.",
+        "confirmed_by_user": true
       }
-    ]
+    ],
+    "unresolved_decisions": []
   },
   "review": {
-    "status": "pending",
+    "status": "approved",
     "revision": 2,
-    "approved_mapping_sha256": null
+    "approved_mapping_sha256": "bb08b8eedc916deeb056f3f47e7016e4169dc797b06b2e60e5b47eadd05ff9c3"
   }
 }
