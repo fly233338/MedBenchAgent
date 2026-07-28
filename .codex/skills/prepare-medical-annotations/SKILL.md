@@ -38,22 +38,35 @@ Record:
 - Source inputs and the authoritative image population.
 - Stable output ordering and deterministic `image_id` and `image_path` derivation.
 - Join keys, measured cardinalities, and source-row-to-annotation mappings.
-- The provenance of modality, anatomy, and other included annotation fields.
+- `modality` and `anatomy` mappings. Both fields are optional; populate them only from source annotations or dataset documentation that clearly applies to the relevant images. Record their provenance and scope, or the reason each field is omitted.
 - Included fields, excluded fields with reasons, and preservation of source value types.
 - Missing, orphaned, duplicate, and conflicting records.
 - Expected source and output counts and every unresolved decision.
 
 Do not flatten one-to-many annotations into duplicate image records, silently discard unmatched annotations, resolve conflicts by table order, or combine fields from separate source rows without source support. Stop when identity, joins, grouping, conflicts, or output meaning remain materially ambiguous.
 
-### 3. Implement deterministic conversion
+### 3. Review and confirm the mapping
 
-Write `<artifact_dir>/scripts/prepare_annotations.py` with all dataset-specific logic documented in the conversion plan.
+After exploration, present `source_inventory.json`, `conversion_plan.json`, and a concise review summary covering:
+
+- The authoritative image population, expected count, and source-row granularity.
+- Join keys and cardinalities, identifier and path derivation, grouping, and ordering.
+- Annotation mappings, including `modality` and `anatomy` provenance or omission.
+- Excluded fields, conflicts, unmatched records, and unresolved decisions.
+
+Set `review.status` in `conversion_plan.json` to `pending`. Do not write conversion code or `annotation.jsonl` until the user explicitly approves the mapping. Treat silence or an ambiguous response as unapproved.
+
+Apply user feedback as structured changes to `conversion_plan.json`, show the revised decisions, and request approval again. On approval, set `review.status` to `approved` and `review.approved_mapping_sha256` to the SHA-256 of the canonical mapping content excluding review metadata. Do not store the conversation or hidden reasoning.
+
+### 4. Implement deterministic conversion
+
+Write `<artifact_dir>/scripts/prepare_annotations.py` with all dataset-specific logic documented in the approved conversion plan.
 
 Require explicit input and output paths. Read sources without modifying them, group all annotations belonging to an image, and emit exactly one canonical record per authoritative image. Preserve source values, JSON-compatible types, and fields originating from the same source row. Use stable record and array-item ordering.
 
 Write to a temporary file and replace `annotation.jsonl` only after complete success. Keep every `image_path` relative to the source-image root. Do not decode images or add PNG metadata during this stage.
 
-### 4. Validate and report
+### 5. Validate and report
 
 Run the generated converter twice with unchanged inputs and compare SHA-256 hashes. Validate the result with this skill's `scripts/validate_annotations.py` and its local `annotation.v1.schema.json`.
 
