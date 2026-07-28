@@ -1,36 +1,59 @@
 ---
 name: prepare-medical-images
-description: Convert only the source images referenced by a canonical annotation.jsonl into deterministic 8-bit PNGs and an exact verified image_manifest.jsonl. Use after annotation preparation when MedBenchAgent image assets must be materialized.
+description: Convert only the source images referenced by a confirmed canonical annotation.jsonl into deterministic 8-bit grayscale PNGs and an exact image_manifest.jsonl. Use after annotation preparation when a dataset-specific conversion script and benchmark image assets must be created.
 ---
 
 # Prepare Medical Images
 
-Consume a confirmed `annotation.jsonl`. Do not reinterpret annotations, discover additional images, or use fuzzy path matching.
+Keep source images and `annotation.jsonl` read-only. Do not reinterpret annotations, discover additional images, or use fuzzy path matching.
 
 ## Inputs
 
-Obtain the canonical annotation file, source-image root, and a processed-image directory inside the annotation artifact directory.
+Obtain the confirmed `annotation.jsonl`, source-image root, and an image output directory inside the annotation artifact directory.
+
+Read `references/medical_image_conversion.py` in this skill directory before exploring formats or writing conversion code. Treat it as a reference implementation: copy only the handlers needed by the supplied images into the generated script. Resolve skill resources relative to this `SKILL.md`; do not assume a repository layout or installation path.
 
 ## Workflow
 
-Run the bundled orchestrator:
+### 1. Explore the referenced images
 
-```text
-uv run python .codex/skills/prepare-medical-images/scripts/prepare_images.py --annotation <artifact/annotation.jsonl> --source-image-root <source> --processed-image-dir <artifact/images>
+Inspect annotation rows in order. Require unique, non-empty `image_id` values and unique, non-escaping relative `image_path` values. Resolve each path exactly beneath the source root and inspect only those files.
+
+Determine formats by content and identify missing, unsupported, multi-frame, volumetric, whole-slide, multi-page, or pyramidal inputs. Accept only files that can be represented as one two-dimensional grayscale image. Do not infer findings or select a slice. If required Python packages are unavailable, report them and let the user prepare the environment.
+
+### 2. Review the conversion plan
+
+Present a concise summary of:
+
+- Referenced image count, detected formats, and unsupported or unresolved files.
+- Exact source and output roots and the deterministic PNG naming rule.
+- Format-specific display transforms and the annotation-to-PNG mapping.
+- The fixed output policy: 8-bit grayscale PNG, original dimensions, and no resize, crop, rotation, flip, or other spatial transform.
+
+Do not write the dataset-specific script or convert images until the user explicitly approves the plan. Apply feedback to the plan, show the changed decisions, and request approval again. Stop rather than silently converting genuinely color images to grayscale.
+
+### 3. Write and run the converter
+
+Write `<artifact_dir>/scripts/prepare_images.py` with explicit annotation, source-root, image-output, and manifest paths. Copy the required pixel-conversion functions from the reference file and implement the dataset-specific orchestration in this generated script.
+
+Process only annotation-referenced files and preserve annotation order. Generate one PNG per `image_id` through a staging directory, publish outputs only after the full conversion succeeds, and refuse to overwrite a different non-empty output.
+
+Write `image_manifest.jsonl` beside `annotation.jsonl` with exactly one row per annotation:
+
+```json
+{
+  "image_id": "image-001",
+  "png_path": "images/image-001.png",
+  "width": 1024,
+  "height": 1024,
+  "sha256": "64 lowercase hexadecimal characters"
+}
 ```
 
-It resolves each `annotation.image_path` beneath the source root, converts only those files in annotation order, builds the exact `image_id` mapping, and verifies every output PNG. Conversion is locked and deterministic; do not request resize, crop, rotation, flip, or another spatial transform.
+Keep `png_path` relative to the manifest directory. The converted PNG files and `image_manifest.jsonl` are the only dataset outputs; the generated script is retained only for reproducibility.
 
-## Output
+### 4. Validate
 
-```text
-<artifact_dir>/
-├── annotation.jsonl
-├── image_manifest.jsonl
-├── image_preparation_report.json
-└── <processed_images>/
-```
+Verify that every manifest row matches its annotation `image_id`, resolves to a unique PNG beneath the artifact directory, and has correct dimensions and SHA-256. Open every PNG and require format `PNG`, mode `L`, positive dimensions, and non-constant pixels.
 
-Each manifest row contains `image_id`, source-relative path, artifact-relative PNG path, dimensions, `L` or `RGB` mode, SHA-256, conversion status, and spatial-transform metadata.
-
-Finish when every annotation maps to one existing verified PNG, no unreferenced source image was converted, all paths remain inside their declared roots, and unchanged reruns are byte-identical.
+Run the generated script again with unchanged inputs. Finish only when it produces byte-identical PNG and manifest bytes, no unreferenced source image was converted, and all source files remain unchanged.
