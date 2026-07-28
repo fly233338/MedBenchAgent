@@ -1,0 +1,135 @@
+{
+  "inventory_version": "1.0",
+  "dataset_id": "BrEaST",
+  "source_root": "datasets/US/BrEaST",
+  "source_files": [
+    {
+      "path": "BrEaST-Lesions-USG-clinical-data-Dec-15-2023.xlsx",
+      "kind": "xlsx",
+      "size_bytes": 40173,
+      "sheets": [
+        {
+          "name": "BrEaST-Lesions-USG clinical dat",
+          "row_count": 256,
+          "row_granularity": "one ultrasound image and its case-level clinical/lesion annotation",
+          "columns": {
+            "CaseID": {"types": ["integer"], "null_count": 0, "unique_count": 256},
+            "Image_filename": {"types": ["string"], "null_count": 0, "unique_count": 256},
+            "Mask_tumor_filename": {"types": ["string"], "null_count": 4, "unique_count": 252},
+            "Mask_other_filename": {"types": ["string"], "null_count": 249, "unique_count": 7},
+            "Pixel_size": {"types": ["number"], "null_count": 0, "unique_count": 28},
+            "Age": {"types": ["integer", "string"], "null_count": 0, "unique_count": 62},
+            "Tissue_composition": {"types": ["string"], "null_count": 0, "unique_count": 9},
+            "Signs": {"types": ["string"], "null_count": 0, "unique_count": 13},
+            "Symptoms": {"types": ["string"], "null_count": 0, "unique_count": 10},
+            "Shape": {"types": ["string"], "null_count": 0, "unique_count": 4},
+            "Margin": {"types": ["string"], "null_count": 0, "unique_count": 15},
+            "Echogenicity": {"types": ["string"], "null_count": 0, "unique_count": 7},
+            "Posterior_features": {"types": ["string"], "null_count": 0, "unique_count": 5},
+            "Halo": {"types": ["string"], "null_count": 0, "unique_count": 3},
+            "Calcifications": {"types": ["string"], "null_count": 0, "unique_count": 5},
+            "Skin_thickening": {"types": ["string"], "null_count": 0, "unique_count": 2},
+            "Interpretation": {"types": ["string"], "null_count": 0, "unique_count": 81},
+            "BIRADS": {"types": ["integer", "string"], "null_count": 0, "unique_count": 7},
+            "Verification": {"types": ["string"], "null_count": 0, "unique_count": 3},
+            "Diagnosis": {"types": ["string"], "null_count": 0, "unique_count": 45},
+            "Classification": {"types": ["string"], "null_count": 0, "unique_count": 3}
+          },
+          "representative_values": {
+            "Image_filename": ["case001.png"],
+            "Mask_other_filename": ["case022_other1.png&case022_other2.png"],
+            "Age": [57, "not available"],
+            "BIRADS": [2, "4a"],
+            "Classification": ["benign", "malignant", "normal"]
+          }
+        },
+        {
+          "name": "Data Dictionary",
+          "row_count": 21,
+          "row_granularity": "one source-column definition",
+          "columns": {
+            "type": {"types": ["string"], "null_count": 0, "unique_count": 21},
+            "description": {"types": ["string"], "null_count": 6, "unique_count": 15}
+          },
+          "representative_values": {
+            "type": ["Case_ID", "Image_filename", "Mask_tumor_filename"],
+            "description": [
+              "unique identifier",
+              "filename(s) of ultrasound b-mode image(s)"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "path": "BrEaST-Lesions_USG-images_and_masks-Dec-15-2023/BrEaST-Lesions_USG-images_and_masks/*.png",
+      "kind": "mixed_image_and_mask_population",
+      "file_count": 522,
+      "duplicate_basenames": 0,
+      "observed_groups": {
+        "source_images_referenced_by_Image_filename": 256,
+        "tumor_masks_referenced_by_Mask_tumor_filename": 252,
+        "other_masks_obtained_by_ampersand_splitting_Mask_other_filename": 14
+      }
+    }
+  ],
+  "candidate_identifiers_and_paths": {
+    "image_identifier": "Image_filename (unique); filename stem is also unique",
+    "case_identifier": "CaseID (unique integer described only as a unique identifier)",
+    "patient_identifier": "not present",
+    "study_identifier": "not present",
+    "image_path": "Image_filename beneath the nested PNG directory",
+    "mask_paths": [
+      "Mask_tumor_filename beneath the nested PNG directory",
+      "ampersand-delimited Mask_other_filename entries beneath the nested PNG directory"
+    ]
+  },
+  "duplicate_keys": {
+    "CaseID": 0,
+    "Image_filename": 0,
+    "all_referenced_png_basenames": 0
+  },
+  "joins": [
+    {
+      "left": "clinical sheet.Image_filename",
+      "right": "PNG basename",
+      "cardinality": "one-to-one",
+      "left_count": 256,
+      "matched_count": 256,
+      "missing_count": 0,
+      "ambiguous_count": 0
+    },
+    {
+      "left": "non-null clinical sheet.Mask_tumor_filename",
+      "right": "PNG basename",
+      "cardinality": "one-to-one",
+      "left_count": 252,
+      "matched_count": 252,
+      "missing_count": 0,
+      "ambiguous_count": 0
+    },
+    {
+      "left": "Mask_other_filename split on literal '&'",
+      "right": "PNG basename",
+      "cardinality": "one-to-one after splitting; zero-to-four masks per clinical row",
+      "left_count": 14,
+      "matched_count": 14,
+      "missing_count": 0,
+      "ambiguous_count": 0
+    }
+  ],
+  "path_reconciliation": {
+    "referenced_png_count": 522,
+    "existing_png_count": 522,
+    "exact_matches": 522,
+    "missing_references": [],
+    "orphan_files": [],
+    "ambiguous_matches": []
+  },
+  "observations": [
+    "The four rows without a tumor mask are cases 45, 61, 209, and 213; all four have source Classification 'normal'.",
+    "Seven rows contain Mask_other_filename values, representing fourteen mask filenames after literal ampersand splitting.",
+    "Age and BIRADS contain mixed JSON-compatible source types and must not be coerced to a single type.",
+    "The workbook supplies masks but no bounding-box column."
+  ]
+}

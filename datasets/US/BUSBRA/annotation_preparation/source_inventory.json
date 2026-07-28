@@ -1,0 +1,180 @@
+{
+  "inventory_version": "1.0",
+  "dataset_id": "BUSBRA",
+  "source_root": "datasets/US/BUSBRA",
+  "source_files": [
+    {
+      "path": "bus_data.csv",
+      "kind": "csv",
+      "size_bytes": 180163,
+      "row_count": 1875,
+      "row_granularity": "one ultrasound image and its image-/case-level lesion annotation",
+      "columns": {
+        "ID": {"types": ["string"], "null_count": 0, "unique_count": 1875},
+        "Case": {"types": ["integer"], "null_count": 0, "unique_count": 1064},
+        "Histology": {"types": ["string"], "null_count": 0, "unique_count": 28},
+        "Pathology": {"types": ["string"], "null_count": 0, "unique_count": 2},
+        "BIRADS": {"types": ["integer"], "null_count": 0, "unique_count": 4},
+        "Device": {"types": ["string"], "null_count": 0, "unique_count": 4},
+        "Width": {"types": ["integer"], "null_count": 0, "unique_count": 117},
+        "Height": {"types": ["integer"], "null_count": 0, "unique_count": 135},
+        "Side": {"types": ["string"], "null_count": 0, "unique_count": 3},
+        "BBOX": {"types": ["string"], "null_count": 0, "unique_count": 1875}
+      },
+      "representative_values": {
+        "ID": ["bus_0001-l", "bus_0001-r"],
+        "Pathology": ["benign", "malignant"],
+        "BIRADS": [2, 3, 4, 5],
+        "Side": ["left", "right", "single"],
+        "BBOX": ["[91,24,103,79]"]
+      }
+    },
+    {
+      "path": "5-fold-cv.csv",
+      "kind": "csv",
+      "size_bytes": 63756,
+      "row_count": 1875,
+      "row_granularity": "one image ID with duplicate pathology and five-fold experimental assignment metadata",
+      "columns": {
+        "ID": {"types": ["string"], "null_count": 0, "unique_count": 1875},
+        "Pathology": {"types": ["string"], "null_count": 0, "unique_count": 2},
+        "kFold": {"types": ["integer"], "null_count": 0, "unique_count": 5},
+        "valid_1": {"types": ["number"], "null_count": 376, "unique_count": 2},
+        "valid_2": {"types": ["number"], "null_count": 385, "unique_count": 2},
+        "valid_3": {"types": ["number"], "null_count": 366, "unique_count": 2},
+        "valid_4": {"types": ["number"], "null_count": 365, "unique_count": 2},
+        "valid_5": {"types": ["number"], "null_count": 383, "unique_count": 2}
+      },
+      "observations": [
+        "ID is unique and its set exactly equals bus_data.csv.ID.",
+        "Pathology agrees with bus_data.csv for all 1,875 joined rows.",
+        "For every row, only valid_<kFold> is null; all other valid_* values are numeric 0 or 1."
+      ]
+    },
+    {
+      "path": "10-fold-cv.csv",
+      "kind": "csv",
+      "size_bytes": 82728,
+      "row_count": 1875,
+      "row_granularity": "one image ID with duplicate pathology and ten-fold experimental assignment metadata",
+      "columns": {
+        "ID": {"types": ["string"], "null_count": 0, "unique_count": 1875},
+        "Pathology": {"types": ["string"], "null_count": 0, "unique_count": 2},
+        "kFold": {"types": ["integer"], "null_count": 0, "unique_count": 10},
+        "valid_1": {"types": ["number"], "null_count": 193, "unique_count": 2},
+        "valid_2": {"types": ["number"], "null_count": 193, "unique_count": 2},
+        "valid_3": {"types": ["number"], "null_count": 186, "unique_count": 2},
+        "valid_4": {"types": ["number"], "null_count": 183, "unique_count": 2},
+        "valid_5": {"types": ["number"], "null_count": 184, "unique_count": 2},
+        "valid_6": {"types": ["number"], "null_count": 185, "unique_count": 2},
+        "valid_7": {"types": ["number"], "null_count": 189, "unique_count": 2},
+        "valid_8": {"types": ["number"], "null_count": 193, "unique_count": 2},
+        "valid_9": {"types": ["number"], "null_count": 188, "unique_count": 2},
+        "valid_10": {"types": ["number"], "null_count": 181, "unique_count": 2}
+      },
+      "observations": [
+        "ID is unique and its set exactly equals bus_data.csv.ID.",
+        "Pathology agrees with bus_data.csv for all 1,875 joined rows.",
+        "For every row, only valid_<kFold> is null; all other valid_* values are numeric 0 or 1."
+      ]
+    },
+    {
+      "path": "LICENSE.txt",
+      "kind": "dataset_document",
+      "size_bytes": 1338,
+      "line_count": 12,
+      "observed_scope": "license and citation requirement for BUS-BRA, whose cited title identifies it as a breast ultrasound dataset"
+    },
+    {
+      "path": "Images/*.png",
+      "kind": "authoritative_image_files",
+      "file_count": 1875,
+      "duplicate_basenames": 0
+    },
+    {
+      "path": "Masks/*.png",
+      "kind": "mask_files",
+      "file_count": 1875,
+      "duplicate_basenames": 0
+    }
+  ],
+  "candidate_identifiers_and_paths": {
+    "image_identifier": "bus_data.csv.ID (unique and equal to the Images filename stem)",
+    "case_identifier": "bus_data.csv.Case (1,064 values; one or two image rows per case)",
+    "patient_identifier": "not present",
+    "study_identifier": "not present",
+    "image_path": "Images/<ID>.png",
+    "mask_path": "Masks/<ID with leading bus_ replaced by mask_>.png"
+  },
+  "duplicate_keys": {
+    "bus_data.ID": 0,
+    "5-fold-cv.ID": 0,
+    "10-fold-cv.ID": 0,
+    "bus_data.Case_repeated_rows": 811
+  },
+  "joins": [
+    {
+      "left": "bus_data.ID",
+      "right": "Images filename stem",
+      "cardinality": "one-to-one",
+      "left_count": 1875,
+      "matched_count": 1875,
+      "missing_count": 0,
+      "ambiguous_count": 0
+    },
+    {
+      "left": "bus_data.ID after bus_ to mask_ prefix substitution",
+      "right": "Masks filename stem",
+      "cardinality": "one-to-one",
+      "left_count": 1875,
+      "matched_count": 1875,
+      "missing_count": 0,
+      "ambiguous_count": 0
+    },
+    {
+      "left": "bus_data.ID",
+      "right": "5-fold-cv.ID",
+      "cardinality": "one-to-one",
+      "left_count": 1875,
+      "matched_count": 1875,
+      "missing_count": 0,
+      "ambiguous_count": 0
+    },
+    {
+      "left": "bus_data.ID",
+      "right": "10-fold-cv.ID",
+      "cardinality": "one-to-one",
+      "left_count": 1875,
+      "matched_count": 1875,
+      "missing_count": 0,
+      "ambiguous_count": 0
+    }
+  ],
+  "case_cardinality": {
+    "case_count": 1064,
+    "cases_with_one_image": 253,
+    "cases_with_two_images": 811,
+    "case_level_Histology_conflicts": 0,
+    "case_level_Pathology_conflicts": 0,
+    "case_level_Device_conflicts": 0,
+    "case_level_BIRADS_differences": 1,
+    "BIRADS_difference_detail": "Case 856 has BIRADS 4 on bus_0856-l and BIRADS 5 on bus_0856-r; both source rows remain image-level records."
+  },
+  "path_reconciliation": {
+    "authoritative_image_count": 1875,
+    "exact_image_matches": 1875,
+    "exact_mask_matches": 1875,
+    "missing_image_references": [],
+    "missing_mask_references": [],
+    "orphan_images": [],
+    "orphan_masks": [],
+    "ambiguous_matches": []
+  },
+  "observations": [
+    "All IDs match bus_<four digits>-<l|r|s>; the numeric portion equals Case.",
+    "ID suffix l/r/s agrees with Side left/right/single for every row.",
+    "All BBOX source values are unique strings matching four comma-separated non-negative integers in square brackets.",
+    "No local data dictionary defines whether BBOX is xyxy, xywh, or another coordinate convention.",
+    "Image dimensions and masks were not decoded during annotation inventory."
+  ]
+}
