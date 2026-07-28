@@ -43,6 +43,8 @@ Record:
 - Missing, orphaned, duplicate, and conflicting records.
 - Expected source and output counts and every unresolved decision.
 
+When source annotations provide a mask but no bounding box, ask whether decoding the mask image is permitted to derive the tight axis-aligned bounding box enclosing its nonzero pixels; do not decode the mask or add the box without explicit approval.
+
 Do not flatten one-to-many annotations into duplicate image records, silently discard unmatched annotations, resolve conflicts by table order, or combine fields from separate source rows without source support. Stop when identity, joins, grouping, conflicts, or output meaning remain materially ambiguous.
 
 ### 3. Review and confirm the mapping
@@ -64,7 +66,7 @@ Write `<artifact_dir>/scripts/prepare_annotations.py` with all dataset-specific 
 
 Require explicit input and output paths. Read sources without modifying them, group all annotations belonging to an image, and emit exactly one canonical record per authoritative image. Preserve source values, JSON-compatible types, and fields originating from the same source row. Use stable record and array-item ordering.
 
-Write to a temporary file and replace `annotation.jsonl` only after complete success. Keep every `image_path` relative to the source-image root. Do not decode images or add PNG metadata during this stage.
+Write to a temporary file and replace `annotation.jsonl` only after complete success. Keep every `image_path` relative to the source-image root. Except for an approved mask-to-bbox derivation, do not decode images or add PNG metadata during this stage.
 
 ### 5. Validate and report
 
