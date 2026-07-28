@@ -130,12 +130,12 @@ but skips RAG design and generation.
 ## Medical references
 
 The workflow always scans the repository `materials/` directory after sample-count confirmation.
-Store extractable PDFs in one of these top-level categories: `clinical_guidelines`,
-`imaging_reporting_and_classification`, `imaging_acquisition_and_quality`,
-`consensus_statements`, `evidence_reviews`, or `regulations_and_policy`. The user is shown
-every categorized PDF and can select one or more files in natural language. DeepSeek maps that
-response to exact relative paths, code validates the selection, and only the selected PDFs enter
-RAG retrieval, indexing, and citations. PDFs outside these categories are configuration errors.
+Store extractable PDFs under any meaningful first-level category directory, for example
+`Standard` or `Guideline`. The directory name is used as the material category and displayed
+to the user. The user is shown every categorized PDF and can select one or more files in natural
+language. DeepSeek maps that response to exact relative paths, code validates the selection, and
+only the selected PDFs enter RAG retrieval, indexing, and citations. PDFs placed directly under
+`materials/` are invalid because they have no category directory.
 
 ## Configuration
 

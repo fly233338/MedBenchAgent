@@ -354,9 +354,9 @@ def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_ch
 ) -> None:
     materials = [
         {
-            "category": "imaging_reporting_and_classification",
-            "category_label": "影像报告与分类标准",
-            "file": "imaging_reporting_and_classification/guide.pdf",
+            "category": "Standard",
+            "category_label": "Standard",
+            "file": "Standard/guide.pdf",
         }
     ]
     monkeypatch.setattr(capability_agent, "discover_medical_materials", lambda _root: materials)
@@ -653,7 +653,7 @@ def test_rag_subgraph_persists_design_and_checkpoints_streamed_progress(
             {
                 "benchmark_info": {"language": "en"},
                 "working_blueprint_path": str(path),
-                "selected_material_files": ["imaging_reporting_and_classification/guide.pdf"],
+                "selected_material_files": ["Standard/guide.pdf"],
                 "dataset_profile": {"fields": {}},
             },
             config,

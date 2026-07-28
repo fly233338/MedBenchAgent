@@ -17,14 +17,6 @@ from medbenchagent.rag.reranker import score_pairs
 from medbenchagent.settings import get_settings
 
 CACHE_SCHEMA_VERSION = "2"
-MATERIAL_CATEGORIES = {
-    "clinical_guidelines": "临床指南",
-    "imaging_reporting_and_classification": "影像报告与分类标准",
-    "imaging_acquisition_and_quality": "影像采集与质量控制",
-    "consensus_statements": "专家共识",
-    "evidence_reviews": "证据综述",
-    "regulations_and_policy": "法规与政策",
-}
 RAG_DESIGN_FIELDS = {
     "question_templates",
     "options",
@@ -54,7 +46,7 @@ class QuestionDesignError(ValueError):
 
 
 def discover_medical_materials(materials_root: str | Path) -> list[dict[str, str]]:
-    """List categorized PDF references relative to the fixed materials directory."""
+    """List PDF references using their first-level directory as the category."""
     root = Path(materials_root).expanduser().resolve()
     if not root.is_dir():
         raise RagUnavailable(f"Medical-material directory does not exist: {root}")
@@ -62,14 +54,14 @@ def discover_medical_materials(materials_root: str | Path) -> list[dict[str, str
     for pdf in sorted(path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"):
         relative_path = pdf.relative_to(root)
         category = relative_path.parts[0] if len(relative_path.parts) > 1 else ""
-        if category not in MATERIAL_CATEGORIES:
+        if not category:
             raise RagUnavailable(
-                f"Medical PDF must be stored in a supported category directory: {relative_path.as_posix()}"
+                f"Medical PDF must be stored in a category directory: {relative_path.as_posix()}"
             )
         materials.append(
             {
                 "category": category,
-                "category_label": MATERIAL_CATEGORIES[category],
+                "category_label": category,
                 "file": relative_path.as_posix(),
             }
         )

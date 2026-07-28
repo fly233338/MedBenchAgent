@@ -129,8 +129,8 @@ def test_design_task_rejects_unsafe_field_value_requests(
 def test_discover_and_extract_selected_categorized_medical_pdfs(
     tmp_path: Path, monkeypatch
 ) -> None:
-    selected = tmp_path / "imaging_reporting_and_classification" / "selected.pdf"
-    unselected = tmp_path / "clinical_guidelines" / "unselected.pdf"
+    selected = tmp_path / "Standard" / "selected.pdf"
+    unselected = tmp_path / "Guideline" / "unselected.pdf"
     selected.parent.mkdir()
     unselected.parent.mkdir()
     selected.write_bytes(b"selected")
@@ -144,41 +144,41 @@ def test_discover_and_extract_selected_categorized_medical_pdfs(
     materials = pdf_rag.discover_medical_materials(tmp_path)
     fingerprint, chunks = pdf_rag.extract_pdf_chunks(
         tmp_path,
-        ["imaging_reporting_and_classification/selected.pdf"],
+        ["Standard/selected.pdf"],
         chunk_size=120,
         overlap=20,
     )
     unselected.write_bytes(b"changed unselected content")
     unchanged_fingerprint, _ = pdf_rag.extract_pdf_chunks(
         tmp_path,
-        ["imaging_reporting_and_classification/selected.pdf"],
+        ["Standard/selected.pdf"],
         chunk_size=120,
         overlap=20,
     )
 
     assert materials == [
         {
-            "category": "clinical_guidelines",
-            "category_label": "临床指南",
-            "file": "clinical_guidelines/unselected.pdf",
+            "category": "Guideline",
+            "category_label": "Guideline",
+            "file": "Guideline/unselected.pdf",
         },
         {
-            "category": "imaging_reporting_and_classification",
-            "category_label": "影像报告与分类标准",
-            "file": "imaging_reporting_and_classification/selected.pdf",
+            "category": "Standard",
+            "category_label": "Standard",
+            "file": "Standard/selected.pdf",
         },
     ]
     assert len(fingerprint) == 64
     assert unchanged_fingerprint == fingerprint
     assert {chunk["pdf"] for chunk in chunks} == {
-        "imaging_reporting_and_classification/selected.pdf"
+        "Standard/selected.pdf"
     }
 
 
 def test_discover_medical_materials_rejects_uncategorized_pdf(tmp_path: Path) -> None:
     (tmp_path / "guide.pdf").write_bytes(b"guide")
 
-    with pytest.raises(pdf_rag.RagUnavailable, match="supported category"):
+    with pytest.raises(pdf_rag.RagUnavailable, match="category directory"):
         pdf_rag.discover_medical_materials(tmp_path)
 
 
