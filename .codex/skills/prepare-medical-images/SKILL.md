@@ -30,13 +30,15 @@ Present a concise summary of:
 - Format-specific display transforms and the annotation-to-PNG mapping.
 - The fixed output policy: 8-bit grayscale PNG, original dimensions, and no resize, crop, rotation, flip, or other spatial transform.
 
+If a referenced source is already a valid 8-bit grayscale PNG, ask whether to reference it unchanged in place or copy its bytes unchanged into the image output directory. Allow in-place use only when the file is beneath the artifact directory and has a safe artifact-relative `png_path`; otherwise require copying. Do not re-encode it in either case.
+
 Do not write the dataset-specific script or convert images until the user explicitly approves the plan. Apply feedback to the plan, show the changed decisions, and request approval again. Stop rather than silently converting genuinely color images to grayscale.
 
 ### 3. Write and run the converter
 
 Write `<artifact_dir>/scripts/prepare_images.py` with explicit annotation, source-root, image-output, and manifest paths. Copy the required pixel-conversion functions from the reference file and implement the dataset-specific orchestration in this generated script.
 
-Process only annotation-referenced files and preserve annotation order. Generate one PNG per `image_id` through a staging directory, publish outputs only after the full conversion succeeds, and refuse to overwrite a different non-empty output.
+Process only annotation-referenced files and preserve annotation order. Ensure one PNG per `image_id`; create converted or copied outputs through a staging directory, publish them only after the full preparation succeeds, and refuse to overwrite a different non-empty output.
 
 Write `image_manifest.jsonl` beside `annotation.jsonl` with exactly one row per annotation:
 
