@@ -1,0 +1,755 @@
+{
+  "inventory_version": "1.0",
+  "dataset": "CBIS-DDSM",
+  "source_root": "datasets/Mammography/CBIS",
+  "artifact_root": "datasets/Mammography/CBIS-normalized",
+  "source_files": [
+    {
+      "path": "calc_case_description_test_set.csv",
+      "kind": "csv",
+      "row_granularity": "one calcification finding on one mammography view",
+      "row_count": 326,
+      "columns": [
+        "patient_id",
+        "breast density",
+        "left or right breast",
+        "image view",
+        "abnormality id",
+        "abnormality type",
+        "calc type",
+        "calc distribution",
+        "assessment",
+        "pathology",
+        "subtlety",
+        "image file path",
+        "cropped image file path",
+        "ROI mask file path"
+      ],
+      "inferred_types": {
+        "patient_id": "string",
+        "breast density": "integer",
+        "left or right breast": "string",
+        "image view": "string",
+        "abnormality id": "integer",
+        "abnormality type": "string",
+        "calc type": "string",
+        "calc distribution": "string",
+        "assessment": "integer",
+        "pathology": "string",
+        "subtlety": "integer",
+        "image file path": "string",
+        "cropped image file path": "string",
+        "ROI mask file path": "string"
+      },
+      "null_counts": {
+        "patient_id": 0,
+        "breast density": 0,
+        "left or right breast": 0,
+        "image view": 0,
+        "abnormality id": 0,
+        "abnormality type": 0,
+        "calc type": 4,
+        "calc distribution": 63,
+        "assessment": 0,
+        "pathology": 0,
+        "subtlety": 0,
+        "image file path": 0,
+        "cropped image file path": 0,
+        "ROI mask file path": 0
+      },
+      "unique_value_counts": {
+        "patient_id": 151,
+        "breast density": 5,
+        "left or right breast": 2,
+        "image view": 2,
+        "abnormality id": 5,
+        "abnormality type": 1,
+        "calc type": 20,
+        "calc distribution": 7,
+        "assessment": 5,
+        "pathology": 3,
+        "subtlety": 5,
+        "image file path": 284,
+        "cropped image file path": 326,
+        "ROI mask file path": 326
+      }
+    },
+    {
+      "path": "calc_case_description_train_set.csv",
+      "kind": "csv",
+      "row_granularity": "one calcification finding on one mammography view",
+      "row_count": 1546,
+      "columns": [
+        "patient_id",
+        "breast density",
+        "left or right breast",
+        "image view",
+        "abnormality id",
+        "abnormality type",
+        "calc type",
+        "calc distribution",
+        "assessment",
+        "pathology",
+        "subtlety",
+        "image file path",
+        "cropped image file path",
+        "ROI mask file path"
+      ],
+      "inferred_types": {
+        "patient_id": "string",
+        "breast density": "integer",
+        "left or right breast": "string",
+        "image view": "string",
+        "abnormality id": "integer",
+        "abnormality type": "string",
+        "calc type": "string",
+        "calc distribution": "string",
+        "assessment": "integer",
+        "pathology": "string",
+        "subtlety": "integer",
+        "image file path": "string",
+        "cropped image file path": "string",
+        "ROI mask file path": "string"
+      },
+      "null_counts": {
+        "patient_id": 0,
+        "breast density": 0,
+        "left or right breast": 0,
+        "image view": 0,
+        "abnormality id": 0,
+        "abnormality type": 0,
+        "calc type": 20,
+        "calc distribution": 376,
+        "assessment": 0,
+        "pathology": 0,
+        "subtlety": 0,
+        "image file path": 0,
+        "cropped image file path": 0,
+        "ROI mask file path": 0
+      },
+      "unique_value_counts": {
+        "patient_id": 602,
+        "breast density": 4,
+        "left or right breast": 2,
+        "image view": 2,
+        "abnormality id": 7,
+        "abnormality type": 1,
+        "calc type": 45,
+        "calc distribution": 9,
+        "assessment": 5,
+        "pathology": 3,
+        "subtlety": 5,
+        "image file path": 1227,
+        "cropped image file path": 1546,
+        "ROI mask file path": 1546
+      }
+    },
+    {
+      "path": "mass_case_description_test_set.csv",
+      "kind": "csv",
+      "row_granularity": "one mass finding on one mammography view",
+      "row_count": 378,
+      "columns": [
+        "patient_id",
+        "breast_density",
+        "left or right breast",
+        "image view",
+        "abnormality id",
+        "abnormality type",
+        "mass shape",
+        "mass margins",
+        "assessment",
+        "pathology",
+        "subtlety",
+        "image file path",
+        "cropped image file path",
+        "ROI mask file path"
+      ],
+      "inferred_types": {
+        "patient_id": "string",
+        "breast_density": "integer",
+        "left or right breast": "string",
+        "image view": "string",
+        "abnormality id": "integer",
+        "abnormality type": "string",
+        "mass shape": "string",
+        "mass margins": "string",
+        "assessment": "integer",
+        "pathology": "string",
+        "subtlety": "integer",
+        "image file path": "string",
+        "cropped image file path": "string",
+        "ROI mask file path": "string"
+      },
+      "null_counts": {
+        "patient_id": 0,
+        "breast_density": 0,
+        "left or right breast": 0,
+        "image view": 0,
+        "abnormality id": 0,
+        "abnormality type": 0,
+        "mass shape": 0,
+        "mass margins": 17,
+        "assessment": 0,
+        "pathology": 0,
+        "subtlety": 0,
+        "image file path": 0,
+        "cropped image file path": 0,
+        "ROI mask file path": 0
+      },
+      "unique_value_counts": {
+        "patient_id": 201,
+        "breast_density": 4,
+        "left or right breast": 2,
+        "image view": 2,
+        "abnormality id": 4,
+        "abnormality type": 1,
+        "mass shape": 13,
+        "mass margins": 16,
+        "assessment": 6,
+        "pathology": 3,
+        "subtlety": 5,
+        "image file path": 361,
+        "cropped image file path": 378,
+        "ROI mask file path": 378
+      }
+    },
+    {
+      "path": "mass_case_description_train_set.csv",
+      "kind": "csv",
+      "row_granularity": "one mass finding on one mammography view",
+      "row_count": 1318,
+      "columns": [
+        "patient_id",
+        "breast_density",
+        "left or right breast",
+        "image view",
+        "abnormality id",
+        "abnormality type",
+        "mass shape",
+        "mass margins",
+        "assessment",
+        "pathology",
+        "subtlety",
+        "image file path",
+        "cropped image file path",
+        "ROI mask file path"
+      ],
+      "inferred_types": {
+        "patient_id": "string",
+        "breast_density": "integer",
+        "left or right breast": "string",
+        "image view": "string",
+        "abnormality id": "integer",
+        "abnormality type": "string",
+        "mass shape": "string",
+        "mass margins": "string",
+        "assessment": "integer",
+        "pathology": "string",
+        "subtlety": "integer",
+        "image file path": "string",
+        "cropped image file path": "string",
+        "ROI mask file path": "string"
+      },
+      "null_counts": {
+        "patient_id": 0,
+        "breast_density": 0,
+        "left or right breast": 0,
+        "image view": 0,
+        "abnormality id": 0,
+        "abnormality type": 0,
+        "mass shape": 4,
+        "mass margins": 43,
+        "assessment": 0,
+        "pathology": 0,
+        "subtlety": 0,
+        "image file path": 0,
+        "cropped image file path": 0,
+        "ROI mask file path": 0
+      },
+      "unique_value_counts": {
+        "patient_id": 691,
+        "breast_density": 4,
+        "left or right breast": 2,
+        "image view": 2,
+        "abnormality id": 6,
+        "abnormality type": 1,
+        "mass shape": 18,
+        "mass margins": 15,
+        "assessment": 6,
+        "pathology": 3,
+        "subtlety": 6,
+        "image file path": 1231,
+        "cropped image file path": 1318,
+        "ROI mask file path": 1318
+      }
+    },
+    {
+      "path": "CBIS-DDSM-All-doiJNLP-zzWs5zfZ-nbia-digest.xlsx",
+      "kind": "xlsx",
+      "sheets": [
+        {
+          "name": "Metadata",
+          "row_granularity": "one DICOM series",
+          "row_count": 6775,
+          "column_count": 36,
+          "columns": [
+            "Patient ID",
+            "Patient Name",
+            "Patient Birth Date",
+            "Patient Sex",
+            "Ethnic Group",
+            "Phantom",
+            "Species Code",
+            "Species Description",
+            "Study Instance UID",
+            "Study Date",
+            "Study Description",
+            "Admitting Diagnosis Description",
+            "Study ID",
+            "Patient Age",
+            "Longitudinal Temporal Event Type",
+            "Longitudinal Temporal Offset From Event",
+            "Series Instance UID",
+            "Project",
+            "Modality",
+            "Protocol Name",
+            "Series Date",
+            "Series Description",
+            "Body Part Examined",
+            "Series Number",
+            "Annotations Flag",
+            "Manufacturer",
+            "Manufacturer Model Name",
+            "Software Versions",
+            "Image Count",
+            "Max Submission Timestamp",
+            "License Name",
+            "License URI",
+            "Collection URI",
+            "File Size",
+            "Date Released",
+            "Third Party Analysis"
+          ],
+          "inferred_types": {
+            "Patient ID": "string",
+            "Patient Name": "string",
+            "Patient Birth Date": "null-only",
+            "Patient Sex": "null-only",
+            "Ethnic Group": "null-only",
+            "Phantom": "string",
+            "Species Code": "integer",
+            "Species Description": "string",
+            "Study Instance UID": "string",
+            "Study Date": "datetime-like string",
+            "Study Description": "null-only",
+            "Admitting Diagnosis Description": "null-only",
+            "Study ID": "string",
+            "Patient Age": "null-only",
+            "Longitudinal Temporal Event Type": "null-only",
+            "Longitudinal Temporal Offset From Event": "null-only",
+            "Series Instance UID": "string",
+            "Project": "string",
+            "Modality": "string",
+            "Protocol Name": "null-only",
+            "Series Date": "null-only",
+            "Series Description": "string",
+            "Body Part Examined": "string",
+            "Series Number": "integer",
+            "Annotations Flag": "null-only",
+            "Manufacturer": "null-only",
+            "Manufacturer Model Name": "null-only",
+            "Software Versions": "null-only",
+            "Image Count": "integer",
+            "Max Submission Timestamp": "datetime-like string",
+            "License Name": "string",
+            "License URI": "string",
+            "Collection URI": "string",
+            "File Size": "integer",
+            "Date Released": "datetime-like string",
+            "Third Party Analysis": "null-only"
+          },
+          "null_counts": {
+            "Patient ID": 0,
+            "Patient Name": 0,
+            "Patient Birth Date": 6775,
+            "Patient Sex": 6775,
+            "Ethnic Group": 6775,
+            "Phantom": 0,
+            "Species Code": 0,
+            "Species Description": 0,
+            "Study Instance UID": 0,
+            "Study Date": 0,
+            "Study Description": 6775,
+            "Admitting Diagnosis Description": 6775,
+            "Study ID": 0,
+            "Patient Age": 6775,
+            "Longitudinal Temporal Event Type": 6775,
+            "Longitudinal Temporal Offset From Event": 6775,
+            "Series Instance UID": 0,
+            "Project": 0,
+            "Modality": 0,
+            "Protocol Name": 6775,
+            "Series Date": 6775,
+            "Series Description": 0,
+            "Body Part Examined": 0,
+            "Series Number": 0,
+            "Annotations Flag": 6775,
+            "Manufacturer": 6775,
+            "Manufacturer Model Name": 6775,
+            "Software Versions": 6775,
+            "Image Count": 0,
+            "Max Submission Timestamp": 0,
+            "License Name": 0,
+            "License URI": 0,
+            "Collection URI": 0,
+            "File Size": 0,
+            "Date Released": 0,
+            "Third Party Analysis": 6775
+          },
+          "unique_value_counts": {
+            "Patient ID": 6671,
+            "Patient Name": 6671,
+            "Patient Birth Date": 0,
+            "Patient Sex": 0,
+            "Ethnic Group": 0,
+            "Phantom": 1,
+            "Species Code": 1,
+            "Species Description": 1,
+            "Study Instance UID": 6775,
+            "Study Date": 9,
+            "Study Description": 0,
+            "Admitting Diagnosis Description": 0,
+            "Study ID": 1,
+            "Patient Age": 0,
+            "Longitudinal Temporal Event Type": 0,
+            "Longitudinal Temporal Offset From Event": 0,
+            "Series Instance UID": 6775,
+            "Project": 1,
+            "Modality": 1,
+            "Protocol Name": 0,
+            "Series Date": 0,
+            "Series Description": 3,
+            "Body Part Examined": 1,
+            "Series Number": 1,
+            "Annotations Flag": 0,
+            "Manufacturer": 0,
+            "Manufacturer Model Name": 0,
+            "Software Versions": 0,
+            "Image Count": 2,
+            "Max Submission Timestamp": 5229,
+            "License Name": 1,
+            "License URI": 1,
+            "Collection URI": 1,
+            "File Size": 6594,
+            "Date Released": 5229,
+            "Third Party Analysis": 0
+          },
+          "representative_non_sensitive_values": {
+            "Project": [
+              "CBIS-DDSM"
+            ],
+            "Modality": [
+              "MG"
+            ],
+            "Series Description": [
+              "full mammogram images",
+              "ROI mask images",
+              "cropped images"
+            ],
+            "Body Part Examined": [
+              "BREAST"
+            ],
+            "Image Count": [
+              1,
+              2
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "path": "info.md",
+      "kind": "dataset documentation",
+      "row_granularity": null,
+      "observations": [
+        "Defines the semantic meaning of all CSV fields.",
+        "States that PatientID + laterality + abnormality ID identifies a lesion entity.",
+        "States that masks may be used to generate bounding boxes; conversion approval is still required by the selected skill."
+      ]
+    },
+    {
+      "path_glob": "dcm_example/*/LICENSE",
+      "kind": "license text",
+      "file_count": 3,
+      "unique_content_count": 1,
+      "sha256": "77585fc0bd3e537c198f8f761607302ad3ac90261b2bb199aa13ba2073460d67",
+      "observations": [
+        "All three copies are byte-identical.",
+        "The collection is distributed under CC BY 3.0 and is subject to the TCIA data usage policy."
+      ]
+    }
+  ],
+  "global_csv_profile": {
+    "source_rows": 3568,
+    "unique_patients": 1566,
+    "unique_full_image_paths": 3103,
+    "unique_cropped_image_paths": 3568,
+    "unique_roi_mask_paths": 3568,
+    "unique_paths_across_all_three_path_fields": 10239,
+    "exact_duplicate_source_rows": 0,
+    "rows_where_crop_path_equals_mask_path": 0,
+    "full_image_annotation_multiplicity": {
+      "images_with_1_source_row": 2810,
+      "images_with_2_source_rows": 191,
+      "images_with_3_source_rows": 66,
+      "images_with_4_source_rows": 15,
+      "images_with_5_source_rows": 10,
+      "images_with_6_source_rows": 9,
+      "images_with_7_source_rows": 2,
+      "images_with_multiple_source_rows": 293,
+      "source_rows_in_repeated_image_groups": 758,
+      "maximum_source_rows_per_image": 7
+    },
+    "representative_non_sensitive_values": {
+      "patient_id": [
+        "P_00005",
+        "P_00016"
+      ],
+      "laterality": [
+        "LEFT",
+        "RIGHT"
+      ],
+      "image_view": [
+        "CC",
+        "MLO"
+      ],
+      "abnormality_type": [
+        "calcification",
+        "mass"
+      ],
+      "pathology": [
+        "BENIGN",
+        "BENIGN_WITHOUT_CALLBACK",
+        "MALIGNANT"
+      ]
+    }
+  },
+  "candidate_identifiers_and_keys": [
+    {
+      "name": "full image path",
+      "columns": [
+        "image file path"
+      ],
+      "unique_keys": 3103,
+      "duplicate_groups": 293,
+      "maximum_rows_per_key": 7,
+      "interpretation": "authoritative image identity candidate; repeated rows are distinct findings on the same view"
+    },
+    {
+      "name": "view-specific source finding",
+      "columns": [
+        "source file",
+        "patient_id",
+        "left or right breast",
+        "image view",
+        "abnormality id"
+      ],
+      "unique_keys": 3568,
+      "duplicate_groups": 0,
+      "maximum_rows_per_key": 1
+    },
+    {
+      "name": "cross-view lesion",
+      "columns": [
+        "split",
+        "abnormality type",
+        "patient_id",
+        "left or right breast",
+        "abnormality id"
+      ],
+      "unique_keys": 2050,
+      "duplicate_groups": 1518,
+      "maximum_rows_per_key": 2,
+      "cardinality": {
+        "one_view": 532,
+        "two_views": 1518
+      },
+      "interpretation": "candidate lesion identity documented by info.md, with split and abnormality type added to prevent collisions"
+    },
+    {
+      "name": "metadata Study Instance UID",
+      "columns": [
+        "Metadata.Study Instance UID"
+      ],
+      "unique_keys": 6775,
+      "duplicate_groups": 0,
+      "maximum_rows_per_key": 1
+    },
+    {
+      "name": "metadata Series Instance UID",
+      "columns": [
+        "Metadata.Series Instance UID"
+      ],
+      "unique_keys": 6775,
+      "duplicate_groups": 0,
+      "maximum_rows_per_key": 1
+    },
+    {
+      "name": "metadata Patient ID",
+      "columns": [
+        "Metadata.Patient ID"
+      ],
+      "unique_keys": 6671,
+      "duplicate_groups": 104,
+      "rows_in_duplicate_groups": 208,
+      "maximum_rows_per_key": 2,
+      "interpretation": "series-level collection label, not used as the canonical patient_id"
+    }
+  ],
+  "measured_joins": [
+    {
+      "left": "CSV image file path embedded Series Instance UID",
+      "right": "Metadata.Series Instance UID",
+      "left_unique_keys": 3103,
+      "cardinality": "1:1 by unique series; 3568 source rows to 3103 series",
+      "exact_matches": 3103,
+      "missing_matches": 0,
+      "ambiguous_matches": 0,
+      "matched_series_descriptions": {
+        "full mammogram images": 3103
+      }
+    },
+    {
+      "left": "CSV cropped image file path embedded Series Instance UID",
+      "right": "Metadata.Series Instance UID",
+      "left_unique_keys": 3568,
+      "cardinality": "1:1",
+      "exact_matches": 3568,
+      "missing_matches": 0,
+      "ambiguous_matches": 0,
+      "matched_series_descriptions": {
+        "ROI mask images": 3462,
+        "cropped images": 106
+      }
+    },
+    {
+      "left": "CSV ROI mask file path embedded Series Instance UID",
+      "right": "Metadata.Series Instance UID",
+      "left_unique_keys": 3568,
+      "cardinality": "1:1",
+      "exact_matches": 3568,
+      "missing_matches": 0,
+      "ambiguous_matches": 0,
+      "matched_series_descriptions": {
+        "ROI mask images": 3564,
+        "cropped images": 4
+      }
+    }
+  ],
+  "series_reconciliation": {
+    "metadata_series": 6775,
+    "metadata_series_descriptions": {
+      "full mammogram images": 3103,
+      "ROI mask images": 3565,
+      "cropped images": 107
+    },
+    "unique_series_referenced_by_any_csv_path_field": 6775,
+    "metadata_series_not_referenced_by_csv": 0,
+    "crop_and_mask_share_series_rows": 3464,
+    "crop_and_mask_use_different_series_rows": 104,
+    "shared_series_original_filename_pairs": {
+      "crop_000000_mask_000001": 1593,
+      "crop_000001_mask_000000": 1871
+    },
+    "different_series_original_filename_pair": {
+      "crop_000000_mask_000000": 104
+    },
+    "description_role_cross_tab": {
+      "same_series_roi_description_for_both": 3461,
+      "same_series_cropped_description_for_both": 3,
+      "different_series_crop_is_cropped_and_mask_is_roi": 103,
+      "different_series_crop_is_roi_and_mask_is_cropped": 1
+    }
+  },
+  "source_image_inventory": {
+    "candidate_source_image_root": "datasets/Mammography/CBIS",
+    "local_dicom_files": 4,
+    "local_dicom_series": 3,
+    "series": [
+      {
+        "relative_directory": "dcm_example/1.3.6.1.4.1.9590.100.1.2.100018879311824535125115145152454291132",
+        "files": [
+          "1-1.dcm",
+          "1-2.dcm"
+        ],
+        "metadata_series_matches": 1,
+        "metadata_series_description": "ROI mask images",
+        "metadata_image_count": 2,
+        "csv_role": "one cropped image path and one ROI mask path from calc_case_description_train_set.csv row 888"
+      },
+      {
+        "relative_directory": "dcm_example/1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547",
+        "files": [
+          "1-1.dcm"
+        ],
+        "metadata_series_matches": 1,
+        "metadata_series_description": "full mammogram images",
+        "metadata_image_count": 1,
+        "csv_role": "image file path from calc_case_description_train_set.csv row 875"
+      },
+      {
+        "relative_directory": "dcm_example/1.3.6.1.4.1.9590.100.1.2.191134379411008523532752949014193653088",
+        "files": [
+          "1-1.dcm"
+        ],
+        "metadata_series_matches": 1,
+        "metadata_series_description": "full mammogram images",
+        "metadata_image_count": 1,
+        "csv_role": "image file path from calc_case_description_train_set.csv row 888"
+      }
+    ],
+    "exact_logical_csv_paths_resolving_under_candidate_root": {
+      "full_image_paths": 0,
+      "cropped_image_paths": 0,
+      "roi_mask_paths": 0
+    },
+    "full_image_series_with_a_local_example": 2,
+    "full_image_series_missing_locally": 3101,
+    "ambiguous_local_correspondence": [
+      "The downloaded examples use filenames such as 1-1.dcm and 1-2.dcm, while CSV paths use 000000.dcm and 000001.dcm.",
+      "For the two-file example series, the available workbook identifies only the series and does not map the downloaded filenames to the two original CSV filenames.",
+      "No DICOM parser is available in the bundled workspace or project environment, so header-level identifiers were not inspected during this read-only inventory."
+    ]
+  },
+  "consistency_and_conflicts": {
+    "full_image_groups_with_conflicting_patient_id": 0,
+    "full_image_groups_with_conflicting_breast_density": 0,
+    "full_image_groups_with_conflicting_laterality": 0,
+    "full_image_groups_with_conflicting_view": 0,
+    "full_image_groups_with_conflicting_split": 0,
+    "full_image_groups_with_conflicting_abnormality_type": 0,
+    "cross_view_lesion_groups_with_conflicts": {
+      "breast_density": 0,
+      "abnormality_type": 0,
+      "assessment": 55,
+      "pathology": 6,
+      "subtlety": 184,
+      "calc_type": 51,
+      "calc_distribution": 15,
+      "mass_shape": 117,
+      "mass_margins": 115
+    },
+    "train_test_patient_overlap": {
+      "calcification": 0,
+      "mass": 0
+    },
+    "interpretation": "Cross-view values must remain attached to their source image-view row; they cannot be collapsed into one lesion-level value without discarding source-supported conflicts."
+  },
+  "unresolved_inventory_issues": [
+    "The complete authoritative full-image population is not present under the candidate source-image root.",
+    "The current local download naming cannot be mapped exactly to original CSV filenames for multi-image series using the supplied files alone.",
+    "Four CSV ROI mask references join to metadata rows described as cropped images; the CSV field role and workbook series description disagree.",
+    "Mask pixels were not decoded, and no bounding boxes were derived during inventory."
+  ]
+}
