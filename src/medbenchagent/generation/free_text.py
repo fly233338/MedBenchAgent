@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from medbenchagent.generation.context import annotation_modality
+from medbenchagent.generation.context import image_modality
 from medbenchagent.construction import event_operation
 from medbenchagent.llm import complete_json
 
@@ -60,7 +60,7 @@ def _texts(value: object) -> list[str]:
 
 
 def _reference_text(candidate: Any) -> str | None:
-    texts = _texts(candidate.supporting_annotation)
+    texts = _texts(candidate.supporting_record)
     return texts[0] if len(texts) == 1 else None
 
 
@@ -78,7 +78,7 @@ def _task_definition(candidate: Any) -> str:
 def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
     return FREE_TEXT_GENERATION_PROMPT.format(
         language=benchmark_info.get("language", ""),
-        modality=annotation_modality(candidate),
+        modality=image_modality(candidate),
         task_id=candidate.task_id,
         task_definition=_task_definition(candidate),
         generation_logic=candidate.task["generation_logic"],

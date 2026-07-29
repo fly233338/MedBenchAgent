@@ -39,7 +39,7 @@ def _task(
         "response_format": response_format,
         "metric": "accuracy",
         "category": category,
-        "supporting_fields": ["annotation.view"],
+        "supporting_fields": ["image.annotation.view"],
         "dataset_support_reason": "Available.",
     }
     return task
@@ -48,7 +48,7 @@ def _task(
 def _rag_fields(response_format: str = "letter") -> dict:
     fields = {
         "question_templates": ["Which view is shown?"],
-        "generation_logic": "Use the approved annotation.",
+        "generation_logic": "Use the approved supporting fields.",
         "medical_task_description": "This assesses recognition; references support terminology.",
         "citations": [],
     }
@@ -285,7 +285,7 @@ def test_dataset_recommendation_and_profile_keep_paths_private(
             "annotation_path": str(expected_path),
             "duckdb_path": "dataset.duckdb",
             "annotation_sha256": "a" * 64,
-            "cache_format_version": "annotation-cache.v3",
+            "cache_format_version": "annotation-cache.v4",
         }
 
     monkeypatch.setattr(capability_agent, "prepare_annotation_dataset", prepare)
@@ -302,7 +302,7 @@ def test_dataset_recommendation_and_profile_keep_paths_private(
     assert profile_result["dataset_access_manifest"] == {
         "duckdb_path": "dataset.duckdb",
         "annotation_sha256": "a" * 64,
-        "cache_format_version": "annotation-cache.v3",
+        "cache_format_version": "annotation-cache.v4",
     }
     assert "annotation_path" not in profile_result
 

@@ -4,13 +4,18 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from medbenchagent.dataset import AnnotationValidationError, annotation_schema_path, prepare_annotation_dataset
+from medbenchagent.dataset import (
+    AnnotationValidationError,
+    annotation_schema_path,
+    prepare_annotation_dataset,
+)
 
 
 def _write_annotation_dataset(tmp_path: Path, records: list[dict]) -> Path:
     annotation_path = tmp_path / "annotation.jsonl"
     annotation_path.write_text(
-        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records), encoding="utf-8"
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+        encoding="utf-8",
     )
     return annotation_path
 
@@ -18,155 +23,268 @@ def _write_annotation_dataset(tmp_path: Path, records: list[dict]) -> Path:
 def _records() -> list[dict]:
     return [
         {
-            "image_id": "img-001",
-            "image_path": "images/img-001.png",
-            "patient_id": None,
-            "case_id": None,
-            "study_id": "study-001",
-            "annotation": {
-                "laterality": "L",
-                "breast_birads": "BI-RADS 4",
-                "findings": [{"finding_type": "calcification", "bbox": [120, 80, 260, 210]}],
+            "patient": {"patient_id": None, "annotation": {}},
+            "case": {"case_id": "case-001", "annotation": {"status": "first"}},
+            "study": {"study_id": "study-001", "annotation": {}},
+            "image": {
+                "image_id": "img-001",
+                "image_path": "images/img-001.png",
+                "modality": "Mammography",
+                "anatomy": "Breast",
+                "annotation": {
+                    "laterality": "L",
+                    "breast_birads": "BI-RADS 4",
+                    "findings": [
+                        {"finding_type": "calcification", "bbox": [120, 80, 260, 210]}
+                    ],
+                },
             },
         },
         {
-            "image_id": "img-002",
-            "image_path": "images/img-002.png",
-            "patient_id": None,
-            "case_id": None,
-            "study_id": "study-001",
-            "annotation": {
-                "laterality": "R",
-                "breast_birads": "BI-RADS 2",
-                "findings": [
-                    {"finding_type": "mass", "bbox": [1, 2, 3, 4]},
-                    {"finding_type": "calcification", "bbox": [5, 6, 7, 8]},
-                ],
+            "patient": {"patient_id": None, "annotation": {}},
+            "case": {"case_id": "case-001", "annotation": {"status": "second"}},
+            "study": {"study_id": "study-001", "annotation": {}},
+            "image": {
+                "image_id": "img-002",
+                "image_path": "images/img-002.png",
+                "modality": "Mammography",
+                "anatomy": "Breast",
+                "annotation": {
+                    "laterality": "R",
+                    "breast_birads": "BI-RADS 2",
+                    "findings": [
+                        {"finding_type": "mass", "bbox": [1, 2, 3, 4]},
+                        {"finding_type": "calcification", "bbox": [5, 6, 7, 8]},
+                    ],
+                },
             },
         },
     ]
 
 
-def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(tmp_path: Path, monkeypatch) -> None:
+def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
     annotation_path = _write_annotation_dataset(tmp_path, _records())
-    monkeypatch.setattr("medbenchagent.llm.complete_json", lambda *_args: pytest.fail("LLM must not be called"))
+    monkeypatch.setattr(
+        "medbenchagent.llm.complete_json", lambda *_args: pytest.fail("LLM must not be called")
+    )
 
     profile, manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
 
     assert profile["total_images"] == 2
     assert profile["schema_version"] == "task-capability-profile.v1"
-    assert profile["fields"]["annotation.findings[*].finding_type"]["non_empty_images"] == 2
-    assert profile["fields"]["annotation.findings[*].finding_type"]["distinct_value_count"] == 2
-    assert profile["fields"]["annotation.breast_birads"]["top_values"] == ["BI-RADS 2", "BI-RADS 4"]
-    assert profile["fields"]["annotation.breast_birads"]["non_empty_images"] == 2
-    assert profile["structures"] == [
-        {"path": "annotation", "kind": "object", "children": ["annotation.breast_birads", "annotation.findings", "annotation.laterality"]},
-        {
-            "path": "annotation.findings",
-            "kind": "array",
-            "item_path": "annotation.findings[*]",
-            "children": ["annotation.findings[*].bbox", "annotation.findings[*].finding_type"],
-        },
-        {"path": "annotation.findings[*].bbox", "kind": "array", "item_path": "annotation.findings[*].bbox[*]", "children": []},
+    assert (
+        profile["fields"]["image.annotation.findings[*].finding_type"]["non_empty_images"] == 2
+    )
+    assert (
+        profile["fields"]["image.annotation.findings[*].finding_type"]["distinct_value_count"]
+        == 2
+    )
+    assert profile["fields"]["image.annotation.breast_birads"]["top_values"] == [
+        "BI-RADS 2",
+        "BI-RADS 4",
     ]
-    assert manifest["cache_format_version"] == "annotation-cache.v3"
+    assert profile["fields"]["case.annotation.status"]["top_values"] == ["first", "second"]
+    assert profile["fields"]["image.modality"]["top_values"] == ["Mammography"]
+    assert not any(path.endswith("_id") or path.endswith("_path") for path in profile["fields"])
+    assert profile["structures"] == [
+        {
+            "path": "case.annotation",
+            "kind": "object",
+            "children": ["case.annotation.status"],
+        },
+        {
+            "path": "image.annotation",
+            "kind": "object",
+            "children": [
+                "image.annotation.breast_birads",
+                "image.annotation.findings",
+                "image.annotation.laterality",
+            ],
+        },
+        {
+            "path": "image.annotation.findings",
+            "kind": "array",
+            "item_path": "image.annotation.findings[*]",
+            "children": [
+                "image.annotation.findings[*].bbox",
+                "image.annotation.findings[*].finding_type",
+            ],
+        },
+        {
+            "path": "image.annotation.findings[*].bbox",
+            "kind": "array",
+            "item_path": "image.annotation.findings[*].bbox[*]",
+            "children": [],
+        },
+        {"path": "patient.annotation", "kind": "object", "children": []},
+        {"path": "study.annotation", "kind": "object", "children": []},
+    ]
+    assert manifest["cache_format_version"] == "annotation-cache.v4"
     connection = duckdb.connect(manifest["duckdb_path"])
     try:
         assert connection.execute("SELECT COUNT(*) FROM images").fetchone()[0] == 2
-        assert connection.execute("SELECT image_path FROM images WHERE image_id = 'img-001'").fetchone() == (
-            "images/img-001.png",
-        )
+        assert connection.execute(
+            "SELECT image_path FROM images WHERE image_id = 'img-001'"
+        ).fetchone() == ("images/img-001.png",)
         columns = {column[0] for column in connection.execute("DESCRIBE images").fetchall()}
-        assert "resolved_image_path" not in columns
-        stored = connection.execute("SELECT annotation::VARCHAR FROM images WHERE image_id = 'img-002'").fetchone()[0]
+        assert "record" in columns
+        assert "annotation" not in columns
+        stored = connection.execute(
+            "SELECT record::VARCHAR FROM images WHERE image_id = 'img-002'"
+        ).fetchone()[0]
         assert stored.index('"mass"') < stored.index('"calcification"')
-        assert connection.execute("SELECT patient_id, case_id, study_id FROM images LIMIT 1").fetchone() == (
-            None,
-            None,
-            "study-001",
-        )
+        assert connection.execute(
+            "SELECT patient_id, case_id, study_id FROM images LIMIT 1"
+        ).fetchone() == (None, "case-001", "study-001")
     finally:
         connection.close()
 
-    monkeypatch.setattr("medbenchagent.dataset.load_annotation_jsonl", lambda _path: pytest.fail("cache not used"))
-    cached_profile, cached_manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
-    assert cached_profile == profile
-    assert cached_manifest == manifest
+    monkeypatch.setattr(
+        "medbenchagent.dataset.load_annotation_jsonl", lambda _path: pytest.fail("cache not used")
+    )
+    assert prepare_annotation_dataset(annotation_path, tmp_path / "cache") == (profile, manifest)
 
 
-def test_compact_profile_counts_non_empty_images_and_filters_raw_values(tmp_path: Path) -> None:
-    records = [
-        {
-            **_records()[0],
-            "image_path": "/unavailable/images/img-001.dicom",
-            "annotation": {
-                "empty": "",
-                "nested": {"values": [0, False, None, [], {}]},
-                "finding_uid": "secret-uid",
-                "dicom_metadata": {"patient_age": "42"},
-            },
-        }
-    ]
-    annotation_path = _write_annotation_dataset(tmp_path, records)
+def test_compact_profile_counts_non_empty_images_and_filters_raw_values(
+    tmp_path: Path,
+) -> None:
+    record = _records()[0]
+    record["image"] = {
+        **record["image"],
+        "image_path": "/unavailable/images/img-001.dicom",
+        "annotation": {
+            "empty": "",
+            "nested": {"values": [0, False, None, [], {}]},
+            "finding_uid": "secret-uid",
+            "dicom_metadata": {"patient_age": "42"},
+        },
+    }
+    profile, _manifest = prepare_annotation_dataset(
+        _write_annotation_dataset(tmp_path, [record]), tmp_path / "cache"
+    )
 
-    profile, _manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
-
-    assert profile["fields"]["annotation.empty"]["non_empty_images"] == 0
-    assert profile["fields"]["annotation.nested.values[*]"]["non_empty_images"] == 1
-    assert "top_values" not in profile["fields"]["annotation.nested.values[*]"]
-    assert "top_values" not in profile["fields"]["annotation.finding_uid"]
-    assert "top_values" not in profile["fields"]["annotation.dicom_metadata.patient_age"]
-    assert "annotation_examples" not in profile
+    assert profile["fields"]["image.annotation.empty"]["non_empty_images"] == 0
+    assert profile["fields"]["image.annotation.nested.values[*]"]["non_empty_images"] == 1
+    assert "top_values" not in profile["fields"]["image.annotation.nested.values[*]"]
+    assert "top_values" not in profile["fields"]["image.annotation.finding_uid"]
+    assert "top_values" not in profile["fields"]["image.annotation.dicom_metadata.patient_age"]
 
 
-def test_compact_profile_deduplicates_repeated_findings_and_limits_categorical_values(tmp_path: Path) -> None:
+def test_compact_profile_deduplicates_repeated_findings_and_limits_values(
+    tmp_path: Path,
+) -> None:
     records = []
     for index in range(12):
         records.append(
             {
-                "image_id": f"img-{index}",
-                "image_path": f"images/img-{index}.png",
-                "patient_id": None,
-                "case_id": None,
-                "study_id": None,
-                "annotation": {
-                    "flag": index % 2 == 0,
-                    "category": f"value-{index}",
-                    "findings": [{"kind": "mass"}, {"kind": "mass"}],
-                    "bbox": [index, index + 1],
+                "patient": {"patient_id": None, "annotation": {}},
+                "case": {"case_id": None, "annotation": {}},
+                "study": {"study_id": None, "annotation": {}},
+                "image": {
+                    "image_id": f"img-{index}",
+                    "image_path": f"images/img-{index}.png",
+                    "modality": None,
+                    "anatomy": None,
+                    "annotation": {
+                        "flag": index % 2 == 0,
+                        "category": f"value-{index}",
+                        "findings": [{"kind": "mass"}, {"kind": "mass"}],
+                        "bbox": [index, index + 1],
+                    },
                 },
             }
         )
-    profile, _manifest = prepare_annotation_dataset(_write_annotation_dataset(tmp_path, records), tmp_path / "cache")
+    profile, _manifest = prepare_annotation_dataset(
+        _write_annotation_dataset(tmp_path, records), tmp_path / "cache"
+    )
 
-    assert profile["fields"]["annotation.findings[*].kind"]["non_empty_images"] == 12
-    assert profile["fields"]["annotation.flag"]["top_values"] == [False, True]
-    assert len(profile["fields"]["annotation.category"]["top_values"]) == 10
-    assert "top_values" not in profile["fields"]["annotation.bbox[*]"]
-    assert all("examples" not in field and "frequent_values" not in field for field in profile["fields"].values())
+    assert profile["fields"]["image.annotation.findings[*].kind"]["non_empty_images"] == 12
+    assert profile["fields"]["image.annotation.flag"]["top_values"] == [False, True]
+    assert len(profile["fields"]["image.annotation.category"]["top_values"]) == 10
+    assert "top_values" not in profile["fields"]["image.annotation.bbox[*]"]
 
 
 @pytest.mark.parametrize(
     ("records", "expected"),
     [
-        ([{key: value for key, value in _records()[0].items() if key != "study_id"}], "missing required fields"),
-        ([_records()[0], {**_records()[1], "image_id": "img-001"}], "duplicate image_id"),
-        ([{**_records()[0], "annotation": []}], "annotation must be a JSON object"),
-        ([{**_records()[0], "image_path": ""}], "image_path must be a non-empty string"),
+        ([{key: value for key, value in _records()[0].items() if key != "study"}], "only patient"),
+        (
+            [
+                _records()[0],
+                {
+                    **_records()[1],
+                    "image": {**_records()[1]["image"], "image_id": "img-001"},
+                },
+            ],
+            "duplicate image.image_id",
+        ),
+        (
+            [{**_records()[0], "case": {**_records()[0]["case"], "annotation": []}}],
+            "case.annotation must be a JSON object",
+        ),
+        (
+            [
+                {
+                    **_records()[0],
+                    "image": {**_records()[0]["image"], "image_path": ""},
+                }
+            ],
+            "image.image_path must be a non-empty string",
+        ),
     ],
 )
-def test_annotation_jsonl_rejects_invalid_records(tmp_path: Path, records: list[dict], expected: str) -> None:
-    annotation_path = _write_annotation_dataset(tmp_path, records)
-
+def test_annotation_jsonl_rejects_invalid_records(
+    tmp_path: Path, records: list[dict], expected: str
+) -> None:
     with pytest.raises(AnnotationValidationError, match=expected):
-        prepare_annotation_dataset(annotation_path, tmp_path / "cache")
+        prepare_annotation_dataset(
+            _write_annotation_dataset(tmp_path, records), tmp_path / "cache"
+        )
 
 
-def test_annotation_jsonl_rejects_invalid_json_and_schema_is_versioned(tmp_path: Path) -> None:
+def test_annotation_jsonl_rejects_v1_and_invalid_json_and_schema_is_versioned(
+    tmp_path: Path,
+) -> None:
     annotation_path = tmp_path / "annotation.jsonl"
     annotation_path.write_text("{not json}\n", encoding="utf-8")
-
     with pytest.raises(AnnotationValidationError, match="invalid JSON"):
         prepare_annotation_dataset(annotation_path, tmp_path / "cache")
+
+    annotation_path.write_text(
+        json.dumps(
+            {
+                "image_id": "old",
+                "image_path": "old.png",
+                "patient_id": None,
+                "case_id": None,
+                "study_id": None,
+                "annotation": {},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(AnnotationValidationError, match="only patient"):
+        prepare_annotation_dataset(annotation_path, tmp_path / "cache")
+
     schema = json.loads(annotation_schema_path().read_text(encoding="utf-8"))
-    assert schema["title"].endswith("v1")
+    assert schema["title"].endswith("v2")
+
+
+def test_annotation_jsonl_allows_inconsistent_repeated_entity_annotations(
+    tmp_path: Path,
+) -> None:
+    records = _records()
+    records[0]["patient"] = {"patient_id": "patient", "annotation": {"age": 40}}
+    records[1]["patient"] = {"patient_id": "patient", "annotation": {"age": 41}}
+    records[0]["study"]["annotation"] = {"label": "A"}
+    records[1]["study"]["annotation"] = {"label": "B"}
+
+    profile, _manifest = prepare_annotation_dataset(
+        _write_annotation_dataset(tmp_path, records), tmp_path / "cache"
+    )
+
+    assert profile["fields"]["patient.annotation.age"]["distinct_value_count"] == 2
+    assert profile["fields"]["study.annotation.label"]["distinct_value_count"] == 2

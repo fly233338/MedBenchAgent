@@ -8,31 +8,33 @@ import math
 from typing import Any
 
 
-def annotation_values(candidate: Any) -> dict[str, object]:
+def record_values(candidate: Any) -> dict[str, object]:
     record = getattr(candidate, "record", {})
-    annotation = record.get("annotation") if isinstance(record, dict) else None
-    return annotation if isinstance(annotation, dict) else {}
+    return record if isinstance(record, dict) else {}
 
 
-def annotation_modality(candidate: Any) -> str:
-    modality = annotation_values(candidate).get("modality")
+def image_modality(candidate: Any) -> str:
+    image = record_values(candidate).get("image")
+    modality = image.get("modality") if isinstance(image, dict) else None
     return modality if isinstance(modality, str) else ""
 
 
-def evidence_value(annotation: dict[str, object], path: str, indices: list[int]) -> object:
-    """Resolve one scalar annotation value using source indices for wildcard segments."""
-    if not path.startswith("annotation."):
-        raise ValueError("Evidence path must start with annotation.")
-    segments = path.split(".")[1:]
+def evidence_value(record: dict[str, object], path: str, indices: list[int]) -> object:
+    """Resolve one scalar v2 record value using source indices for wildcard segments."""
+    from medbenchagent.generation.engine import is_supporting_field_path
+
+    if not is_supporting_field_path(path):
+        raise ValueError("Evidence path must be one supported v2 entity field path.")
+    segments = path.split(".")
     if len(indices) != sum(segment.endswith("[*]") for segment in segments):
         raise ValueError("Evidence indices must match the path wildcards.")
-    current: object = annotation
+    current: object = record
     index_cursor = 0
     for segment in segments:
         wildcard = segment.endswith("[*]")
         key = segment.removesuffix("[*]")
         if not isinstance(current, dict) or key not in current:
-            raise ValueError("Evidence path does not exist in the annotation.")
+            raise ValueError("Evidence path does not exist in the record.")
         current = current[key]
         if wildcard:
             index = indices[index_cursor]
@@ -69,7 +71,7 @@ def evidence_sha256(path: str, indices: list[int], value: object) -> str:
 
 
 def validate_evidence(
-    annotation: dict[str, object],
+    record: dict[str, object],
     supporting_fields: object,
     evidence: object,
 ) -> dict[str, object]:
@@ -88,7 +90,7 @@ def validate_evidence(
         for index in indices
     ):
         raise ValueError("Evidence indices must be non-negative integers.")
-    actual = evidence_value(annotation, path, indices)
+    actual = evidence_value(record, path, indices)
     if type(actual) is not type(value) or actual != value:
         raise ValueError("Evidence value must exactly copy the indexed annotation value.")
     return {"path": path, "indices": list(indices), "value": value}

@@ -26,7 +26,7 @@ def _blueprint() -> dict:
 
 
 def _profile() -> dict:
-    return {"fields": {"annotation.breast_birads": {}, "annotation.findings[*].finding_type": {}}}
+    return {"fields": {"image.annotation.breast_birads": {}, "image.annotation.findings[*].finding_type": {}}}
 
 
 def _plan() -> dict:
@@ -34,7 +34,7 @@ def _plan() -> dict:
         "tasks": {
             "assessment_category": {
                 "decision": "retain",
-                "supporting_fields": ["annotation.breast_birads"],
+                "supporting_fields": ["image.annotation.breast_birads"],
                 "reason": "BI-RADS is available.",
             },
             "diagnosis": {"decision": "drop", "supporting_fields": [], "reason": "No diagnosis path."},
@@ -58,7 +58,7 @@ def test_task_plan_retries_one_invalid_complete_response_and_applies_only_after_
     report_path = Path(screening.apply_task_plan(blueprint_path, plan))
     updated = json.loads(blueprint_path.read_text(encoding="utf-8"))
     assert list(updated["tasks"]) == ["assessment_category"]
-    assert updated["tasks"]["assessment_category"]["supporting_fields"] == ["annotation.breast_birads"]
+    assert updated["tasks"]["assessment_category"]["supporting_fields"] == ["image.annotation.breast_birads"]
     assert json.loads(report_path.read_text(encoding="utf-8")) == plan
     second_report_path = Path(screening.apply_task_plan(blueprint_path, plan))
     assert json.loads(second_report_path.read_text(encoding="utf-8")) == plan
@@ -75,7 +75,7 @@ def test_complete_blueprint_task_plan_uses_one_model_call(monkeypatch) -> None:
     }
     plan["tasks"][task_ids[0]] = {
         "decision": "retain",
-        "supporting_fields": ["annotation.breast_birads"],
+        "supporting_fields": ["image.annotation.breast_birads"],
         "reason": "Available.",
     }
     calls = 0
@@ -98,7 +98,7 @@ def test_task_plan_requires_human_review_after_second_invalid_response(monkeypat
         "tasks": {
             "assessment_category": {
                 "decision": "retain",
-                "supporting_fields": ["annotation.not_present"],
+                "supporting_fields": ["image.annotation.not_present"],
                 "reason": "Invalid field.",
             },
             "diagnosis": _plan()["tasks"]["diagnosis"],
@@ -116,7 +116,7 @@ def test_task_plan_revisions_only_replace_the_target_task(monkeypatch) -> None:
     monkeypatch.setattr(
         screening,
         "complete_json",
-        lambda *_args: {"decision": "retain", "supporting_fields": ["annotation.findings[*].finding_type"], "reason": "Requested."},
+        lambda *_args: {"decision": "retain", "supporting_fields": ["image.annotation.findings[*].finding_type"], "reason": "Requested."},
     )
 
     revised = screening.revise_task_plan(_blueprint(), _profile(), original, "diagnosis", "Keep this task.")
@@ -140,19 +140,19 @@ def test_visual_grounding_deterministically_replaces_detection() -> None:
             "visual_grounding": {"response_format": "bbox"},
         }
     }
-    profile = {"fields": {"annotation.findings[*].bbox[*]": {}, "annotation.findings[*].label": {}}}
+    profile = {"fields": {"image.annotation.findings[*].bbox[*]": {}, "image.annotation.findings[*].label": {}}}
     response = {
         "tasks": {
             "detection": {
                 "decision": "retain",
-                "supporting_fields": ["annotation.findings[*].bbox[*]"],
+                "supporting_fields": ["image.annotation.findings[*].bbox[*]"],
                 "reason": "Has a box.",
             },
             "visual_grounding": {
                 "decision": "retain",
                 "supporting_fields": [
-                    "annotation.findings[*].bbox[*]",
-                    "annotation.findings[*].label",
+                    "image.annotation.findings[*].bbox[*]",
+                    "image.annotation.findings[*].label",
                 ],
                 "reason": "Has a paired label and box.",
             },
@@ -175,3 +175,5 @@ def test_task_plan_prompt_checks_array_leaf_paths() -> None:
 
     assert "For array-valued fields" in prompt
     assert "`[*]` leaf path" in prompt
+    assert '"supporting_fields":["image.annotation.path"]' in prompt
+    assert '"supporting_fields":["annotation.path"]' not in prompt

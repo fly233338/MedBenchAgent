@@ -15,18 +15,18 @@ def _blueprint() -> dict:
             "view": {
                 "category": "image_acquisition_and_basic_information",
                 "response_format": "letter",
-                "supporting_fields": ["annotation.view"],
+                "supporting_fields": ["image.annotation.view"],
                 "sample_count": 1,
                 "metric": "accuracy",
                 "question_templates": ["Which view?"],
-                "generation_logic": "Use annotation.",
+                "generation_logic": "Use supporting fields.",
                 "medical_task_description": "Recognition.",
                 "citations": [],
             },
             "zero": {
                 "category": "report_generation",
                 "response_format": "free_text",
-                "supporting_fields": ["annotation.report"],
+                "supporting_fields": ["image.annotation.report"],
                 "sample_count": 0,
                 "metric": "bleu",
             },
@@ -82,7 +82,7 @@ def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: 
     assert json.loads(Path(rag).read_text(encoding="utf-8"))["tasks"] == {
         "view": {
             "question_templates": ["Which view?"],
-            "generation_logic": "Use annotation.",
+            "generation_logic": "Use supporting fields.",
             "medical_task_description": "Recognition.",
             "citations": [],
         }

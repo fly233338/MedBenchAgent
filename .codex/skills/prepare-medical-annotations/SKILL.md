@@ -11,7 +11,7 @@ Keep sources read-only and local. Preserve source-supported facts without inferr
 
 Obtain the annotation sources, source-image root, and a new artifact directory.
 
-Read `annotation.v1.schema.json` in this skill directory completely before inspecting the source data. Treat it as the authoritative output contract. Resolve bundled resources relative to this `SKILL.md`; do not assume a repository layout or skill installation path.
+Read `annotation.v2.schema.json` in this skill directory completely before inspecting the source data. Treat it as the authoritative output contract. Resolve bundled resources relative to this `SKILL.md`; do not assume a repository layout or skill installation path.
 
 ## Workflow
 
@@ -36,9 +36,10 @@ Choose the authoritative image population and reconcile every annotation source 
 Record:
 
 - Source inputs and the authoritative image population.
-- Stable output ordering and deterministic `image_id` and `image_path` derivation.
+- Stable output ordering and deterministic entity identifiers and `image.image_path` derivation.
 - Join keys, measured cardinalities, and source-row-to-annotation mappings.
-- `modality` and `anatomy` mappings. Both fields are optional; populate them only from source annotations or dataset documentation that clearly applies to the relevant images. Record their provenance and scope, or the reason each field is omitted.
+- Map annotations to `patient.annotation`, `case.annotation`, `study.annotation`, or `image.annotation` according to their source granularity. Stop for review when the granularity is materially ambiguous.
+- `image.modality` and `image.anatomy` mappings. Populate them only from source annotations or dataset documentation that clearly applies to the relevant images. Record their provenance or the reason each field is null.
 - Included fields, excluded fields with reasons, and preservation of source value types.
 - Missing, orphaned, duplicate, and conflicting records.
 - Expected source and output counts and every unresolved decision.
@@ -64,19 +65,19 @@ Apply user feedback as structured changes to `conversion_plan.json`, show the re
 
 Write `<artifact_dir>/scripts/prepare_annotations.py` with all dataset-specific logic documented in the approved conversion plan.
 
-Require explicit input and output paths. Read sources without modifying them, group all annotations belonging to an image, and emit exactly one canonical record per authoritative image. Preserve source values, JSON-compatible types, and fields originating from the same source row. Use stable record and array-item ordering.
+Require explicit input and output paths. Read sources without modifying them, group all annotations belonging to an image, and emit exactly one canonical v2 record per authoritative image. Preserve source values, JSON-compatible types, and fields originating from the same source row. Use stable record and array-item ordering.
 
-Write to a temporary file and replace `annotation.jsonl` only after complete success. Keep every `image_path` relative to the source-image root. Except for an approved mask-to-bbox derivation, do not decode images or add PNG metadata during this stage.
+Write to a temporary file and replace `annotation.jsonl` only after complete success. Keep every `image.image_path` relative to the source-image root. Except for an approved mask-to-bbox derivation, do not decode images or add PNG metadata during this stage.
 
 ### 5. Validate and report
 
-Run the generated converter twice with unchanged inputs and compare SHA-256 hashes. Validate the result with this skill's `scripts/validate_annotations.py` and its local `annotation.v1.schema.json`.
+Run the generated converter twice with unchanged inputs and compare SHA-256 hashes. Validate the result with this skill's `scripts/validate_annotations.py` and its local `annotation.v2.schema.json`.
 
 Verify:
 
 - Every line is valid JSON and contains the canonical fields.
-- Every `image_id` and `image_path` is non-empty and unique.
-- Every `image_path` is relative, remains beneath the source-image root, and resolves to a file.
+- Every `image.image_id` and `image.image_path` is non-empty and unique.
+- Every `image.image_path` is relative, remains beneath the source-image root, and resolves to a file.
 - The output count matches the authoritative image population.
 - Source rows, missing records, orphaned records, duplicates, and conflicts are reconciled.
 - Actual join cardinalities match the conversion plan.
@@ -87,7 +88,7 @@ Verify:
 Write `annotation_report.json` with input and converter hashes, output hash and count, reconciliation counts, validation results, determinism results, observable mapping decisions, and unresolved issues. Do not include complete source rows, unnecessary protected information, or hidden reasoning.
 
 ## Output
-
+Artifact_dir should be a subdirectory of datasets/Normalized
 ```text
 <artifact_dir>/
 ├── scripts/prepare_annotations.py

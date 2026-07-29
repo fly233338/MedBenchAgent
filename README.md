@@ -94,19 +94,22 @@ record assembled from the catalog, profile, access manifest, and adjacent
 `8bit_grayscale_png` image-format contract.
 
 The downstream workflow accepts only an `annotation.jsonl` file. Each line represents one image
-and must contain `image_id`, `image_path`, `patient_id`, `case_id`, `study_id`, and an
-object-valued `annotation`. `image_path` is stored as opaque metadata: dataset
-exploration does not resolve it or check whether an image file exists. Benchmark items
-are identified by `image_id`; mapping IDs to image files is the responsibility of an
-external module. The versioned input contract is at
-`src/medbenchagent/schemas/annotation.v1.schema.json`.
+and contains `patient`, `case`, `study`, and `image` objects. Every entity has its own
+`annotation` object; image identity, path, modality, and anatomy are stored directly in
+`image`. Patient, case, and study identifiers may be null, and no cross-record
+consistency is inferred or enforced for those entities. `image.image_path` is stored as
+opaque metadata: dataset exploration does not resolve it or check whether an image file
+exists. Benchmark items are identified by `image.image_id`; mapping IDs to image files
+is the responsibility of an external module. The versioned input contract is at
+`src/medbenchagent/schemas/annotation.v2.schema.json`.
 
 Validated annotation text is cached by JSONL content hash and cache-format version
 under `benchmarks/dataset_cache/` as a DuckDB database with one `images` row per JSONL
-line and a deterministic `task-capability-profile.v1`. The profile describes annotation
-structures and every scalar leaf field, but exposes raw values only for low-cardinality
-categorical fields; identifiers, DICOM metadata, numeric values, and coordinates are
-not included as examples. CSV and XLSX inputs are not supported.
+line and a deterministic `task-capability-profile.v1`. The profile describes scalar
+leaves under each entity annotation plus `image.modality` and `image.anatomy`, but
+exposes raw values only for low-cardinality categorical fields; identifiers, DICOM
+metadata, numeric values, and coordinates are not included as examples. CSV and XLSX
+inputs are not supported.
 
 ## Planning review
 

@@ -30,11 +30,11 @@ def _task_plan_prompt(
 ) -> str:
     return (
         "Determine which predefined medical VLM benchmark tasks are supported by the dataset's "
-        "image-level annotations.\n\n"
+        "entity-scoped annotation fields.\n\n"
 
         "Return JSON only, using exactly this schema:\n"
         '{"tasks":{"task_id":{"decision":"retain|drop",'
-        '"supporting_fields":["annotation.path"],"reason":"..."}}}\n\n'
+        '"supporting_fields":["image.annotation.path"],"reason":"..."}}}\n\n'
 
         "Rules:\n"
         "1. `tasks` must contain every task in the Blueprint, and no others.\n"

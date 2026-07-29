@@ -17,7 +17,7 @@ from medbenchagent.answer_balance import balance_items
 from medbenchagent.construction import AUDIT_AGENT, record_event
 from medbenchagent.dataset import load_annotation_jsonl
 from medbenchagent.generation.context import evidence_sha256, evidence_value
-from medbenchagent.generation.engine import project_supporting_annotation
+from medbenchagent.generation.engine import project_supporting_record
 from medbenchagent.run_artifacts import blueprint_sha256
 
 
@@ -196,17 +196,16 @@ def audit_run(
             )
             if (
                 not isinstance(annotation_record, dict)
-                or annotation_record.get("image_id") != image_id
+                or not isinstance(annotation_record.get("image"), dict)
+                or annotation_record["image"].get("image_id") != image_id
             ):
                 errors.append("annotation_source")
             elif isinstance(task, dict):
-                annotation = annotation_record.get("annotation")
                 supporting_fields = task.get("supporting_fields")
                 if (
-                    not isinstance(annotation, dict)
-                    or not isinstance(supporting_fields, list)
+                    not isinstance(supporting_fields, list)
                     or not all(
-                        _meaningful(project_supporting_annotation(annotation, [field]))
+                        _meaningful(project_supporting_record(annotation_record, [field]))
                         for field in supporting_fields
                     )
                 ):
@@ -227,7 +226,7 @@ def audit_run(
                                 raise ValueError("Evidence path is not a supporting field.")
                             if not isinstance(indices, list):
                                 raise ValueError("Evidence indices must be a list.")
-                            value = evidence_value(annotation, path, indices)
+                            value = evidence_value(annotation_record, path, indices)
                             if evidence_sha256(path, indices, value) != witness.get(
                                 "evidence_sha256"
                             ):

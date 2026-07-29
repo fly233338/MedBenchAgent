@@ -14,12 +14,16 @@ from medbenchagent.generation.context import evidence_provenance, validate_evide
 
 def _record(index: int, annotation: dict) -> dict:
     return {
-        "image_id": f"img-{index}",
-        "image_path": f"images/{index}.dicom",
-        "patient_id": None,
-        "case_id": None,
-        "study_id": None,
-        "annotation": annotation,
+        "patient": {"patient_id": None, "annotation": {}},
+        "case": {"case_id": None, "annotation": {}},
+        "study": {"study_id": None, "annotation": {}},
+        "image": {
+            "image_id": f"img-{index}",
+            "image_path": f"images/{index}.dicom",
+            "modality": "Mammography",
+            "anatomy": "Breast",
+            "annotation": annotation,
+        },
     }
 
 
@@ -33,7 +37,7 @@ def _task(response_format: str, fields: list[str], **extra) -> dict:
         "supporting_fields": fields,
         "dataset_support_reason": "Available.",
         "question_templates": ["What is shown in this image?"],
-        "generation_logic": "Use only the approved annotation.",
+        "generation_logic": "Use only the approved supporting fields.",
         "medical_task_description": "Recognition task.",
         "citations": [],
     }
@@ -80,34 +84,37 @@ def _fake_model(calls: list[tuple[str, float]]):
         field_line = next(
             line for line in system.splitlines() if line.startswith("- Supporting fields: ")
         )
-        annotation_line = next(
-            line for line in system.splitlines() if line.startswith("- Supporting annotation: ")
+        data_line = next(
+            line for line in system.splitlines() if line.startswith("- Supporting data: ")
         )
         path = json.loads(field_line.removeprefix("- Supporting fields: "))[0]
-        annotation = json.loads(
-            annotation_line.removeprefix("- Supporting annotation: ")
-        )
-        key = path.split(".")[-1]
+        supporting_data = json.loads(data_line.removeprefix("- Supporting data: "))
+        value = supporting_data
+        for segment in path.split("."):
+            value = value[segment]
         return {
             "question": "Which status best describes this image?",
             "answer": "benign",
-            "evidence": {"path": path, "indices": [], "value": annotation[key]},
+            "evidence": {"path": path, "indices": [], "value": value},
         }
 
     return complete_json
 
 
-def _candidate(task_id: str, annotation: dict, supporting_annotation: dict, task: dict):
+def _candidate(task_id: str, annotation: dict, supporting_data: dict, task: dict):
+    modality = annotation.pop("modality", None)
+    record = _record(0, annotation)
+    record["image"]["modality"] = modality
     return SimpleNamespace(
         task_id=task_id,
-        record={"annotation": annotation},
-        supporting_annotation=supporting_annotation,
+        record=record,
+        supporting_record={"image": {"annotation": supporting_data}},
         task=task,
     )
 
 
-def test_generation_prompts_use_annotation_modality() -> None:
-    task = _task("letter", ["annotation.status"])
+def test_generation_prompts_use_image_modality_and_supporting_data() -> None:
+    task = _task("letter", ["image.annotation.status"])
     candidate = _candidate(
         "vqa",
         {"modality": "Mammography"},
@@ -118,6 +125,8 @@ def test_generation_prompts_use_annotation_modality() -> None:
     prompt = vqa._prompt(candidate, {"language": "en", "modality": "CT"})
 
     assert "- Modality: Mammography" in prompt
+    assert "- Supporting data:" in prompt
+    assert "- Supporting annotation:" not in prompt
     missing_modality = _candidate("vqa", {}, {"status": "benign"}, task)
     assert "- Modality: " in vqa._prompt(missing_modality, {"language": "en", "modality": "CT"})
     assert "- Modality: CT" not in vqa._prompt(missing_modality, {"language": "en", "modality": "CT"})
@@ -130,14 +139,15 @@ def test_vqa_evidence_requires_exact_scalar_source_location() -> None:
             {"categories": ["mass"]},
         ]
     }
-    fields = ["annotation.findings[*].categories[*]"]
+    fields = ["image.annotation.findings[*].categories[*]"]
     valid = {
         "path": fields[0],
         "indices": [1, 0],
         "value": "mass",
     }
 
-    assert validate_evidence(annotation, fields, valid) == valid
+    record = _record(0, annotation)
+    assert validate_evidence(record, fields, valid) == valid
     provenance = evidence_provenance(valid)
     assert provenance == {
         "path": fields[0],
@@ -147,7 +157,7 @@ def test_vqa_evidence_requires_exact_scalar_source_location() -> None:
     assert "value" not in provenance
 
     invalid = [
-        valid | {"path": "annotation.other"},
+        valid | {"path": "image.annotation.other"},
         valid | {"indices": [1]},
         valid | {"indices": [2, 0]},
         valid | {"indices": [True, 0]},
@@ -155,18 +165,18 @@ def test_vqa_evidence_requires_exact_scalar_source_location() -> None:
     ]
     for evidence in invalid:
         with pytest.raises(ValueError):
-            validate_evidence(annotation, fields, evidence)
+            validate_evidence(record, fields, evidence)
 
     with pytest.raises(ValueError, match="scalar"):
         validate_evidence(
-            {"findings": [{"categories": [["mass"]]}]},
+            _record(0, {"findings": [{"categories": [["mass"]]}]}),
             fields,
             valid | {"indices": [0, 0], "value": ["mass"]},
         )
 
 
 def test_vqa_repairs_invalid_evidence_before_review(monkeypatch) -> None:
-    task = _task("letter", ["annotation.status"])
+    task = _task("letter", ["image.annotation.status"])
     candidate = _candidate("vqa", {"status": "BENIGN"}, {"status": "BENIGN"}, task)
     responses = iter(
         [
@@ -174,7 +184,7 @@ def test_vqa_repairs_invalid_evidence_before_review(monkeypatch) -> None:
                 "question": "Which status?",
                 "answer": "benign",
                 "evidence": {
-                    "path": "annotation.status",
+                    "path": "image.annotation.status",
                     "indices": [],
                     "value": "Benign",
                 },
@@ -183,7 +193,7 @@ def test_vqa_repairs_invalid_evidence_before_review(monkeypatch) -> None:
                 "question": "Which status?",
                 "answer": "benign",
                 "evidence": {
-                    "path": "annotation.status",
+                    "path": "image.annotation.status",
                     "indices": [],
                     "value": "BENIGN",
                 },
@@ -202,7 +212,7 @@ def test_grounding_modes_require_different_annotation_context() -> None:
         "detection",
         {"modality": "Mammography"},
         {"bbox": [1, 2, 8, 9]},
-        _task("bbox", ["annotation.bbox[*]"]),
+        _task("bbox", ["image.annotation.bbox[*]"]),
     )
     visual = _candidate(
         "visual_grounding",
@@ -210,14 +220,14 @@ def test_grounding_modes_require_different_annotation_context() -> None:
         {"findings": [{"finding_categories": ["Mass"], "bbox": [1, 2, 8, 9]}]},
         _task(
             "bbox",
-            ["annotation.findings[*].finding_categories[*]", "annotation.findings[*].bbox[*]"],
+            ["image.annotation.findings[*].finding_categories[*]", "image.annotation.findings[*].bbox[*]"],
         ),
     )
     unnamed_visual = _candidate(
         "visual_grounding",
         {"modality": "Mammography"},
         {"bbox": [1, 2, 8, 9]},
-        _task("bbox", ["annotation.bbox[*]"]),
+        _task("bbox", ["image.annotation.bbox[*]"]),
     )
 
     assert grounding.supports(detection)
@@ -232,9 +242,9 @@ def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeyp
         tmp_path,
         [_record(0, {"status": "benign", "bbox": [1, 2, 8, 9], "report": "Normal study."})],
         {
-            "vqa": _task("letter", ["annotation.status"], sample_count=1),
-            "grounding": _task("bbox", ["annotation.bbox[*]"], sample_count=1),
-            "report": _task("free_text", ["annotation.report"], sample_count=1),
+            "vqa": _task("letter", ["image.annotation.status"], sample_count=1),
+            "grounding": _task("bbox", ["image.annotation.bbox[*]"], sample_count=1),
+            "report": _task("free_text", ["image.annotation.report"], sample_count=1),
         },
         3,
     )
@@ -273,11 +283,11 @@ def test_each_stage_applies_its_own_three_task_image_limit(tmp_path: Path, monke
     }
     tasks = {
         **{
-            f"vqa_{index}": _task("letter", [f"annotation.status_{index}"], sample_count=1)
+            f"vqa_{index}": _task("letter", [f"image.annotation.status_{index}"], sample_count=1)
             for index in range(4)
         },
         **{
-            f"grounding_{index}": _task("bbox", [f"annotation.bbox_{index}[*]"], sample_count=1)
+            f"grounding_{index}": _task("bbox", [f"image.annotation.bbox_{index}[*]"], sample_count=1)
             for index in range(4)
         },
     }
@@ -296,7 +306,7 @@ def test_each_stage_applies_its_own_three_task_image_limit(tmp_path: Path, monke
 
 
 def test_grounding_requires_exactly_one_bbox_and_repairs_once(tmp_path: Path, monkeypatch) -> None:
-    task = _task("bbox", ["annotation.bbox[*]"], sample_count=1)
+    task = _task("bbox", ["image.annotation.bbox[*]"], sample_count=1)
     request = _request(tmp_path, [_record(0, {"bbox": [1, 2, 8, 9]})], {"grounding": task}, 1)
     responses = iter(
         [
@@ -320,7 +330,7 @@ def test_grounding_requires_exactly_one_bbox_and_repairs_once(tmp_path: Path, mo
     multi = _request(
         tmp_path / "multi",
         [_record(0, {"boxes": [[1, 2, 8, 9], [10, 11, 20, 21]]})],
-        {"grounding": _task("bbox", ["annotation.boxes[*]"], sample_count=1)},
+        {"grounding": _task("bbox", ["image.annotation.boxes[*]"], sample_count=1)},
         1,
     )
     monkeypatch.setattr(grounding, "complete_json", lambda *_args, **_kwargs: pytest.fail("model called"))
@@ -333,8 +343,8 @@ def test_stage_shortfall_does_not_block_later_stage(tmp_path: Path, monkeypatch)
         tmp_path,
         [_record(0, {"bbox": [1, 2, 8, 9]})],
         {
-            "vqa": _task("letter", ["annotation.status"], sample_count=1),
-            "grounding": _task("bbox", ["annotation.bbox[*]"], sample_count=1),
+            "vqa": _task("letter", ["image.annotation.status"], sample_count=1),
+            "grounding": _task("bbox", ["image.annotation.bbox[*]"], sample_count=1),
         },
         2,
     )
@@ -353,7 +363,7 @@ def test_stage_shortfall_does_not_block_later_stage(tmp_path: Path, monkeypatch)
 
 
 def test_free_text_requires_exact_unique_reference_text_and_repairs_once(tmp_path: Path, monkeypatch) -> None:
-    task = _task("free_text", ["annotation.report"], sample_count=1)
+    task = _task("free_text", ["image.annotation.report"], sample_count=1)
     request = _request(tmp_path, [_record(0, {"report": "Normal study."})], {"report": task}, 1)
     responses = iter(
         [
@@ -377,7 +387,7 @@ def test_free_text_requires_exact_unique_reference_text_and_repairs_once(tmp_pat
 
 
 def test_all_supporting_fields_must_be_nonempty_and_vqa_options_remain_normalized() -> None:
-    task = _task("letter", ["annotation.status", "annotation.laterality"], options=["A. benign", "B) malignant"])
+    task = _task("letter", ["image.annotation.status", "image.annotation.laterality"], options=["A. benign", "B) malignant"])
     request = {
         "dataset_id": "test-dataset",
         "tasks": {"vqa": task},
@@ -387,12 +397,16 @@ def test_all_supporting_fields_must_be_nonempty_and_vqa_options_remain_normalize
     }
     generation._validate_tasks(request)
     assert task["options"] == ["benign", "malignant"]
-    assert not generation._all_supporting_fields_present({"status": "benign", "laterality": ""}, task["supporting_fields"])
-    assert generation._all_supporting_fields_present({"status": "benign", "laterality": False}, task["supporting_fields"])
+    assert not generation._all_supporting_fields_present(
+        _record(0, {"status": "benign", "laterality": ""}), task["supporting_fields"]
+    )
+    assert generation._all_supporting_fields_present(
+        _record(0, {"status": "benign", "laterality": False}), task["supporting_fields"]
+    )
 
 
 def test_stage_progress_is_resumed_and_cleaned_only_after_raw_merge(tmp_path: Path) -> None:
-    task = _task("letter", ["annotation.status"], sample_count=1)
+    task = _task("letter", ["image.annotation.status"], sample_count=1)
     request = _request(tmp_path, [_record(0, {"status": "benign"})], {"vqa": task}, 1)
     output_dir = Path(request["output_directory"])
     output_dir.mkdir(parents=True)

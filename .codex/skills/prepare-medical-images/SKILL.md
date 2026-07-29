@@ -17,7 +17,7 @@ Read `references/medical_image_conversion.py` in this skill directory before exp
 
 ### 1. Explore the referenced images
 
-Inspect annotation rows in order. Require unique, non-empty `image_id` values and unique, non-escaping relative `image_path` values. Resolve each path exactly beneath the source root and inspect only those files.
+Inspect annotation rows in order. Require unique, non-empty `image.image_id` values and unique, non-escaping relative `image.image_path` values. Resolve each path exactly beneath the source root and inspect only those files.
 
 Determine formats by content and identify missing, unsupported, multi-frame, volumetric, whole-slide, multi-page, or pyramidal inputs. Accept only files that can be represented as one two-dimensional grayscale image. Do not infer findings or select a slice. If required Python packages are unavailable, report them and let the user prepare the environment.
 
@@ -38,7 +38,7 @@ Do not write the dataset-specific script or convert images until the user explic
 
 Write `<artifact_dir>/scripts/prepare_images.py` with explicit annotation, source-root, image-output, and manifest paths. Copy the required pixel-conversion functions from the reference file and implement the dataset-specific orchestration in this generated script.
 
-Process only annotation-referenced files and preserve annotation order. Ensure one PNG per `image_id`; create converted or copied outputs through a staging directory, publish them only after the full preparation succeeds, and refuse to overwrite a different non-empty output.
+Process only annotation-referenced files and preserve annotation order. Ensure one PNG per `image.image_id`; create converted or copied outputs through a staging directory, publish them only after the full preparation succeeds, and refuse to overwrite a different non-empty output.
 
 Write `image_manifest.jsonl` beside `annotation.jsonl` with exactly one row per annotation:
 
@@ -56,6 +56,6 @@ Keep `png_path` relative to the manifest directory. The converted PNG files and 
 
 ### 4. Validate
 
-Verify that every manifest row matches its annotation `image_id`, resolves to a unique PNG beneath the artifact directory, and has correct dimensions and SHA-256. Open every PNG and require format `PNG`, mode `L`, positive dimensions, and non-constant pixels.
+Verify that every manifest row matches its annotation `image.image_id`, resolves to a unique PNG beneath the artifact directory, and has correct dimensions and SHA-256. Open every PNG and require format `PNG`, mode `L`, positive dimensions, and non-constant pixels.
 
 Run the generated script again with unchanged inputs. Finish only when it produces byte-identical PNG and manifest bytes, no unreferenced source image was converted, and all source files remain unchanged.

@@ -283,7 +283,7 @@ class LocalPdfRag:
 def _design_schema(response_format: object) -> str:
     common = (
         '{"question_templates":["non-empty template"],'
-        '"generation_logic":"non-empty instructions for using supporting annotation",'
+        '"generation_logic":"non-empty instructions for using supporting fields",'
         '"medical_task_description":"one paragraph: assessed capability, then medical basis"}'
     )
     if response_format == "letter":
@@ -352,7 +352,7 @@ def _design_prompt(
         f"Return exactly this JSON shape and no other fields: {schema}. "
         "Use the requested benchmark language. Medical references may guide clinical wording, "
         "option design, and medical basis. "
-        "generation_logic must explain how a later model uses only approved supporting annotations "
+        "generation_logic must explain how a later model uses only approved supporting fields "
         "to generate the question and answer without inventing facts. "
         "Do not return task_id, citations, validation_rules, placeholder bindings, answer fields, "
         "mappings, instance paths, or bbox fields. "
@@ -374,7 +374,7 @@ def _design_prompt(
         system += (
             " If the supplied task and supporting-field paths are insufficient to choose medically accurate "
             "wording or options, return instead exactly "
-            '{"requested_field_values":["one supporting annotation path"]}. '
+            '{"requested_field_values":["one supporting field path"]}. '
             "Request only fields whose categorical values are necessary; do not request DICOM metadata, "
             "bounding-box fields, raw annotations, or identifiers."
         )
@@ -417,7 +417,7 @@ def _field_value_summaries(
         segments = [segment.removesuffix("[*]") for segment in path.split(".")]
         if path not in supporting_fields:
             raise ValueError(f"{task_id}: requested field is not a supporting field: {path}")
-        if path.startswith("annotation.dicom_metadata.") or "bbox" in segments:
+        if path.startswith("image.annotation.dicom_metadata.") or "bbox" in segments:
             raise ValueError(f"{task_id}: requested field is not eligible for value summaries: {path}")
         profile_field = fields.get(path)
         if not isinstance(profile_field, dict) or not isinstance(profile_field.get("top_values"), list):

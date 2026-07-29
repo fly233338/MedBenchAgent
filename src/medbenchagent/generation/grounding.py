@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from medbenchagent.generation.context import annotation_modality
+from medbenchagent.generation.context import image_modality
 from medbenchagent.construction import event_operation
 from medbenchagent.llm import complete_json
 
@@ -19,7 +19,7 @@ Context:
 - Task definition: {task_definition}
 - Generation logic: {generation_logic}
 - Canonical question: {canonical_question}
-- Supporting annotation: {supporting_annotation}
+- Supporting data: {supporting_data}
 
 Requirements:
 1. {task_requirement}
@@ -36,7 +36,7 @@ Review one grounding VQA item.
 Context:
 - Task definition: {task_definition}
 - Generation logic: {generation_logic}
-- Supporting annotation: {supporting_annotation}
+- Supporting data: {supporting_data}
 - Question: {question}
 - Answer: {answer}
 
@@ -73,7 +73,7 @@ def _boxes(value: object) -> list[list[float]]:
 
 
 def _target_bbox(candidate: Any) -> list[float] | None:
-    boxes = _boxes(candidate.supporting_annotation)
+    boxes = _boxes(candidate.supporting_record)
     return boxes[0] if len(boxes) == 1 else None
 
 
@@ -110,7 +110,7 @@ def _visual_target_text(candidate: Any) -> str | None:
     target = _target_bbox(candidate)
     if target is None:
         return None
-    return _named_region_text(candidate.supporting_annotation, target)
+    return _named_region_text(candidate.supporting_record, target)
 
 
 def supports(candidate: Any) -> bool:
@@ -140,12 +140,12 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
         )
     return GROUNDING_GENERATION_PROMPT.format(
         language=benchmark_info.get("language", ""),
-        modality=annotation_modality(candidate),
+        modality=image_modality(candidate),
         task_id=candidate.task_id,
         task_definition=_task_definition(candidate),
         generation_logic=candidate.task["generation_logic"],
         canonical_question=candidate.task["question_templates"][0],
-        supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
+        supporting_data=json.dumps(candidate.supporting_record, ensure_ascii=False),
         task_requirement=task_requirement,
     )
 
@@ -193,7 +193,7 @@ def review(
         GROUNDING_REVIEW_PROMPT.format(
             task_definition=_task_definition(candidate),
             generation_logic=candidate.task["generation_logic"],
-            supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
+            supporting_data=json.dumps(candidate.supporting_record, ensure_ascii=False),
             question=generated["question"],
             answer=json.dumps(generated["answer"]),
             review_requirement=review_requirement,

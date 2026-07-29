@@ -77,7 +77,7 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
     image.save(image_path)
     blueprint = {
         "dataset": {"dataset_id": "set"},
-        "tasks": {"view": {"response_format": "letter", "supporting_fields": ["annotation.view"]}},
+        "tasks": {"view": {"response_format": "letter", "supporting_fields": ["image.annotation.view"]}},
     }
     blueprint_path = tmp_path / "blueprint.json"
     blueprint_path.write_text(json.dumps(blueprint), encoding="utf-8")
@@ -85,12 +85,16 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
     annotation.write_text(
         json.dumps(
             {
-                "image_id": "image",
-                "image_path": "images/a.dicom",
-                "patient_id": None,
-                "case_id": None,
-                "study_id": None,
-                "annotation": {"view": "A"},
+                "patient": {"patient_id": None, "annotation": {}},
+                "case": {"case_id": None, "annotation": {}},
+                "study": {"study_id": None, "annotation": {}},
+                "image": {
+                    "image_id": "image",
+                    "image_path": "images/a.dicom",
+                    "modality": "Mammography",
+                    "anatomy": "Breast",
+                    "annotation": {"view": "A"},
+                },
             }
         )
         + "\n",
@@ -115,12 +119,12 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
         "dataset_id": "set",
         "task_id": "view",
         "image_id": "image",
-        "supporting_fields": ["annotation.view"],
+        "supporting_fields": ["image.annotation.view"],
         "source_row": 1,
         "answer_evidence": {
-            "path": "annotation.view",
+            "path": "image.annotation.view",
             "indices": [],
-            "evidence_sha256": evidence_sha256("annotation.view", [], "A"),
+            "evidence_sha256": evidence_sha256("image.annotation.view", [], "A"),
         },
         "generation_call_ids": [],
         "review_call_ids": [],

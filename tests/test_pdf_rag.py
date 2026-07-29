@@ -12,7 +12,7 @@ def _task(response_format: str = "letter") -> dict:
         "description": "Identify the view",
         "task_type": "close_vqa",
         "response_format": response_format,
-        "supporting_fields": ["annotation.view"],
+        "supporting_fields": ["image.annotation.view"],
     }
 
 
@@ -65,7 +65,7 @@ def test_design_task_repairs_one_invalid_response(monkeypatch) -> None:
     )
 
     result = pdf_rag.design_task(
-        rag, {"language": "en"}, "view", _task(), dataset_profile=_profile("annotation.view")
+        rag, {"language": "en"}, "view", _task(), dataset_profile=_profile("image.annotation.view")
     )
 
     assert result["options"] == ["CC", "MLO"]
@@ -73,7 +73,7 @@ def test_design_task_repairs_one_invalid_response(monkeypatch) -> None:
 
 
 def test_design_task_requests_safe_field_values_only_when_needed(monkeypatch) -> None:
-    responses = iter([{"requested_field_values": ["annotation.view"]}, _design()])
+    responses = iter([{"requested_field_values": ["image.annotation.view"]}, _design()])
     calls: list[str] = []
 
     def complete(system: str, _user: str) -> dict:
@@ -84,7 +84,7 @@ def test_design_task_requests_safe_field_values_only_when_needed(monkeypatch) ->
     rag = SimpleNamespace(retrieve=lambda _query: [])
 
     result = pdf_rag.design_task(
-        rag, {"language": "en"}, "view", _task(), dataset_profile=_profile("annotation.view")
+        rag, {"language": "en"}, "view", _task(), dataset_profile=_profile("image.annotation.view")
     )
 
     assert result["options"] == ["CC", "MLO"]
@@ -95,22 +95,22 @@ def test_design_task_requests_safe_field_values_only_when_needed(monkeypatch) ->
     ("requested_path", "task", "profile", "message"),
     [
         (
-            "annotation.dicom_metadata.view_position",
-            _task() | {"supporting_fields": ["annotation.dicom_metadata.view_position"]},
-            _profile("annotation.dicom_metadata.view_position"),
+            "image.annotation.dicom_metadata.view_position",
+            _task() | {"supporting_fields": ["image.annotation.dicom_metadata.view_position"]},
+            _profile("image.annotation.dicom_metadata.view_position"),
             "not eligible",
         ),
         (
-            "annotation.findings[*].bbox[*]",
-            _task() | {"supporting_fields": ["annotation.findings[*].bbox[*]"]},
-            _profile("annotation.findings[*].bbox[*]"),
+            "image.annotation.findings[*].bbox[*]",
+            _task() | {"supporting_fields": ["image.annotation.findings[*].bbox[*]"]},
+            _profile("image.annotation.findings[*].bbox[*]"),
             "not eligible",
         ),
-        ("annotation.other", _task(), _profile("annotation.other"), "not a supporting field"),
+        ("image.annotation.other", _task(), _profile("image.annotation.other"), "not a supporting field"),
         (
-            "annotation.view",
+            "image.annotation.view",
             _task(),
-            {"fields": {"annotation.view": {"path": "annotation.view"}}},
+            {"fields": {"image.annotation.view": {"path": "image.annotation.view"}}},
             "no safe top_values",
         ),
     ],

@@ -12,19 +12,18 @@ import duckdb
 
 from medbenchagent.settings import get_settings
 
-REQUIRED_RECORD_FIELDS = (
-    "image_id",
-    "image_path",
-    "patient_id",
-    "case_id",
-    "study_id",
-    "annotation",
-)
+RECORD_ENTITIES = ("patient", "case", "study", "image")
+ENTITY_FIELDS = {
+    "patient": {"patient_id", "annotation"},
+    "case": {"case_id", "annotation"},
+    "study": {"study_id", "annotation"},
+    "image": {"image_id", "image_path", "modality", "anatomy", "annotation"},
+}
 PROFILE_SCHEMA_VERSION = "task-capability-profile.v1"
-CACHE_FORMAT_VERSION = "annotation-cache.v3"
+CACHE_FORMAT_VERSION = "annotation-cache.v4"
 
 TOP_VALUE_EXCLUDED_PREFIXES = (
-    "annotation.dicom_metadata.",
+    "image.annotation.dicom_metadata.",
 )
 TOP_VALUE_EXCLUDED_SEGMENTS = {
     "split",
@@ -43,7 +42,7 @@ class AnnotationValidationError(ValueError):
 
 
 def annotation_schema_path() -> Path:
-    return Path(__file__).parent / "schemas" / "annotation.v1.schema.json"
+    return Path(__file__).parent / "schemas" / "annotation.v2.schema.json"
 
 
 def _content_hash(path: Path) -> str:
@@ -76,14 +75,13 @@ def _is_non_empty(value: object) -> bool:
     return value is not None and value not in ("", [], {})
 
 
-def _validate_optional_id(record: dict[str, Any], field: str, line_number: int) -> None:
-    value = record[field]
+def _validate_optional_id(value: object, field: str, line_number: int) -> None:
     if value is not None and (not isinstance(value, str) or not value.strip()):
         raise AnnotationValidationError(f"Line {line_number}: {field} must be a non-empty string or null.")
 
 
 def load_annotation_jsonl(annotation_path: str | Path) -> list[dict[str, Any]]:
-    """Validate annotation records without accessing image files."""
+    """Validate entity-scoped image records without accessing image files."""
     path = Path(annotation_path).expanduser().resolve()
     if path.name != "annotation.jsonl":
         raise AnnotationValidationError("Input file must be named annotation.jsonl.")
@@ -92,6 +90,7 @@ def load_annotation_jsonl(annotation_path: str | Path) -> list[dict[str, Any]]:
 
     records: list[dict[str, Any]] = []
     image_ids: set[str] = set()
+    image_paths: set[str] = set()
     with path.open("r", encoding="utf-8") as source:
         for line_number, line in enumerate(source, start=1):
             if not line.strip():
@@ -102,22 +101,56 @@ def load_annotation_jsonl(annotation_path: str | Path) -> list[dict[str, Any]]:
                 raise AnnotationValidationError(f"Line {line_number}: invalid JSON.") from exc
             if not isinstance(record, dict):
                 raise AnnotationValidationError(f"Line {line_number}: record must be a JSON object.")
-            missing = [field for field in REQUIRED_RECORD_FIELDS if field not in record]
-            if missing:
-                raise AnnotationValidationError(f"Line {line_number}: missing required fields: {', '.join(missing)}.")
-            image_id = record["image_id"]
+            if set(record) != set(RECORD_ENTITIES):
+                raise AnnotationValidationError(
+                    f"Line {line_number}: record must contain only patient, case, study, and image."
+                )
+            for entity_name in RECORD_ENTITIES:
+                entity = record[entity_name]
+                if not isinstance(entity, dict) or set(entity) != ENTITY_FIELDS[entity_name]:
+                    expected = ", ".join(sorted(ENTITY_FIELDS[entity_name]))
+                    raise AnnotationValidationError(
+                        f"Line {line_number}: {entity_name} must contain only {expected}."
+                    )
+                if not isinstance(entity["annotation"], dict):
+                    raise AnnotationValidationError(
+                        f"Line {line_number}: {entity_name}.annotation must be a JSON object."
+                    )
+
+            patient = record["patient"]
+            case = record["case"]
+            study = record["study"]
+            image = record["image"]
+            _validate_optional_id(patient["patient_id"], "patient.patient_id", line_number)
+            _validate_optional_id(case["case_id"], "case.case_id", line_number)
+            _validate_optional_id(study["study_id"], "study.study_id", line_number)
+
+            image_id = image["image_id"]
             if not isinstance(image_id, str) or not image_id.strip():
-                raise AnnotationValidationError(f"Line {line_number}: image_id must be a non-empty string.")
+                raise AnnotationValidationError(
+                    f"Line {line_number}: image.image_id must be a non-empty string."
+                )
             if image_id in image_ids:
-                raise AnnotationValidationError(f"Line {line_number}: duplicate image_id: {image_id}.")
+                raise AnnotationValidationError(
+                    f"Line {line_number}: duplicate image.image_id: {image_id}."
+                )
             image_ids.add(image_id)
-            image_path = record["image_path"]
+            image_path = image["image_path"]
             if not isinstance(image_path, str) or not image_path.strip():
-                raise AnnotationValidationError(f"Line {line_number}: image_path must be a non-empty string.")
-            for field in ("patient_id", "case_id", "study_id"):
-                _validate_optional_id(record, field, line_number)
-            if not isinstance(record["annotation"], dict):
-                raise AnnotationValidationError(f"Line {line_number}: annotation must be a JSON object.")
+                raise AnnotationValidationError(
+                    f"Line {line_number}: image.image_path must be a non-empty string."
+                )
+            if image_path in image_paths:
+                raise AnnotationValidationError(
+                    f"Line {line_number}: duplicate image.image_path: {image_path}."
+                )
+            image_paths.add(image_path)
+            for field in ("modality", "anatomy"):
+                value = image[field]
+                if value is not None and (not isinstance(value, str) or not value.strip()):
+                    raise AnnotationValidationError(
+                        f"Line {line_number}: image.{field} must be a non-empty string or null."
+                    )
             records.append({**record, "_source_row": line_number})
     if not records:
         raise AnnotationValidationError("annotation.jsonl contains no records.")
@@ -187,11 +220,34 @@ def _collect_profile_values(
 
 
 def build_dataset_profile(records: list[dict[str, Any]], content_hash: str) -> dict[str, Any]:
-    """Summarize annotation paths deterministically without inferring medical semantics."""
+    """Summarize task-supporting entity paths without inferring medical semantics."""
     fields_stats: dict[str, dict[str, Any]] = {}
     structures_stats: dict[str, dict[str, Any]] = {}
     for image_index, record in enumerate(records):
-        _collect_profile_values(record["annotation"], "annotation", image_index, fields_stats, structures_stats)
+        for entity_name in ("patient", "case", "study"):
+            _collect_profile_values(
+                record[entity_name]["annotation"],
+                f"{entity_name}.annotation",
+                image_index,
+                fields_stats,
+                structures_stats,
+            )
+        image = record["image"]
+        for field in ("modality", "anatomy"):
+            _collect_profile_values(
+                image[field],
+                f"image.{field}",
+                image_index,
+                fields_stats,
+                structures_stats,
+            )
+        _collect_profile_values(
+            image["annotation"],
+            "image.annotation",
+            image_index,
+            fields_stats,
+            structures_stats,
+        )
 
     fields: dict[str, Any] = {}
     for path in sorted(fields_stats):
@@ -237,7 +293,7 @@ def _write_database(records: list[dict[str, Any]], database_path: Path) -> None:
                 patient_id VARCHAR,
                 case_id VARCHAR,
                 study_id VARCHAR,
-                annotation JSON NOT NULL,
+                record JSON NOT NULL,
                 _source_row BIGINT NOT NULL
             )"""
         )
@@ -245,12 +301,16 @@ def _write_database(records: list[dict[str, Any]], database_path: Path) -> None:
             "INSERT INTO images VALUES (?, ?, ?, ?, ?, CAST(? AS JSON), ?)",
             [
                 (
-                    record["image_id"],
-                    record["image_path"],
-                    record["patient_id"],
-                    record["case_id"],
-                    record["study_id"],
-                    json.dumps(record["annotation"], ensure_ascii=False, separators=(",", ":")),
+                    record["image"]["image_id"],
+                    record["image"]["image_path"],
+                    record["patient"]["patient_id"],
+                    record["case"]["case_id"],
+                    record["study"]["study_id"],
+                    json.dumps(
+                        {entity: record[entity] for entity in RECORD_ENTITIES},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                     record["_source_row"],
                 )
                 for record in records

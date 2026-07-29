@@ -34,7 +34,7 @@ class _Candidate:
     task_id: str
     source_row: int
     record: dict[str, Any]
-    supporting_annotation: dict[str, Any]
+    supporting_record: dict[str, Any]
     task: BlueprintTask
 
 
@@ -86,15 +86,31 @@ def _project_value(value: object, segments: list[str]) -> object:
     return {key: projected} if projected is not _MISSING else _MISSING
 
 
-def project_supporting_annotation(
-    annotation: dict[str, Any], supporting_fields: list[str]
+def is_supporting_field_path(path: object) -> bool:
+    """Return whether a path belongs to one task-supporting v2 scope."""
+    return isinstance(path, str) and (
+        path in {"image.modality", "image.anatomy"}
+        or any(
+            path.startswith(prefix)
+            for prefix in (
+                "patient.annotation.",
+                "case.annotation.",
+                "study.annotation.",
+                "image.annotation.",
+            )
+        )
+    )
+
+
+def project_supporting_record(
+    record: dict[str, Any], supporting_fields: list[str]
 ) -> dict[str, Any]:
-    """Project approved annotation paths while retaining array source indices."""
+    """Project approved v2 record paths while retaining array source indices."""
     projected: object = {}
     for path in supporting_fields:
-        if not isinstance(path, str) or not path.startswith("annotation."):
-            raise ValueError(f"Supporting field must start with annotation.: {path}")
-        value = _project_value(annotation, path.split(".")[1:])
+        if not is_supporting_field_path(path):
+            raise ValueError(f"Unsupported field path: {path}")
+        value = _project_value(record, path.split("."))
         if value is not _MISSING:
             projected = _merge_projection(projected, value)
     return projected if isinstance(projected, dict) else {}
@@ -147,9 +163,9 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
             raise ValueError(f"{task_id}: unsupported response_format {response_format}.")
         supporting = task.get("supporting_fields")
         if not isinstance(supporting, list) or not supporting or not all(
-            isinstance(field, str) and field.startswith("annotation.") for field in supporting
+            is_supporting_field_path(field) for field in supporting
         ):
-            raise ValueError(f"{task_id}: supporting_fields must contain annotation paths.")
+            raise ValueError(f"{task_id}: supporting_fields must contain v2 entity field paths.")
         templates = task.get("question_templates")
         if not isinstance(templates, list) or len(templates) != 1 or not all(
             isinstance(template, str) and template.strip() for template in templates
@@ -179,7 +195,7 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
 
 
 def _item_identity(candidate: _Candidate) -> str:
-    raw = f"{candidate.task_id}:{candidate.record['image_id']}:{candidate.source_row}"
+    raw = f"{candidate.task_id}:{candidate.record['image']['image_id']}:{candidate.source_row}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
@@ -191,8 +207,8 @@ def _build_item(
         "id": _item_identity(candidate),
         "task_id": candidate.task_id,
         "dataset": dataset_id,
-        "image_id": candidate.record["image_id"],
-        "image_path": candidate.record["image_path"],
+        "image_id": candidate.record["image"]["image_id"],
+        "image_path": candidate.record["image"]["image_path"],
         "question": generated["question"],
         "options": options,
         "answer": answer,
@@ -246,15 +262,10 @@ def _merge_progress(path: Path, additions: list[dict[str, Any]], task_order: dic
 
 
 def _row_record(row: tuple[Any, ...]) -> dict[str, Any]:
-    return {
-        "image_id": row[0],
-        "image_path": row[1],
-        "patient_id": row[2],
-        "case_id": row[3],
-        "study_id": row[4],
-        "annotation": json.loads(row[5]) if isinstance(row[5], str) else row[5],
-        "_source_row": int(row[6]),
-    }
+    record = json.loads(row[5]) if isinstance(row[5], str) else row[5]
+    if not isinstance(record, dict):
+        raise ValueError("Dataset record must be a JSON object.")
+    return {**record, "_source_row": int(row[6])}
 
 
 def _has_meaningful_value(value: object) -> bool:
@@ -272,9 +283,9 @@ def _shuffle_candidates(candidates: list[_Candidate], seed: int, image_id: str) 
     random.Random(int.from_bytes(digest, "big")).shuffle(candidates)
 
 
-def _all_supporting_fields_present(annotation: dict[str, Any], supporting_fields: list[str]) -> bool:
+def _all_supporting_fields_present(record: dict[str, Any], supporting_fields: list[str]) -> bool:
     return all(
-        _has_meaningful_value(project_supporting_annotation(annotation, [field]))
+        _has_meaningful_value(project_supporting_record(record, [field]))
         for field in supporting_fields
     )
 
@@ -296,7 +307,7 @@ def _next_candidate_record(
     try:
         while True:
             rows = connection.execute(
-                "SELECT image_id, image_path, patient_id, case_id, study_id, annotation, _source_row "
+                "SELECT image_id, image_path, patient_id, case_id, study_id, record, _source_row "
                 "FROM images ORDER BY hash(_source_row, ?), _source_row LIMIT ? OFFSET ?",
                 [seed, fetch_batch_size, cursor],
             ).fetchall()
@@ -309,14 +320,14 @@ def _next_candidate_record(
                 for task_id, task in tasks.items():
                     if completed[task_id] >= targets[task_id]:
                         continue
-                    if not _all_supporting_fields_present(record["annotation"], task["supporting_fields"]):
+                    if not _all_supporting_fields_present(record, task["supporting_fields"]):
                         continue
-                    projected = project_supporting_annotation(record["annotation"], task["supporting_fields"])
+                    projected = project_supporting_record(record, task["supporting_fields"])
                     candidate = _Candidate(task_id, record["_source_row"], record, projected, task)
                     if _has_meaningful_value(projected) and handler.supports(candidate):
                         candidates.append(candidate)
                 if candidates:
-                    _shuffle_candidates(candidates, seed, str(record["image_id"]))
+                    _shuffle_candidates(candidates, seed, str(record["image"]["image_id"]))
                     return cursor, candidates
             if len(rows) < fetch_batch_size:
                 return cursor, None

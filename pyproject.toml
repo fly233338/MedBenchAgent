@@ -35,7 +35,7 @@ build-backend = "hatchling.build"
 packages = ["src/medbenchagent"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/medbenchagent/schemas/annotation.v1.schema.json" = "medbenchagent/schemas/annotation.v1.schema.json"
+"src/medbenchagent/schemas/annotation.v2.schema.json" = "medbenchagent/schemas/annotation.v2.schema.json"
 
 [dependency-groups]
 dev = [

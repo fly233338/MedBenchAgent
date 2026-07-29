@@ -68,18 +68,42 @@ def validate(annotation_path: Path, schema_path: Path, source_root: Path) -> dic
     image_ids: set[str] = set()
     image_paths: set[str] = set()
     for index, row in enumerate(rows, start=1):
-        if not required <= set(row):
+        if set(row) != required:
             raise ValueError(f"Annotation row {index} is missing canonical fields.")
-        image_id = row.get("image_id")
-        if not isinstance(image_id, str) or not image_id.strip() or image_id in image_ids:
-            raise ValueError(f"Annotation row {index} has an invalid image_id.")
-        if not isinstance(row.get("annotation"), dict):
-            raise ValueError(f"Annotation row {index} has a non-object annotation.")
-        for field in ("patient_id", "case_id", "study_id"):
-            value = row.get(field)
+        expected_fields = {
+            "patient": {"patient_id", "annotation"},
+            "case": {"case_id", "annotation"},
+            "study": {"study_id", "annotation"},
+            "image": {"image_id", "image_path", "modality", "anatomy", "annotation"},
+        }
+        for entity_name, fields in expected_fields.items():
+            entity = row.get(entity_name)
+            if not isinstance(entity, dict) or set(entity) != fields:
+                raise ValueError(f"Annotation row {index} has an invalid {entity_name} object.")
+            if not isinstance(entity["annotation"], dict):
+                raise ValueError(
+                    f"Annotation row {index} has a non-object {entity_name}.annotation."
+                )
+        for entity_name, field in (
+            ("patient", "patient_id"),
+            ("case", "case_id"),
+            ("study", "study_id"),
+        ):
+            value = row[entity_name][field]
             if value is not None and (not isinstance(value, str) or not value.strip()):
-                raise ValueError(f"Annotation row {index} has an invalid {field}.")
-        relative = _relative(row.get("image_path"), f"annotation row {index} image_path")
+                raise ValueError(f"Annotation row {index} has an invalid {entity_name}.{field}.")
+
+        image = row["image"]
+        image_id = image["image_id"]
+        if not isinstance(image_id, str) or not image_id.strip() or image_id in image_ids:
+            raise ValueError(f"Annotation row {index} has an invalid image.image_id.")
+        for field in ("modality", "anatomy"):
+            value = image[field]
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"Annotation row {index} has an invalid image.{field}.")
+        relative = _relative(
+            image["image_path"], f"annotation row {index} image.image_path"
+        )
         if relative in image_paths:
             raise ValueError(f"Annotation row {index} has a duplicate image_path.")
         resolved = root.joinpath(*PurePosixPath(relative).parts).resolve()
@@ -106,7 +130,7 @@ def main() -> None:
     parser.add_argument(
         "--schema",
         type=Path,
-        default=Path(__file__).resolve().parents[1] / "annotation.v1.schema.json",
+        default=Path(__file__).resolve().parents[1] / "annotation.v2.schema.json",
     )
     args = parser.parse_args()
     print(

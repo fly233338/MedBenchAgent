@@ -7,8 +7,8 @@ from typing import Any
 
 from medbenchagent.construction import event_operation
 from medbenchagent.generation.context import (
-    annotation_modality,
-    annotation_values,
+    image_modality,
+    record_values,
     validate_evidence,
 )
 from medbenchagent.llm import complete_json
@@ -23,7 +23,7 @@ Context:
 - Canonical question: {canonical_question}
 - Candidate options: {candidate_options}
 - Supporting fields: {supporting_fields}
-- Supporting annotation: {supporting_annotation}
+- Supporting data: {supporting_data}
 Requirements:
 1. Generate a controlled linguistic variation of the question anchor while preserving the
    exact medical meaning and task intent. Do not modify, generalize, replace, remove, or
@@ -39,9 +39,9 @@ Requirements:
 3. The question must be answerable from the image and candidate options only.
    Do not mention reports, annotations, labels, metadata, or unsupported clinical details.
 4. Do not reveal, describe, or hint at the correct answer in the question.
-5. Normalize the annotation-supported answer to exactly one candidate option.
-   Do not infer beyond the supporting annotation.
-6. Copy exactly one raw scalar annotation value that supports the answer. Use one exact
+5. Normalize the data-supported answer to exactly one candidate option.
+   Do not infer beyond the supporting data.
+6. Copy exactly one raw scalar value that supports the answer. Use one exact
    supporting-field path. For every [*] in that path, provide its original source-array
    index in order. Use `_source_index` for projected object-array entries and zero-based
    positions for scalar arrays. Copy the value exactly without changing case, spelling, or type.
@@ -57,7 +57,7 @@ Context:
 - Task definition: {task_definition}
 - Generation logic: {generation_logic}
 - Candidate options: {candidate_options}
-- Supporting annotation: {supporting_annotation}
+- Supporting data: {supporting_data}
 - Question: {question}
 - Answer: {answer}
 - Answer evidence: {evidence}
@@ -66,7 +66,7 @@ Approve only when:
 1. The question does not reveal or clearly hint at the answer.
 2. The raw evidence value reasonably maps to the selected answer option.
 3. The question asks for the concept represented by that evidence and is consistent
-   with the supporting annotation.
+   with the supporting data.
 4. When several findings or values are present, the question and selected evidence do
    not create an obviously arbitrary or ambiguous target.
 
@@ -89,14 +89,14 @@ def _task_definition(candidate: Any) -> str:
 def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
     return VQA_GENERATION_PROMPT.format(
         language=benchmark_info.get("language", ""),
-        modality=annotation_modality(candidate),
+        modality=image_modality(candidate),
         task_id=candidate.task_id,
         task_definition=_task_definition(candidate),
         generation_logic=candidate.task["generation_logic"],
         canonical_question=candidate.task["question_templates"][0],
         candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
         supporting_fields=json.dumps(candidate.task["supporting_fields"], ensure_ascii=False),
-        supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
+        supporting_data=json.dumps(candidate.supporting_record, ensure_ascii=False),
     )
 
 
@@ -110,7 +110,7 @@ def _validate(candidate: Any, response: object) -> dict[str, Any]:
     if not isinstance(answer, str) or answer not in candidate.task["options"]:
         raise ValueError("Letter answer must be one exact option.")
     evidence = validate_evidence(
-        annotation_values(candidate),
+        record_values(candidate),
         candidate.task.get("supporting_fields"),
         response["evidence"],
     )
@@ -144,7 +144,7 @@ def review(
             task_definition=_task_definition(candidate),
             generation_logic=candidate.task["generation_logic"],
             candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
-            supporting_annotation=json.dumps(candidate.supporting_annotation, ensure_ascii=False),
+            supporting_data=json.dumps(candidate.supporting_record, ensure_ascii=False),
             question=generated["question"],
             answer=generated["answer"],
             evidence=json.dumps(generated["evidence"], ensure_ascii=False),

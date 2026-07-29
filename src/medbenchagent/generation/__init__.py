@@ -6,7 +6,7 @@ from medbenchagent.generation.engine import (
     generate_raw_benchmark,
     generation_done,
     initialize_generation,
-    project_supporting_annotation,
+    project_supporting_record,
 )
 
 __all__ = [
@@ -15,5 +15,5 @@ __all__ = [
     "generate_raw_benchmark",
     "generation_done",
     "initialize_generation",
-    "project_supporting_annotation",
+    "project_supporting_record",
 ]

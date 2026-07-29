@@ -7,7 +7,7 @@
 
 MedBenchAgent 从自然语言需求、目录注册的图像级 `annotation.jsonl` 和医学 PDF 出发，生成
 Medical VLM benchmark 题目。当前系统实际是 annotation-driven：不读取图像内容，也不调用
-VLM；`image_path` 仅作为不透明元数据随题目输出，题目事实必须来自获准的 annotation 字段。
+VLM；`image.image_path` 仅作为不透明元数据随题目输出，题目事实必须来自获准的实体字段。
 
 ## 主流程
 
@@ -41,12 +41,13 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 
 五个角色的 Input、Output 和私有状态 contract 位于 `agents/contracts.py`，领域 contract 仍只定义在
 顶层 `contracts.py`。`ClinicalDesignAgent` 内的 `rag_designs` 子图以 Blueprint 路径、BenchmarkInfo、已选资料和 dataset profile 为输入；模型可按需请求
-当前 supporting field 的安全 `top_values` 摘要，DICOM metadata、bbox 和原始 annotation 行不会进入提示。
+当前 supporting field 的安全 `top_values` 摘要，DICOM metadata、bbox 和原始数据行不会进入提示。
 其任务队列、定向重做反馈、当前任务和完成计数只保存在该 Agent checkpoint。GenerationAgent 先在私有状态中构造 request，现有生成子图仍以只包含 `generation_request` 的输入契约开始，
 并只向根图返回 raw 路径、题目计数、任务计数和 shortfall。阶段、游标、目标/完成计数、progress 路径、
 拒绝计数和耗尽标记属于 GenerationAgent 私有 checkpoint，不进入根图状态或公共输出。稳定类型位于 `contracts.py`：`BlueprintTask`（包含稳定 `category`）是规划到生成
 的任务快照，`GenerationRequest` 是生成边界，`BenchmarkItem` 是输出题目契约。输入记录契约由
-`schemas/annotation.v1.schema.json` 定义。
+`schemas/annotation.v2.schema.json` 定义。每行仍代表一张图，顶层为 `patient`、`case`、`study`
+和 `image`；各实体拥有独立 annotation，任务字段路径与该层级保持一致。
 
 每次运行的核心产物是 working `blueprint.json`、`task_plan_report.json`、
 阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、只含元数据的 append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。配置按代码回退值、`config/default.toml`、显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖；Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
@@ -56,7 +57,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 
 - 语义型用户输入和审核先由 DeepSeek 转为受限 JSON，再由代码验证；RAG 前固定扫描 `materials/` 下
   分类目录中的 PDF，用户自然语言选择的精确相对路径经验证后才参与检索。
-- 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准 annotation 投影。
+- 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准字段投影。
 - Task Plan 与样本分配只在确认后改变 Blueprint；RAG 设计先逐项持久化，再通过确认/修订闭环收敛。
 - 同一 task/image 最多生成一题；默认每阶段每图最多接受三题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
 - letter VQA 除 question/answer 外临时返回一个由 supporting-field path、每层原数组索引和原样 scalar value 组成的 evidence witness；代码在 Reviewer 前精确验证，raw item 不保留 witness，provenance 只保存 path、indices 和覆盖完整 witness 的 hash。
