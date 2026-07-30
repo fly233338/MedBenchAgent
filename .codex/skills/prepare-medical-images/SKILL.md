@@ -1,6 +1,6 @@
 ---
 name: prepare-medical-images
-description: Convert only the source images referenced by a confirmed canonical annotation.jsonl into deterministic 8-bit grayscale PNGs and an exact image_manifest.jsonl. Use after annotation preparation when a dataset-specific conversion script and benchmark image assets must be created.
+description: Copy referenced PNG images without pixel changes, or convert non-PNG images to user-approved PNG encodings, and write an exact image_manifest.jsonl. Use after annotation preparation when a dataset-specific conversion script and benchmark image assets must be created.
 ---
 
 # Prepare Medical Images
@@ -19,7 +19,7 @@ Read `references/medical_image_conversion.py` in this skill directory before exp
 
 Inspect annotation rows in order. Require unique, non-empty `image.image_id` values and unique, non-escaping relative `image.image_path` values. Resolve each path exactly beneath the source root and inspect only those files.
 
-Determine formats by content and identify missing, unsupported, multi-frame, volumetric, whole-slide, multi-page, or pyramidal inputs. Accept only files that can be represented as one two-dimensional grayscale image. Do not infer findings or select a slice. If required Python packages are unavailable, report them and let the user prepare the environment.
+Determine formats by content and identify missing, unsupported, multi-frame, volumetric, whole-slide, multi-page, or pyramidal inputs. Do not infer findings or select a slice. If required Python packages are unavailable, report them and let the user prepare the environment.
 
 ### 2. Review the conversion plan
 
@@ -27,12 +27,12 @@ Present a concise summary of:
 
 - Referenced image count, detected formats, and unsupported or unresolved files.
 - Exact source and output roots and the deterministic PNG naming rule.
-- Format-specific display transforms and the annotation-to-PNG mapping.
-- The fixed output policy: 8-bit grayscale PNG, original dimensions, and no resize, crop, rotation, flip, or other spatial transform.
+- PNG copy or non-PNG conversion policy, format-specific display transforms where applicable, and the annotation-to-PNG mapping.
+- The fixed spatial policy: original dimensions and no resize, crop, rotation, flip, or other spatial transform.
 
-If a referenced source is already a valid 8-bit grayscale PNG, ask whether to reference it unchanged in place or copy its bytes unchanged into the image output directory. Allow in-place use only when the file is beneath the artifact directory and has a safe artifact-relative `png_path`; otherwise require copying. Do not re-encode it in either case.
+If a referenced source is PNG, do not perform any image operation regardless of its pixel mode. Ask whether to reference it unchanged in place or copy its bytes unchanged into the image output directory. Allow in-place use only when the file is beneath the artifact directory and has a safe artifact-relative `png_path`; otherwise require copying. Do not re-encode it in either case. For every non-PNG source, present the available conversion encodings and require the user to choose and approve one before writing conversion code or producing output.
 
-Do not write the dataset-specific script or convert images until the user explicitly approves the plan. Apply feedback to the plan, show the changed decisions, and request approval again. Stop rather than silently converting genuinely color images to grayscale.
+Do not write the dataset-specific script or convert images until the user explicitly approves the plan. Apply feedback to the plan, show the changed decisions, and request approval again. Stop rather than silently choosing a conversion encoding for any non-PNG source.
 
 ### 3. Write and run the converter
 
@@ -56,6 +56,6 @@ Keep `png_path` relative to the manifest directory. The converted PNG files and 
 
 ### 4. Validate
 
-Verify that every manifest row matches its annotation `image.image_id`, resolves to a unique PNG beneath the artifact directory, and has correct dimensions and SHA-256. Open every PNG and require format `PNG`, mode `L`, positive dimensions, and non-constant pixels.
+Verify that every manifest row matches its annotation `image.image_id`, resolves to a unique PNG beneath the artifact directory, and has correct dimensions and SHA-256. Open every PNG and require format `PNG`, positive dimensions, and non-constant pixels. For copied PNG sources, verify byte-identical output; for converted non-PNG sources, verify the user-approved output encoding.
 
 Run the generated script again with unchanged inputs. Finish only when it produces byte-identical PNG and manifest bytes, no unreferenced source image was converted, and all source files remain unchanged.
