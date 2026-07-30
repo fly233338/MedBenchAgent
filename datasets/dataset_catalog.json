@@ -1,10 +1,10 @@
 {
   "datasets": [
     {
-      "id": "vindr-mammo",
-      "name": "VinDr-Mammo",
-      "description": "A breast mammography dataset with breast-level assessment and finding annotations.",
-      "annotation_path": "datasets/Mammography/Vin-Dr-normalized/annotation.jsonl",
+      "id": "breast-us",
+      "name": "BrEaST",
+      "description": "A breast ultrasound dataset with image-level clinical, lesion-characterization, BI-RADS, diagnosis, and classification annotations.",
+      "annotation_path": "datasets/Normalized/BrEaST/annotation.jsonl",
       "available": true
     }
   ]

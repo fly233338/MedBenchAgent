@@ -25,13 +25,13 @@ and PyPI installations are not supported runtime environments.
 ### Prerequisites
 
 - Python 3.11 or later and [uv](https://docs.astral.sh/uv/).
-- A LangSmith account and API key for
-  [LangGraph Studio](https://docs.langchain.com/oss/python/langgraph/studio).
 - An OpenAI-compatible DeepSeek endpoint.
 - Local Qwen embedding and reranking model directories.
 - At least one available normalized dataset with an adjacent
   `image_manifest.jsonl`, plus extractable medical-reference PDFs under
   `materials/`.
+- A LangSmith account is optional and is needed only when using
+  [LangGraph Studio](https://docs.langchain.com/oss/python/langgraph/studio).
 
 Clone the repository, create the locked environment, and prepare local
 configuration:
@@ -44,32 +44,29 @@ Copy-Item .env.example .env
 Copy-Item config/local.toml.example config/local.toml
 ```
 
-Edit `.env` with the DeepSeek endpoint settings and LangSmith API key. The
-example already sets `MEDBENCH_CONFIG=config/local.toml`; edit that TOML file
-with the local Qwen model directories. Keep credentials in `.env`, never in
-TOML files.
+Edit `.env` with the DeepSeek endpoint settings. The example already sets
+`MEDBENCH_CONFIG=config/local.toml`; edit that TOML file with the local Qwen
+model directories. Keep credentials in `.env`, never in TOML files.
 
-Start the configured DeepSeek-compatible service, then launch the local Agent
-Server:
+Start the configured DeepSeek-compatible service, then launch the terminal
+workflow:
 
 ```powershell
-uv run langgraph dev --host 127.0.0.1 --port 8123 --no-browser --allow-blocking
+uv run medbenchagent build
 ```
 
-Open the Studio URL printed by the command and select the `benchmark_builder`
-graph. Start a run with input such as:
+The command first asks for the benchmark requirement:
 
-```json
-{
-  "user_requirement": "Build a breast mammography benchmark with 100 questions.",
-  "seed": 0
-}
+```text
+请描述要构建的 Medical VLM benchmark：构建一个包含 100 道题的乳腺钼靶 benchmark
 ```
 
-Studio displays each interrupt so the user can confirm or revise benchmark
-information, dataset selection, task planning, sample allocation, source
-selection, and question design in natural language. The local OpenAPI
-documentation is available at `http://127.0.0.1:8123/docs`.
+The CLI prints the effective non-sensitive configuration, validates required
+local resources, and presents every graph interrupt as a terminal question.
+Confirm or revise benchmark information, dataset selection, task planning,
+sample allocation, source selection, and question design in natural language.
+It also streams Agent, RAG, generation, and audit progress before printing the
+audited JSONL, manifest, reports, and run directory.
 
 ## Dataset input
 
@@ -168,14 +165,17 @@ adapter metadata such as `modules.json` or `1_LogitScore/`. Embedding and rerank
 models are loaded lazily once per model path in each worker process and then reused.
 Set `RAG_MIN_RERANK_SCORE` to filter weak passages; the default is `0.5`.
 
-To trace model calls in LangSmith, set `LANGSMITH_TRACING=true` with a valid
+To trace model calls in LangSmith when using Studio or the local API, set
+`LANGSMITH_TRACING=true` with a valid
 `LANGSMITH_API_KEY` (and optionally `LANGSMITH_PROJECT`). The OpenAI-compatible DeepSeek
 client is wrapped so RAG design, generation routing, and review calls appear as nested
 LLM spans. The workflow still runs normally when tracing is disabled.
 
 Set `LANGSMITH_TRACING=false` to prevent application traces from being
 uploaded to LangSmith. A LangSmith account is still required to use the hosted
-Studio interface with the local Agent Server.
+Studio interface with the local Agent Server. `medbenchagent build` always
+disables LangSmith tracing, Hugging Face online downloads, and Chroma telemetry
+for its process, regardless of these optional tracing settings.
 
 The graph entry point is `medbenchagent.workflow.graph:compile_benchmark_graph`.
 The deterministic root graph runs `SpecificationAgent`, `CapabilityAgent`,
@@ -185,12 +185,27 @@ confirmation, revision, RAG, and generation loops are visible with `xray=True`.
 
 ## Usage modes
 
+### Interactive local CLI
+
+`uv run medbenchagent build` is the supported interface for offline and
+air-gapped source-checkout environments. It compiles the same
+`benchmark_builder` graph in-process with a `MemorySaver`, translates its
+interrupts into terminal questions, and consumes nested `tasks`, `updates`, and
+`custom` streams for progress. Configuration comes exclusively from the normal
+TOML and environment precedence; the command has no seed or generation tuning
+arguments.
+
+The checkpoint exists only for the lifetime of the CLI process. Ctrl+C, EOF, or
+a fatal model error preserves files already written to the run directory but
+cannot resume the graph after restarting the command.
+
 ### LangGraph Studio
 
-Studio connected to `uv run langgraph dev` is the supported v0.1 interface for
-research users. Despite the command name, this is the project's formal
-source-checkout workflow because Studio natively presents the graph's
-human-in-the-loop interrupts and resumable state.
+Research users with LangSmith access may alternatively start
+`uv run langgraph dev --host 127.0.0.1 --port 8123 --no-browser --allow-blocking`
+and connect Studio to the `benchmark_builder` graph. Studio presents the same
+human-in-the-loop interrupts with Agent Server-managed resumable state. The
+local OpenAPI documentation is available at `http://127.0.0.1:8123/docs`.
 
 ### Local API
 
