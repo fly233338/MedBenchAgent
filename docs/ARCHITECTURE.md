@@ -8,6 +8,8 @@
 MedBenchAgent 从自然语言需求、目录注册的图像级 `annotation.jsonl` 和医学 PDF 出发，生成
 Medical VLM benchmark 题目。当前系统实际是 annotation-driven：不读取图像内容，也不调用
 VLM；`image.image_path` 仅作为不透明元数据随题目输出，题目事实必须来自获准的实体字段。
+独立的 `medbenchagent.evaluation` 子系统在构建完成后才读取审计 PNG 和 benchmark 题目，
+用于本地 Medical VLM 推理与指标统计，不进入 LangGraph 构建流程或 Agent 状态。
 
 ## 主流程
 
@@ -68,6 +70,23 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 - `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。LLM 事件使用五个固定 Agent 名称并记录 operation、模型逻辑名称、token 与 latency；`AuditAgent` 只有抽样语义筛查产生 LLM 调用，硬审计仍为确定性。人类事件仅在自然语言被成功解析并通过代码校验后记录，不保存输入内容。
 - `run_started` 和 `run_completed` 使用 `orchestrator` component，不归属任何业务 Agent，也不进入五角色的 LLM 统计。
 - Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变。硬审计使用 source row 回溯同一 annotation 文件并重算 letter witness hash，随后平衡答案位置。语义层每 task 最多稳定抽取十题，只宽松检查明显任务偏移、答案泄露、歧义/选项重叠及语义近重复/模板塌缩；失败时 fail-open，flag 不会 reject，`flagged.jsonl` 始终是 `audited.jsonl` 的观察性子集。`audit_report.json` 采用 `audit-report.v1`，分别在 `hard_audit` 与 `semantic_audit` 中表达两层计数。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
+
+## 推理与评测边界
+
+评测入口显式接收 benchmark JSONL、`benchmark_manifest.json` 和数据集旁的
+`image_manifest.jsonl`。加载器验证三者哈希、task/response-format/metric 契约以及被引用 PNG
+的路径、尺寸和哈希，只通过 `image_id` 找图，不解释 `image_path`。当前稳定指标映射为
+letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。
+
+模型通过显式注册的 `ModelAdapter` 加载；每个模型拥有一个独立模块。首个实现
+`qwen2_5_vl` 使用 Transformers 和 Qwen 处理器，并把模型 resize 后的绝对 bbox 坐标还原到
+原 PNG 坐标。`torchrun` 单节点每 GPU 启动一个 rank，每个 rank 独立加载一份完整模型，
+以轮转切片和普通 batch 循环推理，不使用 DDP 或 tensor parallel。rank 临时 JSONL 全部成功后，
+rank 0 按输入顺序写出自包含的 `medbench-inference.v1` JSON；中断不自动续跑。
+
+`medbench-evaluation.v1` 从推理 JSON 重新计算逐题结果、逐 task 主指标、同指标 task-macro
+以及 category/全局阈值正确率。选择题 macro-F1 使用选项文本而非平衡后的字母位置；
+不同指标不合成为单一总分。评测产物不修改 benchmark run 或其 manifest。
 
 ## 维护边界
 

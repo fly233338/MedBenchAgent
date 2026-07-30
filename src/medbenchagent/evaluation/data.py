@@ -1,0 +1,268 @@
+"""Strict loading of generated benchmark items and their audited PNG mapping."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from pathlib import Path
+from typing import Any
+
+from PIL import Image
+
+from medbenchagent.evaluation.contracts import (
+    ImageEntry,
+    InferenceSample,
+    LoadedBenchmark,
+    TaskSpec,
+)
+
+
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+METRICS_BY_FORMAT = {
+    "letter": {"accuracy", "macro_f1"},
+    "free_text": {"bleu"},
+    "bbox": {"miou"},
+}
+
+
+class EvaluationDataError(ValueError):
+    """Raised when benchmark evaluation inputs violate their stable contracts."""
+
+
+def file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        while block := source.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _read_json(path: Path, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise EvaluationDataError(f"{label} could not be read: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise EvaluationDataError(f"{label} is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise EvaluationDataError(f"{label} must be a JSON object.")
+    return payload
+
+
+def _manifest_tasks(manifest: dict[str, Any]) -> dict[str, TaskSpec]:
+    if manifest.get("schema_version") != "benchmark-manifest.v1":
+        raise EvaluationDataError("Unsupported benchmark manifest schema_version.")
+    raw_tasks = manifest.get("tasks")
+    if not isinstance(raw_tasks, dict) or not raw_tasks:
+        raise EvaluationDataError("Benchmark manifest must contain a non-empty tasks object.")
+    tasks: dict[str, TaskSpec] = {}
+    for task_id, raw in raw_tasks.items():
+        if not isinstance(task_id, str) or not task_id or not isinstance(raw, dict):
+            raise EvaluationDataError("Benchmark manifest contains an invalid task.")
+        category = raw.get("category")
+        response_format = raw.get("response_format")
+        metrics = raw.get("metrics")
+        if (
+            not isinstance(category, str)
+            or not category
+            or response_format not in METRICS_BY_FORMAT
+            or not isinstance(metrics, list)
+            or len(metrics) != 1
+            or metrics[0] not in METRICS_BY_FORMAT[response_format]
+        ):
+            raise EvaluationDataError(f"{task_id}: unsupported response format or metric.")
+        tasks[task_id] = TaskSpec(task_id, category, response_format, metrics[0])
+    return tasks
+
+
+def _validate_artifact_hash(manifest: dict[str, Any], benchmark_hash: str) -> None:
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise EvaluationDataError("Benchmark manifest must contain artifacts.")
+    recorded = {
+        artifact.get("sha256")
+        for artifact in artifacts.values()
+        if isinstance(artifact, dict) and isinstance(artifact.get("sha256"), str)
+    }
+    if benchmark_hash not in recorded:
+        raise EvaluationDataError("Benchmark JSONL hash is not recorded by the benchmark manifest.")
+
+
+def _load_image_manifest(path: Path) -> dict[str, ImageEntry]:
+    root = path.parent.resolve()
+    images: dict[str, ImageEntry] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise EvaluationDataError(f"Image manifest could not be read: {path}") from exc
+    if not lines:
+        raise EvaluationDataError("Image manifest must not be empty.")
+    expected = {"image_id", "png_path", "width", "height", "sha256"}
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise EvaluationDataError(
+                f"Image manifest line {line_number} is not valid JSON."
+            ) from exc
+        if not isinstance(raw, dict) or set(raw) != expected:
+            raise EvaluationDataError(
+                f"Image manifest line {line_number} must contain exactly {sorted(expected)}."
+            )
+        image_id, relative = raw["image_id"], raw["png_path"]
+        width, height, sha256 = raw["width"], raw["height"], raw["sha256"]
+        if not isinstance(image_id, str) or not image_id or image_id in images:
+            raise EvaluationDataError(f"Image manifest line {line_number} has an invalid image_id.")
+        if not isinstance(relative, str) or not relative:
+            raise EvaluationDataError(f"{image_id}: png_path must be a non-empty string.")
+        relative_path = Path(relative)
+        if relative_path.is_absolute():
+            raise EvaluationDataError(f"{image_id}: png_path must be relative.")
+        resolved = (root / relative_path).resolve()
+        if not resolved.is_relative_to(root):
+            raise EvaluationDataError(f"{image_id}: png_path escapes the manifest directory.")
+        if (
+            not isinstance(width, int)
+            or isinstance(width, bool)
+            or width <= 0
+            or not isinstance(height, int)
+            or isinstance(height, bool)
+            or height <= 0
+            or not isinstance(sha256, str)
+            or not SHA256_PATTERN.fullmatch(sha256)
+        ):
+            raise EvaluationDataError(f"{image_id}: invalid dimensions or sha256.")
+        images[image_id] = ImageEntry(
+            image_id=image_id,
+            png_path=resolved,
+            relative_png_path=relative_path.as_posix(),
+            width=width,
+            height=height,
+            sha256=sha256,
+        )
+    return images
+
+
+def _validate_item(item: dict[str, Any], task: TaskSpec, image: ImageEntry) -> None:
+    required_strings = ("id", "task_id", "dataset", "image_id", "image_path", "question")
+    if any(not isinstance(item.get(field), str) or not item[field].strip() for field in required_strings):
+        raise EvaluationDataError("Benchmark item has a missing or invalid required string field.")
+    if task.response_format == "letter":
+        options, answer = item.get("options"), item.get("answer")
+        if (
+            not isinstance(options, list)
+            or not 2 <= len(options) <= 26
+            or not all(isinstance(option, str) and option.strip() for option in options)
+            or len(set(options)) != len(options)
+            or not isinstance(answer, str)
+            or len(answer) != 1
+            or not answer.isalpha()
+            or ord(answer.upper()) - ord("A") not in range(len(options))
+        ):
+            raise EvaluationDataError(f"{item['id']}: invalid letter response contract.")
+    elif task.response_format == "free_text":
+        if item.get("options") is not None or not isinstance(item.get("answer"), str) or not item["answer"]:
+            raise EvaluationDataError(f"{item['id']}: invalid free-text response contract.")
+    else:
+        box = item.get("answer")
+        if (
+            item.get("options") is not None
+            or not isinstance(box, list)
+            or len(box) != 4
+            or not all(isinstance(value, (int, float)) and math.isfinite(value) for value in box)
+            or not (0 <= box[0] < box[2] <= image.width)
+            or not (0 <= box[1] < box[3] <= image.height)
+        ):
+            raise EvaluationDataError(f"{item['id']}: invalid bbox response contract.")
+
+
+def _validate_png(image: ImageEntry) -> None:
+    if not image.png_path.is_file():
+        raise EvaluationDataError(f"{image.image_id}: PNG is missing: {image.png_path}")
+    if file_sha256(image.png_path) != image.sha256:
+        raise EvaluationDataError(f"{image.image_id}: PNG sha256 does not match image manifest.")
+    try:
+        with Image.open(image.png_path) as png:
+            png.load()
+            if png.format != "PNG" or png.size != (image.width, image.height):
+                raise EvaluationDataError(
+                    f"{image.image_id}: PNG format or dimensions do not match image manifest."
+                )
+    except OSError as exc:
+        raise EvaluationDataError(f"{image.image_id}: PNG could not be decoded.") from exc
+
+
+def load_benchmark(
+    benchmark_path: str | Path,
+    benchmark_manifest_path: str | Path,
+    image_manifest_path: str | Path,
+    *,
+    rank: int = 0,
+    world_size: int = 1,
+) -> LoadedBenchmark:
+    """Load and validate one generated benchmark for a specific inference rank."""
+    benchmark_file = Path(benchmark_path)
+    manifest_file = Path(benchmark_manifest_path)
+    image_manifest_file = Path(image_manifest_path)
+    manifest = _read_json(manifest_file, "Benchmark manifest")
+    tasks = _manifest_tasks(manifest)
+    benchmark_hash = file_sha256(benchmark_file)
+    image_manifest_hash = file_sha256(image_manifest_file)
+    _validate_artifact_hash(manifest, benchmark_hash)
+    dataset = manifest.get("dataset")
+    if not isinstance(dataset, dict) or not isinstance(dataset.get("dataset_id"), str):
+        raise EvaluationDataError("Benchmark manifest has an invalid dataset object.")
+    if image_manifest_hash != dataset.get("image_manifest_sha256"):
+        raise EvaluationDataError("Image manifest sha256 does not match benchmark manifest.")
+    benchmark_info = manifest.get("benchmark_info")
+    if not isinstance(benchmark_info, dict) or benchmark_info.get("language") not in {"en", "zh"}:
+        raise EvaluationDataError("Benchmark manifest has an invalid benchmark_info language.")
+    images = _load_image_manifest(image_manifest_file)
+
+    try:
+        lines = benchmark_file.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise EvaluationDataError(f"Benchmark JSONL could not be read: {benchmark_file}") from exc
+    if not lines:
+        raise EvaluationDataError("Benchmark JSONL must not be empty.")
+    samples: list[InferenceSample] = []
+    seen_item_ids: set[str] = set()
+    validated_images: set[str] = set()
+    for index, line in enumerate(lines):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise EvaluationDataError(f"Benchmark line {index + 1} is not valid JSON.") from exc
+        if not isinstance(item, dict):
+            raise EvaluationDataError(f"Benchmark line {index + 1} must be a JSON object.")
+        item_id, task_id, image_id = item.get("id"), item.get("task_id"), item.get("image_id")
+        if not isinstance(item_id, str) or item_id in seen_item_ids:
+            raise EvaluationDataError(f"Benchmark line {index + 1} has a duplicate or invalid id.")
+        if task_id not in tasks:
+            raise EvaluationDataError(f"{item_id}: unknown task_id.")
+        if item.get("dataset") != dataset["dataset_id"]:
+            raise EvaluationDataError(f"{item_id}: dataset does not match benchmark manifest.")
+        if image_id not in images:
+            raise EvaluationDataError(f"{item_id}: image_id is missing from image manifest.")
+        task, image = tasks[task_id], images[image_id]
+        _validate_item(item, task, image)
+        if index % world_size == rank and image_id not in validated_images:
+            _validate_png(image)
+            validated_images.add(image_id)
+        seen_item_ids.add(item_id)
+        samples.append(InferenceSample(index, item, task, image))
+
+    benchmark_id = manifest.get("benchmark_id")
+    if not isinstance(benchmark_id, str) or not benchmark_id:
+        raise EvaluationDataError("Benchmark manifest has an invalid benchmark_id.")
+    return LoadedBenchmark(
+        benchmark_info=benchmark_info,
+        benchmark_id=benchmark_id,
+        dataset_id=dataset["dataset_id"],
+        samples=samples,
+        benchmark_sha256=benchmark_hash,
+        benchmark_manifest_sha256=file_sha256(manifest_file),
+        image_manifest_sha256=image_manifest_hash,
+    )

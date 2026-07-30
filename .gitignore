@@ -50,5 +50,5 @@ datasets/*
 !datasets/dataset_catalog.json
 # Medical PDFs require source-specific redistribution permission.
 materials/**/*.pdf
-models/
+/models/
 config/local.toml

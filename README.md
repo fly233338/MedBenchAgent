@@ -294,6 +294,60 @@ Balance an existing raw file without modifying it:
 uv run medbenchagent balance-answers --input RAW --output COPY --seed 0
 ```
 
+## Model inference and evaluation
+
+The evaluation package runs generated benchmark artifacts against local Medical
+VLM checkpoints. Use the audited JSONL when available. The loader requires the
+matching `benchmark_manifest.json` and the normalized dataset's
+`image_manifest.jsonl`; it verifies their hashes and resolves every PNG by
+`image_id`. The opaque source `image_path` stored in benchmark items is never
+used for inference.
+
+Run one process per GPU with `torchrun`. Each process loads one complete model
+copy on its `LOCAL_RANK`, processes a round-robin item shard in ordinary
+batches, and writes a temporary rank file. Rank zero creates one ordered,
+self-contained inference JSON after every rank succeeds:
+
+```powershell
+uv run torchrun --standalone --nproc-per-node=4 --module medbenchagent.evaluation.inference `
+  --adapter qwen2_5_vl `
+  --model-path models/Qwen2.5-VL-7B-Instruct `
+  --benchmark benchmarks/runs/RUN_ID/benchmark.DATASET.audited.jsonl `
+  --benchmark-manifest benchmarks/runs/RUN_ID/benchmark_manifest.json `
+  --image-manifest datasets/NORMALIZED_DATASET/image_manifest.jsonl `
+  --output results/qwen2_5_vl.json `
+  --batch-size 4
+```
+
+For one GPU, the equivalent `uv run medbench-infer ...` command is available.
+Inference is deterministic greedy decoding. The defaults are 512 new tokens,
+SDPA, 256-1280 Qwen visual tokens, and correctness thresholds of 0.5 for both
+sentence BLEU and bbox IoU. Use the CLI flags to change these values. Existing
+outputs and temporary parts are protected unless `--overwrite` is explicitly
+passed; interrupted jobs retain their parts for diagnosis but do not resume
+them.
+
+Generate the task, metric-group, and category report from the inference file:
+
+```powershell
+uv run medbench-eval `
+  --input results/qwen2_5_vl.json `
+  --output results/qwen2_5_vl.report.json
+```
+
+The evaluator recomputes item scores and checks the recorded result. It reports
+accuracy, semantic-option macro-F1, SacreBLEU, and mean IoU according to each
+task's manifest metric. Heterogeneous task metrics are kept in separate groups;
+only thresholded correctness is summarized across all tasks. Optional
+`--bleu-threshold` and `--bbox-iou-threshold` values recompute report
+correctness without rerunning the model.
+
+Model integrations live under `medbenchagent.evaluation.models`. Add one model
+module implementing `ModelAdapter.generate`, then add its explicit name and
+factory to the registry in that package. Adapters own checkpoint loading, chat
+templates, batch preprocessing, decoding, and any model-specific coordinate
+space; common parsing and scoring remain model-independent.
+
 ## License
 
 MedBenchAgent is licensed under the [Apache License 2.0](LICENSE). See
