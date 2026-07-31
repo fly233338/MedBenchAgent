@@ -173,12 +173,31 @@ def test_visual_grounding_and_detection_can_both_be_retained() -> None:
 def test_task_plan_prompt_checks_array_leaf_paths() -> None:
     prompt = screening._task_plan_prompt(_blueprint(), _profile())
 
-    assert "For array-valued fields" in prompt
+    assert "For array-valued annotations" in prompt
     assert "`[*]` leaf path" in prompt
     assert "top_values" in prompt
     assert "may both be retained" in prompt
     assert "pathology-confirmed diagnoses are valid" in prompt
+    assert "A segmentation mask is not a bbox" in prompt
+    assert "derive a bbox from it" in prompt
+    assert "description` and `require` fields" in prompt
     assert "bbox or mask" not in prompt
     assert "priority" not in prompt
     assert '"supporting_fields":["image.annotation.path"]' in prompt
     assert '"supporting_fields":["annotation.path"]' not in prompt
+
+
+def test_task_revision_prompt_rejects_mask_as_bbox() -> None:
+    prompt = screening._task_revision_prompt(
+        "detection",
+        {"response_format": "bbox"},
+        {
+            "decision": "drop",
+            "supporting_fields": [],
+            "reason": "No bbox field.",
+        },
+        _profile(),
+        "Retain detection using the mask.",
+    )
+
+    assert "A segmentation mask is not a bbox" in prompt
