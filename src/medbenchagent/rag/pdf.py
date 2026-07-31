@@ -350,54 +350,75 @@ def _design_prompt(
     *,
     allow_value_request: bool = True,
 ) -> tuple[str, str]:
-    schema = _design_schema(task.get("response_format"))
+    response_format = task.get("response_format")
+    schema = _design_schema(response_format)
     system = (
         "Design the medical-content portion of exactly one medical VLM benchmark task. "
-        f"Return exactly this JSON shape and no other fields: {schema}. "
-        "Use the requested benchmark language. Medical references may guide clinical wording, "
-        "option design, and medical basis. "
-        "generation_logic must explain how a later model uses only approved supporting fields "
-        "to generate the question and answer without inventing facts. "
-        "Do not return task_id, citations, validation_rules, placeholder bindings, answer fields, "
-        "mappings, instance paths, or bbox fields. "
-
-        f"For letter tasks, return one question template and 2-{MAX_RAG_LETTER_OPTIONS} options "
-        "without A/B labels. Use 2-4 options by default. Use 5-8 only when the approved field "
-        "summaries or a standard closed scale required by the task establish a larger mutually "
-        "exclusive label set. "
-        "The correct answer must be supported by annotations. Options must be semantically aligned "
-        "with the same concept level and granularity as the answer. Distractors should be medically "
-        "plausible, mutually exclusive alternatives for the same question and imaging modality. "
-        "Do not mix broad diagnostic families with named subtypes, etiologic categories with histologic "
-        "entities, or labels at different diagnostic granularity unless the approved dataset label space "
-        "itself defines them as peer values. Do not enumerate an exhaustive differential diagnosis, copy a "
-        "long disease list from the references, or add rare entities merely as distractors. PDF excerpts may "
-        "guide wording and medical plausibility, but they are not the source of the dataset's option universe. "
-        "For categorical attributes, use concise category labels instead of verbose explanations or copied "
-        "annotation descriptions. "
-
-        "For modality_identification and anatomy_identification, a single supported value is valid. "
-        "Use that value as the answer and add distractors from the same taxonomy and granularity. "
-
-        "Do not create overly broad or clinically unrelated options. "
-        "When no PDF excerpt is supplied, use generic wording and do not claim specific guideline support."
+        "Evidence priority: (1) the task definition and approved supporting fields define what the "
+        "task may assess; (2) supplied field-value summaries constrain dataset-backed answer content; "
+        "(3) PDF excerpts may support clinical wording and plausibility, but must not define or expand "
+        "the dataset's answer-label space. "
     )
     if allow_value_request:
         system += (
-            " If the supplied task and supporting-field paths are insufficient to choose medically accurate "
-            "wording or a dataset-grounded option set, return instead exactly "
-            '{"requested_field_values":["one supporting field path"]}. '
-            "For a categorical letter task with no supplied field-value summary, request the necessary "
-            "supporting field values instead of inventing a taxonomy from the PDF excerpts. "
-            "Request only fields whose categorical values are necessary; do not request DICOM metadata, "
-            "bounding-box fields, raw annotations, or identifiers."
+            "Return exactly one of these objects and no other fields: "
+            f"(A) complete task design: {schema}; "
+            '(B) field-value request: {"requested_field_values":["one supporting field path"]}. '
         )
+    else:
+        system += f"Return exactly this complete design object and no other fields: {schema}. "
+    system += (
+        "Use the requested benchmark language. Return exactly one question template. The template must "
+        "assess the capability defined by the task and must not require information unavailable from the "
+        "image and requested response format. generation_logic must use only approved supporting fields "
+        "to generate the question and answer; it must not invent facts, infer an unsupported diagnosis, "
+        "or use PDF text as annotation evidence. "
+        "Do not return task_id, citations, validation_rules, placeholder bindings, answer fields, "
+        "mappings, instance paths, or bbox fields. "
+    )
+    if response_format == "letter":
+        system += (
+            f"Letter option rules: return 2-{MAX_RAG_LETTER_OPTIONS} options without A/B labels. "
+            "Use 2-4 options by default. Use 5-8 only when the approved field-value "
+            "summaries or a standard closed scale required by the task establish a larger mutually "
+            "exclusive label set. Correct-answer candidates must be supported by the approved annotations. "
+            "Distractors must be medically plausible alternatives for the same question, imaging modality, "
+            "semantic axis, evidence level, and diagnostic granularity. Options must be concise, unique, "
+            "mutually exclusive, and written without letter prefixes. Do not enumerate an exhaustive "
+            "differential diagnosis, copy a disease list from the PDF excerpts, or add rare entities merely "
+            "to increase the number of distractors. Do not mix broad diagnostic families with named subtypes. "
+            "Do not mix etiologic categories, routes of spread, lesion behavior, high-risk lesions, in-situ "
+            "lesions, and named histologic diagnoses as though they were one classification level unless the "
+            "supplied dataset taxonomy explicitly defines those exact labels as mutually exclusive peer "
+            "values. For categorical attributes, use concise category labels rather than verbose explanations "
+            "or copied annotation descriptions. For modality_identification and anatomy_identification, one "
+            "supported dataset value is sufficient; use it as a possible answer and add only minimal "
+            "distractors from the same taxonomy and granularity. "
+        )
+    if allow_value_request:
+        system += (
+            "Use the field-value request only when supplied values are insufficient for medically accurate "
+            "wording or a dataset-grounded design. "
+        )
+        if response_format == "letter":
+            system += (
+                "For a categorical letter task with no supplied field-value summary, request the necessary "
+                "supporting field values instead of inventing a taxonomy from the PDF excerpts. "
+            )
+        system += (
+            "Request only approved supporting fields whose categorical values are necessary; do not request "
+            "DICOM metadata, bounding-box fields, raw annotations, or identifiers. "
+        )
+    system += (
+        "When no relevant PDF excerpt is supplied, use generic medical wording and do not claim "
+        "specific guideline support."
+    )
     user = (
         f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
         f"Task ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n"
         f"Requested revision: {feedback or 'none'}\n"
-        f"Current RAG fields: {json.dumps(current_design or {}, ensure_ascii=False)}\n"
-        f"Requested field value summaries: {json.dumps(field_value_summaries or {}, ensure_ascii=False)}\n"
+        f"Current design: {json.dumps(current_design or {}, ensure_ascii=False)}\n"
+        f"Approved field-value summaries: {json.dumps(field_value_summaries or {}, ensure_ascii=False)}\n"
         f"PDF excerpts:\n{context or '[No sufficiently relevant PDF excerpt was retrieved.]'}"
     )
     return system, user

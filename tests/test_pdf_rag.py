@@ -95,6 +95,8 @@ def test_design_task_requests_safe_field_values_only_when_needed(monkeypatch) ->
 
     assert result["options"] == ["CC", "MLO"]
     assert len(calls) == 2
+    assert "requested_field_values" in calls[0]
+    assert "requested_field_values" not in calls[1]
 
 
 @pytest.mark.parametrize(
@@ -221,5 +223,22 @@ def test_design_prompt_keeps_letter_candidate_sets_compact() -> None:
     assert "Use 2-4 options by default" in system
     assert "Use 5-8 only when" in system
     assert "Do not enumerate an exhaustive differential diagnosis" in system
-    assert "they are not the source of the dataset's option universe" in system
     assert "request the necessary supporting field values instead of inventing a taxonomy" in system
+    assert "routes of spread" in system
+
+
+@pytest.mark.parametrize("response_format", ["bbox", "free_text"])
+def test_design_prompt_omits_letter_rules_for_other_formats(response_format: str) -> None:
+    system, _ = pdf_rag._design_prompt(
+        {"language": "en"},
+        "non_letter_task",
+        _task(response_format),
+        "",
+        "",
+        None,
+    )
+
+    assert "Letter option rules" not in system
+    assert "Use 2-4 options by default" not in system
+    assert "categorical letter task" not in system
+    assert '"options"' not in system
