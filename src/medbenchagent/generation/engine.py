@@ -36,6 +36,7 @@ class _Candidate:
     record: dict[str, Any]
     supporting_record: dict[str, Any]
     task: BlueprintTask
+    question_template: str
 
 
 def _merge_projection(left: object, right: object) -> object:
@@ -167,10 +168,15 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
         ):
             raise ValueError(f"{task_id}: supporting_fields must contain v2 entity field paths.")
         templates = task.get("question_templates")
-        if not isinstance(templates, list) or len(templates) != 1 or not all(
-            isinstance(template, str) and template.strip() for template in templates
+        if (
+            not isinstance(templates, list)
+            or not templates
+            or not all(isinstance(template, str) and template.strip() for template in templates)
+            or len(set(templates)) != len(templates)
         ):
-            raise ValueError(f"{task_id}: question_templates must contain exactly one non-empty string.")
+            raise ValueError(
+                f"{task_id}: question_templates must contain unique non-empty strings."
+            )
         for field in ("generation_logic", "medical_task_description"):
             if not isinstance(task.get(field), str) or not str(task[field]).strip():
                 raise ValueError(f"{task_id}: {field} must be a non-empty string.")
@@ -283,6 +289,16 @@ def _shuffle_candidates(candidates: list[_Candidate], seed: int, image_id: str) 
     random.Random(int.from_bytes(digest, "big")).shuffle(candidates)
 
 
+def _select_question_template(
+    task: BlueprintTask, seed: int, task_id: str, image_id: str, source_row: int
+) -> str:
+    templates = task["question_templates"]
+    digest = hashlib.sha256(
+        f"{seed}:{task_id}:{image_id}:{source_row}".encode("utf-8")
+    ).digest()
+    return templates[int.from_bytes(digest, "big") % len(templates)]
+
+
 def _all_supporting_fields_present(record: dict[str, Any], supporting_fields: list[str]) -> bool:
     return all(
         _has_meaningful_value(project_supporting_record(record, [field]))
@@ -323,11 +339,21 @@ def _next_candidate_record(
                     if not _all_supporting_fields_present(record, task["supporting_fields"]):
                         continue
                     projected = project_supporting_record(record, task["supporting_fields"])
-                    candidate = _Candidate(task_id, record["_source_row"], record, projected, task)
+                    image_id = str(record["image"]["image_id"])
+                    candidate = _Candidate(
+                        task_id,
+                        record["_source_row"],
+                        record,
+                        projected,
+                        task,
+                        _select_question_template(
+                            task, seed, task_id, image_id, record["_source_row"]
+                        ),
+                    )
                     if _has_meaningful_value(projected) and handler.supports(candidate):
                         candidates.append(candidate)
                 if candidates:
-                    _shuffle_candidates(candidates, seed, str(record["image"]["image_id"]))
+                    _shuffle_candidates(candidates, seed, image_id)
                     return cursor, candidates
             if len(rows) < fetch_batch_size:
                 return cursor, None

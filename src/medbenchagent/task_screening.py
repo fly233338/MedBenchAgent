@@ -41,7 +41,10 @@ def _task_plan_prompt(
         "evidence satisfies the task requirements.\n"
         "6. `drop` requires an empty `supporting_fields` list and a reason identifying the missing or "
         "insufficient evidence.\n"
-        "7. At least one task must be retained.\n\n"
+        "7. Every retained letter-response task requires at least two semantically distinct values that "
+        "can serve as correct answers. `distinct_value_count >= 2` is necessary but not sufficient: spelling "
+        "variants, synonyms, or several raw values that map to one answer class still form one semantic class.\n"
+        "8. At least one task must be retained.\n\n"
 
         "How to interpret the dataset profile:\n"
         "- For semantic fields, use `top_values` as the primary evidence when present. These are bounded, "
@@ -67,9 +70,10 @@ def _task_plan_prompt(
         "deterministically downstream.\n\n"
 
         "Task-specific criteria:\n"
-        "- `modality_identification` and `anatomy_identification`: one valid annotated value is sufficient.\n"
-        "- `finding_presence`: requires explicit positive or negative evidence. Missing finding, bbox, mask, "
-        "or other annotation values do not establish absence.\n"
+        "- `modality_identification` and `anatomy_identification`: require at least two semantically distinct "
+        "annotated answer values. Drop either task when its answer field is constant.\n"
+        "- `finding_presence`: requires both explicit positive and explicit negative evidence. Missing finding, "
+        "bbox, mask, or other annotation values do not establish absence.\n"
         "- `finding_description`: requires a paired expert-written natural-language description that can be "
         "used directly as the reference answer. Categorical labels, delimiter-joined terms, diagnoses, and "
         "isolated structured attributes are insufficient.\n"
@@ -108,7 +112,11 @@ def _task_revision_prompt(
         "decision, supporting_fields, and reason. decision must be retain or drop. A retain decision "
         "needs at least one supporting field. A drop decision needs no supporting fields. Supporting "
         "fields must exist in dataset_profile.fields. Use top_values as the primary field-semantic evidence; "
-        "they may be truncated and are not exhaustive. finding_description requires paired expert-written "
+        "they may be truncated and are not exhaustive. Every retained letter-response task requires at least "
+        "two semantically distinct values that can be correct answers; distinct_value_count >= 2 is necessary "
+        "but spelling variants, synonyms, or raw values mapping to one answer class do not qualify. "
+        "finding_presence requires explicit positive and explicit negative evidence, never missing annotations "
+        "as negative evidence. finding_description requires paired expert-written "
         "natural-language text, not categorical labels, delimiter-joined terms, diagnoses, or isolated "
         "attributes. diagnosis requires one clinically specific imaging or pathology-confirmed diagnosis, "
         "not a finding type, assessment category, benign/malignant status, or missing value. "
@@ -172,6 +180,20 @@ def validate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any], respo
         errors.extend(decision_errors)
         if decision is not None:
             normalized_tasks[task_id] = decision
+            task = tasks[task_id]
+            if task.get("response_format") == "letter" and decision["decision"] == "retain":
+                has_multiple_values = any(
+                    isinstance(field_profile := profile.get("fields", {}).get(field), dict)
+                    and isinstance(count := field_profile.get("distinct_value_count"), int)
+                    and not isinstance(count, bool)
+                    and count >= 2
+                    for field in decision["supporting_fields"]
+                )
+                if not has_multiple_values:
+                    errors.append(
+                        f"{task_id}: retained letter tasks need a supporting field with "
+                        "distinct_value_count >= 2"
+                    )
     if not errors and not any(plan["decision"] == "retain" for plan in normalized_tasks.values()):
         errors.append("at least one task must be retained")
     if errors:

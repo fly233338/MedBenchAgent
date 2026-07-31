@@ -24,13 +24,16 @@ role-specialized agents + deterministic orchestration：
 2. `CapabilityAgent` 从 `datasets/dataset_catalog.json` 推荐并确认数据集。
    代码解析路径、校验 `annotation.jsonl`，再生成
    内容寻址的 DuckDB、dataset profile 和 access manifest。
-3. `CapabilityAgent` 根据 profile 为全部预定义任务生成 Task Plan；人工可逐项修订。确认后，代码删除
-   不支持的任务并写入 `supporting_fields`，同时保留完整 `task_plan_report.json`。
+3. `CapabilityAgent` 根据 profile 为全部预定义任务生成 Task Plan；人工可逐项修订。所有保留的 letter
+   任务必须有至少两个语义答案类别，代码以获准字段的 `distinct_value_count >= 2` 作为必要条件兜底；
+   `finding_presence` 还必须同时具有显式正例和负例。确认后，代码删除不支持的任务并写入
+   `supporting_fields`，同时保留完整 `task_plan_report.json`。
 4. `CapabilityAgent` 按任务 category 稳定加权分配样本数：仅在保留类别间归一化默认权重，以最大余数法分配类别整数总数，再在类别内均分任务；自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
 5. `ClinicalDesignAgent` 包装现有 `rag_designs` 子图，对每个非零任务使用医学 PDF 做 RAG，逐项把设计和引用写入 Blueprint，再由
-   人工整体确认或定向重做。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
+   人工整体确认或定向重做。新设计为每个任务生成配置数量的唯一、语义等价模板，默认三个。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
 6. `GenerationAgent` 在私有状态中从确认后的 Blueprint 构造 `GenerationRequest`。现有生成子图按 letter、bbox、free_text 三个阶段
-   独立读取 DuckDB；每阶段仅投影任务获准字段、稳定随机排序候选并逐任务生成/审核，写入各自可恢复进度文件。
+   独立读取 DuckDB；每阶段仅投影任务获准字段、稳定随机排序候选，并按 seed、task、image 和 source row
+   确定性选择一个问题模板后逐任务生成/审核，写入各自可恢复进度文件。旧单模板 Blueprint 仍可重放。
 7. 完成或数据耗尽后生成 raw JSONL；根图先记录 generation summary，再由 `AuditAgent` 硬审计图像完整性、题目契约、annotation witness、provenance 和重复项，平衡通过的选择题位置，最后按 task 稳定抽样进行 fail-open 的宽松 LLM 语义筛查。
 
 ## 状态、契约与产物
@@ -54,7 +57,8 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 
 每次运行的核心产物是 working `blueprint.json`、`task_plan_report.json`、
 阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、只含元数据的 append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。配置按代码回退值、`config/default.toml`、显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖；Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
-`dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。
+`dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。模板数量由配置项
+`generation.question_template_count` 控制并写入生效配置快照，不属于 Graph 输入覆盖项。
 
 ## 不变量与失败语义
 

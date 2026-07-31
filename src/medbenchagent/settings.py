@@ -47,6 +47,7 @@ _CODE_DEFAULTS: dict[str, Any] = {
         "max_tasks_per_image": 3,
         "question_temperature": 0.7,
         "fetch_batch_size": 128,
+        "question_template_count": 3,
     },
     "dataset_profile": {"max_top_values": 3, "max_top_value_chars": 200},
     "sample_allocation": {
@@ -109,6 +110,7 @@ class GenerationSettings:
     max_tasks_per_image: int
     question_temperature: float
     fetch_batch_size: int
+    question_template_count: int
 
 
 @dataclass(frozen=True)
@@ -302,6 +304,11 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
             max_tasks_per_image=_integer(generation["max_tasks_per_image"], "generation.max_tasks_per_image", minimum=1),
             question_temperature=_number(generation["question_temperature"], "generation.question_temperature", minimum=0, maximum=2),
             fetch_batch_size=_integer(generation["fetch_batch_size"], "generation.fetch_batch_size", minimum=1),
+            question_template_count=_integer(
+                generation["question_template_count"],
+                "generation.question_template_count",
+                minimum=1,
+            ),
         ),
         dataset_profile=DatasetProfileSettings(
             max_top_values=_integer(profile["max_top_values"], "dataset_profile.max_top_values", minimum=1),

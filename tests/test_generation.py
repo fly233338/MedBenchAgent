@@ -115,6 +115,7 @@ def _candidate(task_id: str, annotation: dict, supporting_data: dict, task: dict
         record=record,
         supporting_record={"image": {"annotation": supporting_data}},
         task=task,
+        question_template=task["question_templates"][0],
     )
 
 
@@ -130,11 +131,54 @@ def test_generation_prompts_use_image_modality_and_supporting_data() -> None:
     prompt = vqa._prompt(candidate, {"language": "en", "modality": "CT"})
 
     assert "- Modality: Mammography" in prompt
+    assert "- Selected question template: What is shown in this image?" in prompt
     assert "- Supporting data:" in prompt
     assert "- Supporting annotation:" not in prompt
     missing_modality = _candidate("vqa", {}, {"status": "benign"}, task)
     assert "- Modality: " in vqa._prompt(missing_modality, {"language": "en", "modality": "CT"})
     assert "- Modality: CT" not in vqa._prompt(missing_modality, {"language": "en", "modality": "CT"})
+
+
+def test_question_template_selection_is_seeded_and_supports_legacy_single_template() -> None:
+    task = _task("letter", ["image.annotation.status"])
+    assert generation._select_question_template(task, 7, "status", "img-1", 1) == task[
+        "question_templates"
+    ][0]
+
+    task["question_templates"] = ["one", "two", "three"]
+    first = generation._select_question_template(task, 7, "status", "img-1", 1)
+    assert generation._select_question_template(task, 7, "status", "img-1", 1) == first
+    assert len(
+        {
+            generation._select_question_template(task, 7, "status", f"img-{index}", index)
+            for index in range(20)
+        }
+    ) > 1
+
+
+def test_all_generation_formats_use_the_selected_question_template() -> None:
+    selected = "Use this selected anchor."
+    vqa_candidate = _candidate(
+        "vqa", {"status": "benign"}, {"status": "benign"}, _task("letter", ["image.annotation.status"])
+    )
+    grounding_candidate = _candidate(
+        "detection",
+        {"bbox": [1, 2, 8, 9]},
+        {"bbox": [1, 2, 8, 9]},
+        _task("bbox", ["image.annotation.bbox[*]"]),
+    )
+    free_text_candidate = _candidate(
+        "report",
+        {"report": "Normal study."},
+        {"report": "Normal study."},
+        _task("free_text", ["image.annotation.report"]),
+    )
+    for candidate in (vqa_candidate, grounding_candidate, free_text_candidate):
+        candidate.question_template = selected
+
+    assert selected in vqa._prompt(vqa_candidate, {"language": "en"})
+    assert selected in grounding._prompt(grounding_candidate, {"language": "en"})
+    assert selected in free_text._prompt(free_text_candidate, {"language": "en"})
 
 
 def test_vqa_evidence_requires_exact_scalar_source_location() -> None:
@@ -539,6 +583,9 @@ def test_all_supporting_fields_must_be_nonempty_and_vqa_options_remain_normalize
     }
     generation._validate_tasks(request)
     assert task["options"] == ["benign", "malignant"]
+    task["question_templates"] = ["duplicate", "duplicate"]
+    with pytest.raises(ValueError, match="unique non-empty"):
+        generation._validate_tasks(request)
     assert not generation._all_supporting_fields_present(
         _record(0, {"status": "benign", "laterality": ""}), task["supporting_fields"]
     )

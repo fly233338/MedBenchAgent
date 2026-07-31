@@ -18,7 +18,11 @@ def _task(response_format: str = "letter") -> dict:
 
 def _design(response_format: str = "letter") -> dict:
     design = {
-        "question_templates": ["Which view is shown?"],
+        "question_templates": [
+            "Which view is shown?",
+            "Identify the view depicted in the image.",
+            "What imaging view does this image represent?",
+        ],
         "generation_logic": "Normalize the approved view annotation without inventing facts.",
         "medical_task_description": "This assesses view recognition; imaging guidance supports the terminology.",
     }
@@ -48,8 +52,14 @@ def test_validate_task_design_accepts_only_embedded_rag_fields() -> None:
         pdf_rag.validate_task_design("view", _task(), _design() | {"validation_rules": []})
     with pytest.raises(ValueError, match="options"):
         pdf_rag.validate_task_design("view", _task(), _design() | {"options": ["CC"]})
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="exactly 3"):
         pdf_rag.validate_task_design("view", _task(), _design() | {"question_templates": ["one", "two"]})
+    with pytest.raises(ValueError, match="unique"):
+        pdf_rag.validate_task_design(
+            "view",
+            _task(),
+            _design() | {"question_templates": ["one", "one", "three"]},
+        )
     assert pdf_rag.validate_task_design(
         "view", _task(), _design() | {"options": ["A. CC", "B) MLO"]}
     )["options"] == ["CC", "MLO"]
@@ -59,6 +69,20 @@ def test_validate_task_design_accepts_only_embedded_rag_fields() -> None:
             _task(),
             _design() | {"options": [f"option-{index}" for index in range(9)]},
         )
+
+
+def test_validate_task_design_uses_configured_template_count(monkeypatch) -> None:
+    monkeypatch.setattr(
+        pdf_rag,
+        "get_settings",
+        lambda: SimpleNamespace(generation=SimpleNamespace(question_template_count=2)),
+    )
+    design = _design() | {"question_templates": ["Which view?", "What view is shown?"]}
+
+    assert pdf_rag.validate_task_design("view", _task(), design)["question_templates"] == [
+        "Which view?",
+        "What view is shown?",
+    ]
 
 
 def test_design_task_repairs_one_invalid_response(monkeypatch) -> None:
@@ -221,6 +245,7 @@ def test_design_prompt_keeps_letter_candidate_sets_compact() -> None:
     )
 
     assert "Use 2-4 options by default" in system
+    assert "Return exactly 3 question templates" in system
     assert "Use 5-8 only when" in system
     assert "Do not enumerate an exhaustive differential diagnosis" in system
     assert "request the necessary supporting field values instead of inventing a taxonomy" in system

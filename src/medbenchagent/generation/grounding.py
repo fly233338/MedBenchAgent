@@ -23,7 +23,7 @@ Context:
 - Task ID: {task_id}
 - Task definition: {task_definition}
 - Generation logic: {generation_logic}
-- Canonical question: {canonical_question}
+- Selected question template: {selected_question_template}
 - Supporting data: {supporting_data}
 
 Requirements:
@@ -143,12 +143,12 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
     if candidate.task_id == "visual_grounding":
         task_requirement = (
             f"Ask for the location of the explicitly named finding {visual_text!r}. Do not use a different "
-            "finding name, and vary wording from the canonical template."
+            "finding name, and vary wording from the selected template."
         )
     else:
         task_requirement = (
             "Ask only for the location of a lesion or abnormal region. Do not name, describe, or otherwise "
-            "identify the finding category, and vary wording from the canonical template."
+            "identify the finding category, and vary wording from the selected template."
         )
     return GROUNDING_GENERATION_PROMPT.format(
         language=benchmark_info.get("language", ""),
@@ -156,7 +156,7 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
         task_id=candidate.task_id,
         task_definition=_task_definition(candidate),
         generation_logic=candidate.task["generation_logic"],
-        canonical_question=candidate.task["question_templates"][0],
+        selected_question_template=candidate.question_template,
         supporting_data=json.dumps(candidate.supporting_record, ensure_ascii=False),
         task_requirement=task_requirement,
     )

@@ -282,8 +282,9 @@ class LocalPdfRag:
 
 
 def _design_schema(response_format: object) -> str:
+    template_count = get_settings().generation.question_template_count
     common = (
-        '{"question_templates":["non-empty template"],'
+        f'{{"question_templates":["exactly {template_count} distinct non-empty templates"],'
         '"generation_logic":"non-empty instructions for using supporting fields",'
         '"medical_task_description":"one paragraph: assessed capability, then medical basis"}'
     )
@@ -307,15 +308,27 @@ def validate_task_design(task_id: str, task: dict[str, Any], response: object) -
     if set(response) != expected:
         raise ValueError(f"{task_id}: RAG design must contain exactly {sorted(expected)}.")
     templates = response["question_templates"]
-    if not isinstance(templates, list) or len(templates) != 1 or not all(
-        isinstance(template, str) and template.strip() for template in templates
+    template_count = get_settings().generation.question_template_count
+    normalized_templates = (
+        [template.strip() for template in templates]
+        if isinstance(templates, list) and all(isinstance(template, str) for template in templates)
+        else []
+    )
+    if (
+        not isinstance(templates, list)
+        or len(templates) != template_count
+        or not all(normalized_templates)
+        or len(set(normalized_templates)) != len(normalized_templates)
     ):
-        raise ValueError(f"{task_id}: question_templates must contain exactly one non-empty string.")
+        raise ValueError(
+            f"{task_id}: question_templates must contain exactly {template_count} "
+            "unique non-empty strings."
+        )
     for field in ("generation_logic", "medical_task_description"):
         if not isinstance(response[field], str) or not response[field].strip():
             raise ValueError(f"{task_id}: {field} must be a non-empty string.")
     normalized: dict[str, Any] = {
-        "question_templates": [template.strip() for template in templates],
+        "question_templates": normalized_templates,
         "generation_logic": response["generation_logic"].strip(),
         "medical_task_description": response["medical_task_description"].strip(),
     }
@@ -368,9 +381,10 @@ def _design_prompt(
     else:
         system += f"Return exactly this complete design object and no other fields: {schema}. "
     system += (
-        "Use the requested benchmark language. Return exactly one question template. The template must "
-        "assess the capability defined by the task and must not require information unavailable from the "
-        "image and requested response format. generation_logic must use only approved supporting fields "
+        f"Use the requested benchmark language. Return exactly {get_settings().generation.question_template_count} "
+        "question templates. They must assess the same capability and medical concept while using meaningfully "
+        "different question structures, and none may require information unavailable from the image and requested "
+        "response format. generation_logic must use only approved supporting fields "
         "to generate the question and answer; it must not invent facts, infer an unsupported diagnosis, "
         "or use PDF text as annotation evidence. "
         "Do not return task_id, citations, validation_rules, placeholder bindings, answer fields, "

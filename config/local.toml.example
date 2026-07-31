@@ -4,3 +4,6 @@
 [rag]
 embedding_model = "/path/to/Qwen3-Embedding-0.6B"
 reranker_model = "/path/to/Qwen3-Reranker-0.6B"
+
+[generation]
+question_template_count = 3

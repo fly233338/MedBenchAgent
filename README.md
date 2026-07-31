@@ -154,7 +154,8 @@ implicitly; copy `config/local.toml.example` and set `MEDBENCH_CONFIG` to use it
 the configured generation defaults for that one run. The run directory records the resulting
 non-sensitive values, configuration-file paths and SHA-256 hashes, and applied override keys in
 `effective_config.json`; the final manifest records its hash. API and LangSmith keys are never
-written to this snapshot.
+written to this snapshot. `generation.question_template_count` is configuration-only and defaults
+to three templates per newly designed task.
 
 ## Runtime configuration
 
@@ -244,7 +245,16 @@ working Blueprint task. The embedded fields are `question_templates`,
 `generation_logic`, `medical_task_description`, `citations`, and, for letter tasks,
 `options`. There is no separate Question Design artifact or duplicate generation spec.
 Natural-language review can revise one or more task designs without changing other
-Blueprint tasks.
+Blueprint tasks. New designs contain exactly the configured number of unique, semantically
+equivalent question templates. Generation deterministically selects one template for each
+task/image/source-row tuple from the run seed before asking the model for a controlled paraphrase;
+legacy Blueprint tasks containing one valid template remain runnable.
+
+Capability screening retains a letter-response task only when its approved supporting fields
+include at least one field with two or more distinct non-empty values and the values represent at
+least two semantic answer classes. The profile count is a deterministic necessary condition; the
+model must still reject spelling variants, synonyms, or several raw values that collapse to one
+answer. Finding-presence tasks additionally require explicit positive and negative evidence.
 
 The generator runs three independent seeded scans in a fixed order: letter VQA,
 Grounding bbox, then direct-reference free text. Each stage begins from the database

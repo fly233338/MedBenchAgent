@@ -10,7 +10,7 @@
   "tasks": {
     "modality_identification": {
       "description": "Identify the medical imaging modality shown in the image.",
-      "require": "This task applies whenever the imaging modality can be reliably determined from the annotation, image metadata, or dataset description. A dataset containing only one modality is still sufficient for generating this task.",
+      "require": "This task requires at least two semantically distinct imaging modality values that can serve as correct answers and can be reliably determined from the annotation, image metadata, or dataset description.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
@@ -21,16 +21,6 @@
     "view_identification": {
       "description": "Identify the imaging view, projection, plane, or acquisition orientation.",
       "require": "This task requires a view, projection, or plane field with values such as CC, MLO, AP, PA, lateral, axial, coronal, or sagittal.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
-      "metric": "accuracy",
-      "category": "image_acquisition_and_basic_information",
-      "sample_count": null
-    },
-
-    "laterality_identification": {
-      "description": "Identify the anatomical side represented in the image or containing the target finding.",
-      "require": "This task requires a laterality field with values such as left, right, or bilateral.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
@@ -50,7 +40,7 @@
 
     "anatomy_identification": {
       "description": "Identify the dominant anatomical region or primary body structure represented in the image.",
-      "require": "This task applies whenever the depicted anatomy can be reliably determined from the annotation, image metadata, or dataset description. A dataset containing only one anatomical category is still sufficient for generating this task.",
+      "require": "This task requires at least two semantically distinct anatomical regions or primary body structures that can serve as correct answers and can be reliably determined from the annotation, image metadata, or dataset description.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
@@ -70,7 +60,7 @@
 
     "finding_presence": {
       "description": "Determine whether a specified imaging finding or abnormality is present in the image.",
-      "require": "This task requires an explicit finding-presence label, abnormality label, or reliable positive and negative case annotation. Missing bounding boxes or finding annotations must not be interpreted as absence.",
+      "require": "This task requires both explicit positive and explicit negative finding-presence evidence from a finding-presence label, abnormality label, or reliable case annotation. Missing bounding boxes or finding annotations must not be interpreted as absence.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",

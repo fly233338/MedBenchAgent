@@ -32,12 +32,12 @@ Context:
 - Modality: {modality}
 - Task definition: {task_definition}
 - Generation logic: {generation_logic}
-- Canonical question: {canonical_question}
+- Selected question template: {selected_question_template}
 - Candidate options: {candidate_options}
 - Supporting fields: {supporting_fields}
 - Supporting data: {supporting_data}
 Requirements:
-1. Generate a controlled linguistic variation of the question anchor while preserving the
+1. Generate a controlled linguistic variation of the selected question template while preserving the
    exact medical meaning and task intent. Do not modify, generalize, replace, remove, or
    reinterpret medical concepts, including anatomical structures, organs, tissues,
    imaging modalities, pathology terms, clinical attributes, and task-specific concepts.
@@ -45,9 +45,9 @@ Requirements:
 2. Apply only surface-level linguistic changes to create variation. You may adjust sentence
    structure, word order, question formulation, function words, prepositions, or general
    phrasing. The generated question should be linguistically different but semantically
-   equivalent to the question anchor; use a distinctly different grammatical structure when possible.
+   equivalent to the selected template; use a distinctly different grammatical structure when possible.
    Avoid stock openers such as Based on…. Keep modality-specific and medical terminology
-   explicit when they appear in the anchor.
+   explicit when they appear in the selected template.
 3. The question must be answerable from the image and candidate options only.
    Do not mention reports, annotations, labels, metadata, or unsupported clinical details.
 4. Do not reveal, describe, or hint at the correct answer in the question.
@@ -128,7 +128,7 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
         task_id=candidate.task_id,
         task_definition=_task_definition(candidate),
         generation_logic=candidate.task["generation_logic"],
-        canonical_question=candidate.task["question_templates"][0],
+        selected_question_template=candidate.question_template,
         candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
         supporting_fields=json.dumps(candidate.task["supporting_fields"], ensure_ascii=False),
         supporting_data=json.dumps(candidate.supporting_record, ensure_ascii=False),

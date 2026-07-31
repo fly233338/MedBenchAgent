@@ -22,11 +22,11 @@ Context:
 - Task ID: {task_id}
 - Task definition: {task_definition}
 - Generation logic: {generation_logic}
-- Canonical question: {canonical_question}
+- Selected question template: {selected_question_template}
 - Reference text: {reference_text}
 
 Requirements:
-1. Write one substantial semantic paraphrase of the canonical question; avoid following its template verbatim and naturally vary wording, syntax, and word order.
+1. Write one substantial semantic paraphrase of the selected question template; avoid following it verbatim and naturally vary wording, syntax, and word order.
 2. Do not reveal or clearly hint at the reference text in the question.
 3. Copy the reference text exactly as the answer. Do not summarize, rewrite, or add medical inference.
 
@@ -100,7 +100,7 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
         task_id=candidate.task_id,
         task_definition=_task_definition(candidate),
         generation_logic=candidate.task["generation_logic"],
-        canonical_question=candidate.task["question_templates"][0],
+        selected_question_template=candidate.question_template,
         reference_text=json.dumps(_reference_text(candidate), ensure_ascii=False),
     )
 
