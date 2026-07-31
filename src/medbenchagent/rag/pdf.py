@@ -17,6 +17,7 @@ from medbenchagent.rag.reranker import score_pairs
 from medbenchagent.settings import get_settings
 
 CACHE_SCHEMA_VERSION = "2"
+MAX_RAG_LETTER_OPTIONS = 8
 RAG_DESIGN_FIELDS = {
     "question_templates",
     "options",
@@ -287,7 +288,7 @@ def _design_schema(response_format: object) -> str:
         '"medical_task_description":"one paragraph: assessed capability, then medical basis"}'
     )
     if response_format == "letter":
-        return common[:-1] + ',"options":["2 to 26 unique medical options"]}'
+        return common[:-1] + f',"options":["2 to {MAX_RAG_LETTER_OPTIONS} unique medical options"]}}'
     if response_format in {"bbox", "free_text"}:
         return common
     raise ValueError(f"Unsupported response_format for RAG design: {response_format}")
@@ -326,11 +327,14 @@ def validate_task_design(task_id: str, task: dict[str, Any], response: object) -
         ] if isinstance(options, list) else []
         if (
             not isinstance(options, list)
-            or not 2 <= len(options) <= 26
+            or not 2 <= len(options) <= MAX_RAG_LETTER_OPTIONS
             or not all(normalized_options)
             or len(set(normalized_options)) != len(normalized_options)
         ):
-            raise ValueError(f"{task_id}: options must contain 2-26 unique non-empty strings.")
+            raise ValueError(
+                f"{task_id}: options must contain 2-{MAX_RAG_LETTER_OPTIONS} "
+                "unique non-empty strings."
+            )
         normalized["options"] = normalized_options
     return normalized
 
@@ -357,12 +361,20 @@ def _design_prompt(
         "Do not return task_id, citations, validation_rules, placeholder bindings, answer fields, "
         "mappings, instance paths, or bbox fields. "
 
-        "For letter tasks, return one question template and 2-26 options without A/B labels. "
+        f"For letter tasks, return one question template and 2-{MAX_RAG_LETTER_OPTIONS} options "
+        "without A/B labels. Use 2-4 options by default. Use 5-8 only when the approved field "
+        "summaries or a standard closed scale required by the task establish a larger mutually "
+        "exclusive label set. "
         "The correct answer must be supported by annotations. Options must be semantically aligned "
         "with the same concept level and granularity as the answer. Distractors should be medically "
-        "plausible and mutually exclusive. Choose the most appropriate compact candidate set, not options "
-        "merely to add distractors. For categorical attributes, use concise category labels "
-        "instead of verbose explanations or copied annotation descriptions. "
+        "plausible, mutually exclusive alternatives for the same question and imaging modality. "
+        "Do not mix broad diagnostic families with named subtypes, etiologic categories with histologic "
+        "entities, or labels at different diagnostic granularity unless the approved dataset label space "
+        "itself defines them as peer values. Do not enumerate an exhaustive differential diagnosis, copy a "
+        "long disease list from the references, or add rare entities merely as distractors. PDF excerpts may "
+        "guide wording and medical plausibility, but they are not the source of the dataset's option universe. "
+        "For categorical attributes, use concise category labels instead of verbose explanations or copied "
+        "annotation descriptions. "
 
         "For modality_identification and anatomy_identification, a single supported value is valid. "
         "Use that value as the answer and add distractors from the same taxonomy and granularity. "
@@ -373,8 +385,10 @@ def _design_prompt(
     if allow_value_request:
         system += (
             " If the supplied task and supporting-field paths are insufficient to choose medically accurate "
-            "wording or options, return instead exactly "
+            "wording or a dataset-grounded option set, return instead exactly "
             '{"requested_field_values":["one supporting field path"]}. '
+            "For a categorical letter task with no supplied field-value summary, request the necessary "
+            "supporting field values instead of inventing a taxonomy from the PDF excerpts. "
             "Request only fields whose categorical values are necessary; do not request DICOM metadata, "
             "bounding-box fields, raw annotations, or identifiers."
         )

@@ -53,6 +53,12 @@ def test_validate_task_design_accepts_only_embedded_rag_fields() -> None:
     assert pdf_rag.validate_task_design(
         "view", _task(), _design() | {"options": ["A. CC", "B) MLO"]}
     )["options"] == ["CC", "MLO"]
+    with pytest.raises(ValueError, match="2-8"):
+        pdf_rag.validate_task_design(
+            "view",
+            _task(),
+            _design() | {"options": [f"option-{index}" for index in range(9)]},
+        )
 
 
 def test_design_task_repairs_one_invalid_response(monkeypatch) -> None:
@@ -212,5 +218,8 @@ def test_design_prompt_keeps_letter_candidate_sets_compact() -> None:
         None,
     )
 
-    assert "most appropriate compact candidate set" in system
-    assert "merely to add distractors" in system
+    assert "Use 2-4 options by default" in system
+    assert "Use 5-8 only when" in system
+    assert "Do not enumerate an exhaustive differential diagnosis" in system
+    assert "they are not the source of the dataset's option universe" in system
+    assert "request the necessary supporting field values instead of inventing a taxonomy" in system
