@@ -43,7 +43,8 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 
 五个角色的 Input、Output 和私有状态 contract 位于 `agents/contracts.py`，领域 contract 仍只定义在
 顶层 `contracts.py`。`ClinicalDesignAgent` 内的 `rag_designs` 子图以 Blueprint 路径、BenchmarkInfo、已选资料和 dataset profile 为输入；模型可按需请求
-当前 supporting field 的安全 `top_values` 摘要，DICOM metadata、bbox 和原始数据行不会进入提示。
+当前 supporting field 的安全 `top_values` 摘要；每个合格语义标量字段最多暴露三个稳定样例，长字符串
+截断至 200 字符，identifier、文件引用、DICOM metadata、bbox 坐标和原始数据行不会进入提示。
 其任务队列、定向重做反馈、当前任务和完成计数只保存在该 Agent checkpoint。GenerationAgent 先在私有状态中构造 request，现有生成子图仍以只包含 `generation_request` 的输入契约开始，
 并只向根图返回 raw 路径、题目计数、任务计数和 shortfall。阶段、游标、目标/完成计数、progress 路径、
 拒绝计数和耗尽标记属于 GenerationAgent 私有 checkpoint，不进入根图状态或公共输出。稳定类型位于 `contracts.py`：`BlueprintTask`（包含稳定 `category`）是规划到生成
@@ -63,7 +64,12 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 - Task Plan 与样本分配只在确认后改变 Blueprint；RAG 设计先逐项持久化，再通过确认/修订闭环收敛。
 - 同一 task/image 最多生成一题；默认每阶段每图最多接受三题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
 - 三种答案格式都保留可回放的 annotation witness。letter VQA 临时返回一个由 supporting-field path、每层原数组索引和原样 scalar value 组成的 witness；free_text 由代码唯一定位直接答案字符串；bbox 由代码按 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。代码在 Reviewer 前精确验证，raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
-- bbox 仅接受恰有一个合法标注框且能唯一定位四坐标 witness 的候选；`visual_grounding` 还必须有与该框配对的 finding 文本，并确定性优先于 `detection`。`detection` 仅定位泛化 lesion/abnormal region，不能泄露 finding 名称；bbox 与自由文本保持各自的直接 annotation 答案契约。
+- bbox 任务只接受恰有一个合法标注框且能唯一定位四坐标 witness 的候选，不接受 mask 或运行期
+  mask-to-bbox 转换。`visual_grounding` 还必须有与该框配对的 finding 名称、结构化标签或描述；
+  `detection` 仅定位泛化 lesion/abnormal region，不能泄露 finding 名称。两者是独立能力，可同时保留。
+  bbox 与自由文本保持各自的直接 annotation 答案契约。
+- `diagnosis` 允许影像或病理确认的具体诊断作为 reference，但 letter VQA 在模型调用前确定性跳过
+  占位值、`&` 连接的组合诊断以及具有多个 scalar evidence location 的候选。
 - 数据耗尽是带 per-task shortfall 的成功结果；答案平衡不覆盖 raw 文件，也不改 bbox/自由文本题。
 - 根图默认只展示五个角色及确定性适配节点；xray 图、LangSmith 与使用
   `stream_mode=["updates", "custom"]`、`subgraphs=True` 仍可展开角色子图并接收每个 RAG 任务与每条生成记录的进度。启用 LangSmith 后，DeepSeek 调用显示为所属 Agent 下可展开的 LLM span。

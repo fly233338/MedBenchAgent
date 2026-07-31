@@ -19,6 +19,8 @@ def test_default_settings_preserve_current_runtime_defaults() -> None:
     assert settings.rag.candidate_count == 12
     assert settings.rag.result_limit == 5
     assert settings.rag.reranker_max_length == 8192
+    assert settings.dataset_profile.max_top_values == 3
+    assert settings.dataset_profile.max_top_value_chars == 200
 
 
 def test_explicit_toml_then_environment_override_and_empty_value(tmp_path: Path, monkeypatch) -> None:

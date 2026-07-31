@@ -295,6 +295,73 @@ def test_grounding_modes_require_different_annotation_context() -> None:
     assert "explicitly named finding 'Mass'" in grounding._prompt(visual, {"language": "en"})
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("Fibroadenoma", True),
+        (" unknown ", False),
+        ("not available", False),
+        ("not applicable", False),
+        ("n/a", False),
+        ("none", False),
+        ("not specified", False),
+        ("unspecified", False),
+        ("Fibroadenoma&Intraductal papilloma", False),
+        (42, False),
+    ],
+)
+def test_diagnosis_candidates_require_one_specific_string(value: object, expected: bool) -> None:
+    candidate = _candidate(
+        "diagnosis",
+        {"diagnosis": value},
+        {"diagnosis": value},
+        _task("letter", ["image.annotation.diagnosis"]),
+    )
+
+    assert vqa.supports(candidate) is expected
+
+
+def test_diagnosis_candidates_reject_multiple_evidence_locations() -> None:
+    candidate = _candidate(
+        "diagnosis",
+        {"findings": [{"diagnosis": "Fibroadenoma"}, {"diagnosis": "Cyst"}]},
+        {
+            "findings": [
+                {"_source_index": 0, "diagnosis": "Fibroadenoma"},
+                {"_source_index": 1, "diagnosis": "Cyst"},
+            ]
+        },
+        _task("letter", ["image.annotation.findings[*].diagnosis"]),
+    )
+
+    assert not vqa.supports(candidate)
+
+
+def test_invalid_diagnosis_is_skipped_before_model_calls(tmp_path: Path, monkeypatch) -> None:
+    request = _request(
+        tmp_path,
+        [_record(0, {"diagnosis": "not applicable"})],
+        {
+            "diagnosis": _task(
+                "letter",
+                ["image.annotation.diagnosis"],
+                sample_count=1,
+            )
+        },
+        1,
+    )
+    monkeypatch.setattr(
+        vqa,
+        "complete_json",
+        lambda *_args, **_kwargs: pytest.fail("Invalid diagnosis must be skipped before model calls"),
+    )
+
+    result = generation.generate_raw_benchmark(request)
+
+    assert result.task_counts == {"diagnosis": 0}
+    assert _read_items(result.raw_output_path) == []
+
+
 def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeypatch) -> None:
     request = _request(
         tmp_path,

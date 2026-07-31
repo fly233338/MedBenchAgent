@@ -102,11 +102,12 @@ is the responsibility of an external module. The versioned input contract is at
 
 Validated annotation text is cached by JSONL content hash and cache-format version
 under `benchmarks/dataset_cache/` as a DuckDB database with one `images` row per JSONL
-line and a deterministic `task-capability-profile.v1`. The profile describes scalar
-leaves under each entity annotation plus `image.modality` and `image.anatomy`, but
-exposes raw values only for low-cardinality categorical fields; identifiers, DICOM
-metadata, numeric values, and coordinates are not included as examples. CSV and XLSX
-inputs are not supported.
+line and a deterministic `task-capability-profile.v2`. The profile describes scalar
+leaves under each entity annotation plus `image.modality` and `image.anatomy`. Every
+eligible semantic scalar field includes up to three stable top values; strings are
+limited to 200 characters. Identifiers, file references, DICOM metadata, split/fold
+metadata, and bounding-box coordinates do not expose example values. CSV and XLSX inputs
+are not supported.
 
 ## Planning review
 
@@ -116,7 +117,8 @@ DeepSeek maps every response to a validated confirm/revise action. BenchmarkInfo
 uses the same natural-language interpretation. The working Blueprint is updated only
 after confirmation: dropped tasks are removed and retained tasks receive their approved
 `supporting_fields`. The resulting `task_plan_report.json` retains decisions for both
-retained and dropped tasks.
+retained and dropped tasks. Detection and visual grounding are independent capabilities:
+both may be retained when the dataset has the required bounding-box and finding evidence.
 
 The retained tasks then receive a stable category-weighted allocation of the benchmark
 target. The six task-category weights are normalized across categories that retain at
@@ -251,9 +253,11 @@ locates its unique direct-reference string, while grounding locates the four sou
 coordinates of its unique annotated box. Code verifies every witness against the
 original annotation before review; only path, indices, and hashes enter provenance.
 Detection asks only for a generic lesion or abnormal region, while visual grounding
-requires a named finding paired with that same box; the two tasks are mutually exclusive.
-Each stage has its own prompt, validator, review, and temporary progress file; failures
-do not consume the per-image acceptance limit.
+requires a named or described finding paired with that same box; neither task accepts a
+mask as generation evidence. Diagnosis candidates are deterministically skipped before
+generation when they are placeholders, delimiter-joined combinations, or resolve to
+multiple scalar evidence locations. Each stage has its own prompt, validator, review,
+and temporary progress file; failures do not consume the per-image acceptance limit.
 
 Accepted items are merged idempotently into a stage-specific progress JSONL using
 deterministic item IDs. The generation subgraph checkpoints after every processed row,

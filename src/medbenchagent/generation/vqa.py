@@ -13,6 +13,18 @@ from medbenchagent.generation.context import (
 )
 from medbenchagent.llm import complete_json
 
+UNSUPPORTED_DIAGNOSIS_VALUES = frozenset(
+    {
+        "unknown",
+        "not available",
+        "not applicable",
+        "n/a",
+        "none",
+        "not specified",
+        "unspecified",
+    }
+)
+
 VQA_GENERATION_PROMPT = """
 Generate one letter-choice question for a medical image VQA benchmark.
 Context:
@@ -75,8 +87,31 @@ Return JSON only:
 """.strip()
 
 
+def _scalar_values(value: object) -> list[object]:
+    if isinstance(value, dict):
+        return [
+            scalar
+            for key, item in value.items()
+            if key != "_source_index"
+            for scalar in _scalar_values(item)
+        ]
+    if isinstance(value, list):
+        return [scalar for item in value for scalar in _scalar_values(item)]
+    return [] if value is None or value == "" else [value]
+
+
 def supports(candidate: Any) -> bool:
-    return True
+    if candidate.task_id != "diagnosis":
+        return True
+    values = _scalar_values(candidate.supporting_record)
+    if len(values) != 1 or not isinstance(values[0], str):
+        return False
+    diagnosis = values[0].strip()
+    return bool(
+        diagnosis
+        and "&" not in diagnosis
+        and diagnosis.casefold() not in UNSUPPORTED_DIAGNOSIS_VALUES
+    )
 
 
 def _task_definition(candidate: Any) -> str:

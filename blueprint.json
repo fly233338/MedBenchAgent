@@ -70,7 +70,7 @@
 
     "finding_presence": {
       "description": "Determine whether a specified imaging finding or abnormality is present in the image.",
-      "require": "This task requires an explicit finding-presence label, abnormality label, or reliable positive and negative case annotation. Missing bounding boxes, masks, or finding annotations must not be interpreted as absence.",
+      "require": "This task requires an explicit finding-presence label, abnormality label, or reliable positive and negative case annotation. Missing bounding boxes or finding annotations must not be interpreted as absence.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
@@ -100,7 +100,7 @@
 
     "finding_description": {
       "description": "Describe the clinically relevant visual characteristics of a specific imaging finding.",
-      "require": "This task requires either a paired expert-written finding description or structured fields such as finding type, shape, margin, location, distribution, and imaging appearance.",
+      "require": "This task requires a paired expert-written natural-language finding description that can be used directly as the reference answer. Categorical labels, delimiter-joined terms, diagnoses, and isolated structured attributes such as finding type, shape, margin, location, distribution, or imaging appearance do not support this task by themselves.",
       "task_type": "open_vqa",
       "response_format": "free_text",
       "metric": "bleu",
@@ -129,8 +129,8 @@
     },
 
     "diagnosis": {
-      "description": "Determine the most likely named diagnosis supported by the medical image.",
-      "require": "This task requires a diagnosis field containing clinically specific disease or condition labels, such as pneumonia, fracture, fibroadenoma, cyst, invasive ductal carcinoma, or another expert-confirmed diagnosis.",
+      "description": "Determine the most likely diagnosis for the imaged finding or case.",
+      "require": "This task requires an explicit expert-confirmed diagnosis field associated with the imaged finding or case and containing one clinically specific disease or condition label. An imaging diagnosis or pathology-confirmed diagnosis may serve as the reference diagnosis. Generic finding types, standardized assessment categories, benign or malignant status, and missing or non-diagnostic values such as unknown, not available, or not applicable do not support this task.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
@@ -159,8 +159,8 @@
     },
 
     "detection": {
-      "description": "Locate a lesion or abnormal region directly from the image without being given a specific finding name or textual description that identifies the target.",
-      "require": "This task requires a lesion-level bounding box or mask defining the target abnormal region. The spatial annotation may be accompanied by generic lesion-presence labels or case-level labels such as benign or malignant, but it must not rely on a paired region-level finding name or textual description to specify what should be localized. A mask may be converted into a bounding box.",
+      "description": "Locate a lesion or abnormal region in the image without identifying the target by a specific finding name or description.",
+      "require": "This task requires one valid lesion-level bounding box that unambiguously defines the target region for the generated item. Finding names, descriptions, diagnoses, or case-level labels may coexist in the annotation, but they are not used to identify the target in the question and do not make detection unsupported.",
       "task_type": "open_vqa",
       "response_format": "bbox",
       "metric": "miou",
@@ -170,7 +170,7 @@
 
     "visual_grounding": {
       "description": "Locate the image region corresponding to a finding explicitly named or described in the question.",
-      "require": "This task requires a region-level finding name or textual finding description paired with the bounding box or mask of that same finding. The paired text must identify which specific finding the model should localize. A mask may be converted into a bounding box.",
+      "require": "This task requires one valid lesion-level bounding box and a finding name, structured finding label, or textual finding description paired with that box. A flat annotation record containing the selected finding field and a unique bounding box may be treated as paired; for array-valued or multi-finding annotations, the finding and bounding box must belong to the same finding item. The finding identifies the target in the question, while the bounding box is the answer.",
       "task_type": "open_vqa",
       "response_format": "bbox",
       "metric": "miou",

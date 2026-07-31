@@ -11,6 +11,14 @@ def test_blueprint_defines_all_categories_and_spatial_tasks() -> None:
     assert tasks["detection"]["response_format"] == "bbox"
     assert tasks["detection"]["category"] == "spatial_localization"
     assert tasks["visual_grounding"]["category"] == "spatial_localization"
+    assert "mask" not in tasks["detection"]["require"].lower()
+    assert "mask" not in tasks["visual_grounding"]["require"].lower()
+    assert "do not make detection unsupported" in tasks["detection"]["require"]
+    assert "structured finding label" in tasks["visual_grounding"]["require"]
+    assert "natural-language finding description" in tasks["finding_description"]["require"]
+    assert "do not support this task by themselves" in tasks["finding_description"]["require"]
+    assert "pathology-confirmed diagnosis" in tasks["diagnosis"]["require"]
+    assert "benign or malignant status" in tasks["diagnosis"]["require"]
     assert {task["category"] for task in tasks.values()} == {
         "image_acquisition_and_basic_information",
         "anatomy_and_global_tissue_characteristics",
@@ -21,3 +29,4 @@ def test_blueprint_defines_all_categories_and_spatial_tasks() -> None:
     }
     assert "only one modality" in tasks["modality_identification"]["require"]
     assert "Missing bounding boxes" in tasks["finding_presence"]["require"]
+    assert "masks" not in tasks["finding_presence"]["require"]

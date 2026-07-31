@@ -48,7 +48,7 @@ _CODE_DEFAULTS: dict[str, Any] = {
         "question_temperature": 0.7,
         "fetch_batch_size": 128,
     },
-    "dataset_profile": {"max_top_values": 10, "max_categorical_distinct_values": 50},
+    "dataset_profile": {"max_top_values": 3, "max_top_value_chars": 200},
     "sample_allocation": {
         "category_weights": {
             "image_acquisition_and_basic_information": 0.10,
@@ -114,7 +114,7 @@ class GenerationSettings:
 @dataclass(frozen=True)
 class DatasetProfileSettings:
     max_top_values: int
-    max_categorical_distinct_values: int
+    max_top_value_chars: int
 
 
 @dataclass(frozen=True)
@@ -305,7 +305,9 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
         ),
         dataset_profile=DatasetProfileSettings(
             max_top_values=_integer(profile["max_top_values"], "dataset_profile.max_top_values", minimum=1),
-            max_categorical_distinct_values=_integer(profile["max_categorical_distinct_values"], "dataset_profile.max_categorical_distinct_values", minimum=1),
+            max_top_value_chars=_integer(
+                profile["max_top_value_chars"], "dataset_profile.max_top_value_chars", minimum=1
+            ),
         ),
         category_weights=normalized_weights,
         default_config_path=default_path,

@@ -9,11 +9,6 @@ from typing import Any
 from medbenchagent.llm import complete_json
 from medbenchagent.construction import event_operation
 
-VISUAL_GROUNDING_PRECEDENCE_REASON = (
-    "Dropped because visual_grounding has priority when paired region-level finding text and spatial "
-    "annotation are available."
-)
-
 
 class TaskPlanReviewRequired(ValueError):
     """The model twice returned a Task Plan that violates the deterministic contract."""
@@ -42,24 +37,33 @@ def _task_plan_prompt(
         "3. `supporting_fields` must contain only paths that exist in `dataset_profile.fields`.\n"
         "4. Do not invent fields or infer annotation values from field names.\n"
         "5. `retain` requires at least one supporting field; `drop` requires an empty list.\n"
-        "6. At least one task must be retained.\n\n"
+        "6. At least one task must be retained.\n"
+        "7. Use each field's `top_values` as the primary evidence for its semantics. These are bounded, "
+        "possibly truncated examples and are not the field's complete value space.\n\n"
 
         "Task-specific criteria:\n"
         "- `modality_identification` and `anatomy_identification`: one valid annotated value is sufficient.\n"
-        "- `finding_presence`: requires explicit positive or negative evidence. Missing finding, bbox, or "
-        "mask values do not establish absence.\n"
+        "- `finding_presence`: requires explicit positive or negative evidence. Missing finding or bbox "
+        "values do not establish absence.\n"
+        "- `finding_description`: requires a paired expert-written natural-language description usable "
+        "directly as the reference answer. Categorical labels, delimiter-joined terms, diagnoses, and "
+        "isolated structured attributes are insufficient.\n"
+        "- `diagnosis`: requires one clinically specific expert-confirmed diagnosis associated with the "
+        "finding or case. Imaging or pathology-confirmed diagnoses are valid, but finding types, assessment "
+        "categories, benign/malignant status, and missing or non-diagnostic values are insufficient.\n"
         "- `pathology_status`: requires an explicit pathology or malignancy field; diagnosis alone is "
         "insufficient.\n"
-        "- `visual_grounding`: requires region-level finding text paired with the bbox or mask of the same "
-        "region.\n"
-        "- `detection`: requires a bbox or mask without paired region-level finding text.\n\n"
+        "- `visual_grounding`: requires one valid bbox and a finding name, structured label, or description "
+        "paired with that box. A flat record with a unique bbox may pair it with the selected finding field; "
+        "array-valued findings must pair them within the same item.\n"
+        "- `detection`: requires one valid bbox. Other finding or case annotations may coexist but are not "
+        "used to identify the target and do not make detection unsupported.\n\n"
 
         "Additional rules:\n"
         "- For array-valued fields, inspect the `[*]` leaf path before rejecting the parent field. A parent "
         "path may be null for records with missing annotations while its array leaf still contains valid values.\n"
-        "- Never retain both `visual_grounding` and `detection`.\n"
-        "- If `visual_grounding` is supported, retain it and drop `detection`.\n"
-        "- If neither task has reliable bbox or mask annotations, drop both.\n\n"
+        "- `visual_grounding` and `detection` are independent capabilities and may both be retained.\n"
+        "- If neither task has reliable bbox annotations, drop both.\n\n"
 
         f"Blueprint tasks:\n{json.dumps(blueprint['tasks'], ensure_ascii=False)}\n\n"
         f"Dataset profile:\n{json.dumps(profile, ensure_ascii=False)}"
@@ -77,10 +81,14 @@ def _task_revision_prompt(
         "Revise only this one Task Plan entry using the user's feedback. Return JSON only with "
         "decision, supporting_fields, and reason. decision must be retain or drop. A retain decision "
         "needs at least one supporting field. A drop decision needs no supporting fields. Supporting "
-        "fields must exist in dataset_profile.fields. A visual_grounding decision requires paired "
-        "region-level finding text and bbox/mask; if visual_grounding is retained, detection is "
-        "deterministically dropped. detection is only suitable for a bbox/mask without that paired "
-        "finding text.\n\n"
+        "fields must exist in dataset_profile.fields. Use top_values as the primary field-semantic evidence; "
+        "they may be truncated and are not exhaustive. finding_description requires paired expert-written "
+        "natural-language text, not categorical labels, delimiter-joined terms, diagnoses, or isolated "
+        "attributes. diagnosis requires one clinically specific imaging or pathology-confirmed diagnosis, "
+        "not a finding type, assessment category, benign/malignant status, or missing value. "
+        "visual_grounding requires a bbox paired with a finding name, structured label, or description. "
+        "detection requires a bbox and remains supported even when finding text coexists. Both spatial tasks "
+        "may be retained.\n\n"
         f"Task ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n"
         f"Current task plan: {json.dumps(current_plan, ensure_ascii=False)}\n"
         f"User feedback: {feedback}\n\n"
@@ -116,23 +124,6 @@ def _normalize_task_decision(
     }, []
 
 
-def _apply_spatial_precedence(tasks: dict[str, dict[str, Any]]) -> None:
-    """Keep only the higher-value spatial task when both are proposed."""
-    visual_grounding = tasks.get("visual_grounding")
-    detection = tasks.get("detection")
-    if (
-        isinstance(visual_grounding, dict)
-        and visual_grounding.get("decision") == "retain"
-        and isinstance(detection, dict)
-        and detection.get("decision") == "retain"
-    ):
-        tasks["detection"] = {
-            "decision": "drop",
-            "supporting_fields": [],
-            "reason": VISUAL_GROUNDING_PRECEDENCE_REASON,
-        }
-
-
 def validate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any], response: object) -> tuple[dict[str, Any] | None, list[str]]:
     """Validate a complete Task Plan without relying on model judgement."""
     tasks = blueprint.get("tasks")
@@ -155,8 +146,6 @@ def validate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any], respo
         errors.extend(decision_errors)
         if decision is not None:
             normalized_tasks[task_id] = decision
-    if not errors:
-        _apply_spatial_precedence(normalized_tasks)
     if not errors and not any(plan["decision"] == "retain" for plan in normalized_tasks.values()):
         errors.append("at least one task must be retained")
     if errors:

@@ -133,7 +133,7 @@ def test_task_plan_rejects_unknown_tasks_and_all_dropped_tasks() -> None:
     assert errors == ["at least one task must be retained"]
 
 
-def test_visual_grounding_deterministically_replaces_detection() -> None:
+def test_visual_grounding_and_detection_can_both_be_retained() -> None:
     blueprint = {
         "tasks": {
             "detection": {"response_format": "bbox"},
@@ -164,16 +164,21 @@ def test_visual_grounding_deterministically_replaces_detection() -> None:
     assert errors == []
     assert plan is not None
     assert plan["tasks"]["visual_grounding"]["decision"] == "retain"
-    assert plan["tasks"]["detection"] == {
-        "decision": "drop",
-        "supporting_fields": [],
-        "reason": screening.VISUAL_GROUNDING_PRECEDENCE_REASON,
-    }
+    assert plan["tasks"]["detection"]["decision"] == "retain"
+    assert plan["tasks"]["detection"]["supporting_fields"] == [
+        "image.annotation.findings[*].bbox[*]"
+    ]
+
 
 def test_task_plan_prompt_checks_array_leaf_paths() -> None:
     prompt = screening._task_plan_prompt(_blueprint(), _profile())
 
     assert "For array-valued fields" in prompt
     assert "`[*]` leaf path" in prompt
+    assert "top_values" in prompt
+    assert "may both be retained" in prompt
+    assert "pathology-confirmed diagnoses are valid" in prompt
+    assert "bbox or mask" not in prompt
+    assert "priority" not in prompt
     assert '"supporting_fields":["image.annotation.path"]' in prompt
     assert '"supporting_fields":["annotation.path"]' not in prompt

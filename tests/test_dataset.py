@@ -73,7 +73,7 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
     profile, manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
 
     assert profile["total_images"] == 2
-    assert profile["schema_version"] == "task-capability-profile.v1"
+    assert profile["schema_version"] == "task-capability-profile.v2"
     assert (
         profile["fields"]["image.annotation.findings[*].finding_type"]["non_empty_images"] == 2
     )
@@ -121,7 +121,7 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
         {"path": "patient.annotation", "kind": "object", "children": []},
         {"path": "study.annotation", "kind": "object", "children": []},
     ]
-    assert manifest["cache_format_version"] == "annotation-cache.v4"
+    assert manifest["cache_format_version"] == "annotation-cache.v5"
     connection = duckdb.connect(manifest["duckdb_path"])
     try:
         assert connection.execute("SELECT COUNT(*) FROM images").fetchone()[0] == 2
@@ -167,7 +167,7 @@ def test_compact_profile_counts_non_empty_images_and_filters_raw_values(
 
     assert profile["fields"]["image.annotation.empty"]["non_empty_images"] == 0
     assert profile["fields"]["image.annotation.nested.values[*]"]["non_empty_images"] == 1
-    assert "top_values" not in profile["fields"]["image.annotation.nested.values[*]"]
+    assert profile["fields"]["image.annotation.nested.values[*]"]["top_values"] == [0, False]
     assert "top_values" not in profile["fields"]["image.annotation.finding_uid"]
     assert "top_values" not in profile["fields"]["image.annotation.dicom_metadata.patient_age"]
 
@@ -190,6 +190,9 @@ def test_compact_profile_deduplicates_repeated_findings_and_limits_values(
                     "annotation": {
                         "flag": index % 2 == 0,
                         "category": f"value-{index}",
+                        "score": index % 2,
+                        "long_text": f"value-{index:02d}-" + "x" * 220,
+                        "source_path": f"private/value-{index}.txt",
                         "findings": [{"kind": "mass"}, {"kind": "mass"}],
                         "bbox": [index, index + 1],
                     },
@@ -202,7 +205,18 @@ def test_compact_profile_deduplicates_repeated_findings_and_limits_values(
 
     assert profile["fields"]["image.annotation.findings[*].kind"]["non_empty_images"] == 12
     assert profile["fields"]["image.annotation.flag"]["top_values"] == [False, True]
-    assert len(profile["fields"]["image.annotation.category"]["top_values"]) == 10
+    assert profile["fields"]["image.annotation.category"]["top_values"] == [
+        "value-0",
+        "value-1",
+        "value-10",
+    ]
+    assert profile["fields"]["image.annotation.score"]["top_values"] == [0, 1]
+    assert len(profile["fields"]["image.annotation.long_text"]["top_values"]) == 3
+    assert all(
+        len(value) == 200 and value.endswith("…")
+        for value in profile["fields"]["image.annotation.long_text"]["top_values"]
+    )
+    assert "top_values" not in profile["fields"]["image.annotation.source_path"]
     assert "top_values" not in profile["fields"]["image.annotation.bbox[*]"]
 
 

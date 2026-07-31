@@ -19,8 +19,8 @@ ENTITY_FIELDS = {
     "study": {"study_id", "annotation"},
     "image": {"image_id", "image_path", "modality", "anatomy", "annotation"},
 }
-PROFILE_SCHEMA_VERSION = "task-capability-profile.v1"
-CACHE_FORMAT_VERSION = "annotation-cache.v4"
+PROFILE_SCHEMA_VERSION = "task-capability-profile.v2"
+CACHE_FORMAT_VERSION = "annotation-cache.v5"
 
 TOP_VALUE_EXCLUDED_PREFIXES = (
     "image.annotation.dicom_metadata.",
@@ -34,6 +34,18 @@ IDENTIFIER_SUFFIXES = (
     "_id",
     "_uid",
     "_uuid",
+)
+FILE_REFERENCE_SEGMENTS = {
+    "path",
+    "paths",
+    "filename",
+    "filenames",
+}
+FILE_REFERENCE_SUFFIXES = (
+    "_path",
+    "_paths",
+    "_filename",
+    "_filenames",
 )
 
 
@@ -157,8 +169,8 @@ def load_annotation_jsonl(annotation_path: str | Path) -> list[dict[str, Any]]:
     return records
 
 
-def _should_include_top_values(path: str, value_types: set[str], distinct_value_count: int) -> bool:
-    """Keep categorical values useful for task support without exposing sensitive/raw values."""
+def _should_include_top_values(path: str) -> bool:
+    """Expose bounded semantic examples without identifiers, files, metadata, or coordinates."""
     if path.startswith(TOP_VALUE_EXCLUDED_PREFIXES):
         return False
     segments = [segment.removesuffix("[*]") for segment in path.split(".")]
@@ -166,12 +178,21 @@ def _should_include_top_values(path: str, value_types: set[str], distinct_value_
         return False
     if any(segment in {"id", "uid", "uuid"} or segment.endswith(IDENTIFIER_SUFFIXES) for segment in segments):
         return False
-    if "boolean" in value_types and value_types <= {"boolean", "null"}:
-        return True
-    return (
-        "string" in value_types
-        and distinct_value_count <= get_settings().dataset_profile.max_categorical_distinct_values
-    )
+    if "bbox" in segments:
+        return False
+    if any(
+        segment in FILE_REFERENCE_SEGMENTS or segment.endswith(FILE_REFERENCE_SUFFIXES)
+        for segment in segments
+    ):
+        return False
+    return True
+
+
+def _profile_top_value(value: str, max_chars: int) -> object:
+    rendered = json.loads(value)
+    if isinstance(rendered, str) and len(rendered) > max_chars:
+        return f"{rendered[: max_chars - 1]}…" if max_chars > 1 else "…"
+    return rendered
 
 
 def _collect_profile_values(
@@ -250,6 +271,7 @@ def build_dataset_profile(records: list[dict[str, Any]], content_hash: str) -> d
         )
 
     fields: dict[str, Any] = {}
+    profile_settings = get_settings().dataset_profile
     for path in sorted(fields_stats):
         item = fields_stats[path]
         value_types = item["types"]
@@ -260,11 +282,11 @@ def build_dataset_profile(records: list[dict[str, Any]], content_hash: str) -> d
             "non_empty_images": len(item["non_empty_images"]),
             "distinct_value_count": distinct_value_count,
         }
-        if _should_include_top_values(path, value_types, distinct_value_count):
+        if _should_include_top_values(path):
             field["top_values"] = [
-                json.loads(value)
+                _profile_top_value(value, profile_settings.max_top_value_chars)
                 for value, _count in sorted(item["values"].items(), key=lambda pair: (-pair[1], pair[0]))[
-                    : get_settings().dataset_profile.max_top_values
+                    : profile_settings.max_top_values
                 ]
             ]
         fields[path] = field
@@ -329,10 +351,7 @@ def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Pa
         raise AnnotationValidationError(f"annotation.jsonl does not exist: {source_path}")
     content_hash = _content_hash(source_path)
     profile_settings = get_settings().dataset_profile
-    profile_key = (
-        f"top-{profile_settings.max_top_values}-"
-        f"categorical-{profile_settings.max_categorical_distinct_values}"
-    )
+    profile_key = f"top-{profile_settings.max_top_values}-chars-{profile_settings.max_top_value_chars}"
     cache_dir = Path(cache_root) / CACHE_FORMAT_VERSION / profile_key / content_hash
     database_path = cache_dir / "dataset.duckdb"
     profile_path = cache_dir / "dataset_profile.json"
