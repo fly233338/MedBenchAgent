@@ -221,7 +221,10 @@ def test_build_prompts_for_requirement_and_drives_all_interrupts(
         assert question in rendered
     assert "[start] SpecificationAgent / benchmark_extract" in rendered
     assert "[waiting] Confirm the BenchmarkInfo" in rendered
-    assert "[artifact] run_directory: runs/run-1" in rendered
+    assert "=== Run initialized ===" in rendered
+    assert "Run ID (directory name): run-1" in rendered
+    assert rendered.count("Run ID (directory name): run-1") == 1
+    assert "Run directory: runs/run-1" in rendered
     assert "[artifact] working_blueprint_path: runs/run-1/blueprint.json" in rendered
     assert "[artifact] audited: runs/run-1/audited.jsonl" in rendered
     assert "[RAG] view: 1/1, remaining=0" in rendered

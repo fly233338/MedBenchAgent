@@ -36,7 +36,6 @@ _NODE_LABELS = {
 }
 
 _ARTIFACT_PATH_KEYS = {
-    "run_directory",
     "working_blueprint_path",
     "effective_config_path",
     "construction_events_path",
@@ -346,6 +345,22 @@ def _print_result(values: dict[str, Any], output: OutputFunction) -> None:
     output(f"Manifest: {values.get('manifest_path')}")
 
 
+def _announce_run(values: object, output: OutputFunction) -> str | None:
+    if not isinstance(values, dict):
+        return None
+    run_directory = values.get("run_directory")
+    if not isinstance(run_directory, str) or not run_directory:
+        return None
+    run_id = values.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        run_id = Path(run_directory).name
+    output("")
+    output("=== Run initialized ===")
+    output(f"Run ID (directory name): {run_id}")
+    output(f"Run directory: {run_directory}")
+    return run_directory
+
+
 def _run_directory(graph: object, config: dict[str, Any] | None) -> str | None:
     if graph is None or config is None:
         return None
@@ -368,6 +383,7 @@ def run_interactive_build(
     """Run the benchmark graph as a local, terminal-driven conversation."""
     _enforce_offline_mode()
     config: dict[str, Any] | None = None
+    announced_run_directory: str | None = None
     try:
         requirement = _read_nonempty(
             "Describe the Medical VLM benchmark to build: ", input_fn, output
@@ -416,6 +432,12 @@ def run_interactive_build(
                     interrupt = interrupt or _interrupt_payload(payload)
 
             snapshot = graph.get_state(config)
+            current_run_directory = snapshot.values.get("run_directory")
+            if (
+                isinstance(current_run_directory, str)
+                and current_run_directory != announced_run_directory
+            ):
+                announced_run_directory = _announce_run(snapshot.values, output)
             config["recursion_limit"] = _recursion_limit(snapshot.values)
             if interrupt is not None:
                 _render_interrupt(interrupt, output)

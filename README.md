@@ -63,6 +63,9 @@ Describe the Medical VLM benchmark to build: Build a 100-question breast ultraso
 
 The CLI prints the effective non-sensitive configuration, validates required
 local resources, and presents every graph interrupt as a terminal question.
+After initialization it prominently prints the exact run ID (the UUID directory
+name) and absolute `benchmarks/runs/<run_id>` directory before asking for the
+first confirmation.
 Confirm or revise benchmark information, dataset selection, task planning,
 sample allocation, source selection, and question design in natural language.
 It also streams Agent, RAG, generation, and audit progress before printing the
