@@ -52,3 +52,4 @@ datasets/*
 materials/**/*.pdf
 /models/
 config/local.toml
+*.bundle
