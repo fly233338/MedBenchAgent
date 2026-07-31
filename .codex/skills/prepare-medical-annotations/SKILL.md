@@ -69,6 +69,17 @@ Require explicit input and output paths. Read sources without modifying them, gr
 
 Write to a temporary file and replace `annotation.jsonl` only after complete success. Keep every `image.image_path` relative to the source-image root. Except for an approved mask-to-bbox derivation, do not decode images or add PNG metadata during this stage.
 
+Assign fields by source-supported entity scope, not by identifier names or row layout.
+
+- Use `patient.annotation` only for facts explicitly identified as patient-scoped.
+- Use `case.annotation` only when the source defines a diagnostic case, episode, or case-level grouping. Do not treat a column named `CaseID` as proof of case scope.
+- Use `study.annotation` only when the source defines an examination, acquisition, study, or session scope.
+- Use `image.annotation` for image-file facts and for source-row facts whose broader entity scope is not explicitly supported.
+- Treat one-to-one identifier cardinality as an identity and deduplication fact, not as entity-scope evidence.
+- When the source provides lesion-level facts but the canonical schema has no lesion entity, preserve them under `image.annotation` unless the source supplies a supported relationship to another canonical entity. Do not invent a lesion, case, study, or patient grouping.
+- Keep an entity annotation object empty when the source supplies no fields at that scope.
+- Stop for review when a field’s entity scope remains materially ambiguous. Never use `case.annotation` as a fallback bucket.
+
 ### 5. Validate and report
 
 Run the generated converter twice with unchanged inputs and compare SHA-256 hashes. Validate the result with this skill's `scripts/validate_annotations.py` and its local `annotation.v2.schema.json`.
