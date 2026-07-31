@@ -5,22 +5,28 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
+import duckdb
 from pypdf import PdfReader
 
 from medbenchagent.llm import complete_json
 from medbenchagent.construction import event_operation
+from medbenchagent.generation.context import scalar_evidence_candidates
 from medbenchagent.rag.reranker import score_pairs
 from medbenchagent.settings import get_settings
 
 CACHE_SCHEMA_VERSION = "2"
 MAX_RAG_LETTER_OPTIONS = 8
+MAX_RAG_MAPPING_VALUES = 32
 RAG_DESIGN_FIELDS = {
     "question_templates",
     "options",
+    "answer_field",
+    "answer_value_mapping",
     "generation_logic",
     "medical_task_description",
     "citations",
@@ -28,8 +34,6 @@ RAG_DESIGN_FIELDS = {
 LEGACY_DESIGN_FIELDS = {
     "validation_rules",
     "placeholder_bindings",
-    "answer_field",
-    "answer_value_mapping",
     "instance_path",
     "target_text_field",
     "bbox_field",
@@ -289,13 +293,33 @@ def _design_schema(response_format: object) -> str:
         '"medical_task_description":"one paragraph: assessed capability, then medical basis"}'
     )
     if response_format == "letter":
-        return common[:-1] + f',"options":["2 to {MAX_RAG_LETTER_OPTIONS} unique medical options"]}}'
+        return (
+            common[:-1]
+            + f',"options":["2 to {MAX_RAG_LETTER_OPTIONS} unique medical options"],'
+            '"answer_field":"one exact approved supporting field",'
+            '"answer_value_mapping":[{"raw_value":"one exact JSON scalar",'
+            '"option":"one exact returned option"}]}'
+        )
     if response_format in {"bbox", "free_text"}:
         return common
     raise ValueError(f"Unsupported response_format for RAG design: {response_format}")
 
 
-def validate_task_design(task_id: str, task: dict[str, Any], response: object) -> dict[str, Any]:
+def _canonical_scalar(value: object) -> str | None:
+    if value is None or value == "" or isinstance(value, (dict, list)):
+        return None
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+
+
+def validate_task_design(
+    task_id: str,
+    task: dict[str, Any],
+    response: object,
+    field_value_summaries: dict[str, dict[str, object]] | None = None,
+) -> dict[str, Any]:
     """Validate one RAG contribution before embedding it in the Blueprint task."""
     if not isinstance(response, dict):
         raise ValueError(f"{task_id}: RAG design must be a JSON object.")
@@ -304,7 +328,7 @@ def validate_task_design(task_id: str, task: dict[str, Any], response: object) -
         raise ValueError(f"{task_id}: unsupported response_format {response_format}.")
     expected = {"question_templates", "generation_logic", "medical_task_description"}
     if response_format == "letter":
-        expected.add("options")
+        expected.update({"options", "answer_field", "answer_value_mapping"})
     if set(response) != expected:
         raise ValueError(f"{task_id}: RAG design must contain exactly {sorted(expected)}.")
     templates = response["question_templates"]
@@ -349,6 +373,54 @@ def validate_task_design(task_id: str, task: dict[str, Any], response: object) -
                 "unique non-empty strings."
             )
         normalized["options"] = normalized_options
+        answer_field = response["answer_field"]
+        supporting_fields = task.get("supporting_fields")
+        if (
+            not isinstance(answer_field, str)
+            or not isinstance(supporting_fields, list)
+            or answer_field not in supporting_fields
+        ):
+            raise ValueError(f"{task_id}: answer_field must be one approved supporting field.")
+        summary = (field_value_summaries or {}).get(answer_field)
+        summary_values = summary.get("values") if isinstance(summary, dict) else None
+        if not isinstance(summary_values, list):
+            raise ValueError(f"{task_id}: answer_field needs an approved field-value summary.")
+        approved_values = {
+            canonical
+            for item in summary_values
+            if isinstance(item, dict)
+            and (canonical := _canonical_scalar(item.get("value"))) is not None
+        }
+        mappings = response["answer_value_mapping"]
+        if not isinstance(mappings, list) or not mappings:
+            raise ValueError(f"{task_id}: answer_value_mapping must be a non-empty list.")
+        normalized_mapping: list[dict[str, object]] = []
+        seen_values: set[str] = set()
+        mapped_options: set[str] = set()
+        for mapping in mappings:
+            if not isinstance(mapping, dict) or set(mapping) != {"raw_value", "option"}:
+                raise ValueError(
+                    f"{task_id}: every answer mapping needs only raw_value and option."
+                )
+            raw_value, option = mapping["raw_value"], mapping["option"]
+            canonical = _canonical_scalar(raw_value)
+            if canonical is None:
+                raise ValueError(f"{task_id}: mapped raw values must be non-empty JSON scalars.")
+            if canonical in seen_values:
+                raise ValueError(f"{task_id}: a raw value may be mapped only once.")
+            if canonical not in approved_values:
+                raise ValueError(f"{task_id}: mapped raw value is absent from the approved summary.")
+            if not isinstance(option, str) or option not in normalized_options:
+                raise ValueError(f"{task_id}: every mapped option must exactly match one option.")
+            seen_values.add(canonical)
+            mapped_options.add(option)
+            normalized_mapping.append({"raw_value": raw_value, "option": option})
+        if len(mapped_options) < 2:
+            raise ValueError(
+                f"{task_id}: answer mapping must support at least two correct-answer options."
+            )
+        normalized["answer_field"] = answer_field
+        normalized["answer_value_mapping"] = normalized_mapping
     return normalized
 
 
@@ -372,14 +444,22 @@ def _design_prompt(
         "(3) PDF excerpts may support clinical wording and plausibility, but must not define or expand "
         "the dataset's answer-label space. "
     )
-    if allow_value_request:
+    if allow_value_request and response_format == "letter":
         system += (
-            "Return exactly one of these objects and no other fields: "
-            f"(A) complete task design: {schema}; "
-            '(B) field-value request: {"requested_field_values":["one supporting field path"]}. '
+            "Before designing this letter task, return exactly this field-value request and no other fields: "
+            '{"requested_field_values":["one answer-bearing supporting field path"]}. '
+            "Request exactly one approved supporting field whose categorical values determine the answer. "
+            "Do not request DICOM metadata, bounding-box fields, raw annotations, or identifiers."
         )
-    else:
-        system += f"Return exactly this complete design object and no other fields: {schema}. "
+        user = (
+            f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
+            f"Task ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n"
+            f"Requested revision: {feedback or 'none'}\n"
+            f"Current design: {json.dumps(current_design or {}, ensure_ascii=False)}\n"
+            f"PDF excerpts:\n{context or '[No sufficiently relevant PDF excerpt was retrieved.]'}"
+        )
+        return system, user
+    system += f"Return exactly this complete design object and no other fields: {schema}. "
     system += (
         f"Use the requested benchmark language. Return exactly {get_settings().generation.question_template_count} "
         "question templates. They must assess the same capability and medical concept while using meaningfully "
@@ -387,11 +467,14 @@ def _design_prompt(
         "response format. generation_logic must use only approved supporting fields "
         "to generate the question and answer; it must not invent facts, infer an unsupported diagnosis, "
         "or use PDF text as annotation evidence. "
-        "Do not return task_id, citations, validation_rules, placeholder bindings, answer fields, "
-        "mappings, instance paths, or bbox fields. "
+        "Do not return task_id, citations, validation_rules, placeholder bindings, instance paths, "
+        "or bbox fields. "
     )
     if response_format == "letter":
         system += (
+            "The supplied task is one fixed question type. Use only its declared semantic answer axis; "
+            "do not create another question type or switch to a related property. All templates must use "
+            "the same answer field, options, and answer mapping, and may vary wording and syntax only. "
             f"Letter option rules: return 2-{MAX_RAG_LETTER_OPTIONS} options without A/B labels. "
             "Use 2-4 options by default. Use 5-8 only when the approved field-value "
             "summaries or a standard closed scale required by the task establish a larger mutually "
@@ -400,28 +483,20 @@ def _design_prompt(
             "semantic axis, evidence level, and diagnostic granularity. Options must be concise, unique, "
             "mutually exclusive, and written without letter prefixes. Do not enumerate an exhaustive "
             "differential diagnosis, copy a disease list from the PDF excerpts, or add rare entities merely "
-            "to increase the number of distractors. Do not mix broad diagnostic families with named subtypes. "
-            "Do not mix etiologic categories, routes of spread, lesion behavior, high-risk lesions, in-situ "
-            "lesions, and named histologic diagnoses as though they were one classification level unless the "
-            "supplied dataset taxonomy explicitly defines those exact labels as mutually exclusive peer "
-            "values. For categorical attributes, use concise category labels rather than verbose explanations "
-            "or copied annotation descriptions. For modality_identification and anatomy_identification, one "
-            "supported dataset value is sufficient; use it as a possible answer and add only minimal "
-            "distractors from the same taxonomy and granularity. "
-        )
-    if allow_value_request:
-        system += (
-            "Use the field-value request only when supplied values are insufficient for medically accurate "
-            "wording or a dataset-grounded design. "
-        )
-        if response_format == "letter":
-            system += (
-                "For a categorical letter task with no supplied field-value summary, request the necessary "
-                "supporting field values instead of inventing a taxonomy from the PDF excerpts. "
-            )
-        system += (
-            "Request only approved supporting fields whose categorical values are necessary; do not request "
-            "DICOM metadata, bounding-box fields, raw annotations, or identifiers. "
+            "to increase the number of distractors. Use one semantic axis and one level of granularity. Do not "
+            "mix attributes, finding categories, assessments, diagnoses, or pathology results. For categorical "
+            "attributes, use concise category labels rather than verbose explanations or copied annotation "
+            "descriptions. Every letter task must have at least two dataset-supported "
+            "semantic classes that can serve as correct answers; distractors do not make a constant-label "
+            "task valid. "
+            "Answer-mapping rules: select exactly one answer_field from the approved supporting fields. "
+            "Copy raw values exactly from the approved field-value summary, preserving JSON type, case, "
+            "spelling, and punctuation. Map each raw value to exactly one returned option, and support at "
+            "least two distinct correct-answer options. Many-to-one mapping is allowed only within the same "
+            "annotated variable when every raw value uniquely determines the declared coarser option. Do not "
+            "map between clinical variables or ontology levels. Omit values that cannot produce one "
+            "unambiguous option; omitted values are ineligible. generation_logic must not add or override "
+            "the structured mapping. "
         )
     system += (
         "When no relevant PDF excerpt is supplied, use generic medical wording and do not claim "
@@ -442,6 +517,7 @@ def _field_value_summaries(
     task_id: str,
     task: dict[str, Any],
     dataset_profile: dict[str, Any],
+    dataset_access_manifest: dict[str, Any],
     response: object,
 ) -> dict[str, dict[str, object]] | None:
     """Validate an optional on-demand request for safe categorical field summaries."""
@@ -450,10 +526,8 @@ def _field_value_summaries(
     if set(response) != {_VALUE_REQUEST_KEY}:
         raise ValueError(f"{task_id}: field-value request must contain only {_VALUE_REQUEST_KEY}.")
     requested = response[_VALUE_REQUEST_KEY]
-    if not isinstance(requested, list) or not requested or not all(isinstance(path, str) for path in requested):
-        raise ValueError(f"{task_id}: field-value request must be a non-empty list of paths.")
-    if len(requested) != len(set(requested)):
-        raise ValueError(f"{task_id}: field-value request must not repeat paths.")
+    if not isinstance(requested, list) or len(requested) != 1 or not isinstance(requested[0], str):
+        raise ValueError(f"{task_id}: field-value request must contain exactly one path.")
     supporting_fields = task.get("supporting_fields")
     if not isinstance(supporting_fields, list):
         raise ValueError(f"{task_id}: supporting_fields must be present before requesting values.")
@@ -461,21 +535,51 @@ def _field_value_summaries(
     if not isinstance(fields, dict):
         raise ValueError(f"{task_id}: dataset profile must contain fields before requesting values.")
 
-    summaries: dict[str, dict[str, object]] = {}
-    for path in requested:
-        segments = [segment.removesuffix("[*]") for segment in path.split(".")]
-        if path not in supporting_fields:
-            raise ValueError(f"{task_id}: requested field is not a supporting field: {path}")
-        if path.startswith("image.annotation.dicom_metadata.") or "bbox" in segments:
-            raise ValueError(f"{task_id}: requested field is not eligible for value summaries: {path}")
-        profile_field = fields.get(path)
-        if not isinstance(profile_field, dict) or not isinstance(profile_field.get("top_values"), list):
-            raise ValueError(f"{task_id}: requested field has no safe top_values summary: {path}")
-        summaries[path] = {
-            key: profile_field[key]
-            for key in ("path", "types", "non_empty_images", "distinct_value_count", "top_values")
-            if key in profile_field
+    database = dataset_access_manifest.get("duckdb_path")
+    if not isinstance(database, str):
+        raise ValueError(f"{task_id}: dataset access manifest lacks duckdb_path.")
+    path = requested[0]
+    segments = [segment.removesuffix("[*]") for segment in path.split(".")]
+    if path not in supporting_fields:
+        raise ValueError(f"{task_id}: requested field is not a supporting field: {path}")
+    if path.startswith("image.annotation.dicom_metadata.") or "bbox" in segments:
+        raise ValueError(f"{task_id}: requested field is not eligible for value summaries: {path}")
+    profile_field = fields.get(path)
+    if not isinstance(profile_field, dict) or not isinstance(profile_field.get("top_values"), list):
+        raise ValueError(f"{task_id}: requested field has no safe categorical summary: {path}")
+
+    counts: Counter[str] = Counter()
+    raw_values: dict[str, object] = {}
+    connection = duckdb.connect(database, read_only=True)
+    try:
+        rows = connection.execute("SELECT record FROM images ORDER BY _source_row").fetchall()
+    finally:
+        connection.close()
+    for row in rows:
+        record = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        if not isinstance(record, dict):
+            continue
+        for evidence in scalar_evidence_candidates(record, path):
+            value = evidence["value"]
+            if isinstance(value, str) and len(value) > 200:
+                continue
+            canonical = _canonical_scalar(value)
+            if canonical is not None:
+                counts[canonical] += 1
+                raw_values[canonical] = value
+    ordered = sorted(counts, key=lambda value: (-counts[value], value))
+    selected = ordered[:MAX_RAG_MAPPING_VALUES]
+    summaries: dict[str, dict[str, object]] = {
+        path: {
+            "field": path,
+            "distinct_value_count": len(counts),
+            "values": [
+                {"value": raw_values[canonical], "count": counts[canonical]}
+                for canonical in selected
+            ],
+            "truncated": len(ordered) > len(selected),
         }
+    }
     return summaries
 
 
@@ -486,6 +590,7 @@ def design_task(
     task: dict[str, Any],
     *,
     dataset_profile: dict[str, Any],
+    dataset_access_manifest: dict[str, Any],
     feedback: str = "",
 ) -> dict[str, Any]:
     """Retrieve medical material and produce one validated Blueprint task contribution."""
@@ -509,7 +614,13 @@ def design_task(
     current = {field: task[field] for field in RAG_DESIGN_FIELDS if field in task and field != "citations"}
     system, user = _design_prompt(benchmark_info, task_id, task, context, feedback, current)
     response = complete_json(system, user)
-    field_value_summaries = _field_value_summaries(task_id, task, dataset_profile, response)
+    field_value_summaries = _field_value_summaries(
+        task_id, task, dataset_profile, dataset_access_manifest, response
+    )
+    if task.get("response_format") == "letter" and field_value_summaries is None:
+        raise QuestionDesignError(
+            f"{task_id}: letter design must request one answer-bearing field before design."
+        )
     if field_value_summaries is not None:
         system, user = _design_prompt(
             benchmark_info,
@@ -523,7 +634,7 @@ def design_task(
         )
         response = complete_json(system, user)
     try:
-        normalized = validate_task_design(task_id, task, response)
+        normalized = validate_task_design(task_id, task, response, field_value_summaries)
     except ValueError as first_error:
         repair_system = (
             f"{system}\nYour previous JSON violated the contract: {first_error}. "
@@ -535,7 +646,7 @@ def design_task(
                 f"Previous response: {json.dumps(response, ensure_ascii=False)}\n\n{user}",
             )
         try:
-            normalized = validate_task_design(task_id, task, repaired)
+            normalized = validate_task_design(task_id, task, repaired, field_value_summaries)
         except ValueError as second_error:
             preview = json.dumps(repaired, ensure_ascii=False)[:500]
             raise QuestionDesignError(

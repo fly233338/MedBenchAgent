@@ -155,7 +155,29 @@ def _answer_evidence_matches(
     try:
         witness = source.get("answer_evidence")
         if task.get("response_format") != "bbox":
-            _path, _indices, value = _replay_witness(record, supporting_fields, witness)
+            path, _indices, value = _replay_witness(record, supporting_fields, witness)
+            if task.get("response_format") == "letter" and isinstance(
+                task.get("answer_value_mapping"), list
+            ):
+                options, answer = item.get("options"), item.get("answer")
+                if (
+                    path != task.get("answer_field")
+                    or not isinstance(options, list)
+                    or not isinstance(answer, str)
+                    or len(answer) != 1
+                    or not 0 <= ord(answer.upper()) - ord("A") < len(options)
+                ):
+                    return False
+                expected_option = options[ord(answer.upper()) - ord("A")]
+                matches = [
+                    mapping
+                    for mapping in task["answer_value_mapping"]
+                    if isinstance(mapping, dict)
+                    and type(mapping.get("raw_value")) is type(value)
+                    and mapping.get("raw_value") == value
+                    and mapping.get("option") == expected_option
+                ]
+                return len(matches) == 1
             return task.get("response_format") != "free_text" or (
                 isinstance(value, str) and value == item.get("answer")
             )

@@ -13,6 +13,8 @@ def _blueprint() -> dict:
         },
         "tasks": {
             "view": {
+                "parent_task_id": "image_acquisition_attribute",
+                "question_type_id": "view",
                 "category": "image_acquisition_and_basic_information",
                 "response_format": "letter",
                 "supporting_fields": ["image.annotation.view"],
@@ -62,6 +64,8 @@ def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: 
     payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
     assert identifier == benchmark_id(_blueprint())
     assert payload["tasks"]["zero"]["metrics"] == ["bleu"]
+    assert payload["tasks"]["view"]["parent_task_id"] == "image_acquisition_attribute"
+    assert payload["tasks"]["view"]["question_type_id"] == "view"
     assert payload["dataset"] == {
         "dataset_id": "vindr-mammo",
         "dataset_name": "VinDr-Mammo",
@@ -79,7 +83,9 @@ def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: 
         "sha256": hashlib.sha256(effective_config.read_bytes()).hexdigest(),
     }
     assert payload["artifacts"]["manifest"] == {"path": "benchmark_manifest.json"}
-    assert json.loads(Path(rag).read_text(encoding="utf-8"))["tasks"] == {
+    rag_payload = json.loads(Path(rag).read_text(encoding="utf-8"))
+    assert rag_payload["schema_version"] == "rag-designs.v2"
+    assert rag_payload["tasks"] == {
         "view": {
             "question_templates": ["Which view?"],
             "generation_logic": "Use supporting fields.",

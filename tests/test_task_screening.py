@@ -74,7 +74,11 @@ def test_complete_blueprint_task_plan_uses_one_model_call(monkeypatch) -> None:
     task_ids = list(blueprint["tasks"])
     plan = {
         "tasks": {
-            task_id: {"decision": "drop", "supporting_fields": [], "reason": "Unsupported."}
+            task_id: (
+                {"decision": "drop", "question_types": {}, "reason": "Unsupported."}
+                if task_id in screening.DECOMPOSABLE_TASK_IDS
+                else {"decision": "drop", "supporting_fields": [], "reason": "Unsupported."}
+            )
             for task_id in task_ids
         }
     }
@@ -217,8 +221,95 @@ def test_task_plan_prompt_checks_array_leaf_paths() -> None:
     assert "description` and `require` fields" in prompt
     assert "bbox or mask" not in prompt
     assert "priority" not in prompt
-    assert '"supporting_fields":["image.annotation.path"]' in prompt
+    assert '"supporting_fields":["exact.path"]' in prompt
     assert '"supporting_fields":["annotation.path"]' not in prompt
+    assert "Question-type rules" in prompt
+    assert "interpretation, diagnosis, assessment" in prompt
+
+
+def test_attribute_task_plan_expands_question_types_into_independent_tasks(tmp_path: Path) -> None:
+    blueprint = {
+        "tasks": {
+            "finding_attribute": {
+                "description": "Determine one finding property.",
+                "require": "One structured property.",
+                "response_format": "letter",
+                "category": "finding_recognition_and_characterization",
+                "sample_count": None,
+            }
+        }
+    }
+    profile = {
+        "fields": {
+            "image.annotation.shape": {"distinct_value_count": 3},
+            "image.annotation.signal_intensity": {"distinct_value_count": 2},
+        }
+    }
+    plan = {
+        "tasks": {
+            "finding_attribute": {
+                "decision": "retain",
+                "question_types": {
+                    "shape": {
+                        "description": "Determine the finding shape.",
+                        "supporting_fields": ["image.annotation.shape"],
+                        "reason": "Three shape values are available.",
+                    },
+                    "signal_intensity": {
+                        "description": "Determine the signal intensity.",
+                        "supporting_fields": ["image.annotation.signal_intensity"],
+                        "reason": "Two intensity values are available.",
+                    },
+                },
+                "reason": "Two independent properties are supported.",
+            }
+        }
+    }
+    path = tmp_path / "blueprint.json"
+    path.write_text(json.dumps(blueprint), encoding="utf-8")
+
+    report = screening.apply_task_plan(path, plan, profile)
+    tasks = json.loads(path.read_text(encoding="utf-8"))["tasks"]
+
+    assert list(tasks) == ["finding_attribute.shape", "finding_attribute.signal_intensity"]
+    assert tasks["finding_attribute.shape"]["parent_task_id"] == "finding_attribute"
+    assert tasks["finding_attribute.shape"]["question_type_id"] == "shape"
+    assert json.loads(Path(report).read_text(encoding="utf-8")) == plan
+
+
+def test_attribute_task_plan_rejects_reused_or_constant_fields() -> None:
+    blueprint = {"tasks": {"anatomy_attribute": {"response_format": "letter"}}}
+    profile = {
+        "fields": {
+            "study.annotation.size": {"distinct_value_count": 1},
+        }
+    }
+    response = {
+        "tasks": {
+            "anatomy_attribute": {
+                "decision": "retain",
+                "question_types": {
+                    "size": {
+                        "description": "Determine size.",
+                        "supporting_fields": ["study.annotation.size"],
+                        "reason": "Available.",
+                    },
+                    "size_group": {
+                        "description": "Determine size group.",
+                        "supporting_fields": ["study.annotation.size"],
+                        "reason": "Available.",
+                    },
+                },
+                "reason": "Available.",
+            }
+        }
+    }
+
+    plan, errors = screening.validate_task_plan(blueprint, profile, response)
+
+    assert plan is None
+    assert any("reused by multiple question types" in error for error in errors)
+    assert any("distinct_value_count >= 2" in error for error in errors)
 
 
 def test_task_revision_prompt_rejects_mask_as_bbox() -> None:

@@ -46,6 +46,31 @@ def test_weighted_distribution_normalizes_active_categories_and_splits_ties() ->
     }
 
 
+def test_expanded_question_types_share_their_parent_task_weight() -> None:
+    category = "finding_recognition_and_characterization"
+    tasks = {
+        "finding_type": {"category": category},
+        "finding_attribute.shape": {
+            "category": category,
+            "parent_task_id": "finding_attribute",
+        },
+        "finding_attribute.signal_intensity": {
+            "category": category,
+            "parent_task_id": "finding_attribute",
+        },
+        "finding_attribute.enhancement": {
+            "category": category,
+            "parent_task_id": "finding_attribute",
+        },
+    }
+
+    assert distribute_weighted_sample_counts(tasks, 12) == {
+        "finding_type": 6,
+        "finding_attribute.shape": 2,
+        "finding_attribute.signal_intensity": 2,
+        "finding_attribute.enhancement": 2,
+    }
+
 def test_write_sample_counts_is_atomic_and_preserves_tasks(tmp_path: Path) -> None:
     path = tmp_path / "blueprint.json"
     path.write_text(

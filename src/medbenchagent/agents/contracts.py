@@ -73,6 +73,7 @@ class ClinicalDesignAgentInputState(TypedDict):
     working_blueprint_path: str
     selected_material_files: list[str]
     dataset_profile: dict[str, Any]
+    dataset_access_manifest: dict[str, Any]
     run_id: str
     selected_dataset_id: str
     construction_events_path: str

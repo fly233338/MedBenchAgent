@@ -26,14 +26,16 @@ role-specialized agents + deterministic orchestration：
    内容寻址的 DuckDB、dataset profile 和 access manifest。
 3. `CapabilityAgent` 根据 profile 为全部预定义任务生成 Task Plan；人工可逐项修订。所有保留的 letter
    任务必须有至少两个语义答案类别，代码以获准字段的 `distinct_value_count >= 2` 作为必要条件兜底；
-   `finding_presence` 还必须同时具有显式正例和负例。确认后，代码删除不支持的任务并写入
+   `finding_presence` 还必须同时具有显式正例和负例。`anatomy_attribute` 与
+   `finding_attribute` 按单一语义答案轴识别 question type，每个类型只使用一个字段，并展开为
+   `<parent_task_id>.<question_type_id>` 独立任务。确认后，代码删除不支持的任务并写入
    `supporting_fields`，同时保留完整 `task_plan_report.json`。
-4. `CapabilityAgent` 按任务 category 稳定加权分配样本数：仅在保留类别间归一化默认权重，以最大余数法分配类别整数总数，再在类别内均分任务；自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
+4. `CapabilityAgent` 按任务 category 稳定加权分配样本数：仅在保留类别间归一化默认权重，以最大余数法分配类别整数总数；类别内先在原始父任务之间分配，再在父任务的有效 question types 之间均分，因此拆分不会提高父任务权重。自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
 5. `ClinicalDesignAgent` 包装现有 `rag_designs` 子图，对每个非零任务使用医学 PDF 做 RAG，逐项把设计和引用写入 Blueprint，再由
-   人工整体确认或定向重做。新设计为每个任务生成配置数量的唯一、语义等价模板，默认三个。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
+   人工整体确认或定向重做。新设计为每个具体 question type 生成配置数量的唯一、语义等价模板，默认三个；letter 任务先请求一个获准字段的安全精确分类值摘要，再生成结构化 `answer_field` 与 `answer_value_mapping`。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
 6. `GenerationAgent` 在私有状态中从确认后的 Blueprint 构造 `GenerationRequest`。现有生成子图按 letter、bbox、free_text 三个阶段
    独立读取 DuckDB；每阶段仅投影任务获准字段、稳定随机排序候选，并按 seed、task、image 和 source row
-   确定性选择一个问题模板后逐任务生成/审核，写入各自可恢复进度文件。旧单模板 Blueprint 仍可重放。
+   确定性选择一个问题模板后逐任务生成/审核。新 letter 设计由代码从 mapping 唯一确定 evidence 与答案，LLM 只改写题干；旧单模板或无 mapping Blueprint 仍可重放。
 7. 完成或数据耗尽后生成 raw JSONL；根图先记录 generation summary，再由 `AuditAgent` 硬审计图像完整性、题目契约、annotation witness、provenance 和重复项，平衡通过的选择题位置，最后按 task 稳定抽样进行 fail-open 的宽松 LLM 语义筛查。
 
 ## 状态、契约与产物
@@ -45,9 +47,7 @@ cursor、`GenerationRequest` 或数据集行；`BenchmarkOutputState` 则只返�
 ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务计数和 shortfall。
 
 五个角色的 Input、Output 和私有状态 contract 位于 `agents/contracts.py`，领域 contract 仍只定义在
-顶层 `contracts.py`。`ClinicalDesignAgent` 内的 `rag_designs` 子图以 Blueprint 路径、BenchmarkInfo、已选资料和 dataset profile 为输入；模型可按需请求
-当前 supporting field 的安全 `top_values` 摘要；每个合格语义标量字段最多暴露三个稳定样例，长字符串
-截断至 200 字符，identifier、文件引用、DICOM metadata、bbox 坐标和原始数据行不会进入提示。
+顶层 `contracts.py`。`ClinicalDesignAgent` 内的 `rag_designs` 子图以 Blueprint 路径、BenchmarkInfo、已选资料、dataset profile 和 access manifest 为输入。初始 profile 只包含安全的稳定样例；设计 letter mapping 时，模型可按需选择一个获准字段，代码再从 DuckDB 返回最多 32 个高频精确 scalar、计数、总 distinct count 和截断状态。字符串最长 200 字符，identifier、文件引用、DICOM metadata、bbox 坐标、长自由文本和原始数据行不会进入提示。
 其任务队列、定向重做反馈、当前任务和完成计数只保存在该 Agent checkpoint。GenerationAgent 先在私有状态中构造 request，现有生成子图仍以只包含 `generation_request` 的输入契约开始，
 并只向根图返回 raw 路径、题目计数、任务计数和 shortfall。阶段、游标、目标/完成计数、progress 路径、
 拒绝计数和耗尽标记属于 GenerationAgent 私有 checkpoint，不进入根图状态或公共输出。稳定类型位于 `contracts.py`：`BlueprintTask`（包含稳定 `category`）是规划到生成
@@ -57,7 +57,8 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 
 每次运行的核心产物是 working `blueprint.json`、`task_plan_report.json`、
 阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、只含元数据的 append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。配置按代码回退值、`config/default.toml`、显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖；Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
-`dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。模板数量由配置项
+`dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。确认后的设计采用
+`rag-designs.v2`；manifest 的展开任务记录可选 `parent_task_id` 与 `question_type_id`。模板数量由配置项
 `generation.question_template_count` 控制并写入生效配置快照，不属于 Graph 输入覆盖项。
 
 ## 不变量与失败语义
@@ -67,7 +68,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 - 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准字段投影。
 - Task Plan 与样本分配只在确认后改变 Blueprint；RAG 设计先逐项持久化，再通过确认/修订闭环收敛。
 - 同一 task/image 最多生成一题；默认每阶段每图最多接受三题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
-- 三种答案格式都保留可回放的 annotation witness。letter VQA 临时返回一个由 supporting-field path、每层原数组索引和原样 scalar value 组成的 witness；free_text 由代码唯一定位直接答案字符串；bbox 由代码按 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。代码在 Reviewer 前精确验证，raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
+- 三种答案格式都保留可回放的 annotation witness。新结构化 letter 任务由代码从 `answer_field` 唯一定位原始 scalar，并通过 `answer_value_mapping` 固定正确 option；LLM 只生成题干。旧 letter 设计仍由生成模型返回 supporting-field witness。free_text 由代码唯一定位直接答案字符串；bbox 由代码按 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。代码在 Reviewer 前精确验证，raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
 - bbox 任务只接受恰有一个合法标注框且能唯一定位四坐标 witness 的候选，不接受 mask 或运行期
   mask-to-bbox 转换。`visual_grounding` 还必须有与该框配对的 finding 名称、结构化标签或描述；
   `detection` 仅定位泛化 lesion/abnormal region，不能泄露 finding 名称。两者是独立能力，可同时保留。
@@ -83,7 +84,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
   仅在进程存活期间有效。
 - `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。LLM 事件使用五个固定 Agent 名称并记录 operation、模型逻辑名称、token 与 latency；`AuditAgent` 只有抽样语义筛查产生 LLM 调用，硬审计仍为确定性。人类事件仅在自然语言被成功解析并通过代码校验后记录，不保存输入内容。
 - `run_started` 和 `run_completed` 使用 `orchestrator` component，不归属任何业务 Agent，也不进入五角色的 LLM 统计。
-- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变。硬审计使用 source row 回溯同一 annotation 文件并重算所有答案格式的 witness hash；free_text 必须与回放字符串完全一致，bbox 必须与四个回放坐标数值一致，letter 的证据到选项语义映射仍由 Reviewer 负责。随后仅平衡选择题答案位置。语义层每 task 最多稳定抽取十题，只宽松检查明显任务偏移、答案泄露、歧义/选项重叠及语义近重复/模板塌缩；失败时 fail-open，flag 不会 reject，`flagged.jsonl` 始终是 `audited.jsonl` 的观察性子集。`audit_report.json` 采用 `audit-report.v1`，分别在 `hard_audit` 与 `semantic_audit` 中表达两层计数。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
+- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变。硬审计使用 source row 回溯同一 annotation 文件并重算所有答案格式的 witness hash；free_text 必须与回放字符串完全一致，bbox 必须与四个回放坐标数值一致。新结构化 letter 任务还必须满足回放 raw value、mapping、语义 option 与最终答案字母一致；旧无 mapping 设计的证据到选项语义关系仍由 Reviewer 负责。随后仅平衡选择题答案位置。语义层每 task 最多稳定抽取十题，只宽松检查明显任务偏移、答案泄露、歧义/选项重叠及语义近重复/模板塌缩；失败时 fail-open，flag 不会 reject，`flagged.jsonl` 始终是 `audited.jsonl` 的观察性子集。`audit_report.json` 采用 `audit-report.v1`，分别在 `hard_audit` 与 `semantic_audit` 中表达两层计数。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
 
 ## 推理与评测边界
 

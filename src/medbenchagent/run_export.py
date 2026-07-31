@@ -40,14 +40,22 @@ def export_rag_designs(
     blueprint: dict[str, Any], run_id: str, selected_material_files: list[str], output_path: str | Path
 ) -> str:
     designs = {}
-    fields = ("question_templates", "options", "generation_logic", "medical_task_description", "citations")
+    fields = (
+        "question_templates",
+        "options",
+        "answer_field",
+        "answer_value_mapping",
+        "generation_logic",
+        "medical_task_description",
+        "citations",
+    )
     for task_id, task in blueprint["tasks"].items():
         if task.get("sample_count", 0) > 0:
             designs[task_id] = {field: task[field] for field in fields if field in task}
     atomic_write_json(
         output_path,
         {
-            "schema_version": "rag-designs.v1",
+            "schema_version": "rag-designs.v2",
             "run_id": run_id,
             "selected_material_files": selected_material_files,
             "tasks": designs,
@@ -132,6 +140,16 @@ def finalize_run(
                     "supporting_fields": task["supporting_fields"],
                     "sample_count": task["sample_count"],
                     "metrics": [task["metric"]],
+                    **(
+                        {"parent_task_id": task["parent_task_id"]}
+                        if isinstance(task.get("parent_task_id"), str)
+                        else {}
+                    ),
+                    **(
+                        {"question_type_id": task["question_type_id"]}
+                        if isinstance(task.get("question_type_id"), str)
+                        else {}
+                    ),
                 }
                 for task_id, task in blueprint["tasks"].items()
             },

@@ -14,7 +14,7 @@ from typing import Any
 import duckdb
 
 from medbenchagent.generation import free_text, grounding, vqa
-from medbenchagent.generation.context import evidence_provenance
+from medbenchagent.generation.context import evidence_provenance, scalar_evidence_candidates
 from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
 from medbenchagent.construction import GENERATION_AGENT, event_context, record_event
 from medbenchagent.llm import ModelUnavailable
@@ -37,6 +37,8 @@ class _Candidate:
     supporting_record: dict[str, Any]
     task: BlueprintTask
     question_template: str
+    expected_answer: str | None = None
+    expected_evidence: dict[str, object] | None = None
 
 
 def _merge_projection(left: object, right: object) -> object:
@@ -150,6 +152,46 @@ def _normalized_options(options: object) -> list[str]:
     ]
 
 
+def _canonical_scalar(value: object) -> str | None:
+    if value is None or value == "" or isinstance(value, (dict, list)):
+        return None
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_answer_mapping(task_id: str, task: BlueprintTask, options: list[str]) -> None:
+    answer_field = task.get("answer_field")
+    mappings = task.get("answer_value_mapping")
+    if answer_field is None and mappings is None:
+        return
+    supporting_fields = task.get("supporting_fields")
+    if (
+        not isinstance(answer_field, str)
+        or not isinstance(supporting_fields, list)
+        or answer_field not in supporting_fields
+    ):
+        raise ValueError(f"{task_id}: answer_field must be one approved supporting field.")
+    if not isinstance(mappings, list) or not mappings:
+        raise ValueError(f"{task_id}: answer_value_mapping must be a non-empty list.")
+    seen: set[str] = set()
+    mapped_options: set[str] = set()
+    for mapping in mappings:
+        if not isinstance(mapping, dict) or set(mapping) != {"raw_value", "option"}:
+            raise ValueError(f"{task_id}: answer mappings need only raw_value and option.")
+        canonical = _canonical_scalar(mapping["raw_value"])
+        option = mapping["option"]
+        if canonical is None or canonical in seen:
+            raise ValueError(f"{task_id}: mapped raw values must be unique non-empty scalars.")
+        if not isinstance(option, str) or option not in options:
+            raise ValueError(f"{task_id}: every mapped option must exactly match one option.")
+        seen.add(canonical)
+        mapped_options.add(option)
+    if len(mapped_options) < 2:
+        raise ValueError(f"{task_id}: answer mapping must support at least two answer options.")
+
+
 def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask], dict[str, int]]:
     dataset_id = request.get("dataset_id")
     if not isinstance(dataset_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", dataset_id):
@@ -185,6 +227,7 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
             if not 2 <= len(options) <= 26 or not all(options) or len(set(options)) != len(options):
                 raise ValueError(f"{task_id}: letter tasks need 2-26 unique options.")
             task["options"] = options
+            _validate_answer_mapping(task_id, task, options)
         elif task.get("options") is not None:
             raise ValueError(f"{task_id}: options are allowed only for letter tasks.")
     max_tasks = request.get("max_tasks_per_image")
@@ -306,6 +349,30 @@ def _all_supporting_fields_present(record: dict[str, Any], supporting_fields: li
     )
 
 
+def _mapped_answer(
+    record: dict[str, Any], task: BlueprintTask
+) -> tuple[str, dict[str, object]] | None:
+    answer_field = task.get("answer_field")
+    mappings = task.get("answer_value_mapping")
+    if not isinstance(answer_field, str) or not isinstance(mappings, list):
+        return None
+    mapping_by_value = {
+        canonical: mapping["option"]
+        for mapping in mappings
+        if isinstance(mapping, dict)
+        and (canonical := _canonical_scalar(mapping.get("raw_value"))) is not None
+        and isinstance(mapping.get("option"), str)
+    }
+    matches = [
+        (mapping_by_value[canonical], evidence)
+        for evidence in scalar_evidence_candidates(record, answer_field)
+        if (canonical := _canonical_scalar(evidence["value"])) in mapping_by_value
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
 def _next_candidate_record(
     request: GenerationRequest,
     tasks: dict[str, BlueprintTask],
@@ -340,6 +407,10 @@ def _next_candidate_record(
                         continue
                     projected = project_supporting_record(record, task["supporting_fields"])
                     image_id = str(record["image"]["image_id"])
+                    has_mapping = isinstance(task.get("answer_value_mapping"), list)
+                    mapped = _mapped_answer(record, task) if has_mapping else None
+                    if has_mapping and mapped is None:
+                        continue
                     candidate = _Candidate(
                         task_id,
                         record["_source_row"],
@@ -349,6 +420,8 @@ def _next_candidate_record(
                         _select_question_template(
                             task, seed, task_id, image_id, record["_source_row"]
                         ),
+                        mapped[0] if mapped else None,
+                        mapped[1] if mapped else None,
                     )
                     if _has_meaningful_value(projected) and handler.supports(candidate):
                         candidates.append(candidate)

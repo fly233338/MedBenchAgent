@@ -53,6 +53,11 @@ def _validate_weighted_tasks(tasks: dict[str, dict[str, Any]]) -> None:
             raise ValueError(f"{task_id}: unsupported task category: {category!r}.")
 
 
+def _task_family(task_id: str, task: dict[str, Any]) -> str:
+    parent = task.get("parent_task_id")
+    return parent if isinstance(parent, str) and parent else task_id
+
+
 def _largest_remainder(total: int, weights: dict[str, float]) -> dict[str, int]:
     weight_total = sum(weights.values())
     if weight_total <= 0:
@@ -82,10 +87,16 @@ def distribute_weighted_sample_counts(
     remaining_total = total - sum(fixed.values())
     if remaining_total < 0:
         raise ValueError("Fixed task sample counts exceed the benchmark sample_count.")
-    remaining_by_category: dict[str, list[str]] = {}
+    remaining_by_category: dict[str, dict[str, list[str]]] = {}
+    family_categories: dict[str, str] = {}
     for task_id, task in tasks.items():
         if task_id not in fixed:
-            remaining_by_category.setdefault(task["category"], []).append(task_id)
+            category = task["category"]
+            family = _task_family(task_id, task)
+            previous = family_categories.setdefault(family, category)
+            if previous != category:
+                raise ValueError(f"Task family spans multiple categories: {family}.")
+            remaining_by_category.setdefault(category, {}).setdefault(family, []).append(task_id)
     if not remaining_by_category:
         if remaining_total:
             raise ValueError("Complete task sample counts must sum to the benchmark sample_count.")
@@ -99,10 +110,14 @@ def distribute_weighted_sample_counts(
     }
     category_counts = _largest_remainder(remaining_total, active_weights)
     distributed = dict(fixed)
-    for category, task_ids in remaining_by_category.items():
-        quotient, remainder = divmod(category_counts[category], len(task_ids))
-        for index, task_id in enumerate(task_ids):
-            distributed[task_id] = quotient + (index < remainder)
+    for category, families in remaining_by_category.items():
+        family_counts = _largest_remainder(
+            category_counts[category], {family: 1.0 for family in families}
+        )
+        for family, task_ids in families.items():
+            quotient, remainder = divmod(family_counts[family], len(task_ids))
+            for index, task_id in enumerate(task_ids):
+                distributed[task_id] = quotient + (index < remainder)
     return {task_id: distributed[task_id] for task_id in tasks}
 
 

@@ -386,6 +386,43 @@ def test_answer_evidence_replays_free_text_and_bbox_exactly() -> None:
     )
 
 
+def test_answer_evidence_replays_structured_letter_mapping() -> None:
+    answer_path = "image.annotation.finding.shape"
+    record = {
+        "image": {
+            "annotation": {"finding": {"shape": "irregular"}},
+        }
+    }
+    source = {
+        "answer_evidence": {
+            "path": answer_path,
+            "indices": [],
+            "evidence_sha256": evidence_sha256(answer_path, [], "irregular"),
+        }
+    }
+    task = {
+        "response_format": "letter",
+        "answer_field": answer_path,
+        "answer_value_mapping": [
+            {"raw_value": "oval", "option": "Oval"},
+            {"raw_value": "irregular", "option": "Irregular"},
+        ],
+    }
+    item = {"options": ["Oval", "Irregular"], "answer": "B"}
+
+    assert _answer_evidence_matches(item, task, source, record, [answer_path])
+    assert not _answer_evidence_matches(
+        item | {"answer": "A"}, task, source, record, [answer_path]
+    )
+    assert not _answer_evidence_matches(
+        item,
+        task | {"answer_field": "image.annotation.finding.margin"},
+        source,
+        record,
+        [answer_path],
+    )
+
+
 def test_semantic_audit_samples_once_per_task_and_flags_without_rejecting(
     tmp_path: Path, monkeypatch
 ) -> None:

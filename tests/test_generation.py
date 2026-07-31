@@ -594,6 +594,84 @@ def test_all_supporting_fields_must_be_nonempty_and_vqa_options_remain_normalize
     )
 
 
+def test_structured_mapping_fixes_answer_and_evidence_before_vqa_generation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    task = _task(
+        "letter",
+        ["image.annotation.status"],
+        sample_count=1,
+        parent_task_id="finding_attribute",
+        question_type_id="status",
+        answer_field="image.annotation.status",
+        answer_value_mapping=[
+            {"raw_value": "benign", "option": "benign"},
+            {"raw_value": "malignant", "option": "malignant"},
+        ],
+    )
+    request = _request(tmp_path, [_record(0, {"status": "benign"})], {"status": task}, 1)
+    calls: list[str] = []
+    responses = iter(
+        [
+            {"question": "Which status is shown?"},
+            {"approved": True, "reason": "Faithful."},
+        ]
+    )
+
+    def complete(system: str, *_args, **_kwargs) -> dict:
+        calls.append(system)
+        return next(responses)
+
+    monkeypatch.setattr(vqa, "complete_json", complete)
+    result = generation.generate_raw_benchmark(request)
+    item = _read_items(result.raw_output_path)[0]
+    provenance = _read_items(result.provenance_output_path)[0]
+
+    assert item["answer"] == "A"
+    assert "Fixed answer option: benign" in calls[0]
+    assert "Supporting data:" not in calls[0]
+    assert provenance["answer_evidence"]["path"] == "image.annotation.status"
+
+
+def test_structured_mapping_skips_unmapped_or_multiple_evidence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    mapping = [
+        {"raw_value": "low", "option": "benign"},
+        {"raw_value": "high", "option": "malignant"},
+    ]
+    unmapped_task = _task(
+        "letter",
+        ["image.annotation.signal"],
+        sample_count=1,
+        answer_field="image.annotation.signal",
+        answer_value_mapping=mapping,
+    )
+    unmapped = _request(
+        tmp_path / "unmapped",
+        [_record(0, {"signal": "intermediate"})],
+        {"signal": unmapped_task},
+        1,
+    )
+    monkeypatch.setattr(vqa, "complete_json", lambda *_args, **_kwargs: pytest.fail("model called"))
+    assert generation.generate_raw_benchmark(unmapped).item_count == 0
+
+    multiple_task = _task(
+        "letter",
+        ["image.annotation.findings[*].signal"],
+        sample_count=1,
+        answer_field="image.annotation.findings[*].signal",
+        answer_value_mapping=mapping,
+    )
+    multiple = _request(
+        tmp_path / "multiple",
+        [_record(0, {"findings": [{"signal": "low"}, {"signal": "high"}]})],
+        {"signal": multiple_task},
+        1,
+    )
+    assert generation.generate_raw_benchmark(multiple).item_count == 0
+
+
 def test_stage_progress_is_resumed_and_cleaned_only_after_raw_merge(tmp_path: Path) -> None:
     task = _task("letter", ["image.annotation.status"], sample_count=1)
     request = _request(tmp_path, [_record(0, {"status": "benign"})], {"vqa": task}, 1)

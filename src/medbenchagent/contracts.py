@@ -20,7 +20,11 @@ class BlueprintTask(TypedDict):
     medical_task_description: str
     citations: list[dict[str, object]]
     sample_count: int | None
+    parent_task_id: NotRequired[str]
+    question_type_id: NotRequired[str]
     options: NotRequired[list[str]]
+    answer_field: NotRequired[str]
+    answer_value_mapping: NotRequired[list[dict[str, object]]]
 
 
 class GenerationRequest(TypedDict):

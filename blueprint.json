@@ -49,8 +49,8 @@
     },
 
     "anatomy_attribute": {
-      "description": "Determine a structured attribute describing the composition, morphology, or global characteristic of the target anatomy.",
-      "require": "This task requires a structured anatomy-attribute field such as breast density, organ size, tissue composition, parenchymal pattern, or anatomical development stage.",
+      "description": "Determine one explicitly annotated, image-observable global property of the depicted anatomy or background tissue.",
+      "require": "This task requires a structured categorical field that directly describes one image-observable global anatomical property, such as tissue composition, organ size, developmental state, or background texture. Different semantic properties must be represented as separate question types, each using exactly one answer-bearing field with at least two semantically distinct values that can serve as correct answers. Acquisition metadata, localized finding attributes, clinical interpretations, assessments, diagnoses, and pathology results do not support this task.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
@@ -69,8 +69,8 @@
     },
 
     "finding_type": {
-      "description": "Identify the type of abnormal imaging finding shown in the image.",
-      "require": "This task requires a finding-type field containing at least two clinically meaningful values, such as mass, calcification, nodule, effusion, fracture, asymmetry, or architectural distortion.",
+      "description": "Identify the explicitly annotated visual category of the primary imaging finding.",
+      "require": "This task requires a structured categorical field whose values directly name visual finding categories at one consistent taxonomy level, such as a mass, fracture, effusion, or consolidation, with at least two categories able to serve as correct answers. The category must be explicitly annotated rather than inferred from a clinical interpretation, differential diagnosis, named disease, malignancy suspicion, assessment category, prognosis, or pathology result.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",
@@ -79,8 +79,8 @@
     },
 
     "finding_attribute": {
-      "description": "Identify a morphological or visual characteristic of a specific imaging finding.",
-      "require": "This task requires structured finding-attribute fields such as shape, margin, distribution, texture, density, echogenicity, enhancement, or signal intensity.",
+      "description": "Determine one explicitly annotated, image-observable property of a target finding or abnormal region.",
+      "require": "This task requires a structured categorical field that directly describes one observable property of the same target finding or abnormal region, such as shape, boundary, orientation, signal intensity, or enhancement pattern. Fields describing different semantic properties must become separate question types, each using exactly one answer-bearing field with at least two semantically distinct values that can serve as correct answers. Finding categories, clinical interpretations, assessments, diagnoses, prognoses, and pathology results are not finding attributes.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "metric": "accuracy",

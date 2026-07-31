@@ -1,8 +1,10 @@
 import sys
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import duckdb
 
 import medbenchagent.rag.pdf as pdf_rag
 
@@ -27,7 +29,16 @@ def _design(response_format: str = "letter") -> dict:
         "medical_task_description": "This assesses view recognition; imaging guidance supports the terminology.",
     }
     if response_format == "letter":
-        design["options"] = ["CC", "MLO"]
+        design.update(
+            {
+                "options": ["CC", "MLO"],
+                "answer_field": "image.annotation.view",
+                "answer_value_mapping": [
+                    {"raw_value": "CC", "option": "CC"},
+                    {"raw_value": "MLO", "option": "MLO"},
+                ],
+            }
+        )
     return design
 
 
@@ -46,28 +57,82 @@ def _profile(*paths: str) -> dict:
     }
 
 
+def _summaries(path: str = "image.annotation.view") -> dict:
+    return {
+        path: {
+            "field": path,
+            "distinct_value_count": 2,
+            "values": [{"value": "CC", "count": 6}, {"value": "MLO", "count": 4}],
+            "truncated": False,
+        }
+    }
+
+
+def _manifest(tmp_path: Path) -> dict:
+    database = tmp_path / "dataset.duckdb"
+    connection = duckdb.connect(str(database))
+    try:
+        connection.execute("CREATE TABLE images(record JSON, _source_row BIGINT)")
+        records = [
+            {"image": {"annotation": {"view": view}}}
+            for view in ("CC", "CC", "MLO")
+        ]
+        connection.executemany(
+            "INSERT INTO images VALUES (?, ?)",
+            [(json.dumps(record), index) for index, record in enumerate(records)],
+        )
+    finally:
+        connection.close()
+    return {"duckdb_path": str(database)}
+
+
 def test_validate_task_design_accepts_only_embedded_rag_fields() -> None:
-    assert pdf_rag.validate_task_design("view", _task(), _design())["options"] == ["CC", "MLO"]
+    def validate(design: dict) -> dict:
+        return pdf_rag.validate_task_design("view", _task(), design, _summaries())
+    assert validate(_design())["options"] == ["CC", "MLO"]
     with pytest.raises(ValueError, match="exactly"):
-        pdf_rag.validate_task_design("view", _task(), _design() | {"validation_rules": []})
+        validate(_design() | {"validation_rules": []})
     with pytest.raises(ValueError, match="options"):
-        pdf_rag.validate_task_design("view", _task(), _design() | {"options": ["CC"]})
+        validate(_design() | {"options": ["CC"]})
     with pytest.raises(ValueError, match="exactly 3"):
-        pdf_rag.validate_task_design("view", _task(), _design() | {"question_templates": ["one", "two"]})
+        validate(_design() | {"question_templates": ["one", "two"]})
     with pytest.raises(ValueError, match="unique"):
-        pdf_rag.validate_task_design(
-            "view",
-            _task(),
+        validate(
             _design() | {"question_templates": ["one", "one", "three"]},
         )
-    assert pdf_rag.validate_task_design(
-        "view", _task(), _design() | {"options": ["A. CC", "B) MLO"]}
-    )["options"] == ["CC", "MLO"]
+    assert validate(_design() | {"options": ["A. CC", "B) MLO"]})["options"] == ["CC", "MLO"]
     with pytest.raises(ValueError, match="2-8"):
+        validate(
+            _design() | {"options": [f"option-{index}" for index in range(9)]},
+        )
+
+
+def test_validate_task_design_rejects_invalid_answer_mappings() -> None:
+    with pytest.raises(ValueError, match="mapped only once"):
         pdf_rag.validate_task_design(
             "view",
             _task(),
-            _design() | {"options": [f"option-{index}" for index in range(9)]},
+            _design()
+            | {
+                "answer_value_mapping": [
+                    {"raw_value": "CC", "option": "CC"},
+                    {"raw_value": "CC", "option": "MLO"},
+                ]
+            },
+            _summaries(),
+        )
+    with pytest.raises(ValueError, match="at least two"):
+        pdf_rag.validate_task_design(
+            "view",
+            _task(),
+            _design()
+            | {
+                "answer_value_mapping": [
+                    {"raw_value": "CC", "option": "CC"},
+                    {"raw_value": "MLO", "option": "CC"},
+                ]
+            },
+            _summaries(),
         )
 
 
@@ -79,14 +144,18 @@ def test_validate_task_design_uses_configured_template_count(monkeypatch) -> Non
     )
     design = _design() | {"question_templates": ["Which view?", "What view is shown?"]}
 
-    assert pdf_rag.validate_task_design("view", _task(), design)["question_templates"] == [
+    assert pdf_rag.validate_task_design("view", _task(), design, _summaries())["question_templates"] == [
         "Which view?",
         "What view is shown?",
     ]
 
 
-def test_design_task_repairs_one_invalid_response(monkeypatch) -> None:
-    responses = iter([_design() | {"validation_rules": []}, _design()])
+def test_design_task_repairs_one_invalid_response(tmp_path: Path, monkeypatch) -> None:
+    responses = iter([
+        {"requested_field_values": ["image.annotation.view"]},
+        _design() | {"validation_rules": []},
+        _design(),
+    ])
     monkeypatch.setattr(pdf_rag, "complete_json", lambda *_args: next(responses))
     rag = SimpleNamespace(
         retrieve=lambda _query: [
@@ -95,14 +164,19 @@ def test_design_task_repairs_one_invalid_response(monkeypatch) -> None:
     )
 
     result = pdf_rag.design_task(
-        rag, {"language": "en"}, "view", _task(), dataset_profile=_profile("image.annotation.view")
+        rag,
+        {"language": "en"},
+        "view",
+        _task(),
+        dataset_profile=_profile("image.annotation.view"),
+        dataset_access_manifest=_manifest(tmp_path),
     )
 
     assert result["options"] == ["CC", "MLO"]
     assert result["citations"] == [{"pdf": "guide.pdf", "page": 1, "chunk_id": "guide-p1-c0"}]
 
 
-def test_design_task_requests_safe_field_values_only_when_needed(monkeypatch) -> None:
+def test_design_task_requests_safe_field_values_before_letter_design(tmp_path: Path, monkeypatch) -> None:
     responses = iter([{"requested_field_values": ["image.annotation.view"]}, _design()])
     calls: list[str] = []
 
@@ -114,13 +188,19 @@ def test_design_task_requests_safe_field_values_only_when_needed(monkeypatch) ->
     rag = SimpleNamespace(retrieve=lambda _query: [])
 
     result = pdf_rag.design_task(
-        rag, {"language": "en"}, "view", _task(), dataset_profile=_profile("image.annotation.view")
+        rag,
+        {"language": "en"},
+        "view",
+        _task(),
+        dataset_profile=_profile("image.annotation.view"),
+        dataset_access_manifest=_manifest(tmp_path),
     )
 
     assert result["options"] == ["CC", "MLO"]
     assert len(calls) == 2
     assert "requested_field_values" in calls[0]
     assert "requested_field_values" not in calls[1]
+    assert result["answer_value_mapping"] == _design()["answer_value_mapping"]
 
 
 @pytest.mark.parametrize(
@@ -143,7 +223,7 @@ def test_design_task_requests_safe_field_values_only_when_needed(monkeypatch) ->
             "image.annotation.view",
             _task(),
             {"fields": {"image.annotation.view": {"path": "image.annotation.view"}}},
-            "no safe top_values",
+            "no safe categorical summary",
         ),
     ],
 )
@@ -155,7 +235,14 @@ def test_design_task_rejects_unsafe_field_value_requests(
     )
 
     with pytest.raises(ValueError, match=message):
-        pdf_rag.design_task(SimpleNamespace(retrieve=lambda _query: []), {"language": "en"}, "view", task, dataset_profile=profile)
+        pdf_rag.design_task(
+            SimpleNamespace(retrieve=lambda _query: []),
+            {"language": "en"},
+            "view",
+            task,
+            dataset_profile=profile,
+            dataset_access_manifest={"duckdb_path": "unused"},
+        )
 
 
 def test_discover_and_extract_selected_categorized_medical_pdfs(
@@ -242,14 +329,18 @@ def test_design_prompt_keeps_letter_candidate_sets_compact() -> None:
         "",
         "",
         None,
+        _summaries(),
+        allow_value_request=False,
     )
 
     assert "Use 2-4 options by default" in system
     assert "Return exactly 3 question templates" in system
     assert "Use 5-8 only when" in system
     assert "Do not enumerate an exhaustive differential diagnosis" in system
-    assert "request the necessary supporting field values instead of inventing a taxonomy" in system
-    assert "routes of spread" in system
+    assert "Answer-mapping rules" in system
+    assert "distractors do not make a constant-label task valid" in system
+    assert "Use one semantic axis and one level of granularity" in system
+    assert "routes of spread" not in system
 
 
 @pytest.mark.parametrize("response_format", ["bbox", "free_text"])

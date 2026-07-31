@@ -119,14 +119,18 @@ review. Respond in natural language to confirm it or describe one task to revise
 DeepSeek maps every response to a validated confirm/revise action. BenchmarkInfo review
 uses the same natural-language interpretation. The working Blueprint is updated only
 after confirmation: dropped tasks are removed and retained tasks receive their approved
-`supporting_fields`. The resulting `task_plan_report.json` retains decisions for both
-retained and dropped tasks. Detection and visual grounding are independent capabilities:
+`supporting_fields`. For `anatomy_attribute` and `finding_attribute`, Task Plan first
+identifies one question type per observable semantic property, then materializes each type
+as an independent task such as `finding_attribute.shape`. Every expanded task has one
+answer-bearing field, while `parent_task_id` preserves its planning family. The resulting
+`task_plan_report.json` retains decisions for both retained and dropped tasks. Detection and visual grounding are independent capabilities:
 both may be retained when the dataset has the required bounding-box and finding evidence.
 
 The retained tasks then receive a stable category-weighted allocation of the benchmark
 target. The six task-category weights are normalized across categories that retain at
-least one task, then distributed by largest remainder; tasks within each category split
-that category's integer allocation evenly. The complete allocation is shown for
+least one task, then distributed by largest remainder. Within each category, allocation is
+split first across original parent tasks and then evenly across the valid question types of
+each parent, so decomposition does not increase a parent task's weight. The complete allocation is shown for
 natural-language review; named task adjustments are fixed and the remaining count is
 redistributed across unnamed tasks with the same weighting. Counts are written to the
 working Blueprint only after confirmation. A zero-count task remains in the Blueprint
@@ -243,12 +247,19 @@ checkout instead of installing its wheel.
 RAG processes retained tasks one at a time and writes its result directly into each
 working Blueprint task. The embedded fields are `question_templates`,
 `generation_logic`, `medical_task_description`, `citations`, and, for letter tasks,
-`options`. There is no separate Question Design artifact or duplicate generation spec.
+`options`, `answer_field`, and `answer_value_mapping`. There is no separate Question Design artifact or duplicate generation spec.
 Natural-language review can revise one or more task designs without changing other
 Blueprint tasks. New designs contain exactly the configured number of unique, semantically
 equivalent question templates. Generation deterministically selects one template for each
 task/image/source-row tuple from the run seed before asking the model for a controlled paraphrase;
 legacy Blueprint tasks containing one valid template remain runnable.
+
+Before designing a new letter task, RAG requests the exact categorical values of its selected
+approved answer field. Code returns at most 32 frequent scalar values with counts, truncation
+status, and the total distinct-value count; it never returns source rows, identifiers, bounding
+boxes, DICOM metadata, or long free text. The resulting mapping preserves each raw JSON value
+exactly and may merge values only when one annotated variable unambiguously determines a coarser
+option. Unmapped values are ineligible for generation.
 
 Capability screening retains a letter-response task only when its approved supporting fields
 include at least one field with two or more distinct non-empty values and the values represent at
@@ -259,9 +270,11 @@ answer. Finding-presence tasks additionally require explicit positive and negati
 The generator runs three independent seeded scans in a fixed order: letter VQA,
 Grounding bbox, then direct-reference free text. Each stage begins from the database
 start, projects only unfinished tasks' approved `supporting_fields`, and independently
-accepts up to three tasks per image after a stable seed/image-ID shuffle. Letter VQA
-normalizes one exact option and copies one exact scalar evidence value with source
-indices for every wildcard in its supporting-field path. Free text deterministically
+accepts up to three tasks per image after a stable seed/image-ID shuffle. For new mapped letter
+tasks, code reads the declared answer field, requires one uniquely located mapped raw value, and
+fixes the semantic answer and evidence before the model call; the model generates only the
+question stem. Legacy letter designs without a mapping retain their existing generation path.
+Free text deterministically
 locates its unique direct-reference string, while grounding locates the four source
 coordinates of its unique annotated box. Code verifies every witness against the
 original annotation before review; only path, indices, and hashes enter provenance.
@@ -311,7 +324,9 @@ and checks every item's source row against the exact annotation file used by Gen
 every response format it replays the evidence path and source indices, then verifies the witness
 hash. Free-text answers must exactly equal the replayed string, and bbox answers must equal the
 four replayed coordinates. For letter items it does not reinterpret the evidence or judge its
-mapping to an option. It rejects repeated item IDs and canonical-identical items while retaining
+mapping to an option for legacy designs; for structured mappings it deterministically verifies
+that the replayed raw value maps to the semantic option represented by the saved answer letter.
+It rejects repeated item IDs and canonical-identical items while retaining
 repeated question text; `audit_report.json` reports normalized-question repetition separately in
 `duplicate_statistics`. After answer balancing,
 Audit deterministically samples at most ten items per task for one permissive semantic call per

@@ -25,7 +25,7 @@ UNSUPPORTED_DIAGNOSIS_VALUES = frozenset(
     }
 )
 
-VQA_GENERATION_PROMPT = """
+LEGACY_VQA_GENERATION_PROMPT = """
 Generate one letter-choice question for a medical image VQA benchmark.
 Context:
 - Language: {language}
@@ -62,7 +62,34 @@ Return JSON only:
   "evidence": {{"path": "one exact supporting field", "indices": [0], "value": "exact raw value"}}}}
 """.strip()
 
-VQA_REVIEW_PROMPT = """
+VQA_GENERATION_PROMPT = """
+Generate only the question stem for one letter-choice medical-image benchmark item.
+
+Fixed context:
+- Language: {language}
+- Modality: {modality}
+- Task definition: {task_definition}
+- Question type: {question_type}
+- Answer field: {answer_field}
+- Fixed answer option: {expected_answer}
+- Fixed raw evidence: {expected_evidence}
+- Selected template: {selected_question_template}
+- Options: {candidate_options}
+
+Requirements:
+1. Preserve the declared question type and answer axis.
+2. Apply surface-level linguistic variation only, using a distinctly different grammatical structure when possible.
+   Avoid stock openers such as Based on….
+3. Do not switch property, target, scope, or granularity.
+4. Do not reveal or hint at the answer.
+5. Do not mention annotations, labels, metadata, or reports.
+6. Do not choose or reinterpret the answer or evidence.
+
+Return JSON only:
+{{"question": "question stem"}}
+""".strip()
+
+LEGACY_VQA_REVIEW_PROMPT = """
 Review one generated letter-choice VQA item.
 
 Context:
@@ -86,6 +113,28 @@ Return JSON only:
 {{"approved": true, "reason": "short reason"}}
 """.strip()
 
+VQA_REVIEW_PROMPT = """
+Review one generated letter-choice VQA item whose answer and evidence were fixed by code.
+
+Context:
+- Task definition: {task_definition}
+- Question type: {question_type}
+- Candidate options: {candidate_options}
+- Supporting data: {supporting_data}
+- Question: {question}
+- Fixed answer: {answer}
+
+Approve only when:
+1. The question asks exactly for the declared question type and answer axis.
+2. It is answerable using the image and supplied options.
+3. It does not reveal or strongly hint at the fixed answer.
+4. It does not switch property, target, scope, granularity, or clinical concept.
+5. The options are mutually exclusive for the question as written.
+
+Return JSON only:
+{{"approved": true, "reason": "short reason"}}
+""".strip()
+
 
 def _scalar_values(value: object) -> list[object]:
     if isinstance(value, dict):
@@ -101,6 +150,8 @@ def _scalar_values(value: object) -> list[object]:
 
 
 def supports(candidate: Any) -> bool:
+    if getattr(candidate, "expected_answer", None) is not None:
+        return True
     if candidate.task_id != "diagnosis":
         return True
     values = _scalar_values(candidate.supporting_record)
@@ -116,13 +167,32 @@ def supports(candidate: Any) -> bool:
 
 def _task_definition(candidate: Any) -> str:
     return json.dumps(
-        {"description": candidate.task["description"], "require": candidate.task["require"]},
+        {
+            "description": candidate.task["description"],
+            "require": candidate.task["require"],
+            "question_type_id": candidate.task.get("question_type_id"),
+        },
         ensure_ascii=False,
     )
 
 
 def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
-    return VQA_GENERATION_PROMPT.format(
+    if (
+        getattr(candidate, "expected_answer", None) is not None
+        and getattr(candidate, "expected_evidence", None) is not None
+    ):
+        return VQA_GENERATION_PROMPT.format(
+            language=benchmark_info.get("language", ""),
+            modality=image_modality(candidate),
+            task_definition=_task_definition(candidate),
+            question_type=candidate.task.get("question_type_id", candidate.task_id),
+            answer_field=candidate.task["answer_field"],
+            expected_answer=candidate.expected_answer,
+            expected_evidence=json.dumps(candidate.expected_evidence, ensure_ascii=False),
+            selected_question_template=candidate.question_template,
+            candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
+        )
+    return LEGACY_VQA_GENERATION_PROMPT.format(
         language=benchmark_info.get("language", ""),
         modality=image_modality(candidate),
         task_id=candidate.task_id,
@@ -136,6 +206,20 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
 
 
 def _validate(candidate: Any, response: object) -> dict[str, Any]:
+    if (
+        getattr(candidate, "expected_answer", None) is not None
+        and getattr(candidate, "expected_evidence", None) is not None
+    ):
+        if not isinstance(response, dict) or set(response) != {"question"}:
+            raise ValueError("Mapped letter generation must contain only question.")
+        question = response["question"]
+        if not isinstance(question, str) or not question.strip():
+            raise ValueError("Generated question must be a non-empty string.")
+        return {
+            "question": question.strip(),
+            "answer": candidate.expected_answer,
+            "evidence": dict(candidate.expected_evidence),
+        }
     if not isinstance(response, dict) or set(response) != {"question", "answer", "evidence"}:
         raise ValueError("Letter generation must contain only question, answer, and evidence.")
     question = response["question"]
@@ -174,8 +258,17 @@ def generate(
 def review(
     candidate: Any, generated: dict[str, Any], _benchmark_info: dict[str, object]
 ) -> tuple[bool, str]:
-    response = complete_json(
-        VQA_REVIEW_PROMPT.format(
+    if getattr(candidate, "expected_answer", None) is not None:
+        prompt = VQA_REVIEW_PROMPT.format(
+            task_definition=_task_definition(candidate),
+            question_type=candidate.task.get("question_type_id", candidate.task_id),
+            candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
+            supporting_data=json.dumps(candidate.supporting_record, ensure_ascii=False),
+            question=generated["question"],
+            answer=generated["answer"],
+        )
+    else:
+        prompt = LEGACY_VQA_REVIEW_PROMPT.format(
             task_definition=_task_definition(candidate),
             generation_logic=candidate.task["generation_logic"],
             candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),
@@ -183,7 +276,9 @@ def review(
             question=generated["question"],
             answer=generated["answer"],
             evidence=json.dumps(generated["evidence"], ensure_ascii=False),
-        ),
+        )
+    response = complete_json(
+        prompt,
         "",
     )
     approved = (

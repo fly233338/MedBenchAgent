@@ -98,6 +98,13 @@ def _evidence_candidates(
     return candidates
 
 
+def scalar_evidence_candidates(
+    record: dict[str, object], path: str
+) -> list[dict[str, object]]:
+    """Return every non-empty scalar witness for one approved field path."""
+    return _evidence_candidates(record, path)
+
+
 def locate_scalar_evidence(
     record: dict[str, object], supporting_fields: object, expected: object
 ) -> dict[str, object]:

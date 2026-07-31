@@ -29,6 +29,7 @@ class RagDesignInputState(TypedDict):
     working_blueprint_path: str
     selected_material_files: list[str]
     dataset_profile: dict[str, Any]
+    dataset_access_manifest: dict[str, Any]
     run_id: str
     selected_dataset_id: str
     construction_events_path: str
@@ -108,6 +109,7 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
             task_id,
             task,
             dataset_profile=state["dataset_profile"],
+            dataset_access_manifest=state["dataset_access_manifest"],
             feedback=state.get("rag_task_feedback", {}).get(task_id, ""),
         )
     if state.get("construction_events_path"):
@@ -168,7 +170,8 @@ def _design_review_action(answer: object, tasks: dict[str, Any]) -> dict[str, An
         '{"action":"revise","revisions":[{"task_id":"exact task id","feedback":"requested design change"}]}\n'
         "Confirm only when the complete Blueprint task design is accepted. Support multiple task revisions "
         "and expand a global request to every affected task. Revisions may change only question_templates, "
-        "options, generation_logic, or medical_task_description. They must not add or remove tasks or alter "
+        "options, answer_field, answer_value_mapping, generation_logic, or medical_task_description. They "
+        "must not add or remove tasks or alter "
         "supporting_fields, task_type, or response_format.\n"
         f"Current tasks: {json.dumps(tasks, ensure_ascii=False)}\nUser response: {answer}"
     )

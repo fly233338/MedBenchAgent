@@ -640,7 +640,7 @@ def test_rag_subgraph_persists_design_and_checkpoints_streamed_progress(
     monkeypatch.setattr(
         rag_workflow,
         "design_task",
-        lambda _rag, _info, _task_id, _task, dataset_profile, feedback="": _rag_fields(),
+        lambda _rag, _info, _task_id, _task, dataset_profile, dataset_access_manifest, feedback="": _rag_fields(),
     )
     monkeypatch.setattr(rag_workflow, "interrupt", lambda _payload: "确认")
     monkeypatch.setattr(rag_workflow, "complete_json", lambda *_args: {"action": "confirm"})
@@ -655,6 +655,7 @@ def test_rag_subgraph_persists_design_and_checkpoints_streamed_progress(
                 "working_blueprint_path": str(path),
                 "selected_material_files": ["Standard/guide.pdf"],
                 "dataset_profile": {"fields": {}},
+                "dataset_access_manifest": {"duckdb_path": "unused"},
             },
             config,
             stream_mode="custom",
