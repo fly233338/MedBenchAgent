@@ -15,24 +15,46 @@ InputFunction = Callable[[str], str]
 OutputFunction = Callable[[str], None]
 
 _QUESTION_TEXT = {
-    "benchmark_info_confirmation": "请确认 BenchmarkInfo，或描述需要修改的内容。",
-    "dataset_selection_confirmation": "请确认推荐的数据集，或输入另一个可用数据集。",
-    "task_plan_review": "请确认 Task Plan，或说明要修改的一个任务及修改要求。",
-    "sample_count_confirmation": "请确认各任务题量，或描述需要调整的数量。",
-    "materials_choose": "请选择一个或多个医学 PDF，可直接输入文件名或描述所需资料。",
-    "question_design_confirmation": "请确认题目设计，或描述需要修改的任务和要求。",
+    "benchmark_info_confirmation": "Confirm the BenchmarkInfo or describe the changes you need.",
+    "dataset_selection_confirmation": "Confirm the recommended dataset or name another available dataset.",
+    "task_plan_review": "Confirm the Task Plan or describe one task that should be revised.",
+    "sample_count_confirmation": "Confirm the per-task sample counts or describe adjustments.",
+    "materials_choose": "Choose one or more medical PDFs by filename or describe the references you need.",
+    "question_design_confirmation": "Confirm the question designs or describe the tasks to revise.",
 }
 
 _NODE_LABELS = {
-    "run_initialize": "初始化运行目录",
-    "SpecificationAgent": "需求解析",
-    "CapabilityAgent": "数据与任务规划",
-    "ClinicalDesignAgent": "医学题目设计",
-    "rag_design_export": "导出 RAG 设计",
-    "GenerationAgent": "生成 benchmark",
-    "generation_summary": "汇总生成结果",
-    "AuditAgent": "审计 benchmark",
-    "run_finalize": "完成运行产物",
+    "run_initialize": "initialize run directory",
+    "SpecificationAgent": "parse benchmark requirement",
+    "CapabilityAgent": "plan dataset and tasks",
+    "ClinicalDesignAgent": "design medical questions",
+    "rag_design_export": "export RAG designs",
+    "GenerationAgent": "generate benchmark",
+    "generation_summary": "summarize generation",
+    "AuditAgent": "audit benchmark",
+    "run_finalize": "finalize run artifacts",
+}
+
+_ARTIFACT_PATH_KEYS = {
+    "run_directory",
+    "working_blueprint_path",
+    "effective_config_path",
+    "construction_events_path",
+    "task_screening_report_path",
+    "rag_designs_path",
+    "raw_output_path",
+    "provenance_output_path",
+    "construction_report_path",
+    "manifest_path",
+}
+
+_AUDIT_ARTIFACT_KEYS = {
+    "audited",
+    "flagged",
+    "rejected",
+    "records",
+    "report",
+    "semantic_records",
 }
 
 
@@ -53,7 +75,7 @@ def _read_nonempty(prompt: str, input_fn: InputFunction, output: OutputFunction)
         value = input_fn(prompt).strip()
         if value:
             return value
-        output("输入不能为空，请重新输入。")
+        output("Input cannot be empty. Please try again.")
 
 
 def _preflight_errors(settings: Any) -> list[str]:
@@ -63,16 +85,16 @@ def _preflight_errors(settings: Any) -> list[str]:
 
     errors: list[str] = []
     if not settings.paths.blueprint_template.is_file():
-        errors.append(f"Blueprint 模板不存在：{settings.paths.blueprint_template}")
+        errors.append(f"Blueprint template does not exist: {settings.paths.blueprint_template}")
 
     for label, path in (
-        ("embedding 模型", settings.rag.embedding_model),
-        ("reranker 模型", settings.rag.reranker_model),
+        ("Embedding model", settings.rag.embedding_model),
+        ("Reranker model", settings.rag.reranker_model),
     ):
         if path is None:
-            errors.append(f"{label}尚未配置")
+            errors.append(f"{label} is not configured.")
         elif not path.is_dir():
-            errors.append(f"{label}目录不存在：{path}")
+            errors.append(f"{label} directory does not exist: {path}")
 
     try:
         discover_medical_materials(settings.paths.materials_root)
@@ -92,16 +114,16 @@ def _preflight_errors(settings: Any) -> list[str]:
             annotation_path = resolve_annotation_path(dataset)
             missing: list[str] = []
             if not annotation_path.is_file():
-                missing.append(f"annotation.jsonl：{annotation_path}")
+                missing.append(f"annotation.jsonl: {annotation_path}")
             image_manifest = annotation_path.parent / "image_manifest.jsonl"
             if not image_manifest.is_file():
-                missing.append(f"image_manifest.jsonl：{image_manifest}")
+                missing.append(f"image_manifest.jsonl: {image_manifest}")
             if missing:
-                dataset_problems.append(f"{dataset['id']} 缺少 " + "；".join(missing))
+                dataset_problems.append(f"{dataset['id']} is missing " + "; ".join(missing))
             else:
                 viable_datasets += 1
         if viable_datasets == 0:
-            errors.append("没有可完整运行的数据集：" + "；".join(dataset_problems))
+            errors.append("No dataset is ready for a complete run: " + "; ".join(dataset_problems))
     return errors
 
 
@@ -112,14 +134,14 @@ def _print_json(value: object, output: OutputFunction) -> None:
 def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
     kind = str(payload.get("kind", ""))
     output("")
-    output(f"=== {_QUESTION_TEXT.get(kind, '需要你的确认')} ===")
+    output(f"=== {_QUESTION_TEXT.get(kind, 'Your confirmation is required.')} ===")
     if kind == "benchmark_info_confirmation":
         _print_json(payload.get("benchmark_info", {}), output)
     elif kind == "dataset_selection_confirmation":
-        output("推荐数据集：")
+        output("Recommended dataset:")
         _print_json(payload.get("recommendation", {}), output)
         datasets = payload.get("datasets", [])
-        output("可用数据集：" + "、".join(
+        output("Available datasets: " + ", ".join(
             f"{item.get('id')} ({item.get('name')})"
             for item in datasets
             if isinstance(item, dict) and item.get("available")
@@ -128,9 +150,9 @@ def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
         profile = payload.get("dataset_profile", {})
         if isinstance(profile, dict):
             output(
-                "数据集概况："
-                f"{profile.get('total_images', '?')} 张图像，"
-                f"{len(profile.get('fields', {}))} 个字段"
+                "Dataset profile: "
+                f"{profile.get('total_images', '?')} images, "
+                f"{len(profile.get('fields', {}))} fields"
             )
         tasks = payload.get("task_plan", {}).get("tasks", {})
         for task_id, decision in tasks.items():
@@ -140,11 +162,11 @@ def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
                 f"{decision.get('reason', '')}"
             )
     elif kind == "sample_count_confirmation":
-        output(f"总题量：{payload.get('total')}")
+        output(f"Total questions: {payload.get('total')}")
         _print_json(payload.get("sample_counts", {}), output)
     elif kind == "materials_choose":
         if payload.get("error"):
-            output(f"上次选择无效：{payload['error']}")
+            output(f"Previous selection was invalid: {payload['error']}")
         for material in payload.get("materials", []):
             if isinstance(material, dict):
                 output(f"- [{material.get('category_label')}] {material.get('file')}")
@@ -165,7 +187,7 @@ def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
             _print_json(design, output)
     else:
         _print_json(payload, output)
-    output(_QUESTION_TEXT.get(kind, str(payload.get("question", "请输入你的回复。"))))
+    output(_QUESTION_TEXT.get(kind, str(payload.get("question", "Enter your response."))))
 
 
 def _interrupt_payload(value: object) -> dict[str, Any] | None:
@@ -200,12 +222,38 @@ def _node_name(namespace: tuple[str, ...], payload: object) -> str:
     return " / ".join(names)
 
 
+def _render_artifact_paths(payload: object, output: OutputFunction) -> None:
+    found: list[tuple[str, str]] = []
+
+    def collect(value: object, *, in_audit_artifacts: bool = False) -> None:
+        if not isinstance(value, dict):
+            return
+        for key, nested in value.items():
+            is_audit_artifacts = key == "audit_artifacts"
+            if isinstance(nested, str) and (
+                key in _ARTIFACT_PATH_KEYS
+                or (in_audit_artifacts and key in _AUDIT_ARTIFACT_KEYS)
+            ):
+                found.append((key, nested))
+            elif isinstance(nested, dict):
+                collect(nested, in_audit_artifacts=is_audit_artifacts)
+
+    collect(payload)
+    for key, path in dict.fromkeys(found):
+        output(f"[artifact] {key}: {path}")
+
+
 def _render_update(namespace: tuple[str, ...], payload: object, output: OutputFunction) -> None:
+    _render_artifact_paths(payload, output)
+    if interrupt := _interrupt_payload(payload):
+        kind = str(interrupt.get("kind", ""))
+        output(f"[waiting] {_QUESTION_TEXT.get(kind, 'user confirmation')}")
+        return
     name = _node_name(namespace, payload)
     if not name or any(part in name for part in ("generation_step", "rag_design_task")):
         return
     leaf = name.rsplit(" / ", 1)[-1]
-    output(f"[完成] {_NODE_LABELS.get(leaf, name)}")
+    output(f"[done] {_NODE_LABELS.get(leaf, name)}")
 
 
 def _render_task(namespace: tuple[str, ...], payload: object, output: OutputFunction) -> None:
@@ -218,7 +266,7 @@ def _render_task(namespace: tuple[str, ...], payload: object, output: OutputFunc
     name = " / ".join(names)
     if any(part in name for part in ("generation_step", "rag_design_task")):
         return
-    output(f"[开始] {_NODE_LABELS.get(task_name, name)}")
+    output(f"[start] {_NODE_LABELS.get(task_name, name)}")
 
 
 def _render_progress(payload: object, output: OutputFunction) -> None:
@@ -226,18 +274,18 @@ def _render_progress(payload: object, output: OutputFunction) -> None:
         return
     if payload.get("kind") == "rag_progress":
         output(
-            f"[RAG] {payload.get('task_id')}："
-            f"{payload.get('completed')}/{payload.get('total')}，"
-            f"剩余 {payload.get('remaining')}"
+            f"[RAG] {payload.get('task_id')}: "
+            f"{payload.get('completed')}/{payload.get('total')}, "
+            f"remaining={payload.get('remaining')}"
         )
     elif payload.get("kind") == "generation_progress":
         output(
-            f"[生成] stage={payload.get('stage') or 'complete'} "
+            f"[generation] stage={payload.get('stage') or 'complete'} "
             f"cursor={payload.get('cursor')} "
-            f"完成={payload.get('completed_counts', {})}/"
-            f"目标={payload.get('target_counts', {})} "
-            f"拒绝={payload.get('rejections', {})} "
-            f"耗尽={payload.get('exhausted')}"
+            f"completed={payload.get('completed_counts', {})}/"
+            f"target={payload.get('target_counts', {})} "
+            f"rejections={payload.get('rejections', {})} "
+            f"exhausted={payload.get('exhausted')}"
         )
 
 
@@ -253,46 +301,49 @@ def _recursion_limit(values: object) -> int:
 
 def _print_settings(settings: Any, output: OutputFunction) -> None:
     output("")
-    output("=== 生效配置 ===")
-    output(f"LLM：{settings.llm.model} @ {settings.llm.base_url}")
+    output("=== Effective configuration ===")
+    output(f"LLM: {settings.llm.model} @ {settings.llm.base_url}")
     output(
-        "生成："
+        "Generation: "
         f"seed={settings.generation.seed}, "
         f"max_tasks_per_image={settings.generation.max_tasks_per_image}, "
         f"question_temperature={settings.generation.question_temperature}"
     )
-    output(f"Embedding：{settings.rag.embedding_model}")
-    output(f"Reranker：{settings.rag.reranker_model}")
-    output(f"数据集目录：{settings.paths.dataset_catalog}")
-    output(f"医学资料目录：{settings.paths.materials_root}")
-    output(f"运行产物目录：{settings.paths.runs_root}")
+    output(f"Embedding: {settings.rag.embedding_model}")
+    output(f"Reranker: {settings.rag.reranker_model}")
+    output(f"Dataset catalog: {settings.paths.dataset_catalog}")
+    output(f"Medical materials: {settings.paths.materials_root}")
+    output(f"Run artifacts root: {settings.paths.runs_root}")
 
 
 def _print_result(values: dict[str, Any], output: OutputFunction) -> None:
     output("")
-    output("=== Benchmark 构建完成 ===")
-    output(f"Run ID：{values.get('run_id')}")
-    output(f"运行目录：{values.get('run_directory')}")
-    output(f"题目总数：{values.get('item_count', 0)}")
-    output(f"各任务数量：{values.get('task_counts', {})}")
-    output(f"Shortfall：{values.get('generation_shortfalls', {})}")
-    output(f"Raw JSONL：{values.get('raw_output_path')}")
+    output("=== Benchmark construction completed ===")
+    output(f"Run ID: {values.get('run_id')}")
+    run_directory = values.get("run_directory")
+    if not run_directory and isinstance(values.get("manifest_path"), str):
+        run_directory = str(Path(values["manifest_path"]).parent)
+    output(f"Run directory: {run_directory}")
+    output(f"Total items: {values.get('item_count', 0)}")
+    output(f"Task counts: {values.get('task_counts', {})}")
+    output(f"Shortfalls: {values.get('generation_shortfalls', {})}")
+    output(f"Raw JSONL: {values.get('raw_output_path')}")
     artifacts = values.get("audit_artifacts", {})
     if isinstance(artifacts, dict):
-        output(f"Audited JSONL：{artifacts.get('audited')}")
-        output(f"Flagged JSONL：{artifacts.get('flagged')}")
-        output(f"Rejected JSONL：{artifacts.get('rejected')}")
-        output(f"Audit report：{artifacts.get('report')}")
+        output(f"Audited JSONL: {artifacts.get('audited')}")
+        output(f"Flagged JSONL: {artifacts.get('flagged')}")
+        output(f"Rejected JSONL: {artifacts.get('rejected')}")
+        output(f"Audit report: {artifacts.get('report')}")
         report_path = artifacts.get("report")
         if isinstance(report_path, str) and Path(report_path).is_file():
             report = json.loads(Path(report_path).read_text(encoding="utf-8"))
             output(
-                "审计摘要："
-                f"通过={report.get('hard_audit', {}).get('accepted', 0)}，"
-                f"拒绝={report.get('hard_audit', {}).get('rejected', 0)}，"
-                f"语义标记={report.get('semantic_audit', {}).get('flagged', 0)}"
+                "Audit summary: "
+                f"accepted={report.get('hard_audit', {}).get('accepted', 0)}, "
+                f"rejected={report.get('hard_audit', {}).get('rejected', 0)}, "
+                f"semantic_flags={report.get('semantic_audit', {}).get('flagged', 0)}"
             )
-    output(f"Manifest：{values.get('manifest_path')}")
+    output(f"Manifest: {values.get('manifest_path')}")
 
 
 def _run_directory(graph: object, config: dict[str, Any] | None) -> str | None:
@@ -319,7 +370,7 @@ def run_interactive_build(
     config: dict[str, Any] | None = None
     try:
         requirement = _read_nonempty(
-            "请描述要构建的 Medical VLM benchmark：", input_fn, output
+            "Describe the Medical VLM benchmark to build: ", input_fn, output
         )
         if settings is None:
             from medbenchagent.settings import get_settings
@@ -329,7 +380,7 @@ def run_interactive_build(
         errors = _preflight_errors(settings)
         if errors:
             output("")
-            output("本地运行预检未通过：")
+            output("Local preflight failed:")
             for error in errors:
                 output(f"- {error}")
             return 2
@@ -368,7 +419,7 @@ def run_interactive_build(
             config["recursion_limit"] = _recursion_limit(snapshot.values)
             if interrupt is not None:
                 _render_interrupt(interrupt, output)
-                answer = _read_nonempty("你的回复：", input_fn, output)
+                answer = _read_nonempty("Your response: ", input_fn, output)
                 next_input = Command(resume=answer)
                 continue
             if snapshot.next:
@@ -378,16 +429,22 @@ def run_interactive_build(
             return 0
     except (EOFError, KeyboardInterrupt):
         output("")
-        output("运行已中止。当前 CLI 使用进程内 checkpoint，退出后不能从中断点恢复。")
+        output(
+            "Run interrupted. This CLI uses an in-memory checkpoint and cannot resume "
+            "after the process exits."
+        )
         if run_directory := _run_directory(graph, config):
-            output(f"已写入的运行产物：{run_directory}")
+            output(f"Preserved run artifacts: {run_directory}")
         return 130
     except Exception as exc:
         output("")
-        output(f"Benchmark 构建失败：{type(exc).__name__}: {exc}")
-        output("已写入的运行产物会保留；当前 CLI 退出后不能从 Graph 中断点恢复。")
+        output(f"Benchmark construction failed: {type(exc).__name__}: {exc}")
+        output(
+            "Files already written are preserved, but this CLI cannot resume the Graph "
+            "after the process exits."
+        )
         if run_directory := _run_directory(graph, config):
-            output(f"已写入的运行产物：{run_directory}")
+            output(f"Preserved run artifacts: {run_directory}")
         return 1
 
 

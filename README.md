@@ -58,7 +58,7 @@ uv run medbenchagent build
 The command first asks for the benchmark requirement:
 
 ```text
-请描述要构建的 Medical VLM benchmark：构建一个包含 100 道题的乳腺钼靶 benchmark
+Describe the Medical VLM benchmark to build: Build a 100-question breast ultrasound benchmark.
 ```
 
 The CLI prints the effective non-sensitive configuration, validates required

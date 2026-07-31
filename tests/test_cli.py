@@ -109,6 +109,18 @@ class _FakeGraph:
             "subgraphs": True,
         }
         if self.index < len(self.kinds):
+            if self.index == 0:
+                yield (
+                    (),
+                    "updates",
+                    {
+                        "run_initialize": {
+                            "run_directory": "runs/run-1",
+                            "working_blueprint_path": "runs/run-1/blueprint.json",
+                            "effective_config_path": "runs/run-1/effective_config.json",
+                        }
+                    },
+                )
             kind = self.kinds[self.index]
             self.index += 1
             yield (
@@ -138,6 +150,18 @@ class _FakeGraph:
                 "target_counts": {"view": 2},
                 "rejections": {},
                 "exhausted": False,
+            },
+        )
+        yield (
+            (),
+            "updates",
+            {
+                "AuditAgent": {
+                    "audit_artifacts": {
+                        "audited": "runs/run-1/audited.jsonl",
+                        "report": str(self.report_path),
+                    }
+                }
             },
         )
         yield ((), "updates", {"run_finalize": {"manifest_path": "manifest.json"}})
@@ -177,7 +201,7 @@ def test_build_prompts_for_requirement_and_drives_all_interrupts(
         encoding="utf-8",
     )
     graph = _FakeGraph(report)
-    answers = iter(["", "构建乳腺钼靶 benchmark", *(["确认"] * 6)])
+    answers = iter(["", "Build a breast ultrasound benchmark", *(["confirm"] * 6)])
     output: list[str] = []
     monkeypatch.setattr(cli, "_preflight_errors", lambda _settings: [])
 
@@ -189,15 +213,22 @@ def test_build_prompts_for_requirement_and_drives_all_interrupts(
     )
 
     assert result == 0
-    assert graph.inputs[0] == {"user_requirement": "构建乳腺钼靶 benchmark"}
-    assert [getattr(value, "resume", None) for value in graph.inputs[1:]] == ["确认"] * 6
+    assert graph.inputs[0] == {"user_requirement": "Build a breast ultrasound benchmark"}
+    assert [getattr(value, "resume", None) for value in graph.inputs[1:]] == ["confirm"] * 6
     rendered = "\n".join(output)
-    assert "输入不能为空" in rendered
+    assert "Input cannot be empty" in rendered
     for question in cli._QUESTION_TEXT.values():
         assert question in rendered
-    assert "[RAG] view：1/1" in rendered
-    assert "[生成] stage=vqa cursor=5" in rendered
-    assert "审计摘要：通过=2，拒绝=0，语义标记=1" in rendered
+    assert "[start] SpecificationAgent / benchmark_extract" in rendered
+    assert "[waiting] Confirm the BenchmarkInfo" in rendered
+    assert "[artifact] run_directory: runs/run-1" in rendered
+    assert "[artifact] working_blueprint_path: runs/run-1/blueprint.json" in rendered
+    assert "[artifact] audited: runs/run-1/audited.jsonl" in rendered
+    assert "[RAG] view: 1/1, remaining=0" in rendered
+    assert "[generation] stage=vqa cursor=5" in rendered
+    assert "Audit summary: accepted=2, rejected=0, semantic_flags=1" in rendered
+    assert "Run directory: runs/run-1" in rendered
+    assert "Audited JSONL: runs/run-1/audited.jsonl" in rendered
     assert "seed=17" in rendered
     assert graph.configs[-1]["recursion_limit"] == 1_000
 
@@ -227,11 +258,11 @@ def test_preflight_aggregates_missing_local_resources(tmp_path: Path) -> None:
 
     errors = "\n".join(cli._preflight_errors(settings))
 
-    assert "Blueprint 模板不存在" in errors
-    assert "embedding 模型尚未配置" in errors
-    assert "reranker 模型目录不存在" in errors
+    assert "Blueprint template does not exist" in errors
+    assert "Embedding model is not configured" in errors
+    assert "Reranker model directory does not exist" in errors
     assert "No categorized PDF medical materials were found" in errors
-    assert "没有可完整运行的数据集" in errors
+    assert "No dataset is ready for a complete run" in errors
     assert "annotation.jsonl" in errors
     assert "image_manifest.jsonl" in errors
 
@@ -276,7 +307,7 @@ def test_build_reports_preflight_before_graph_creation(tmp_path: Path) -> None:
     )
 
     assert result == 2
-    assert "本地运行预检未通过" in "\n".join(output)
+    assert "Local preflight failed" in "\n".join(output)
 
 
 def test_build_handles_eof_and_keyboard_interrupt(tmp_path: Path) -> None:
@@ -293,7 +324,7 @@ def test_build_handles_eof_and_keyboard_interrupt(tmp_path: Path) -> None:
         )
 
         assert result == 130
-        assert "退出后不能从中断点恢复" in "\n".join(output)
+        assert "cannot resume after the process exits" in "\n".join(output)
 
 
 def test_build_failure_reports_preserved_run_directory(tmp_path: Path, monkeypatch) -> None:
@@ -318,7 +349,7 @@ def test_build_failure_reports_preserved_run_directory(tmp_path: Path, monkeypat
     rendered = "\n".join(output)
     assert result == 1
     assert "RuntimeError: model unavailable" in rendered
-    assert "已写入的运行产物：runs/failed-run" in rendered
+    assert "Preserved run artifacts: runs/failed-run" in rendered
 
 
 def test_recursion_limit_scales_with_dataset_size() -> None:
