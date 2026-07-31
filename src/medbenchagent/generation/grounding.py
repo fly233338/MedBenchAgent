@@ -5,8 +5,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from medbenchagent.generation.context import image_modality
 from medbenchagent.construction import event_operation
+from medbenchagent.generation.context import (
+    image_modality,
+    locate_bbox_evidence,
+    normalized_bbox,
+    record_values,
+)
 from medbenchagent.llm import complete_json
 
 GROUNDING_GENERATION_PROMPT = """
@@ -51,14 +56,7 @@ Return JSON only:
 
 
 def _valid_bbox(value: object) -> list[float] | None:
-    if (
-        not isinstance(value, list)
-        or len(value) != 4
-        or not all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)
-    ):
-        return None
-    bbox = [float(item) for item in value]
-    return bbox if bbox[2] > bbox[0] and bbox[3] > bbox[1] else None
+    return normalized_bbox(value)
 
 
 def _boxes(value: object) -> list[list[float]]:
@@ -75,6 +73,20 @@ def _boxes(value: object) -> list[list[float]]:
 def _target_bbox(candidate: Any) -> list[float] | None:
     boxes = _boxes(candidate.supporting_record)
     return boxes[0] if len(boxes) == 1 else None
+
+
+def _bbox_evidence(candidate: Any) -> list[dict[str, object]] | None:
+    target = _target_bbox(candidate)
+    if target is None:
+        return None
+    try:
+        return locate_bbox_evidence(
+            record_values(candidate),
+            candidate.task.get("supporting_fields"),
+            target,
+        )
+    except ValueError:
+        return None
 
 
 def _strings(value: object) -> list[str]:
@@ -114,7 +126,7 @@ def _visual_target_text(candidate: Any) -> str | None:
 
 
 def supports(candidate: Any) -> bool:
-    if _target_bbox(candidate) is None:
+    if _bbox_evidence(candidate) is None:
         return False
     return candidate.task_id != "visual_grounding" or _visual_target_text(candidate) is not None
 
@@ -159,7 +171,10 @@ def _validate(candidate: Any, response: object) -> dict[str, Any]:
         raise ValueError("Generated question must be a non-empty string.")
     if answer is None or answer != _target_bbox(candidate):
         raise ValueError("Grounding answer must exactly match the unique annotation bbox.")
-    return {"question": question.strip(), "answer": answer}
+    evidence = _bbox_evidence(candidate)
+    if evidence is None:
+        raise ValueError("Grounding answer must have one exact source witness.")
+    return {"question": question.strip(), "answer": answer, "evidence": evidence}
 
 
 def generate(

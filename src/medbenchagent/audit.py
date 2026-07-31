@@ -16,7 +16,11 @@ from PIL import Image
 from medbenchagent.answer_balance import balance_items
 from medbenchagent.construction import AUDIT_AGENT, record_event
 from medbenchagent.dataset import load_annotation_jsonl
-from medbenchagent.generation.context import evidence_sha256, evidence_value
+from medbenchagent.generation.context import (
+    evidence_sha256,
+    evidence_value,
+    normalized_bbox,
+)
 from medbenchagent.generation.engine import project_supporting_record
 from medbenchagent.run_artifacts import blueprint_sha256
 
@@ -119,6 +123,67 @@ def _contract(item: dict[str, Any], task: dict[str, Any], dimensions: tuple[int,
     return errors
 
 
+def _replay_witness(
+    record: dict[str, object],
+    supporting_fields: list[str],
+    witness: object,
+) -> tuple[str, list[int], object]:
+    if not isinstance(witness, dict) or set(witness) != {
+        "path",
+        "indices",
+        "evidence_sha256",
+    }:
+        raise ValueError("Evidence witness has an invalid structure.")
+    path, indices = witness.get("path"), witness.get("indices")
+    if not isinstance(path, str) or path not in supporting_fields:
+        raise ValueError("Evidence path is not a supporting field.")
+    if not isinstance(indices, list):
+        raise ValueError("Evidence indices must be a list.")
+    value = evidence_value(record, path, indices)
+    if evidence_sha256(path, indices, value) != witness.get("evidence_sha256"):
+        raise ValueError("Evidence hash mismatch.")
+    return path, indices, value
+
+
+def _answer_evidence_matches(
+    item: dict[str, Any],
+    task: dict[str, Any],
+    source: dict[str, Any],
+    record: dict[str, object],
+    supporting_fields: list[str],
+) -> bool:
+    try:
+        witness = source.get("answer_evidence")
+        if task.get("response_format") != "bbox":
+            _path, _indices, value = _replay_witness(record, supporting_fields, witness)
+            return task.get("response_format") != "free_text" or (
+                isinstance(value, str) and value == item.get("answer")
+            )
+        if not isinstance(witness, list) or len(witness) != 4:
+            return False
+        replayed = [
+            _replay_witness(record, supporting_fields, coordinate)
+            for coordinate in witness
+        ]
+        paths = [path for path, _indices, _value in replayed]
+        indices = [coordinate_indices for _path, coordinate_indices, _value in replayed]
+        if (
+            len(set(paths)) != 1
+            or not paths[0].endswith("[*]")
+            or any(not coordinate_indices for coordinate_indices in indices)
+            or any(
+                coordinate_indices[:-1] != indices[0][:-1]
+                or coordinate_indices[-1] != coordinate
+                for coordinate, coordinate_indices in enumerate(indices)
+            )
+        ):
+            return False
+        source_bbox = normalized_bbox([value for _path, _indices, value in replayed])
+        return source_bbox is not None and source_bbox == normalized_bbox(item.get("answer"))
+    except (TypeError, ValueError):
+        return False
+
+
 def audit_run(
     *,
     raw_path: str | Path,
@@ -210,29 +275,14 @@ def audit_run(
                     )
                 ):
                     errors.append("annotation_evidence")
-                elif task.get("response_format") == "letter":
-                    witness = source.get("answer_evidence")
-                    if not isinstance(witness, dict) or set(witness) != {
-                        "path",
-                        "indices",
-                        "evidence_sha256",
-                    }:
-                        errors.append("answer_evidence")
-                    else:
-                        path = witness.get("path")
-                        indices = witness.get("indices")
-                        try:
-                            if not isinstance(path, str) or path not in supporting_fields:
-                                raise ValueError("Evidence path is not a supporting field.")
-                            if not isinstance(indices, list):
-                                raise ValueError("Evidence indices must be a list.")
-                            value = evidence_value(annotation_record, path, indices)
-                            if evidence_sha256(path, indices, value) != witness.get(
-                                "evidence_sha256"
-                            ):
-                                raise ValueError("Evidence hash mismatch.")
-                        except (TypeError, ValueError):
-                            errors.append("answer_evidence")
+                elif not _answer_evidence_matches(
+                    item,
+                    task,
+                    source,
+                    annotation_record,
+                    supporting_fields,
+                ):
+                    errors.append("answer_evidence")
         candidates.append((item, errors))
     seen_ids: set[object] = set()
     seen_items: set[str] = set()

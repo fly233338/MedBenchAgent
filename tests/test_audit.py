@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from medbenchagent.audit import audit_run
+from medbenchagent.audit import _answer_evidence_matches, audit_run
 from medbenchagent.generation.context import evidence_sha256
 from medbenchagent.llm import ModelUnavailable
 from medbenchagent.run_artifacts import blueprint_sha256
@@ -283,6 +283,107 @@ def test_letter_contract_rejects_unhashable_options() -> None:
         {"response_format": "letter"},
         (1, 1),
     ) == ["letter_answer"]
+
+
+def test_answer_evidence_replays_free_text_and_bbox_exactly() -> None:
+    record = {
+        "patient": {"patient_id": None, "annotation": {}},
+        "case": {"case_id": None, "annotation": {}},
+        "study": {"study_id": None, "annotation": {}},
+        "image": {
+            "image_id": "image",
+            "image_path": "images/a.dicom",
+            "modality": "Mammography",
+            "anatomy": "Breast",
+            "annotation": {
+                "report": "Normal study.",
+                "findings": [{"bbox": [1, 2, 8, 9]}],
+            },
+        },
+    }
+    report_path = "image.annotation.report"
+    report_source = {
+        "answer_evidence": {
+            "path": report_path,
+            "indices": [],
+            "evidence_sha256": evidence_sha256(report_path, [], "Normal study."),
+        }
+    }
+    report_task = {"response_format": "free_text"}
+    assert _answer_evidence_matches(
+        {"answer": "Normal study."},
+        report_task,
+        report_source,
+        record,
+        [report_path],
+    )
+    assert not _answer_evidence_matches(
+        {"answer": "Normal"},
+        report_task,
+        report_source,
+        record,
+        [report_path],
+    )
+    assert not _answer_evidence_matches(
+        {"answer": "Normal study."},
+        report_task,
+        {
+            "answer_evidence": report_source["answer_evidence"]
+            | {"evidence_sha256": "0" * 64}
+        },
+        record,
+        [report_path],
+    )
+
+    bbox_path = "image.annotation.findings[*].bbox[*]"
+    bbox_source = {
+        "answer_evidence": [
+            {
+                "path": bbox_path,
+                "indices": [0, coordinate],
+                "evidence_sha256": evidence_sha256(
+                    bbox_path,
+                    [0, coordinate],
+                    value,
+                ),
+            }
+            for coordinate, value in enumerate([1, 2, 8, 9])
+        ]
+    }
+    bbox_task = {"response_format": "bbox"}
+    assert _answer_evidence_matches(
+        {"answer": [1.0, 2.0, 8.0, 9.0]},
+        bbox_task,
+        bbox_source,
+        record,
+        [bbox_path],
+    )
+    assert not _answer_evidence_matches(
+        {"answer": [1.0, 2.0, 7.0, 9.0]},
+        bbox_task,
+        bbox_source,
+        record,
+        [bbox_path],
+    )
+    bad_coordinates = [dict(coordinate) for coordinate in bbox_source["answer_evidence"]]
+    bad_coordinates[2]["indices"] = [0, 3]
+    assert not _answer_evidence_matches(
+        {"answer": [1.0, 2.0, 8.0, 9.0]},
+        bbox_task,
+        {"answer_evidence": bad_coordinates},
+        record,
+        [bbox_path],
+    )
+
+    changed_record = json.loads(json.dumps(record))
+    changed_record["image"]["annotation"]["findings"][0]["bbox"][2] = 7
+    assert not _answer_evidence_matches(
+        {"answer": [1.0, 2.0, 8.0, 9.0]},
+        bbox_task,
+        bbox_source,
+        changed_record,
+        [bbox_path],
+    )
 
 
 def test_semantic_audit_samples_once_per_task_and_flags_without_rejecting(

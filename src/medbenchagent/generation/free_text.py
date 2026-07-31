@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from medbenchagent.generation.context import image_modality
 from medbenchagent.construction import event_operation
+from medbenchagent.generation.context import (
+    image_modality,
+    locate_scalar_evidence,
+    record_values,
+)
 from medbenchagent.llm import complete_json
 
 FREE_TEXT_GENERATION_PROMPT = """
@@ -64,8 +68,22 @@ def _reference_text(candidate: Any) -> str | None:
     return texts[0] if len(texts) == 1 else None
 
 
+def _reference_evidence(candidate: Any) -> dict[str, object] | None:
+    reference = _reference_text(candidate)
+    if reference is None:
+        return None
+    try:
+        return locate_scalar_evidence(
+            record_values(candidate),
+            candidate.task.get("supporting_fields"),
+            reference,
+        )
+    except ValueError:
+        return None
+
+
 def supports(candidate: Any) -> bool:
-    return _reference_text(candidate) is not None
+    return _reference_evidence(candidate) is not None
 
 
 def _task_definition(candidate: Any) -> str:
@@ -87,7 +105,7 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
     )
 
 
-def _validate(candidate: Any, response: object) -> dict[str, str]:
+def _validate(candidate: Any, response: object) -> dict[str, Any]:
     if not isinstance(response, dict) or set(response) != {"question", "answer"}:
         raise ValueError("Free-text generation must contain only question and answer.")
     question = response["question"]
@@ -96,12 +114,15 @@ def _validate(candidate: Any, response: object) -> dict[str, str]:
         raise ValueError("Generated question must be a non-empty string.")
     if not isinstance(answer, str) or answer != _reference_text(candidate):
         raise ValueError("Free-text answer must exactly match the unique reference text.")
-    return {"question": question.strip(), "answer": answer}
+    evidence = _reference_evidence(candidate)
+    if evidence is None:
+        raise ValueError("Free-text answer must have one exact source witness.")
+    return {"question": question.strip(), "answer": answer, "evidence": evidence}
 
 
 def generate(
     candidate: Any, benchmark_info: dict[str, object], question_temperature: float
-) -> dict[str, str]:
+) -> dict[str, Any]:
     prompt = _prompt(candidate, benchmark_info)
     try:
         response = complete_json(prompt, "", temperature=question_temperature)
@@ -119,7 +140,7 @@ def generate(
 
 
 def review(
-    candidate: Any, generated: dict[str, str], _benchmark_info: dict[str, object]
+    candidate: Any, generated: dict[str, Any], _benchmark_info: dict[str, object]
 ) -> tuple[bool, str]:
     reference = _reference_text(candidate)
     response = complete_json(
@@ -142,5 +163,5 @@ def review(
     return approved, str(reason)
 
 
-def encode_answer(_candidate: Any, generated: dict[str, str]) -> tuple[None, str]:
+def encode_answer(_candidate: Any, generated: dict[str, Any]) -> tuple[None, str]:
     return None, generated["answer"]

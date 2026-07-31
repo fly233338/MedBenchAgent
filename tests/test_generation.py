@@ -9,7 +9,12 @@ import medbenchagent.generation.free_text as free_text
 import medbenchagent.generation.grounding as grounding
 import medbenchagent.generation.vqa as vqa
 from medbenchagent.dataset import prepare_annotation_dataset
-from medbenchagent.generation.context import evidence_provenance, validate_evidence
+from medbenchagent.generation.context import (
+    evidence_provenance,
+    locate_bbox_evidence,
+    locate_scalar_evidence,
+    validate_evidence,
+)
 
 
 def _record(index: int, annotation: dict) -> dict:
@@ -175,6 +180,56 @@ def test_vqa_evidence_requires_exact_scalar_source_location() -> None:
         )
 
 
+def test_direct_answer_evidence_requires_one_exact_source_location() -> None:
+    record = _record(
+        0,
+        {
+            "report": "Normal study.",
+            "findings": [
+                {"label": "mass", "bbox": [1, 2, 8, 9]},
+                {"label": "calcification", "bbox": [10, 11, 20, 21]},
+            ],
+        },
+    )
+    scalar = locate_scalar_evidence(
+        record,
+        ["image.annotation.report"],
+        "Normal study.",
+    )
+    assert scalar == {
+        "path": "image.annotation.report",
+        "indices": [],
+        "value": "Normal study.",
+    }
+    bbox = locate_bbox_evidence(
+        record,
+        ["image.annotation.findings[*].bbox[*]"],
+        [10.0, 11.0, 20.0, 21.0],
+    )
+    assert [coordinate["indices"] for coordinate in bbox] == [
+        [1, 0],
+        [1, 1],
+        [1, 2],
+        [1, 3],
+    ]
+    compact = evidence_provenance(bbox)
+    assert isinstance(compact, list)
+    assert all("value" not in coordinate for coordinate in compact)
+
+    with pytest.raises(ValueError, match="exactly one"):
+        locate_scalar_evidence(
+            _record(0, {"first": "same", "second": "same"}),
+            ["image.annotation.first", "image.annotation.second"],
+            "same",
+        )
+    with pytest.raises(ValueError, match="valid xyxy"):
+        locate_bbox_evidence(
+            record,
+            ["image.annotation.findings[*].bbox[*]"],
+            [1, 2, float("inf"), 9],
+        )
+
+
 def test_vqa_repairs_invalid_evidence_before_review(monkeypatch) -> None:
     task = _task("letter", ["image.annotation.status"])
     candidate = _candidate("vqa", {"status": "BENIGN"}, {"status": "BENIGN"}, task)
@@ -210,13 +265,16 @@ def test_vqa_repairs_invalid_evidence_before_review(monkeypatch) -> None:
 def test_grounding_modes_require_different_annotation_context() -> None:
     detection = _candidate(
         "detection",
-        {"modality": "Mammography"},
+        {"modality": "Mammography", "bbox": [1, 2, 8, 9]},
         {"bbox": [1, 2, 8, 9]},
         _task("bbox", ["image.annotation.bbox[*]"]),
     )
     visual = _candidate(
         "visual_grounding",
-        {"modality": "Mammography"},
+        {
+            "modality": "Mammography",
+            "findings": [{"finding_categories": ["Mass"], "bbox": [1, 2, 8, 9]}],
+        },
         {"findings": [{"finding_categories": ["Mass"], "bbox": [1, 2, 8, 9]}]},
         _task(
             "bbox",
@@ -225,7 +283,7 @@ def test_grounding_modes_require_different_annotation_context() -> None:
     )
     unnamed_visual = _candidate(
         "visual_grounding",
-        {"modality": "Mammography"},
+        {"modality": "Mammography", "bbox": [1, 2, 8, 9]},
         {"bbox": [1, 2, 8, 9]},
         _task("bbox", ["image.annotation.bbox[*]"]),
     )
@@ -271,6 +329,23 @@ def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeyp
     assert items[1]["answer"] == [1.0, 2.0, 8.0, 9.0]
     assert items[2]["answer"] == "Normal study."
     assert all(set(item) == {"id", "task_id", "dataset", "image_id", "image_path", "question", "options", "answer"} for item in items)
+    assert isinstance(provenance[0]["answer_evidence"], dict)
+    assert [coordinate["indices"] for coordinate in provenance[1]["answer_evidence"]] == [
+        [0],
+        [1],
+        [2],
+        [3],
+    ]
+    assert isinstance(provenance[2]["answer_evidence"], dict)
+    assert all(
+        "value" not in witness
+        for entry in provenance
+        for witness in (
+            entry["answer_evidence"]
+            if isinstance(entry["answer_evidence"], list)
+            else [entry["answer_evidence"]]
+        )
+    )
     assert not list(Path(request["output_directory"]).glob("benchmark_items.*.progress.jsonl"))
     assert all(temperature == 0.7 for prompt, temperature in calls if prompt.startswith("Generate one"))
     assert all(temperature == 0 for prompt, temperature in calls if "Review one" in prompt)
@@ -414,13 +489,24 @@ def test_stage_progress_is_resumed_and_cleaned_only_after_raw_merge(tmp_path: Pa
     progress.write_text(
         json.dumps(
             {
-                "id": "existing",
-                "task_id": "vqa",
-                "image_id": "img-0",
-                "image_path": "images/0.dicom",
-                "question": "Which status?",
-                "options": ["benign", "malignant"],
-                "answer": "A",
+                "item": {
+                    "id": "existing",
+                    "task_id": "vqa",
+                    "dataset": "test-dataset",
+                    "image_id": "img-0",
+                    "image_path": "images/0.dicom",
+                    "question": "Which status?",
+                    "options": ["benign", "malignant"],
+                    "answer": "A",
+                },
+                "provenance": {
+                    "item_id": "existing",
+                    "answer_evidence": {
+                        "path": "image.annotation.status",
+                        "indices": [],
+                        "evidence_sha256": "a" * 64,
+                    },
+                },
             }
         )
         + "\n",
@@ -432,6 +518,7 @@ def test_stage_progress_is_resumed_and_cleaned_only_after_raw_merge(tmp_path: Pa
     result = generation.finalize_generation(request, state)
 
     assert _read_items(result.raw_output_path)[0]["id"] == "existing"
+    assert _read_items(result.provenance_output_path)[0]["item_id"] == "existing"
     assert not progress.exists()
 
 def test_vqa_prompt_requires_distinct_question_structure() -> None:

@@ -59,6 +59,107 @@ def evidence_value(record: dict[str, object], path: str, indices: list[int]) -> 
     return current
 
 
+def _evidence_candidates(
+    record: dict[str, object], path: str
+) -> list[dict[str, object]]:
+    from medbenchagent.generation.engine import is_supporting_field_path
+
+    if not is_supporting_field_path(path):
+        raise ValueError("Evidence path must be one supported v2 entity field path.")
+    segments = path.split(".")
+    index_sets: list[list[int]] = []
+
+    def visit(current: object, remaining: list[str], indices: list[int]) -> None:
+        if not remaining:
+            index_sets.append(indices)
+            return
+        segment = remaining[0]
+        wildcard = segment.endswith("[*]")
+        key = segment.removesuffix("[*]")
+        if not isinstance(current, dict) or key not in current:
+            return
+        nested = current[key]
+        if wildcard:
+            if not isinstance(nested, list):
+                return
+            for index, item in enumerate(nested):
+                visit(item, remaining[1:], [*indices, index])
+            return
+        visit(nested, remaining[1:], indices)
+
+    visit(record, segments, [])
+    candidates = []
+    for indices in index_sets:
+        try:
+            value = evidence_value(record, path, indices)
+        except ValueError:
+            continue
+        candidates.append({"path": path, "indices": indices, "value": value})
+    return candidates
+
+
+def locate_scalar_evidence(
+    record: dict[str, object], supporting_fields: object, expected: object
+) -> dict[str, object]:
+    """Locate one exact scalar source witness among approved supporting fields."""
+    if not isinstance(supporting_fields, list):
+        raise ValueError("Supporting fields must be a list.")
+    matches = [
+        evidence
+        for path in supporting_fields
+        if isinstance(path, str)
+        for evidence in _evidence_candidates(record, path)
+        if type(evidence["value"]) is type(expected) and evidence["value"] == expected
+    ]
+    if len(matches) != 1:
+        raise ValueError("Answer must match exactly one supporting scalar value.")
+    return matches[0]
+
+
+def normalized_bbox(value: object) -> list[float] | None:
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or not all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(item)
+            for item in value
+        )
+    ):
+        return None
+    bbox = [float(item) for item in value]
+    return bbox if bbox[2] > bbox[0] and bbox[3] > bbox[1] else None
+
+
+def locate_bbox_evidence(
+    record: dict[str, object], supporting_fields: object, expected: object
+) -> list[dict[str, object]]:
+    """Locate one xyxy box represented by four terminal wildcard scalar values."""
+    target = normalized_bbox(expected)
+    if target is None or not isinstance(supporting_fields, list):
+        raise ValueError("A bbox witness requires one valid xyxy answer.")
+    matches: list[list[dict[str, object]]] = []
+    for path in supporting_fields:
+        if not isinstance(path, str) or not path.endswith("[*]"):
+            continue
+        grouped: dict[tuple[int, ...], dict[int, dict[str, object]]] = {}
+        for evidence in _evidence_candidates(record, path):
+            indices = evidence["indices"]
+            if not isinstance(indices, list) or not indices:
+                continue
+            grouped.setdefault(tuple(indices[:-1]), {})[indices[-1]] = evidence
+        for coordinates in grouped.values():
+            if set(coordinates) != {0, 1, 2, 3}:
+                continue
+            ordered = [coordinates[index] for index in range(4)]
+            if normalized_bbox([evidence["value"] for evidence in ordered]) == target:
+                matches.append(ordered)
+    if len(matches) != 1:
+        raise ValueError("Answer must match exactly one supporting bbox.")
+    return matches[0]
+
+
 def evidence_sha256(path: str, indices: list[int], value: object) -> str:
     payload = json.dumps(
         {"path": path, "indices": indices, "value": value},
@@ -96,11 +197,18 @@ def validate_evidence(
     return {"path": path, "indices": list(indices), "value": value}
 
 
-def evidence_provenance(evidence: dict[str, object]) -> dict[str, object]:
-    path = str(evidence["path"])
-    indices = list(evidence["indices"]) if isinstance(evidence["indices"], list) else []
-    return {
-        "path": path,
-        "indices": indices,
-        "evidence_sha256": evidence_sha256(path, indices, evidence["value"]),
-    }
+def evidence_provenance(
+    evidence: dict[str, object] | list[dict[str, object]],
+) -> dict[str, object] | list[dict[str, object]]:
+    def compact(item: dict[str, object]) -> dict[str, object]:
+        path = str(item["path"])
+        indices = list(item["indices"]) if isinstance(item["indices"], list) else []
+        return {
+            "path": path,
+            "indices": indices,
+            "evidence_sha256": evidence_sha256(path, indices, item["value"]),
+        }
+
+    if isinstance(evidence, list):
+        return [compact(item) for item in evidence]
+    return compact(evidence)

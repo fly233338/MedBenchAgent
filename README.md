@@ -246,14 +246,14 @@ Grounding bbox, then direct-reference free text. Each stage begins from the data
 start, projects only unfinished tasks' approved `supporting_fields`, and independently
 accepts up to three tasks per image after a stable seed/image-ID shuffle. Letter VQA
 normalizes one exact option and copies one exact scalar evidence value with source
-indices for every wildcard in its supporting-field path. Code verifies that witness
-against the original annotation before review; only its path, indices, and hash enter
-provenance. Grounding accepts only candidates with one valid annotated
-box. Detection asks only for a generic lesion or abnormal region, while visual grounding
+indices for every wildcard in its supporting-field path. Free text deterministically
+locates its unique direct-reference string, while grounding locates the four source
+coordinates of its unique annotated box. Code verifies every witness against the
+original annotation before review; only path, indices, and hashes enter provenance.
+Detection asks only for a generic lesion or abnormal region, while visual grounding
 requires a named finding paired with that same box; the two tasks are mutually exclusive.
-Free text accepts only one direct reference string. Each stage has its own prompt,
-validator, review, and temporary progress file; failures do not consume the per-image
-acceptance limit.
+Each stage has its own prompt, validator, review, and temporary progress file; failures
+do not consume the per-image acceptance limit.
 
 Accepted items are merged idempotently into a stage-specific progress JSONL using
 deterministic item IDs. The generation subgraph checkpoints after every processed row,
@@ -291,10 +291,12 @@ Run lifecycle events use the `orchestrator` component and are not attributed to 
 
 Hard Audit verifies the image-manifest mapping, streams PNG hashes, decodes 8-bit grayscale PNGs,
 and checks every item's source row against the exact annotation file used by Generation. For
-letter items it replays the evidence path and source indices, then verifies the witness hash; it
-does not reinterpret that evidence or judge its mapping to an option. It rejects repeated item IDs and
-canonical-identical items while retaining repeated question text; `audit_report.json` reports
-normalized-question repetition separately in `duplicate_statistics`. After answer balancing,
+every response format it replays the evidence path and source indices, then verifies the witness
+hash. Free-text answers must exactly equal the replayed string, and bbox answers must equal the
+four replayed coordinates. For letter items it does not reinterpret the evidence or judge its
+mapping to an option. It rejects repeated item IDs and canonical-identical items while retaining
+repeated question text; `audit_report.json` reports normalized-question repetition separately in
+`duplicate_statistics`. After answer balancing,
 Audit deterministically samples at most ten items per task for one permissive semantic call per
 task. Clear task drift, answer leakage, ambiguity/option overlap, and semantic duplication/template
 collapse are copied to `benchmark.<dataset_id>.flagged.jsonl` and

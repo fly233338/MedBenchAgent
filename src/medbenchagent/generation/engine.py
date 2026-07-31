@@ -498,8 +498,7 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
                 "generation_attempt_count": len(generation_call_ids), "review_attempt_count": len(review_call_ids),
                 "blueprint_hash": request["blueprint_sha256"],
             }
-            if phase == "vqa":
-                provenance["answer_evidence"] = evidence_provenance(generated["evidence"])
+            provenance["answer_evidence"] = evidence_provenance(generated["evidence"])
             accepted.append({"item": item, "provenance": provenance})
             record_event(request["construction_events_path"], "review_accept", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="review", component=phase, status="success")
         else:
@@ -530,6 +529,7 @@ def finalize_generation(request: GenerationRequest, state: dict[str, Any]) -> Ge
     tasks, targets = _validate_tasks(request)
     output_dir = Path(request["output_directory"])
     kept: list[dict[str, Any]] = []
+    kept_provenance: list[dict[str, Any]] = []
     counts = {task_id: 0 for task_id in tasks}
     progress_paths: list[Path] = []
     for phase, response_format, _handler in _STAGES:
@@ -538,20 +538,20 @@ def finalize_generation(request: GenerationRequest, state: dict[str, Any]) -> Ge
         stage_tasks = _stage_tasks(tasks, targets, response_format)
         for entry in _read_jsonl(progress_path):
             item = _progress_item(entry)
+            provenance = entry.get("provenance")
+            if not isinstance(entry.get("item"), dict) or not isinstance(provenance, dict):
+                raise ValueError("Generation progress entries must contain item and provenance.")
+            if provenance.get("item_id") != item.get("id"):
+                raise ValueError("Generation progress provenance must match its item.")
             task_id = str(item.get("task_id"))
             if task_id in stage_tasks and counts[task_id] < targets[task_id]:
                 kept.append(item)
+                kept_provenance.append(provenance)
                 counts[task_id] += 1
     output = output_dir / f"benchmark.{request['dataset_id']}.raw.jsonl"
     _write_jsonl(output, kept)
     provenance_path = output_dir / "item_provenance.jsonl"
-    provenance = [
-        entry["provenance"]
-        for phase, _response_format, _handler in _STAGES
-        for entry in _read_jsonl(_stage_progress_path(output_dir, phase))
-        if isinstance(entry.get("provenance"), dict)
-    ]
-    _write_jsonl(provenance_path, provenance)
+    _write_jsonl(provenance_path, kept_provenance)
     for progress_path in progress_paths:
         if progress_path.exists():
             progress_path.unlink()
