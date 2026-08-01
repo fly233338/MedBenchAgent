@@ -22,6 +22,7 @@ from medbenchagent.agents.contracts import (
     GENERATION_AGENT,
     SPECIFICATION_AGENT,
 )
+from medbenchagent.construction import construction_report
 from medbenchagent.contracts import GenerationResult
 from medbenchagent.generation import graph as generation_workflow
 from medbenchagent.rag import graph as rag_workflow
@@ -244,6 +245,78 @@ def test_specification_agent_preserves_interrupt_payload_and_resume(
     blueprint_path = Path(resumed["working_blueprint_path"])
     assert blueprint_path.is_file()
     assert json.loads(blueprint_path.read_text(encoding="utf-8"))["benchmark_info"] == benchmark_info
+    human_events = [
+        event
+        for event in map(
+            json.loads,
+            Path(run["construction_events_path"]).read_text(encoding="utf-8").splitlines(),
+        )
+        if event["event_type"] == "human_interaction"
+    ]
+    assert [(event["action"], event["user_input"]) for event in human_events] == [
+        ("submit", "Build a benchmark."),
+        ("confirm", "confirm"),
+    ]
+
+
+def test_specification_agent_records_two_applied_revisions_before_confirmation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run = initialize_run(tmp_path / "runs")
+    infos = iter(
+        [
+            {"language": "en", "sample_count": 10},
+            {"language": "zh", "sample_count": 10},
+            {"language": "zh", "sample_count": 20},
+        ]
+    )
+    actions = iter(
+        [
+            {"action": "revise", "feedback": "use Chinese"},
+            {"action": "revise", "feedback": "make 20 questions"},
+            {"action": "confirm"},
+        ]
+    )
+    monkeypatch.setattr(specification_agent, "extract_benchmark_info", lambda *_args: next(infos))
+    monkeypatch.setattr(specification_agent, "missing_fields", lambda _info: [])
+    monkeypatch.setattr(specification_agent, "_benchmark_review_action", lambda *_args: next(actions))
+    graph = compile_specification_agent(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "specification-revisions"}}
+    graph.invoke(
+        {
+            "user_requirement": "Build a benchmark.",
+            "run_id": run["run_id"],
+            "construction_events_path": run["construction_events_path"],
+            "working_blueprint_path": run["working_blueprint_path"],
+        },
+        config,
+    )
+    graph.invoke(Command(resume="把语言改成中文"), config)
+    graph.invoke(Command(resume="题量改成 20"), config)
+    graph.invoke(Command(resume="确认"), config)
+
+    events = [
+        json.loads(line)
+        for line in Path(run["construction_events_path"]).read_text(encoding="utf-8").splitlines()
+    ]
+    review_events = [
+        event
+        for event in events
+        if event["event_type"] == "human_interaction" and event.get("action") != "submit"
+    ]
+    applied = [event for event in events if event["event_type"] == "revision_applied"]
+    assert [event["user_input"] for event in review_events] == [
+        "把语言改成中文",
+        "题量改成 20",
+        "确认",
+    ]
+    assert [event["modified_object_ids"] for event in applied] == [
+        ["language"],
+        ["sample_count"],
+    ]
+    assert construction_report(run["construction_events_path"])["human_stages"][
+        "benchmark_info"
+    ] == {"confirmed": 1, "revision_rounds": 2, "modified_objects": 2}
 
 
 def test_dataset_recommendation_and_profile_keep_paths_private(
@@ -349,8 +422,46 @@ def test_dataset_review_confirms_reselects_and_rejects_unavailable_datasets(
         capability_agent._dataset_review_action("使用 Future Dataset", _datasets())
 
 
+def test_dataset_reselection_records_actual_dataset_change(tmp_path: Path, monkeypatch) -> None:
+    datasets = _datasets()
+    datasets[1]["available"] = True
+    blueprint_path = tmp_path / "blueprint.json"
+    blueprint_path.write_text(json.dumps({"tasks": {}}), encoding="utf-8")
+    events_path = tmp_path / "construction_events.jsonl"
+    events_path.touch()
+    state = {
+        "run_id": "run",
+        "construction_events_path": str(events_path),
+        "working_blueprint_path": str(blueprint_path),
+        "dataset_recommendation": {
+            "dataset_id": "vindr-mammo",
+            "name": "VinDr-Mammo",
+            "description": "Mammography annotations.",
+            "reason": "Matches.",
+        },
+    }
+    monkeypatch.setattr(capability_agent, "load_dataset_catalog", lambda: datasets)
+    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "使用 future")
+    monkeypatch.setattr(
+        capability_agent,
+        "complete_json",
+        lambda *_args: {"action": "select", "dataset_id": "future"},
+    )
+
+    capability_agent._dataset_review_node(state)
+
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert events[0]["action"] == "revise"
+    assert events[1]["modified_object_ids"] == ["future"]
+    assert construction_report(events_path)["human_stages"]["dataset"] == {
+        "confirmed": 0,
+        "revision_rounds": 1,
+        "modified_objects": 1,
+    }
+
+
 def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_choice(
-    monkeypatch
+    tmp_path: Path, monkeypatch
 ) -> None:
     materials = [
         {
@@ -367,7 +478,10 @@ def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_ch
         lambda *_args: {"selected_files": [materials[0]["file"]]},
     )
 
-    selected = capability_agent._materials_choose_node({})
+    events_path = tmp_path / "construction_events.jsonl"
+    events_path.touch()
+    state = {"run_id": "run", "construction_events_path": str(events_path)}
+    selected = capability_agent._materials_choose_node(state)
 
     assert selected == {
         "selected_material_files": [materials[0]["file"]],
@@ -379,10 +493,24 @@ def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_ch
         "complete_json",
         lambda *_args: {"selected_files": ["missing.pdf"]},
     )
-    invalid = capability_agent._materials_choose_node({})
+    invalid = capability_agent._materials_choose_node(state)
 
     assert invalid["selected_material_files"] == []
     assert "Unknown medical PDF selection" in invalid["material_selection_error"]
+    interactions = [
+        json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(event["parse_status"], event["user_input"]) for event in interactions] == [
+        ("success", "选择指南"),
+        ("failed", "选择指南"),
+    ]
+    assert interactions[0]["selected_objects"] == 1
+    assert construction_report(events_path)["human_stages"]["materials"] == {
+        "confirmed": 1,
+        "revision_rounds": 0,
+        "modified_objects": 0,
+        "selected_objects": 1,
+    }
 
 
 def test_sample_counts_are_weighted_prepared_and_written_only_after_confirmation(
@@ -419,6 +547,72 @@ def test_sample_counts_are_weighted_prepared_and_written_only_after_confirmation
     assert {task_id: task["sample_count"] for task_id, task in tasks.items()} == {
         "view": 2,
         "diagnosis": 3,
+    }
+
+
+def test_task_plan_revision_records_only_tasks_with_actual_changes(tmp_path: Path, monkeypatch) -> None:
+    events_path = tmp_path / "construction_events.jsonl"
+    events_path.touch()
+    blueprint_path = tmp_path / "blueprint.json"
+    blueprint_path.write_text(json.dumps({"tasks": {}}), encoding="utf-8")
+    original = {"tasks": {"view": {"decision": "drop"}, "report": {"decision": "retain"}}}
+    revised = {"tasks": {"view": {"decision": "retain"}, "report": {"decision": "retain"}}}
+    state = {
+        "run_id": "run",
+        "construction_events_path": str(events_path),
+        "working_blueprint_path": str(blueprint_path),
+        "dataset_profile": {},
+        "draft_task_plan": original,
+    }
+    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "保留 view")
+    monkeypatch.setattr(
+        capability_agent,
+        "complete_json",
+        lambda *_args: {"action": "revise", "task_id": "view", "feedback": "Keep it."},
+    )
+    monkeypatch.setattr(capability_agent, "revise_task_plan", lambda *_args: revised)
+
+    review = capability_agent._task_plan_review_node(state)
+    capability_agent._task_plan_revise_node(state | review)
+
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert events[1]["modified_object_ids"] == ["view"]
+
+
+def test_sample_count_revision_records_all_redistributed_tasks(tmp_path: Path, monkeypatch) -> None:
+    events_path = tmp_path / "construction_events.jsonl"
+    events_path.touch()
+    blueprint_path = tmp_path / "blueprint.json"
+    tasks = {
+        "view": _task(category="image_acquisition_and_basic_information"),
+        "report": _task("free_text", category="report_generation"),
+    }
+    blueprint_path.write_text(
+        json.dumps({"benchmark_info": {"sample_count": 5}, "tasks": tasks}), encoding="utf-8"
+    )
+    state = {
+        "run_id": "run",
+        "construction_events_path": str(events_path),
+        "working_blueprint_path": str(blueprint_path),
+        "benchmark_info": {"sample_count": 5},
+        "draft_sample_counts": {"view": 2, "report": 3},
+    }
+    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "view 改为 4")
+    monkeypatch.setattr(
+        capability_agent,
+        "complete_json",
+        lambda *_args: {"action": "adjust", "counts": {"view": 4}},
+    )
+
+    result = capability_agent._sample_count_review_node(state)
+
+    assert result["draft_sample_counts"] == {"view": 4, "report": 1}
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert events[1]["modified_object_ids"] == ["report", "view"]
+    assert construction_report(events_path)["human_stages"]["sample_count"] == {
+        "confirmed": 0,
+        "revision_rounds": 1,
+        "modified_objects": 2,
     }
 
 
@@ -463,6 +657,54 @@ def test_design_review_action_supports_multiple_targeted_revisions(monkeypatch) 
     result = rag_workflow._design_review_action("修改两个任务", {"view": {}, "report": {}})
 
     assert [revision["task_id"] for revision in result["revisions"]] == ["view", "report"]
+
+
+def test_rag_design_revision_records_actual_changed_tasks(tmp_path: Path, monkeypatch) -> None:
+    events_path = tmp_path / "construction_events.jsonl"
+    events_path.touch()
+    blueprint_path = tmp_path / "blueprint.json"
+    task = _task() | _rag_fields() | {"sample_count": 1}
+    blueprint_path.write_text(
+        json.dumps({"benchmark_info": {"language": "en"}, "tasks": {"view": task}}),
+        encoding="utf-8",
+    )
+    state = {
+        "run_id": "run",
+        "selected_dataset_id": "vindr-mammo",
+        "construction_events_path": str(events_path),
+        "working_blueprint_path": str(blueprint_path),
+        "benchmark_info": {"language": "en"},
+        "selected_material_files": ["Standard/guide.pdf"],
+        "dataset_profile": {"fields": {}},
+        "dataset_access_manifest": {"duckdb_path": "unused"},
+    }
+    monkeypatch.setattr(rag_workflow, "interrupt", lambda _payload: "缩短 view 题干")
+    monkeypatch.setattr(
+        rag_workflow,
+        "complete_json",
+        lambda *_args: {
+            "action": "revise",
+            "revisions": [{"task_id": "view", "feedback": "Shorter wording."}],
+        },
+    )
+    monkeypatch.setattr(rag_workflow, "LocalPdfRag", lambda *_args: object())
+    monkeypatch.setattr(
+        rag_workflow,
+        "design_task",
+        lambda *_args, **_kwargs: _rag_fields() | {"question_templates": ["Name the view."]},
+    )
+
+    review = rag_workflow._design_review_node(state)
+    rag_workflow._rag_design_task_node(state | review)
+
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    applied = [event for event in events if event["event_type"] == "revision_applied"]
+    assert applied[0]["modified_object_ids"] == ["view"]
+    assert construction_report(events_path)["human_stages"]["rag_design"] == {
+        "confirmed": 0,
+        "revision_rounds": 1,
+        "modified_objects": 1,
+    }
 
 
 def test_generation_agent_keeps_request_snapshot_private(

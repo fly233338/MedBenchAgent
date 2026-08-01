@@ -311,12 +311,15 @@ letter and option order, while detection and free-text items pass through unchan
 
 ## Construction records and Audit
 
-`construction_events.jsonl` records only metadata. LLM calls use the fixed agent names,
-including the sampled semantic portion of `AuditAgent`, with their operation, logical model
-value, token usage, and latency. Hard Audit events use `AuditAgent` without an LLM call.
-Validated human confirmations and revisions are recorded without
-their natural-language input. `construction_report.json` reduces these events to total and
-per-agent LLM usage, generation/audit item counts, wall-clock time, and per-stage human counts.
+`construction_events.jsonl` records LLM metadata plus every complete natural-language user input,
+including inputs that fail parsing or validation. These raw inputs are intentionally unredacted and
+may contain sensitive information, so run directories must be handled accordingly. Each successful
+revision writes a linked `revision_applied` event containing the actually changed object IDs. LLM
+calls use the fixed agent names, including the sampled semantic portion of `AuditAgent`, with their
+operation, logical model value, token usage, and latency. Hard Audit events use `AuditAgent` without
+an LLM call. `construction_report.json` uses `construction-report.v2` and reduces these events to
+total and per-agent LLM usage, generation/audit item counts, wall-clock time, final confirmation
+status, applied revision rounds, actual modified-object counts, and the selected material count.
 Run lifecycle events use the `orchestrator` component and are not attributed to a sixth Agent.
 
 Hard Audit verifies the image-manifest mapping, streams PNG hashes, decodes 8-bit grayscale PNGs,

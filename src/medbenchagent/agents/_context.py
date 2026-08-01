@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from medbenchagent.construction import event_context, record_human_action
+from medbenchagent.construction import (
+    event_context,
+    record_human_interaction,
+    record_revision_applied,
+)
 from medbenchagent.settings import get_settings
 
 
@@ -19,17 +23,50 @@ def llm_context(state: dict[str, Any], agent: str, operation: str):
     )
 
 
-def human_action(
-    state: dict[str, Any], *, agent: str, stage: str, action: str, modified_objects: int
-) -> None:
+def human_interaction(
+    state: dict[str, Any],
+    *,
+    agent: str,
+    stage: str,
+    user_input: object,
+    parse_status: str,
+    action: str | None = None,
+    error_type: str | None = None,
+    selected_objects: int | None = None,
+) -> str:
+    interaction_id = ""
     if not state.get("construction_events_path") or not state.get("run_id"):
-        return
-    record_human_action(
+        return interaction_id
+    return record_human_interaction(
         state["construction_events_path"],
         run_id=state["run_id"],
         dataset_id=state.get("selected_dataset_id") or None,
         agent=agent,
         stage=stage,
+        user_input=user_input if isinstance(user_input, str) else str(user_input),
+        parse_status=parse_status,
         action=action,
-        modified_objects=modified_objects,
+        error_type=error_type,
+        selected_objects=selected_objects,
+    )
+
+
+def revision_applied(
+    state: dict[str, Any],
+    *,
+    agent: str,
+    stage: str,
+    interaction_id: str,
+    modified_object_ids: list[str],
+) -> None:
+    if not interaction_id or not state.get("construction_events_path") or not state.get("run_id"):
+        return
+    record_revision_applied(
+        state["construction_events_path"],
+        run_id=state["run_id"],
+        dataset_id=state.get("selected_dataset_id") or None,
+        agent=agent,
+        stage=stage,
+        interaction_id=interaction_id,
+        modified_object_ids=modified_object_ids,
     )

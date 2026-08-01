@@ -28,6 +28,9 @@ class SpecificationAgentInputState(MessagesState, total=False):
 class SpecificationAgentState(SpecificationAgentInputState, total=False):
     benchmark_feedback: str
     benchmark_confirmed: bool
+    initial_requirement_recorded: bool
+    pending_benchmark_interaction_id: str
+    pending_benchmark_info: dict[str, Any]
 
 
 class SpecificationAgentOutputState(TypedDict):
@@ -51,6 +54,7 @@ class CapabilityAgentState(CapabilityAgentInputState, total=False):
     dataset_access_manifest: dict[str, Any]
     draft_task_plan: dict[str, Any]
     pending_task_feedback: dict[str, str] | None
+    pending_task_interaction_id: str
     task_plan_confirmed: bool
     task_screening_report_path: str
     draft_sample_counts: dict[str, int]

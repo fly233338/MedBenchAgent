@@ -28,13 +28,24 @@ AGENT_NAMES = (
     AUDIT_AGENT,
 )
 
+_MISSING = object()
+
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+def changed_mapping_keys(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """Return stable string keys whose values differ between two mappings."""
+    return sorted(
+        key
+        for key in before.keys() | after.keys()
+        if before.get(key, _MISSING) != after.get(key, _MISSING)
+    )
+
+
 def record_event(path: str | Path, event_type: str, **values: object) -> dict[str, object]:
-    """Append metadata only; callers must never pass prompts or model bodies."""
+    """Append one construction event as compact UTF-8 JSON."""
     event = {"timestamp": _timestamp(), "event_type": event_type} | {
         key: value for key, value in values.items() if value is not None
     }
@@ -102,26 +113,59 @@ def record_llm_call(*, status: str, started: float, error_type: str | None = Non
     )
 
 
-def record_human_action(
+def record_human_interaction(
     path: str | Path,
     *,
     run_id: str,
     dataset_id: str | None,
     agent: str,
     stage: str,
-    action: str,
-    modified_objects: int,
-) -> None:
-    """Record one validated human decision without retaining the original input."""
+    user_input: str,
+    parse_status: str,
+    action: str | None = None,
+    error_type: str | None = None,
+    selected_objects: int | None = None,
+) -> str:
+    """Record one natural-language interaction, including failed parse attempts."""
+    interaction_id = str(uuid.uuid4())
     record_event(
         path,
-        "human_action",
+        "human_interaction",
         run_id=run_id,
         dataset_id=dataset_id,
         agent=agent,
         stage=stage,
+        interaction_id=interaction_id,
+        user_input=user_input,
+        parse_status=parse_status,
         action=action,
-        modified_objects=modified_objects,
+        error_type=error_type,
+        selected_objects=selected_objects,
+    )
+    return interaction_id
+
+
+def record_revision_applied(
+    path: str | Path,
+    *,
+    run_id: str,
+    dataset_id: str | None,
+    agent: str,
+    stage: str,
+    interaction_id: str,
+    modified_object_ids: list[str],
+) -> None:
+    """Record one successfully completed revision and its actual changed objects."""
+    record_event(
+        path,
+        "revision_applied",
+        run_id=run_id,
+        dataset_id=dataset_id,
+        agent=agent,
+        stage=stage,
+        interaction_id=interaction_id,
+        modified_objects=len(modified_object_ids),
+        modified_object_ids=modified_object_ids,
     )
 
 
@@ -164,28 +208,32 @@ def construction_report(events_path: str | Path) -> dict[str, object]:
         for name in AGENT_NAMES
     }
     human_stages = {
-        stage: {"confirmed": 0, "revised": 0, "revision_rounds": 0, "modified_objects": 0}
-        for stage in (
-            "benchmark_info", "dataset", "task_plan", "sample_count", "materials", "rag_design",
-            "generation_review_override", "audit_override",
-        )
+        stage: {"confirmed": 0, "revision_rounds": 0, "modified_objects": 0}
+        for stage in ("benchmark_info", "dataset", "task_plan", "sample_count", "materials", "rag_design")
     }
+    human_stages["materials"]["selected_objects"] = 0
     for event in events:
-        if event.get("event_type") != "human_action" or event.get("stage") not in human_stages:
+        if event.get("stage") not in human_stages:
             continue
         stage = human_stages[event["stage"]]
-        if event.get("action") == "confirm":
-            stage["confirmed"] += 1
-        elif event.get("action") == "revise":
-            stage["revised"] += 1
+        if (
+            event.get("event_type") == "human_interaction"
+            and event.get("parse_status") == "success"
+            and event.get("action") == "confirm"
+        ):
+            stage["confirmed"] = 1
+            selected = event.get("selected_objects")
+            if event.get("stage") == "materials" and isinstance(selected, int) and selected >= 0:
+                stage["selected_objects"] = selected
+        elif event.get("event_type") == "revision_applied":
             stage["revision_rounds"] += 1
-        modified = event.get("modified_objects", 0)
-        if isinstance(modified, int) and modified >= 0:
-            stage["modified_objects"] += modified
+            modified = event.get("modified_objects", 0)
+            if isinstance(modified, int) and modified >= 0:
+                stage["modified_objects"] += modified
     input_tokens = sum(int(event.get("input_tokens", 0)) for event in llm)
     output_tokens = sum(int(event.get("output_tokens", 0)) for event in llm)
     return {
-        "schema_version": "construction-report.v1",
+        "schema_version": "construction-report.v2",
         "wall_clock_seconds": elapsed,
         "llm": {
             "calls": len(llm),

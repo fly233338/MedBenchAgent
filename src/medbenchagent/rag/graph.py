@@ -10,13 +10,14 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from medbenchagent.agents._context import human_interaction, revision_applied
 from medbenchagent.llm import complete_json
 from medbenchagent.construction import (
     CLINICAL_DESIGN_AGENT,
+    changed_mapping_keys,
     event_context,
     event_operation,
     record_event,
-    record_human_action,
 )
 from medbenchagent.rag.pdf import LocalPdfRag, design_task, write_task_design
 from medbenchagent.settings import get_settings
@@ -44,12 +45,29 @@ class RagDesignState(RagDesignInputState, total=False):
     rag_completed_count: int
     rag_total_count: int
     designs_confirmed: bool
+    rag_revision_interaction_id: str
+    rag_revision_before: dict[str, dict[str, Any]]
 
 
 class RagDesignOutputState(TypedDict):
     """Stable result returned from the RAG-design subgraph to the root graph."""
 
     working_blueprint_path: str
+
+
+_DESIGN_FIELDS = (
+    "question_templates",
+    "options",
+    "answer_field",
+    "answer_value_mapping",
+    "generation_logic",
+    "medical_task_description",
+    "citations",
+)
+
+
+def _design_snapshot(task: dict[str, Any]) -> dict[str, Any]:
+    return {field: task[field] for field in _DESIGN_FIELDS if field in task}
 
 
 def _emit_custom_event(event: dict[str, Any]) -> None:
@@ -130,12 +148,29 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
             "remaining": len(remaining),
         }
     )
-    return {
+    updates: dict[str, Any] = {
         "rag_task_queue": remaining,
         "rag_current_task_id": task_id,
         "rag_completed_count": completed,
         "designs_confirmed": False,
     }
+    if not remaining and (interaction_id := state.get("rag_revision_interaction_id")):
+        revised_blueprint = json.loads(blueprint_path.read_text(encoding="utf-8"))
+        before = state.get("rag_revision_before", {})
+        after = {
+            revised_task_id: _design_snapshot(revised_blueprint["tasks"][revised_task_id])
+            for revised_task_id in before
+        }
+        revision_applied(
+            state,
+            agent=CLINICAL_DESIGN_AGENT,
+            stage="rag_design",
+            interaction_id=interaction_id,
+            modified_object_ids=changed_mapping_keys(before, after),
+        )
+        updates["rag_revision_interaction_id"] = ""
+        updates["rag_revision_before"] = {}
+    return updates
 
 
 def _validate_design_review_action(response: object, task_ids: list[str]) -> dict[str, Any]:
@@ -202,42 +237,45 @@ def _design_review_node(state: RagDesignState) -> dict[str, Any]:
             "question": "Confirm the Blueprint task designs or describe one or more corrections.",
         }
     )
-    with event_context(
-        construction_events_path=state.get("construction_events_path"),
-        run_id=state.get("run_id"),
-        dataset_id=state.get("selected_dataset_id"),
-        agent=CLINICAL_DESIGN_AGENT,
-        operation="rag_design_review",
-        model=get_settings().llm.model,
-    ):
-        action = _design_review_action(answer, tasks)
-    if action["action"] == "confirm":
-        if state.get("construction_events_path") and state.get("run_id"):
-            record_human_action(
-                state["construction_events_path"],
-                run_id=state["run_id"],
-                dataset_id=state.get("selected_dataset_id"),
-                agent=CLINICAL_DESIGN_AGENT,
-                stage="rag_design",
-                action="confirm",
-                modified_objects=0,
-            )
-        return {"designs_confirmed": True, "rag_task_queue": [], "rag_task_feedback": {}}
-    feedback = {revision["task_id"]: revision["feedback"] for revision in action["revisions"]}
-    if state.get("construction_events_path") and state.get("run_id"):
-        record_human_action(
-            state["construction_events_path"],
-            run_id=state["run_id"],
+    try:
+        with event_context(
+            construction_events_path=state.get("construction_events_path"),
+            run_id=state.get("run_id"),
             dataset_id=state.get("selected_dataset_id"),
             agent=CLINICAL_DESIGN_AGENT,
+            operation="rag_design_review",
+            model=get_settings().llm.model,
+        ):
+            action = _design_review_action(answer, tasks)
+    except Exception as exc:
+        human_interaction(
+            state,
+            agent=CLINICAL_DESIGN_AGENT,
             stage="rag_design",
-            action="revise",
-            modified_objects=len(feedback),
+            user_input=answer,
+            parse_status="failed",
+            error_type=type(exc).__name__,
         )
+        raise
+    interaction_id = human_interaction(
+        state,
+        agent=CLINICAL_DESIGN_AGENT,
+        stage="rag_design",
+        user_input=answer,
+        parse_status="success",
+        action=action["action"],
+    )
+    if action["action"] == "confirm":
+        return {"designs_confirmed": True, "rag_task_queue": [], "rag_task_feedback": {}}
+    feedback = {revision["task_id"]: revision["feedback"] for revision in action["revisions"]}
     return {
         "designs_confirmed": False,
         "rag_task_queue": list(feedback),
         "rag_task_feedback": feedback,
+        "rag_revision_interaction_id": interaction_id,
+        "rag_revision_before": {
+            task_id: _design_snapshot(tasks[task_id]) for task_id in feedback
+        },
         "rag_current_task_id": "",
         "rag_completed_count": 0,
         "rag_total_count": len(feedback),

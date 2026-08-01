@@ -56,7 +56,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 和 `image`；各实体拥有独立 annotation，任务字段路径与该层级保持一致。
 
 每次运行的核心产物是 working `blueprint.json`、`task_plan_report.json`、
-阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、只含元数据的 append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。配置按代码回退值、`config/default.toml`、显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖；Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
+阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。construction events 除 LLM 元数据外还保存每轮完整、未脱敏的用户自然语言输入，因此运行目录可能含敏感信息。配置按代码回退值、`config/default.toml`、显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖；Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
 `dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。确认后的设计采用
 `rag-designs.v2`；manifest 的展开任务记录可选 `parent_task_id` 与 `question_type_id`。模板数量由配置项
 `generation.question_template_count` 控制并写入生效配置快照，不属于 Graph 输入覆盖项。
@@ -82,7 +82,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
   requirement 和每次自然语言确认，并消费 `tasks`、`updates`、`custom` 子图事件展示进度。
   该入口不改变 Graph 契约或产物，强制关闭可选外部 tracing、模型下载与遥测；checkpoint
   仅在进程存活期间有效。
-- `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。LLM 事件使用五个固定 Agent 名称并记录 operation、模型逻辑名称、token 与 latency；`AuditAgent` 只有抽样语义筛查产生 LLM 调用，硬审计仍为确定性。人类事件仅在自然语言被成功解析并通过代码校验后记录，不保存输入内容。
+- `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。LLM 事件使用五个固定 Agent 名称并记录 operation、模型逻辑名称、token 与 latency；`AuditAgent` 只有抽样语义筛查产生 LLM 调用，硬审计仍为确定性。每轮用户输入写为独立 `human_interaction`，包括解析失败的输入；修订完成后以同一 `interaction_id` 写入 `revision_applied` 及实际变化对象。`construction-report.v2` 按 stage 汇总最终确认状态、成功修订轮数和实际修改对象数，materials 另计选择数量。
 - `run_started` 和 `run_completed` 使用 `orchestrator` component，不归属任何业务 Agent，也不进入五角色的 LLM 统计。
 - Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变。硬审计使用 source row 回溯同一 annotation 文件并重算所有答案格式的 witness hash；free_text 必须与回放字符串完全一致，bbox 必须与四个回放坐标数值一致。新结构化 letter 任务还必须满足回放 raw value、mapping、语义 option 与最终答案字母一致；旧无 mapping 设计的证据到选项语义关系仍由 Reviewer 负责。随后仅平衡选择题答案位置。语义层每 task 最多稳定抽取十题，只宽松检查明显任务偏移、答案泄露、歧义/选项重叠及语义近重复/模板塌缩；失败时 fail-open，flag 不会 reject，`flagged.jsonl` 始终是 `audited.jsonl` 的观察性子集。`audit_report.json` 采用 `audit-report.v1`，分别在 `hard_audit` 与 `semantic_audit` 中表达两层计数。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
 

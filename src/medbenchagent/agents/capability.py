@@ -9,14 +9,14 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from medbenchagent.agents._context import human_action, llm_context
+from medbenchagent.agents._context import human_interaction, llm_context, revision_applied
 from medbenchagent.agents.contracts import (
     CAPABILITY_AGENT,
     CapabilityAgentInputState,
     CapabilityAgentOutputState,
     CapabilityAgentState,
 )
-from medbenchagent.construction import event_operation
+from medbenchagent.construction import changed_mapping_keys, event_operation
 from medbenchagent.dataset import AnnotationValidationError, prepare_annotation_dataset
 from medbenchagent.dataset_catalog import (
     DatasetCatalogError,
@@ -85,26 +85,41 @@ def _dataset_review_node(state: CapabilityAgentState) -> dict[str, Any]:
             "question": "Confirm the recommended dataset, or name another available dataset.",
         }
     )
-    with llm_context(state, CAPABILITY_AGENT, "dataset_review"):
-        action = _dataset_review_action(answer, datasets)
-    if action["action"] == "confirm":
-        dataset = dataset_by_id(datasets, recommendation["dataset_id"])
-        update_blueprint_dataset(state["working_blueprint_path"], dataset["id"])
-        human_action(
+    try:
+        with llm_context(state, CAPABILITY_AGENT, "dataset_review"):
+            action = _dataset_review_action(answer, datasets)
+    except Exception as exc:
+        human_interaction(
             state,
             agent=CAPABILITY_AGENT,
             stage="dataset",
-            action="confirm",
-            modified_objects=0,
+            user_input=answer,
+            parse_status="failed",
+            error_type=type(exc).__name__,
         )
-        return {"selected_dataset_id": dataset["id"], "dataset_confirmed": True}
-    dataset = dataset_by_id(datasets, action["dataset_id"])
-    human_action(
+        raise
+    event_action = "confirm" if action["action"] == "confirm" else "revise"
+    interaction_id = human_interaction(
         state,
         agent=CAPABILITY_AGENT,
         stage="dataset",
-        action="revise",
-        modified_objects=1,
+        user_input=answer,
+        parse_status="success",
+        action=event_action,
+    )
+    if action["action"] == "confirm":
+        dataset = dataset_by_id(datasets, recommendation["dataset_id"])
+        update_blueprint_dataset(state["working_blueprint_path"], dataset["id"])
+        return {"selected_dataset_id": dataset["id"], "dataset_confirmed": True}
+    dataset = dataset_by_id(datasets, action["dataset_id"])
+    revision_applied(
+        state,
+        agent=CAPABILITY_AGENT,
+        stage="dataset",
+        interaction_id=interaction_id,
+        modified_object_ids=(
+            [dataset["id"]] if dataset["id"] != recommendation["dataset_id"] else []
+        ),
     )
     return {
         "dataset_recommendation": {
@@ -193,25 +208,34 @@ def _task_plan_review_node(state: CapabilityAgentState) -> dict[str, Any]:
         }
     )
     task_ids = list(state["draft_task_plan"]["tasks"])
-    with llm_context(state, CAPABILITY_AGENT, "task_plan_revise"):
-        action = _review_action(answer, task_ids)
-    if action["action"] == "confirm":
-        human_action(
+    try:
+        with llm_context(state, CAPABILITY_AGENT, "task_plan_revise"):
+            action = _review_action(answer, task_ids)
+    except Exception as exc:
+        human_interaction(
             state,
             agent=CAPABILITY_AGENT,
             stage="task_plan",
-            action="confirm",
-            modified_objects=0,
+            user_input=answer,
+            parse_status="failed",
+            error_type=type(exc).__name__,
         )
-        return {"task_plan_confirmed": True, "pending_task_feedback": None}
-    human_action(
+        raise
+    interaction_id = human_interaction(
         state,
         agent=CAPABILITY_AGENT,
         stage="task_plan",
-        action="revise",
-        modified_objects=1,
+        user_input=answer,
+        parse_status="success",
+        action=action["action"],
     )
-    return {"task_plan_confirmed": False, "pending_task_feedback": action}
+    if action["action"] == "confirm":
+        return {"task_plan_confirmed": True, "pending_task_feedback": None}
+    return {
+        "task_plan_confirmed": False,
+        "pending_task_feedback": action,
+        "pending_task_interaction_id": interaction_id,
+    }
 
 
 def _task_plan_revise_node(state: CapabilityAgentState) -> dict[str, Any]:
@@ -220,6 +244,7 @@ def _task_plan_revise_node(state: CapabilityAgentState) -> dict[str, Any]:
     if not feedback:
         raise ValueError("Task Plan revision requires pending task feedback.")
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
+    before_tasks = state["draft_task_plan"].get("tasks", {})
     with llm_context(state, CAPABILITY_AGENT, "task_plan_revise"):
         revised_task_plan = revise_task_plan(
             blueprint,
@@ -228,9 +253,18 @@ def _task_plan_revise_node(state: CapabilityAgentState) -> dict[str, Any]:
             feedback["task_id"],
             feedback["feedback"],
         )
+    after_tasks = revised_task_plan.get("tasks", {})
+    revision_applied(
+        state,
+        agent=CAPABILITY_AGENT,
+        stage="task_plan",
+        interaction_id=state.get("pending_task_interaction_id", ""),
+        modified_object_ids=changed_mapping_keys(before_tasks, after_tasks),
+    )
     return {
         "draft_task_plan": revised_task_plan,
         "pending_task_feedback": None,
+        "pending_task_interaction_id": "",
         "task_plan_confirmed": False,
     }
 
@@ -330,27 +364,41 @@ def _sample_count_review_node(state: CapabilityAgentState) -> dict[str, Any]:
             "question": "Confirm the per-task sample counts or describe adjustments.",
         }
     )
-    with llm_context(state, CAPABILITY_AGENT, "sample_count_review"):
-        action = _sample_count_review_action(answer, counts, total, tasks)
-    if action["action"] == "confirm":
-        write_sample_counts(state["working_blueprint_path"], counts)
-        human_action(
+    try:
+        with llm_context(state, CAPABILITY_AGENT, "sample_count_review"):
+            action = _sample_count_review_action(answer, counts, total, tasks)
+    except Exception as exc:
+        human_interaction(
             state,
             agent=CAPABILITY_AGENT,
             stage="sample_count",
-            action="confirm",
-            modified_objects=0,
+            user_input=answer,
+            parse_status="failed",
+            error_type=type(exc).__name__,
         )
-        return {"sample_counts_confirmed": True}
-    human_action(
+        raise
+    event_action = "confirm" if action["action"] == "confirm" else "revise"
+    interaction_id = human_interaction(
         state,
         agent=CAPABILITY_AGENT,
         stage="sample_count",
-        action="revise",
-        modified_objects=len(action["counts"]),
+        user_input=answer,
+        parse_status="success",
+        action=event_action,
+    )
+    if action["action"] == "confirm":
+        write_sample_counts(state["working_blueprint_path"], counts)
+        return {"sample_counts_confirmed": True}
+    revised_counts = distribute_weighted_sample_counts(tasks, total, action["counts"])
+    revision_applied(
+        state,
+        agent=CAPABILITY_AGENT,
+        stage="sample_count",
+        interaction_id=interaction_id,
+        modified_object_ids=changed_mapping_keys(counts, revised_counts),
     )
     return {
-        "draft_sample_counts": distribute_weighted_sample_counts(tasks, total, action["counts"]),
+        "draft_sample_counts": revised_counts,
         "sample_counts_confirmed": False,
     }
 
@@ -409,13 +457,33 @@ def _materials_choose_node(state: CapabilityAgentState) -> dict[str, Any]:
         with llm_context(state, CAPABILITY_AGENT, "material_selection"):
             selected_files = _material_selection_action(answer, materials)
     except ValueError as exc:
+        human_interaction(
+            state,
+            agent=CAPABILITY_AGENT,
+            stage="materials",
+            user_input=answer,
+            parse_status="failed",
+            error_type=type(exc).__name__,
+        )
         return {"selected_material_files": [], "material_selection_error": str(exc)}
-    human_action(
+    except Exception as exc:
+        human_interaction(
+            state,
+            agent=CAPABILITY_AGENT,
+            stage="materials",
+            user_input=answer,
+            parse_status="failed",
+            error_type=type(exc).__name__,
+        )
+        raise
+    human_interaction(
         state,
         agent=CAPABILITY_AGENT,
         stage="materials",
+        user_input=answer,
+        parse_status="success",
         action="confirm",
-        modified_objects=len(selected_files),
+        selected_objects=len(selected_files),
     )
     return {"selected_material_files": selected_files, "material_selection_error": ""}
 

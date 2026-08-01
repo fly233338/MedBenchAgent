@@ -10,7 +10,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from medbenchagent.agents._context import human_action, llm_context
+from medbenchagent.agents._context import human_interaction, llm_context, revision_applied
 from medbenchagent.agents.contracts import (
     SPECIFICATION_AGENT,
     SpecificationAgentInputState,
@@ -18,6 +18,7 @@ from medbenchagent.agents.contracts import (
     SpecificationAgentState,
 )
 from medbenchagent.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
+from medbenchagent.construction import changed_mapping_keys
 from medbenchagent.llm import complete_json
 
 
@@ -36,11 +37,48 @@ def _benchmark_extract_node(state: SpecificationAgentState) -> dict[str, Any]:
         raise ValueError("A benchmark requirement is required before BenchmarkInfo extraction.")
     if feedback := state.get("benchmark_feedback"):
         requirement = f"{requirement}\nRequested correction: {feedback}"
-    with llm_context(state, SPECIFICATION_AGENT, "benchmark_info_extract"):
-        info = extract_benchmark_info(requirement, state.get("benchmark_info", {}))
-    if missing := missing_fields(info):
-        raise ValueError(f"BenchmarkInfo is missing required fields: {', '.join(missing)}")
-    return {"user_requirement": requirement, "benchmark_info": info, "benchmark_confirmed": False}
+    try:
+        with llm_context(state, SPECIFICATION_AGENT, "benchmark_info_extract"):
+            info = extract_benchmark_info(requirement, state.get("benchmark_info", {}))
+        if missing := missing_fields(info):
+            raise ValueError(f"BenchmarkInfo is missing required fields: {', '.join(missing)}")
+    except Exception as exc:
+        if not state.get("initial_requirement_recorded"):
+            human_interaction(
+                state,
+                agent=SPECIFICATION_AGENT,
+                stage="benchmark_info",
+                user_input=requirement,
+                parse_status="failed",
+                error_type=type(exc).__name__,
+            )
+        raise
+    updates: dict[str, Any] = {
+        "user_requirement": requirement,
+        "benchmark_info": info,
+        "benchmark_confirmed": False,
+    }
+    if not state.get("initial_requirement_recorded"):
+        human_interaction(
+            state,
+            agent=SPECIFICATION_AGENT,
+            stage="benchmark_info",
+            user_input=requirement,
+            parse_status="success",
+            action="submit",
+        )
+        updates["initial_requirement_recorded"] = True
+    if interaction_id := state.get("pending_benchmark_interaction_id"):
+        revision_applied(
+            state,
+            agent=SPECIFICATION_AGENT,
+            stage="benchmark_info",
+            interaction_id=interaction_id,
+            modified_object_ids=changed_mapping_keys(state.get("pending_benchmark_info", {}), info),
+        )
+        updates["pending_benchmark_interaction_id"] = ""
+        updates["pending_benchmark_info"] = {}
+    return updates
 
 
 def _benchmark_confirm_node(state: SpecificationAgentState) -> dict[str, Any]:
@@ -52,32 +90,42 @@ def _benchmark_confirm_node(state: SpecificationAgentState) -> dict[str, Any]:
             "question": "Confirm this BenchmarkInfo, or describe the correction.",
         }
     )
-    with llm_context(state, SPECIFICATION_AGENT, "benchmark_info_review"):
-        action = _benchmark_review_action(answer, state["benchmark_info"])
+    try:
+        with llm_context(state, SPECIFICATION_AGENT, "benchmark_info_review"):
+            action = _benchmark_review_action(answer, state["benchmark_info"])
+    except Exception as exc:
+        human_interaction(
+            state,
+            agent=SPECIFICATION_AGENT,
+            stage="benchmark_info",
+            user_input=answer,
+            parse_status="failed",
+            error_type=type(exc).__name__,
+        )
+        raise
+    interaction_id = human_interaction(
+        state,
+        agent=SPECIFICATION_AGENT,
+        stage="benchmark_info",
+        user_input=answer,
+        parse_status="success",
+        action=action["action"],
+    )
     if action["action"] == "confirm":
         working_blueprint_path = state["working_blueprint_path"]
         if not Path(working_blueprint_path).is_file():
             write_working_blueprint(state["benchmark_info"], working_blueprint_path)
-        human_action(
-            state,
-            agent=SPECIFICATION_AGENT,
-            stage="benchmark_info",
-            action="confirm",
-            modified_objects=0,
-        )
         return {
             "benchmark_confirmed": True,
             "benchmark_feedback": "",
             "working_blueprint_path": working_blueprint_path,
         }
-    human_action(
-        state,
-        agent=SPECIFICATION_AGENT,
-        stage="benchmark_info",
-        action="revise",
-        modified_objects=1,
-    )
-    return {"benchmark_confirmed": False, "benchmark_feedback": action["feedback"]}
+    return {
+        "benchmark_confirmed": False,
+        "benchmark_feedback": action["feedback"],
+        "pending_benchmark_interaction_id": interaction_id,
+        "pending_benchmark_info": state["benchmark_info"],
+    }
 
 
 def _benchmark_review_action(answer: object, benchmark_info: dict[str, Any]) -> dict[str, str]:
