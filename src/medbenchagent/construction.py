@@ -154,6 +154,10 @@ def record_revision_applied(
     stage: str,
     interaction_id: str,
     modified_object_ids: list[str],
+    artifact_type: str | None = None,
+    artifact_version: int | None = None,
+    artifact_path: str | None = None,
+    artifact_sha256: str | None = None,
 ) -> None:
     """Record one successfully completed revision and its actual changed objects."""
     record_event(
@@ -166,6 +170,37 @@ def record_revision_applied(
         interaction_id=interaction_id,
         modified_objects=len(modified_object_ids),
         modified_object_ids=modified_object_ids,
+        artifact_type=artifact_type,
+        artifact_version=artifact_version,
+        artifact_path=artifact_path,
+        artifact_sha256=artifact_sha256,
+    )
+
+
+def record_artifact_snapshot(
+    path: str | Path,
+    *,
+    run_id: str,
+    dataset_id: str | None,
+    agent: str,
+    stage: str,
+    artifact_type: str,
+    artifact: dict[str, str | int],
+    source: str,
+) -> None:
+    """Record the first immutable artifact snapshot created by a model stage."""
+    record_event(
+        path,
+        "artifact_snapshot",
+        run_id=run_id,
+        dataset_id=dataset_id,
+        agent=agent,
+        stage=stage,
+        artifact_type=artifact_type,
+        artifact_version=artifact["version"],
+        artifact_path=artifact["relative_path"],
+        artifact_sha256=artifact["sha256"],
+        source=source,
     )
 
 

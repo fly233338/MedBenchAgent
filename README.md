@@ -6,7 +6,7 @@ supported tasks, designs them with PDF RAG, and writes closed VQA, detection, fi
 description, and report items into one mixed JSONL. Each run is initialized at
 `benchmarks/runs/<run_id>/` before the first model call and writes an immutable,
 unshuffled `benchmark.<dataset_id>.raw.jsonl`. The same directory contains provenance,
-construction events/report, confirmed RAG designs, an `effective_config.json` provenance snapshot,
+construction events/report, versioned Task Plan and RAG-design snapshots, an `effective_config.json` provenance snapshot,
 and a SHA-256 manifest. Per-task `sample_count` values are generation targets:
 the files contain the accepted items produced before all targets are met or the
 dataset is exhausted.
@@ -123,7 +123,7 @@ after confirmation: dropped tasks are removed and retained tasks receive their a
 identifies one question type per observable semantic property, then materializes each type
 as an independent task such as `finding_attribute.shape`. Every expanded task has one
 answer-bearing field, while `parent_task_id` preserves its planning family. The resulting
-`task_plan_report.json` is written after the first model plan and updated after each review revision; it retains decisions for both retained and dropped tasks. `rag_designs.json` is likewise written before RAG-design review and updated after each revision. Detection and visual grounding are independent capabilities:
+Task Plan drafts are stored as immutable `task_plans/v1.json`, `v2.json`, and so on; RAG designs use the matching `rag_designs/vN.json` layout. The first model output creates `v1`, and each review revision creates the next version without overwriting earlier results. `construction_events.jsonl` links each revision's natural-language request, changed task IDs, artifact path, and SHA-256. Detection and visual grounding are independent capabilities:
 both may be retained when the dataset has the required bounding-box and finding evidence.
 
 The retained tasks then receive a stable category-weighted allocation of the benchmark

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -40,8 +38,8 @@ from medbenchagent.rag.graph import (
     RagDesignState,
     compile_rag_designs_subgraph,
 )
-from medbenchagent.run_artifacts import initialize_run
-from medbenchagent.run_export import export_rag_designs, finalize_run
+from medbenchagent.run_artifacts import initialize_run, latest_versioned_json
+from medbenchagent.run_export import finalize_run
 from medbenchagent.settings import get_settings
 
 __all__ = [
@@ -134,16 +132,10 @@ def _run_initialize_node(state: BenchmarkState) -> dict[str, Any]:
 
 
 def _rag_design_export_node(state: BenchmarkState) -> dict[str, Any]:
-    blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
-    path = Path(state["run_directory"]) / "rag_designs.json"
-    return {
-        "rag_designs_path": export_rag_designs(
-            blueprint,
-            state["run_id"],
-            state["selected_material_files"],
-            path,
-        )
-    }
+    artifact = latest_versioned_json(state["run_directory"], "rag_designs")
+    if artifact is None:
+        raise ValueError("RAG design review completed without a persisted design artifact.")
+    return {"rag_designs_path": str(artifact["path"])}
 
 
 def _generation_summary_node(state: BenchmarkState) -> dict[str, Any]:

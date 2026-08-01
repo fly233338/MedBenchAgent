@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -25,6 +26,51 @@ def atomic_write_json(path: str | Path, value: object) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def write_versioned_json(
+    run_directory: str | Path, artifact_directory: str, value: object
+) -> dict[str, str | int]:
+    """Append one immutable vN.json artifact inside a benchmark run."""
+    run_path = Path(run_directory)
+    destination_directory = run_path / artifact_directory
+    version_pattern = re.compile(r"v(\d+)\.json")
+    versions = [
+        int(match.group(1))
+        for path in destination_directory.glob("v*.json")
+        if (match := version_pattern.fullmatch(path.name))
+    ]
+    version = max(versions, default=0) + 1
+    destination = destination_directory / f"v{version}.json"
+    atomic_write_json(destination, value)
+    return {
+        "version": version,
+        "path": str(destination),
+        "relative_path": destination.relative_to(run_path).as_posix(),
+        "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+    }
+
+
+def latest_versioned_json(
+    run_directory: str | Path, artifact_directory: str
+) -> dict[str, str | int] | None:
+    """Return metadata for the latest immutable vN.json artifact, if present."""
+    run_path = Path(run_directory)
+    version_pattern = re.compile(r"v(\d+)\.json")
+    candidates = [
+        (int(match.group(1)), path)
+        for path in (run_path / artifact_directory).glob("v*.json")
+        if (match := version_pattern.fullmatch(path.name))
+    ]
+    if not candidates:
+        return None
+    version, path = max(candidates)
+    return {
+        "version": version,
+        "path": str(path),
+        "relative_path": path.relative_to(run_path).as_posix(),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
 
 
 def initialize_run(

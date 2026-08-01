@@ -36,9 +36,10 @@ def benchmark_id(blueprint: dict[str, Any]) -> str:
     )[:16]
 
 
-def export_rag_designs(
-    blueprint: dict[str, Any], run_id: str, selected_material_files: list[str], output_path: str | Path
-) -> str:
+def rag_designs_payload(
+    blueprint: dict[str, Any], run_id: str, selected_material_files: list[str]
+) -> dict[str, Any]:
+    """Build the stable RAG-design artifact payload."""
     designs = {}
     fields = (
         "question_templates",
@@ -52,15 +53,18 @@ def export_rag_designs(
     for task_id, task in blueprint["tasks"].items():
         if task.get("sample_count", 0) > 0:
             designs[task_id] = {field: task[field] for field in fields if field in task}
-    atomic_write_json(
-        output_path,
-        {
-            "schema_version": "rag-designs.v2",
-            "run_id": run_id,
-            "selected_material_files": selected_material_files,
-            "tasks": designs,
-        },
-    )
+    return {
+        "schema_version": "rag-designs.v2",
+        "run_id": run_id,
+        "selected_material_files": selected_material_files,
+        "tasks": designs,
+    }
+
+
+def export_rag_designs(
+    blueprint: dict[str, Any], run_id: str, selected_material_files: list[str], output_path: str | Path
+) -> str:
+    atomic_write_json(output_path, rag_designs_payload(blueprint, run_id, selected_material_files))
     return str(output_path)
 
 

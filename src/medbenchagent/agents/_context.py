@@ -6,6 +6,7 @@ from typing import Any
 
 from medbenchagent.construction import (
     event_context,
+    record_artifact_snapshot,
     record_human_interaction,
     record_revision_applied,
 )
@@ -58,6 +59,8 @@ def revision_applied(
     stage: str,
     interaction_id: str,
     modified_object_ids: list[str],
+    artifact_type: str | None = None,
+    artifact: dict[str, str | int] | None = None,
 ) -> None:
     if not interaction_id or not state.get("construction_events_path") or not state.get("run_id"):
         return
@@ -69,4 +72,30 @@ def revision_applied(
         stage=stage,
         interaction_id=interaction_id,
         modified_object_ids=modified_object_ids,
+        artifact_type=artifact_type,
+        artifact_version=artifact["version"] if artifact else None,
+        artifact_path=artifact["relative_path"] if artifact else None,
+        artifact_sha256=artifact["sha256"] if artifact else None,
+    )
+
+
+def artifact_snapshot(
+    state: dict[str, Any],
+    *,
+    agent: str,
+    stage: str,
+    artifact_type: str,
+    artifact: dict[str, str | int],
+) -> None:
+    if not state.get("construction_events_path") or not state.get("run_id"):
+        return
+    record_artifact_snapshot(
+        state["construction_events_path"],
+        run_id=state["run_id"],
+        dataset_id=state.get("selected_dataset_id") or None,
+        agent=agent,
+        stage=stage,
+        artifact_type=artifact_type,
+        artifact=artifact,
+        source="initial_model_output",
     )

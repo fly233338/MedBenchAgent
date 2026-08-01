@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from medbenchagent.construction import construction_report
 from medbenchagent.contracts import GenerationResult
 from medbenchagent.generation import graph as generation_workflow
 from medbenchagent.rag import graph as rag_workflow
-from medbenchagent.run_artifacts import initialize_run
+from medbenchagent.run_artifacts import initialize_run, write_versioned_json
 
 
 def _task(
@@ -89,6 +90,16 @@ def test_compiled_graph_exposes_rag_and_generation_as_expandable_subgraphs() -> 
     assert rag_graph.builder.input_schema is rag_workflow.RagDesignInputState
     assert rag_graph.builder.output_schema is rag_workflow.RagDesignOutputState
     assert set(rag_graph.builder.output_schema.__annotations__) == {"working_blueprint_path"}
+
+
+def test_rag_design_export_uses_latest_versioned_artifact(tmp_path: Path) -> None:
+    first = write_versioned_json(tmp_path, "rag_designs", {"tasks": {"view": {"version": 1}}})
+    second = write_versioned_json(tmp_path, "rag_designs", {"tasks": {"view": {"version": 2}}})
+
+    result = workflow._rag_design_export_node({"run_directory": str(tmp_path)})
+
+    assert first["path"] != second["path"]
+    assert result["rag_designs_path"] == second["path"]
 
 
 def test_role_agents_expose_strict_input_and_output_contracts() -> None:
@@ -571,29 +582,54 @@ def test_task_plan_revision_records_only_tasks_with_actual_changes(tmp_path: Pat
         lambda *_args: {"action": "revise", "task_id": "view", "feedback": "Keep it."},
     )
     monkeypatch.setattr(capability_agent, "revise_task_plan", lambda *_args: revised)
+    capability_agent.write_task_plan_report(blueprint_path, original)
 
     review = capability_agent._task_plan_review_node(state)
     revised_state = capability_agent._task_plan_revise_node(state | review)
 
     report = Path(revised_state["task_screening_report_path"])
+    assert report == tmp_path / "task_plans" / "v2.json"
     assert json.loads(report.read_text(encoding="utf-8")) == revised
+    assert json.loads((tmp_path / "task_plans" / "v1.json").read_text(encoding="utf-8")) == original
 
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     assert events[1]["modified_object_ids"] == ["view"]
+    assert events[1]["artifact_path"] == "task_plans/v2.json"
 
 
 def test_task_plan_draft_is_written_before_human_review(tmp_path: Path, monkeypatch) -> None:
     blueprint_path = tmp_path / "blueprint.json"
+    events_path = tmp_path / "construction_events.jsonl"
+    events_path.touch()
     blueprint_path.write_text(json.dumps({"tasks": {"view": _task()}}), encoding="utf-8")
-    plan = {"tasks": {"view": {"decision": "retain", "supporting_fields": ["image.annotation.view"], "reason": "Available."}}}
+    plan = {
+        "tasks": {
+            "view": {
+                "decision": "retain",
+                "supporting_fields": ["image.annotation.view"],
+                "reason": "Available.",
+            }
+        }
+    }
     monkeypatch.setattr(capability_agent, "generate_task_plan", lambda *_args: plan)
 
     result = capability_agent._task_plan_generate_node(
-        {"working_blueprint_path": str(blueprint_path), "dataset_profile": {}}
+        {
+            "run_id": "run",
+            "construction_events_path": str(events_path),
+            "working_blueprint_path": str(blueprint_path),
+            "dataset_profile": {},
+        }
     )
 
     report = Path(result["task_screening_report_path"])
+    assert report == tmp_path / "task_plans" / "v1.json"
     assert json.loads(report.read_text(encoding="utf-8")) == plan
+    snapshot = json.loads(events_path.read_text(encoding="utf-8"))
+    assert snapshot["event_type"] == "artifact_snapshot"
+    assert snapshot["artifact_path"] == "task_plans/v1.json"
+    assert snapshot["artifact_sha256"] == hashlib.sha256(report.read_bytes()).hexdigest()
+    assert snapshot["source"] == "initial_model_output"
 
 
 def test_sample_count_revision_records_all_redistributed_tasks(tmp_path: Path, monkeypatch) -> None:
@@ -680,7 +716,7 @@ def test_rag_design_revision_records_actual_changed_tasks(tmp_path: Path, monkey
     events_path = tmp_path / "construction_events.jsonl"
     events_path.touch()
     blueprint_path = tmp_path / "blueprint.json"
-    task = _task() | _rag_fields() | {"sample_count": 1}
+    task = _task() | {"sample_count": 1}
     blueprint_path.write_text(
         json.dumps({"benchmark_info": {"language": "en"}, "tasks": {"view": task}}),
         encoding="utf-8",
@@ -708,18 +744,27 @@ def test_rag_design_revision_records_actual_changed_tasks(tmp_path: Path, monkey
     monkeypatch.setattr(
         rag_workflow,
         "design_task",
-        lambda *_args, **_kwargs: _rag_fields() | {"question_templates": ["Name the view."]},
+        lambda *_args, **kwargs: _rag_fields()
+        | {"question_templates": ["Name the view."] if kwargs["feedback"] else ["Which view?"]},
     )
+
+    rag_workflow._rag_design_task_node(state | {"rag_task_queue": ["view"]})
 
     review = rag_workflow._design_review_node(state)
     rag_workflow._rag_design_task_node(state | review)
 
-    designs = json.loads((tmp_path / "rag_designs.json").read_text(encoding="utf-8"))
-    assert designs["tasks"]["view"]["question_templates"] == ["Name the view."]
+    initial = json.loads((tmp_path / "rag_designs" / "v1.json").read_text(encoding="utf-8"))
+    revised = json.loads((tmp_path / "rag_designs" / "v2.json").read_text(encoding="utf-8"))
+    assert initial["tasks"]["view"]["question_templates"] == ["Which view?"]
+    assert revised["tasks"]["view"]["question_templates"] == ["Name the view."]
 
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     applied = [event for event in events if event["event_type"] == "revision_applied"]
     assert applied[0]["modified_object_ids"] == ["view"]
+    assert applied[0]["artifact_path"] == "rag_designs/v2.json"
+    assert applied[0]["artifact_sha256"] == hashlib.sha256(
+        (tmp_path / "rag_designs" / "v2.json").read_bytes()
+    ).hexdigest()
     assert construction_report(events_path)["human_stages"]["rag_design"] == {
         "confirmed": 0,
         "revision_rounds": 1,
@@ -750,7 +795,7 @@ def test_rag_design_draft_is_written_before_human_review(tmp_path: Path, monkeyp
         }
     )
 
-    designs = json.loads((tmp_path / "rag_designs.json").read_text(encoding="utf-8"))
+    designs = json.loads((tmp_path / "rag_designs" / "v1.json").read_text(encoding="utf-8"))
     assert designs["tasks"]["view"] == _rag_fields()
 
 

@@ -17,10 +17,12 @@ from medbenchagent.construction import (
     changed_mapping_keys,
     event_context,
     event_operation,
+    record_artifact_snapshot,
     record_event,
 )
 from medbenchagent.rag.pdf import LocalPdfRag, design_task, write_task_design
-from medbenchagent.run_export import export_rag_designs
+from medbenchagent.run_artifacts import write_versioned_json
+from medbenchagent.run_export import rag_designs_payload
 from medbenchagent.settings import get_settings
 
 
@@ -139,13 +141,32 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
         )
     write_task_design(blueprint_path, task_id, design)
     remaining = queue[1:]
+    artifact: dict[str, str | int] | None = None
     if not remaining:
-        export_rag_designs(
-            json.loads(blueprint_path.read_text(encoding="utf-8")),
-            state.get("run_id", ""),
-            state["selected_material_files"],
-            blueprint_path.with_name("rag_designs.json"),
+        artifact = write_versioned_json(
+            blueprint_path.parent,
+            "rag_designs",
+            rag_designs_payload(
+                json.loads(blueprint_path.read_text(encoding="utf-8")),
+                state.get("run_id", ""),
+                state["selected_material_files"],
+            ),
         )
+        if (
+            not state.get("rag_revision_interaction_id")
+            and state.get("construction_events_path")
+            and state.get("run_id")
+        ):
+            record_artifact_snapshot(
+                state["construction_events_path"],
+                run_id=state["run_id"],
+                dataset_id=state.get("selected_dataset_id"),
+                agent=CLINICAL_DESIGN_AGENT,
+                stage="rag_design",
+                artifact_type="rag_design",
+                artifact=artifact,
+                source="initial_model_output",
+            )
     completed = state.get("rag_completed_count", 0) + 1
     _emit_custom_event(
         {
@@ -175,6 +196,8 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
             stage="rag_design",
             interaction_id=interaction_id,
             modified_object_ids=changed_mapping_keys(before, after),
+            artifact_type="rag_design",
+            artifact=artifact,
         )
         updates["rag_revision_interaction_id"] = ""
         updates["rag_revision_before"] = {}

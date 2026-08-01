@@ -10,7 +10,7 @@ from typing import Any
 
 from medbenchagent.llm import complete_json
 from medbenchagent.construction import event_operation
-from medbenchagent.run_artifacts import atomic_write_json
+from medbenchagent.run_artifacts import write_versioned_json
 
 
 class TaskPlanReviewRequired(ValueError):
@@ -363,15 +363,18 @@ def task_plan_entries(task_plan: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"task_id": task_id, **decision} for task_id, decision in task_plan["tasks"].items()]
 
 
-def write_task_plan_report(working_blueprint_path: str | Path, task_plan: dict[str, Any]) -> str:
-    """Persist the current Task Plan draft beside the working Blueprint."""
-    report_path = Path(working_blueprint_path).with_name("task_plan_report.json")
-    atomic_write_json(report_path, task_plan)
-    return str(report_path)
+def write_task_plan_report(
+    working_blueprint_path: str | Path, task_plan: dict[str, Any]
+) -> dict[str, str | int]:
+    """Persist the current Task Plan as a new immutable run artifact version."""
+    return write_versioned_json(Path(working_blueprint_path).parent, "task_plans", task_plan)
 
 
 def apply_task_plan(
-    working_blueprint_path: str | Path, task_plan: dict[str, Any], profile: dict[str, Any] | None = None
+    working_blueprint_path: str | Path,
+    task_plan: dict[str, Any],
+    profile: dict[str, Any] | None = None,
+    report_path: str | Path | None = None,
 ) -> str:
     """Apply a confirmed Task Plan once and preserve the complete plan in its report."""
     blueprint_path = Path(working_blueprint_path)
@@ -439,4 +442,6 @@ def apply_task_plan(
     written = json.loads(blueprint_path.read_text(encoding="utf-8"))
     if set(written.get("tasks", {})) != expected_retained:
         raise ValueError("Working Blueprint does not match the confirmed retained tasks")
-    return write_task_plan_report(blueprint_path, validated)
+    if report_path is not None:
+        return str(report_path)
+    return str(write_task_plan_report(blueprint_path, validated)["path"])

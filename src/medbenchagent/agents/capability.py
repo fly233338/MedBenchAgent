@@ -9,7 +9,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from medbenchagent.agents._context import human_interaction, llm_context, revision_applied
+from medbenchagent.agents._context import artifact_snapshot, human_interaction, llm_context, revision_applied
 from medbenchagent.agents.contracts import (
     CAPABILITY_AGENT,
     CapabilityAgentInputState,
@@ -166,10 +166,17 @@ def _task_plan_generate_node(state: CapabilityAgentState) -> dict[str, Any]:
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
     with llm_context(state, CAPABILITY_AGENT, "task_plan_generate"):
         task_plan = generate_task_plan(blueprint, state["dataset_profile"])
-    report_path = write_task_plan_report(state["working_blueprint_path"], task_plan)
+    artifact = write_task_plan_report(state["working_blueprint_path"], task_plan)
+    artifact_snapshot(
+        state,
+        agent=CAPABILITY_AGENT,
+        stage="task_plan",
+        artifact_type="task_plan",
+        artifact=artifact,
+    )
     return {
         "draft_task_plan": task_plan,
-        "task_screening_report_path": report_path,
+        "task_screening_report_path": str(artifact["path"]),
         "pending_task_feedback": None,
         "task_plan_confirmed": False,
     }
@@ -261,17 +268,19 @@ def _task_plan_revise_node(state: CapabilityAgentState) -> dict[str, Any]:
             feedback["feedback"],
         )
     after_tasks = revised_task_plan.get("tasks", {})
+    artifact = write_task_plan_report(state["working_blueprint_path"], revised_task_plan)
     revision_applied(
         state,
         agent=CAPABILITY_AGENT,
         stage="task_plan",
         interaction_id=state.get("pending_task_interaction_id", ""),
         modified_object_ids=changed_mapping_keys(before_tasks, after_tasks),
+        artifact_type="task_plan",
+        artifact=artifact,
     )
-    report_path = write_task_plan_report(state["working_blueprint_path"], revised_task_plan)
     return {
         "draft_task_plan": revised_task_plan,
-        "task_screening_report_path": report_path,
+        "task_screening_report_path": str(artifact["path"]),
         "pending_task_feedback": None,
         "pending_task_interaction_id": "",
         "task_plan_confirmed": False,
@@ -281,7 +290,10 @@ def _task_plan_revise_node(state: CapabilityAgentState) -> dict[str, Any]:
 def _apply_task_plan_node(state: CapabilityAgentState) -> dict[str, Any]:
     """Mutate the working Blueprint only after explicit Task Plan confirmation."""
     report_path = apply_task_plan(
-        state["working_blueprint_path"], state["draft_task_plan"], state["dataset_profile"]
+        state["working_blueprint_path"],
+        state["draft_task_plan"],
+        state["dataset_profile"],
+        state.get("task_screening_report_path"),
     )
     return {"task_screening_report_path": report_path}
 
