@@ -573,10 +573,27 @@ def test_task_plan_revision_records_only_tasks_with_actual_changes(tmp_path: Pat
     monkeypatch.setattr(capability_agent, "revise_task_plan", lambda *_args: revised)
 
     review = capability_agent._task_plan_review_node(state)
-    capability_agent._task_plan_revise_node(state | review)
+    revised_state = capability_agent._task_plan_revise_node(state | review)
+
+    report = Path(revised_state["task_screening_report_path"])
+    assert json.loads(report.read_text(encoding="utf-8")) == revised
 
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     assert events[1]["modified_object_ids"] == ["view"]
+
+
+def test_task_plan_draft_is_written_before_human_review(tmp_path: Path, monkeypatch) -> None:
+    blueprint_path = tmp_path / "blueprint.json"
+    blueprint_path.write_text(json.dumps({"tasks": {"view": _task()}}), encoding="utf-8")
+    plan = {"tasks": {"view": {"decision": "retain", "supporting_fields": ["image.annotation.view"], "reason": "Available."}}}
+    monkeypatch.setattr(capability_agent, "generate_task_plan", lambda *_args: plan)
+
+    result = capability_agent._task_plan_generate_node(
+        {"working_blueprint_path": str(blueprint_path), "dataset_profile": {}}
+    )
+
+    report = Path(result["task_screening_report_path"])
+    assert json.loads(report.read_text(encoding="utf-8")) == plan
 
 
 def test_sample_count_revision_records_all_redistributed_tasks(tmp_path: Path, monkeypatch) -> None:
@@ -697,6 +714,9 @@ def test_rag_design_revision_records_actual_changed_tasks(tmp_path: Path, monkey
     review = rag_workflow._design_review_node(state)
     rag_workflow._rag_design_task_node(state | review)
 
+    designs = json.loads((tmp_path / "rag_designs.json").read_text(encoding="utf-8"))
+    assert designs["tasks"]["view"]["question_templates"] == ["Name the view."]
+
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     applied = [event for event in events if event["event_type"] == "revision_applied"]
     assert applied[0]["modified_object_ids"] == ["view"]
@@ -705,6 +725,33 @@ def test_rag_design_revision_records_actual_changed_tasks(tmp_path: Path, monkey
         "revision_rounds": 1,
         "modified_objects": 1,
     }
+
+
+def test_rag_design_draft_is_written_before_human_review(tmp_path: Path, monkeypatch) -> None:
+    blueprint_path = tmp_path / "blueprint.json"
+    task = _task() | {"sample_count": 1}
+    blueprint_path.write_text(
+        json.dumps({"benchmark_info": {"language": "en"}, "tasks": {"view": task}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rag_workflow, "LocalPdfRag", lambda *_args: object())
+    monkeypatch.setattr(rag_workflow, "design_task", lambda *_args, **_kwargs: _rag_fields())
+
+    rag_workflow._rag_design_task_node(
+        {
+            "run_id": "run",
+            "selected_dataset_id": "vindr-mammo",
+            "working_blueprint_path": str(blueprint_path),
+            "benchmark_info": {"language": "en"},
+            "selected_material_files": ["Standard/guide.pdf"],
+            "dataset_profile": {"fields": {}},
+            "dataset_access_manifest": {"duckdb_path": "unused"},
+            "rag_task_queue": ["view"],
+        }
+    )
+
+    designs = json.loads((tmp_path / "rag_designs.json").read_text(encoding="utf-8"))
+    assert designs["tasks"]["view"] == _rag_fields()
 
 
 def test_generation_agent_keeps_request_snapshot_private(

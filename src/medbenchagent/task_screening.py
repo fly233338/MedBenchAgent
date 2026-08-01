@@ -10,6 +10,7 @@ from typing import Any
 
 from medbenchagent.llm import complete_json
 from medbenchagent.construction import event_operation
+from medbenchagent.run_artifacts import atomic_write_json
 
 
 class TaskPlanReviewRequired(ValueError):
@@ -362,6 +363,13 @@ def task_plan_entries(task_plan: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"task_id": task_id, **decision} for task_id, decision in task_plan["tasks"].items()]
 
 
+def write_task_plan_report(working_blueprint_path: str | Path, task_plan: dict[str, Any]) -> str:
+    """Persist the current Task Plan draft beside the working Blueprint."""
+    report_path = Path(working_blueprint_path).with_name("task_plan_report.json")
+    atomic_write_json(report_path, task_plan)
+    return str(report_path)
+
+
 def apply_task_plan(
     working_blueprint_path: str | Path, task_plan: dict[str, Any], profile: dict[str, Any] | None = None
 ) -> str:
@@ -431,6 +439,4 @@ def apply_task_plan(
     written = json.loads(blueprint_path.read_text(encoding="utf-8"))
     if set(written.get("tasks", {})) != expected_retained:
         raise ValueError("Working Blueprint does not match the confirmed retained tasks")
-    report_path = blueprint_path.with_name("task_plan_report.json")
-    report_path.write_text(json.dumps(validated, ensure_ascii=False, indent=2), encoding="utf-8")
-    return str(report_path)
+    return write_task_plan_report(blueprint_path, validated)

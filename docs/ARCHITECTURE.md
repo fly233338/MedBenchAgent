@@ -29,7 +29,7 @@ role-specialized agents + deterministic orchestration：
    `finding_presence` 还必须同时具有显式正例和负例。`anatomy_attribute` 与
    `finding_attribute` 按单一语义答案轴识别 question type，每个类型只使用一个字段，并展开为
    `<parent_task_id>.<question_type_id>` 独立任务。确认后，代码删除不支持的任务并写入
-   `supporting_fields`，同时保留完整 `task_plan_report.json`。
+   `supporting_fields`；`task_plan_report.json` 在首轮模型输出后立即写入，并随每轮人工修订更新。
 4. `CapabilityAgent` 按任务 category 稳定加权分配样本数：仅在保留类别间归一化默认权重，以最大余数法分配类别整数总数；类别内先在原始父任务之间分配，再在父任务的有效 question types 之间均分，因此拆分不会提高父任务权重。自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
 5. `ClinicalDesignAgent` 包装现有 `rag_designs` 子图，对每个非零任务使用医学 PDF 做 RAG，逐项把设计和引用写入 Blueprint，再由
    人工整体确认或定向重做。新设计为每个具体 question type 生成配置数量的唯一、语义等价模板，默认三个；letter 任务先请求一个获准字段的安全精确分类值摘要，再生成结构化 `answer_field` 与 `answer_value_mapping`。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
@@ -56,7 +56,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 和 `image`；各实体拥有独立 annotation，任务字段路径与该层级保持一致。
 
 每次运行的核心产物是 working `blueprint.json`、`task_plan_report.json`、
-阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、确认后的 `rag_designs.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。construction events 除 LLM 元数据外还保存每轮完整、未脱敏的用户自然语言输入，因此运行目录可能含敏感信息。配置按代码回退值、`config/default.toml`、显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖；Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
+阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、在首轮完整设计后写入且随人工修订更新的 `rag_designs.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。construction events 除 LLM 元数据外还保存每轮完整、未脱敏的用户自然语言输入，因此运行目录可能含敏感信息。配置按代码回退值、`config/default.toml`、显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖；Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
 `dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。确认后的设计采用
 `rag-designs.v2`；manifest 的展开任务记录可选 `parent_task_id` 与 `question_type_id`。模板数量由配置项
 `generation.question_template_count` 控制并写入生效配置快照，不属于 Graph 输入覆盖项。

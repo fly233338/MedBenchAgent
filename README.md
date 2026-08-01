@@ -123,7 +123,7 @@ after confirmation: dropped tasks are removed and retained tasks receive their a
 identifies one question type per observable semantic property, then materializes each type
 as an independent task such as `finding_attribute.shape`. Every expanded task has one
 answer-bearing field, while `parent_task_id` preserves its planning family. The resulting
-`task_plan_report.json` retains decisions for both retained and dropped tasks. Detection and visual grounding are independent capabilities:
+`task_plan_report.json` is written after the first model plan and updated after each review revision; it retains decisions for both retained and dropped tasks. `rag_designs.json` is likewise written before RAG-design review and updated after each revision. Detection and visual grounding are independent capabilities:
 both may be retained when the dataset has the required bounding-box and finding evidence.
 
 The retained tasks then receive a stable category-weighted allocation of the benchmark

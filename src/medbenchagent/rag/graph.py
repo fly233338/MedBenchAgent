@@ -20,6 +20,7 @@ from medbenchagent.construction import (
     record_event,
 )
 from medbenchagent.rag.pdf import LocalPdfRag, design_task, write_task_design
+from medbenchagent.run_export import export_rag_designs
 from medbenchagent.settings import get_settings
 
 
@@ -138,6 +139,13 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
         )
     write_task_design(blueprint_path, task_id, design)
     remaining = queue[1:]
+    if not remaining:
+        export_rag_designs(
+            json.loads(blueprint_path.read_text(encoding="utf-8")),
+            state.get("run_id", ""),
+            state["selected_material_files"],
+            blueprint_path.with_name("rag_designs.json"),
+        )
     completed = state.get("rag_completed_count", 0) + 1
     _emit_custom_event(
         {

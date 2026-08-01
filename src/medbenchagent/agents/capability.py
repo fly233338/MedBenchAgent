@@ -32,7 +32,12 @@ from medbenchagent.rag.pdf import discover_medical_materials
 from medbenchagent.run_artifacts import update_blueprint_dataset
 from medbenchagent.sample_counts import distribute_weighted_sample_counts, write_sample_counts
 from medbenchagent.settings import get_settings
-from medbenchagent.task_screening import apply_task_plan, generate_task_plan, revise_task_plan
+from medbenchagent.task_screening import (
+    apply_task_plan,
+    generate_task_plan,
+    revise_task_plan,
+    write_task_plan_report,
+)
 
 def _dataset_recommend_node(state: CapabilityAgentState) -> dict[str, Any]:
     datasets = load_dataset_catalog()
@@ -161,8 +166,10 @@ def _task_plan_generate_node(state: CapabilityAgentState) -> dict[str, Any]:
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
     with llm_context(state, CAPABILITY_AGENT, "task_plan_generate"):
         task_plan = generate_task_plan(blueprint, state["dataset_profile"])
+    report_path = write_task_plan_report(state["working_blueprint_path"], task_plan)
     return {
         "draft_task_plan": task_plan,
+        "task_screening_report_path": report_path,
         "pending_task_feedback": None,
         "task_plan_confirmed": False,
     }
@@ -261,8 +268,10 @@ def _task_plan_revise_node(state: CapabilityAgentState) -> dict[str, Any]:
         interaction_id=state.get("pending_task_interaction_id", ""),
         modified_object_ids=changed_mapping_keys(before_tasks, after_tasks),
     )
+    report_path = write_task_plan_report(state["working_blueprint_path"], revised_task_plan)
     return {
         "draft_task_plan": revised_task_plan,
+        "task_screening_report_path": report_path,
         "pending_task_feedback": None,
         "pending_task_interaction_id": "",
         "task_plan_confirmed": False,
