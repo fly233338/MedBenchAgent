@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,6 +50,15 @@ def _task(response_format: str, fields: list[str], **extra) -> dict:
     if response_format == "letter":
         task["options"] = ["benign", "malignant"]
     task.update(extra)
+    if response_format == "letter" and "answer_value_mapping" not in task:
+        task["answer_field"] = task.get("answer_field", fields[0])
+        normalized_options = [
+            re.sub(r"^\s*[A-Za-z]\s*[.)]\s*", "", option).strip()
+            for option in task["options"]
+        ]
+        task["answer_value_mapping"] = [
+            {"raw_value": option, "option": option} for option in normalized_options
+        ]
     return task
 
 
@@ -86,6 +96,8 @@ def _fake_model(calls: list[tuple[str, float]]):
             return {"question": "Locate the finding.", "answer": [1, 2, 8, 9]}
         if system.startswith("Generate one free-text"):
             return {"question": "What is the report?", "answer": "Normal study."}
+        if system.startswith("Generate only the question stem"):
+            return {"question": "Which status best describes this image?"}
         field_line = next(
             line for line in system.splitlines() if line.startswith("- Supporting fields: ")
         )
@@ -110,12 +122,23 @@ def _candidate(task_id: str, annotation: dict, supporting_data: dict, task: dict
     modality = annotation.pop("modality", None)
     record = _record(0, annotation)
     record["image"]["modality"] = modality
+    expected_answer = None
+    expected_evidence = None
+    if task.get("response_format") == "letter":
+        expected_answer = task["options"][0]
+        expected_evidence = {
+            "path": task["answer_field"],
+            "indices": [],
+            "value": supporting_data[next(iter(supporting_data))],
+        }
     return SimpleNamespace(
         task_id=task_id,
         record=record,
         supporting_record={"image": {"annotation": supporting_data}},
         task=task,
         question_template=task["question_templates"][0],
+        expected_answer=expected_answer,
+        expected_evidence=expected_evidence,
     )
 
 
@@ -131,15 +154,47 @@ def test_generation_prompts_use_image_modality_and_supporting_data() -> None:
     prompt = vqa._prompt(candidate, {"language": "en", "modality": "CT"})
 
     assert "- Modality: Mammography" in prompt
-    assert "- Selected question template: What is shown in this image?" in prompt
-    assert "- Supporting data:" in prompt
-    assert "- Supporting annotation:" not in prompt
+    assert "- Selected template: What is shown in this image?" in prompt
+    assert "- Fixed answer option: benign" in prompt
+    assert "- Fixed raw evidence:" in prompt
+    assert "- Supporting data:" not in prompt
     missing_modality = _candidate("vqa", {}, {"status": "benign"}, task)
     assert "- Modality: " in vqa._prompt(missing_modality, {"language": "en", "modality": "CT"})
     assert "- Modality: CT" not in vqa._prompt(missing_modality, {"language": "en", "modality": "CT"})
 
 
-def test_question_template_selection_is_seeded_and_supports_legacy_single_template() -> None:
+def test_mapped_vqa_review_prompt_uses_fixed_context_and_rules(monkeypatch) -> None:
+    task = _task("letter", ["image.annotation.status"])
+    candidate = _candidate("vqa", {}, {"status": "benign"}, task)
+    captured: dict[str, str] = {}
+
+    def complete(system: str, _user: str, **_kwargs) -> dict[str, object]:
+        captured["prompt"] = system
+        return {"approved": True, "reason": "Faithful."}
+
+    monkeypatch.setattr(vqa, "complete_json", complete)
+    approved, reason = vqa.review(
+        candidate,
+        {
+            "question": "Which status is shown?",
+            "answer": candidate.expected_answer,
+            "evidence": candidate.expected_evidence,
+        },
+        {"language": "en"},
+    )
+
+    assert approved is True
+    assert reason == "Faithful."
+    prompt = captured["prompt"]
+    assert "- Answer field: image.annotation.status" in prompt
+    assert "- Answer mapping:" in prompt
+    assert "- Selected question template:" in prompt
+    assert "fixed answer and evidence were deterministically derived by code" in prompt
+    assert "8. Ambiguity" in prompt
+    assert "generation_logic" not in prompt
+
+
+def test_question_template_selection_is_seeded_and_supports_single_template() -> None:
     task = _task("letter", ["image.annotation.status"])
     assert generation._select_question_template(task, 7, "status", "img-1", 1) == task[
         "question_templates"
@@ -274,35 +329,20 @@ def test_direct_answer_evidence_requires_one_exact_source_location() -> None:
         )
 
 
-def test_vqa_repairs_invalid_evidence_before_review(monkeypatch) -> None:
+def test_mapped_vqa_repairs_invalid_response_contract(monkeypatch) -> None:
     task = _task("letter", ["image.annotation.status"])
     candidate = _candidate("vqa", {"status": "BENIGN"}, {"status": "BENIGN"}, task)
     responses = iter(
         [
-            {
-                "question": "Which status?",
-                "answer": "benign",
-                "evidence": {
-                    "path": "image.annotation.status",
-                    "indices": [],
-                    "value": "Benign",
-                },
-            },
-            {
-                "question": "Which status?",
-                "answer": "benign",
-                "evidence": {
-                    "path": "image.annotation.status",
-                    "indices": [],
-                    "value": "BENIGN",
-                },
-            },
+            {"question": "Which status?", "answer": "benign"},
+            {"question": "Which status?"},
         ]
     )
     monkeypatch.setattr(vqa, "complete_json", lambda *_args, **_kwargs: next(responses))
 
     generated = vqa.generate(candidate, {"language": "en"}, 0.7)
 
+    assert generated["answer"] == candidate.expected_answer
     assert generated["evidence"]["value"] == "BENIGN"
 
 
@@ -339,73 +379,6 @@ def test_grounding_modes_require_different_annotation_context() -> None:
     assert "explicitly named finding 'Mass'" in grounding._prompt(visual, {"language": "en"})
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        ("Fibroadenoma", True),
-        (" unknown ", False),
-        ("not available", False),
-        ("not applicable", False),
-        ("n/a", False),
-        ("none", False),
-        ("not specified", False),
-        ("unspecified", False),
-        ("Fibroadenoma&Intraductal papilloma", False),
-        (42, False),
-    ],
-)
-def test_diagnosis_candidates_require_one_specific_string(value: object, expected: bool) -> None:
-    candidate = _candidate(
-        "diagnosis",
-        {"diagnosis": value},
-        {"diagnosis": value},
-        _task("letter", ["image.annotation.diagnosis"]),
-    )
-
-    assert vqa.supports(candidate) is expected
-
-
-def test_diagnosis_candidates_reject_multiple_evidence_locations() -> None:
-    candidate = _candidate(
-        "diagnosis",
-        {"findings": [{"diagnosis": "Fibroadenoma"}, {"diagnosis": "Cyst"}]},
-        {
-            "findings": [
-                {"_source_index": 0, "diagnosis": "Fibroadenoma"},
-                {"_source_index": 1, "diagnosis": "Cyst"},
-            ]
-        },
-        _task("letter", ["image.annotation.findings[*].diagnosis"]),
-    )
-
-    assert not vqa.supports(candidate)
-
-
-def test_invalid_diagnosis_is_skipped_before_model_calls(tmp_path: Path, monkeypatch) -> None:
-    request = _request(
-        tmp_path,
-        [_record(0, {"diagnosis": "not applicable"})],
-        {
-            "diagnosis": _task(
-                "letter",
-                ["image.annotation.diagnosis"],
-                sample_count=1,
-            )
-        },
-        1,
-    )
-    monkeypatch.setattr(
-        vqa,
-        "complete_json",
-        lambda *_args, **_kwargs: pytest.fail("Invalid diagnosis must be skipped before model calls"),
-    )
-
-    result = generation.generate_raw_benchmark(request)
-
-    assert result.task_counts == {"diagnosis": 0}
-    assert _read_items(result.raw_output_path) == []
-
-
 def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeypatch) -> None:
     request = _request(
         tmp_path,
@@ -427,9 +400,9 @@ def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeyp
     items = _read_items(result.raw_output_path)
     provenance = _read_items(str(Path(request["output_directory"]) / "item_provenance.jsonl"))
 
-    generation_prompts = [prompt for prompt, _temperature in calls if prompt.startswith("Generate one")]
+    generation_prompts = [prompt for prompt, _temperature in calls if prompt.startswith("Generate")]
     assert [prompt.splitlines()[0] for prompt in generation_prompts] == [
-        "Generate one letter-choice question for a medical image VQA benchmark.",
+        "Generate only the question stem for one letter-choice medical-image benchmark item.",
         "Generate one grounding question for a medical image benchmark.",
         "Generate one free-text medical image benchmark item.",
     ]
@@ -592,6 +565,22 @@ def test_all_supporting_fields_must_be_nonempty_and_vqa_options_remain_normalize
     assert generation._all_supporting_fields_present(
         _record(0, {"status": "benign", "laterality": False}), task["supporting_fields"]
     )
+
+
+def test_letter_tasks_require_structured_answer_mapping() -> None:
+    task = _task("letter", ["image.annotation.status"])
+    task.pop("answer_field")
+    task.pop("answer_value_mapping")
+    request = {
+        "dataset_id": "test-dataset",
+        "tasks": {"vqa": task},
+        "target_sample_count": 1,
+        "max_tasks_per_image": 3,
+        "question_temperature": 0.7,
+    }
+
+    with pytest.raises(ValueError, match="require answer_field and answer_value_mapping"):
+        generation._validate_tasks(request)
 
 
 def test_structured_mapping_fixes_answer_and_evidence_before_vqa_generation(

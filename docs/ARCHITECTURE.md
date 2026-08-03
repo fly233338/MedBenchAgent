@@ -35,7 +35,7 @@ role-specialized agents + deterministic orchestration：
    人工整体确认或定向重做。新设计为每个具体 question type 生成配置数量的唯一、语义等价模板，默认三个；letter 任务先请求一个获准字段的安全精确分类值摘要，再生成结构化 `answer_field` 与 `answer_value_mapping`。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
 6. `GenerationAgent` 在私有状态中从确认后的 Blueprint 构造 `GenerationRequest`。现有生成子图按 letter、bbox、free_text 三个阶段
    独立读取 DuckDB；每阶段仅投影任务获准字段、稳定随机排序候选，并按 seed、task、image 和 source row
-   确定性选择一个问题模板后逐任务生成/审核。新 letter 设计由代码从 mapping 唯一确定 evidence 与答案，LLM 只改写题干；旧单模板或无 mapping Blueprint 仍可重放。
+   确定性选择一个问题模板后逐任务生成/审核。letter 设计由代码从 mapping 唯一确定 evidence 与答案，LLM 只改写题干；无 mapping 的 letter Blueprint 在生成边界拒绝。
 7. 完成或数据耗尽后生成 raw JSONL；根图先记录 generation summary，再由 `AuditAgent` 硬审计图像完整性、题目契约、annotation witness、provenance 和重复项，平衡通过的选择题位置，最后按 task 稳定抽样进行 fail-open 的宽松 LLM 语义筛查。
 
 ## 状态、契约与产物
@@ -68,13 +68,13 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 - 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准字段投影。
 - Task Plan 与样本分配只在确认后改变 Blueprint；Task Plan 和 RAG 设计的每个审核版本均作为不可变 JSON 保存，RAG 设计仍逐项写入 Blueprint 后通过确认/修订闭环收敛。
 - 同一 task/image 最多生成一题；默认每阶段每图最多接受二十题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
-- 三种答案格式都保留可回放的 annotation witness。新结构化 letter 任务由代码从 `answer_field` 唯一定位原始 scalar，并通过 `answer_value_mapping` 固定正确 option；LLM 只生成题干。旧 letter 设计仍由生成模型返回 supporting-field witness。free_text 由代码唯一定位直接答案字符串；bbox 由代码按 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。代码在 Reviewer 前精确验证，raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
+- 三种答案格式都保留可回放的 annotation witness。letter 任务由代码从 `answer_field` 唯一定位原始 scalar，并通过 `answer_value_mapping` 固定正确 option；LLM 只生成题干。free_text 由代码唯一定位直接答案字符串；bbox 由代码按 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。代码在 Reviewer 前精确验证，raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
 - bbox 任务只接受恰有一个合法标注框且能唯一定位四坐标 witness 的候选，不接受 mask 或运行期
   mask-to-bbox 转换。`visual_grounding` 还必须有与该框配对的 finding 名称、结构化标签或描述；
   `detection` 仅定位泛化 lesion/abnormal region，不能泄露 finding 名称。两者是独立能力，可同时保留。
   bbox 与自由文本保持各自的直接 annotation 答案契约。
-- `diagnosis` 允许影像或病理确认的具体诊断作为 reference，但 letter VQA 在模型调用前确定性跳过
-  占位值、`&` 连接的组合诊断以及具有多个 scalar evidence location 的候选。
+- `diagnosis` 允许影像或病理确认的具体诊断作为 reference；letter VQA 仅接受能由
+  `answer_field` 和 `answer_value_mapping` 唯一确定正确 option 的候选。
 - 数据耗尽是带 per-task shortfall 的成功结果；答案平衡不覆盖 raw 文件，也不改 bbox/自由文本题。
 - 根图默认只展示五个角色及确定性适配节点；xray 图、LangSmith 与使用
   `stream_mode=["updates", "custom"]`、`subgraphs=True` 仍可展开角色子图并接收每个 RAG 任务与每条生成记录的进度。启用 LangSmith 后，DeepSeek 调用显示为所属 Agent 下可展开的 LLM span。
@@ -84,7 +84,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
   仅在进程存活期间有效。
 - `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。LLM 事件使用五个固定 Agent 名称并记录 operation、模型逻辑名称、token 与 latency；`AuditAgent` 只有抽样语义筛查产生 LLM 调用，硬审计仍为确定性。每轮用户输入写为独立 `human_interaction`，包括解析失败的输入；修订完成后以同一 `interaction_id` 写入 `revision_applied`、实际变化对象及对应版本 artifact 的相对路径和 SHA-256。`construction-report.v2` 按 stage 汇总最终确认状态、成功修订轮数和实际修改对象数，materials 另计选择数量。
 - `run_started` 和 `run_completed` 使用 `orchestrator` component，不归属任何业务 Agent，也不进入五角色的 LLM 统计。
-- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变。硬审计使用 source row 回溯同一 annotation 文件并重算所有答案格式的 witness hash；free_text 必须与回放字符串完全一致，bbox 必须与四个回放坐标数值一致。新结构化 letter 任务还必须满足回放 raw value、mapping、语义 option 与最终答案字母一致；旧无 mapping 设计的证据到选项语义关系仍由 Reviewer 负责。随后仅平衡选择题答案位置。语义层每 task 最多稳定抽取十题，只宽松检查明显任务偏移、答案泄露、歧义/选项重叠及语义近重复/模板塌缩；失败时 fail-open，flag 不会 reject，`flagged.jsonl` 始终是 `audited.jsonl` 的观察性子集。`audit_report.json` 采用 `audit-report.v1`，分别在 `hard_audit` 与 `semantic_audit` 中表达两层计数。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
+- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变。硬审计使用 source row 回溯同一 annotation 文件并重算所有答案格式的 witness hash；free_text 必须与回放字符串完全一致，bbox 必须与四个回放坐标数值一致。letter 任务还必须满足回放 raw value、mapping、语义 option 与最终答案字母一致。随后仅平衡选择题答案位置。语义层每 task 最多稳定抽取十题，只宽松检查明显任务偏移、答案泄露、歧义/选项重叠及语义近重复/模板塌缩；失败时 fail-open，flag 不会 reject，`flagged.jsonl` 始终是 `audited.jsonl` 的观察性子集。`audit_report.json` 采用 `audit-report.v1`，分别在 `hard_audit` 与 `semantic_audit` 中表达两层计数。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
 
 ## 推理与评测边界
 

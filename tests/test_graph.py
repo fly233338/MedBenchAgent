@@ -56,6 +56,11 @@ def _rag_fields(response_format: str = "letter") -> dict:
     }
     if response_format == "letter":
         fields["options"] = ["CC", "MLO"]
+        fields["answer_field"] = "image.annotation.view"
+        fields["answer_value_mapping"] = [
+            {"raw_value": "CC", "option": "CC"},
+            {"raw_value": "MLO", "option": "MLO"},
+        ]
     return fields
 
 

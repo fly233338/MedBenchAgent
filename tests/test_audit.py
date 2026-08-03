@@ -77,7 +77,17 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
     image.save(image_path)
     blueprint = {
         "dataset": {"dataset_id": "set"},
-        "tasks": {"view": {"response_format": "letter", "supporting_fields": ["image.annotation.view"]}},
+        "tasks": {
+            "view": {
+                "response_format": "letter",
+                "supporting_fields": ["image.annotation.view"],
+                "answer_field": "image.annotation.view",
+                "answer_value_mapping": [
+                    {"raw_value": "A", "option": "A"},
+                    {"raw_value": "B", "option": "B"},
+                ],
+            }
+        },
     }
     blueprint_path = tmp_path / "blueprint.json"
     blueprint_path.write_text(json.dumps(blueprint), encoding="utf-8")

@@ -252,7 +252,7 @@ Natural-language review can revise one or more task designs without changing oth
 Blueprint tasks. New designs contain exactly the configured number of unique, semantically
 equivalent question templates. Generation deterministically selects one template for each
 task/image/source-row tuple from the run seed before asking the model for a controlled paraphrase;
-legacy Blueprint tasks containing one valid template remain runnable.
+letter tasks require a structured answer field and answer-value mapping before generation.
 
 Before designing a new letter task, RAG requests the exact categorical values of its selected
 approved answer field. Code returns at most 32 frequent scalar values with counts, truncation
@@ -270,10 +270,10 @@ answer. Finding-presence tasks additionally require explicit positive and negati
 The generator runs three independent seeded scans in a fixed order: letter VQA,
 Grounding bbox, then direct-reference free text. Each stage begins from the database
 start, projects only unfinished tasks' approved `supporting_fields`, and independently
-accepts up to three tasks per image after a stable seed/image-ID shuffle. For new mapped letter
+accepts up to twenty tasks per image after a stable seed/image-ID shuffle. For mapped letter
 tasks, code reads the declared answer field, requires one uniquely located mapped raw value, and
 fixes the semantic answer and evidence before the model call; the model generates only the
-question stem. Legacy letter designs without a mapping retain their existing generation path.
+question stem. Letter designs without a mapping are rejected at the generation boundary.
 Free text deterministically
 locates its unique direct-reference string, while grounding locates the four source
 coordinates of its unique annotated box. Code verifies every witness against the
@@ -326,9 +326,8 @@ Hard Audit verifies the image-manifest mapping, streams PNG hashes, decodes 8-bi
 and checks every item's source row against the exact annotation file used by Generation. For
 every response format it replays the evidence path and source indices, then verifies the witness
 hash. Free-text answers must exactly equal the replayed string, and bbox answers must equal the
-four replayed coordinates. For letter items it does not reinterpret the evidence or judge its
-mapping to an option for legacy designs; for structured mappings it deterministically verifies
-that the replayed raw value maps to the semantic option represented by the saved answer letter.
+four replayed coordinates. For letter items it deterministically verifies that the replayed raw
+value maps to the semantic option represented by the saved answer letter.
 It rejects repeated item IDs and canonical-identical items while retaining
 repeated question text; `audit_report.json` reports normalized-question repetition separately in
 `duplicate_statistics`. After answer balancing,

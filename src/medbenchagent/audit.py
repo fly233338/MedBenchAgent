@@ -156,9 +156,9 @@ def _answer_evidence_matches(
         witness = source.get("answer_evidence")
         if task.get("response_format") != "bbox":
             path, _indices, value = _replay_witness(record, supporting_fields, witness)
-            if task.get("response_format") == "letter" and isinstance(
-                task.get("answer_value_mapping"), list
-            ):
+            if task.get("response_format") == "letter":
+                if not isinstance(task.get("answer_value_mapping"), list):
+                    return False
                 options, answer = item.get("options"), item.get("answer")
                 if (
                     path != task.get("answer_field")

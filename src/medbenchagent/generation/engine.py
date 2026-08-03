@@ -164,8 +164,10 @@ def _canonical_scalar(value: object) -> str | None:
 def _validate_answer_mapping(task_id: str, task: BlueprintTask, options: list[str]) -> None:
     answer_field = task.get("answer_field")
     mappings = task.get("answer_value_mapping")
-    if answer_field is None and mappings is None:
-        return
+    if answer_field is None or mappings is None:
+        raise ValueError(
+            f"{task_id}: letter tasks require answer_field and answer_value_mapping."
+        )
     supporting_fields = task.get("supporting_fields")
     if (
         not isinstance(answer_field, str)
@@ -407,9 +409,12 @@ def _next_candidate_record(
                         continue
                     projected = project_supporting_record(record, task["supporting_fields"])
                     image_id = str(record["image"]["image_id"])
-                    has_mapping = isinstance(task.get("answer_value_mapping"), list)
-                    mapped = _mapped_answer(record, task) if has_mapping else None
-                    if has_mapping and mapped is None:
+                    mapped = (
+                        _mapped_answer(record, task)
+                        if task["response_format"] == "letter"
+                        else None
+                    )
+                    if task["response_format"] == "letter" and mapped is None:
                         continue
                     candidate = _Candidate(
                         task_id,
