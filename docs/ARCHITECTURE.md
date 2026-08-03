@@ -67,7 +67,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
   分类目录中的 PDF，用户自然语言选择的精确相对路径经验证后才参与检索。
 - 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准字段投影。
 - Task Plan 与样本分配只在确认后改变 Blueprint；Task Plan 和 RAG 设计的每个审核版本均作为不可变 JSON 保存，RAG 设计仍逐项写入 Blueprint 后通过确认/修订闭环收敛。
-- 同一 task/image 最多生成一题；默认每阶段每图最多接受三题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
+- 同一 task/image 最多生成一题；默认每阶段每图最多接受二十题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
 - 三种答案格式都保留可回放的 annotation witness。新结构化 letter 任务由代码从 `answer_field` 唯一定位原始 scalar，并通过 `answer_value_mapping` 固定正确 option；LLM 只生成题干。旧 letter 设计仍由生成模型返回 supporting-field witness。free_text 由代码唯一定位直接答案字符串；bbox 由代码按 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。代码在 Reviewer 前精确验证，raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
 - bbox 任务只接受恰有一个合法标注框且能唯一定位四坐标 witness 的候选，不接受 mask 或运行期
   mask-to-bbox 转换。`visual_grounding` 还必须有与该框配对的 finding 名称、结构化标签或描述；

@@ -44,7 +44,7 @@ _CODE_DEFAULTS: dict[str, Any] = {
     },
     "generation": {
         "seed": 0,
-        "max_tasks_per_image": 3,
+        "max_tasks_per_image": 20,
         "question_temperature": 0.7,
         "fetch_batch_size": 128,
         "question_template_count": 3,

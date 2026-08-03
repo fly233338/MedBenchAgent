@@ -36,6 +36,9 @@ def test_extract_uses_only_five_field_schema(monkeypatch) -> None:
     assert result["sample_count"] == 20
     assert "Blueprint:" not in captured["user"]
     assert '"disease"' in captured["system"]
+    assert "only the benchmark aspects explicitly stated by the user" in captured["system"]
+    assert "Omit any unspecified aspect instead of inferring or inventing it" in captured["system"]
+    assert "did not mention a task focus, do not add one." in captured["system"].replace("\n", " ")
 
 
 def test_working_blueprint_replaces_info_without_changing_template(tmp_path: Path) -> None:

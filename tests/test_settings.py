@@ -11,7 +11,7 @@ def test_default_settings_preserve_current_runtime_defaults() -> None:
 
     assert settings.llm.timeout_seconds == 120
     assert settings.llm.max_retries == 0
-    assert settings.generation.max_tasks_per_image == 3
+    assert settings.generation.max_tasks_per_image == 20
     assert settings.generation.question_temperature == 0.7
     assert settings.generation.fetch_batch_size == 128
     assert settings.generation.question_template_count == 3

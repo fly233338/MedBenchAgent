@@ -18,7 +18,7 @@ Return exactly these five keys and no wrapper object:
 {
   "disease": "English disease name or null",
   "modality": "English imaging modality or null",
-  "description": "One complete English sentence describing the benchmark objective, disease, modality, and requested task focus; never return only keywords or a phrase.",
+  "description": "One complete English sentence describing only the benchmark aspects explicitly stated by the user. Mention the benchmark objective, disease, modality, or task focus only when that aspect is explicitly provided. Omit any unspecified aspect instead of inferring or inventing it. Never add task types, clinical goals, diagnoses, evaluation criteria, or dataset properties based on common medical benchmark conventions; never return only keywords or a phrase.",
   "language": "en, zh, or null",
   "sample_count": "positive integer or null"
 }
@@ -27,6 +27,8 @@ The user may write Chinese, English, or both. Infer the requested benchmark lang
 not the language of the user's message. Translate disease and modality to standard
 English medical terms. Convert expressions such as "20题", "10k", and "2.5k" to a
 positive integer. Use null only when the user did not provide or imply a value.
+Every detail in the description must be traceable to the user's wording. If the user
+did not mention a task focus, do not add one.
 Return valid JSON only."""
 
 
