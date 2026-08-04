@@ -40,6 +40,7 @@ class Qwen25VLAdapter:
             min_pixels=min_pixels,
             max_pixels=max_pixels,
         )
+        self.processor.tokenizer.padding_side = "left"
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_path,
             torch_dtype=torch_dtype,

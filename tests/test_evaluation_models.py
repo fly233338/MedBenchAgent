@@ -48,6 +48,9 @@ def test_qwen_adapter_batches_and_reports_processed_image_size(
             return self
 
     class FakeProcessor:
+        def __init__(self) -> None:
+            self.tokenizer = types.SimpleNamespace(padding_side="right")
+
         @classmethod
         def from_pretrained(cls, _path: str, **kwargs: object) -> "FakeProcessor":
             assert kwargs["min_pixels"] < kwargs["max_pixels"]
@@ -92,6 +95,7 @@ def test_qwen_adapter_batches_and_reports_processed_image_size(
     monkeypatch.setitem(sys.modules, "transformers", transformers)
 
     adapter = Qwen25VLAdapter("model", device=torch.device("cpu"))
+    assert adapter.processor.tokenizer.padding_side == "left"
     outputs = adapter.generate([_sample(tmp_path)], max_new_tokens=16)
 
     assert outputs[0].raw_text == '{"answer":"A"}'
