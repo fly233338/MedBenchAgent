@@ -380,6 +380,10 @@ them. Letter VQA uses a neutral system instruction to return only the correct
 option letter; its user message contains only the image followed by the
 question and labeled options, without an answer-format example. Letter outputs
 are parsed strictly as a single bare letter; JSON and option text are rejected.
+Free-text VQA omits the system message and sends only the image and original
+question; its complete non-empty response is scored as plain text. Bbox tasks
+send the same minimal user content with a system instruction requiring exactly
+one `{"bbox":[x1,y1,x2,y2]}` object in resized-image absolute coordinates.
 
 Generate the task, metric-group, and category report from the inference file:
 

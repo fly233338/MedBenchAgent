@@ -11,9 +11,12 @@ from medbenchagent.evaluation.models import load_model_adapter
 from medbenchagent.evaluation.models.qwen2_5_vl import Qwen25VLAdapter
 
 
-def _sample(tmp_path: Path) -> InferenceSample:
+def _sample(tmp_path: Path, response_format: str = "letter") -> InferenceSample:
     image_path = tmp_path / "image.png"
     Image.new("L", (20, 10), 100).save(image_path)
+    options = ["CC", "MLO"] if response_format == "letter" else None
+    answer = {"letter": "A", "free_text": "CC", "bbox": [1, 1, 10, 8]}[response_format]
+    metric = {"letter": "accuracy", "free_text": "bleu", "bbox": "miou"}[response_format]
     return InferenceSample(
         0,
         {
@@ -23,10 +26,10 @@ def _sample(tmp_path: Path) -> InferenceSample:
             "image_id": "image",
             "image_path": "opaque",
             "question": "Which view?",
-            "options": ["CC", "MLO"],
-            "answer": "A",
+            "options": options,
+            "answer": answer,
         },
-        TaskSpec("view", "acquisition", "letter", "accuracy"),
+        TaskSpec("view", "acquisition", response_format, metric),
         ImageEntry("image", image_path, "image.png", 20, 10, "a" * 64),
     )
 
@@ -36,8 +39,32 @@ def test_unknown_model_adapter_is_rejected() -> None:
         load_model_adapter("missing", "model")
 
 
-def test_qwen_adapter_batches_and_reports_processed_image_size(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("response_format", "expected_system", "expected_text", "raw_output"),
+    [
+        (
+            "letter",
+            "Answer with the correct single letter answer.",
+            "Which view?\n\nA. CC\nB. MLO",
+            "A",
+        ),
+        ("free_text", None, "Which view?", "CC"),
+        (
+            "bbox",
+            'Answer with only a JSON object containing the single bounding box under the "bbox" '
+            "key as four absolute pixel coordinates in x1, y1, x2, y2 order.",
+            "Which view?",
+            '{"bbox":[1,1,10,8]}',
+        ),
+    ],
+)
+def test_qwen_adapter_builds_task_messages_and_reports_processed_image_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    response_format: str,
+    expected_system: str | None,
+    expected_text: str,
+    raw_output: str,
 ) -> None:
     class FakeInputs(dict):
         def __init__(self) -> None:
@@ -58,18 +85,21 @@ def test_qwen_adapter_batches_and_reports_processed_image_size(
 
         def apply_chat_template(self, messages: list[dict], **kwargs: object) -> str:
             assert kwargs == {"tokenize": False, "add_generation_prompt": True}
-            assert messages[0] == {
-                "role": "system",
-                "content": "Answer with the correct single letter answer.",
-            }
-            assert messages[1]["content"] == [
+            if expected_system is None:
+                assert len(messages) == 1
+                user_message = messages[0]
+            else:
+                assert messages[0] == {"role": "system", "content": expected_system}
+                user_message = messages[1]
+            assert user_message["role"] == "user"
+            assert user_message["content"] == [
                 {
                     "type": "image",
-                    "image": messages[1]["content"][0]["image"],
+                    "image": user_message["content"][0]["image"],
                     "min_pixels": 256 * 28 * 28,
                     "max_pixels": 1280 * 28 * 28,
                 },
-                {"type": "text", "text": "Which view?\n\nA. CC\nB. MLO"},
+                {"type": "text", "text": expected_text},
             ]
             return "prompt"
 
@@ -78,7 +108,7 @@ def test_qwen_adapter_batches_and_reports_processed_image_size(
             return FakeInputs()
 
         def batch_decode(self, _tokens: list[torch.Tensor], **_kwargs: object) -> list[str]:
-            return ["A"]
+            return [raw_output]
 
     class FakeModel:
         @classmethod
@@ -107,7 +137,7 @@ def test_qwen_adapter_batches_and_reports_processed_image_size(
 
     adapter = Qwen25VLAdapter("model", device=torch.device("cpu"))
     assert adapter.processor.tokenizer.padding_side == "left"
-    outputs = adapter.generate([_sample(tmp_path)], max_new_tokens=16)
+    outputs = adapter.generate([_sample(tmp_path, response_format)], max_new_tokens=16)
 
-    assert outputs[0].raw_text == "A"
+    assert outputs[0].raw_text == raw_output
     assert outputs[0].coordinate_size == (56, 28)

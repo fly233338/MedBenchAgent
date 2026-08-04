@@ -17,10 +17,15 @@ class ModelAdapter(Protocol):
         """Generate one raw model output per input sample."""
 
 
-def system_prompt(sample: InferenceSample) -> str:
+def system_prompt(sample: InferenceSample) -> str | None:
     if sample.task.response_format == "letter":
         return "Answer with the correct single letter answer."
-    return "Answer the medical image benchmark question using only the requested JSON."
+    if sample.task.response_format == "bbox":
+        return (
+            'Answer with only a JSON object containing the single bounding box under the "bbox" '
+            "key as four absolute pixel coordinates in x1, y1, x2, y2 order."
+        )
+    return None
 
 
 def user_prompt(sample: InferenceSample) -> str:
@@ -32,12 +37,4 @@ def user_prompt(sample: InferenceSample) -> str:
             f"{chr(ord('A') + index)}. {option}" for index, option in enumerate(options)
         )
         return f"{question}\n\n{rendered}"
-    if sample.task.response_format == "bbox":
-        return (
-            f"{question}\n\nReturn the single target box as absolute pixel xyxy coordinates "
-            'in the image shown. Return JSON only in the form {"answer":[x1,y1,x2,y2]}.'
-        )
-    return (
-        f"{question}\n\nAnswer the question directly. "
-        'Return JSON only in the form {"answer":"your answer"}.'
-    )
+    return question

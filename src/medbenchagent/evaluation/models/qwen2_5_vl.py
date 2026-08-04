@@ -60,11 +60,11 @@ class Qwen25VLAdapter:
         for sample in samples:
             with Image.open(sample.image.png_path) as source:
                 image = source.convert("RGB")
-            messages = [
-                {
-                    "role": "system",
-                    "content": system_prompt(sample),
-                },
+            messages = []
+            instruction = system_prompt(sample)
+            if instruction is not None:
+                messages.append({"role": "system", "content": instruction})
+            messages.append(
                 {
                     "role": "user",
                     "content": [
@@ -76,8 +76,8 @@ class Qwen25VLAdapter:
                         },
                         {"type": "text", "text": user_prompt(sample)},
                     ],
-                },
-            ]
+                }
+            )
             image_inputs, video_inputs = self.process_vision_info(messages)
             if video_inputs or len(image_inputs) != 1:
                 raise ValueError("Qwen2.5-VL evaluation requires exactly one image per item.")

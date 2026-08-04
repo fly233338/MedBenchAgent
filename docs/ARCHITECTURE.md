@@ -96,8 +96,10 @@ letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。
 模型通过显式注册的 `ModelAdapter` 加载；每个模型拥有一个独立模块。首个实现
 `qwen2_5_vl` 使用 Transformers 和 Qwen 处理器，并把模型 resize 后的绝对 bbox 坐标还原到
 原 PNG 坐标。letter VQA 的 system prompt 只要求返回正确选项的单个字母，user content 只含图像及
-题干与选项，不提供具体答案或输出格式示例；解析器也只接受裸单字母响应。`torchrun` 单节点每 GPU
-启动一个 rank，每个 rank 独立加载一份完整模型，
+题干与选项，不提供具体答案或输出格式示例；解析器也只接受裸单字母响应。free-text VQA 不设置
+system message，直接把完整非空响应作为预测；所有 bbox 任务统一由 system
+要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含图像和题目（letter
+另含选项）。`torchrun` 单节点每 GPU 启动一个 rank，每个 rank 独立加载一份完整模型，
 以轮转切片和普通 batch 循环推理，不使用 DDP 或 tensor parallel。rank 临时 JSONL 全部成功后，
 rank 0 按输入顺序写出自包含的 `medbench-inference.v1` JSON；中断不自动续跑。
 

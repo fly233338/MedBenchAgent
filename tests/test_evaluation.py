@@ -199,11 +199,42 @@ def test_parse_letter_prediction_rejects_non_letter_output(raw: str) -> None:
         parse_prediction(ModelOutput(raw), _sample("letter", "B", ["benign", "malignant"]))
 
 
+def test_parse_free_text_prediction_preserves_raw_answer() -> None:
+    sample = _sample("free_text", "No acute finding.")
+
+    assert parse_prediction(ModelOutput("  No acute finding.\n"), sample) == "No acute finding."
+    assert parse_prediction(ModelOutput('{"answer":"No acute finding."}'), sample) == (
+        '{"answer":"No acute finding."}'
+    )
+
+
+def test_parse_free_text_prediction_rejects_empty_output() -> None:
+    with pytest.raises(PredictionParseError, match="non-empty text"):
+        parse_prediction(ModelOutput(" \n"), _sample("free_text", "answer"))
+
+
 def test_parse_bbox_rescales_qwen_coordinate_space() -> None:
     sample = _sample("bbox", [20.0, 10.0, 100.0, 50.0])
-    output = ModelOutput('{"answer":[10,5,50,25]}', coordinate_size=(100, 50))
+    output = ModelOutput('{"bbox":[10,5,50,25]}', coordinate_size=(100, 50))
 
     assert parse_prediction(output, sample) == [20.0, 10.0, 100.0, 50.0]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"answer":[10,5,50,25]}',
+        "[10,5,50,25]",
+        '```json\n{"bbox":[10,5,50,25]}\n```',
+        '{"bbox":[10,5,50,25],"label":"lesion"}',
+        '{"bbox":[true,5,50,25]}',
+        '{"bbox":[10,5,150,25]}',
+    ],
+)
+def test_parse_bbox_rejects_outputs_outside_strict_contract(raw: str) -> None:
+    sample = _sample("bbox", [20.0, 10.0, 100.0, 50.0])
+    with pytest.raises(PredictionParseError):
+        parse_prediction(ModelOutput(raw, coordinate_size=(100, 50)), sample)
 
 
 def test_metrics_cover_iou_and_semantic_macro_f1() -> None:

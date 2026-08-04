@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
-from typing import Any
 
 from medbenchagent.evaluation.contracts import InferenceSample, ModelOutput
 
@@ -14,18 +12,14 @@ class PredictionParseError(ValueError):
     """Raised when a model response cannot be safely normalized."""
 
 
-def _json_answer(raw_text: str) -> Any:
-    text = raw_text.strip()
-    fenced = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", text, flags=re.DOTALL | re.IGNORECASE)
-    if fenced:
-        text = fenced.group(1).strip()
+def _bbox_answer(raw_text: str) -> object:
     try:
-        payload = json.loads(text)
+        payload = json.loads(raw_text.strip())
     except json.JSONDecodeError as exc:
-        raise PredictionParseError("response is not valid answer JSON") from exc
-    if not isinstance(payload, dict) or set(payload) != {"answer"}:
-        raise PredictionParseError("response must contain exactly one answer field")
-    return payload["answer"]
+        raise PredictionParseError("bbox response is not valid JSON") from exc
+    if not isinstance(payload, dict) or set(payload) != {"bbox"}:
+        raise PredictionParseError("bbox response must contain exactly one bbox field")
+    return payload["bbox"]
 
 
 def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list[float]:
@@ -40,15 +34,21 @@ def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list
             if ord(letter) - ord("A") in range(len(options)):
                 return letter
         raise PredictionParseError("response must be exactly one valid option letter")
-    answer = _json_answer(output.raw_text)
     if response_format == "free_text":
-        if not isinstance(answer, str) or not answer.strip():
-            raise PredictionParseError("answer must be a non-empty string")
-        return answer.strip()
+        answer = output.raw_text.strip()
+        if not answer:
+            raise PredictionParseError("response must be non-empty text")
+        return answer
+    answer = _bbox_answer(output.raw_text)
     if (
         not isinstance(answer, list)
         or len(answer) != 4
-        or not all(isinstance(value, (int, float)) and math.isfinite(value) for value in answer)
+        or not all(
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+            for value in answer
+        )
     ):
         raise PredictionParseError("answer must be four finite xyxy coordinates")
     source_width, source_height = output.coordinate_size or (
