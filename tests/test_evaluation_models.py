@@ -58,8 +58,19 @@ def test_qwen_adapter_batches_and_reports_processed_image_size(
 
         def apply_chat_template(self, messages: list[dict], **kwargs: object) -> str:
             assert kwargs == {"tokenize": False, "add_generation_prompt": True}
-            assert messages[1]["content"][1]["type"] == "text"
-            assert messages[1]["content"][0]["min_pixels"] == 256 * 28 * 28
+            assert messages[0] == {
+                "role": "system",
+                "content": "Answer with the correct single letter answer.",
+            }
+            assert messages[1]["content"] == [
+                {
+                    "type": "image",
+                    "image": messages[1]["content"][0]["image"],
+                    "min_pixels": 256 * 28 * 28,
+                    "max_pixels": 1280 * 28 * 28,
+                },
+                {"type": "text", "text": "Which view?\n\nA. CC\nB. MLO"},
+            ]
             return "prompt"
 
         def __call__(self, **kwargs: object) -> FakeInputs:
@@ -67,7 +78,7 @@ def test_qwen_adapter_batches_and_reports_processed_image_size(
             return FakeInputs()
 
         def batch_decode(self, _tokens: list[torch.Tensor], **_kwargs: object) -> list[str]:
-            return ['{"answer":"A"}']
+            return ["A"]
 
     class FakeModel:
         @classmethod
@@ -98,5 +109,5 @@ def test_qwen_adapter_batches_and_reports_processed_image_size(
     assert adapter.processor.tokenizer.padding_side == "left"
     outputs = adapter.generate([_sample(tmp_path)], max_new_tokens=16)
 
-    assert outputs[0].raw_text == '{"answer":"A"}'
+    assert outputs[0].raw_text == "A"
     assert outputs[0].coordinate_size == (56, 28)

@@ -33,11 +33,16 @@ def _json_answer(raw_text: str) -> Any:
 
 def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list[float]:
     """Parse one adapter output and return the benchmark's canonical prediction type."""
-    answer = _json_answer(output.raw_text)
     response_format = sample.task.response_format
     if response_format == "letter":
         options = sample.item["options"]
         assert isinstance(options, list)
+        direct_match = LETTER_PATTERN.fullmatch(output.raw_text.strip())
+        if direct_match:
+            letter = direct_match.group(1).upper()
+            if ord(letter) - ord("A") in range(len(options)):
+                return letter
+        answer = _json_answer(output.raw_text)
         if isinstance(answer, str):
             normalized = answer.strip()
             if normalized in options:
@@ -48,6 +53,7 @@ def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list
                 if ord(letter) - ord("A") in range(len(options)):
                     return letter
         raise PredictionParseError("answer is not a valid option letter or exact option text")
+    answer = _json_answer(output.raw_text)
     if response_format == "free_text":
         if not isinstance(answer, str) or not answer.strip():
             raise PredictionParseError("answer must be a non-empty string")

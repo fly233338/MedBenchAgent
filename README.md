@@ -376,7 +376,9 @@ SDPA, 256-1280 Qwen visual tokens, and correctness thresholds of 0.5 for both
 sentence BLEU and bbox IoU. Use the CLI flags to change these values. Existing
 outputs and temporary parts are protected unless `--overwrite` is explicitly
 passed; interrupted jobs retain their parts for diagnosis but do not resume
-them.
+them. Letter VQA uses a neutral system instruction to return only the correct
+option letter; its user message contains only the image followed by the
+question and labeled options, without an answer-format example.
 
 Generate the task, metric-group, and category report from the inference file:
 

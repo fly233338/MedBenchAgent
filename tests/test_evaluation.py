@@ -184,6 +184,7 @@ def test_load_benchmark_rejects_escaping_image_path(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
+        ("B", "B"),
         ('{"answer":"b"}', "B"),
         ('```json\n{"answer":"(B)"}\n```', "B"),
         ('{"answer":"malignant"}', "B"),

@@ -8,7 +8,7 @@ import torch
 from PIL import Image
 
 from medbenchagent.evaluation.contracts import InferenceSample, ModelOutput
-from medbenchagent.evaluation.models.base import user_prompt
+from medbenchagent.evaluation.models.base import system_prompt, user_prompt
 
 
 class Qwen25VLAdapter:
@@ -63,7 +63,7 @@ class Qwen25VLAdapter:
             messages = [
                 {
                     "role": "system",
-                    "content": "Answer the medical image benchmark question using only the requested JSON.",
+                    "content": system_prompt(sample),
                 },
                 {
                     "role": "user",
