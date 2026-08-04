@@ -10,9 +10,6 @@ from typing import Any
 from medbenchagent.evaluation.contracts import InferenceSample, ModelOutput
 
 
-LETTER_PATTERN = re.compile(r"\(?\s*([A-Za-z])\s*[\).]?\Z")
-
-
 class PredictionParseError(ValueError):
     """Raised when a model response cannot be safely normalized."""
 
@@ -37,22 +34,12 @@ def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list
     if response_format == "letter":
         options = sample.item["options"]
         assert isinstance(options, list)
-        direct_match = LETTER_PATTERN.fullmatch(output.raw_text.strip())
-        if direct_match:
-            letter = direct_match.group(1).upper()
+        raw_answer = output.raw_text.strip()
+        if len(raw_answer) == 1 and raw_answer.isalpha():
+            letter = raw_answer.upper()
             if ord(letter) - ord("A") in range(len(options)):
                 return letter
-        answer = _json_answer(output.raw_text)
-        if isinstance(answer, str):
-            normalized = answer.strip()
-            if normalized in options:
-                return chr(ord("A") + options.index(normalized))
-            match = LETTER_PATTERN.fullmatch(normalized)
-            if match:
-                letter = match.group(1).upper()
-                if ord(letter) - ord("A") in range(len(options)):
-                    return letter
-        raise PredictionParseError("answer is not a valid option letter or exact option text")
+        raise PredictionParseError("response must be exactly one valid option letter")
     answer = _json_answer(output.raw_text)
     if response_format == "free_text":
         if not isinstance(answer, str) or not answer.strip():

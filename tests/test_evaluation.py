@@ -185,19 +185,18 @@ def test_load_benchmark_rejects_escaping_image_path(tmp_path: Path) -> None:
     ("raw", "expected"),
     [
         ("B", "B"),
-        ('{"answer":"b"}', "B"),
-        ('```json\n{"answer":"(B)"}\n```', "B"),
-        ('{"answer":"malignant"}', "B"),
+        (" b\n", "B"),
     ],
 )
-def test_parse_letter_prediction_with_constrained_tolerance(raw: str, expected: str) -> None:
+def test_parse_letter_prediction(raw: str, expected: str) -> None:
     sample = _sample("letter", "B", ["benign", "malignant"])
     assert parse_prediction(ModelOutput(raw), sample) == expected
 
 
-def test_parse_prediction_rejects_unstructured_output() -> None:
-    with pytest.raises(PredictionParseError, match="valid answer JSON"):
-        parse_prediction(ModelOutput("The answer is B."), _sample("letter", "B", ["a", "b"]))
+@pytest.mark.parametrize("raw", ['{"answer":"B"}', "malignant", "The answer is B.", "(B)"])
+def test_parse_letter_prediction_rejects_non_letter_output(raw: str) -> None:
+    with pytest.raises(PredictionParseError, match="exactly one valid option letter"):
+        parse_prediction(ModelOutput(raw), _sample("letter", "B", ["benign", "malignant"]))
 
 
 def test_parse_bbox_rescales_qwen_coordinate_space() -> None:
@@ -218,7 +217,10 @@ def test_metrics_cover_iou_and_semantic_macro_f1() -> None:
 class _FakeAdapter:
     def generate(self, samples: list[InferenceSample], *, max_new_tokens: int) -> list[ModelOutput]:
         assert max_new_tokens == 32
-        return [ModelOutput('{"answer":"malignant"}') for _ in samples]
+        return [
+            ModelOutput(chr(ord("A") + sample.item["options"].index("malignant")))
+            for sample in samples
+        ]
 
 
 def _args(benchmark: Path, manifest: Path, image_manifest: Path, output: Path) -> argparse.Namespace:

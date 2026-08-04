@@ -378,7 +378,8 @@ outputs and temporary parts are protected unless `--overwrite` is explicitly
 passed; interrupted jobs retain their parts for diagnosis but do not resume
 them. Letter VQA uses a neutral system instruction to return only the correct
 option letter; its user message contains only the image followed by the
-question and labeled options, without an answer-format example.
+question and labeled options, without an answer-format example. Letter outputs
+are parsed strictly as a single bare letter; JSON and option text are rejected.
 
 Generate the task, metric-group, and category report from the inference file:
 
