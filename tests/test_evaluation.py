@@ -240,7 +240,26 @@ def _args(benchmark: Path, manifest: Path, image_manifest: Path, output: Path) -
     )
 
 
-def test_inference_and_evaluation_end_to_end_with_fake_adapter(tmp_path: Path) -> None:
+def test_inference_and_evaluation_end_to_end_with_fake_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    progress: dict[str, object] = {}
+    progress_updates: list[int] = []
+
+    class FakeProgress:
+        def __init__(self, **kwargs: object) -> None:
+            progress.update(kwargs)
+
+        def __enter__(self) -> "FakeProgress":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def update(self, count: int) -> None:
+            progress_updates.append(count)
+
+    monkeypatch.setattr("medbenchagent.evaluation.inference.tqdm", FakeProgress)
     items = [_letter_item(0), _letter_item(1)]
     benchmark, manifest, image_manifest = _fixture(tmp_path, items=items)
     output = tmp_path / "inference.json"
@@ -257,6 +276,9 @@ def test_inference_and_evaluation_end_to_end_with_fake_adapter(tmp_path: Path) -
     inference = json.loads(output.read_text(encoding="utf-8"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert result == str(output)
+    assert progress["total"] == 2
+    assert progress["desc"] == "rank 0"
+    assert progress_updates == [2]
     assert not (tmp_path / "inference.json.parts").exists()
     assert [item["prediction"] for item in inference["items"]] == ["B", "B"]
     assert report["summary"] == {

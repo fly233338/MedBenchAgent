@@ -14,6 +14,7 @@ from typing import Any, Callable
 import torch
 import torch.distributed as dist
 from torch.distributed.elastic.multiprocessing.errors import record
+from tqdm.auto import tqdm
 
 from medbenchagent.evaluation.contracts import InferenceSample, LoadedBenchmark
 from medbenchagent.evaluation.data import load_benchmark
@@ -129,40 +130,48 @@ def _write_rank_results(
     indices = list(shard_indices(len(benchmark.samples), context.rank, context.world_size))
     language = benchmark.benchmark_info["language"]
     with path.open("w", encoding="utf-8", newline="\n") as destination:
-        for start in range(0, len(indices), batch_size):
-            batch = [benchmark.samples[index] for index in indices[start : start + batch_size]]
-            outputs = adapter.generate(batch, max_new_tokens=max_new_tokens)
-            if len(outputs) != len(batch):
-                raise RuntimeError("Model adapter returned an unexpected number of outputs.")
-            for sample, output in zip(batch, outputs):
-                try:
-                    prediction = parse_prediction(output, sample)
-                    score = item_score(sample, prediction, language)
-                    correct = item_correct(
-                        sample,
-                        score,
-                        bleu_threshold=bleu_threshold,
-                        bbox_iou_threshold=bbox_iou_threshold,
-                    )
-                    error = None
-                except PredictionParseError as exc:
-                    prediction, score, correct = None, 0.0, False
-                    error = {"code": "parse_error", "message": str(exc)}
-                destination.write(
-                    json.dumps(
-                        _result_record(
+        with tqdm(
+            total=len(indices),
+            desc=f"rank {context.rank}",
+            unit="item",
+            position=context.rank,
+            dynamic_ncols=True,
+        ) as progress:
+            for start in range(0, len(indices), batch_size):
+                batch = [benchmark.samples[index] for index in indices[start : start + batch_size]]
+                outputs = adapter.generate(batch, max_new_tokens=max_new_tokens)
+                if len(outputs) != len(batch):
+                    raise RuntimeError("Model adapter returned an unexpected number of outputs.")
+                for sample, output in zip(batch, outputs):
+                    try:
+                        prediction = parse_prediction(output, sample)
+                        score = item_score(sample, prediction, language)
+                        correct = item_correct(
                             sample,
-                            raw_prediction=output.raw_text,
-                            prediction=prediction,
-                            score=score,
-                            correct=correct,
-                            error=error,
-                        ),
-                        ensure_ascii=False,
+                            score,
+                            bleu_threshold=bleu_threshold,
+                            bbox_iou_threshold=bbox_iou_threshold,
+                        )
+                        error = None
+                    except PredictionParseError as exc:
+                        prediction, score, correct = None, 0.0, False
+                        error = {"code": "parse_error", "message": str(exc)}
+                    destination.write(
+                        json.dumps(
+                            _result_record(
+                                sample,
+                                raw_prediction=output.raw_text,
+                                prediction=prediction,
+                                score=score,
+                                correct=correct,
+                                error=error,
+                            ),
+                            ensure_ascii=False,
+                        )
+                        + "\n"
                     )
-                    + "\n"
-                )
-            destination.flush()
+                destination.flush()
+                progress.update(len(batch))
 
 
 def _read_parts(parts: Path, expected_count: int, world_size: int) -> list[dict[str, Any]]:
