@@ -39,7 +39,7 @@ def _task(response_format: str, fields: list[str], **extra) -> dict:
         "response_format": response_format,
         "description": f"{response_format} task",
         "require": "Use approved annotation",
-        "metric": "accuracy",
+        "metric": {"letter": "accuracy", "free_text": "bleu", "bbox": "miou"}[response_format],
         "supporting_fields": fields,
         "dataset_support_reason": "Available.",
         "question_templates": ["What is shown in this image?"],
@@ -581,6 +581,15 @@ def test_letter_tasks_require_structured_answer_mapping() -> None:
 
     with pytest.raises(ValueError, match="require answer_field and answer_value_mapping"):
         generation._validate_tasks(request)
+
+
+def test_generation_rejects_final_task_without_metric(tmp_path: Path) -> None:
+    task = _task("letter", ["image.annotation.status"], sample_count=1)
+    task.pop("metric")
+    request = _request(tmp_path, [_record(0, {"status": "benign"})], {"task": task}, 1)
+
+    with pytest.raises(ValueError, match="metric"):
+        generation.initialize_generation(request)
 
 
 def test_structured_mapping_fixes_answer_and_evidence_before_vqa_generation(

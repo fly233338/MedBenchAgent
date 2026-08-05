@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from medbenchagent.construction import construction_report, record_event
+from medbenchagent.metrics import is_metric_supported
 from medbenchagent.run_artifacts import atomic_write_json
 
 
@@ -94,6 +95,12 @@ def finalize_run(
     image_manifest = Path(image_manifest_path)
     if not image_manifest.is_file():
         raise ValueError("image_manifest.jsonl is required to finalize a benchmark run.")
+    for task_id, task in blueprint["tasks"].items():
+        if not is_metric_supported(task.get("response_format"), task.get("metric")):
+            raise ValueError(
+                f"{task_id}: final Blueprint task must contain a metric compatible with "
+                f"response format {task.get('response_format')}."
+            )
     record_event(
         construction_events_path,
         "run_completed",

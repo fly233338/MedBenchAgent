@@ -7,6 +7,8 @@ def test_blueprint_defines_all_categories_and_spatial_tasks() -> None:
     blueprint = json.loads(get_settings().paths.blueprint_template.read_text(encoding="utf-8"))
     tasks = blueprint["tasks"]
 
+    assert all("metric" not in task for task in tasks.values())
+
     assert tasks["visual_grounding"]["response_format"] == "bbox"
     assert tasks["detection"]["response_format"] == "bbox"
     assert tasks["detection"]["category"] == "spatial_localization"

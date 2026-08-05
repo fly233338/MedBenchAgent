@@ -114,17 +114,29 @@ are not supported.
 
 ## Planning review
 
-The workflow computes the complete Task Plan in one model call, then presents it for
-review. Respond in natural language to confirm it or describe one task to revise;
-DeepSeek maps every response to a validated confirm/revise action. BenchmarkInfo review
-uses the same natural-language interpretation. The working Blueprint is updated only
-after confirmation: dropped tasks are removed and retained tasks receive their approved
-`supporting_fields`. For `anatomy_attribute` and `finding_attribute`, Task Plan first
-identifies one question type per observable semantic property, then materializes each type
-as an independent task such as `finding_attribute.shape`. Every expanded task has one
-answer-bearing field, while `parent_task_id` preserves its planning family. The resulting
-Task Plan drafts are stored as immutable `task_plans/v1.json`, `v2.json`, and so on; RAG designs use the matching `rag_designs/vN.json` layout. The first model output creates `v1`, and each review revision creates the next version without overwriting earlier results. `construction_events.jsonl` links each revision's natural-language request, changed task IDs, artifact path, and SHA-256. Detection and visual grounding are independent capabilities:
+The workflow computes the Task Plan by sending each predefined task to one sequential
+model call, then presents the aggregated result for review. Each call preserves the
+support-screening rules and also chooses one registered metric compatible with the task's
+response format. Respond in natural language to confirm the complete plan or describe one
+task to revise; DeepSeek maps every response to a validated confirm/revise action.
+BenchmarkInfo review uses the same natural-language interpretation. The initial Blueprint
+template does not preselect metrics. The working Blueprint is updated only after
+confirmation: dropped tasks are removed, retained tasks receive their approved
+`supporting_fields`, and each retained final task receives its selected metric. For
+`anatomy_attribute` and `finding_attribute`, Task Plan first identifies one question type
+per observable semantic property, then materializes each type as an independent task such
+as `finding_attribute.shape`; every expanded task selects its own metric. Every expanded
+task has one answer-bearing field, while `parent_task_id` preserves its planning family.
+The resulting Task Plan drafts are stored as immutable `task_plans/v1.json`, `v2.json`, and
+so on; RAG designs use the matching `rag_designs/vN.json` layout. The first model output
+creates `v1`, and each review revision creates the next version without overwriting earlier
+results. `construction_events.jsonl` records task-specific model calls and links each
+revision's natural-language request, changed task IDs, artifact path, and SHA-256. Detection and visual grounding are independent capabilities:
 both may be retained when the dataset has the required bounding-box and finding evidence.
+
+Metric candidates and their response-format compatibility are maintained in the shared
+metric registry. The task prompt receives the compatible candidates and their selection
+rules; the final benchmark manifest continues to store one primary metric per task.
 
 The retained tasks then receive a stable category-weighted allocation of the benchmark
 target. The six task-category weights are normalized across categories that retain at

@@ -24,12 +24,13 @@ role-specialized agents + deterministic orchestration：
 2. `CapabilityAgent` 从 `datasets/dataset_catalog.json` 推荐并确认数据集。
    代码解析路径、校验 `annotation.jsonl`，再生成
    内容寻址的 DuckDB、dataset profile 和 access manifest。
-3. `CapabilityAgent` 根据 profile 为全部预定义任务生成 Task Plan；人工可逐项修订。所有保留的 letter
-   任务必须有至少两个语义答案类别，代码以获准字段的 `distinct_value_count >= 2` 作为必要条件兜底；
-   `finding_presence` 还必须同时具有显式正例和负例。`anatomy_attribute` 与
-   `finding_attribute` 按单一语义答案轴识别 question type，每个类型只使用一个字段，并展开为
-   `<parent_task_id>.<question_type_id>` 独立任务。确认后，代码删除不支持的任务并写入
-   `supporting_fields`；首轮模型输出写入 `task_plans/v1.json`，每轮人工修订写入递增的 `vN.json`，不覆盖历史版本。
+3. `CapabilityAgent` 根据 profile 为每个预定义任务顺序调用一次模型生成 Task Plan entry，再聚合为完整
+   Task Plan；人工可逐项修订。每个保留的最终任务同时选择一个由共享 metric registry 提供、且与
+   `response_format` 兼容的主指标。所有保留的 letter 任务必须有至少两个语义答案类别，代码以获准字段的
+   `distinct_value_count >= 2` 作为必要条件兜底；`finding_presence` 还必须同时具有显式正例和负例。
+   `anatomy_attribute` 与 `finding_attribute` 按单一语义答案轴识别 question type，每个类型只使用一个字段，并展开为
+   `<parent_task_id>.<question_type_id>` 独立任务；每个展开任务独立保存 metric。确认后，代码删除不支持的任务并写入
+   `supporting_fields` 与 metric；首轮模型输出写入 `task_plans/v1.json`，每轮人工修订写入递增的 `vN.json`，不覆盖历史版本。
 4. `CapabilityAgent` 按任务 category 稳定加权分配样本数：仅在保留类别间归一化默认权重，以最大余数法分配类别整数总数；类别内先在原始父任务之间分配，再在父任务的有效 question types 之间均分，因此拆分不会提高父任务权重。自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
 5. `ClinicalDesignAgent` 包装现有 `rag_designs` 子图，对每个非零任务使用医学 PDF 做 RAG，逐项把设计和引用写入 Blueprint，再由
    人工整体确认或定向重做。新设计为每个具体 question type 生成配置数量的唯一、语义等价模板，默认三个；letter 任务先请求一个获准字段的安全精确分类值摘要，再生成结构化 `answer_field` 与 `answer_value_mapping`。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
@@ -66,7 +67,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 - 语义型用户输入和审核先由 DeepSeek 转为受限 JSON，再由代码验证；RAG 前固定扫描 `materials/` 下
   分类目录中的 PDF，用户自然语言选择的精确相对路径经验证后才参与检索。
 - 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准字段投影。
-- Task Plan 与样本分配只在确认后改变 Blueprint；Task Plan 和 RAG 设计的每个审核版本均作为不可变 JSON 保存，RAG 设计仍逐项写入 Blueprint 后通过确认/修订闭环收敛。
+- 初始 Blueprint 模板不预填 metric；Task Plan 与样本分配只在确认后改变 Blueprint，确认时才写入每个保留最终任务的 metric。Task Plan 和 RAG 设计的每个审核版本均作为不可变 JSON 保存，RAG 设计仍逐项写入 Blueprint 后通过确认/修订闭环收敛。
 - 同一 task/image 最多生成一题；默认每阶段每图最多接受二十题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
 - 三种答案格式都保留可回放的 annotation witness。letter 任务由代码从 `answer_field` 唯一定位原始 scalar，并通过 `answer_value_mapping` 固定正确 option；LLM 只生成题干。free_text 由代码唯一定位直接答案字符串；bbox 由代码按 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。代码在 Reviewer 前精确验证，raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
 - bbox 任务只接受恰有一个合法标注框且能唯一定位四坐标 witness 的候选，不接受 mask 或运行期
@@ -89,7 +90,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 ## 推理与评测边界
 
 评测入口显式接收 benchmark JSONL、`benchmark_manifest.json` 和数据集旁的
-`image_manifest.jsonl`。加载器验证三者哈希、task/response-format/metric 契约以及被引用 PNG
+`image_manifest.jsonl`。加载器依据共享 metric registry 验证三者哈希、task/response-format/metric 契约以及被引用 PNG
 的路径、尺寸和哈希，只通过 `image_id` 找图，不解释 `image_path`。当前稳定指标映射为
 letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。
 

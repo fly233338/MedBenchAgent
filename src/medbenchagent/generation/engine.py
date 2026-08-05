@@ -18,6 +18,7 @@ from medbenchagent.generation.context import evidence_provenance, scalar_evidenc
 from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
 from medbenchagent.construction import GENERATION_AGENT, event_context, record_event
 from medbenchagent.llm import ModelUnavailable
+from medbenchagent.metrics import is_metric_supported
 from medbenchagent.sample_counts import distribute_sample_counts
 from medbenchagent.settings import get_settings
 
@@ -206,6 +207,11 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
         response_format = task.get("response_format")
         if response_format not in {"letter", "bbox", "free_text"}:
             raise ValueError(f"{task_id}: unsupported response_format {response_format}.")
+        if not is_metric_supported(response_format, task.get("metric")):
+            raise ValueError(
+                f"{task_id}: final Blueprint task must contain a metric compatible with "
+                f"response format {response_format}."
+            )
         supporting = task.get("supporting_fields")
         if not isinstance(supporting, list) or not supporting or not all(
             is_supporting_field_path(field) for field in supporting

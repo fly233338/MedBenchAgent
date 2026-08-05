@@ -612,6 +612,7 @@ def test_task_plan_draft_is_written_before_human_review(tmp_path: Path, monkeypa
             "view": {
                 "decision": "retain",
                 "supporting_fields": ["image.annotation.view"],
+                "metric": "accuracy",
                 "reason": "Available.",
             }
         }

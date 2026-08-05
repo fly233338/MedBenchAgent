@@ -17,14 +17,11 @@ from medbenchagent.evaluation.contracts import (
     LoadedBenchmark,
     TaskSpec,
 )
+from medbenchagent.metrics import metrics_by_response_format
 
 
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
-METRICS_BY_FORMAT = {
-    "letter": {"accuracy", "macro_f1"},
-    "free_text": {"bleu"},
-    "bbox": {"miou"},
-}
+METRICS_BY_FORMAT = metrics_by_response_format()
 
 
 class EvaluationDataError(ValueError):

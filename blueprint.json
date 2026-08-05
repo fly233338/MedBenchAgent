@@ -13,7 +13,6 @@
       "require": "This task requires at least two semantically distinct imaging modality values that can serve as correct answers and can be reliably determined from the annotation, image metadata, or dataset description.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "accuracy",
       "category": "image_acquisition_and_basic_information",
       "sample_count": null
     },
@@ -23,7 +22,6 @@
       "require": "This task requires a view, projection, or plane field with values such as CC, MLO, AP, PA, lateral, axial, coronal, or sagittal.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "accuracy",
       "category": "image_acquisition_and_basic_information",
       "sample_count": null
     },
@@ -33,7 +31,6 @@
       "require": "This task requires a quality or artifact field with values such as diagnostic, non-diagnostic, motion artifact, blur, underexposure, or overexposure.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "accuracy",
       "category": "image_acquisition_and_basic_information",
       "sample_count": null
     },
@@ -43,7 +40,6 @@
       "require": "This task requires at least two semantically distinct anatomical regions or primary body structures that can serve as correct answers and can be reliably determined from the annotation, image metadata, or dataset description.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "accuracy",
       "category": "anatomy_and_global_tissue_characteristics",
       "sample_count": null
     },
@@ -53,7 +49,6 @@
       "require": "This task requires a structured categorical field that directly describes one image-observable global anatomical property, such as tissue composition, organ size, developmental state, or background texture. Different semantic properties must be represented as separate question types, each using exactly one answer-bearing field with at least two semantically distinct values that can serve as correct answers. Acquisition metadata, localized finding attributes, clinical interpretations, assessments, diagnoses, and pathology results do not support this task.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "accuracy",
       "category": "anatomy_and_global_tissue_characteristics",
       "sample_count": null
     },
@@ -63,7 +58,6 @@
       "require": "This task requires both explicit positive and explicit negative finding-presence evidence from a finding-presence label, abnormality label, or reliable case annotation. Missing bounding boxes or finding annotations must not be interpreted as absence.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "accuracy",
       "category": "finding_recognition_and_characterization",
       "sample_count": null
     },
@@ -73,7 +67,6 @@
       "require": "This task requires a structured categorical field whose values directly name visual finding categories at one consistent taxonomy level, such as a mass, fracture, effusion, or consolidation, with at least two categories able to serve as correct answers. The category must be explicitly annotated rather than inferred from a clinical interpretation, differential diagnosis, named disease, malignancy suspicion, assessment category, prognosis, or pathology result.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "accuracy",
       "category": "finding_recognition_and_characterization",
       "sample_count": null
     },
@@ -83,7 +76,6 @@
       "require": "This task requires a structured categorical field that directly describes one observable property of the same target finding or abnormal region, such as shape, boundary, orientation, signal intensity, or enhancement pattern. Fields describing different semantic properties must become separate question types, each using exactly one answer-bearing field with at least two semantically distinct values that can serve as correct answers. Finding categories, clinical interpretations, assessments, diagnoses, prognoses, and pathology results are not finding attributes.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "accuracy",
       "category": "finding_recognition_and_characterization",
       "sample_count": null
     },
@@ -93,7 +85,6 @@
       "require": "This task requires a paired expert-written natural-language finding description that can be used directly as the reference answer. Categorical labels, delimiter-joined terms, diagnoses, and isolated structured attributes such as finding type, shape, margin, location, distribution, or imaging appearance do not support this task by themselves.",
       "task_type": "open_vqa",
       "response_format": "free_text",
-      "metric": "bleu",
       "category": "finding_recognition_and_characterization",
       "sample_count": null
     },
@@ -103,7 +94,6 @@
       "require": "This task requires an assessment-category field with values such as BI-RADS 1–6, PI-RADS 1–5, LI-RADS categories, Lung-RADS categories, or an equivalent standardized system.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "macro_f1",
       "category": "clinical_assessment_and_diagnosis",
       "sample_count": null
     },
@@ -113,7 +103,6 @@
       "require": "This task requires a severity, grade, or stage field with ordered values such as mild, moderate, and severe; grade 1–3; or stage I–IV.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "macro_f1",
       "category": "clinical_assessment_and_diagnosis",
       "sample_count": null
     },
@@ -123,7 +112,6 @@
       "require": "This task requires an explicit expert-confirmed diagnosis field associated with the imaged finding or case and containing one clinically specific disease or condition label. An imaging diagnosis or pathology-confirmed diagnosis may serve as the reference diagnosis. Generic finding types, standardized assessment categories, benign or malignant status, and missing or non-diagnostic values such as unknown, not available, or not applicable do not support this task.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "accuracy",
       "category": "clinical_assessment_and_diagnosis",
       "sample_count": null
     },
@@ -133,7 +121,6 @@
       "require": "This task requires an explicit pathology or malignancy-status field with values such as benign, malignant, atypical, high-risk, in situ, or invasive. The label may describe the target lesion or the corresponding case, but it must be explicitly provided rather than inferred from the diagnosis name.",
       "task_type": "close_vqa",
       "response_format": "letter",
-      "metric": "macro_f1",
       "category": "clinical_assessment_and_diagnosis",
       "sample_count": null
     },
@@ -143,7 +130,6 @@
       "require": "This task requires a paired report field containing a complete expert-written medical imaging report for each corresponding case.",
       "task_type": "open_vqa",
       "response_format": "free_text",
-      "metric": "bleu",
       "category": "report_generation",
       "sample_count": null
     },
@@ -153,7 +139,6 @@
       "require": "This task requires one valid lesion-level bounding box that unambiguously defines the target region for the generated item. Finding names, descriptions, diagnoses, or case-level labels may coexist in the annotation, but they are not used to identify the target in the question and do not make detection unsupported.",
       "task_type": "open_vqa",
       "response_format": "bbox",
-      "metric": "miou",
       "category": "spatial_localization",
       "sample_count": null
     },
@@ -163,7 +148,6 @@
       "require": "This task requires one valid lesion-level bounding box and a finding name, structured finding label, or textual finding description paired with that box. A flat annotation record containing the selected finding field and a unique bounding box may be treated as paired; for array-valued or multi-finding annotations, the finding and bounding box must belong to the same finding item. The finding identifies the target in the question, while the bounding box is the answer.",
       "task_type": "open_vqa",
       "response_format": "bbox",
-      "metric": "miou",
       "category": "spatial_localization",
       "sample_count": null
     }

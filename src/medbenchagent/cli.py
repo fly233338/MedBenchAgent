@@ -156,15 +156,21 @@ def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
         tasks = payload.get("task_plan", {}).get("tasks", {})
         for task_id, decision in tasks.items():
             fields = decision.get("supporting_fields", [])
+            metric = decision.get("metric")
             if isinstance(decision.get("question_types"), dict):
                 fields = {
                     question_type_id: question_type.get("supporting_fields", [])
                     for question_type_id, question_type in decision["question_types"].items()
                     if isinstance(question_type, dict)
                 }
+                metric = {
+                    question_type_id: question_type.get("metric")
+                    for question_type_id, question_type in decision["question_types"].items()
+                    if isinstance(question_type, dict)
+                }
             output(
                 f"- {task_id}: {decision.get('decision')} | "
-                f"fields={fields} | "
+                f"metric={metric} | fields={fields} | "
                 f"{decision.get('reason', '')}"
             )
     elif kind == "sample_count_confirmation":

@@ -152,7 +152,7 @@ def _task_score(
         ]
         references = [str(row["sample"].item["answer"]) for row in rows]
         return corpus_bleu(predictions, references, language)
-    return sum(row["score"] for row in rows) / len(rows)
+    raise EvaluationDataError(f"Unsupported metric implementation: {metric}")
 
 
 def evaluate_inference(

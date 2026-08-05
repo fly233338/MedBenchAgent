@@ -2,6 +2,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from medbenchagent.run_export import benchmark_id, export_rag_designs, finalize_run
 
 
@@ -113,3 +115,33 @@ def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: 
             "status": "complete",
         }
     ]
+
+
+def test_finalize_rejects_blueprint_without_metric(tmp_path: Path) -> None:
+    blueprint = _blueprint()
+    blueprint["tasks"]["view"].pop("metric")
+    blueprint_path = tmp_path / "blueprint.json"
+    blueprint_path.write_text(json.dumps(blueprint), encoding="utf-8")
+    image_manifest = tmp_path / "image_manifest.jsonl"
+    image_manifest.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="view: final Blueprint task must contain a metric"):
+        finalize_run(
+            run_directory=tmp_path,
+            run_id="run-1",
+            blueprint_path=blueprint_path,
+            raw_output_path=tmp_path / "raw.jsonl",
+            provenance_output_path=tmp_path / "provenance.jsonl",
+            rag_designs_path=tmp_path / "rag_designs.json",
+            construction_events_path=tmp_path / "construction_events.jsonl",
+            task_counts={},
+            shortfalls={},
+            dataset_catalog_entry={
+                "id": "vindr-mammo",
+                "name": "VinDr-Mammo",
+                "description": "Mammography.",
+            },
+            dataset_profile={},
+            dataset_access_manifest={},
+            image_manifest_path=image_manifest,
+        )
