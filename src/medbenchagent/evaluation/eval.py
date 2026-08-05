@@ -11,6 +11,7 @@ from typing import Any
 
 from medbenchagent.evaluation.contracts import ImageEntry, InferenceSample, TaskSpec
 from medbenchagent.evaluation.data import EvaluationDataError, METRICS_BY_FORMAT, file_sha256
+from medbenchagent.evaluation.io import atomic_write_json
 from medbenchagent.evaluation.scoring import (
     corpus_bleu,
     item_correct,
@@ -18,7 +19,6 @@ from medbenchagent.evaluation.scoring import (
     macro_f1,
     option_value,
 )
-from medbenchagent.run_artifacts import atomic_write_json
 
 
 def _load_inference(path: Path) -> dict[str, Any]:

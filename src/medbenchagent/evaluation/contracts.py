@@ -37,6 +37,7 @@ class InferenceSample:
 class ModelOutput:
     raw_text: str
     coordinate_size: tuple[int, int] | None = None
+    answer_text: str | None = None
 
 
 @dataclass(frozen=True)

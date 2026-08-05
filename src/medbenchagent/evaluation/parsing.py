@@ -25,21 +25,22 @@ def _bbox_answer(raw_text: str) -> object:
 def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list[float]:
     """Parse one adapter output and return the benchmark's canonical prediction type."""
     response_format = sample.task.response_format
+    answer_text = output.answer_text if output.answer_text is not None else output.raw_text
     if response_format == "letter":
         options = sample.item["options"]
         assert isinstance(options, list)
-        raw_answer = output.raw_text.strip()
+        raw_answer = answer_text.strip()
         if len(raw_answer) == 1 and raw_answer.isalpha():
             letter = raw_answer.upper()
             if ord(letter) - ord("A") in range(len(options)):
                 return letter
         raise PredictionParseError("response must be exactly one valid option letter")
     if response_format == "free_text":
-        answer = output.raw_text.strip()
+        answer = answer_text.strip()
         if not answer:
             raise PredictionParseError("response must be non-empty text")
         return answer
-    answer = _bbox_answer(output.raw_text)
+    answer = _bbox_answer(answer_text)
     if (
         not isinstance(answer, list)
         or len(answer) != 4

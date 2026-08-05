@@ -354,43 +354,88 @@ matching `benchmark_manifest.json` and the normalized dataset's
 `image_id`. The opaque source `image_path` stored in benchmark items is never
 used for inference.
 
-Run one process per GPU with `torchrun`. Each process loads one complete model
-copy on its `LOCAL_RANK`, processes a round-robin item shard in ordinary
-batches, and writes a temporary rank file. Rank zero creates one ordered,
-self-contained inference JSON after every rank succeeds:
+Run evaluation in a separate Conda environment rather than the project's locked
+`uv` environment:
 
-```powershell
-uv run torchrun --standalone --nproc-per-node=4 --module medbenchagent.evaluation.inference `
-  --adapter qwen2_5_vl `
-  --model-path models/Qwen2.5-VL-7B-Instruct `
-  --benchmark benchmarks/runs/RUN_ID/benchmark.DATASET.audited.jsonl `
-  --benchmark-manifest benchmarks/runs/RUN_ID/benchmark_manifest.json `
-  --image-manifest datasets/NORMALIZED_DATASET/image_manifest.jsonl `
-  --output results/qwen2_5_vl.json `
-  --batch-size 4
+```bash
+conda create -n medbench-eval python=3.11 -y
+conda activate medbench-eval
+python -m pip install -r requirements/evaluation.txt
 ```
 
-For one GPU, the equivalent `uv run medbench-infer ...` command is available.
-Inference is deterministic greedy decoding. The defaults are 512 new tokens,
-SDPA, 256-1280 Qwen visual tokens, and correctness thresholds of 0.5 for both
-sentence BLEU and bbox IoU. Use the CLI flags to change these values. Existing
-outputs and temporary parts are protected unless `--overwrite` is explicitly
-passed; interrupted jobs retain their parts for diagnosis but do not resume
-them. Letter VQA uses a neutral system instruction to return only the correct
-option letter; its user message contains only the image followed by the
-question and labeled options, without an answer-format example. Letter outputs
-are parsed strictly as a single bare letter; JSON and option text are rejected.
-Free-text VQA omits the system message and sends only the image and original
-question; its complete non-empty response is scored as plain text. Bbox tasks
-send the same minimal user content with a system instruction requiring exactly
-one `{"bbox":[x1,y1,x2,y2]}` object in resized-image absolute coordinates.
+If the server needs a CUDA-specific PyTorch wheel, install the matching `torch`
+and `torchvision` build first, then install the requirements file. The repository
+does not assume a CUDA version. The evaluation environment does not need the full
+MedBenchAgent dependency set or an editable package install. From the repository
+root, verify the source modules directly:
 
-Generate the task, metric-group, and category report from the inference file:
+```bash
+PYTHONPATH=src python -m medbenchagent.evaluation.inference --help
+PYTHONPATH=src python -m medbenchagent.evaluation.eval --help
+```
 
-```powershell
-uv run medbench-eval `
-  --input results/qwen2_5_vl.json `
-  --output results/qwen2_5_vl.report.json
+Supported adapter keys are:
+
+| Adapter key | Model family | Parsed bbox coordinate space |
+| --- | --- | --- |
+| `qwen2_5_vl` | Backward-compatible Qwen2.5-VL key | Processed Qwen image |
+| `qwen2_5_vl_7b_instruct` | Qwen2.5-VL-7B-Instruct | Processed Qwen image |
+| `internvl3_8b` | InternVL3-8B | `[0,1000]` |
+| `qwen3_vl_8b_instruct` | Qwen3-VL-8B-Instruct | Processed Qwen image |
+| `qwen3_vl_8b_thinking` | Qwen3-VL-8B-Thinking | Processed Qwen image |
+| `lingshu_7b` | Lingshu-7B | Processed Qwen image |
+| `hulu_med_7b` | Hulu-Med-7B | Original PNG |
+| `qoq_med_vl_7b` | QoQ-Med-VL-7B | Processed Qwen image |
+| `chiron_o1_8b` | Chiron-o1-8B | `[0,1000]` |
+
+All adapters use the same task prompts. Qwen3 Thinking extracts the suffix after
+the last `</think>`, Chiron extracts the suffix after the last
+`### The final answer is:`, and Hulu uses its processor's `use_think=False`
+decode as the answer. Full reasoning remains in `raw_prediction`; an absent
+official separator falls back to the full response, while an empty extracted
+answer fails strict parsing. Letter responses must be one bare valid letter,
+free text must be non-empty, and bbox responses must be exactly one
+`{"bbox":[x1,y1,x2,y2]}` JSON object.
+
+For a single model/dataset combination, run one process per GPU with the current
+Conda environment's Python:
+
+```bash
+PYTHONPATH=src python -m torch.distributed.run \
+  --standalone \
+  --nproc-per-node 4 \
+  --module medbenchagent.evaluation.inference \
+  --adapter qwen2_5_vl_7b_instruct \
+  --model-path /path/to/Qwen2.5-VL-7B-Instruct \
+  --benchmark /path/to/benchmark.DATASET.audited.jsonl \
+  --benchmark-manifest /path/to/benchmark_manifest.json \
+  --image-manifest /path/to/image_manifest.jsonl \
+  --output results/qwen2_5_vl_7b_instruct.json \
+  --batch-size 4
+
+PYTHONPATH=src python -m medbenchagent.evaluation.eval \
+  --input results/qwen2_5_vl_7b_instruct.json \
+  --output results/qwen2_5_vl_7b_instruct.report.json
+```
+
+Each process loads one complete model on its `LOCAL_RANK`, processes a
+round-robin item shard, and writes a temporary rank file. Rank zero creates the
+ordered inference JSON after every rank succeeds. Generation is greedy, with
+defaults of 512 new tokens, SDPA, and 0.5 correctness thresholds for both BLEU
+and bbox IoU. Existing inference outputs and temporary parts are protected
+unless `--overwrite` is supplied; interrupted jobs do not resume.
+
+For batch evaluation, edit the direct assignments at the top of
+`scripts/experiments/evaluate_models.sh`. Each model has `NAME`, `ADAPTER`, and
+`PATH` variables. Four dataset groups each have `NAME`, `BENCHMARK`,
+`BENCHMARK_MANIFEST`, and `IMAGE_MANIFEST`; select prefixes in
+`SELECTED_MODELS` and `SELECTED_DATASETS`. The script validates every selected
+path before starting a GPU, then runs inference and report generation for each
+model/dataset pair. It assumes the evaluation Conda environment is already
+active and intentionally contains no `conda activate`, `conda run`, or `uv run`.
+
+```bash
+bash scripts/experiments/evaluate_models.sh
 ```
 
 The evaluator recomputes item scores and checks the recorded result. It reports

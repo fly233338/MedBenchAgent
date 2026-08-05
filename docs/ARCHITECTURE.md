@@ -93,15 +93,27 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 的路径、尺寸和哈希，只通过 `image_id` 找图，不解释 `image_path`。当前稳定指标映射为
 letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。
 
-模型通过显式注册的 `ModelAdapter` 加载；每个模型拥有一个独立模块。首个实现
-`qwen2_5_vl` 使用 Transformers 和 Qwen 处理器，并把模型 resize 后的绝对 bbox 坐标还原到
-原 PNG 坐标。letter VQA 的 system prompt 只要求返回正确选项的单个字母，user content 只含图像及
-题干与选项，不提供具体答案或输出格式示例；解析器也只接受裸单字母响应。free-text VQA 不设置
-system message，直接把完整非空响应作为预测；所有 bbox 任务统一由 system
-要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含图像和题目（letter
-另含选项）。`torchrun` 单节点每 GPU 启动一个 rank，每个 rank 独立加载一份完整模型，
-以轮转切片和普通 batch 循环推理，不使用 DDP 或 tensor parallel。rank 临时 JSONL 全部成功后，
-rank 0 按输入顺序写出自包含的 `medbench-inference.v1` JSON；中断不自动续跑。
+模型通过显式注册的 `ModelAdapter` 加载；每个具体模型拥有独立模块，共用族级实现。目前支持
+Qwen2.5-VL、InternVL3、Qwen3-VL Instruct/Thinking、Lingshu、Hulu-Med、QoQ-Med-VL 和
+Chiron-o1。Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/Chiron 以固定
+`[0,1000]` 坐标空间解释 grounding，Hulu 以原 PNG 尺寸解释。letter VQA 的 system prompt 只要求
+返回正确选项的单个字母，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
+只接受裸单字母响应。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
+任务统一由 system 要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含
+图像和题目（letter 另含选项），所有 adapter 复用同一 prompt 函数。
+
+`ModelOutput` 同时保留完整 `raw_text`、可选模型坐标空间和可选 `answer_text`。解析器仅在 adapter
+按模型官方协议提取终答时优先使用 `answer_text`：Qwen3 Thinking 使用最后一个 `</think>`，Chiron
+使用最后一个 `### The final answer is:`，Hulu 对同一 output IDs 分别保留 thinking 与无 thinking
+解码。分隔符缺失时回退完整响应，空终答保持为空并产生严格 parse error；推理产物只把完整响应写入
+`raw_prediction`，wire schema 仍是 `medbench-inference.v1`。
+
+`torchrun` 单节点每 GPU 启动一个 rank，每个 rank 独立加载一份完整模型，以轮转切片和普通 batch
+循环推理，不使用 DDP 或 tensor parallel。InternVL 族在 adapter batch 内按公共 system prompt 分组
+调用 `batch_chat` 后恢复输入顺序；Hulu 因 processor 限制在 batch 内逐样本执行。rank 临时 JSONL
+全部成功后，rank 0 按输入顺序写出自包含推理 JSON；中断不自动续跑。evaluation 子系统的 JSON
+写入工具不依赖 benchmark 构建运行时，因此可在只安装 `requirements/evaluation.txt` 的独立 Conda
+环境中通过源码 `PYTHONPATH` 运行。
 
 `medbench-evaluation.v1` 从推理 JSON 重新计算逐题结果、逐 task 主指标、同指标 task-macro
 以及 category/全局阈值正确率。选择题 macro-F1 使用选项文本而非平衡后的字母位置；

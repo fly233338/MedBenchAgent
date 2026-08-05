@@ -1,0 +1,11 @@
+torch>=2.0
+torchvision>=0.15
+transformers>=4.57.0,<5
+qwen-vl-utils>=0.0.14
+pillow>=10
+tqdm>=4.66
+sacrebleu>=2.4
+decord>=0.6
+imageio>=2.34
+ffmpeg-python>=0.2
+opencv-python-headless>=4.6

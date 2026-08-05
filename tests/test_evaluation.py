@@ -213,9 +213,33 @@ def test_parse_free_text_prediction_rejects_empty_output() -> None:
         parse_prediction(ModelOutput(" \n"), _sample("free_text", "answer"))
 
 
+def test_parse_prediction_prefers_officially_extracted_answer() -> None:
+    sample = _sample("letter", "B", ["benign", "malignant"])
+
+    assert parse_prediction(ModelOutput("reasoning</think>B", answer_text="B"), sample) == "B"
+
+
+def test_empty_extracted_answer_does_not_fall_back_to_raw_output() -> None:
+    sample = _sample("letter", "B", ["benign", "malignant"])
+
+    with pytest.raises(PredictionParseError, match="exactly one valid option letter"):
+        parse_prediction(ModelOutput("B", answer_text=""), sample)
+
+
 def test_parse_bbox_rescales_qwen_coordinate_space() -> None:
     sample = _sample("bbox", [20.0, 10.0, 100.0, 50.0])
     output = ModelOutput('{"bbox":[10,5,50,25]}', coordinate_size=(100, 50))
+
+    assert parse_prediction(output, sample) == [20.0, 10.0, 100.0, 50.0]
+
+
+def test_parse_bbox_rescales_internvl_normalized_coordinate_space() -> None:
+    sample = _sample("bbox", [20.0, 10.0, 100.0, 50.0])
+    output = ModelOutput(
+        "reasoning### The final answer is:{\"bbox\":[100,100,500,500]}",
+        coordinate_size=(1000, 1000),
+        answer_text='{"bbox":[100,100,500,500]}',
+    )
 
     assert parse_prediction(output, sample) == [20.0, 10.0, 100.0, 50.0]
 
@@ -249,7 +273,10 @@ class _FakeAdapter:
     def generate(self, samples: list[InferenceSample], *, max_new_tokens: int) -> list[ModelOutput]:
         assert max_new_tokens == 32
         return [
-            ModelOutput(chr(ord("A") + sample.item["options"].index("malignant")))
+            ModelOutput(
+                "private reasoning",
+                answer_text=chr(ord("A") + sample.item["options"].index("malignant")),
+            )
             for sample in samples
         ]
 
@@ -315,6 +342,10 @@ def test_inference_and_evaluation_end_to_end_with_fake_adapter(
     assert progress_updates == [2]
     assert not (tmp_path / "inference.json.parts").exists()
     assert [item["prediction"] for item in inference["items"]] == ["B", "B"]
+    assert [item["raw_prediction"] for item in inference["items"]] == [
+        "private reasoning",
+        "private reasoning",
+    ]
     assert report["summary"] == {
         "total": 2,
         "correct": 2,

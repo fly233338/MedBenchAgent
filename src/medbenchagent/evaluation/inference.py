@@ -18,11 +18,11 @@ from tqdm.auto import tqdm
 
 from medbenchagent.evaluation.contracts import InferenceSample, LoadedBenchmark
 from medbenchagent.evaluation.data import load_benchmark
+from medbenchagent.evaluation.io import atomic_write_json
 from medbenchagent.evaluation.models import load_model_adapter
 from medbenchagent.evaluation.models.base import ModelAdapter
 from medbenchagent.evaluation.parsing import PredictionParseError, parse_prediction
 from medbenchagent.evaluation.scoring import item_correct, item_score
-from medbenchagent.run_artifacts import atomic_write_json
 
 
 AdapterLoader = Callable[..., ModelAdapter]
