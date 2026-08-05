@@ -312,6 +312,7 @@ def test_reconciliation_drops_clear_duplicate_and_rewrites_reason(monkeypatch) -
     assert "Review the complete draft Task Plan" in calls[0][0]
     assert "assessment_category" in calls[0][0]
     assert "severity_grading" in calls[0][0]
+    assert "ordered category values alone do not make them distinct" in calls[0][0]
     assert "Draft Task Plan" in calls[0][0]
 
 

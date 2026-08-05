@@ -34,6 +34,15 @@ def test_blueprint_defines_all_categories_and_spatial_tasks() -> None:
     assert "binary presence or absence" in tasks["finding_presence"]["require"]
     assert "direct categorical label" in tasks["finding_presence"]["require"]
     assert "explicit positive and negative" in tasks["finding_presence"]["require"]
+    assert tasks["assessment_category"]["description"] == (
+        "Determine the standardized reporting category assigned to an imaging finding or case."
+    )
+    assert "formal clinical reporting or risk-stratification scheme" in tasks["assessment_category"]["require"]
+    assert "predefined clinical meanings" in tasks["assessment_category"]["require"]
+    assert tasks["severity_grading"]["description"] == (
+        "Determine how severe or extensive an imaging abnormality or disease is, expressed as an ordered grade or stage."
+    )
+    assert "directly encodes the severity or extent" in tasks["severity_grading"]["require"]
     assert "laterality_identification" not in tasks
     assert "missing finding annotations or bounding boxes" in tasks["finding_presence"]["require"]
     assert "masks" not in tasks["finding_presence"]["require"]

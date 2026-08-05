@@ -157,6 +157,8 @@ def _task_plan_reconciliation_prompt(
         "Use only the Blueprint task definitions, the dataset profile, and the draft Task Plan.\n\n"
         "Check for these clear problems:\n"
         "1. Two retained tasks use the same supporting field and ask essentially the same semantic question.\n"
+        "   In particular, assess the pair `assessment_category` and `severity_grading` for duplication when\n"
+        "   both rely on the same field; ordered category values alone do not make them distinct.\n"
         "2. A general task duplicates a more direct task supported by an explicit categorical annotation.\n"
         "   For example, a binary presence task should not be retained alongside a direct finding-category task\n"
         "   when both rely on the same finding label.\n"

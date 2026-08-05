@@ -90,8 +90,8 @@
     },
 
     "assessment_category": {
-      "description": "Determine the standardized clinical assessment category supported by the medical image.",
-      "require": "This task requires an assessment-category field with values such as BI-RADS 1–6, PI-RADS 1–5, LI-RADS categories, Lung-RADS categories, or an equivalent standardized system.",
+      "description": "Determine the standardized reporting category assigned to an imaging finding or case.",
+      "require": "This task requires a categorical field drawn from a formal clinical reporting or risk-stratification scheme whose labels have predefined clinical meanings.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "category": "clinical_assessment_and_diagnosis",
@@ -99,8 +99,8 @@
     },
 
     "severity_grading": {
-      "description": "Determine the severity, stage, or grade of an abnormality or disease.",
-      "require": "This task requires a severity, grade, or stage field with ordered values such as mild, moderate, and severe; grade 1–3; or stage I–IV.",
+      "description": "Determine how severe or extensive an imaging abnormality or disease is, expressed as an ordered grade or stage.",
+      "require": "This task requires a field that directly encodes the severity or extent of an abnormality or disease through ordered levels, grades, or stages, such as mild, moderate, and severe; grade 1–3; or stage I–IV.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "category": "clinical_assessment_and_diagnosis",
