@@ -55,7 +55,7 @@
 
     "finding_presence": {
       "description": "Determine whether a specified imaging finding or abnormality is present in the image.",
-      "require": "This task requires both explicit positive and explicit negative finding-presence evidence from a finding-presence label, abnormality label, or reliable case annotation. Missing bounding boxes or finding annotations must not be interpreted as absence.",
+      "require": "This task evaluates the binary presence or absence of a specified imaging finding or abnormality when no direct categorical label for that finding is available; if such a label is available, the category-identification task is preferred, and support requires explicit positive and negative evidence because missing finding annotations or bounding boxes do not establish absence.",
       "task_type": "close_vqa",
       "response_format": "letter",
       "category": "finding_recognition_and_characterization",

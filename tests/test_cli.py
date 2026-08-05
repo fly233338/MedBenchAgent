@@ -55,6 +55,12 @@ def _interrupt(kind: str) -> dict:
                         "supporting_fields": ["image.annotation.view"],
                         "metric": "accuracy",
                         "reason": "View is available.",
+                    },
+                    "severity_grading": {
+                        "decision": "drop",
+                        "supporting_fields": [],
+                        "metric": None,
+                        "reason": "Duplicate of the assessment task.",
                     }
                 }
             },
@@ -223,6 +229,8 @@ def test_build_prompts_for_requirement_and_drives_all_interrupts(
     assert "[start] SpecificationAgent / benchmark_extract" in rendered
     assert "[waiting] Confirm the BenchmarkInfo" in rendered
     assert "metric=accuracy" in rendered
+    assert "severity_grading" in rendered
+    assert "Duplicate of the assessment task." in rendered
     assert "=== Run initialized ===" in rendered
     assert "Run ID (directory name): run-1" in rendered
     assert rendered.count("Run ID (directory name): run-1") == 1

@@ -31,7 +31,9 @@ def test_blueprint_defines_all_categories_and_spatial_tasks() -> None:
     }
     assert "at least two semantically distinct" in tasks["modality_identification"]["require"]
     assert "at least two semantically distinct" in tasks["anatomy_identification"]["require"]
-    assert "both explicit positive and explicit negative" in tasks["finding_presence"]["require"]
+    assert "binary presence or absence" in tasks["finding_presence"]["require"]
+    assert "direct categorical label" in tasks["finding_presence"]["require"]
+    assert "explicit positive and negative" in tasks["finding_presence"]["require"]
     assert "laterality_identification" not in tasks
-    assert "Missing bounding boxes" in tasks["finding_presence"]["require"]
+    assert "missing finding annotations or bounding boxes" in tasks["finding_presence"]["require"]
     assert "masks" not in tasks["finding_presence"]["require"]

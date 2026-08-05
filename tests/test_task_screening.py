@@ -61,7 +61,14 @@ def test_task_plan_retries_one_invalid_complete_response_and_applies_only_after_
         "supporting_fields": ["image.annotation.breast_birads"],
         "reason": "Missing metric.",
     }
-    responses = iter([invalid, _plan()["tasks"]["assessment_category"], _plan()["tasks"]["diagnosis"]])
+    responses = iter(
+        [
+            invalid,
+            _plan()["tasks"]["assessment_category"],
+            _plan()["tasks"]["diagnosis"],
+            _plan(),
+        ]
+    )
     monkeypatch.setattr(screening, "complete_json", lambda *_args: next(responses))
 
     plan = screening.generate_task_plan(_blueprint(), _profile())
@@ -84,36 +91,46 @@ def test_complete_blueprint_task_plan_calls_model_once_per_task(monkeypatch) -> 
     blueprint = json.loads(get_settings().paths.blueprint_template.read_text(encoding="utf-8"))
     task_ids = list(blueprint["tasks"])
     calls: list[tuple[str, str]] = []
+    task_responses: dict[str, dict] = {}
 
     def fake_complete_json(system_prompt, user_prompt):
         calls.append((system_prompt, user_prompt))
-        task_id = next(task_id for task_id in task_ids if f"Task ID: {task_id}" in system_prompt)
+        task_id = next(
+            (task_id for task_id in task_ids if f"Task ID: {task_id}" in system_prompt), None
+        )
+        if task_id is None:
+            return {"tasks": task_responses}
         if task_id == task_ids[0]:
-            return {
+            response = {
                 "decision": "retain",
                 "supporting_fields": ["image.annotation.breast_birads"],
                 "metric": "accuracy",
                 "reason": "Available.",
             }
-        if task_id in screening.DECOMPOSABLE_TASK_IDS:
-            return {"decision": "drop", "question_types": {}, "reason": "Unsupported."}
-        return {
-            "decision": "drop",
-            "supporting_fields": [],
-            "metric": None,
-            "reason": "Unsupported.",
-        }
+        elif task_id in screening.DECOMPOSABLE_TASK_IDS:
+            response = {"decision": "drop", "question_types": {}, "reason": "Unsupported."}
+        else:
+            response = {
+                "decision": "drop",
+                "supporting_fields": [],
+                "metric": None,
+                "reason": "Unsupported.",
+            }
+        task_responses[task_id] = response
+        return response
 
     monkeypatch.setattr(screening, "complete_json", fake_complete_json)
 
     result = screening.generate_task_plan(blueprint, _profile())
 
     assert list(result["tasks"]) == task_ids
-    assert len(calls) == len(task_ids)
+    assert len(calls) == len(task_ids) + 1
     assert all(
         sum(f"Task ID: {task_id}" in system_prompt for task_id in task_ids) == 1
-        for system_prompt, _user_prompt in calls
+        for system_prompt, _user_prompt in calls[:-1]
     )
+    assert "Review the complete draft Task Plan" in calls[-1][0]
+    assert all(task_id in calls[-1][0] for task_id in task_ids)
     assert result["tasks"][task_ids[0]]["metric"] == "accuracy"
 
 
@@ -226,6 +243,158 @@ def test_task_plan_rejects_incompatible_metric() -> None:
     assert errors == ["task: unsupported metric for response format: bleu"]
 
 
+def test_reconciliation_drops_clear_duplicate_and_rewrites_reason(monkeypatch) -> None:
+    blueprint = {
+        "tasks": {
+            "assessment_category": {
+                "description": "Determine the standardized assessment category.",
+                "require": "Requires a standardized assessment field.",
+                "response_format": "letter",
+            },
+            "severity_grading": {
+                "description": "Determine the severity or grade.",
+                "require": "Requires an ordered severity or grade field.",
+                "response_format": "letter",
+            },
+        }
+    }
+    profile = {
+        "fields": {
+            "image.annotation.birads": {
+                "distinct_value_count": 7,
+                "top_values": ["1", "2", "3"],
+            }
+        }
+    }
+    draft = {
+        "tasks": {
+            "assessment_category": {
+                "decision": "retain",
+                "supporting_fields": ["image.annotation.birads"],
+                "metric": "macro_f1",
+                "reason": "The field is available.",
+            },
+            "severity_grading": {
+                "decision": "retain",
+                "supporting_fields": ["image.annotation.birads"],
+                "metric": "macro_f1",
+                "reason": "The field is ordered.",
+            },
+        }
+    }
+    reviewed = {
+        "tasks": {
+            "assessment_category": {
+                "decision": "retain",
+                "supporting_fields": ["image.annotation.birads"],
+                "metric": "macro_f1",
+                "reason": "The field directly supplies the assessment categories.",
+            },
+            "severity_grading": {
+                "decision": "drop",
+                "supporting_fields": [],
+                "metric": None,
+                "reason": "This task duplicates the retained assessment-category task.",
+            },
+        }
+    }
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        screening,
+        "complete_json",
+        lambda system, user: calls.append((system, user)) or reviewed,
+    )
+
+    result = screening._reconcile_task_plan(blueprint, profile, draft)
+
+    assert result == reviewed
+    assert len(calls) == 1
+    assert "Review the complete draft Task Plan" in calls[0][0]
+    assert "assessment_category" in calls[0][0]
+    assert "severity_grading" in calls[0][0]
+    assert "Draft Task Plan" in calls[0][0]
+
+
+def test_reconciliation_cannot_change_supporting_fields_or_metric(monkeypatch) -> None:
+    draft = _plan()
+    invalid = {
+        "tasks": {
+            "assessment_category": {
+                "decision": "retain",
+                "supporting_fields": ["image.annotation.findings[*].finding_type"],
+                "metric": "accuracy",
+                "reason": "Changed by review.",
+            },
+            "diagnosis": draft["tasks"]["diagnosis"],
+        }
+    }
+    monkeypatch.setattr(screening, "complete_json", lambda *_args: invalid)
+
+    with pytest.raises(screening.TaskPlanReviewRequired) as error:
+        screening._reconcile_task_plan(_blueprint(), _profile(), draft)
+
+    assert any("cannot change supporting_fields" in item for item in error.value.errors)
+    assert any("cannot change metric" in item for item in error.value.errors)
+
+
+def test_reconciliation_can_remove_one_question_type_without_adding_another(monkeypatch) -> None:
+    blueprint = {
+        "tasks": {
+            "finding_attribute": {
+                "response_format": "letter",
+            }
+        }
+    }
+    profile = {
+        "fields": {
+            "image.annotation.shape": {"distinct_value_count": 3},
+            "image.annotation.signal_intensity": {"distinct_value_count": 2},
+        }
+    }
+    draft = {
+        "tasks": {
+            "finding_attribute": {
+                "decision": "retain",
+                "question_types": {
+                    "shape": {
+                        "description": "Determine shape.",
+                        "supporting_fields": ["image.annotation.shape"],
+                        "metric": "accuracy",
+                        "reason": "Shape is available.",
+                    },
+                    "signal_intensity": {
+                        "description": "Determine signal intensity.",
+                        "supporting_fields": ["image.annotation.signal_intensity"],
+                        "metric": "macro_f1",
+                        "reason": "Signal intensity is available.",
+                    },
+                },
+                "reason": "Both properties are available.",
+            }
+        }
+    }
+    reviewed = {
+        "tasks": {
+            "finding_attribute": {
+                "decision": "retain",
+                "question_types": {
+                    "shape": {
+                        "description": "Determine shape.",
+                        "supporting_fields": ["image.annotation.shape"],
+                        "metric": "accuracy",
+                        "reason": "Shape remains supported.",
+                    }
+                },
+                "reason": "The signal-intensity question was removed as a duplicate.",
+            }
+        }
+    }
+    monkeypatch.setattr(screening, "complete_json", lambda *_args: reviewed)
+    result = screening._reconcile_task_plan(blueprint, profile, draft)
+
+    assert set(result["tasks"]["finding_attribute"]["question_types"]) == {"shape"}
+
+
 def test_visual_grounding_and_detection_can_both_be_retained() -> None:
     blueprint = {
         "tasks": {
@@ -274,7 +443,10 @@ def test_task_plan_prompt_checks_array_leaf_paths() -> None:
     assert "`[*]` leaf path" in prompt
     assert "top_values" in prompt
     assert "distinct_value_count >= 2" in prompt
-    assert "explicit positive and explicit negative" in prompt
+    assert "binary presence or absence" in prompt
+    assert "direct categorical finding label" in prompt
+    assert "prefer `finding_type`" in prompt
+    assert "explicit positive and negative" in prompt
     assert "may both be retained" in prompt
     assert "pathology-confirmed diagnoses are valid" in prompt
     assert "A segmentation mask is not a bbox" in prompt

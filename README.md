@@ -115,10 +115,13 @@ are not supported.
 ## Planning review
 
 The workflow computes the Task Plan by sending each predefined task to one sequential
-model call, then presents the aggregated result for review. Each call preserves the
-support-screening rules and also chooses one registered metric compatible with the task's
-response format. Respond in natural language to confirm the complete plan or describe one
-task to revise; DeepSeek maps every response to a validated confirm/revise action.
+model call, then runs one lightweight global consistency review over the aggregated result
+before presenting it for human review. Each task call preserves the support-screening rules
+and chooses one registered metric compatible with the task's response format. The global
+review may remove obvious semantic duplicates or clearly unsupported retained decisions and
+may rewrite reasons, but it cannot add fields or metrics. Respond in natural language to
+confirm the complete plan or describe one task to revise; DeepSeek maps every response to a
+validated confirm/revise action.
 BenchmarkInfo review uses the same natural-language interpretation. The initial Blueprint
 template does not preselect metrics. The working Blueprint is updated only after
 confirmation: dropped tasks are removed, retained tasks receive their approved
@@ -128,12 +131,14 @@ per observable semantic property, then materializes each type as an independent 
 as `finding_attribute.shape`; every expanded task selects its own metric. Every expanded
 task has one answer-bearing field, while `parent_task_id` preserves its planning family.
 The resulting Task Plan drafts are stored as immutable `task_plans/v1.json`, `v2.json`, and
-so on; RAG designs use the matching `rag_designs/vN.json` layout. The first model output
-creates `v1`, and each review revision creates the next version without overwriting earlier
-results. `construction_events.jsonl` records task-specific model calls and links each
+so on; RAG designs use the matching `rag_designs/vN.json` layout. The first per-task generation
+and global review create `v1`, and each human review revision creates the next version without overwriting earlier
+results. `construction_events.jsonl` records task-specific calls and the global reconciliation, and links each
 revision's natural-language request, changed task IDs, artifact path, and SHA-256. Detection and visual grounding are independent capabilities:
 both may be retained when the dataset has the required bounding-box and finding evidence.
 
+`finding_presence` is used for binary presence/absence when no direct categorical finding
+label is available; when such a label exists, the category-identification task is preferred.
 Metric candidates and their response-format compatibility are maintained in the shared
 metric registry. The task prompt receives the compatible candidates and their selection
 rules; the final benchmark manifest continues to store one primary metric per task.

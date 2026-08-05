@@ -28,6 +28,7 @@ from medbenchagent.contracts import GenerationResult
 from medbenchagent.generation import graph as generation_workflow
 from medbenchagent.rag import graph as rag_workflow
 from medbenchagent.run_artifacts import initialize_run, write_versioned_json
+from medbenchagent.task_screening import TaskPlanReviewRequired
 
 
 def _task(
@@ -636,6 +637,33 @@ def test_task_plan_draft_is_written_before_human_review(tmp_path: Path, monkeypa
     assert snapshot["artifact_path"] == "task_plans/v1.json"
     assert snapshot["artifact_sha256"] == hashlib.sha256(report.read_bytes()).hexdigest()
     assert snapshot["source"] == "initial_model_output"
+
+
+def test_task_plan_reconciliation_failure_does_not_write_artifact(tmp_path: Path, monkeypatch) -> None:
+    blueprint_path = tmp_path / "blueprint.json"
+    events_path = tmp_path / "construction_events.jsonl"
+    events_path.touch()
+    blueprint_path.write_text(json.dumps({"tasks": {"view": _task()}}), encoding="utf-8")
+    error = TaskPlanReviewRequired(
+        {"tasks": {}}, ["reconciliation: invalid reviewed Task Plan"]
+    )
+
+    def fail_generate_task_plan(*_args):
+        raise error
+
+    monkeypatch.setattr(capability_agent, "generate_task_plan", fail_generate_task_plan)
+
+    with pytest.raises(TaskPlanReviewRequired):
+        capability_agent._task_plan_generate_node(
+            {
+                "run_id": "run",
+                "construction_events_path": str(events_path),
+                "working_blueprint_path": str(blueprint_path),
+                "dataset_profile": {},
+            }
+        )
+
+    assert not (tmp_path / "task_plans").exists()
 
 
 def test_sample_count_revision_records_all_redistributed_tasks(tmp_path: Path, monkeypatch) -> None:
