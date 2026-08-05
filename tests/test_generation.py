@@ -43,7 +43,7 @@ def _task(response_format: str, fields: list[str], **extra) -> dict:
         "supporting_fields": fields,
         "dataset_support_reason": "Available.",
         "question_templates": ["What is shown in this image?"],
-        "generation_logic": "Use only the approved supporting fields.",
+        "generation_logic": "Use the approved annotation and selected template to generate the question.",
         "medical_task_description": "Recognition task.",
         "citations": [],
     }
@@ -93,27 +93,12 @@ def _fake_model(calls: list[tuple[str, float]]):
         if "Review one" in system:
             return {"approved": True, "reason": "Faithful."}
         if system.startswith("Generate one grounding"):
-            return {"question": "Locate the finding.", "answer": [1, 2, 8, 9]}
+            return {"question": "Locate the finding."}
         if system.startswith("Generate one free-text"):
-            return {"question": "What is the report?", "answer": "Normal study."}
+            return {"question": "What is the report?"}
         if system.startswith("Generate only the question stem"):
             return {"question": "Which status best describes this image?"}
-        field_line = next(
-            line for line in system.splitlines() if line.startswith("- Supporting fields: ")
-        )
-        data_line = next(
-            line for line in system.splitlines() if line.startswith("- Supporting data: ")
-        )
-        path = json.loads(field_line.removeprefix("- Supporting fields: "))[0]
-        supporting_data = json.loads(data_line.removeprefix("- Supporting data: "))
-        value = supporting_data
-        for segment in path.split("."):
-            value = value[segment]
-        return {
-            "question": "Which status best describes this image?",
-            "answer": "benign",
-            "evidence": {"path": path, "indices": [], "value": value},
-        }
+        raise AssertionError(f"Unexpected generation prompt: {system}")
 
     return complete_json
 
@@ -155,6 +140,9 @@ def test_generation_prompts_use_image_modality_and_supporting_data() -> None:
 
     assert "- Modality: Mammography" in prompt
     assert "- Selected template: What is shown in this image?" in prompt
+    assert "- Medical task description: Recognition task." in prompt
+    assert "- Generation logic: Use the approved annotation and selected template to generate the question." in prompt
+    assert "- Task definition:" not in prompt
     assert "- Fixed answer option: benign" in prompt
     assert "- Fixed raw evidence:" in prompt
     assert "- Supporting data:" not in prompt
@@ -191,7 +179,9 @@ def test_mapped_vqa_review_prompt_uses_fixed_context_and_rules(monkeypatch) -> N
     assert "- Selected question template:" in prompt
     assert "fixed answer and evidence were deterministically derived by code" in prompt
     assert "8. Ambiguity" in prompt
-    assert "generation_logic" not in prompt
+    assert "- Medical task description: Recognition task." in prompt
+    assert "- Generation logic: Use the approved annotation and selected template to generate the question." in prompt
+    assert "- Task definition:" not in prompt
 
 
 def test_question_template_selection_is_seeded_and_supports_single_template() -> None:
@@ -231,9 +221,61 @@ def test_all_generation_formats_use_the_selected_question_template() -> None:
     for candidate in (vqa_candidate, grounding_candidate, free_text_candidate):
         candidate.question_template = selected
 
-    assert selected in vqa._prompt(vqa_candidate, {"language": "en"})
-    assert selected in grounding._prompt(grounding_candidate, {"language": "en"})
-    assert selected in free_text._prompt(free_text_candidate, {"language": "en"})
+    prompts = [
+        vqa._prompt(vqa_candidate, {"language": "en"}),
+        grounding._prompt(grounding_candidate, {"language": "en"}),
+        free_text._prompt(free_text_candidate, {"language": "en"}),
+    ]
+    for prompt in prompts:
+        assert selected in prompt
+        assert "- Medical task description: Recognition task." in prompt
+        assert "- Generation logic: Use the approved annotation and selected template to generate the question." in prompt
+        assert "- Task definition:" not in prompt
+
+
+def test_bbox_and_free_text_review_prompts_use_design_fields(monkeypatch) -> None:
+    grounding_candidate = _candidate(
+        "detection",
+        {"bbox": [1, 2, 8, 9]},
+        {"bbox": [1, 2, 8, 9]},
+        _task("bbox", ["image.annotation.bbox[*]"]),
+    )
+    grounding_prompt: dict[str, str] = {}
+
+    def capture_grounding(system: str, _user: str, **_kwargs) -> dict[str, object]:
+        grounding_prompt["value"] = system
+        return {"approved": True, "reason": "Faithful."}
+
+    monkeypatch.setattr(grounding, "complete_json", capture_grounding)
+    grounding.review(
+        grounding_candidate,
+        {"question": "Where is the lesion?", "answer": [1.0, 2.0, 8.0, 9.0]},
+        {"language": "en"},
+    )
+
+    free_text_candidate = _candidate(
+        "report",
+        {"report": "Normal study."},
+        {"report": "Normal study."},
+        _task("free_text", ["image.annotation.report"]),
+    )
+    free_text_prompt: dict[str, str] = {}
+
+    def capture_free_text(system: str, _user: str, **_kwargs) -> dict[str, object]:
+        free_text_prompt["value"] = system
+        return {"approved": True, "reason": "Faithful."}
+
+    monkeypatch.setattr(free_text, "complete_json", capture_free_text)
+    free_text.review(
+        free_text_candidate,
+        {"question": "What is the report?", "answer": "Normal study."},
+        {"language": "en"},
+    )
+
+    for prompt in (grounding_prompt["value"], free_text_prompt["value"]):
+        assert "- Medical task description: Recognition task." in prompt
+        assert "- Generation logic: Use the approved annotation and selected template to generate the question." in prompt
+        assert "- Task definition:" not in prompt
 
 
 def test_vqa_evidence_requires_exact_scalar_source_location() -> None:
@@ -470,7 +512,7 @@ def test_grounding_requires_exactly_one_bbox_and_repairs_once(tmp_path: Path, mo
     responses = iter(
         [
             {"question": "Locate the finding.", "answer": [0, 0, 1, 1]},
-            {"question": "Locate the finding.", "answer": [1, 2, 8, 9]},
+            {"question": "Locate the finding."},
             {"approved": True, "reason": "Faithful."},
         ]
     )
@@ -510,7 +552,7 @@ def test_stage_shortfall_does_not_block_later_stage(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(vqa, "complete_json", lambda *_args, **_kwargs: pytest.fail("VQA model called"))
     responses = iter(
         [
-            {"question": "Locate the finding.", "answer": [1, 2, 8, 9]},
+            {"question": "Locate the finding."},
             {"approved": True, "reason": "Faithful."},
         ]
     )
@@ -527,7 +569,7 @@ def test_free_text_requires_exact_unique_reference_text_and_repairs_once(tmp_pat
     responses = iter(
         [
             {"question": "What is the report?", "answer": "Normal."},
-            {"question": "What is the report?", "answer": "Normal study."},
+            {"question": "What is the report?"},
             {"approved": True, "reason": "Faithful."},
         ]
     )

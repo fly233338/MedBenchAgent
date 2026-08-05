@@ -21,7 +21,7 @@ Context:
 - Language: {language}
 - Modality: {modality}
 - Task ID: {task_id}
-- Task definition: {task_definition}
+- Medical task description: {medical_task_description}
 - Generation logic: {generation_logic}
 - Selected question template: {selected_question_template}
 - Supporting data: {supporting_data}
@@ -29,17 +29,17 @@ Context:
 Requirements:
 1. {task_requirement}
 2. Do not include coordinates, reports, annotations, labels, or unsupported details in the question.
-3. Copy the exact annotated xyxy bounding box as the answer. Do not infer a new box.
+3. The exact annotated xyxy bounding box is fixed by code; do not generate or reinterpret an answer.
 
 Return JSON only:
-{{"question": "question stem", "answer": [x1, y1, x2, y2]}}
+{{"question": "question stem"}}
 """.strip()
 
 GROUNDING_REVIEW_PROMPT = """
 Review one grounding VQA item.
 
 Context:
-- Task definition: {task_definition}
+- Medical task description: {medical_task_description}
 - Generation logic: {generation_logic}
 - Supporting data: {supporting_data}
 - Question: {question}
@@ -131,13 +131,6 @@ def supports(candidate: Any) -> bool:
     return candidate.task_id != "visual_grounding" or _visual_target_text(candidate) is not None
 
 
-def _task_definition(candidate: Any) -> str:
-    return json.dumps(
-        {"description": candidate.task["description"], "require": candidate.task["require"]},
-        ensure_ascii=False,
-    )
-
-
 def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
     visual_text = _visual_target_text(candidate)
     if candidate.task_id == "visual_grounding":
@@ -154,7 +147,7 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
         language=benchmark_info.get("language", ""),
         modality=image_modality(candidate),
         task_id=candidate.task_id,
-        task_definition=_task_definition(candidate),
+        medical_task_description=candidate.task["medical_task_description"],
         generation_logic=candidate.task["generation_logic"],
         selected_question_template=candidate.question_template,
         supporting_data=json.dumps(candidate.supporting_record, ensure_ascii=False),
@@ -163,14 +156,14 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
 
 
 def _validate(candidate: Any, response: object) -> dict[str, Any]:
-    if not isinstance(response, dict) or set(response) != {"question", "answer"}:
-        raise ValueError("Grounding generation must contain only question and answer.")
+    if not isinstance(response, dict) or set(response) != {"question"}:
+        raise ValueError("Grounding generation must contain only question.")
     question = response["question"]
-    answer = _valid_bbox(response["answer"])
     if not isinstance(question, str) or not question.strip():
         raise ValueError("Generated question must be a non-empty string.")
-    if answer is None or answer != _target_bbox(candidate):
-        raise ValueError("Grounding answer must exactly match the unique annotation bbox.")
+    answer = _target_bbox(candidate)
+    if answer is None:
+        raise ValueError("Grounding answer must have one unique annotation bbox.")
     evidence = _bbox_evidence(candidate)
     if evidence is None:
         raise ValueError("Grounding answer must have one exact source witness.")
@@ -187,7 +180,7 @@ def generate(
     except ValueError as first_error:
         with event_operation("repair"):
             repaired = complete_json(
-                "Repair one grounding VQA response. Return JSON only.\n"
+                "Repair one grounding VQA question response. Return JSON only.\n"
                 f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
                 f"Contract error: {first_error}",
                 "",
@@ -206,7 +199,7 @@ def review(
     )
     response = complete_json(
         GROUNDING_REVIEW_PROMPT.format(
-            task_definition=_task_definition(candidate),
+            medical_task_description=candidate.task["medical_task_description"],
             generation_logic=candidate.task["generation_logic"],
             supporting_data=json.dumps(candidate.supporting_record, ensure_ascii=False),
             question=generated["question"],

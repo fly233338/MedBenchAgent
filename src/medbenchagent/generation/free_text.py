@@ -20,7 +20,7 @@ Context:
 - Language: {language}
 - Modality: {modality}
 - Task ID: {task_id}
-- Task definition: {task_definition}
+- Medical task description: {medical_task_description}
 - Generation logic: {generation_logic}
 - Selected question template: {selected_question_template}
 - Reference text: {reference_text}
@@ -28,24 +28,24 @@ Context:
 Requirements:
 1. Write one substantial semantic paraphrase of the selected question template; avoid following it verbatim and naturally vary wording, syntax, and word order.
 2. Do not reveal or clearly hint at the reference text in the question.
-3. Copy the reference text exactly as the answer. Do not summarize, rewrite, or add medical inference.
+3. The exact reference answer is fixed by code; do not generate or reinterpret an answer.
 
 Return JSON only:
-{{"question": "question stem", "answer": "exact reference text"}}
+{{"question": "question stem"}}
 """.strip()
 
 FREE_TEXT_REVIEW_PROMPT = """
 Review one direct-reference free-text VQA item.
 
 Context:
-- Task definition: {task_definition}
+- Medical task description: {medical_task_description}
 - Generation logic: {generation_logic}
 - Reference text: {reference_text}
 - Question: {question}
 - Answer: {answer}
 
 Approve only when:
-1. The question follows the task definition and does not reveal the answer.
+1. The question follows the medical task description and generation logic and does not reveal the answer.
 2. The answer exactly equals the reference text.
 
 Return JSON only:
@@ -86,19 +86,12 @@ def supports(candidate: Any) -> bool:
     return _reference_evidence(candidate) is not None
 
 
-def _task_definition(candidate: Any) -> str:
-    return json.dumps(
-        {"description": candidate.task["description"], "require": candidate.task["require"]},
-        ensure_ascii=False,
-    )
-
-
 def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
     return FREE_TEXT_GENERATION_PROMPT.format(
         language=benchmark_info.get("language", ""),
         modality=image_modality(candidate),
         task_id=candidate.task_id,
-        task_definition=_task_definition(candidate),
+        medical_task_description=candidate.task["medical_task_description"],
         generation_logic=candidate.task["generation_logic"],
         selected_question_template=candidate.question_template,
         reference_text=json.dumps(_reference_text(candidate), ensure_ascii=False),
@@ -106,14 +99,14 @@ def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
 
 
 def _validate(candidate: Any, response: object) -> dict[str, Any]:
-    if not isinstance(response, dict) or set(response) != {"question", "answer"}:
-        raise ValueError("Free-text generation must contain only question and answer.")
+    if not isinstance(response, dict) or set(response) != {"question"}:
+        raise ValueError("Free-text generation must contain only question.")
     question = response["question"]
-    answer = response["answer"]
     if not isinstance(question, str) or not question.strip():
         raise ValueError("Generated question must be a non-empty string.")
-    if not isinstance(answer, str) or answer != _reference_text(candidate):
-        raise ValueError("Free-text answer must exactly match the unique reference text.")
+    answer = _reference_text(candidate)
+    if answer is None:
+        raise ValueError("Free-text answer must have one unique reference text.")
     evidence = _reference_evidence(candidate)
     if evidence is None:
         raise ValueError("Free-text answer must have one exact source witness.")
@@ -130,7 +123,7 @@ def generate(
     except ValueError as first_error:
         with event_operation("repair"):
             repaired = complete_json(
-                "Repair one free-text VQA response. Return JSON only.\n"
+                "Repair one free-text VQA question response. Return JSON only.\n"
                 f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
                 f"Contract error: {first_error}",
                 "",
@@ -145,7 +138,7 @@ def review(
     reference = _reference_text(candidate)
     response = complete_json(
         FREE_TEXT_REVIEW_PROMPT.format(
-            task_definition=_task_definition(candidate),
+            medical_task_description=candidate.task["medical_task_description"],
             generation_logic=candidate.task["generation_logic"],
             reference_text=json.dumps(reference, ensure_ascii=False),
             question=generated["question"],

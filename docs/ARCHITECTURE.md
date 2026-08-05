@@ -36,7 +36,8 @@ role-specialized agents + deterministic orchestration：
    人工整体确认或定向重做。新设计为每个具体 question type 生成配置数量的唯一、语义等价模板，默认三个；letter 任务先请求一个获准字段的安全精确分类值摘要，再生成结构化 `answer_field` 与 `answer_value_mapping`。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
 6. `GenerationAgent` 在私有状态中从确认后的 Blueprint 构造 `GenerationRequest`。现有生成子图按 letter、bbox、free_text 三个阶段
    独立读取 DuckDB；每阶段仅投影任务获准字段、稳定随机排序候选，并按 seed、task、image 和 source row
-   确定性选择一个问题模板后逐任务生成/审核。letter 设计由代码从 mapping 唯一确定 evidence 与答案，LLM 只改写题干；无 mapping 的 letter Blueprint 在生成边界拒绝。
+   确定性选择一个问题模板后逐任务生成/审核。三种格式都把 `medical_task_description`、`generation_logic`
+   和选定模板传入生成与 Reviewer prompt；答案和 evidence 均由代码根据获准 annotation/reference 固定，LLM 只生成题干。
 7. 完成或数据耗尽后生成 raw JSONL；根图先记录 generation summary，再由 `AuditAgent` 硬审计图像完整性、题目契约、annotation witness、provenance 和重复项，平衡通过的选择题位置，最后按 task 稳定抽样进行 fail-open 的宽松 LLM 语义筛查。
 
 ## 状态、契约与产物
@@ -61,6 +62,8 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 `dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。确认后的设计采用
 `rag-designs.v2`；manifest 的展开任务记录可选 `parent_task_id` 与 `question_type_id`。模板数量由配置项
 `generation.question_template_count` 控制并写入生效配置快照，不属于 Graph 输入覆盖项。
+RAG 设计中的 `medical_task_description` 保持为“先描述评估能力，再说明医学依据”的一段话；
+`generation_logic` 是一条语义完整的指令句，描述如何利用获准标注语义和选定题目模板生成题目。
 
 ## 不变量与失败语义
 
@@ -69,7 +72,7 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 - 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准字段投影。
 - 初始 Blueprint 模板不预填 metric；Task Plan 与样本分配只在确认后改变 Blueprint，确认时才写入每个保留最终任务的 metric。Task Plan 和 RAG 设计的每个审核版本均作为不可变 JSON 保存，RAG 设计仍逐项写入 Blueprint 后通过确认/修订闭环收敛。
 - 同一 task/image 最多生成一题；默认每阶段每图最多接受二十题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
-- 三种答案格式都保留可回放的 annotation witness。letter 任务由代码从 `answer_field` 唯一定位原始 scalar，并通过 `answer_value_mapping` 固定正确 option；LLM 只生成题干。free_text 由代码唯一定位直接答案字符串；bbox 由代码按 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。代码在 Reviewer 前精确验证，raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
+- 三种答案格式都保留可回放的 annotation witness。letter 任务由代码从 `answer_field` 唯一定位原始 scalar，并通过 `answer_value_mapping` 固定正确 option；free_text 由代码唯一定位直接答案字符串；bbox 由代码按 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。三种格式的 LLM 都只生成题干，代码在 Reviewer 前精确固定并验证答案与 evidence；raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
 - bbox 任务只接受恰有一个合法标注框且能唯一定位四坐标 witness 的候选，不接受 mask 或运行期
   mask-to-bbox 转换。`visual_grounding` 还必须有与该框配对的 finding 名称、结构化标签或描述；
   `detection` 仅定位泛化 lesion/abnormal region，不能泄露 finding 名称。两者是独立能力，可同时保留。

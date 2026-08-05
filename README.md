@@ -262,9 +262,13 @@ working Blueprint task. The embedded fields are `question_templates`,
 `options`, `answer_field`, and `answer_value_mapping`. There is no separate Question Design artifact or duplicate generation spec.
 Natural-language review can revise one or more task designs without changing other
 Blueprint tasks. New designs contain exactly the configured number of unique, semantically
-equivalent question templates. Generation deterministically selects one template for each
-task/image/source-row tuple from the run seed before asking the model for a controlled paraphrase;
-letter tasks require a structured answer field and answer-value mapping before generation.
+equivalent question templates. `generation_logic` is one semantically complete instruction
+sentence describing how to use approved annotation semantics and the selected question template
+to generate the question; `medical_task_description` remains one paragraph describing the
+assessed capability followed by its medical basis. Generation deterministically selects one
+template for each task/image/source-row tuple from the run seed before asking the model for a
+controlled paraphrase; letter tasks require a structured answer field and answer-value mapping
+before generation.
 
 Before designing a new letter task, RAG requests the exact categorical values of its selected
 approved answer field. Code returns at most 32 frequent scalar values with counts, truncation
@@ -282,14 +286,15 @@ answer. Finding-presence tasks additionally require explicit positive and negati
 The generator runs three independent seeded scans in a fixed order: letter VQA,
 Grounding bbox, then direct-reference free text. Each stage begins from the database
 start, projects only unfinished tasks' approved `supporting_fields`, and independently
-accepts up to twenty tasks per image after a stable seed/image-ID shuffle. For mapped letter
-tasks, code reads the declared answer field, requires one uniquely located mapped raw value, and
-fixes the semantic answer and evidence before the model call; the model generates only the
-question stem. Letter designs without a mapping are rejected at the generation boundary.
-Free text deterministically
-locates its unique direct-reference string, while grounding locates the four source
-coordinates of its unique annotated box. Code verifies every witness against the
-original annotation before review; only path, indices, and hashes enter provenance.
+accepts up to twenty tasks per image after a stable seed/image-ID shuffle. All three formats
+pass `medical_task_description` and `generation_logic` to their generation and review prompts.
+Code fixes the answer and evidence before the model call, and every generation model returns
+only the question stem. For mapped letter tasks, code reads the declared answer field, requires
+one uniquely located mapped raw value, and fixes the semantic answer and evidence before the
+model call. Letter designs without a mapping are rejected at the generation boundary.
+Free text deterministically locates its unique direct-reference string, while grounding locates
+the four source coordinates of its unique annotated box. Code verifies every witness against
+the original annotation before review; only path, indices, and hashes enter provenance.
 Detection asks only for a generic lesion or abnormal region, while visual grounding
 requires a named or described finding paired with that same box; neither task accepts a
 mask as generation evidence. Diagnosis candidates are deterministically skipped before

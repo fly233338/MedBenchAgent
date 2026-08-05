@@ -31,14 +31,6 @@ RAG_DESIGN_FIELDS = {
     "medical_task_description",
     "citations",
 }
-LEGACY_DESIGN_FIELDS = {
-    "validation_rules",
-    "placeholder_bindings",
-    "instance_path",
-    "target_text_field",
-    "bbox_field",
-    "bbox_format",
-}
 _VALUE_REQUEST_KEY = "requested_field_values"
 
 
@@ -289,7 +281,7 @@ def _design_schema(response_format: object) -> str:
     template_count = get_settings().generation.question_template_count
     common = (
         f'{{"question_templates":["exactly {template_count} distinct non-empty templates"],'
-        '"generation_logic":"non-empty instructions for using supporting fields",'
+        '"generation_logic":"one semantically complete instruction sentence describing how to use approved annotation semantics and the selected question template to generate the question",'
         '"medical_task_description":"one paragraph: assessed capability, then medical basis"}'
     )
     if response_format == "letter":
@@ -464,9 +456,10 @@ def _design_prompt(
         f"Use the requested benchmark language. Return exactly {get_settings().generation.question_template_count} "
         "question templates. They must assess the same capability and medical concept while using meaningfully "
         "different question structures, and none may require information unavailable from the image and requested "
-        "response format. generation_logic must use only approved supporting fields "
-        "to generate the question and answer; it must not invent facts, infer an unsupported diagnosis, "
-        "or use PDF text as annotation evidence. "
+        "response format. generation_logic must be one semantically complete instruction sentence "
+        "describing how to use approved annotation semantics and the selected question template to "
+        "generate the question. It must not invent facts, infer an unsupported diagnosis, or use PDF "
+        "text as annotation evidence. "
         "Do not return task_id, citations, validation_rules, placeholder bindings, instance paths, "
         "or bbox fields. "
     )
@@ -670,7 +663,7 @@ def write_task_design(
     if not isinstance(tasks, dict) or not isinstance(tasks.get(task_id), dict):
         raise ValueError(f"Working Blueprint does not contain task: {task_id}")
     task = tasks[task_id]
-    for field in RAG_DESIGN_FIELDS | LEGACY_DESIGN_FIELDS:
+    for field in RAG_DESIGN_FIELDS:
         task.pop(field, None)
     task.update(design)
     temporary = path.with_suffix(path.suffix + ".tmp")

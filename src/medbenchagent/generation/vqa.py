@@ -15,7 +15,8 @@ Generate only the question stem for one letter-choice medical-image benchmark it
 Fixed context:
 - Language: {language}
 - Modality: {modality}
-- Task definition: {task_definition}
+- Medical task description: {medical_task_description}
+- Generation logic: {generation_logic}
 - Question type: {question_type}
 - Answer field: {answer_field}
 - Fixed answer option: {expected_answer}
@@ -41,7 +42,8 @@ Review one generated letter-choice VQA item whose answer and evidence were fixed
 
 Context:
 
-- Task definition: {task_definition}
+- Medical task description: {medical_task_description}
+- Generation logic: {generation_logic}
 - Answer field: {answer_field}
 - Answer mapping: {answer_mapping}
 - Candidate options: {candidate_options}
@@ -109,7 +111,7 @@ classification.
 
 6. Question-answerability and option compatibility
 
-Approve when the question is answerable from the image, task definition, and candidate
+Approve when the question is answerable from the image, medical task description, and candidate
 options, and every candidate option is a natural and semantically valid possible answer
 to the question as written.
 
@@ -119,9 +121,9 @@ incompatible with the options.
 
 7. Unsupported semantic additions
 
-Approve when the question introduces no additional clinical meaning beyond the task
-definition, declared answer field and mapping, selected template, supporting data, and
-fixed evidence.
+Approve when the question introduces no additional clinical meaning beyond the medical
+task description, generation logic, declared answer field and mapping, selected template,
+supporting data, and fixed evidence.
 
 Reject when it adds unsupported confirmation status, pathology, causality, severity,
 prognosis, treatment, temporal information, or other clinical assumptions.
@@ -148,22 +150,12 @@ def supports(candidate: Any) -> bool:
     )
 
 
-def _task_definition(candidate: Any) -> str:
-    return json.dumps(
-        {
-            "description": candidate.task["description"],
-            "require": candidate.task["require"],
-            "question_type_id": candidate.task.get("question_type_id"),
-        },
-        ensure_ascii=False,
-    )
-
-
 def _prompt(candidate: Any, benchmark_info: dict[str, object]) -> str:
     return VQA_GENERATION_PROMPT.format(
         language=benchmark_info.get("language", ""),
         modality=image_modality(candidate),
-        task_definition=_task_definition(candidate),
+        medical_task_description=candidate.task["medical_task_description"],
+        generation_logic=candidate.task["generation_logic"],
         question_type=candidate.task.get("question_type_id", candidate.task_id),
         answer_field=candidate.task["answer_field"],
         expected_answer=candidate.expected_answer,
@@ -198,7 +190,7 @@ def generate(
     except ValueError as first_error:
         with event_operation("repair"):
             repaired = complete_json(
-                "Repair one mapped letter-choice VQA response. Return JSON only.\n"
+                "Repair one mapped letter-choice VQA question response. Return JSON only.\n"
                 f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
                 f"Contract error: {first_error}",
                 "",
@@ -213,7 +205,8 @@ def review(
     if candidate.expected_answer is None or candidate.expected_evidence is None:
         raise ValueError("Mapped letter review requires a fixed answer and evidence.")
     prompt = VQA_REVIEW_PROMPT.format(
-        task_definition=_task_definition(candidate),
+        medical_task_description=candidate.task["medical_task_description"],
+        generation_logic=candidate.task["generation_logic"],
         answer_field=candidate.task["answer_field"],
         answer_mapping=json.dumps(candidate.task["answer_value_mapping"], ensure_ascii=False),
         candidate_options=json.dumps(candidate.task["options"], ensure_ascii=False),

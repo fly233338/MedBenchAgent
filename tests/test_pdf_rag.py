@@ -25,7 +25,7 @@ def _design(response_format: str = "letter") -> dict:
             "Identify the view depicted in the image.",
             "What imaging view does this image represent?",
         ],
-        "generation_logic": "Normalize the approved view annotation without inventing facts.",
+        "generation_logic": "Use the approved view annotation with the selected template to generate the question without inventing facts.",
         "medical_task_description": "This assesses view recognition; imaging guidance supports the terminology.",
     }
     if response_format == "letter":
@@ -335,6 +335,9 @@ def test_design_prompt_keeps_letter_candidate_sets_compact() -> None:
 
     assert "Use 2-4 options by default" in system
     assert "Return exactly 3 question templates" in system
+    assert "one semantically complete instruction sentence describing how to use approved annotation semantics and the selected question template to generate the question" in system
+    assert "generation_logic must be one semantically complete instruction sentence" in system
+    assert "generation_logic must use only approved supporting fields" not in system
     assert "Use 5-8 only when" in system
     assert "Do not enumerate an exhaustive differential diagnosis" in system
     assert "Answer-mapping rules" in system
