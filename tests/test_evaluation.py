@@ -188,6 +188,11 @@ def test_load_benchmark_rejects_escaping_image_path(tmp_path: Path) -> None:
         (" b\n", "B"),
         ("A.", "A"),
         (" e.\n", "E"),
+        ("A. one", "A"),
+        (" b. TWO\n", "B"),
+        ("A. E.", "A"),
+        ("A. because this finding is characteristic", "A"),
+        ("A. malignant", "A"),
     ],
 )
 def test_parse_letter_prediction(raw: str, expected: str) -> None:
@@ -197,7 +202,12 @@ def test_parse_letter_prediction(raw: str, expected: str) -> None:
 
 @pytest.mark.parametrize(
     "raw",
-    ['{"answer":"B"}', "malignant", "The answer is B.", "(B)", "A. E.", "A. because"],
+    [
+        '{"answer":"B"}',
+        "malignant",
+        "The answer is B.",
+        "(B)",
+    ],
 )
 def test_parse_letter_prediction_rejects_non_letter_output(raw: str) -> None:
     with pytest.raises(PredictionParseError, match="one valid option letter"):

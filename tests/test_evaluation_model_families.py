@@ -16,6 +16,7 @@ from medbenchagent.evaluation.models.internvl import InternVLAdapter, dynamic_pr
 from medbenchagent.evaluation.models.internvl3_5_8b import InternVL3_5_8BAdapter
 from medbenchagent.evaluation.models.lingshu_32b import Lingshu32BAdapter
 from medbenchagent.evaluation.models.qoq_med_vl_32b import QoQMedVL32BAdapter
+from medbenchagent.evaluation.models.qoq_med_vl_7b import QoQMedVL7BAdapter
 from medbenchagent.evaluation.models.qwen2_5_vl import Qwen25VLAdapter
 from medbenchagent.evaluation.models.qwen2_5_vl_32b_instruct import (
     Qwen25VL32BInstructAdapter,
@@ -109,6 +110,25 @@ def test_internvl35_alone_strengthens_the_public_prompts(tmp_path: Path) -> None
     )
 
 
+def test_qoq_uses_native_reasoning_prompt_and_boxed_final_answer(tmp_path: Path) -> None:
+    adapter = object.__new__(QoQMedVL7BAdapter)
+    letter = _sample(tmp_path, "letter")
+
+    assert adapter.instruction_for(letter) is None
+    prompt = adapter.prompt_for(letter)
+    assert prompt.startswith("Which view?\n\nA. CC\nB. MLO\n\n")
+    assert "MUST BE enclosed within <think> </think> tags" in prompt
+    assert "final answer MUST BE put in \\boxed{}" in prompt
+    assert "Inside \\boxed{}, put exactly one valid option letter." in prompt
+
+
+def test_chiron_preserves_checkpoint_system_message(tmp_path: Path) -> None:
+    adapter = object.__new__(ChironO1_8BAdapter)
+    adapter.model = types.SimpleNamespace(system_message="checkpoint reasoning protocol")
+
+    assert adapter.instruction_for(_sample(tmp_path, "letter")) == "checkpoint reasoning protocol"
+
+
 @pytest.mark.parametrize(
     ("adapter_class", "raw_text", "expected"),
     [
@@ -119,6 +139,12 @@ def test_internvl35_alone_strengthens_the_public_prompts(tmp_path: Path) -> None
         (InternVL3_5_8BAdapter, "first</think>second</think>B", "B"),
         (InternVL3_5_8BAdapter, "reasoning</think>", ""),
         (InternVL3_5_8BAdapter, "A", "A"),
+        (QoQMedVL7BAdapter, r"reasoning\boxed{A}", "A"),
+        (QoQMedVL7BAdapter, r"first\boxed{B} second\boxed{A}", "A"),
+        (QoQMedVL7BAdapter, r'reasoning\boxed{{"bbox":[1,2,3,4]}}', '{"bbox":[1,2,3,4]}'),
+        (QoQMedVL7BAdapter, r"reasoning\boxed{}", ""),
+        (QoQMedVL7BAdapter, r"reasoning\boxed{A", ""),
+        (QoQMedVL7BAdapter, "A", "A"),
         (ChironO1_8BAdapter, "reasoning### The final answer is:A", "A"),
         (ChironO1_8BAdapter, "reasoning### The final answer is:", ""),
         (ChironO1_8BAdapter, "A", "A"),

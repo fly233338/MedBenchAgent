@@ -104,15 +104,22 @@ Qwen2.5-VL 7B/32B、InternVL3/3.5 8B、Qwen3-VL Instruct 8B/32B 与 Thinking 8B�
 Lingshu 7B/32B、Hulu-Med 7B/32B、QoQ-Med-VL 7B/32B 和 Chiron-o1。Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron 以固定
 `[0,1000]` 坐标空间解释 grounding，Hulu 以原 PNG 尺寸解释。letter VQA 的公共 system prompt 保持
 原始单字母回答要求，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
-只接受裸单字母或 Lingshu 风格的单字母加 ASCII 句点响应。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
+接受裸单字母、Lingshu 风格的单字母加 ASCII 句点，或合法字母和句点后继续输出选项文本或解释；
+例如 `A. E.` 与 `A. because ...` 均解析为 `A`。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
 任务统一由 system 要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含
 图像和题目（letter 另含选项），所有 adapter 复用同一公共 prompt 函数。仅 InternVL3.5 adapter
 在公共 prompt 后追加禁止 reasoning 与 `<think>` 标签的模型专用指令，但不设置官方可选的
 Thinking System Prompt；模型若仍输出解释性内容，完整文本保存在 `raw_prediction`，并取最后一个
 `</think>` 后的内容按统一规则解析。
 
+QoQ-Med-VL 7B/32B 使用其原生 medical reasoning prompt，要求 `<think>...</think>` 推理并把终答放入
+`\boxed{...}`；adapter 从最后一个 balanced boxed payload 提取终答，支持内部嵌套 bbox JSON。Chiron
+不额外伪造 reasoning prompt，而是保留 checkpoint 默认 system message，与官方仅传问题的评测方式一致，
+并继续使用 `### The final answer is:` 作为终答边界。
+
 `ModelOutput` 同时保留完整 `raw_text`、可选模型坐标空间和可选 `answer_text`。解析器仅在 adapter
-按模型协议提取终答时优先使用 `answer_text`：Qwen3 Thinking 与 InternVL3.5 使用最后一个 `</think>`，Chiron
+按模型协议提取终答时优先使用 `answer_text`：QoQ 使用最后一个 balanced `\boxed{...}`，Qwen3 Thinking
+与 InternVL3.5 使用最后一个 `</think>`，Chiron
 使用最后一个 `### The final answer is:`，Hulu 对同一 output IDs 分别保留 thinking 与无 thinking
 解码。分隔符缺失时回退完整响应，空终答保持为空并产生严格 parse error；推理产物只把完整响应写入
 `raw_prediction`，wire schema 仍是 `medbench-inference.v1`。

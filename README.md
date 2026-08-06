@@ -429,15 +429,18 @@ Supported adapter keys are:
 | `qoq_med_vl_32b` | QoQ-Med-VL-32B | Processed Qwen image |
 | `chiron_o1_8b` | Chiron-o1-8B | `[0,1000]` |
 
-All adapters retain the original shared task prompts. Qwen3 Thinking and InternVL3.5 extract
-the suffix after the last `</think>`, Chiron extracts the suffix after the last
+Most adapters retain the original shared task prompts. QoQ uses its native medical
+reasoning prompt and extracts the final balanced `\boxed{...}` payload. Qwen3
+Thinking and InternVL3.5 extract the suffix after the last `</think>`, Chiron
+preserves its checkpoint system message and extracts the suffix after the last
 `### The final answer is:`, and Hulu uses its processor's `use_think=False`
 decode as the answer. Full reasoning remains in `raw_prediction`; an absent
 official separator falls back to the full response, while an empty extracted
-answer fails strict parsing. Letter responses must be one bare valid letter or
-the Lingshu-style form with one trailing ASCII period, such as `A.`. Explanations,
-multiple letters, and other wrappers remain parse errors. Free text must be
-non-empty, and bbox responses must be exactly one
+answer fails strict parsing. Letter responses may be one bare valid letter, the
+Lingshu-style form with one trailing ASCII period such as `A.`, or a valid letter
+and period followed by option text or an explanation such as `A. Benign` or
+`A. because ...`. Multiple letters without this prefix form and other wrappers
+remain parse errors. Free text must be non-empty, and bbox responses must be exactly one
 `{"bbox":[x1,y1,x2,y2]}` JSON object.
 
 The InternVL3.5 adapter does not install InternVL's optional Thinking System

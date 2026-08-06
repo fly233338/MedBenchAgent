@@ -140,4 +140,5 @@ def test_qwen_adapter_builds_task_messages_and_reports_processed_image_size(
     outputs = adapter.generate([_sample(tmp_path, response_format)], max_new_tokens=16)
 
     assert outputs[0].raw_text == raw_output
+    assert outputs[0].answer_text is None
     assert outputs[0].coordinate_size == (56, 28)

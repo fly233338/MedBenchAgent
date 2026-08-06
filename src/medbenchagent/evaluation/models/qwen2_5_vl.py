@@ -12,6 +12,15 @@ from medbenchagent.evaluation.models.base import system_prompt, user_prompt
 
 
 class Qwen25VLAdapter:
+    def instruction_for(self, sample: InferenceSample) -> str | None:
+        return system_prompt(sample)
+
+    def prompt_for(self, sample: InferenceSample) -> str:
+        return user_prompt(sample)
+
+    def extract_answer(self, _text: str) -> str | None:
+        return None
+
     def __init__(
         self,
         model_path: str,
@@ -61,7 +70,7 @@ class Qwen25VLAdapter:
             with Image.open(sample.image.png_path) as source:
                 image = source.convert("RGB")
             messages = []
-            instruction = system_prompt(sample)
+            instruction = self.instruction_for(sample)
             if instruction is not None:
                 messages.append({"role": "system", "content": instruction})
             messages.append(
@@ -74,7 +83,7 @@ class Qwen25VLAdapter:
                             "min_pixels": self.min_pixels,
                             "max_pixels": self.max_pixels,
                         },
-                        {"type": "text", "text": user_prompt(sample)},
+                        {"type": "text", "text": self.prompt_for(sample)},
                     ],
                 }
             )
@@ -116,6 +125,10 @@ class Qwen25VLAdapter:
         if len(decoded) != len(samples):
             raise RuntimeError("Qwen2.5-VL returned an unexpected number of outputs.")
         return [
-            ModelOutput(raw_text=text, coordinate_size=size)
+            ModelOutput(
+                raw_text=text,
+                coordinate_size=size,
+                answer_text=self.extract_answer(text),
+            )
             for text, size in zip(decoded, coordinate_sizes)
         ]
