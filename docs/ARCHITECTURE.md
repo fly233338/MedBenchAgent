@@ -100,8 +100,8 @@ RAG 设计中的 `medical_task_description` 保持为“先描述评估能力，
 letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。
 
 模型通过显式注册的 `ModelAdapter` 加载；每个具体模型拥有独立模块，共用族级实现。目前支持
-Qwen2.5-VL、InternVL3、Qwen3-VL Instruct/Thinking、Lingshu、Hulu-Med、QoQ-Med-VL 和
-Chiron-o1。Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/Chiron 以固定
+Qwen2.5-VL 7B/32B、InternVL3/3.5 8B、Qwen3-VL Instruct 8B/32B 与 Thinking 8B、
+Lingshu 7B/32B、Hulu-Med 7B/32B、QoQ-Med-VL 7B/32B 和 Chiron-o1。Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron 以固定
 `[0,1000]` 坐标空间解释 grounding，Hulu 以原 PNG 尺寸解释。letter VQA 的 system prompt 只要求
 返回正确选项的单个字母，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
 只接受裸单字母响应。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
@@ -115,7 +115,8 @@ Chiron-o1。Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/
 `raw_prediction`，wire schema 仍是 `medbench-inference.v1`。
 
 `torchrun` 单节点每 GPU 启动一个 rank，每个 rank 独立加载一份完整模型，以轮转切片和普通 batch
-循环推理，不使用 DDP 或 tensor parallel。InternVL 族在 adapter batch 内按公共 system prompt 分组
+循环推理，不使用 DDP 或 tensor parallel；32B checkpoint 也必须完整装入每个 rank 所属 GPU，增加 rank
+只增加数据并行副本，不会切分模型。InternVL 族在 adapter batch 内按公共 system prompt 分组
 调用 `batch_chat` 后恢复输入顺序；Hulu 因 processor 限制在 batch 内逐样本执行。rank 临时 JSONL
 全部成功后，rank 0 按输入顺序写出自包含推理 JSON；中断不自动续跑。evaluation 子系统的 JSON
 写入工具不依赖 benchmark 构建运行时，因此可在只安装 `requirements/evaluation.txt` 的独立 Conda

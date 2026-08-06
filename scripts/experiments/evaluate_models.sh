@@ -6,7 +6,7 @@ NPROC_PER_NODE=1
 BATCH_SIZE=1
 MAX_NEW_TOKENS=512
 DTYPE=bfloat16
-ATTN_IMPLEMENTATION=sdpa
+ATTN_IMPLEMENTATION=flash_attention_2
 BLEU_THRESHOLD=0.5
 BBOX_IOU_THRESHOLD=0.5
 OUTPUT_ROOT=results/evaluation
@@ -14,45 +14,70 @@ OVERWRITE=0
 
 QWEN2_5_VL_7B_INSTRUCT_NAME=qwen2_5_vl_7b_instruct
 QWEN2_5_VL_7B_INSTRUCT_ADAPTER=qwen2_5_vl_7b_instruct
-QWEN2_5_VL_7B_INSTRUCT_PATH=/path/to/Qwen2.5-VL-7B-Instruct
+QWEN2_5_VL_7B_INSTRUCT_PATH=/public/home/rxa-jj-wzk/models/Qwen2.5-VL/Qwen2.5-VL-7B-Instruct
 
-INTERNVL3_8B_NAME=internvl3_8b
-INTERNVL3_8B_ADAPTER=internvl3_8b
-INTERNVL3_8B_PATH=/path/to/InternVL3-8B
+QWEN2_5_VL_32B_INSTRUCT_NAME=qwen2_5_vl_32b_instruct
+QWEN2_5_VL_32B_INSTRUCT_ADAPTER=qwen2_5_vl_32b_instruct
+QWEN2_5_VL_32B_INSTRUCT_PATH=/public/home/rxa-jj-wzk/models/Qwen2.5-VL/Qwen2.5-VL-32B-Instruct
+
+INTERNVL3_5_8B_NAME=internvl3_5_8b
+INTERNVL3_5_8B_ADAPTER=internvl3_5_8b
+INTERNVL3_5_8B_PATH=/public/home/rxa-jj-wzk/models/InternVL3.5/InternVL3_5-8B
 
 QWEN3_VL_8B_INSTRUCT_NAME=qwen3_vl_8b_instruct
 QWEN3_VL_8B_INSTRUCT_ADAPTER=qwen3_vl_8b_instruct
-QWEN3_VL_8B_INSTRUCT_PATH=/path/to/Qwen3-VL-8B-Instruct
+QWEN3_VL_8B_INSTRUCT_PATH=/public/home/rxa-jj-wzk/models/Qwen3-VL-Instruct/Qwen3-VL-8B-Instruct
+
+QWEN3_VL_32B_INSTRUCT_NAME=qwen3_vl_32b_instruct
+QWEN3_VL_32B_INSTRUCT_ADAPTER=qwen3_vl_32b_instruct
+QWEN3_VL_32B_INSTRUCT_PATH=/public/home/rxa-jj-wzk/models/Qwen3-VL-Instruct/Qwen3-VL-32B-Instruct
 
 QWEN3_VL_8B_THINKING_NAME=qwen3_vl_8b_thinking
 QWEN3_VL_8B_THINKING_ADAPTER=qwen3_vl_8b_thinking
-QWEN3_VL_8B_THINKING_PATH=/path/to/Qwen3-VL-8B-Thinking
+QWEN3_VL_8B_THINKING_PATH=/public/home/rxa-jj-wzk/models/Qwen3-VL-Thinking/Qwen3-VL-8B-Thinking
 
 LINGSHU_7B_NAME=lingshu_7b
 LINGSHU_7B_ADAPTER=lingshu_7b
-LINGSHU_7B_PATH=/path/to/Lingshu-7B
+LINGSHU_7B_PATH=/public/home/rxa-jj-wzk/models/Lingshu/Lingshu-7B
+
+LINGSHU_32B_NAME=lingshu_32b
+LINGSHU_32B_ADAPTER=lingshu_32b
+LINGSHU_32B_PATH=/public/home/rxa-jj-wzk/models/Lingshu/Lingshu-32B
 
 HULU_MED_7B_NAME=hulu_med_7b
 HULU_MED_7B_ADAPTER=hulu_med_7b
-HULU_MED_7B_PATH=/path/to/Hulu-Med-7B
+HULU_MED_7B_PATH=/public/home/rxa-jj-wzk/models/Hulu-Med/Hulu-Med-7B
+
+HULU_MED_32B_NAME=hulu_med_32b
+HULU_MED_32B_ADAPTER=hulu_med_32b
+HULU_MED_32B_PATH=/public/home/rxa-jj-wzk/models/Hulu-Med/Hulu-Med-32B
 
 QOQ_MED_VL_7B_NAME=qoq_med_vl_7b
 QOQ_MED_VL_7B_ADAPTER=qoq_med_vl_7b
-QOQ_MED_VL_7B_PATH=/path/to/QoQ-Med-VL-7B
+QOQ_MED_VL_7B_PATH=/public/home/rxa-jj-wzk/models/QoQ-Med-VL/QoQ-Med-VL-7B
+
+QOQ_MED_VL_32B_NAME=qoq_med_vl_32b
+QOQ_MED_VL_32B_ADAPTER=qoq_med_vl_32b
+QOQ_MED_VL_32B_PATH=/public/home/rxa-jj-wzk/models/QoQ-Med-VL/QoQ-Med-VL-32B
 
 CHIRON_O1_8B_NAME=chiron_o1_8b
 CHIRON_O1_8B_ADAPTER=chiron_o1_8b
-CHIRON_O1_8B_PATH=/path/to/Chiron-o1-8B
+CHIRON_O1_8B_PATH=/public/home/rxa-jj-wzk/models/Chiron-o1/Chiron-o1-8B
 
 SELECTED_MODELS=(
   QWEN2_5_VL_7B_INSTRUCT
-  INTERNVL3_8B
   QWEN3_VL_8B_INSTRUCT
   QWEN3_VL_8B_THINKING
+  INTERNVL3_5_8B
+  QWEN2_5_VL_32B_INSTRUCT
+  QWEN3_VL_32B_INSTRUCT
   LINGSHU_7B
   HULU_MED_7B
   QOQ_MED_VL_7B
   CHIRON_O1_8B
+  LINGSHU_32B
+  HULU_MED_32B
+  QOQ_MED_VL_32B
 )
 
 DATASET_1_NAME=dataset_1

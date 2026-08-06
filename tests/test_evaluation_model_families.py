@@ -10,20 +10,36 @@ from medbenchagent.evaluation.contracts import ImageEntry, InferenceSample, Task
 from medbenchagent.evaluation.models import ADAPTERS
 from medbenchagent.evaluation.models.base import system_prompt, user_prompt
 from medbenchagent.evaluation.models.chiron_o1_8b import ChironO1_8BAdapter
+from medbenchagent.evaluation.models.hulu_med_32b import HuluMed32BAdapter
 from medbenchagent.evaluation.models.hulu_med_7b import HuluMed7BAdapter
 from medbenchagent.evaluation.models.internvl import InternVLAdapter, dynamic_preprocess
+from medbenchagent.evaluation.models.internvl3_5_8b import InternVL3_5_8BAdapter
+from medbenchagent.evaluation.models.lingshu_32b import Lingshu32BAdapter
+from medbenchagent.evaluation.models.qoq_med_vl_32b import QoQMedVL32BAdapter
+from medbenchagent.evaluation.models.qwen2_5_vl import Qwen25VLAdapter
+from medbenchagent.evaluation.models.qwen2_5_vl_32b_instruct import (
+    Qwen25VL32BInstructAdapter,
+)
+from medbenchagent.evaluation.models.qwen3_vl import Qwen3VLAdapter
+from medbenchagent.evaluation.models.qwen3_vl_32b_instruct import Qwen3VL32BInstructAdapter
 from medbenchagent.evaluation.models.qwen3_vl_8b_thinking import Qwen3VL8BThinkingAdapter
 
 
 EXPECTED_ADAPTERS = {
     "qwen2_5_vl",
     "qwen2_5_vl_7b_instruct",
+    "qwen2_5_vl_32b_instruct",
     "internvl3_8b",
+    "internvl3_5_8b",
     "qwen3_vl_8b_instruct",
     "qwen3_vl_8b_thinking",
+    "qwen3_vl_32b_instruct",
     "lingshu_7b",
+    "lingshu_32b",
     "hulu_med_7b",
+    "hulu_med_32b",
     "qoq_med_vl_7b",
+    "qoq_med_vl_32b",
     "chiron_o1_8b",
 }
 
@@ -53,6 +69,36 @@ def _sample(tmp_path: Path, response_format: str, index: int = 0) -> InferenceSa
 
 def test_registry_contains_all_model_keys() -> None:
     assert set(ADAPTERS) == EXPECTED_ADAPTERS
+
+
+def test_new_checkpoint_sizes_reuse_their_family_implementations() -> None:
+    assert issubclass(Qwen25VL32BInstructAdapter, Qwen25VLAdapter)
+    assert issubclass(Qwen3VL32BInstructAdapter, Qwen3VLAdapter)
+    assert issubclass(Lingshu32BAdapter, Qwen25VLAdapter)
+    assert issubclass(HuluMed32BAdapter, HuluMed7BAdapter)
+    assert issubclass(InternVL3_5_8BAdapter, InternVLAdapter)
+    assert issubclass(QoQMedVL32BAdapter, Qwen25VLAdapter)
+
+
+def test_batch_script_uses_server_model_paths_and_flash_attention() -> None:
+    script = (
+        Path(__file__).resolve().parents[1] / "scripts" / "experiments" / "evaluate_models.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "ATTN_IMPLEMENTATION=flash_attention_2" in script
+    assert (
+        "QWEN2_5_VL_32B_INSTRUCT_PATH=/public/home/rxa-jj-wzk/models/"
+        "Qwen2.5-VL/Qwen2.5-VL-32B-Instruct"
+    ) in script
+    assert (
+        "INTERNVL3_5_8B_PATH=/public/home/rxa-jj-wzk/models/"
+        "InternVL3.5/InternVL3_5-8B"
+    ) in script
+    assert "INTERNVL3_5_8B" in script
+    assert (
+        "QOQ_MED_VL_32B_PATH=/public/home/rxa-jj-wzk/models/"
+        "QoQ-Med-VL/QoQ-Med-VL-32B"
+    ) in script
 
 
 def test_public_prompts_remain_qwen25_prompts(tmp_path: Path) -> None:

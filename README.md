@@ -388,8 +388,21 @@ python -m pip install -r requirements/evaluation.txt
 If the server needs a CUDA-specific PyTorch wheel, install the matching `torch`
 and `torchvision` build first, then install the requirements file. The repository
 does not assume a CUDA version. The evaluation environment does not need the full
-MedBenchAgent dependency set or an editable package install. From the repository
-root, verify the source modules directly:
+MedBenchAgent dependency set or an editable package install.
+
+The batch script is configured to use FlashAttention-2. Install a build compatible
+with the active PyTorch and server CUDA toolchain after the base requirements:
+
+```bash
+python -m pip install packaging psutil ninja
+python -m pip install flash-attn --no-build-isolation
+```
+
+Keep `flash-attn` outside the base requirements because its build is specific to
+the server GPU, CUDA, and PyTorch versions. Set `ATTN_IMPLEMENTATION=sdpa` in the
+batch script when FlashAttention-2 is unavailable.
+
+From the repository root, verify the source modules directly:
 
 ```bash
 PYTHONPATH=src python -m medbenchagent.evaluation.inference --help
@@ -402,12 +415,18 @@ Supported adapter keys are:
 | --- | --- | --- |
 | `qwen2_5_vl` | Backward-compatible Qwen2.5-VL key | Processed Qwen image |
 | `qwen2_5_vl_7b_instruct` | Qwen2.5-VL-7B-Instruct | Processed Qwen image |
+| `qwen2_5_vl_32b_instruct` | Qwen2.5-VL-32B-Instruct | Processed Qwen image |
 | `internvl3_8b` | InternVL3-8B | `[0,1000]` |
+| `internvl3_5_8b` | InternVL3.5-8B | `[0,1000]` |
 | `qwen3_vl_8b_instruct` | Qwen3-VL-8B-Instruct | Processed Qwen image |
 | `qwen3_vl_8b_thinking` | Qwen3-VL-8B-Thinking | Processed Qwen image |
+| `qwen3_vl_32b_instruct` | Qwen3-VL-32B-Instruct | Processed Qwen image |
 | `lingshu_7b` | Lingshu-7B | Processed Qwen image |
+| `lingshu_32b` | Lingshu-32B | Processed Qwen image |
 | `hulu_med_7b` | Hulu-Med-7B | Original PNG |
+| `hulu_med_32b` | Hulu-Med-32B | Original PNG |
 | `qoq_med_vl_7b` | QoQ-Med-VL-7B | Processed Qwen image |
+| `qoq_med_vl_32b` | QoQ-Med-VL-32B | Processed Qwen image |
 | `chiron_o1_8b` | Chiron-o1-8B | `[0,1000]` |
 
 All adapters use the same task prompts. Qwen3 Thinking extracts the suffix after
@@ -447,6 +466,11 @@ defaults of 512 new tokens, SDPA, and 0.5 correctness thresholds for both BLEU
 and bbox IoU. Existing inference outputs and temporary parts are protected
 unless `--overwrite` is supplied; interrupted jobs do not resume.
 
+The CLI default remains SDPA for portability, while the provided batch script
+sets `ATTN_IMPLEMENTATION=flash_attention_2`. PyTorch SDPA may itself select a
+fused CUDA attention kernel, so compare end-to-end throughput on the target
+server rather than assuming a fixed speed ratio.
+
 For batch evaluation, edit the direct assignments at the top of
 `scripts/experiments/evaluate_models.sh`. Each model has `NAME`, `ADAPTER`, and
 `PATH` variables. Four dataset groups each have `NAME`, `BENCHMARK`,
@@ -455,10 +479,17 @@ For batch evaluation, edit the direct assignments at the top of
 path before starting a GPU, then runs inference and report generation for each
 model/dataset pair. It assumes the evaluation Conda environment is already
 active and intentionally contains no `conda activate`, `conda run`, or `uv run`.
+The model paths are prefilled under `/public/home/rxa-jj-wzk/models`; dataset
+paths remain user-provided placeholders.
 
 ```bash
 bash scripts/experiments/evaluate_models.sh
 ```
+
+Each torchrun rank loads a complete checkpoint. `NPROC_PER_NODE` adds independent
+data-parallel replicas and does not shard a 32B model across GPUs. A 32B BF16
+checkpoint therefore requires a GPU that can hold the complete model plus runtime
+memory; multi-GPU tensor parallelism and quantization are outside this evaluator.
 
 The evaluator recomputes item scores and checks the recorded result. It reports
 accuracy, semantic-option macro-F1, SacreBLEU, and mean IoU according to each
