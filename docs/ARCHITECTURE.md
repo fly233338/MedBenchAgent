@@ -102,16 +102,16 @@ letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。
 模型通过显式注册的 `ModelAdapter` 加载；每个具体模型拥有独立模块，共用族级实现。目前支持
 Qwen2.5-VL 7B/32B、InternVL3/3.5 8B、Qwen3-VL Instruct 8B/32B 与 Thinking 8B、
 Lingshu 7B/32B、Hulu-Med 7B/32B、QoQ-Med-VL 7B/32B 和 Chiron-o1。Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron 以固定
-`[0,1000]` 坐标空间解释 grounding，Hulu 以原 PNG 尺寸解释。letter VQA 的 system prompt 只要求
-返回正确选项的单个字母，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
+`[0,1000]` 坐标空间解释 grounding，Hulu 以原 PNG 尺寸解释。letter VQA 的公共 system prompt 明确
+要求只返回正确选项字母并禁止 reasoning、标点、标签和其他文本，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
 只接受裸单字母或 Lingshu 风格的单字母加 ASCII 句点响应。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
 任务统一由 system 要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含
 图像和题目（letter 另含选项），所有 adapter 复用同一 prompt 函数。
 InternVL3.5 adapter 不设置官方可选的 Thinking System Prompt；模型若仍输出解释性内容，完整文本
-保存在 `raw_prediction`，并继续按统一的严格终答规则解析。
+保存在 `raw_prediction`，并取最后一个 `</think>` 后的内容按统一规则解析。
 
 `ModelOutput` 同时保留完整 `raw_text`、可选模型坐标空间和可选 `answer_text`。解析器仅在 adapter
-按模型官方协议提取终答时优先使用 `answer_text`：Qwen3 Thinking 使用最后一个 `</think>`，Chiron
+按模型协议提取终答时优先使用 `answer_text`：Qwen3 Thinking 与 InternVL3.5 使用最后一个 `</think>`，Chiron
 使用最后一个 `### The final answer is:`，Hulu 对同一 output IDs 分别保留 thinking 与无 thinking
 解码。分隔符缺失时回退完整响应，空终答保持为空并产生严格 parse error；推理产物只把完整响应写入
 `raw_prediction`，wire schema 仍是 `medbench-inference.v1`。

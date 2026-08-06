@@ -390,8 +390,8 @@ and `torchvision` build first, then install the requirements file. The repositor
 does not assume a CUDA version. The evaluation environment does not need the full
 MedBenchAgent dependency set or an editable package install.
 
-The batch script is configured to use FlashAttention-2. Install a build compatible
-with the active PyTorch and server CUDA toolchain after the base requirements:
+To use FlashAttention-2, install a build compatible with the active PyTorch and
+server CUDA toolchain after the base requirements:
 
 ```bash
 python -m pip install packaging psutil ninja
@@ -399,8 +399,8 @@ python -m pip install flash-attn --no-build-isolation
 ```
 
 Keep `flash-attn` outside the base requirements because its build is specific to
-the server GPU, CUDA, and PyTorch versions. Set `ATTN_IMPLEMENTATION=sdpa` in the
-batch script when FlashAttention-2 is unavailable.
+the server GPU, CUDA, and PyTorch versions. Use the CLI's default SDPA when
+FlashAttention-2 is unavailable.
 
 From the repository root, verify the source modules directly:
 
@@ -429,8 +429,10 @@ Supported adapter keys are:
 | `qoq_med_vl_32b` | QoQ-Med-VL-32B | Processed Qwen image |
 | `chiron_o1_8b` | Chiron-o1-8B | `[0,1000]` |
 
-All adapters use the same task prompts. Qwen3 Thinking extracts the suffix after
-the last `</think>`, Chiron extracts the suffix after the last
+All adapters use the same task prompts. The shared letter system prompt explicitly
+forbids reasoning, punctuation, tags, and any text besides the option letter.
+Qwen3 Thinking and InternVL3.5 extract
+the suffix after the last `</think>`, Chiron extracts the suffix after the last
 `### The final answer is:`, and Hulu uses its processor's `use_think=False`
 decode as the answer. Full reasoning remains in `raw_prediction`; an absent
 official separator falls back to the full response, while an empty extracted
@@ -441,7 +443,9 @@ non-empty, and bbox responses must be exactly one
 `{"bbox":[x1,y1,x2,y2]}` JSON object.
 
 The InternVL3.5 adapter does not install InternVL's optional Thinking System
-Prompt; it uses the same task-specific prompts as the other adapters.
+Prompt; it uses the same task-specific prompts as the other adapters. Because the
+checkpoint can still emit `<think>` blocks, the complete response is retained in
+`raw_prediction` and only the suffix after the final closing tag is parsed.
 
 For a single model/dataset combination, run one process per GPU with the current
 Conda environment's Python:
@@ -471,25 +475,12 @@ defaults of 512 new tokens, SDPA, and 0.5 correctness thresholds for both BLEU
 and bbox IoU. Existing inference outputs and temporary parts are protected
 unless `--overwrite` is supplied; interrupted jobs do not resume.
 
-The CLI default remains SDPA for portability, while the provided batch script
-sets `ATTN_IMPLEMENTATION=flash_attention_2`. PyTorch SDPA may itself select a
-fused CUDA attention kernel, so compare end-to-end throughput on the target
-server rather than assuming a fixed speed ratio.
-
-For batch evaluation, edit the direct assignments at the top of
-`scripts/experiments/evaluate_models.sh`. Each model has `NAME`, `ADAPTER`, and
-`PATH` variables. Four dataset groups each have `NAME`, `BENCHMARK`,
-`BENCHMARK_MANIFEST`, and `IMAGE_MANIFEST`; select prefixes in
-`SELECTED_MODELS` and `SELECTED_DATASETS`. The script validates every selected
-path before starting a GPU, then runs inference and report generation for each
-model/dataset pair. It assumes the evaluation Conda environment is already
-active and intentionally contains no `conda activate`, `conda run`, or `uv run`.
-The model paths are prefilled under `/public/home/rxa-jj-wzk/models`; dataset
-paths remain user-provided placeholders.
-
-```bash
-bash scripts/experiments/evaluate_models.sh
-```
+The CLI default remains SDPA for portability. Pass
+`--attn-implementation flash_attention_2` to opt in. PyTorch SDPA may itself
+select a fused CUDA attention kernel, so compare end-to-end throughput on the
+target server rather than assuming a fixed speed ratio. The repository ignores
+the entire `scripts/` directory; local batch automation and server paths are not
+tracked by Git.
 
 Each torchrun rank loads a complete checkpoint. `NPROC_PER_NODE` adds independent
 data-parallel replicas and does not shard a 32B model across GPUs. A 32B BF16

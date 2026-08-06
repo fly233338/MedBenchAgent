@@ -80,33 +80,15 @@ def test_new_checkpoint_sizes_reuse_their_family_implementations() -> None:
     assert issubclass(QoQMedVL32BAdapter, Qwen25VLAdapter)
 
 
-def test_batch_script_uses_server_model_paths_and_flash_attention() -> None:
-    script = (
-        Path(__file__).resolve().parents[1] / "scripts" / "experiments" / "evaluate_models.sh"
-    ).read_text(encoding="utf-8")
-
-    assert "ATTN_IMPLEMENTATION=flash_attention_2" in script
-    assert (
-        "QWEN2_5_VL_32B_INSTRUCT_PATH=/public/home/rxa-jj-wzk/models/"
-        "Qwen2.5-VL/Qwen2.5-VL-32B-Instruct"
-    ) in script
-    assert (
-        "INTERNVL3_5_8B_PATH=/public/home/rxa-jj-wzk/models/"
-        "InternVL3.5/InternVL3_5-8B"
-    ) in script
-    assert "INTERNVL3_5_8B" in script
-    assert (
-        "QOQ_MED_VL_32B_PATH=/public/home/rxa-jj-wzk/models/"
-        "QoQ-Med-VL/QoQ-Med-VL-32B"
-    ) in script
-
-
 def test_public_prompts_remain_qwen25_prompts(tmp_path: Path) -> None:
     letter = _sample(tmp_path, "letter")
     free_text = _sample(tmp_path, "free_text", 1)
     bbox = _sample(tmp_path, "bbox", 2)
 
-    assert system_prompt(letter) == "Answer with the correct single letter answer."
+    assert system_prompt(letter) == (
+        "Answer with only the correct option letter. Do not include reasoning, "
+        "punctuation, tags, or any other text."
+    )
     assert user_prompt(letter) == "Which view?\n\nA. CC\nB. MLO"
     assert system_prompt(free_text) is None
     assert user_prompt(free_text) == "Which view?"
@@ -122,6 +104,10 @@ def test_public_prompts_remain_qwen25_prompts(tmp_path: Path) -> None:
         (Qwen3VL8BThinkingAdapter, "reasoning</think>A", "A"),
         (Qwen3VL8BThinkingAdapter, "reasoning</think>", ""),
         (Qwen3VL8BThinkingAdapter, "A", "A"),
+        (InternVL3_5_8BAdapter, "reasoning</think>A", "A"),
+        (InternVL3_5_8BAdapter, "first</think>second</think>B", "B"),
+        (InternVL3_5_8BAdapter, "reasoning</think>", ""),
+        (InternVL3_5_8BAdapter, "A", "A"),
         (ChironO1_8BAdapter, "reasoning### The final answer is:A", "A"),
         (ChironO1_8BAdapter, "reasoning### The final answer is:", ""),
         (ChironO1_8BAdapter, "A", "A"),

@@ -19,7 +19,10 @@ class ModelAdapter(Protocol):
 
 def system_prompt(sample: InferenceSample) -> str | None:
     if sample.task.response_format == "letter":
-        return "Answer with the correct single letter answer."
+        return (
+            "Answer with only the correct option letter. Do not include reasoning, "
+            "punctuation, tags, or any other text."
+        )
     if sample.task.response_format == "bbox":
         return (
             'Answer with only a JSON object containing the single bounding box under the "bbox" '
