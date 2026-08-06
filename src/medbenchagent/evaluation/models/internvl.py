@@ -111,6 +111,15 @@ class InternVLAdapter:
     def instruction_for(self, sample: InferenceSample) -> str | None:
         return system_prompt(sample)
 
+    def prompt_for(self, sample: InferenceSample) -> str:
+        return user_prompt(sample)
+
+    def generation_config(self, max_new_tokens: int) -> dict[str, object]:
+        return {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": False,
+        }
+
     def __init__(
         self,
         model_path: str,
@@ -172,17 +181,14 @@ class InternVLAdapter:
             for instruction, indices in grouped.items():
                 group_pixels = torch.cat([pixel_values[index] for index in indices])
                 patch_counts = [pixel_values[index].size(0) for index in indices]
-                questions = [f"<image>\n{user_prompt(samples[index])}" for index in indices]
+                questions = [f"<image>\n{self.prompt_for(samples[index])}" for index in indices]
                 self.model.system_message = instruction
                 responses = self.model.batch_chat(
                     self.tokenizer,
                     group_pixels,
                     num_patches_list=patch_counts,
                     questions=questions,
-                    generation_config={
-                        "max_new_tokens": max_new_tokens,
-                        "do_sample": False,
-                    },
+                    generation_config=self.generation_config(max_new_tokens),
                 )
                 if len(responses) != len(indices):
                     raise RuntimeError("InternVL returned an unexpected number of outputs.")

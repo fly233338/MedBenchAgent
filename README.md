@@ -436,8 +436,9 @@ terms before downloading it, then point the adapter at the local model directory
 Most adapters retain the original shared task prompts. QoQ uses its native medical
 reasoning prompt and extracts the final balanced `\boxed{...}` payload. Qwen3
 Thinking and InternVL3.5 extract the suffix after the last `</think>`, Chiron
-preserves its checkpoint system message and extracts the suffix after the last
-`### The final answer is:`, and Hulu uses its processor's `use_think=False`
+preserves its checkpoint system message, appends the official step-by-step trigger,
+requires the `### The final answer is:` boundary, and extracts the suffix after its
+last occurrence. Hulu uses its processor's `use_think=False`
 decode as the answer. Full reasoning remains in `raw_prediction`; an absent
 official separator falls back to the full response, while an empty extracted
 answer fails strict parsing. Letter responses may be one bare valid letter, the
@@ -448,10 +449,11 @@ remain parse errors. Free text must be non-empty, and bbox responses must be exa
 `{"bbox":[x1,y1,x2,y2]}` JSON object.
 
 The InternVL3.5 adapter does not install InternVL's optional Thinking System
-Prompt. It alone appends a model-specific instruction forbidding reasoning and
-`<think>` tags to the shared task prompt. Because the checkpoint can still emit
+Prompt. Its user prompt appends a model-specific evaluation instruction forbidding
+reasoning and `<think>` tags and requiring only the final answer. Because the checkpoint can still emit
 `<think>` blocks, the complete response is retained in `raw_prediction` and only
-the suffix after the final closing tag is parsed.
+the suffix after the final closing tag is parsed. Chiron and InternVL3.5 explicitly
+set `pad_token_id` to the tokenizer EOS ID to avoid the open-end generation warning.
 
 For a single model/dataset combination, run one process per GPU with the current
 Conda environment's Python:

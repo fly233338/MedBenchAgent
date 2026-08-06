@@ -10,6 +10,26 @@ class ChironO1_8BAdapter(InternVLAdapter):
     def instruction_for(self, _sample: InferenceSample) -> str:
         return self.model.system_message
 
+    def prompt_for(self, sample: InferenceSample) -> str:
+        final_format = {
+            "letter": "one valid option letter and nothing else",
+            "free_text": "the concise final answer and nothing else",
+            "bbox": (
+                'only a JSON object containing the single bounding box under the "bbox" key '
+                "as four absolute xyxy coordinates"
+            ),
+        }[sample.task.response_format]
+        return (
+            f"{super().prompt_for(sample)}\n\n"
+            "Let's reason step-by-step to answer the above question. End the response with the "
+            f"exact marker ### The final answer is: followed by {final_format}."
+        )
+
+    def generation_config(self, max_new_tokens: int) -> dict[str, object]:
+        config = super().generation_config(max_new_tokens)
+        config["pad_token_id"] = self.tokenizer.eos_token_id
+        return config
+
     def extract_answer(self, text: str) -> str:
         marker = "### The final answer is:"
         return text.rpartition(marker)[2].strip() if marker in text else text

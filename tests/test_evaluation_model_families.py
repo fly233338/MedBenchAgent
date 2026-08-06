@@ -98,18 +98,27 @@ def test_public_prompts_remain_qwen25_prompts(tmp_path: Path) -> None:
     )
 
 
-def test_internvl35_alone_strengthens_the_public_prompts(tmp_path: Path) -> None:
+def test_internvl35_adds_its_direct_answer_evaluation_requirement(tmp_path: Path) -> None:
     adapter = object.__new__(InternVL3_5_8BAdapter)
+    adapter.tokenizer = types.SimpleNamespace(eos_token_id=151645)
     letter = _sample(tmp_path, "letter")
     free_text = _sample(tmp_path, "free_text", 1)
 
-    assert adapter.instruction_for(letter) == (
-        "Answer with the correct single letter answer. Do not include reasoning or <think> "
-        "tags. Return only the final answer and no other text."
+    assert adapter.instruction_for(letter) == system_prompt(letter)
+    assert adapter.instruction_for(free_text) is None
+    assert adapter.prompt_for(letter) == (
+        "Which view?\n\nA. CC\nB. MLO\n\nDo not include reasoning or <think> tags. "
+        "Return only the final answer and no other text."
     )
-    assert adapter.instruction_for(free_text) == (
-        "Do not include reasoning or <think> tags. Return only the final answer and no other text."
+    assert adapter.prompt_for(free_text) == (
+        "Which view?\n\nDo not include reasoning or <think> tags. Return only the final "
+        "answer and no other text."
     )
+    assert adapter.generation_config(512) == {
+        "max_new_tokens": 512,
+        "do_sample": False,
+        "pad_token_id": 151645,
+    }
 
 
 def test_qoq_uses_native_reasoning_prompt_and_boxed_final_answer(tmp_path: Path) -> None:
@@ -124,11 +133,29 @@ def test_qoq_uses_native_reasoning_prompt_and_boxed_final_answer(tmp_path: Path)
     assert "Inside \\boxed{}, put exactly one valid option letter." in prompt
 
 
-def test_chiron_preserves_checkpoint_system_message(tmp_path: Path) -> None:
+def test_chiron_uses_official_reasoning_trigger_and_final_answer_boundary(tmp_path: Path) -> None:
     adapter = object.__new__(ChironO1_8BAdapter)
     adapter.model = types.SimpleNamespace(system_message="checkpoint reasoning protocol")
+    adapter.tokenizer = types.SimpleNamespace(eos_token_id=151645)
+    sample = _sample(tmp_path, "letter")
+    bbox = _sample(tmp_path, "bbox", 1)
 
-    assert adapter.instruction_for(_sample(tmp_path, "letter")) == "checkpoint reasoning protocol"
+    assert adapter.instruction_for(sample) == "checkpoint reasoning protocol"
+    assert adapter.prompt_for(sample) == (
+        "Which view?\n\nA. CC\nB. MLO\n\n"
+        "Let's reason step-by-step to answer the above question. End the response with the "
+        "exact marker ### The final answer is: followed by one valid option letter and nothing "
+        "else."
+    )
+    assert adapter.prompt_for(bbox).endswith(
+        'exact marker ### The final answer is: followed by only a JSON object containing the '
+        'single bounding box under the "bbox" key as four absolute xyxy coordinates.'
+    )
+    assert adapter.generation_config(1024) == {
+        "max_new_tokens": 1024,
+        "do_sample": False,
+        "pad_token_id": 151645,
+    }
 
 
 @pytest.mark.parametrize(

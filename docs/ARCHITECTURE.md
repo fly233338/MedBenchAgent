@@ -109,14 +109,15 @@ Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron �
 例如 `A. E.` 与 `A. because ...` 均解析为 `A`。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
 任务统一由 system 要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含
 图像和题目（letter 另含选项），所有 adapter 复用同一公共 prompt 函数。仅 InternVL3.5 adapter
-在公共 prompt 后追加禁止 reasoning 与 `<think>` 标签的模型专用指令，但不设置官方可选的
+在其 user prompt 后追加禁止 reasoning 与 `<think>` 标签、只返回终答的模型专用评测指令，但不设置官方可选的
 Thinking System Prompt；模型若仍输出解释性内容，完整文本保存在 `raw_prediction`，并取最后一个
 `</think>` 后的内容按统一规则解析。
 
 QoQ-Med-VL 7B/32B 使用其原生 medical reasoning prompt，要求 `<think>...</think>` 推理并把终答放入
 `\boxed{...}`；adapter 从最后一个 balanced boxed payload 提取终答，支持内部嵌套 bbox JSON。Chiron
-不额外伪造 reasoning prompt，而是保留 checkpoint 默认 system message，与官方仅传问题的评测方式一致，
-并继续使用 `### The final answer is:` 作为终答边界。
+保留 checkpoint 默认 system message，在 user prompt 后追加官方 `Let's reason step-by-step` trigger，
+并明确要求使用 `### The final answer is:` 作为终答边界。Chiron 与 InternVL3.5 的 generation config
+均显式令 `pad_token_id` 等于 tokenizer EOS ID，只用于消除 open-end generation 警告。
 
 `ModelOutput` 同时保留完整 `raw_text`、可选模型坐标空间和可选 `answer_text`。解析器仅在 adapter
 按模型协议提取终答时优先使用 `answer_text`：QoQ 使用最后一个 balanced `\boxed{...}`，Qwen3 Thinking
