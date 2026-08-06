@@ -186,16 +186,21 @@ def test_load_benchmark_rejects_escaping_image_path(tmp_path: Path) -> None:
     [
         ("B", "B"),
         (" b\n", "B"),
+        ("A.", "A"),
+        (" e.\n", "E"),
     ],
 )
 def test_parse_letter_prediction(raw: str, expected: str) -> None:
-    sample = _sample("letter", "B", ["benign", "malignant"])
+    sample = _sample("letter", "B", ["one", "two", "three", "four", "five"])
     assert parse_prediction(ModelOutput(raw), sample) == expected
 
 
-@pytest.mark.parametrize("raw", ['{"answer":"B"}', "malignant", "The answer is B.", "(B)"])
+@pytest.mark.parametrize(
+    "raw",
+    ['{"answer":"B"}', "malignant", "The answer is B.", "(B)", "A. E.", "A. because"],
+)
 def test_parse_letter_prediction_rejects_non_letter_output(raw: str) -> None:
-    with pytest.raises(PredictionParseError, match="exactly one valid option letter"):
+    with pytest.raises(PredictionParseError, match="one valid option letter"):
         parse_prediction(ModelOutput(raw), _sample("letter", "B", ["benign", "malignant"]))
 
 
@@ -222,7 +227,7 @@ def test_parse_prediction_prefers_officially_extracted_answer() -> None:
 def test_empty_extracted_answer_does_not_fall_back_to_raw_output() -> None:
     sample = _sample("letter", "B", ["benign", "malignant"])
 
-    with pytest.raises(PredictionParseError, match="exactly one valid option letter"):
+    with pytest.raises(PredictionParseError, match="one valid option letter"):
         parse_prediction(ModelOutput("B", answer_text=""), sample)
 
 
@@ -355,6 +360,28 @@ def test_inference_and_evaluation_end_to_end_with_fake_adapter(
         "error_counts": {},
     }
     assert report["tasks"]["diagnosis"]["score"] == 1.0
+    assert report["items"] == [
+        {
+            "index": 0,
+            "item_id": "item-0",
+            "task_id": "diagnosis",
+            "prediction": "B",
+            "raw_prediction": "private reasoning",
+            "item_score": 1.0,
+            "correct": True,
+            "error": None,
+        },
+        {
+            "index": 1,
+            "item_id": "item-1",
+            "task_id": "diagnosis",
+            "prediction": "B",
+            "raw_prediction": "private reasoning",
+            "item_score": 1.0,
+            "correct": True,
+            "error": None,
+        },
+    ]
 
 
 def test_evaluation_macro_f1_uses_semantic_options_after_balancing(tmp_path: Path) -> None:

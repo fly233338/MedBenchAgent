@@ -193,6 +193,9 @@ def evaluate_inference(
         ):
             raise EvaluationDataError("Inference results contain duplicate indices or item ids.")
         prediction = _prediction(result, sample)
+        raw_prediction = result.get("raw_prediction")
+        if not isinstance(raw_prediction, str):
+            raise EvaluationDataError(f"{item_id}: raw prediction must be text.")
         score = item_score(sample, prediction, language)
         correct = item_correct(
             sample,
@@ -223,6 +226,7 @@ def evaluate_inference(
             {
                 "sample": sample,
                 "prediction": prediction,
+                "raw_prediction": raw_prediction,
                 "score": score,
                 "correct": correct,
                 "error": result.get("error"),
@@ -297,6 +301,19 @@ def evaluate_inference(
         },
         "categories": categories,
         "tasks": tasks,
+        "items": [
+            {
+                "index": row["sample"].index,
+                "item_id": row["sample"].item["id"],
+                "task_id": row["sample"].task.task_id,
+                "prediction": row["prediction"],
+                "raw_prediction": row["raw_prediction"],
+                "item_score": row["score"],
+                "correct": row["correct"],
+                "error": row["error"],
+            }
+            for row in rows
+        ],
     }
     atomic_write_json(output_path, report)
     return str(output_path)

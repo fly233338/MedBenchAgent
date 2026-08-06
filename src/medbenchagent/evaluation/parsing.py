@@ -30,11 +30,14 @@ def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list
         options = sample.item["options"]
         assert isinstance(options, list)
         raw_answer = answer_text.strip()
-        if len(raw_answer) == 1 and raw_answer.isalpha():
-            letter = raw_answer.upper()
+        candidate = raw_answer[:-1] if len(raw_answer) == 2 and raw_answer.endswith(".") else raw_answer
+        if len(candidate) == 1 and "A" <= candidate.upper() <= "Z":
+            letter = candidate.upper()
             if ord(letter) - ord("A") in range(len(options)):
                 return letter
-        raise PredictionParseError("response must be exactly one valid option letter")
+        raise PredictionParseError(
+            "response must be one valid option letter, optionally followed by a period"
+        )
     if response_format == "free_text":
         answer = answer_text.strip()
         if not answer:

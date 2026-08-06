@@ -104,9 +104,11 @@ Qwen2.5-VL 7B/32B、InternVL3/3.5 8B、Qwen3-VL Instruct 8B/32B 与 Thinking 8B�
 Lingshu 7B/32B、Hulu-Med 7B/32B、QoQ-Med-VL 7B/32B 和 Chiron-o1。Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron 以固定
 `[0,1000]` 坐标空间解释 grounding，Hulu 以原 PNG 尺寸解释。letter VQA 的 system prompt 只要求
 返回正确选项的单个字母，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
-只接受裸单字母响应。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
+只接受裸单字母或 Lingshu 风格的单字母加 ASCII 句点响应。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
 任务统一由 system 要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含
 图像和题目（letter 另含选项），所有 adapter 复用同一 prompt 函数。
+InternVL3.5 adapter 不设置官方可选的 Thinking System Prompt；模型若仍输出解释性内容，完整文本
+保存在 `raw_prediction`，并继续按统一的严格终答规则解析。
 
 `ModelOutput` 同时保留完整 `raw_text`、可选模型坐标空间和可选 `answer_text`。解析器仅在 adapter
 按模型官方协议提取终答时优先使用 `answer_text`：Qwen3 Thinking 使用最后一个 `</think>`，Chiron
@@ -123,7 +125,8 @@ Lingshu 7B/32B、Hulu-Med 7B/32B、QoQ-Med-VL 7B/32B 和 Chiron-o1。Qwen2.5/Qwe
 环境中通过源码 `PYTHONPATH` 运行。
 
 `medbench-evaluation.v1` 从推理 JSON 重新计算逐题结果、逐 task 主指标、同指标 task-macro
-以及 category/全局阈值正确率。选择题 macro-F1 使用选项文本而非平衡后的字母位置；
+以及 category/全局阈值正确率，并在逐题 `items` 中同时保留规范化 `prediction` 与模型完整
+`raw_prediction`。选择题 macro-F1 使用选项文本而非平衡后的字母位置；
 不同指标不合成为单一总分。评测产物不修改 benchmark run 或其 manifest。
 
 ## 维护边界

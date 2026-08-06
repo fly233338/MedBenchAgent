@@ -434,9 +434,14 @@ the last `</think>`, Chiron extracts the suffix after the last
 `### The final answer is:`, and Hulu uses its processor's `use_think=False`
 decode as the answer. Full reasoning remains in `raw_prediction`; an absent
 official separator falls back to the full response, while an empty extracted
-answer fails strict parsing. Letter responses must be one bare valid letter,
-free text must be non-empty, and bbox responses must be exactly one
+answer fails strict parsing. Letter responses must be one bare valid letter or
+the Lingshu-style form with one trailing ASCII period, such as `A.`. Explanations,
+multiple letters, and other wrappers remain parse errors. Free text must be
+non-empty, and bbox responses must be exactly one
 `{"bbox":[x1,y1,x2,y2]}` JSON object.
+
+The InternVL3.5 adapter does not install InternVL's optional Thinking System
+Prompt; it uses the same task-specific prompts as the other adapters.
 
 For a single model/dataset combination, run one process per GPU with the current
 Conda environment's Python:
@@ -496,7 +501,9 @@ accuracy, semantic-option macro-F1, SacreBLEU, and mean IoU according to each
 task's manifest metric. Heterogeneous task metrics are kept in separate groups;
 only thresholded correctness is summarized across all tasks. Optional
 `--bleu-threshold` and `--bbox-iou-threshold` values recompute report
-correctness without rerunning the model.
+correctness without rerunning the model. The report's per-item `items` list
+retains both the normalized `prediction` and the model's complete
+`raw_prediction` for output auditing.
 
 Model integrations live under `medbenchagent.evaluation.models`. Add one model
 module implementing `ModelAdapter.generate`, then add its explicit name and
