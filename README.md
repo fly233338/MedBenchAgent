@@ -428,6 +428,10 @@ Supported adapter keys are:
 | `qoq_med_vl_7b` | QoQ-Med-VL-7B | Processed Qwen image |
 | `qoq_med_vl_32b` | QoQ-Med-VL-32B | Processed Qwen image |
 | `chiron_o1_8b` | Chiron-o1-8B | `[0,1000]` |
+| `medgemma_1_5_4b_it` | MedGemma-1.5-4B-IT | Processed 896×896 image |
+
+MedGemma is a gated checkpoint. Accept Google's Health AI Developer Foundations
+terms before downloading it, then point the adapter at the local model directory.
 
 Most adapters retain the original shared task prompts. QoQ uses its native medical
 reasoning prompt and extracts the final balanced `\boxed{...}` payload. Qwen3

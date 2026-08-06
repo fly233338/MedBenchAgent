@@ -12,6 +12,7 @@ from medbenchagent.evaluation.models.internvl3_5_8b import InternVL3_5_8BAdapter
 from medbenchagent.evaluation.models.internvl3_8b import InternVL3_8BAdapter
 from medbenchagent.evaluation.models.lingshu_32b import Lingshu32BAdapter
 from medbenchagent.evaluation.models.lingshu_7b import Lingshu7BAdapter
+from medbenchagent.evaluation.models.medgemma_1_5_4b_it import MedGemma15_4BITAdapter
 from medbenchagent.evaluation.models.qoq_med_vl_32b import QoQMedVL32BAdapter
 from medbenchagent.evaluation.models.qoq_med_vl_7b import QoQMedVL7BAdapter
 from medbenchagent.evaluation.models.qwen2_5_vl import Qwen25VLAdapter
@@ -38,6 +39,7 @@ ADAPTERS = {
     "qoq_med_vl_7b": QoQMedVL7BAdapter,
     "qoq_med_vl_32b": QoQMedVL32BAdapter,
     "chiron_o1_8b": ChironO1_8BAdapter,
+    "medgemma_1_5_4b_it": MedGemma15_4BITAdapter,
 }
 
 

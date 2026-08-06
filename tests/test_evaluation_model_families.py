@@ -15,6 +15,7 @@ from medbenchagent.evaluation.models.hulu_med_7b import HuluMed7BAdapter
 from medbenchagent.evaluation.models.internvl import InternVLAdapter, dynamic_preprocess
 from medbenchagent.evaluation.models.internvl3_5_8b import InternVL3_5_8BAdapter
 from medbenchagent.evaluation.models.lingshu_32b import Lingshu32BAdapter
+from medbenchagent.evaluation.models.medgemma_1_5_4b_it import MedGemma15_4BITAdapter
 from medbenchagent.evaluation.models.qoq_med_vl_32b import QoQMedVL32BAdapter
 from medbenchagent.evaluation.models.qoq_med_vl_7b import QoQMedVL7BAdapter
 from medbenchagent.evaluation.models.qwen2_5_vl import Qwen25VLAdapter
@@ -42,6 +43,7 @@ EXPECTED_ADAPTERS = {
     "qoq_med_vl_7b",
     "qoq_med_vl_32b",
     "chiron_o1_8b",
+    "medgemma_1_5_4b_it",
 }
 
 
@@ -235,6 +237,104 @@ def test_qwen3_uses_patch_size_16_without_second_resize(
     assert output.raw_text == "reasoning</think>A"
     assert output.answer_text == "A"
     assert output.coordinate_size == (64, 32)
+
+
+def test_medgemma_uses_native_batched_chat_template_and_896_coordinate_space(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeInputs(dict):
+        def __init__(self) -> None:
+            super().__init__(
+                input_ids=torch.tensor([[0, 1], [2, 3]]),
+                pixel_values=torch.ones((2, 3, 4, 4), dtype=torch.float64),
+            )
+
+        def to(self, device: torch.device, *, dtype: torch.dtype) -> "FakeInputs":
+            calls["inputs_to"] = (device, dtype)
+            self["pixel_values"] = self["pixel_values"].to(dtype=dtype)
+            return self
+
+    class FakeProcessor:
+        def __init__(self) -> None:
+            self.tokenizer = types.SimpleNamespace(padding_side="right")
+            self.image_processor = types.SimpleNamespace(size={"width": 896, "height": 896})
+
+        @classmethod
+        def from_pretrained(cls, path: str) -> "FakeProcessor":
+            calls["processor_path"] = path
+            return cls()
+
+        def apply_chat_template(
+            self,
+            conversations: list[list[dict]],
+            **kwargs: object,
+        ) -> FakeInputs:
+            calls["conversations"] = conversations
+            calls["template_kwargs"] = kwargs
+            return FakeInputs()
+
+        def batch_decode(self, tokens: torch.Tensor, **kwargs: object) -> list[str]:
+            calls["decoded_tokens"] = tokens
+            calls["decode_kwargs"] = kwargs
+            return [" A ", " report "]
+
+    class FakeModel:
+        dtype = torch.float32
+
+        @classmethod
+        def from_pretrained(cls, path: str, **kwargs: object) -> "FakeModel":
+            calls["model_path"] = path
+            calls["model_load"] = kwargs
+            return cls()
+
+        def to(self, device: torch.device) -> "FakeModel":
+            calls["model_device"] = device
+            return self
+
+        def eval(self) -> None:
+            return None
+
+        def generate(self, **kwargs: object) -> torch.Tensor:
+            calls["generate"] = kwargs
+            assert kwargs["pixel_values"].dtype == torch.float32
+            return torch.tensor([[0, 1, 9], [2, 3, 8]])
+
+    transformers = types.ModuleType("transformers")
+    transformers.AutoModelForImageTextToText = FakeModel
+    transformers.AutoProcessor = FakeProcessor
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    samples = [_sample(tmp_path, "letter", 0), _sample(tmp_path, "free_text", 1)]
+
+    adapter = MedGemma15_4BITAdapter("model", device=torch.device("cpu"))
+    outputs = adapter.generate(samples, max_new_tokens=24)
+
+    assert adapter.processor.tokenizer.padding_side == "left"
+    assert calls["model_load"] == {
+        "torch_dtype": "auto",
+        "attn_implementation": "sdpa",
+    }
+    assert calls["template_kwargs"] == {
+        "add_generation_prompt": True,
+        "tokenize": True,
+        "return_dict": True,
+        "return_tensors": "pt",
+        "padding": True,
+    }
+    conversations = calls["conversations"]
+    assert conversations[0][0] == {"role": "system", "content": system_prompt(samples[0])}
+    assert conversations[0][1]["content"][1] == {
+        "type": "text",
+        "text": user_prompt(samples[0]),
+    }
+    assert conversations[1][0]["role"] == "user"
+    assert calls["generate"]["do_sample"] is False
+    assert calls["generate"]["max_new_tokens"] == 24
+    assert torch.equal(calls["decoded_tokens"], torch.tensor([[9], [8]]))
+    assert [output.raw_text for output in outputs] == ["A", "report"]
+    assert all(output.coordinate_size == (896, 896) for output in outputs)
 
 
 def test_internvl_dynamic_preprocess_adds_thumbnail_for_multiple_tiles() -> None:
