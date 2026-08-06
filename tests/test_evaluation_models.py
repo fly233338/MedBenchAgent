@@ -44,10 +44,7 @@ def test_unknown_model_adapter_is_rejected() -> None:
     [
         (
             "letter",
-            (
-                "Answer with only the correct option letter. Do not include reasoning, "
-                "punctuation, tags, or any other text."
-            ),
+            "Answer with the correct single letter answer.",
             "Which view?\n\nA. CC\nB. MLO",
             "A",
         ),

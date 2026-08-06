@@ -138,14 +138,13 @@ def _task_score(
     rows: list[dict[str, Any]],
     language: str,
 ) -> float:
-    if metric == "accuracy":
+    if metric in {"accuracy", "miou"}:
         return sum(row["score"] for row in rows) / len(rows)
     if metric == "macro_f1":
-        gold = [option_value(row["sample"].item, row["sample"].item["answer"]) for row in rows]
-        predicted = [option_value(row["sample"].item, row["prediction"]) for row in rows]
-        if not all(isinstance(value, str) for value in gold):
-            raise EvaluationDataError("Macro-F1 task has an invalid gold option.")
-        return macro_f1(gold, predicted)
+        score = _task_macro_f1(rows)
+        if score is None:
+            raise EvaluationDataError("Macro-F1 requires a letter task.")
+        return score
     if metric == "bleu":
         predictions = [
             row["prediction"] if isinstance(row["prediction"], str) else "" for row in rows
@@ -153,6 +152,16 @@ def _task_score(
         references = [str(row["sample"].item["answer"]) for row in rows]
         return corpus_bleu(predictions, references, language)
     raise EvaluationDataError(f"Unsupported metric implementation: {metric}")
+
+
+def _task_macro_f1(rows: list[dict[str, Any]]) -> float | None:
+    if rows[0]["sample"].task.response_format != "letter":
+        return None
+    gold = [option_value(row["sample"].item, row["sample"].item["answer"]) for row in rows]
+    predicted = [option_value(row["sample"].item, row["prediction"]) for row in rows]
+    if not all(isinstance(value, str) for value in gold):
+        raise EvaluationDataError("Letter task has an invalid gold option.")
+    return macro_f1(gold, predicted)
 
 
 def evaluate_inference(
@@ -248,6 +257,7 @@ def evaluate_inference(
         if any(row["sample"].task != task for row in task_rows):
             raise EvaluationDataError(f"{task_id}: inconsistent task metadata in inference results.")
         score = _task_score(task.metric, task_rows, language)
+        task_macro_f1 = _task_macro_f1(task_rows)
         correct_count = sum(row["correct"] for row in task_rows)
         tasks[task_id] = {
             "category": task.category,
@@ -255,22 +265,32 @@ def evaluate_inference(
             "metric": task.metric,
             "count": len(task_rows),
             "score": score,
+            "macro_f1": task_macro_f1,
             "correct": correct_count,
             "correct_rate": correct_count / len(task_rows),
             "errors": sum(row["error"] is not None for row in task_rows),
         }
         metric_scores[task.metric].append(score)
 
-    categories: dict[str, dict[str, int | float]] = {}
+    categories: dict[str, dict[str, int | float | None]] = {}
     for category in sorted({row["sample"].task.category for row in rows}):
         category_rows = [row for row in rows if row["sample"].task.category == category]
         correct_count = sum(row["correct"] for row in category_rows)
+        category_task_f1s = [
+            task["macro_f1"]
+            for task in tasks.values()
+            if task["category"] == category and task["macro_f1"] is not None
+        ]
         categories[category] = {
             "count": len(category_rows),
             "correct": correct_count,
             "correct_rate": correct_count / len(category_rows),
+            "macro_f1": (
+                sum(category_task_f1s) / len(category_task_f1s) if category_task_f1s else None
+            ),
         }
     correct_total = sum(row["correct"] for row in rows)
+    task_f1s = [task["macro_f1"] for task in tasks.values() if task["macro_f1"] is not None]
     report = {
         "schema_version": "medbench-evaluation.v1",
         "metadata": {
@@ -289,6 +309,7 @@ def evaluate_inference(
             "correct": correct_total,
             "incorrect": len(rows) - correct_total,
             "correct_rate": correct_total / len(rows) if rows else 0.0,
+            "macro_f1": sum(task_f1s) / len(task_f1s) if task_f1s else None,
             "errors": sum(error_counts.values()),
             "error_counts": dict(sorted(error_counts.items())),
         },

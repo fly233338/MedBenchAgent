@@ -14,7 +14,7 @@ from medbenchagent.evaluation.contracts import (
     TaskSpec,
 )
 from medbenchagent.evaluation.data import EvaluationDataError, load_benchmark
-from medbenchagent.evaluation.eval import evaluate_inference
+from medbenchagent.evaluation.eval import _task_score, evaluate_inference
 from medbenchagent.evaluation.inference import (
     DistributedContext,
     run_inference,
@@ -268,6 +268,7 @@ def test_parse_bbox_rejects_outputs_outside_strict_contract(raw: str) -> None:
 
 def test_metrics_cover_iou_and_semantic_macro_f1() -> None:
     assert bbox_iou([0, 0, 10, 10], [5, 0, 15, 10]) == pytest.approx(1 / 3)
+    assert _task_score("miou", [{"score": 0.25}, {"score": 0.75}], "en") == 0.5
     first = _letter_item()
     second = {**_letter_item(1), "options": ["malignant", "benign"], "answer": "A"}
     assert option_value(first, "B") == option_value(second, "A") == "malignant"
@@ -356,10 +357,13 @@ def test_inference_and_evaluation_end_to_end_with_fake_adapter(
         "correct": 2,
         "incorrect": 0,
         "correct_rate": 1.0,
+        "macro_f1": 1.0,
         "errors": 0,
         "error_counts": {},
     }
     assert report["tasks"]["diagnosis"]["score"] == 1.0
+    assert report["tasks"]["diagnosis"]["macro_f1"] == 1.0
+    assert report["categories"]["clinical"]["macro_f1"] == 1.0
     assert report["items"] == [
         {
             "index": 0,
@@ -480,6 +484,9 @@ def test_eval_threshold_override_recomputes_correctness(tmp_path: Path) -> None:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["metadata"]["thresholds"]["overridden"] is True
     assert report["summary"]["correct"] == 1
+    assert report["summary"]["macro_f1"] is None
+    assert report["tasks"]["report"]["macro_f1"] is None
+    assert report["categories"]["report"]["macro_f1"] is None
 
 
 def test_shard_indices_are_complete_and_non_overlapping() -> None:

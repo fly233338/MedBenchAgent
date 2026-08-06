@@ -108,6 +108,9 @@ def load_image(path: str, *, input_size: int = 448, max_num: int = 12) -> torch.
 class InternVLAdapter:
     coordinate_size = (1000, 1000)
 
+    def instruction_for(self, sample: InferenceSample) -> str | None:
+        return system_prompt(sample)
+
     def __init__(
         self,
         model_path: str,
@@ -161,7 +164,7 @@ class InternVLAdapter:
         ]
         grouped: dict[str, list[int]] = defaultdict(list)
         for index, sample in enumerate(samples):
-            grouped[system_prompt(sample) or ""].append(index)
+            grouped[self.instruction_for(sample) or ""].append(index)
 
         decoded: list[str | None] = [None] * len(samples)
         original_system_message = self.model.system_message

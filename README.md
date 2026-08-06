@@ -429,9 +429,7 @@ Supported adapter keys are:
 | `qoq_med_vl_32b` | QoQ-Med-VL-32B | Processed Qwen image |
 | `chiron_o1_8b` | Chiron-o1-8B | `[0,1000]` |
 
-All adapters use the same task prompts. The shared letter system prompt explicitly
-forbids reasoning, punctuation, tags, and any text besides the option letter.
-Qwen3 Thinking and InternVL3.5 extract
+All adapters retain the original shared task prompts. Qwen3 Thinking and InternVL3.5 extract
 the suffix after the last `</think>`, Chiron extracts the suffix after the last
 `### The final answer is:`, and Hulu uses its processor's `use_think=False`
 decode as the answer. Full reasoning remains in `raw_prediction`; an absent
@@ -443,9 +441,10 @@ non-empty, and bbox responses must be exactly one
 `{"bbox":[x1,y1,x2,y2]}` JSON object.
 
 The InternVL3.5 adapter does not install InternVL's optional Thinking System
-Prompt; it uses the same task-specific prompts as the other adapters. Because the
-checkpoint can still emit `<think>` blocks, the complete response is retained in
-`raw_prediction` and only the suffix after the final closing tag is parsed.
+Prompt. It alone appends a model-specific instruction forbidding reasoning and
+`<think>` tags to the shared task prompt. Because the checkpoint can still emit
+`<think>` blocks, the complete response is retained in `raw_prediction` and only
+the suffix after the final closing tag is parsed.
 
 For a single model/dataset combination, run one process per GPU with the current
 Conda environment's Python:
@@ -495,6 +494,11 @@ only thresholded correctness is summarized across all tasks. Optional
 correctness without rerunning the model. The report's per-item `items` list
 retains both the normalized `prediction` and the model's complete
 `raw_prediction` for output auditing.
+
+Every letter task also records semantic-option `macro_f1`, regardless of its
+primary metric. Free-text and bbox tasks record `macro_f1: null`. Category and
+summary macro-F1 values average the available letter-task macro-F1 values and are
+`null` when no letter task is present.
 
 Model integrations live under `medbenchagent.evaluation.models`. Add one model
 module implementing `ModelAdapter.generate`, then add its explicit name and

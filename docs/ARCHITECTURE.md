@@ -102,13 +102,14 @@ letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。
 模型通过显式注册的 `ModelAdapter` 加载；每个具体模型拥有独立模块，共用族级实现。目前支持
 Qwen2.5-VL 7B/32B、InternVL3/3.5 8B、Qwen3-VL Instruct 8B/32B 与 Thinking 8B、
 Lingshu 7B/32B、Hulu-Med 7B/32B、QoQ-Med-VL 7B/32B 和 Chiron-o1。Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron 以固定
-`[0,1000]` 坐标空间解释 grounding，Hulu 以原 PNG 尺寸解释。letter VQA 的公共 system prompt 明确
-要求只返回正确选项字母并禁止 reasoning、标点、标签和其他文本，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
+`[0,1000]` 坐标空间解释 grounding，Hulu 以原 PNG 尺寸解释。letter VQA 的公共 system prompt 保持
+原始单字母回答要求，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
 只接受裸单字母或 Lingshu 风格的单字母加 ASCII 句点响应。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
 任务统一由 system 要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含
-图像和题目（letter 另含选项），所有 adapter 复用同一 prompt 函数。
-InternVL3.5 adapter 不设置官方可选的 Thinking System Prompt；模型若仍输出解释性内容，完整文本
-保存在 `raw_prediction`，并取最后一个 `</think>` 后的内容按统一规则解析。
+图像和题目（letter 另含选项），所有 adapter 复用同一公共 prompt 函数。仅 InternVL3.5 adapter
+在公共 prompt 后追加禁止 reasoning 与 `<think>` 标签的模型专用指令，但不设置官方可选的
+Thinking System Prompt；模型若仍输出解释性内容，完整文本保存在 `raw_prediction`，并取最后一个
+`</think>` 后的内容按统一规则解析。
 
 `ModelOutput` 同时保留完整 `raw_text`、可选模型坐标空间和可选 `answer_text`。解析器仅在 adapter
 按模型协议提取终答时优先使用 `answer_text`：Qwen3 Thinking 与 InternVL3.5 使用最后一个 `</think>`，Chiron
@@ -126,7 +127,9 @@ InternVL3.5 adapter 不设置官方可选的 Thinking System Prompt；模型若�
 
 `medbench-evaluation.v1` 从推理 JSON 重新计算逐题结果、逐 task 主指标、同指标 task-macro
 以及 category/全局阈值正确率，并在逐题 `items` 中同时保留规范化 `prediction` 与模型完整
-`raw_prediction`。选择题 macro-F1 使用选项文本而非平衡后的字母位置；
+`raw_prediction`。每个 letter task 不论主指标均额外记录基于选项文本的 `macro_f1`，free-text/bbox
+记录 `null`；category 和 summary 对可用的 letter task F1 做 task-macro 平均，无 letter task 时为
+`null`。选择题 macro-F1 使用选项文本而非平衡后的字母位置；
 不同指标不合成为单一总分。评测产物不修改 benchmark run 或其 manifest。
 
 ## 维护边界

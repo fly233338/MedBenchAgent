@@ -85,16 +85,27 @@ def test_public_prompts_remain_qwen25_prompts(tmp_path: Path) -> None:
     free_text = _sample(tmp_path, "free_text", 1)
     bbox = _sample(tmp_path, "bbox", 2)
 
-    assert system_prompt(letter) == (
-        "Answer with only the correct option letter. Do not include reasoning, "
-        "punctuation, tags, or any other text."
-    )
+    assert system_prompt(letter) == "Answer with the correct single letter answer."
     assert user_prompt(letter) == "Which view?\n\nA. CC\nB. MLO"
     assert system_prompt(free_text) is None
     assert user_prompt(free_text) == "Which view?"
     assert system_prompt(bbox) == (
         'Answer with only a JSON object containing the single bounding box under the "bbox" '
         "key as four absolute pixel coordinates in x1, y1, x2, y2 order."
+    )
+
+
+def test_internvl35_alone_strengthens_the_public_prompts(tmp_path: Path) -> None:
+    adapter = object.__new__(InternVL3_5_8BAdapter)
+    letter = _sample(tmp_path, "letter")
+    free_text = _sample(tmp_path, "free_text", 1)
+
+    assert adapter.instruction_for(letter) == (
+        "Answer with the correct single letter answer. Do not include reasoning or <think> "
+        "tags. Return only the final answer and no other text."
+    )
+    assert adapter.instruction_for(free_text) == (
+        "Do not include reasoning or <think> tags. Return only the final answer and no other text."
     )
 
 
