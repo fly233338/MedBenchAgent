@@ -17,6 +17,8 @@ from medbenchagent.evaluation.data import EvaluationDataError, load_benchmark
 from medbenchagent.evaluation.eval import _task_score, evaluate_inference
 from medbenchagent.evaluation.inference import (
     DistributedContext,
+    _mark_rank_complete,
+    _wait_for_rank_completion,
     run_inference,
     shard_indices,
 )
@@ -548,3 +550,10 @@ def test_shard_indices_are_complete_and_non_overlapping() -> None:
     shards = [list(shard_indices(10, rank, 3)) for rank in range(3)]
     assert sorted(index for shard in shards for index in shard) == list(range(10))
     assert shards == [[0, 3, 6, 9], [1, 4, 7], [2, 5, 8]]
+
+
+def test_rank_completion_wait_returns_after_all_markers_exist(tmp_path: Path) -> None:
+    _mark_rank_complete(tmp_path, 0)
+    _mark_rank_complete(tmp_path, 1)
+
+    _wait_for_rank_completion(tmp_path, 2)

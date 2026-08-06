@@ -68,7 +68,12 @@ class MedGemma15_4BITAdapter:
             messages = []
             instruction = system_prompt(sample)
             if instruction is not None:
-                messages.append({"role": "system", "content": instruction})
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": [{"type": "text", "text": instruction}],
+                    }
+                )
             messages.append(
                 {
                     "role": "user",

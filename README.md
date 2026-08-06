@@ -438,8 +438,9 @@ reasoning prompt and extracts the final balanced `\boxed{...}` payload. Qwen3
 Thinking and InternVL3.5 extract the suffix after the last `</think>`, Chiron
 preserves its checkpoint system message, appends the official step-by-step trigger,
 requires the `### The final answer is:` boundary, and extracts the suffix after its
-last occurrence. Hulu uses its processor's `use_think=False`
-decode as the answer. Full reasoning remains in `raw_prediction`; an absent
+last occurrence. The extractor also accepts the checkpoint-observed form without
+the leading Markdown heading, `The final answer is:`. Hulu uses its processor's
+`use_think=False` decode as the answer. Full reasoning remains in `raw_prediction`; an absent
 official separator falls back to the full response, while an empty extracted
 answer fails strict parsing. Letter responses may be one bare valid letter, the
 Lingshu-style form with one trailing ASCII period such as `A.`, or a valid letter
@@ -478,7 +479,10 @@ PYTHONPATH=src python -m medbenchagent.evaluation.eval \
 
 Each process loads one complete model on its `LOCAL_RANK`, processes a
 round-robin item shard, and writes a temporary rank file. Rank zero creates the
-ordered inference JSON after every rank succeeds. Generation is greedy, with
+ordered inference JSON after every rank succeeds. Completion is coordinated by
+per-rank files rather than a post-inference NCCL barrier, so uneven inference times
+are not limited by NCCL's default 10-minute process-group timeout. Generation is
+greedy, with
 defaults of 512 new tokens, SDPA, and 0.5 correctness thresholds for both BLEU
 and bbox IoU. Existing inference outputs and temporary parts are protected
 unless `--overwrite` is supplied; interrupted jobs do not resume.

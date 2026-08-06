@@ -31,5 +31,6 @@ class ChironO1_8BAdapter(InternVLAdapter):
         return config
 
     def extract_answer(self, text: str) -> str:
-        marker = "### The final answer is:"
+        # Some Chiron checkpoints omit the requested Markdown heading prefix.
+        marker = "The final answer is:"
         return text.rpartition(marker)[2].strip() if marker in text else text

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -194,6 +195,17 @@ def _read_parts(parts: Path, expected_count: int, world_size: int) -> list[dict[
     return results
 
 
+def _mark_rank_complete(parts: Path, rank: int) -> None:
+    (parts / f"rank-{rank}.done").touch()
+
+
+def _wait_for_rank_completion(parts: Path, world_size: int) -> None:
+    """Wait without a collective timeout for every independent rank output."""
+    completion_files = [parts / f"rank-{rank}.done" for rank in range(world_size)]
+    while not all(path.is_file() for path in completion_files):
+        time.sleep(1)
+
+
 def _metadata(args: argparse.Namespace, benchmark: LoadedBenchmark, context: DistributedContext) -> dict[str, Any]:
     return {
         "created_at": datetime.now(UTC).isoformat(),
@@ -261,8 +273,9 @@ def run_inference(
         bleu_threshold=args.bleu_threshold,
         bbox_iou_threshold=args.bbox_iou_threshold,
     )
-    context.barrier()
+    _mark_rank_complete(parts, context.rank)
     if context.rank == 0:
+        _wait_for_rank_completion(parts, context.world_size)
         results = _read_parts(parts, len(benchmark.samples), context.world_size)
         atomic_write_json(
             output,
@@ -273,7 +286,6 @@ def run_inference(
             },
         )
         shutil.rmtree(parts)
-    context.barrier()
     return str(output) if context.rank == 0 else None
 
 

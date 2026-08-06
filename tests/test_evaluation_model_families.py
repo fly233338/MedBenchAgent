@@ -6,7 +6,7 @@ import pytest
 import torch
 from PIL import Image
 
-from medbenchagent.evaluation.contracts import ImageEntry, InferenceSample, TaskSpec
+from medbenchagent.evaluation.contracts import ImageEntry, InferenceSample, ModelOutput, TaskSpec
 from medbenchagent.evaluation.models import ADAPTERS
 from medbenchagent.evaluation.models.base import system_prompt, user_prompt
 from medbenchagent.evaluation.models.chiron_o1_8b import ChironO1_8BAdapter
@@ -25,6 +25,7 @@ from medbenchagent.evaluation.models.qwen2_5_vl_32b_instruct import (
 from medbenchagent.evaluation.models.qwen3_vl import Qwen3VLAdapter
 from medbenchagent.evaluation.models.qwen3_vl_32b_instruct import Qwen3VL32BInstructAdapter
 from medbenchagent.evaluation.models.qwen3_vl_8b_thinking import Qwen3VL8BThinkingAdapter
+from medbenchagent.evaluation.parsing import parse_prediction
 
 
 EXPECTED_ADAPTERS = {
@@ -175,6 +176,7 @@ def test_chiron_uses_official_reasoning_trigger_and_final_answer_boundary(tmp_pa
         (QoQMedVL7BAdapter, r"reasoning\boxed{A", ""),
         (QoQMedVL7BAdapter, "A", "A"),
         (ChironO1_8BAdapter, "reasoning### The final answer is:A", "A"),
+        (ChironO1_8BAdapter, "reasoning\nThe final answer is: B. benign", "B. benign"),
         (ChironO1_8BAdapter, "reasoning### The final answer is:", ""),
         (ChironO1_8BAdapter, "A", "A"),
     ],
@@ -186,6 +188,16 @@ def test_reasoning_adapters_extract_only_official_final_answer(
 ) -> None:
     adapter = object.__new__(adapter_class)
     assert adapter.extract_answer(raw_text) == expected
+
+
+def test_chiron_checkpoint_boundary_produces_a_valid_letter_prediction(tmp_path: Path) -> None:
+    adapter = object.__new__(ChironO1_8BAdapter)
+    sample = _sample(tmp_path, "letter")
+    raw_text = "Let's think about the question.\nThe final answer is: B. MLO"
+
+    output = ModelOutput(raw_text, answer_text=adapter.extract_answer(raw_text))
+
+    assert parse_prediction(output, sample) == "B"
 
 
 def test_qwen3_uses_patch_size_16_without_second_resize(
@@ -351,7 +363,10 @@ def test_medgemma_uses_native_batched_chat_template_and_896_coordinate_space(
         "padding": True,
     }
     conversations = calls["conversations"]
-    assert conversations[0][0] == {"role": "system", "content": system_prompt(samples[0])}
+    assert conversations[0][0] == {
+        "role": "system",
+        "content": [{"type": "text", "text": system_prompt(samples[0])}],
+    }
     assert conversations[0][1]["content"][1] == {
         "type": "text",
         "text": user_prompt(samples[0]),

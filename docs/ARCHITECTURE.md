@@ -122,7 +122,8 @@ QoQ-Med-VL 7B/32B 使用其原生 medical reasoning prompt，要求 `<think>...<
 `ModelOutput` 同时保留完整 `raw_text`、可选模型坐标空间和可选 `answer_text`。解析器仅在 adapter
 按模型协议提取终答时优先使用 `answer_text`：QoQ 使用最后一个 balanced `\boxed{...}`，Qwen3 Thinking
 与 InternVL3.5 使用最后一个 `</think>`，Chiron
-使用最后一个 `### The final answer is:`，Hulu 对同一 output IDs 分别保留 thinking 与无 thinking
+使用最后一个 `The final answer is:`（兼容前方存在或缺少 `###`），Hulu 对同一 output IDs 分别保留
+thinking 与无 thinking
 解码。分隔符缺失时回退完整响应，空终答保持为空并产生严格 parse error；推理产物只把完整响应写入
 `raw_prediction`，wire schema 仍是 `medbench-inference.v1`。
 
@@ -130,7 +131,8 @@ QoQ-Med-VL 7B/32B 使用其原生 medical reasoning prompt，要求 `<think>...<
 循环推理，不使用 DDP 或 tensor parallel；32B checkpoint 也必须完整装入每个 rank 所属 GPU，增加 rank
 只增加数据并行副本，不会切分模型。InternVL 族在 adapter batch 内按公共 system prompt 分组
 调用 `batch_chat` 后恢复输入顺序；Hulu 因 processor 限制在 batch 内逐样本执行。rank 临时 JSONL
-全部成功后，rank 0 按输入顺序写出自包含推理 JSON；中断不自动续跑。evaluation 子系统的 JSON
+写完后创建完成标记，rank 0 无超时地等待全部标记，再按输入顺序写出自包含推理 JSON；耗时推理后
+不再使用受 NCCL 默认超时约束的 collective barrier，中断仍不自动续跑。evaluation 子系统的 JSON
 写入工具不依赖 benchmark 构建运行时，因此可在只安装 `requirements/evaluation.txt` 的独立 Conda
 环境中通过源码 `PYTHONPATH` 运行。
 
