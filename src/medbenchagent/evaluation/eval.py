@@ -49,12 +49,14 @@ def _sample_from_result(result: dict[str, Any]) -> InferenceSample:
         task.get("response_format"),
         task.get("metric"),
     )
+    parent_task_id = task.get("parent_task_id")
     width, height = image.get("width"), image.get("height")
     if (
         not isinstance(task_id, str)
         or not isinstance(category, str)
         or response_format not in {"letter", "free_text", "bbox"}
         or metric not in METRICS_BY_FORMAT[response_format]
+        or (parent_task_id is not None and not isinstance(parent_task_id, str))
         or not isinstance(width, int)
         or width <= 0
         or not isinstance(height, int)
@@ -64,7 +66,7 @@ def _sample_from_result(result: dict[str, Any]) -> InferenceSample:
     return InferenceSample(
         index=result.get("index"),
         item=item,
-        task=TaskSpec(task_id, category, response_format, metric),
+        task=TaskSpec(task_id, category, response_format, metric, parent_task_id),
         image=ImageEntry(
             image_id=str(item.get("image_id", "")),
             png_path=Path("."),
@@ -164,6 +166,37 @@ def _task_macro_f1(rows: list[dict[str, Any]]) -> float | None:
     return macro_f1(gold, predicted)
 
 
+def _parent_task_id(task_id: str, parent_task_id: str | None) -> str:
+    if parent_task_id:
+        return parent_task_id
+    for decomposable in ("anatomy_attribute", "finding_attribute"):
+        if task_id.startswith(f"{decomposable}."):
+            return decomposable
+    return task_id
+
+
+def _all_task_metric_groups(tasks: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, list[float]]] = defaultdict(
+        lambda: {"accuracy": [], "f1": []}
+    )
+    for task_id, task in tasks.items():
+        parent_task_id = _parent_task_id(task_id, task["parent_task_id"])
+        grouped[parent_task_id]["accuracy"].append(task["correct_rate"])
+        grouped[parent_task_id]["f1"].append(task["score"])
+
+    parent_scores = {
+        metric: [sum(values[metric]) / len(values[metric]) for values in grouped.values()]
+        for metric in ("accuracy", "f1")
+    }
+    return {
+        metric: {
+            "task_count": len(scores),
+            "task_macro_score": sum(scores) / len(scores) if scores else 0.0,
+        }
+        for metric, scores in parent_scores.items()
+    }
+
+
 def evaluate_inference(
     input_path: str | Path,
     output_path: str | Path,
@@ -250,7 +283,6 @@ def evaluate_inference(
     for row in rows:
         by_task[row["sample"].task.task_id].append(row)
     tasks = {}
-    metric_scores: dict[str, list[float]] = defaultdict(list)
     for task_id in sorted(by_task):
         task_rows = by_task[task_id]
         task = task_rows[0]["sample"].task
@@ -263,6 +295,7 @@ def evaluate_inference(
             "category": task.category,
             "response_format": task.response_format,
             "metric": task.metric,
+            "parent_task_id": task.parent_task_id,
             "count": len(task_rows),
             "score": score,
             "macro_f1": task_macro_f1,
@@ -270,7 +303,6 @@ def evaluate_inference(
             "correct_rate": correct_count / len(task_rows),
             "errors": sum(row["error"] is not None for row in task_rows),
         }
-        metric_scores[task.metric].append(score)
 
     categories: dict[str, dict[str, int | float | None]] = {}
     for category in sorted({row["sample"].task.category for row in rows}):
@@ -313,13 +345,7 @@ def evaluate_inference(
             "errors": sum(error_counts.values()),
             "error_counts": dict(sorted(error_counts.items())),
         },
-        "metric_groups": {
-            metric: {
-                "task_count": len(scores),
-                "task_macro_score": sum(scores) / len(scores),
-            }
-            for metric, scores in sorted(metric_scores.items())
-        },
+        "metric_groups": _all_task_metric_groups(tasks),
         "categories": categories,
         "tasks": tasks,
         "items": [

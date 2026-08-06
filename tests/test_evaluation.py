@@ -427,6 +427,51 @@ def test_evaluation_macro_f1_uses_semantic_options_after_balancing(tmp_path: Pat
     assert report["tasks"]["diagnosis"]["score"] == 1.0
 
 
+def test_metric_groups_average_parent_tasks_instead_of_question_types(tmp_path: Path) -> None:
+    items = [
+        {**_letter_item(0), "task_id": "finding_attribute.shape"},
+        {**_letter_item(1), "task_id": "finding_attribute.margin", "answer": "A"},
+        {**_letter_item(2), "task_id": "diagnosis"},
+    ]
+    tasks = {
+        "finding_attribute.shape": {
+            "category": "clinical",
+            "response_format": "letter",
+            "metrics": ["accuracy"],
+            "parent_task_id": "finding_attribute",
+        },
+        "finding_attribute.margin": {
+            "category": "clinical",
+            "response_format": "letter",
+            "metrics": ["accuracy"],
+            "parent_task_id": "finding_attribute",
+        },
+        "diagnosis": {
+            "category": "clinical",
+            "response_format": "letter",
+            "metrics": ["accuracy"],
+        },
+    }
+    benchmark, manifest, image_manifest = _fixture(tmp_path, items=items, tasks=tasks)
+    output = tmp_path / "inference.json"
+    run_inference(
+        _args(benchmark, manifest, image_manifest, output),
+        DistributedContext(0, 1, 0, torch.device("cpu"), False),
+        adapter_loader=lambda *_args, **_kwargs: _FakeAdapter(),
+    )
+    report_path = tmp_path / "report.json"
+    evaluate_inference(output, report_path)
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["metric_groups"] == {
+        "accuracy": {"task_count": 2, "task_macro_score": 0.75},
+        "f1": {"task_count": 2, "task_macro_score": 0.75},
+    }
+    assert report["tasks"]["finding_attribute.shape"]["parent_task_id"] == (
+        "finding_attribute"
+    )
+
+
 def test_inference_requires_overwrite_for_existing_output(tmp_path: Path) -> None:
     benchmark, manifest, image_manifest = _fixture(tmp_path)
     output = tmp_path / "inference.json"

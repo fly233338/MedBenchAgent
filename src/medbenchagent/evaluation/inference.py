@@ -102,6 +102,7 @@ def _result_record(
             "category": sample.task.category,
             "response_format": sample.task.response_format,
             "metric": sample.task.metric,
+            "parent_task_id": sample.task.parent_task_id,
         },
         "image": {
             "png_path": sample.image.relative_png_path,

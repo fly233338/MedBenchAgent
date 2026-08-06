@@ -132,12 +132,15 @@ QoQ-Med-VL 7B/32B 使用其原生 medical reasoning prompt，要求 `<think>...<
 写入工具不依赖 benchmark 构建运行时，因此可在只安装 `requirements/evaluation.txt` 的独立 Conda
 环境中通过源码 `PYTHONPATH` 运行。
 
-`medbench-evaluation.v1` 从推理 JSON 重新计算逐题结果、逐 task 主指标、同指标 task-macro
-以及 category/全局阈值正确率，并在逐题 `items` 中同时保留规范化 `prediction` 与模型完整
+`medbench-evaluation.v1` 从推理 JSON 重新计算逐题结果、逐 question type 主指标以及
+category/全局阈值正确率，并在逐题 `items` 中同时保留规范化 `prediction` 与模型完整
 `raw_prediction`。每个 letter task 不论主指标均额外记录基于选项文本的 `macro_f1`，free-text/bbox
 记录 `null`；category 和 summary 对可用的 letter task F1 做 task-macro 平均，无 letter task 时为
-`null`。选择题 macro-F1 使用选项文本而非平衡后的字母位置；
-不同指标不合成为单一总分。评测产物不修改 benchmark run 或其 manifest。
+`null`。选择题 macro-F1 使用选项文本而非平衡后的字母位置。`metric_groups` 不再按原生 metric
+拆组，而是输出 `accuracy` 与 `f1` 两个层级宏平均：先在每个父 task 内等权平均各 question type 的
+`correct_rate` 与原生 `score`，再在父 tasks 间等权平均。因此 question type 数量不改变父 task 权重；
+其中 `f1` 是按评测展示约定命名的统一第二分数，对 free-text/bbox 实际仍分别来自 BLEU/mIoU，
+不是分类 F1。评测产物不修改 benchmark run 或其 manifest。
 
 ## 维护边界
 

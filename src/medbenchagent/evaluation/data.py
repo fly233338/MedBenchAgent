@@ -61,6 +61,7 @@ def _manifest_tasks(manifest: dict[str, Any]) -> dict[str, TaskSpec]:
         category = raw.get("category")
         response_format = raw.get("response_format")
         metrics = raw.get("metrics")
+        parent_task_id = raw.get("parent_task_id")
         if (
             not isinstance(category, str)
             or not category
@@ -68,9 +69,16 @@ def _manifest_tasks(manifest: dict[str, Any]) -> dict[str, TaskSpec]:
             or not isinstance(metrics, list)
             or len(metrics) != 1
             or metrics[0] not in METRICS_BY_FORMAT[response_format]
+            or (parent_task_id is not None and not isinstance(parent_task_id, str))
         ):
             raise EvaluationDataError(f"{task_id}: unsupported response format or metric.")
-        tasks[task_id] = TaskSpec(task_id, category, response_format, metrics[0])
+        tasks[task_id] = TaskSpec(
+            task_id,
+            category,
+            response_format,
+            metrics[0],
+            parent_task_id,
+        )
     return tasks
 
 

@@ -491,8 +491,12 @@ memory; multi-GPU tensor parallelism and quantization are outside this evaluator
 
 The evaluator recomputes item scores and checks the recorded result. It reports
 accuracy, semantic-option macro-F1, SacreBLEU, and mean IoU according to each
-task's manifest metric. Heterogeneous task metrics are kept in separate groups;
-only thresholded correctness is summarized across all tasks. Optional
+question type's manifest metric. `metric_groups` exposes two hierarchical task-macro
+values instead of grouping by those native metrics: each question type first contributes
+its `correct_rate` and native `score` to an equal-weight mean within its parent task, then
+the parent-task values are averaged with equal weight as `accuracy` and `f1`. Thus the
+reported `f1` group is the requested metric-independent second score column; for non-letter
+tasks its inputs remain BLEU or mIoU rather than classification F1. Optional
 `--bleu-threshold` and `--bbox-iou-threshold` values recompute report
 correctness without rerunning the model. The report's per-item `items` list
 retains both the normalized `prediction` and the model's complete

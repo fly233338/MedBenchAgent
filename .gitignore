@@ -56,3 +56,7 @@ config/local.toml
 
 # Local experiment scripts
 scripts/
+
+# Evaluation outputs; keep the checked-in report summarizer.
+results/*
+!results/summarize_task_metrics.py
