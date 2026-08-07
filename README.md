@@ -439,7 +439,8 @@ letter forms. Conflicting legacy candidates remain parse errors.
 
 Most adapters retain the original shared task prompts. QoQ uses its native medical
 reasoning prompt and extracts the final balanced `\boxed{...}` payload. Qwen3
-Thinking and InternVL3.5 extract the suffix after the last `</think>`, Chiron
+Thinking extracts the suffix after the last `</think>`. InternVL3.5 uses explicit
+`<think>...</think>` reasoning and `<answer>...</answer>` final-answer sections. Chiron
 preserves its checkpoint system message, appends the official step-by-step trigger,
 requires the `### The final answer is:` boundary, and extracts the suffix after its
 last occurrence. The extractor also accepts the checkpoint-observed form without
@@ -453,11 +454,13 @@ and period followed by option text or an explanation such as `A. Benign` or
 remain parse errors. Free text must be non-empty, and bbox responses must be exactly one
 `{"bbox":[x1,y1,x2,y2]}` JSON object.
 
-The InternVL3.5 adapter does not install InternVL's optional Thinking System
-Prompt. Its user prompt appends a model-specific evaluation instruction forbidding
-reasoning and `<think>` tags and requiring only the final answer. Because the checkpoint can still emit
-`<think>` blocks, the complete response is retained in `raw_prediction` and only
-the suffix after the final closing tag is parsed. Chiron and InternVL3.5 explicitly
+The InternVL3.5 adapter installs a model-specific reasoning system prompt based on
+InternVL's optional Thinking Mode protocol. It requires all reasoning inside
+`<think>...</think>` and the task-constrained final answer inside
+`<answer>...</answer>`. The complete response remains in `raw_prediction`; the adapter
+extracts the last complete answer section and retains the prior `</think>` suffix as a
+legacy fallback. InternVL3 remains on the shared direct-answer prompt and behavior.
+Chiron and InternVL3.5 explicitly
 set `pad_token_id` to the tokenizer EOS ID to avoid the open-end generation warning.
 
 For a single model/dataset combination, run one process per GPU with the current

@@ -14,6 +14,7 @@ from medbenchagent.evaluation.models.hulu_med_32b import HuluMed32BAdapter
 from medbenchagent.evaluation.models.hulu_med_7b import HuluMed7BAdapter
 from medbenchagent.evaluation.models.internvl import InternVLAdapter, dynamic_preprocess
 from medbenchagent.evaluation.models.internvl3_5_8b import InternVL3_5_8BAdapter
+from medbenchagent.evaluation.models.internvl3_8b import InternVL3_8BAdapter
 from medbenchagent.evaluation.models.lingshu_32b import Lingshu32BAdapter
 from medbenchagent.evaluation.models.medgemma_1_5_4b_it import MedGemma15_4BITAdapter
 from medbenchagent.evaluation.models.qoq_med_vl_32b import QoQMedVL32BAdapter
@@ -99,27 +100,38 @@ def test_public_prompts_remain_qwen25_prompts(tmp_path: Path) -> None:
     )
 
 
-def test_internvl35_adds_its_direct_answer_evaluation_requirement(tmp_path: Path) -> None:
+def test_internvl35_uses_think_and_answer_tag_protocol(tmp_path: Path) -> None:
     adapter = object.__new__(InternVL3_5_8BAdapter)
     adapter.tokenizer = types.SimpleNamespace(eos_token_id=151645)
     letter = _sample(tmp_path, "letter")
     free_text = _sample(tmp_path, "free_text", 1)
 
-    assert adapter.instruction_for(letter) == system_prompt(letter)
-    assert adapter.instruction_for(free_text) is None
+    assert "<think> and </think> tags" in adapter.instruction_for(letter)
+    assert "<answer> and </answer> tags" in adapter.instruction_for(free_text)
     assert adapter.prompt_for(letter) == (
-        "Which view?\n\nA. CC\nB. MLO\n\nDo not include reasoning or <think> tags. "
-        "Return only the final answer and no other text."
+        "Which view?\n\nA. CC\nB. MLO\n\nInside <answer> and </answer>, put exactly "
+        "one valid option letter from A through B. Always complete both the "
+        "<think>...</think> and <answer>...</answer> sections."
     )
     assert adapter.prompt_for(free_text) == (
-        "Which view?\n\nDo not include reasoning or <think> tags. Return only the final "
-        "answer and no other text."
+        "Which view?\n\nInside <answer> and </answer>, put only the concise final answer. "
+        "Always complete both the <think>...</think> and <answer>...</answer> sections."
     )
     assert adapter.generation_config(512) == {
         "max_new_tokens": 512,
         "do_sample": False,
         "pad_token_id": 151645,
     }
+
+
+def test_internvl3_keeps_the_shared_direct_answer_protocol(tmp_path: Path) -> None:
+    adapter = object.__new__(InternVL3_8BAdapter)
+    letter = _sample(tmp_path, "letter")
+
+    assert adapter.instruction_for(letter) == system_prompt(letter)
+    assert adapter.prompt_for(letter) == user_prompt(letter)
+    assert adapter.generation_config(512) == {"max_new_tokens": 512, "do_sample": False}
+    assert adapter.extract_answer("A") is None
 
 
 def test_qoq_uses_native_reasoning_prompt_and_boxed_final_answer(tmp_path: Path) -> None:
@@ -166,6 +178,15 @@ def test_chiron_uses_official_reasoning_trigger_and_final_answer_boundary(tmp_pa
         (Qwen3VL8BThinkingAdapter, "reasoning</think>", ""),
         (Qwen3VL8BThinkingAdapter, "A", "A"),
         (InternVL3_5_8BAdapter, "reasoning</think>A", "A"),
+        (InternVL3_5_8BAdapter, "<think>reasoning</think><answer>A</answer>", "A"),
+        (
+            InternVL3_5_8BAdapter,
+            '<think>reasoning</think><answer>{"bbox":[1,2,3,4]}</answer>',
+            '{"bbox":[1,2,3,4]}',
+        ),
+        (InternVL3_5_8BAdapter, "<think>reasoning</think><answer></answer>", ""),
+        (InternVL3_5_8BAdapter, "<think>reasoning</think><answer>A", ""),
+        (InternVL3_5_8BAdapter, "<answer>A</answer> trailing", ""),
         (InternVL3_5_8BAdapter, "first</think>second</think>B", "B"),
         (InternVL3_5_8BAdapter, "reasoning</think>", ""),
         (InternVL3_5_8BAdapter, "A", "A"),
