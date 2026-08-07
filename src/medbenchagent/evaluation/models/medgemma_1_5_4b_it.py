@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 import torch
@@ -9,6 +10,21 @@ from PIL import Image
 
 from medbenchagent.evaluation.contracts import InferenceSample, ModelOutput
 from medbenchagent.evaluation.models.base import system_prompt, user_prompt
+
+
+_FINAL_ANSWER_MARKER = "FINAL_ANSWER:"
+_BOXED_LETTER = re.compile(r"\\boxed\{\s*([A-Z])\s*\}", re.IGNORECASE)
+_EXPLICIT_LETTER = re.compile(
+    r"\b(?:the\s+)?(?:(?:final|correct)\s+)?answer\s+is\s*[:\-]?\s*"
+    r"(?:\*{1,2}|\$\s*)*(?:\\boxed\{\s*)?([A-Z])",
+    re.IGNORECASE,
+)
+_CATEGORY_LETTER = re.compile(
+    r"\b(?:the\s+)?(?:most\s+)?(?:appropriate\s+|best\s+|correct\s+)?"
+    r"(?:BI-RADS\s+)?(?:assessment\s+)?category\s+is\s*"
+    r"(?:\*{1,2}|\$\s*)*([A-Z])\s*\.",
+    re.IGNORECASE,
+)
 
 
 def _image_coordinate_size(processor: object) -> tuple[int, int]:
@@ -55,6 +71,65 @@ class MedGemma15_4BITAdapter:
         self.model.eval()
         self.compute_dtype = self.model.dtype if torch_dtype == "auto" else torch_dtype
 
+    def prompt_for(self, sample: InferenceSample) -> str:
+        if sample.task.response_format == "letter":
+            options = sample.item["options"]
+            assert isinstance(options, list)
+            final_format = (
+                "one valid option letter. The valid letters are A through "
+                f"{chr(ord('A') + len(options) - 1)}"
+            )
+        elif sample.task.response_format == "free_text":
+            final_format = "only the concise final answer"
+        else:
+            final_format = (
+                'only a JSON object containing the single bounding box under the "bbox" key '
+                "as four absolute xyxy coordinates"
+            )
+        return (
+            f"{user_prompt(sample)}\n\n"
+            "You may reason before answering. End the response with exactly one line beginning "
+            f"with {_FINAL_ANSWER_MARKER} followed by {final_format}. Do not write anything after "
+            "that line."
+        )
+
+    def extract_answer(self, sample: InferenceSample, text: str) -> str:
+        if _FINAL_ANSWER_MARKER in text:
+            return text.rpartition(_FINAL_ANSWER_MARKER)[2].strip()
+        if sample.task.response_format != "letter":
+            return text
+
+        options = sample.item["options"]
+        assert isinstance(options, list)
+        valid_letters = {chr(ord("A") + index) for index in range(len(options))}
+        candidates = {
+            match.group(1).upper()
+            for pattern in (_BOXED_LETTER, _EXPLICIT_LETTER, _CATEGORY_LETTER)
+            for match in pattern.finditer(text)
+            if match.group(1).upper() in valid_letters
+        }
+        if len(candidates) == 1:
+            return candidates.pop()
+        if len(candidates) > 1:
+            return ""
+
+        option_matches = {
+            letter
+            for index, option in enumerate(options)
+            if isinstance(option, str)
+            for letter in [chr(ord("A") + index)]
+            if re.search(
+                rf"\b{letter}\.\s*(?:\*{{1,2}})?{re.escape(option)}(?:\*{{1,2}})?",
+                text,
+                re.IGNORECASE,
+            )
+        }
+        if len(option_matches) == 1:
+            return option_matches.pop()
+        if len(option_matches) > 1:
+            return ""
+        return text
+
     def generate(
         self,
         samples: Sequence[InferenceSample],
@@ -79,7 +154,7 @@ class MedGemma15_4BITAdapter:
                     "role": "user",
                     "content": [
                         {"type": "image", "image": image},
-                        {"type": "text", "text": user_prompt(sample)},
+                        {"type": "text", "text": self.prompt_for(sample)},
                     ],
                 }
             )
@@ -108,6 +183,10 @@ class MedGemma15_4BITAdapter:
         if len(decoded) != len(samples):
             raise RuntimeError("MedGemma returned an unexpected number of outputs.")
         return [
-            ModelOutput(raw_text=text.strip(), coordinate_size=self.coordinate_size)
-            for text in decoded
+            ModelOutput(
+                raw_text=text.strip(),
+                coordinate_size=self.coordinate_size,
+                answer_text=self.extract_answer(sample, text.strip()),
+            )
+            for sample, text in zip(samples, decoded)
         ]

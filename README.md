@@ -432,6 +432,10 @@ Supported adapter keys are:
 
 MedGemma is a gated checkpoint. Accept Google's Health AI Developer Foundations
 terms before downloading it, then point the adapter at the local model directory.
+MedGemma keeps the shared task prompt and appends a model-specific requirement to end
+with `FINAL_ANSWER:`. Its adapter prefers that boundary and otherwise recognizes the
+checkpoint-observed `answer is`, `category is X.`, Markdown option, and `\boxed{X}`
+letter forms. Conflicting legacy candidates remain parse errors.
 
 Most adapters retain the original shared task prompts. QoQ uses its native medical
 reasoning prompt and extracts the final balanced `\boxed{...}` payload. Qwen3

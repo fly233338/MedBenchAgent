@@ -200,6 +200,57 @@ def test_chiron_checkpoint_boundary_produces_a_valid_letter_prediction(tmp_path:
     assert parse_prediction(output, sample) == "B"
 
 
+def test_medgemma_adds_a_model_specific_final_answer_protocol(tmp_path: Path) -> None:
+    adapter = object.__new__(MedGemma15_4BITAdapter)
+    letter = _sample(tmp_path, "letter")
+    free_text = _sample(tmp_path, "free_text", 1)
+
+    assert adapter.prompt_for(letter).startswith(user_prompt(letter))
+    assert "valid letters are A through B" in adapter.prompt_for(letter)
+    assert "FINAL_ANSWER:" in adapter.prompt_for(letter)
+    assert adapter.prompt_for(free_text).startswith(user_prompt(free_text))
+    assert "only the concise final answer" in adapter.prompt_for(free_text)
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "expected"),
+    [
+        ("The answer is D.", "D"),
+        ("Therefore, the category is **F. option F**.", "F"),
+        (r"Final Answer: The final answer is $\boxed{D}$", "D"),
+        ("Therefore, the correct answer is **E**.", "E"),
+        ("The most appropriate BI-RADS assessment category is **B. option B**.", "B"),
+        ("A. option A", "A"),
+        (r"The answer is A, but the final choice is \boxed{B}", ""),
+        ("reasoning\nFINAL_ANSWER: G", "G"),
+        ("reasoning\nFINAL_ANSWER:", ""),
+    ],
+)
+def test_medgemma_extracts_observed_legacy_letter_formats(
+    tmp_path: Path,
+    raw_text: str,
+    expected: str,
+) -> None:
+    adapter = object.__new__(MedGemma15_4BITAdapter)
+    sample = _sample(tmp_path, "letter")
+    sample.item["options"] = [f"option {letter}" for letter in "ABCDEFG"]
+
+    assert adapter.extract_answer(sample, raw_text) == expected
+
+
+def test_medgemma_final_answer_protocol_handles_text_and_bbox(tmp_path: Path) -> None:
+    adapter = object.__new__(MedGemma15_4BITAdapter)
+    free_text = _sample(tmp_path, "free_text")
+    bbox = _sample(tmp_path, "bbox", 1)
+
+    assert adapter.extract_answer(free_text, "reasoning\nFINAL_ANSWER: concise report") == (
+        "concise report"
+    )
+    assert adapter.extract_answer(bbox, 'reasoning\nFINAL_ANSWER: {"bbox":[1,2,3,4]}') == (
+        '{"bbox":[1,2,3,4]}'
+    )
+
+
 def test_qwen3_uses_patch_size_16_without_second_resize(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -318,7 +369,10 @@ def test_medgemma_uses_native_batched_chat_template_and_896_coordinate_space(
         def batch_decode(self, tokens: torch.Tensor, **kwargs: object) -> list[str]:
             calls["decoded_tokens"] = tokens
             calls["decode_kwargs"] = kwargs
-            return [" A ", " report "]
+            return [
+                " reasoning\nFINAL_ANSWER: A ",
+                " reasoning\nFINAL_ANSWER: report ",
+            ]
 
     class FakeModel:
         dtype = torch.float32
@@ -369,13 +423,17 @@ def test_medgemma_uses_native_batched_chat_template_and_896_coordinate_space(
     }
     assert conversations[0][1]["content"][1] == {
         "type": "text",
-        "text": user_prompt(samples[0]),
+        "text": adapter.prompt_for(samples[0]),
     }
     assert conversations[1][0]["role"] == "user"
     assert calls["generate"]["do_sample"] is False
     assert calls["generate"]["max_new_tokens"] == 24
     assert torch.equal(calls["decoded_tokens"], torch.tensor([[9], [8]]))
-    assert [output.raw_text for output in outputs] == ["A", "report"]
+    assert [output.raw_text for output in outputs] == [
+        "reasoning\nFINAL_ANSWER: A",
+        "reasoning\nFINAL_ANSWER: report",
+    ]
+    assert [output.answer_text for output in outputs] == ["A", "report"]
     assert all(output.coordinate_size == (896, 896) for output in outputs)
 
 

@@ -108,10 +108,12 @@ Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron �
 接受裸单字母、Lingshu 风格的单字母加 ASCII 句点，或合法字母和句点后继续输出选项文本或解释；
 例如 `A. E.` 与 `A. because ...` 均解析为 `A`。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
 任务统一由 system 要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含
-图像和题目（letter 另含选项），所有 adapter 复用同一公共 prompt 函数。仅 InternVL3.5 adapter
+图像和题目（letter 另含选项），所有 adapter 复用同一公共 prompt 函数。InternVL3.5 adapter
 在其 user prompt 后追加禁止 reasoning 与 `<think>` 标签、只返回终答的模型专用评测指令，但不设置官方可选的
 Thinking System Prompt；模型若仍输出解释性内容，完整文本保存在 `raw_prediction`，并取最后一个
-`</think>` 后的内容按统一规则解析。
+`</think>` 后的内容按统一规则解析。MedGemma adapter 则在公共 user prompt 后要求以 `FINAL_ANSWER:`
+行结束，优先提取该边界；对既有输出仅兼容明确的 `answer is`、`category is X.`、Markdown option 和
+`\boxed{X}` letter 终答，多个冲突候选保持为空并触发 parse error。
 
 QoQ-Med-VL 7B/32B 使用其原生 medical reasoning prompt，要求 `<think>...</think>` 推理并把终答放入
 `\boxed{...}`；adapter 从最后一个 balanced boxed payload 提取终答，支持内部嵌套 bbox JSON。Chiron
@@ -123,8 +125,8 @@ QoQ-Med-VL 7B/32B 使用其原生 medical reasoning prompt，要求 `<think>...<
 按模型协议提取终答时优先使用 `answer_text`：QoQ 使用最后一个 balanced `\boxed{...}`，Qwen3 Thinking
 与 InternVL3.5 使用最后一个 `</think>`，Chiron
 使用最后一个 `The final answer is:`（兼容前方存在或缺少 `###`），Hulu 对同一 output IDs 分别保留
-thinking 与无 thinking
-解码。分隔符缺失时回退完整响应，空终答保持为空并产生严格 parse error；推理产物只把完整响应写入
+thinking 与无 thinking 解码，MedGemma 使用 `FINAL_ANSWER:` 或上述受限 legacy letter 协议。
+分隔符缺失时回退完整响应，空终答保持为空并产生严格 parse error；推理产物只把完整响应写入
 `raw_prediction`，wire schema 仍是 `medbench-inference.v1`。
 
 `torchrun` 单节点每 GPU 启动一个 rank，每个 rank 独立加载一份完整模型，以轮转切片和普通 batch
