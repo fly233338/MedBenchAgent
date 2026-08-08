@@ -133,10 +133,10 @@ def _benchmark_review_action(answer: object, benchmark_info: dict[str, Any]) -> 
         "Interpret a BenchmarkInfo review response. Return JSON only and do not change values yourself.",
         "Convert the user's response into exactly one of these shapes:\n"
         '{"action":"confirm"}\n'
-        '{"action":"revise","feedback":"the requested correction"}\n'
+        '{"action":"revise","feedback":"the requested correction"}\n\n'
         "Confirm only when the user accepts the complete BenchmarkInfo. For revise, preserve every requested "
-        "correction in feedback.\n"
-        f"Current BenchmarkInfo: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
+        "correction in feedback.\n\n"
+        f"Current BenchmarkInfo: {json.dumps(benchmark_info, ensure_ascii=False)}\n\n"
         f"User response: {answer}",
     )
     if action == {"action": "confirm"}:

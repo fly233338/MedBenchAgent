@@ -60,10 +60,10 @@ def _dataset_review_action(answer: object, datasets: list[DatasetEntry]) -> dict
         "Interpret a medical dataset selection review. Return JSON only.",
         "Convert the user's response into exactly one of these shapes:\n"
         '{"action":"confirm"}\n'
-        '{"action":"select","dataset_id":"one exact available dataset id"}\n'
+        '{"action":"select","dataset_id":"one exact available dataset id"}\n\n'
         "Confirm only when the user accepts the current recommendation. Select only when the user "
-        "explicitly requests another available dataset.\n"
-        f"Dataset catalog: {json.dumps(public_dataset_entries(datasets), ensure_ascii=False)}\n"
+        "explicitly requests another available dataset.\n\n"
+        f"Dataset catalog: {json.dumps(public_dataset_entries(datasets), ensure_ascii=False)}\n\n"
         f"User response: {answer}",
     )
     if response == {"action": "confirm"}:
@@ -187,10 +187,10 @@ def _review_action(answer: object, task_ids: list[str]) -> dict[str, str]:
         "Interpret a Task Plan review response. Return JSON only. Do not make task decisions yourself.",
         "Convert the user's response into exactly one of these shapes:\n"
         '{"action":"confirm"}\n'
-        '{"action":"revise","task_id":"one exact available task id","feedback":"the requested change"}\n'
+        '{"action":"revise","task_id":"one exact available task id","feedback":"the requested change"}\n\n'
         "Confirm only when the user accepts the complete Task Plan. A revise action may target only one task. "
-        "Preserve the user's requested change in feedback. "
-        f"Available task ids: {json.dumps(task_ids, ensure_ascii=False)}\n"
+        "Preserve the user's requested change in feedback.\n\n"
+        f"Available task ids: {json.dumps(task_ids, ensure_ascii=False)}\n\n"
         f"User response: {answer}",
     )
     if action == {"action": "confirm"}:
@@ -347,14 +347,14 @@ def _sample_count_review_action(
     prompt = (
         "Convert the user's sample-count review into exactly one JSON shape:\n"
         '{"action":"confirm"}\n'
-        '{"action":"adjust","counts":{"exact task id":0}}\n'
+        '{"action":"adjust","counts":{"exact task id":0}}\n\n'
         "For adjust, include only tasks the user explicitly changes. Convert relative requests such as "
         "'add two diagnosis questions' into the final integer for that task using the current allocation. "
-        "Do not distribute unspecified counts yourself. Counts must be non-negative integers.\n"
-        f"Benchmark total: {total}\n"
+        "Do not distribute unspecified counts yourself. Counts must be non-negative integers.\n\n"
+        f"Benchmark total: {total}\n\n"
         f"Task categories: {json.dumps(task_categories, ensure_ascii=False)}\n"
         f"Normalized active category weights: {json.dumps(normalized_weights, ensure_ascii=False)}\n"
-        f"Current allocation: {json.dumps(current_counts, ensure_ascii=False)}\n"
+        f"Current allocation: {json.dumps(current_counts, ensure_ascii=False)}\n\n"
         f"User response: {answer}"
     )
     response = complete_json("Interpret a benchmark sample-count review. Return JSON only.", prompt)
@@ -364,7 +364,7 @@ def _sample_count_review_action(
         with event_operation("repair"):
             repaired = complete_json(
                 "Repair a benchmark sample-count review action. Return JSON only.",
-                f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+                f"{prompt}\n\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n\n"
                 f"Contract error: {first_error}",
             )
         return _validate_sample_count_action(repaired, task_ids)
@@ -445,10 +445,10 @@ def _validate_material_selection(
 
 def _material_selection_action(answer: object, materials: list[dict[str, str]]) -> list[str]:
     prompt = (
-        'Convert the user request into exactly {"selected_files":["exact relative PDF path"]}.\n'
+        'Convert the user request into exactly {"selected_files":["exact relative PDF path"]}.\n\n'
         "Select one or more files only from the scanned medical references. Use exact paths from the list, "
-        "including their category directory. Do not select directories or invent filenames.\n"
-        f"Scanned medical references: {json.dumps(materials, ensure_ascii=False)}\n"
+        "including their category directory. Do not select directories or invent filenames.\n\n"
+        f"Scanned medical references: {json.dumps(materials, ensure_ascii=False)}\n\n"
         f"User response: {answer}"
     )
     response = complete_json("Interpret a medical-reference selection. Return JSON only.", prompt)
@@ -458,7 +458,7 @@ def _material_selection_action(answer: object, materials: list[dict[str, str]]) 
         with event_operation("repair"):
             repaired = complete_json(
                 "Repair a medical-reference selection. Return JSON only.",
-                f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+                f"{prompt}\n\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n\n"
                 f"Contract error: {first_error}",
             )
         return _validate_material_selection(repaired, materials)

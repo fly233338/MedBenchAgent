@@ -223,13 +223,13 @@ def _design_review_action(answer: object, tasks: dict[str, Any]) -> dict[str, An
     prompt = (
         "Convert the user's review into exactly one of these JSON shapes:\n"
         '{"action":"confirm"}\n'
-        '{"action":"revise","revisions":[{"task_id":"exact task id","feedback":"requested design change"}]}\n'
+        '{"action":"revise","revisions":[{"task_id":"exact task id","feedback":"requested design change"}]}\n\n'
         "Confirm only when the complete Blueprint task design is accepted. Support multiple task revisions "
         "and expand a global request to every affected task. Revisions may change only question_templates, "
         "options, answer_field, answer_value_mapping, generation_logic, or medical_task_description. They "
         "must not add or remove tasks or alter "
-        "supporting_fields, task_type, or response_format.\n"
-        f"Current tasks: {json.dumps(tasks, ensure_ascii=False)}\nUser response: {answer}"
+        "supporting_fields, task_type, or response_format.\n\n"
+        f"Current tasks: {json.dumps(tasks, ensure_ascii=False)}\n\nUser response: {answer}"
     )
     response = complete_json("Interpret a Question Design review response. Return JSON only.", prompt)
     try:
@@ -238,7 +238,7 @@ def _design_review_action(answer: object, tasks: dict[str, Any]) -> dict[str, An
         with event_operation("repair"):
             repaired = complete_json(
                 "Repair a Question Design review action. Return JSON only.",
-                f"{prompt}\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
+                f"{prompt}\n\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n\n"
                 f"Contract error: {first_error}",
             )
         return _validate_design_review_action(repaired, task_ids)

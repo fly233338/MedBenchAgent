@@ -1,0 +1,23 @@
+{
+  "cap_dataset_system": "8b6bb2f25e998e60c088737e78d4b570249cc05083d0889a0f31e83885f79e9c",
+  "cap_dataset_user": "f3b8877fe8202ec5bd5af43fc55a0f6a2676535a438891bf06cdcd7f4989b1ab",
+  "cap_material_action_system": "ed73a242ca6214ea6f0cf8a7aaf520d1a3e12db007766e14336e83850d4aadd8",
+  "cap_material_action_user": "b4bfe288151efb985970cffb32055bfb3bcd20d3eb27556ae3688274019ec83f",
+  "cap_material_repair_system": "5d2d46c786aae90031bb15a17302b72dd1690edf77adde1cf0ac557088b06a38",
+  "cap_material_repair_user": "039b4b50372802cc4e7e63df24abd8bf695dda3720114538abc59f2a20193e28",
+  "cap_sample_action_system": "d7646cd8665d760814c7e198c38e3d9f9676ba9d350226505e96cba7fa922879",
+  "cap_sample_action_user": "03b9f4f13ce053e62a90528d379b7cbdf874cf1439bd3adc88b654b94e2c7038",
+  "cap_sample_repair_system": "f5960e35a3750021a147c88cbb5433c33441d4f05aa125c1ed172567a3a4d36a",
+  "cap_sample_repair_user": "0308c47d14783c09450acc78211f134d98bd9ed51a09d04198cfbf2b7322cc9e",
+  "cap_task_plan_system": "3665bd5c1dab8383f729487ebf9fb2020f397d6a404aabaeb66f5471ad7ed374",
+  "cap_task_plan_user": "3e15cd3b2ec2cf069bd86f7040f372e7de1d575d4264a5e8ea74d9ada380cd44",
+  "rag_design_system": "dc97d713e05a43836e31a8d8f334c5e44f4c26ea7e2a8dcbbc58ba4f7bc0c10c",
+  "rag_design_user": "9947abbedff734fa2b82c3e130f2f7507a82586cecc48797a2603a46d123a855",
+  "rag_review_action_system": "21557ba1cef761a3d8bda2c225eff531e573ce3518eeae7f5dd24b5f8f7d5012",
+  "rag_review_action_user": "903abe5189e055055e659ee3bdd3c5ad0954983394ed5619f6d09b92daa2b3d7",
+  "rag_review_repair_system": "79e133127c8486e8130af77a39aa6a0b415461a67168a82211a66ce2f031bc0c",
+  "rag_review_repair_user": "bd455145166e8b4b9f24a2aa37702b9f3789af7169920bf5d7a46d032f9a6625",
+  "spec_review_system": "9068a393a375f6440b16e98cd0ec82f886738168010cac60a53b05c3781ac093",
+  "spec_review_user": "1f08a3aa9570cb30653512dc03968d490263479d2c3229cd6907470797946d83",
+  "task_revision": "68cbc933b432d8609cc5918879bd18dc6514478dbfaeb52a1dd720dd406a57ba"
+}

@@ -413,44 +413,46 @@ def _design_prompt(
     response_format = task.get("response_format")
     schema = _design_schema(response_format)
     system = (
-        "Design the medical-content portion of exactly one medical VLM benchmark task. "
-        "Evidence priority: (1) the task definition and approved supporting fields define what the "
-        "task may assess; (2) supplied field-value summaries constrain dataset-backed answer content; "
+        "Design the medical-content portion of exactly one medical VLM benchmark task.\n\n"
+        "Evidence priority:\n"
+        "(1) the task definition and approved supporting fields define what the "
+        "task may assess;\n"
+        "(2) supplied field-value summaries constrain dataset-backed answer content;\n"
         "(3) PDF excerpts may support clinical wording and plausibility, but must not define or expand "
-        "the dataset's answer-label space. "
+        "the dataset's answer-label space."
     )
     if allow_value_request and response_format == "letter":
         system += (
-            "Before designing this letter task, return exactly this field-value request and no other fields: "
-            '{"requested_field_values":["one answer-bearing supporting field path"]}. '
+            "\n\nBefore designing this letter task, return exactly this field-value request and no other fields:\n"
+            '{"requested_field_values":["one answer-bearing supporting field path"]}.\n\n'
             "Request exactly one approved supporting field whose categorical values determine the answer. "
             "Do not request DICOM metadata, bounding-box fields, raw annotations, or identifiers."
         )
         user = (
             f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
-            f"Task ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n"
-            f"Requested revision: {feedback or 'none'}\n"
+            f"\nTask ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n"
+            f"\nRequested revision: {feedback or 'none'}\n"
             f"Current design: {json.dumps(current_design or {}, ensure_ascii=False)}\n"
-            f"PDF excerpts:\n{context or '[No sufficiently relevant PDF excerpt was retrieved.]'}"
+            f"\nPDF excerpts:\n{context or '[No sufficiently relevant PDF excerpt was retrieved.]'}"
         )
         return system, user
-    system += f"Return exactly this complete design object and no other fields: {schema}. "
+    system += f"\n\nReturn exactly this complete design object and no other fields:\n{schema}.\n\n"
     system += (
         f"Use the requested benchmark language. Return exactly {get_settings().generation.question_template_count} "
         "question templates. They must assess the same capability and medical concept while using meaningfully "
         "different question structures, and none may require information unavailable from the image and requested "
-        "response format. generation_logic must be one semantically complete instruction sentence "
+        "response format.\n\ngeneration_logic must be one semantically complete instruction sentence "
         "describing how to use approved annotation semantics and the selected question template to "
         "generate the question. It must not invent facts, infer an unsupported diagnosis, or use PDF "
-        "text as annotation evidence. "
+        "text as annotation evidence.\n\n"
         "Do not return task_id, citations, validation_rules, placeholder bindings, instance paths, "
-        "or bbox fields. "
+        "or bbox fields."
     )
     if response_format == "letter":
         system += (
-            "The supplied task is one fixed question type. Use only its declared semantic answer axis; "
+            "\n\nThe supplied task is one fixed question type. Use only its declared semantic answer axis; "
             "do not create another question type or switch to a related property. All templates must use "
-            "the same answer field, options, and answer mapping, and may vary wording and syntax only. "
+            "the same answer field, options, and answer mapping, and may vary wording and syntax only.\n\n"
             f"Letter option rules: return 2-{MAX_RAG_LETTER_OPTIONS} options without A/B labels. "
             "Use 2-4 options by default. Use 5-8 only when the approved field-value "
             "summaries or a standard closed scale required by the task establish a larger mutually "
@@ -464,7 +466,7 @@ def _design_prompt(
             "attributes, use concise category labels rather than verbose explanations or copied annotation "
             "descriptions. Every letter task must have at least two dataset-supported "
             "semantic classes that can serve as correct answers; distractors do not make a constant-label "
-            "task valid. "
+            "task valid.\n\n"
             "Answer-mapping rules: select exactly one answer_field from the approved supporting fields. "
             "Copy raw values exactly from the approved field-value summary, preserving JSON type, case, "
             "spelling, and punctuation. Map each raw value to exactly one returned option, and support at "
@@ -472,19 +474,19 @@ def _design_prompt(
             "annotated variable when every raw value uniquely determines the declared coarser option. Do not "
             "map between clinical variables or ontology levels. Omit values that cannot produce one "
             "unambiguous option; omitted values are ineligible. generation_logic must not add or override "
-            "the structured mapping. "
+            "the structured mapping."
         )
     system += (
-        "When no relevant PDF excerpt is supplied, use generic medical wording and do not claim "
+        "\n\nWhen no relevant PDF excerpt is supplied, use generic medical wording and do not claim "
         "specific guideline support."
     )
     user = (
         f"Benchmark: {json.dumps(benchmark_info, ensure_ascii=False)}\n"
-        f"Task ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n"
-        f"Requested revision: {feedback or 'none'}\n"
+        f"\nTask ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n"
+        f"\nRequested revision: {feedback or 'none'}\n"
         f"Current design: {json.dumps(current_design or {}, ensure_ascii=False)}\n"
-        f"Approved field-value summaries: {json.dumps(field_value_summaries or {}, ensure_ascii=False)}\n"
-        f"PDF excerpts:\n{context or '[No sufficiently relevant PDF excerpt was retrieved.]'}"
+        f"\nApproved field-value summaries: {json.dumps(field_value_summaries or {}, ensure_ascii=False)}\n"
+        f"\nPDF excerpts:\n{context or '[No sufficiently relevant PDF excerpt was retrieved.]'}"
     )
     return system, user
 
