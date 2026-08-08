@@ -5,6 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
+RAG_DESIGN_FIELDS = (
+    "question_templates",
+    "options",
+    "answer_field",
+    "answer_value_mapping",
+    "generation_logic",
+    "medical_task_description",
+    "citations",
+)
+
 
 class BlueprintTask(TypedDict):
     task_type: str

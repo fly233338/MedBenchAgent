@@ -23,7 +23,7 @@ def _write_catalog(path: Path, datasets: list[dict]) -> Path:
 
 def test_catalog_loads_and_resolves_project_relative_paths(tmp_path: Path, monkeypatch) -> None:
     catalog_path = _write_catalog(tmp_path / "catalog.json", [_entry("vindr-mammo")])
-    monkeypatch.setattr(catalog, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("medbenchagent.settings.PROJECT_ROOT", tmp_path)
 
     datasets = catalog.load_dataset_catalog(catalog_path)
 

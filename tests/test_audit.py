@@ -172,13 +172,17 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
     )
 
     original_read_bytes = Path.read_bytes
-    monkeypatch.setattr(
-        Path,
-        "read_bytes",
-        lambda path: (_ for _ in ()).throw(AssertionError("read_bytes"))
-        if path == image_path
-        else original_read_bytes(path),
-    )
+    blueprint_reads = 0
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        nonlocal blueprint_reads
+        if path == image_path:
+            raise AssertionError("read_bytes")
+        if path == blueprint_path:
+            blueprint_reads += 1
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
     monkeypatch.setattr(Image.Image, "getdata", lambda *_args: (_ for _ in ()).throw(AssertionError("getdata")))
     result = audit_run(
         raw_path=raw,
@@ -193,6 +197,7 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
     )
 
     assert result["item_count"] == 2
+    assert blueprint_reads == 1
     assert len((Path(result["rejected_path"])).read_text(encoding="utf-8").splitlines()) == 2
     report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
     assert report["hard_audit"]["duplicate_statistics"] == {
@@ -247,12 +252,51 @@ def test_audit_keeps_repeated_questions_and_rejects_item_duplicates(tmp_path: Pa
         Path(tampered_result["report_path"]).read_text(encoding="utf-8")
     )
     assert tampered_result["item_count"] == 0
+    assert blueprint_reads == 2
     assert tampered_report["hard_audit"]["reason_counts"]["answer_evidence"] == 4
     _assert_report_invariants(
         tampered_report,
         Path(tampered_result["audited_path"]),
         Path(tampered_result["flagged_path"]),
     )
+
+    malformed = tmp_path / "malformed-calls"
+    malformed.mkdir()
+    call_items = [{**item, "id": item_id} for item_id in ("bad-shape", "unknown", "valid")]
+    _write_jsonl(raw, call_items)
+    _write_jsonl(
+        provenance,
+        [
+            {
+                "item_id": "bad-shape",
+                **source,
+                "generation_call_ids": "not-a-list",
+            },
+            {
+                "item_id": "unknown",
+                **source,
+                "generation_call_ids": ["missing-call"],
+            },
+            {"item_id": "valid", **source},
+        ],
+    )
+    malformed_result = audit_run(
+        raw_path=raw,
+        blueprint_path=blueprint_path,
+        provenance_path=provenance,
+        events_path=events,
+        manifest_path=manifest,
+        annotation_path=annotation,
+        annotation_sha256=hashlib.sha256(annotation.read_bytes()).hexdigest(),
+        output_directory=malformed,
+        run_id="run",
+    )
+    malformed_report = json.loads(
+        Path(malformed_result["report_path"]).read_text(encoding="utf-8")
+    )
+    assert malformed_result["item_count"] == 1
+    assert malformed_report["hard_audit"]["reason_counts"]["provenance_calls"] == 2
+    assert blueprint_reads == 3
 
 
 def test_audit_accepts_readable_color_images_and_rejects_constant_thumbnails(tmp_path: Path) -> None:
@@ -283,6 +327,29 @@ def test_audit_accepts_readable_color_images_and_rejects_constant_thumbnails(tmp
         },
         tmp_path,
     ) == ["image_pixels"]
+
+
+def test_invalid_image_dimensions_skip_bbox_bounds_without_type_error(tmp_path: Path) -> None:
+    from medbenchagent.audit import _contract, _image_dimensions, _image_errors
+
+    image_path = tmp_path / "image.png"
+    image = Image.new("L", (2, 2))
+    image.putdata([0, 1, 2, 3])
+    image.save(image_path)
+    entry = {
+        "png_path": image_path.name,
+        "width": "2",
+        "height": 2,
+        "sha256": hashlib.sha256(image_path.read_bytes()).hexdigest(),
+    }
+
+    assert _image_errors(entry, tmp_path) == ["image_dimensions"]
+    assert _image_dimensions(entry) is None
+    assert _contract(
+        {"question": "Where?", "answer": [0, 0, 2, 2]},
+        {"response_format": "bbox"},
+        None,
+    ) == []
 
 
 def test_letter_contract_rejects_unhashable_options() -> None:

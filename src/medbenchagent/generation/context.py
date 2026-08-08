@@ -2,10 +2,111 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
 from typing import Any
+
+_MISSING = object()
+
+
+def _merge_projection(left: object, right: object) -> object:
+    if isinstance(left, dict) and isinstance(right, dict):
+        merged = copy.deepcopy(left)
+        for key, value in right.items():
+            merged[key] = (
+                _merge_projection(merged[key], value)
+                if key in merged
+                else copy.deepcopy(value)
+            )
+        return merged
+    if isinstance(left, list) and isinstance(right, list):
+        if all(isinstance(item, dict) and "_source_index" in item for item in left + right):
+            by_index = {int(item["_source_index"]): copy.deepcopy(item) for item in left}
+            for item in right:
+                index = int(item["_source_index"])
+                by_index[index] = (
+                    _merge_projection(by_index[index], item)
+                    if index in by_index
+                    else copy.deepcopy(item)
+                )
+            return [by_index[index] for index in sorted(by_index)]
+    return copy.deepcopy(right)
+
+
+def _project_value(value: object, segments: list[str]) -> object:
+    if not segments:
+        return copy.deepcopy(value)
+    if not isinstance(value, dict):
+        return _MISSING
+    segment = segments[0]
+    is_array = segment.endswith("[*]")
+    key = segment.removesuffix("[*]")
+    if key not in value:
+        return _MISSING
+    nested = value[key]
+    if is_array:
+        if not isinstance(nested, list):
+            return _MISSING
+        if len(segments) == 1:
+            return {key: copy.deepcopy(nested)}
+        projected_items: list[dict[str, Any]] = []
+        for index, item in enumerate(nested):
+            projected = _project_value(item, segments[1:])
+            if projected is _MISSING:
+                continue
+            if isinstance(projected, dict):
+                projected_items.append({"_source_index": index, **projected})
+            else:
+                projected_items.append({"_source_index": index, "value": projected})
+        return {key: projected_items} if projected_items else _MISSING
+    projected = _project_value(nested, segments[1:])
+    return {key: projected} if projected is not _MISSING else _MISSING
+
+
+def is_supporting_field_path(path: object) -> bool:
+    """Return whether a path belongs to one task-supporting v2 scope."""
+    return isinstance(path, str) and (
+        path in {"image.modality", "image.anatomy"}
+        or any(
+            path.startswith(prefix)
+            for prefix in (
+                "patient.annotation.",
+                "case.annotation.",
+                "study.annotation.",
+                "image.annotation.",
+            )
+        )
+    )
+
+
+def project_supporting_record(
+    record: dict[str, Any], supporting_fields: list[str]
+) -> dict[str, Any]:
+    """Project approved v2 record paths while retaining array source indices."""
+    projected: object = {}
+    for path in supporting_fields:
+        if not is_supporting_field_path(path):
+            raise ValueError(f"Unsupported field path: {path}")
+        value = _project_value(record, path.split("."))
+        if value is not _MISSING:
+            projected = _merge_projection(projected, value)
+    return projected if isinstance(projected, dict) else {}
+
+
+def has_meaningful_value(value: object) -> bool:
+    """Return whether a projected value contains non-empty source data."""
+    if value is None or value == "":
+        return False
+    if isinstance(value, dict):
+        return any(
+            key != "_source_index" and has_meaningful_value(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(has_meaningful_value(item) for item in value)
+    return True
 
 
 def record_values(candidate: Any) -> dict[str, object]:
@@ -21,8 +122,6 @@ def image_modality(candidate: Any) -> str:
 
 def evidence_value(record: dict[str, object], path: str, indices: list[int]) -> object:
     """Resolve one scalar v2 record value using source indices for wildcard segments."""
-    from medbenchagent.generation.engine import is_supporting_field_path
-
     if not is_supporting_field_path(path):
         raise ValueError("Evidence path must be one supported v2 entity field path.")
     segments = path.split(".")
@@ -62,8 +161,6 @@ def evidence_value(record: dict[str, object], path: str, indices: list[int]) -> 
 def _evidence_candidates(
     record: dict[str, object], path: str
 ) -> list[dict[str, object]]:
-    from medbenchagent.generation.engine import is_supporting_field_path
-
     if not is_supporting_field_path(path):
         raise ValueError("Evidence path must be one supported v2 entity field path.")
     segments = path.split(".")

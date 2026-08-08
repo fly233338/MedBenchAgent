@@ -14,15 +14,6 @@ from medbenchagent.answer_balance import balance_jsonl
 InputFunction = Callable[[str], str]
 OutputFunction = Callable[[str], None]
 
-_QUESTION_TEXT = {
-    "benchmark_info_confirmation": "Confirm the BenchmarkInfo or describe the changes you need.",
-    "dataset_selection_confirmation": "Confirm the recommended dataset or name another available dataset.",
-    "task_plan_review": "Confirm the Task Plan or describe one task that should be revised.",
-    "sample_count_confirmation": "Confirm the per-task sample counts or describe adjustments.",
-    "materials_choose": "Choose one or more medical PDFs by filename or describe the references you need.",
-    "question_design_confirmation": "Confirm the question designs or describe the tasks to revise.",
-}
-
 _NODE_LABELS = {
     "run_initialize": "initialize run directory",
     "SpecificationAgent": "parse benchmark requirement",
@@ -130,10 +121,18 @@ def _print_json(value: object, output: OutputFunction) -> None:
     output(json.dumps(value, ensure_ascii=False, indent=2))
 
 
+def _interrupt_question(payload: dict[str, Any]) -> str:
+    question = payload.get("question")
+    if isinstance(question, str) and question.strip():
+        return question.strip()
+    return "Your confirmation is required."
+
+
 def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
     kind = str(payload.get("kind", ""))
+    question = _interrupt_question(payload)
     output("")
-    output(f"=== {_QUESTION_TEXT.get(kind, 'Your confirmation is required.')} ===")
+    output(f"=== {question} ===")
     if kind == "benchmark_info_confirmation":
         _print_json(payload.get("benchmark_info", {}), output)
     elif kind == "dataset_selection_confirmation":
@@ -181,7 +180,7 @@ def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
             output(f"Previous selection was invalid: {payload['error']}")
         for material in payload.get("materials", []):
             if isinstance(material, dict):
-                output(f"- [{material.get('category_label')}] {material.get('file')}")
+                output(f"- [{material.get('category')}] {material.get('file')}")
     elif kind == "question_design_confirmation":
         for task_id, task in payload.get("tasks", {}).items():
             design = {
@@ -201,7 +200,7 @@ def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
             _print_json(design, output)
     else:
         _print_json(payload, output)
-    output(_QUESTION_TEXT.get(kind, str(payload.get("question", "Enter your response."))))
+    output(question)
 
 
 def _interrupt_payload(value: object) -> dict[str, Any] | None:
@@ -260,8 +259,7 @@ def _render_artifact_paths(payload: object, output: OutputFunction) -> None:
 def _render_update(namespace: tuple[str, ...], payload: object, output: OutputFunction) -> None:
     _render_artifact_paths(payload, output)
     if interrupt := _interrupt_payload(payload):
-        kind = str(interrupt.get("kind", ""))
-        output(f"[waiting] {_QUESTION_TEXT.get(kind, 'user confirmation')}")
+        output(f"[waiting] {_interrupt_question(interrupt)}")
         return
     name = _node_name(namespace, payload)
     if not name or any(part in name for part in ("generation_step", "rag_design_task")):

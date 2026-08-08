@@ -15,53 +15,6 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.toml"
 
-_CODE_DEFAULTS: dict[str, Any] = {
-    "paths": {
-        "dataset_catalog": "datasets/dataset_catalog.json",
-        "blueprint_template": "blueprint.json",
-        "materials_root": "materials",
-        "runs_root": "benchmarks/runs",
-        "dataset_cache_root": "benchmarks/dataset_cache",
-        "rag_cache_root": "benchmarks/rag_cache",
-    },
-    "llm": {
-        "model": "deepseek-v4-flash",
-        "base_url": "http://127.0.0.1:8005/v1",
-        "timeout_seconds": 120,
-        "max_retries": 0,
-        "default_temperature": 0.0,
-        "trace_name": "DeepSeek",
-    },
-    "rag": {
-        "embedding_model": "",
-        "reranker_model": "",
-        "chunk_size": 1200,
-        "chunk_overlap": 200,
-        "candidate_count": 12,
-        "result_limit": 5,
-        "min_rerank_score": 0.5,
-        "reranker_max_length": 8192,
-    },
-    "generation": {
-        "seed": 0,
-        "max_tasks_per_image": 20,
-        "question_temperature": 0.7,
-        "fetch_batch_size": 128,
-        "question_template_count": 3,
-    },
-    "dataset_profile": {"max_top_values": 3, "max_top_value_chars": 200},
-    "sample_allocation": {
-        "category_weights": {
-            "image_acquisition_and_basic_information": 0.10,
-            "anatomy_and_global_tissue_characteristics": 0.20,
-            "finding_recognition_and_characterization": 0.20,
-            "clinical_assessment_and_diagnosis": 0.20,
-            "report_generation": 0.10,
-            "spatial_localization": 0.20,
-        }
-    },
-}
-
 _ENVIRONMENT_OVERRIDES = {
     "DEEPSEEK_MODEL": ("llm", "model"),
     "DEEPSEEK_BASE_URL": ("llm", "base_url"),
@@ -187,12 +140,6 @@ def load_project_env() -> None:
 def get_llm_api_key() -> str | None:
     """Read the optional API key in the sole configuration module."""
     return os.getenv("DEEPSEEK_API_KEY") or None
-
-
-def _copy_defaults(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: _copy_defaults(item) for key, item in value.items()}
-    return value
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any], *, prefix: str = "") -> None:
@@ -328,8 +275,7 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
 def load_settings(config_path: Path | None = None) -> AppSettings:
     """Load default TOML, one explicit TOML override, then non-empty environment overrides."""
     load_project_env()
-    values = _copy_defaults(_CODE_DEFAULTS)
-    _merge(values, _read_toml(DEFAULT_CONFIG_PATH))
+    values = _read_toml(DEFAULT_CONFIG_PATH)
     raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
     local_path = _resolve_path(str(raw_path), "MEDBENCH_CONFIG") if raw_path else None
     if local_path:

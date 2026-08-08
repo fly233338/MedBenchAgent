@@ -11,7 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from medbenchagent.agents._context import human_interaction, revision_applied
-from medbenchagent.llm import complete_json
+from medbenchagent.contracts import RAG_DESIGN_FIELDS
 from medbenchagent.construction import (
     CLINICAL_DESIGN_AGENT,
     changed_mapping_keys,
@@ -20,6 +20,7 @@ from medbenchagent.construction import (
     record_artifact_snapshot,
     record_event,
 )
+from medbenchagent.llm import complete_json
 from medbenchagent.rag.pdf import LocalPdfRag, design_task, write_task_design
 from medbenchagent.run_artifacts import write_versioned_json
 from medbenchagent.run_export import rag_designs_payload
@@ -58,19 +59,8 @@ class RagDesignOutputState(TypedDict):
     working_blueprint_path: str
 
 
-_DESIGN_FIELDS = (
-    "question_templates",
-    "options",
-    "answer_field",
-    "answer_value_mapping",
-    "generation_logic",
-    "medical_task_description",
-    "citations",
-)
-
-
 def _design_snapshot(task: dict[str, Any]) -> dict[str, Any]:
-    return {field: task[field] for field in _DESIGN_FIELDS if field in task}
+    return {field: task[field] for field in RAG_DESIGN_FIELDS if field in task}
 
 
 def _emit_custom_event(event: dict[str, Any]) -> None:

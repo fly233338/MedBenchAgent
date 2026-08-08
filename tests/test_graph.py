@@ -483,7 +483,6 @@ def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_ch
     materials = [
         {
             "category": "Standard",
-            "category_label": "Standard",
             "file": "Standard/guide.pdf",
         }
     ]

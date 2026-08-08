@@ -13,24 +13,17 @@ from typing import Any
 import duckdb
 from pypdf import PdfReader
 
-from medbenchagent.llm import complete_json
+from medbenchagent.answer_mapping import canonical_answer_scalar
+from medbenchagent.contracts import RAG_DESIGN_FIELDS
 from medbenchagent.construction import event_operation
 from medbenchagent.generation.context import scalar_evidence_candidates
+from medbenchagent.llm import complete_json
 from medbenchagent.rag.reranker import score_pairs
 from medbenchagent.settings import get_settings
 
 CACHE_SCHEMA_VERSION = "2"
 MAX_RAG_LETTER_OPTIONS = 8
 MAX_RAG_MAPPING_VALUES = 32
-RAG_DESIGN_FIELDS = {
-    "question_templates",
-    "options",
-    "answer_field",
-    "answer_value_mapping",
-    "generation_logic",
-    "medical_task_description",
-    "citations",
-}
 _VALUE_REQUEST_KEY = "requested_field_values"
 
 
@@ -58,7 +51,6 @@ def discover_medical_materials(materials_root: str | Path) -> list[dict[str, str
         materials.append(
             {
                 "category": category,
-                "category_label": category,
                 "file": relative_path.as_posix(),
             }
         )
@@ -297,15 +289,6 @@ def _design_schema(response_format: object) -> str:
     raise ValueError(f"Unsupported response_format for RAG design: {response_format}")
 
 
-def _canonical_scalar(value: object) -> str | None:
-    if value is None or value == "" or isinstance(value, (dict, list)):
-        return None
-    try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
-    except (TypeError, ValueError):
-        return None
-
-
 def validate_task_design(
     task_id: str,
     task: dict[str, Any],
@@ -381,7 +364,7 @@ def validate_task_design(
             canonical
             for item in summary_values
             if isinstance(item, dict)
-            and (canonical := _canonical_scalar(item.get("value"))) is not None
+            and (canonical := canonical_answer_scalar(item.get("value"))) is not None
         }
         mappings = response["answer_value_mapping"]
         if not isinstance(mappings, list) or not mappings:
@@ -395,7 +378,7 @@ def validate_task_design(
                     f"{task_id}: every answer mapping needs only raw_value and option."
                 )
             raw_value, option = mapping["raw_value"], mapping["option"]
-            canonical = _canonical_scalar(raw_value)
+            canonical = canonical_answer_scalar(raw_value)
             if canonical is None:
                 raise ValueError(f"{task_id}: mapped raw values must be non-empty JSON scalars.")
             if canonical in seen_values:
@@ -556,7 +539,7 @@ def _field_value_summaries(
             value = evidence["value"]
             if isinstance(value, str) and len(value) > 200:
                 continue
-            canonical = _canonical_scalar(value)
+            canonical = canonical_answer_scalar(value)
             if canonical is not None:
                 counts[canonical] += 1
                 raw_values[canonical] = value

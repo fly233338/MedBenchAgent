@@ -9,6 +9,7 @@ import medbenchagent.generation.engine as generation
 import medbenchagent.generation.free_text as free_text
 import medbenchagent.generation.grounding as grounding
 import medbenchagent.generation.vqa as vqa
+from medbenchagent.answer_mapping import canonical_answer_scalar
 from medbenchagent.dataset import prepare_annotation_dataset
 from medbenchagent.generation.context import (
     evidence_provenance,
@@ -124,6 +125,23 @@ def _candidate(task_id: str, annotation: dict, supporting_data: dict, task: dict
         expected_answer=expected_answer,
         expected_evidence=expected_evidence,
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ({}, None),
+        ([], None),
+        (float("nan"), None),
+        ("benign", '"benign"'),
+        (False, "false"),
+        (1, "1"),
+    ],
+)
+def test_answer_mapping_scalar_canonicalization(value: object, expected: str | None) -> None:
+    assert canonical_answer_scalar(value) == expected
 
 
 def test_generation_prompts_use_image_modality_and_supporting_data() -> None:

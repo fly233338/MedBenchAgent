@@ -278,12 +278,10 @@ def test_discover_and_extract_selected_categorized_medical_pdfs(
     assert materials == [
         {
             "category": "Guideline",
-            "category_label": "Guideline",
             "file": "Guideline/unselected.pdf",
         },
         {
             "category": "Standard",
-            "category_label": "Standard",
             "file": "Standard/selected.pdf",
         },
     ]

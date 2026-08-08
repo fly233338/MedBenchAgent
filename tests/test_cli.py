@@ -70,7 +70,6 @@ def _interrupt(kind: str) -> dict:
             "materials": [
                 {
                     "category": "Guideline",
-                    "category_label": "Guideline",
                     "file": "Guideline/guide.pdf",
                 }
             ],
@@ -224,10 +223,9 @@ def test_build_prompts_for_requirement_and_drives_all_interrupts(
     assert [getattr(value, "resume", None) for value in graph.inputs[1:]] == ["confirm"] * 6
     rendered = "\n".join(output)
     assert "Input cannot be empty" in rendered
-    for question in cli._QUESTION_TEXT.values():
-        assert question in rendered
+    assert "Confirm?" in rendered
     assert "[start] SpecificationAgent / benchmark_extract" in rendered
-    assert "[waiting] Confirm the BenchmarkInfo" in rendered
+    assert "[waiting] Confirm?" in rendered
     assert "metric=accuracy" in rendered
     assert "severity_grading" in rendered
     assert "Duplicate of the assessment task." in rendered

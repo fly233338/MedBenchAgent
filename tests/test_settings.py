@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from medbenchagent.run_artifacts import initialize_run
 from medbenchagent.settings import clear_settings_cache, get_settings, load_project_env, load_settings
 
@@ -54,6 +56,14 @@ def test_explicit_toml_then_environment_override_and_empty_value(tmp_path: Path,
     assert settings.generation.question_template_count == 5
     assert settings.environment_overrides == ("llm.model",)
     assert settings.local_config_path == local.resolve()
+
+
+def test_explicit_toml_rejects_unknown_keys(tmp_path: Path) -> None:
+    local = tmp_path / "local.toml"
+    local.write_text("[generation]\nunknown = 1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unknown configuration key: generation.unknown"):
+        load_settings(local)
 
 
 def test_initialize_run_writes_secret_free_effective_configuration(tmp_path: Path, monkeypatch) -> None:

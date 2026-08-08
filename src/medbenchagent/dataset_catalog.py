@@ -7,11 +7,10 @@ import re
 from pathlib import Path
 from typing import Any, TypedDict
 
-from medbenchagent.llm import complete_json
+from medbenchagent import settings
 from medbenchagent.construction import event_operation
-from medbenchagent.settings import get_settings
+from medbenchagent.llm import complete_json
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATASET_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 
@@ -29,7 +28,11 @@ class DatasetEntry(TypedDict):
 
 def load_dataset_catalog(catalog_path: str | Path | None = None) -> list[DatasetEntry]:
     """Load and deterministically validate the dataset catalog."""
-    path = Path(catalog_path) if catalog_path is not None else get_settings().paths.dataset_catalog
+    path = (
+        Path(catalog_path)
+        if catalog_path is not None
+        else settings.get_settings().paths.dataset_catalog
+    )
     try:
         catalog = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -103,7 +106,7 @@ def dataset_by_id(datasets: list[DatasetEntry], dataset_id: str) -> DatasetEntry
 def resolve_annotation_path(dataset: DatasetEntry) -> Path:
     """Resolve project-relative annotation paths without exposing them to the model."""
     path = Path(dataset["annotation_path"]).expanduser()
-    return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+    return path.resolve() if path.is_absolute() else (settings.PROJECT_ROOT / path).resolve()
 
 
 def _validate_recommendation(

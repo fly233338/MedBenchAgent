@@ -147,7 +147,7 @@ def _run_finalize_node(state: BenchmarkState) -> dict[str, Any]:
         dataset_profile=state["dataset_profile"],
         dataset_access_manifest=state["dataset_access_manifest"],
         image_manifest_path=resolve_annotation_path(dataset).parent / "image_manifest.jsonl",
-        audit_artifacts=state.get("audit_artifacts"),
+        audit_artifacts=state["audit_artifacts"],
     )
     return {
         "benchmark_id": identifier,

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from medbenchagent.dataset import CACHE_FORMAT_VERSION, PROFILE_SCHEMA_VERSION
 from medbenchagent.run_artifacts import write_versioned_json
 from medbenchagent.run_export import benchmark_id, finalize_run, rag_designs_payload
 
@@ -39,17 +40,32 @@ def _blueprint() -> dict:
     }
 
 
-def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: Path) -> None:
+def _audit_artifacts(run_directory: Path) -> dict[str, str]:
+    paths = {
+        "audited": run_directory / "benchmark.vindr-mammo.audited.jsonl",
+        "flagged": run_directory / "benchmark.vindr-mammo.flagged.jsonl",
+        "rejected": run_directory / "benchmark.vindr-mammo.rejected.jsonl",
+        "records": run_directory / "audit_records.jsonl",
+        "report": run_directory / "audit_report.json",
+        "semantic_records": run_directory / "semantic_audit_records.jsonl",
+    }
+    for path in paths.values():
+        path.write_text("{}\n", encoding="utf-8")
+    return {name: str(path) for name, path in paths.items()}
+
+
+def _finalize_inputs(tmp_path: Path) -> dict:
     blueprint_path = tmp_path / "blueprint.json"
     blueprint_path.write_text(json.dumps(_blueprint()), encoding="utf-8")
     raw = tmp_path / "benchmark.vindr-mammo.raw.jsonl"
     provenance = tmp_path / "item_provenance.jsonl"
     events = tmp_path / "construction_events.jsonl"
-    effective_config = tmp_path / "effective_config.json"
     raw.write_text("{}\n", encoding="utf-8")
     provenance.write_text("{}\n", encoding="utf-8")
     events.touch()
-    effective_config.write_text('{"settings": {}}\n', encoding="utf-8")
+    (tmp_path / "effective_config.json").write_text(
+        '{"settings": {}}\n', encoding="utf-8"
+    )
     image_manifest = tmp_path / "image_manifest.jsonl"
     image_manifest.write_text("{}\n", encoding="utf-8")
     rag_artifact = write_versioned_json(
@@ -57,16 +73,41 @@ def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: 
         "rag_designs",
         rag_designs_payload(_blueprint(), "run-1", ["guide.pdf"]),
     )
-    rag = str(rag_artifact["path"])
+    return {
+        "run_directory": tmp_path,
+        "run_id": "run-1",
+        "blueprint_path": blueprint_path,
+        "raw_output_path": raw,
+        "provenance_output_path": provenance,
+        "rag_designs_path": str(rag_artifact["path"]),
+        "construction_events_path": events,
+        "dataset_catalog_entry": {
+            "id": "vindr-mammo",
+            "name": "VinDr-Mammo",
+            "description": "Mammography.",
+        },
+        "dataset_profile": {
+            "schema_version": PROFILE_SCHEMA_VERSION,
+            "total_images": 1,
+        },
+        "dataset_access_manifest": {
+            "annotation_sha256": "a" * 64,
+            "cache_format_version": CACHE_FORMAT_VERSION,
+        },
+        "image_manifest_path": image_manifest,
+        "audit_artifacts": _audit_artifacts(tmp_path),
+    }
 
-    identifier, report, manifest = finalize_run(
-        run_directory=tmp_path, run_id="run-1", blueprint_path=blueprint_path, raw_output_path=raw,
-        provenance_output_path=provenance, rag_designs_path=rag, construction_events_path=events,
-        dataset_catalog_entry={"id": "vindr-mammo", "name": "VinDr-Mammo", "description": "Mammography."},
-        dataset_profile={"schema_version": "profile.v1", "total_images": 1},
-        dataset_access_manifest={"annotation_sha256": "a" * 64, "cache_format_version": "cache.v1"},
-        image_manifest_path=image_manifest,
-    )
+
+def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: Path) -> None:
+    inputs = _finalize_inputs(tmp_path)
+    raw = Path(inputs["raw_output_path"])
+    events = Path(inputs["construction_events_path"])
+    image_manifest = Path(inputs["image_manifest_path"])
+    effective_config = tmp_path / "effective_config.json"
+    rag = str(inputs["rag_designs_path"])
+
+    identifier, report, manifest = finalize_run(**inputs)
 
     payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
     assert identifier == benchmark_id(_blueprint())
@@ -79,8 +120,8 @@ def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: 
         "description": "Mammography.",
         "annotation_sha256": "a" * 64,
         "image_manifest_sha256": hashlib.sha256(image_manifest.read_bytes()).hexdigest(),
-        "profile_schema_version": "profile.v1",
-        "cache_schema_version": "cache.v1",
+        "profile_schema_version": PROFILE_SCHEMA_VERSION,
+        "cache_schema_version": CACHE_FORMAT_VERSION,
         "total_images": 1,
         "image_format": "8bit_grayscale_png",
     }
@@ -145,4 +186,27 @@ def test_finalize_rejects_blueprint_without_metric(tmp_path: Path) -> None:
             dataset_profile={},
             dataset_access_manifest={},
             image_manifest_path=image_manifest,
+            audit_artifacts={},
         )
+
+
+@pytest.mark.parametrize("missing", ["audit", "config"])
+def test_finalize_does_not_record_completion_when_required_artifacts_are_missing(
+    tmp_path: Path, missing: str
+) -> None:
+    inputs = _finalize_inputs(tmp_path)
+    events = Path(inputs["construction_events_path"])
+    if missing == "audit":
+        inputs["audit_artifacts"].pop("semantic_records")
+        expected = "missing required files"
+    else:
+        (tmp_path / "effective_config.json").unlink()
+        expected = "effective_config"
+
+    with pytest.raises(ValueError, match=expected):
+        finalize_run(**inputs)
+
+    assert all(
+        json.loads(line).get("event_type") != "run_completed"
+        for line in events.read_text(encoding="utf-8").splitlines()
+    )

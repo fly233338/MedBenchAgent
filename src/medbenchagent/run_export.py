@@ -7,9 +7,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from medbenchagent.contracts import RAG_DESIGN_FIELDS
 from medbenchagent.construction import construction_report, record_event
 from medbenchagent.metrics import is_metric_supported
 from medbenchagent.run_artifacts import atomic_write_json
+
+_REQUIRED_AUDIT_ARTIFACTS = frozenset(
+    {"audited", "flagged", "rejected", "records", "report", "semantic_records"}
+)
 
 
 def _sha256(path: str | Path) -> str:
@@ -37,23 +42,44 @@ def benchmark_id(blueprint: dict[str, Any]) -> str:
     )[:16]
 
 
+def _required_run_file(path: str | Path, name: str, run_directory: Path) -> Path:
+    resolved = Path(path).resolve()
+    try:
+        resolved.relative_to(run_directory)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be stored inside the run directory.") from exc
+    if not resolved.is_file():
+        raise ValueError(f"{name} must be an existing regular file.")
+    try:
+        with resolved.open("rb") as source:
+            source.read(1)
+    except OSError as exc:
+        raise ValueError(f"{name} must be readable.") from exc
+    return resolved
+
+
+def _required_readable_file(path: str | Path, name: str) -> Path:
+    resolved = Path(path).resolve()
+    if not resolved.is_file():
+        raise ValueError(f"{name} must be an existing regular file.")
+    try:
+        with resolved.open("rb") as source:
+            source.read(1)
+    except OSError as exc:
+        raise ValueError(f"{name} must be readable.") from exc
+    return resolved
+
+
 def rag_designs_payload(
     blueprint: dict[str, Any], run_id: str, selected_material_files: list[str]
 ) -> dict[str, Any]:
     """Build the stable RAG-design artifact payload."""
     designs = {}
-    fields = (
-        "question_templates",
-        "options",
-        "answer_field",
-        "answer_value_mapping",
-        "generation_logic",
-        "medical_task_description",
-        "citations",
-    )
     for task_id, task in blueprint["tasks"].items():
         if task.get("sample_count", 0) > 0:
-            designs[task_id] = {field: task[field] for field in fields if field in task}
+            designs[task_id] = {
+                field: task[field] for field in RAG_DESIGN_FIELDS if field in task
+            }
     return {
         "schema_version": "rag-designs.v2",
         "run_id": run_id,
@@ -75,25 +101,52 @@ def finalize_run(
     dataset_profile: dict[str, Any],
     dataset_access_manifest: dict[str, Any],
     image_manifest_path: str | Path,
-    audit_artifacts: dict[str, str] | None = None,
+    audit_artifacts: dict[str, str],
 ) -> tuple[str, str, str]:
-    run_dir = Path(run_directory)
-    blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
+    run_dir = Path(run_directory).resolve()
+    blueprint_file = _required_run_file(blueprint_path, "blueprint", run_dir)
+    blueprint = json.loads(blueprint_file.read_text(encoding="utf-8"))
     identifier = benchmark_id(blueprint)
     dataset_id = blueprint["dataset"]["dataset_id"]
     if dataset_catalog_entry.get("id") != dataset_id:
         raise ValueError("Dataset catalog entry does not match the confirmed Blueprint dataset ID.")
-    image_manifest = Path(image_manifest_path)
-    if not image_manifest.is_file():
-        raise ValueError("image_manifest.jsonl is required to finalize a benchmark run.")
+    image_manifest = _required_readable_file(image_manifest_path, "image_manifest.jsonl")
     for task_id, task in blueprint["tasks"].items():
         if not is_metric_supported(task.get("response_format"), task.get("metric")):
             raise ValueError(
                 f"{task_id}: final Blueprint task must contain a metric compatible with "
                 f"response format {task.get('response_format')}."
             )
+    if not isinstance(audit_artifacts, dict):
+        raise ValueError("audit_artifacts must be a dictionary.")
+    missing_audit_artifacts = _REQUIRED_AUDIT_ARTIFACTS - set(audit_artifacts)
+    if missing_audit_artifacts:
+        raise ValueError(
+            "audit_artifacts is missing required files: "
+            + ", ".join(sorted(missing_audit_artifacts))
+        )
+    paths = {
+        "blueprint": blueprint_file,
+        "raw": _required_run_file(raw_output_path, "raw", run_dir),
+        "provenance": _required_run_file(
+            provenance_output_path, "provenance", run_dir
+        ),
+        "rag_designs": _required_run_file(rag_designs_path, "rag_designs", run_dir),
+        "construction_events": _required_run_file(
+            construction_events_path, "construction_events", run_dir
+        ),
+        "effective_config": _required_run_file(
+            run_dir / "effective_config.json", "effective_config", run_dir
+        ),
+    }
+    for name, path in audit_artifacts.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("audit_artifacts keys must be non-empty strings.")
+        if name in paths or name == "construction_report":
+            raise ValueError(f"audit artifact name is reserved: {name}")
+        paths[name] = _required_run_file(path, f"audit artifact {name}", run_dir)
     record_event(
-        construction_events_path,
+        paths["construction_events"],
         "run_completed",
         run_id=run_id,
         dataset_id=dataset_id,
@@ -102,20 +155,8 @@ def finalize_run(
         status="complete",
     )
     report_path = run_dir / "construction_report.json"
-    atomic_write_json(report_path, construction_report(construction_events_path))
-    paths = {
-        "blueprint": Path(blueprint_path),
-        "raw": Path(raw_output_path),
-        "provenance": Path(provenance_output_path),
-        "rag_designs": Path(rag_designs_path),
-        "construction_events": Path(construction_events_path),
-        "construction_report": report_path,
-    }
-    effective_config = run_dir / "effective_config.json"
-    if effective_config.is_file():
-        paths["effective_config"] = effective_config
-    if audit_artifacts:
-        paths.update({name: Path(path) for name, path in audit_artifacts.items()})
+    atomic_write_json(report_path, construction_report(paths["construction_events"]))
+    paths["construction_report"] = report_path
     manifest_path = run_dir / "benchmark_manifest.json"
     atomic_write_json(
         manifest_path,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import random
@@ -13,15 +12,21 @@ from typing import Any
 
 import duckdb
 
-from medbenchagent.generation import free_text, grounding, vqa
-from medbenchagent.generation.context import evidence_provenance, scalar_evidence_candidates
+from medbenchagent.answer_mapping import canonical_answer_scalar
 from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
 from medbenchagent.construction import GENERATION_AGENT, event_context, record_event
+from medbenchagent.generation import free_text, grounding, vqa
+from medbenchagent.generation.context import (
+    evidence_provenance,
+    has_meaningful_value,
+    is_supporting_field_path,
+    project_supporting_record,
+    scalar_evidence_candidates,
+)
 from medbenchagent.llm import ModelUnavailable
 from medbenchagent.metrics import is_metric_supported
 from medbenchagent.settings import get_settings
 
-_MISSING = object()
 _STAGES = (
     ("vqa", "letter", vqa),
     ("grounding", "bbox", grounding),
@@ -39,84 +44,6 @@ class _Candidate:
     question_template: str
     expected_answer: str | None = None
     expected_evidence: dict[str, object] | None = None
-
-
-def _merge_projection(left: object, right: object) -> object:
-    if isinstance(left, dict) and isinstance(right, dict):
-        merged = copy.deepcopy(left)
-        for key, value in right.items():
-            merged[key] = _merge_projection(merged[key], value) if key in merged else copy.deepcopy(value)
-        return merged
-    if isinstance(left, list) and isinstance(right, list):
-        if all(isinstance(item, dict) and "_source_index" in item for item in left + right):
-            by_index = {int(item["_source_index"]): copy.deepcopy(item) for item in left}
-            for item in right:
-                index = int(item["_source_index"])
-                by_index[index] = (
-                    _merge_projection(by_index[index], item) if index in by_index else copy.deepcopy(item)
-                )
-            return [by_index[index] for index in sorted(by_index)]
-    return copy.deepcopy(right)
-
-
-def _project_value(value: object, segments: list[str]) -> object:
-    if not segments:
-        return copy.deepcopy(value)
-    if not isinstance(value, dict):
-        return _MISSING
-    segment = segments[0]
-    is_array = segment.endswith("[*]")
-    key = segment.removesuffix("[*]")
-    if key not in value:
-        return _MISSING
-    nested = value[key]
-    if is_array:
-        if not isinstance(nested, list):
-            return _MISSING
-        if len(segments) == 1:
-            return {key: copy.deepcopy(nested)}
-        projected_items: list[dict[str, Any]] = []
-        for index, item in enumerate(nested):
-            projected = _project_value(item, segments[1:])
-            if projected is _MISSING:
-                continue
-            if isinstance(projected, dict):
-                projected_items.append({"_source_index": index, **projected})
-            else:
-                projected_items.append({"_source_index": index, "value": projected})
-        return {key: projected_items} if projected_items else _MISSING
-    projected = _project_value(nested, segments[1:])
-    return {key: projected} if projected is not _MISSING else _MISSING
-
-
-def is_supporting_field_path(path: object) -> bool:
-    """Return whether a path belongs to one task-supporting v2 scope."""
-    return isinstance(path, str) and (
-        path in {"image.modality", "image.anatomy"}
-        or any(
-            path.startswith(prefix)
-            for prefix in (
-                "patient.annotation.",
-                "case.annotation.",
-                "study.annotation.",
-                "image.annotation.",
-            )
-        )
-    )
-
-
-def project_supporting_record(
-    record: dict[str, Any], supporting_fields: list[str]
-) -> dict[str, Any]:
-    """Project approved v2 record paths while retaining array source indices."""
-    projected: object = {}
-    for path in supporting_fields:
-        if not is_supporting_field_path(path):
-            raise ValueError(f"Unsupported field path: {path}")
-        value = _project_value(record, path.split("."))
-        if value is not _MISSING:
-            projected = _merge_projection(projected, value)
-    return projected if isinstance(projected, dict) else {}
 
 
 def _task_targets(request: GenerationRequest) -> dict[str, int]:
@@ -150,15 +77,6 @@ def _normalized_options(options: object) -> list[str]:
     ]
 
 
-def _canonical_scalar(value: object) -> str | None:
-    if value is None or value == "" or isinstance(value, (dict, list)):
-        return None
-    try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
-    except (TypeError, ValueError):
-        return None
-
-
 def _validate_answer_mapping(task_id: str, task: BlueprintTask, options: list[str]) -> None:
     answer_field = task.get("answer_field")
     mappings = task.get("answer_value_mapping")
@@ -180,7 +98,7 @@ def _validate_answer_mapping(task_id: str, task: BlueprintTask, options: list[st
     for mapping in mappings:
         if not isinstance(mapping, dict) or set(mapping) != {"raw_value", "option"}:
             raise ValueError(f"{task_id}: answer mappings need only raw_value and option.")
-        canonical = _canonical_scalar(mapping["raw_value"])
+        canonical = canonical_answer_scalar(mapping["raw_value"])
         option = mapping["option"]
         if canonical is None or canonical in seen:
             raise ValueError(f"{task_id}: mapped raw values must be unique non-empty scalars.")
@@ -322,16 +240,6 @@ def _row_record(row: tuple[Any, ...]) -> dict[str, Any]:
     return {**record, "_source_row": int(row[6])}
 
 
-def _has_meaningful_value(value: object) -> bool:
-    if value is None or value == "":
-        return False
-    if isinstance(value, dict):
-        return any(key != "_source_index" and _has_meaningful_value(item) for key, item in value.items())
-    if isinstance(value, list):
-        return any(_has_meaningful_value(item) for item in value)
-    return True
-
-
 def _shuffle_candidates(candidates: list[_Candidate], seed: int, image_id: str) -> None:
     digest = hashlib.sha256(f"{seed}:{image_id}".encode("utf-8")).digest()
     random.Random(int.from_bytes(digest, "big")).shuffle(candidates)
@@ -349,7 +257,7 @@ def _select_question_template(
 
 def _all_supporting_fields_present(record: dict[str, Any], supporting_fields: list[str]) -> bool:
     return all(
-        _has_meaningful_value(project_supporting_record(record, [field]))
+        has_meaningful_value(project_supporting_record(record, [field]))
         for field in supporting_fields
     )
 
@@ -365,13 +273,13 @@ def _mapped_answer(
         canonical: mapping["option"]
         for mapping in mappings
         if isinstance(mapping, dict)
-        and (canonical := _canonical_scalar(mapping.get("raw_value"))) is not None
+        and (canonical := canonical_answer_scalar(mapping.get("raw_value"))) is not None
         and isinstance(mapping.get("option"), str)
     }
     matches = [
         (mapping_by_value[canonical], evidence)
         for evidence in scalar_evidence_candidates(record, answer_field)
-        if (canonical := _canonical_scalar(evidence["value"])) in mapping_by_value
+        if (canonical := canonical_answer_scalar(evidence["value"])) in mapping_by_value
     ]
     if len(matches) != 1:
         return None
@@ -431,7 +339,7 @@ def _next_candidate_record(
                         mapped[0] if mapped else None,
                         mapped[1] if mapped else None,
                     )
-                    if _has_meaningful_value(projected) and handler.supports(candidate):
+                    if has_meaningful_value(projected) and handler.supports(candidate):
                         candidates.append(candidate)
                 if candidates:
                     _shuffle_candidates(candidates, seed, image_id)

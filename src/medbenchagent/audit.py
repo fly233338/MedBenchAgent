@@ -19,10 +19,10 @@ from medbenchagent.dataset import load_annotation_jsonl
 from medbenchagent.generation.context import (
     evidence_sha256,
     evidence_value,
+    has_meaningful_value,
     normalized_bbox,
+    project_supporting_record,
 )
-from medbenchagent.generation.engine import project_supporting_record
-from medbenchagent.run_artifacts import blueprint_sha256
 
 
 def _rows(path: Path) -> list[dict[str, Any]]:
@@ -38,16 +38,6 @@ def _write(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def _normal(text: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text).casefold()).strip()
-
-
-def _meaningful(value: object) -> bool:
-    if value is None or value == "":
-        return False
-    if isinstance(value, dict):
-        return any(key != "_source_index" and _meaningful(item) for key, item in value.items())
-    if isinstance(value, list):
-        return any(_meaningful(item) for item in value)
-    return True
 
 
 def _sha256(path: Path) -> str:
@@ -89,7 +79,18 @@ def _image_errors(entry: dict[str, Any], root: Path) -> list[str]:
     return []
 
 
-def _contract(item: dict[str, Any], task: dict[str, Any], dimensions: tuple[int, int]) -> list[str]:
+def _image_dimensions(entry: dict[str, Any]) -> tuple[int, int] | None:
+    width, height = entry.get("width"), entry.get("height")
+    if isinstance(width, int) and width > 0 and isinstance(height, int) and height > 0:
+        return width, height
+    return None
+
+
+def _contract(
+    item: dict[str, Any],
+    task: dict[str, Any],
+    dimensions: tuple[int, int] | None,
+) -> list[str]:
     errors = []
     if not isinstance(item.get("question"), str) or not item["question"].strip():
         errors.append("question")
@@ -115,12 +116,28 @@ def _contract(item: dict[str, Any], task: dict[str, Any], dimensions: tuple[int,
             not isinstance(box, list)
             or len(box) != 4
             or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in box)
-            or not (0 <= box[0] < box[2] <= dimensions[0] and 0 <= box[1] < box[3] <= dimensions[1])
+            or dimensions is not None
+            and not (
+                0 <= box[0] < box[2] <= dimensions[0]
+                and 0 <= box[1] < box[3] <= dimensions[1]
+            )
         ):
             errors.append("bbox")
     else:
         errors.append("response_format")
     return errors
+
+
+def _valid_call_references(source: dict[str, Any], known_call_ids: set[str]) -> bool:
+    values: list[str] = []
+    for field in ("generation_call_ids", "review_call_ids"):
+        references = source.get(field)
+        if not isinstance(references, list) or not all(
+            isinstance(call_id, str) for call_id in references
+        ):
+            return False
+        values.extend(references)
+    return set(values) <= known_call_ids
 
 
 def _replay_witness(
@@ -219,7 +236,9 @@ def audit_run(
     run_id: str,
     seed: int = 0,
 ) -> dict[str, str | int]:
-    blueprint = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
+    blueprint_bytes = Path(blueprint_path).read_bytes()
+    blueprint = json.loads(blueprint_bytes)
+    blueprint_hash = hashlib.sha256(blueprint_bytes).hexdigest()
     tasks = blueprint["tasks"]
     annotation_source = Path(annotation_path)
     annotation_hash_matches = _sha256(annotation_source) == annotation_sha256
@@ -233,9 +252,10 @@ def audit_run(
     }
     provenance = {row.get("item_id"): row for row in _rows(Path(provenance_path))}
     call_ids = {
-        row.get("call_id")
+        call_id
         for row in _rows(Path(events_path))
         if row.get("event_type") == "llm_call"
+        and isinstance((call_id := row.get("call_id")), str)
     }
     image_errors: dict[str, list[str]] = {}
     candidates = []
@@ -253,7 +273,7 @@ def audit_run(
             image_errors.setdefault(image_id, _image_errors(entry, Path(manifest_path).parent))
             errors += image_errors[image_id]
         if isinstance(task, dict) and entry is not None:
-            errors += _contract(item, task, (entry.get("width", 0), entry.get("height", 0)))
+            errors += _contract(item, task, _image_dimensions(entry))
         source = provenance.get(item_id)
         if (
             not isinstance(source, dict)
@@ -264,13 +284,10 @@ def audit_run(
                 isinstance(task, dict)
                 and source.get("supporting_fields") != task.get("supporting_fields")
             )
-            or source.get("blueprint_hash") != blueprint_sha256(blueprint_path)
+            or source.get("blueprint_hash") != blueprint_hash
         ):
             errors.append("provenance")
-        elif (
-            not set(source.get("generation_call_ids", []) + source.get("review_call_ids", []))
-            <= call_ids
-        ):
+        elif not _valid_call_references(source, call_ids):
             errors.append("provenance_calls")
         if not annotation_hash_matches:
             errors.append("annotation_hash")
@@ -292,7 +309,9 @@ def audit_run(
                 if (
                     not isinstance(supporting_fields, list)
                     or not all(
-                        _meaningful(project_supporting_record(annotation_record, [field]))
+                        has_meaningful_value(
+                            project_supporting_record(annotation_record, [field])
+                        )
                         for field in supporting_fields
                     )
                 ):
