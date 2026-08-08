@@ -44,6 +44,25 @@ Record:
 - Missing, orphaned, duplicate, and conflicting records.
 - Expected source and output counts and every unresolved decision.
 
+Normalize every source-supported bounding box to a `bbox` property on the same finding or
+annotation object, encoded as four absolute image-pixel coordinates in
+`[xmin, ymin, xmax, ymax]` order. The mapping plan must identify the documented source
+coordinate convention and exact conversion:
+
+- Copy documented corner coordinates or reorder documented `xmin`, `ymin`, `xmax`, and
+  `ymax` fields into canonical order.
+- Convert documented top-left `x`, `y`, `width`, and `height` values to
+  `[x, y, x + width, y + height]`.
+- Convert documented center `cx`, `cy`, `width`, and `height` values to
+  `[cx - width / 2, cy - height / 2, cx + width / 2, cy + height / 2]`.
+- Combine four dispersed coordinate fields only when the source establishes that they
+  describe the same box.
+
+Do not infer an array order, coordinate origin, endpoint convention, or width/height meaning
+from the values. Stop for review when the source does not establish them. Convert normalized
+coordinates only when reliable image dimensions are source-supported; otherwise stop for
+review.
+
 When source annotations provide a mask but no bounding box, ask whether decoding the mask image is permitted to derive the tight axis-aligned bounding box enclosing its nonzero pixels; do not decode the mask or add the box without explicit approval.
 
 Do not flatten one-to-many annotations into duplicate image records, silently discard unmatched annotations, resolve conflicts by table order, or combine fields from separate source rows without source support. Stop when identity, joins, grouping, conflicts, or output meaning remain materially ambiguous.
@@ -66,6 +85,11 @@ Apply user feedback as structured changes to `conversion_plan.json`, show the re
 Write `<artifact_dir>/scripts/prepare_annotations.py` with all dataset-specific logic documented in the approved conversion plan.
 
 Require explicit input and output paths. Read sources without modifying them, group all annotations belonging to an image, and emit exactly one canonical v2 record per authoritative image. Preserve source values, JSON-compatible types, and fields originating from the same source row. Use stable record and array-item ordering.
+
+Emit each approved bounding box only in canonical `bbox: [xmin, ymin, xmax, ymax]` form on
+its corresponding object. Do not also emit the source coordinate components unless they have
+an independently documented non-bounding-box meaning. Preserve numeric precision and require
+finite, non-negative coordinates with `xmin < xmax` and `ymin < ymax`.
 
 Write to a temporary file and replace `annotation.jsonl` only after complete success. Keep every `image.image_path` relative to the source-image root. Except for an approved mask-to-bbox derivation, do not decode images or add PNG metadata during this stage.
 
@@ -94,9 +118,11 @@ Verify:
 - Actual join cardinalities match the conversion plan.
 - One-to-many annotations remain grouped under one image record.
 - Source-row field grouping and source value types are preserved as planned.
+- Every bounding box uses one absolute `[xmin, ymin, xmax, ymax]` array; no bbox object or
+  recognized source coordinate components remain in the canonical annotations.
 - Both converter runs produce byte-identical output.
 
-Write `annotation_report.json` with input and converter hashes, output hash and count, reconciliation counts, validation results, determinism results, observable mapping decisions, and unresolved issues. Do not include complete source rows, unnecessary protected information, or hidden reasoning.
+Write `annotation_report.json` with input and converter hashes, output hash and count, reconciliation counts, validation results, determinism results, observable mapping decisions (including bbox source conventions and conversion formulas), and unresolved issues. Do not include complete source rows, unnecessary protected information, or hidden reasoning.
 
 ## Output
 Artifact_dir should be a subdirectory of datasets/Normalized

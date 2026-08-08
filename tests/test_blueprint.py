@@ -13,6 +13,10 @@ def test_blueprint_defines_all_categories_and_spatial_tasks() -> None:
     assert tasks["detection"]["response_format"] == "bbox"
     assert tasks["detection"]["category"] == "spatial_localization"
     assert tasks["visual_grounding"]["category"] == "spatial_localization"
+    assert tasks["visual_grounding"]["description"] == (
+        "Locate the single image region corresponding to one clearly specified, localized, "
+        "image-observable finding or imaging sign."
+    )
     assert "mask" not in tasks["detection"]["require"].lower()
     assert "mask" not in tasks["visual_grounding"]["require"].lower()
     assert "do not make detection unsupported" in tasks["detection"]["require"]

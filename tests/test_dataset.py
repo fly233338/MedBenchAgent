@@ -73,7 +73,7 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
     profile, manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
 
     assert profile["total_images"] == 2
-    assert profile["schema_version"] == "task-capability-profile.v2"
+    assert profile["schema_version"] == "task-capability-profile.v3"
     assert (
         profile["fields"]["image.annotation.findings[*].finding_type"]["non_empty_images"] == 2
     )
@@ -85,6 +85,17 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
         "BI-RADS 2",
         "BI-RADS 4",
     ]
+    assert profile["fields"]["image.annotation.findings[*].finding_type"][
+        "value_distribution"
+    ] == {
+        "total_count": 3,
+        "top": [
+            {"value": "calcification", "count": 2, "proportion": 2 / 3},
+            {"value": "mass", "count": 1, "proportion": 1 / 3},
+        ],
+        "least_frequent": {"value": "mass", "count": 1, "proportion": 1 / 3},
+        "truncated": False,
+    }
     assert profile["fields"]["case.annotation.status"]["top_values"] == ["first", "second"]
     assert profile["fields"]["image.modality"]["top_values"] == ["Mammography"]
     assert not any(path.endswith("_id") or path.endswith("_path") for path in profile["fields"])
@@ -121,7 +132,7 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
         {"path": "patient.annotation", "kind": "object", "children": []},
         {"path": "study.annotation", "kind": "object", "children": []},
     ]
-    assert manifest["cache_format_version"] == "annotation-cache.v5"
+    assert manifest["cache_format_version"] == "annotation-cache.v6"
     connection = duckdb.connect(manifest["duckdb_path"])
     try:
         assert connection.execute("SELECT COUNT(*) FROM images").fetchone()[0] == 2
@@ -166,9 +177,11 @@ def test_compact_profile_counts_non_empty_images_and_filters_raw_values(
     )
 
     assert profile["fields"]["image.annotation.empty"]["non_empty_images"] == 0
+    assert "value_distribution" not in profile["fields"]["image.annotation.empty"]
     assert profile["fields"]["image.annotation.nested.values[*]"]["non_empty_images"] == 1
     assert profile["fields"]["image.annotation.nested.values[*]"]["top_values"] == [0, False]
     assert "top_values" not in profile["fields"]["image.annotation.finding_uid"]
+    assert "value_distribution" not in profile["fields"]["image.annotation.finding_uid"]
     assert "top_values" not in profile["fields"]["image.annotation.dicom_metadata.patient_age"]
 
 
@@ -176,6 +189,7 @@ def test_compact_profile_deduplicates_repeated_findings_and_limits_values(
     tmp_path: Path,
 ) -> None:
     records = []
+    imbalanced_categories = ["A"] * 5 + ["B"] * 3 + ["C"] * 2 + ["D", "E"]
     for index in range(12):
         records.append(
             {
@@ -190,6 +204,7 @@ def test_compact_profile_deduplicates_repeated_findings_and_limits_values(
                     "annotation": {
                         "flag": index % 2 == 0,
                         "category": f"value-{index}",
+                        "imbalanced_category": imbalanced_categories[index],
                         "score": index % 2,
                         "long_text": f"value-{index:02d}-" + "x" * 220,
                         "source_path": f"private/value-{index}.txt",
@@ -210,6 +225,28 @@ def test_compact_profile_deduplicates_repeated_findings_and_limits_values(
         "value-1",
         "value-10",
     ]
+    assert profile["fields"]["image.annotation.category"]["value_distribution"] == {
+        "total_count": 12,
+        "top": [
+            {"value": "value-0", "count": 1, "proportion": 1 / 12},
+            {"value": "value-1", "count": 1, "proportion": 1 / 12},
+            {"value": "value-10", "count": 1, "proportion": 1 / 12},
+        ],
+        "least_frequent": {"value": "value-0", "count": 1, "proportion": 1 / 12},
+        "truncated": True,
+    }
+    assert profile["fields"]["image.annotation.imbalanced_category"][
+        "value_distribution"
+    ] == {
+        "total_count": 12,
+        "top": [
+            {"value": "A", "count": 5, "proportion": 5 / 12},
+            {"value": "B", "count": 3, "proportion": 3 / 12},
+            {"value": "C", "count": 2, "proportion": 2 / 12},
+        ],
+        "least_frequent": {"value": "D", "count": 1, "proportion": 1 / 12},
+        "truncated": True,
+    }
     assert profile["fields"]["image.annotation.score"]["top_values"] == [0, 1]
     assert len(profile["fields"]["image.annotation.long_text"]["top_values"]) == 3
     assert all(
@@ -218,6 +255,7 @@ def test_compact_profile_deduplicates_repeated_findings_and_limits_values(
     )
     assert "top_values" not in profile["fields"]["image.annotation.source_path"]
     assert "top_values" not in profile["fields"]["image.annotation.bbox[*]"]
+    assert "value_distribution" not in profile["fields"]["image.annotation.bbox[*]"]
 
 
 @pytest.mark.parametrize(

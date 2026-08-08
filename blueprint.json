@@ -144,7 +144,7 @@
     },
 
     "visual_grounding": {
-      "description": "Locate the image region corresponding to a finding explicitly named or described in the question.",
+      "description": "Locate the single image region corresponding to one clearly specified, localized, image-observable finding or imaging sign.",
       "require": "This task requires one valid lesion-level bounding box and a finding name, structured finding label, or textual finding description paired with that box. A flat annotation record containing the selected finding field and a unique bounding box may be treated as paired; for array-valued or multi-finding annotations, the finding and bounding box must belong to the same finding item. The finding identifies the target in the question, while the bounding box is the answer.",
       "task_type": "open_vqa",
       "response_format": "bbox",

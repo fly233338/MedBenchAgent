@@ -105,12 +105,13 @@ is the responsibility of an external module. The versioned input contract is at
 
 Validated annotation text is cached by JSONL content hash and cache-format version
 under `benchmarks/dataset_cache/` as a DuckDB database with one `images` row per JSONL
-line and a deterministic `task-capability-profile.v2`. The profile describes scalar
+line and a deterministic `task-capability-profile.v3`. The profile describes scalar
 leaves under each entity annotation plus `image.modality` and `image.anatomy`. Every
-eligible semantic scalar field includes up to three stable top values; strings are
-limited to 200 characters. Identifiers, file references, DICOM metadata, split/fold
-metadata, and bounding-box coordinates do not expose example values. CSV and XLSX inputs
-are not supported.
+eligible semantic scalar field includes up to three stable top values and a bounded value
+distribution with occurrence counts, proportions, and one globally least-frequent value;
+strings are limited to 200 characters. Identifiers, file references, DICOM metadata,
+split/fold metadata, and bounding-box coordinates do not expose example values. CSV and
+XLSX inputs are not supported.
 
 ## Planning review
 

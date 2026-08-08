@@ -53,7 +53,7 @@ cursor、`GenerationRequest` 或数据集行；`BenchmarkOutputState` 则只返�
 ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务计数和 shortfall。
 
 五个角色的 Input、Output 和私有状态 contract 位于 `agents/contracts.py`，领域 contract 仍只定义在
-顶层 `contracts.py`。`ClinicalDesignAgent` 内的 `rag_designs` 子图以 Blueprint 路径、BenchmarkInfo、已选资料、dataset profile 和 access manifest 为输入。初始 profile 只包含安全的稳定样例；设计 letter mapping 时，模型可按需选择一个获准字段，代码再从 DuckDB 返回最多 32 个高频精确 scalar、计数、总 distinct count 和截断状态。字符串最长 200 字符，identifier、文件引用、DICOM metadata、bbox 坐标、长自由文本和原始数据行不会进入提示。
+顶层 `contracts.py`。`ClinicalDesignAgent` 内的 `rag_designs` 子图以 Blueprint 路径、BenchmarkInfo、已选资料、dataset profile 和 access manifest 为输入。`task-capability-profile.v3` 对安全语义字段提供稳定 top values，并提供其计数、比例、一个来自完整非空集合的最低频值及截断状态，供 Task Plan 结合任务语义选择 metric；设计 letter mapping 时，模型可按需选择一个获准字段，代码再从 DuckDB 返回最多 32 个高频精确 scalar、计数、总 distinct count 和截断状态。字符串最长 200 字符，identifier、文件引用、DICOM metadata、bbox 坐标、长自由文本和原始数据行不会进入提示。
 其任务队列、定向重做反馈、当前任务和完成计数只保存在该 Agent checkpoint。GenerationAgent 先在私有状态中构造 request，现有生成子图仍以只包含 `generation_request` 的输入契约开始，
 并只向根图返回 raw 路径、题目计数、任务计数和 shortfall。阶段、游标、目标/完成计数、progress 路径、
 拒绝计数和耗尽标记属于 GenerationAgent 私有 checkpoint，不进入根图状态或公共输出。稳定类型位于 `contracts.py`：`BlueprintTask`（包含稳定 `category`）是规划到生成
@@ -83,9 +83,9 @@ construction report 与 manifest。Audit 产物允许追加额外命名文件，
 - 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准字段投影。
 - 初始 Blueprint 模板不预填 metric；Task Plan 与样本分配只在确认后改变 Blueprint，确认时才写入每个保留最终任务的 metric。Task Plan 和 RAG 设计的每个审核版本均作为不可变 JSON 保存，RAG 设计仍逐项写入 Blueprint 后通过确认/修订闭环收敛。
 - 同一 task/image 最多生成一题；默认每阶段每图最多接受二十题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
-- 三种答案格式都保留可回放的 annotation witness。letter 任务由代码从 `answer_field` 唯一定位原始 scalar，并通过 `answer_value_mapping` 固定正确 option；free_text 由代码唯一定位直接答案字符串；bbox 由代码按 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。三种格式的 LLM 都只生成题干，代码在 Reviewer 前精确固定并验证答案与 evidence；raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
+- 三种答案格式都保留可回放的 annotation witness。letter 任务由代码从 `answer_field` 唯一定位原始 scalar，并通过 `answer_value_mapping` 固定正确 option；free_text 由代码唯一定位直接答案字符串；规范 annotation 中的每个 bbox 均为同一标注对象下的绝对像素 `[xmin, ymin, xmax, ymax]`，准备阶段只按来源已确认的角点或 width/height 语义完成转换，代码再按该 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。三种格式的 LLM 都只生成题干，代码在 Reviewer 前精确固定并验证答案与 evidence；raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
 - bbox 任务只接受恰有一个合法标注框且能唯一定位四坐标 witness 的候选，不接受 mask 或运行期
-  mask-to-bbox 转换。`visual_grounding` 还必须有与该框配对的 finding 名称、结构化标签或描述；
+  mask-to-bbox 转换。`visual_grounding` 还必须有与该框配对、能明确标识单一局部且图像可观察 finding 或 imaging sign 的字段；
   `detection` 仅定位泛化 lesion/abnormal region，不能泄露 finding 名称。两者是独立能力，可同时保留。
   bbox 与自由文本保持各自的直接 annotation 答案契约。
 - `diagnosis` 允许影像或病理确认的具体诊断作为 reference；letter VQA 仅接受能由

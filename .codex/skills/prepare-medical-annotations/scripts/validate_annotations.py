@@ -5,8 +5,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+
+
+_NON_CANONICAL_BBOX_FIELDS = (
+    frozenset({"xmin", "ymin", "xmax", "ymax"}),
+    frozenset({"x", "y", "width", "height"}),
+    frozenset({"cx", "cy", "width", "height"}),
+)
 
 
 def _sha256(path: Path) -> str:
@@ -52,6 +60,39 @@ def _rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _validate_bbox(value: object, path: str) -> None:
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or not all(
+            isinstance(coordinate, (int, float))
+            and not isinstance(coordinate, bool)
+            and math.isfinite(coordinate)
+            and coordinate >= 0
+            for coordinate in value
+        )
+    ):
+        raise ValueError(f"{path} must be four finite non-negative xyxy numbers.")
+    if value[0] >= value[2] or value[1] >= value[3]:
+        raise ValueError(f"{path} must satisfy xmin < xmax and ymin < ymax.")
+
+
+def _validate_annotation_bboxes(value: object, path: str) -> None:
+    if isinstance(value, dict):
+        keys = set(value)
+        if any(fields <= keys for fields in _NON_CANONICAL_BBOX_FIELDS):
+            raise ValueError(f"{path} contains non-canonical bbox coordinate fields.")
+        for key, nested in value.items():
+            nested_path = f"{path}.{key}"
+            if key == "bbox":
+                _validate_bbox(nested, nested_path)
+            else:
+                _validate_annotation_bboxes(nested, nested_path)
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            _validate_annotation_bboxes(nested, f"{path}[{index}]")
+
+
 def validate(annotation_path: Path, schema_path: Path, source_root: Path) -> dict[str, object]:
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     required_fields = schema.get("required")
@@ -84,6 +125,9 @@ def validate(annotation_path: Path, schema_path: Path, source_root: Path) -> dic
                 raise ValueError(
                     f"Annotation row {index} has a non-object {entity_name}.annotation."
                 )
+            _validate_annotation_bboxes(
+                entity["annotation"], f"annotation row {index} {entity_name}.annotation"
+            )
         for entity_name, field in (
             ("patient", "patient_id"),
             ("case", "case_id"),

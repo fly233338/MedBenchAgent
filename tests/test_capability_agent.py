@@ -64,11 +64,11 @@ def test_dataset_recommendation_and_profile_keep_paths_private(tmp_path: Path, m
 
     def prepare(path, _cache_root):
         assert path == expected_path
-        return {"schema_version": "task-capability-profile.v2", "total_images": 2}, {
+        return {"schema_version": "task-capability-profile.v3", "total_images": 2}, {
             "annotation_path": str(expected_path),
             "duckdb_path": "dataset.duckdb",
             "annotation_sha256": "a" * 64,
-            "cache_format_version": "annotation-cache.v5",
+            "cache_format_version": "annotation-cache.v6",
         }
 
     monkeypatch.setattr(capability_agent, "prepare_annotation_dataset", prepare)
@@ -79,13 +79,13 @@ def test_dataset_recommendation_and_profile_keep_paths_private(tmp_path: Path, m
 
     assert json.loads(blueprint_path.read_text(encoding="utf-8")) == blueprint
     assert profile_result["dataset_profile"] == {
-        "schema_version": "task-capability-profile.v2",
+        "schema_version": "task-capability-profile.v3",
         "total_images": 2,
     }
     assert profile_result["dataset_access_manifest"] == {
         "duckdb_path": "dataset.duckdb",
         "annotation_sha256": "a" * 64,
-        "cache_format_version": "annotation-cache.v5",
+        "cache_format_version": "annotation-cache.v6",
     }
     assert "annotation_path" not in profile_result
 

@@ -19,8 +19,8 @@ ENTITY_FIELDS = {
     "study": {"study_id", "annotation"},
     "image": {"image_id", "image_path", "modality", "anatomy", "annotation"},
 }
-PROFILE_SCHEMA_VERSION = "task-capability-profile.v2"
-CACHE_FORMAT_VERSION = "annotation-cache.v5"
+PROFILE_SCHEMA_VERSION = "task-capability-profile.v3"
+CACHE_FORMAT_VERSION = "annotation-cache.v6"
 
 TOP_VALUE_EXCLUDED_PREFIXES = (
     "image.annotation.dicom_metadata.",
@@ -283,12 +283,40 @@ def build_dataset_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
             "distinct_value_count": distinct_value_count,
         }
         if _should_include_top_values(path):
+            ordered_values = sorted(
+                item["values"].items(), key=lambda pair: (-pair[1], pair[0])
+            )
+            top_values = ordered_values[: profile_settings.max_top_values]
             field["top_values"] = [
                 _profile_top_value(value, profile_settings.max_top_value_chars)
-                for value, _count in sorted(item["values"].items(), key=lambda pair: (-pair[1], pair[0]))[
-                    : profile_settings.max_top_values
-                ]
+                for value, _count in top_values
             ]
+            if ordered_values:
+                total_count = sum(item["values"].values())
+                least_value, least_count = min(
+                    item["values"].items(), key=lambda pair: (pair[1], pair[0])
+                )
+                field["value_distribution"] = {
+                    "total_count": total_count,
+                    "top": [
+                        {
+                            "value": _profile_top_value(
+                                value, profile_settings.max_top_value_chars
+                            ),
+                            "count": count,
+                            "proportion": count / total_count,
+                        }
+                        for value, count in top_values
+                    ],
+                    "least_frequent": {
+                        "value": _profile_top_value(
+                            least_value, profile_settings.max_top_value_chars
+                        ),
+                        "count": least_count,
+                        "proportion": least_count / total_count,
+                    },
+                    "truncated": distinct_value_count > len(top_values),
+                }
         fields[path] = field
 
     structures = []

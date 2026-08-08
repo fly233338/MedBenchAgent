@@ -20,19 +20,16 @@ METRIC_REGISTRY: tuple[MetricSpec, ...] = (
         name="accuracy",
         supported_response_formats=("letter",),
         description="Exact-match correctness across all categorical answers.",
-        selection_rule=(
-            "Prefer when the categorical classes are relatively balanced or when overall exact "
-            "correctness is the primary objective."
-        ),
+        selection_rule="Use as the default letter-task metric.",
     ),
     MetricSpec(
         name="macro_f1",
         supported_response_formats=("letter",),
         description="Unweighted mean of per-class F1 scores.",
         selection_rule=(
-            "Prefer for multi-class or imbalanced categorical tasks, when minority classes matter, "
-            "or for standardized assessment, severity, grade, and stage tasks unless the profile "
-            "strongly supports accuracy."
+            "Choose only when the supplied most- and least-frequent class statistics show a large "
+            "disparity, or when the task clearly represents a high-risk diagnostic decision for "
+            "which class-wise performance matters; otherwise choose accuracy."
         ),
     ),
     MetricSpec(

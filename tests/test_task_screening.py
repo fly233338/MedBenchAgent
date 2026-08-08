@@ -243,58 +243,58 @@ def test_task_plan_rejects_incompatible_metric() -> None:
     assert errors == ["task: unsupported metric for response format: bleu"]
 
 
-def test_reconciliation_drops_clear_duplicate_and_rewrites_reason(monkeypatch) -> None:
+def test_reconciliation_drops_clear_duplicate_with_atomic_review(monkeypatch) -> None:
     blueprint = {
         "tasks": {
-            "assessment_category": {
-                "description": "Determine the standardized assessment category.",
-                "require": "Requires a standardized assessment field.",
+            "broad_category": {
+                "description": "Determine the broad category.",
+                "require": "Requires a category field.",
                 "response_format": "letter",
             },
-            "severity_grading": {
-                "description": "Determine the severity or grade.",
-                "require": "Requires an ordered severity or grade field.",
+            "direct_category": {
+                "description": "Identify the directly annotated category.",
+                "require": "Requires a direct category field.",
                 "response_format": "letter",
             },
         }
     }
     profile = {
         "fields": {
-            "image.annotation.birads": {
-                "distinct_value_count": 7,
-                "top_values": ["1", "2", "3"],
+            "image.annotation.category": {
+                "distinct_value_count": 3,
+                "top_values": ["A", "B", "C"],
             }
         }
     }
     draft = {
         "tasks": {
-            "assessment_category": {
+            "broad_category": {
                 "decision": "retain",
-                "supporting_fields": ["image.annotation.birads"],
-                "metric": "macro_f1",
+                "supporting_fields": ["image.annotation.category"],
+                "metric": "accuracy",
                 "reason": "The field is available.",
             },
-            "severity_grading": {
+            "direct_category": {
                 "decision": "retain",
-                "supporting_fields": ["image.annotation.birads"],
-                "metric": "macro_f1",
-                "reason": "The field is ordered.",
+                "supporting_fields": ["image.annotation.category"],
+                "metric": "accuracy",
+                "reason": "The field directly names the category.",
             },
         }
     }
     reviewed = {
         "tasks": {
-            "assessment_category": {
-                "decision": "retain",
-                "supporting_fields": ["image.annotation.birads"],
-                "metric": "macro_f1",
-                "reason": "The field directly supplies the assessment categories.",
-            },
-            "severity_grading": {
+            "broad_category": {
                 "decision": "drop",
                 "supporting_fields": [],
                 "metric": None,
-                "reason": "This task duplicates the retained assessment-category task.",
+                "reason": "This task duplicates the more direct category task.",
+            },
+            "direct_category": {
+                "decision": "retain",
+                "supporting_fields": ["image.annotation.category"],
+                "metric": "accuracy",
+                "reason": "The field directly supplies the category.",
             },
         }
     }
@@ -310,9 +310,11 @@ def test_reconciliation_drops_clear_duplicate_and_rewrites_reason(monkeypatch) -
     assert result == reviewed
     assert len(calls) == 1
     assert "Review the complete draft Task Plan" in calls[0][0]
-    assert "assessment_category" in calls[0][0]
-    assert "severity_grading" in calls[0][0]
-    assert "ordered category values alone do not make them distinct" in calls[0][0]
+    assert "Treat each retained ordinary task as one atomic task" in calls[0][0]
+    assert "each retained question type as one atomic task" in calls[0][0]
+    assert "Compare every pair by semantic question and answer axis" in calls[0][0]
+    assert "A shared supporting field alone does not establish duplication" in calls[0][0]
+    assert "For example" not in calls[0][0]
     assert "Draft Task Plan" in calls[0][0]
 
 
@@ -341,7 +343,14 @@ def test_reconciliation_cannot_change_supporting_fields_or_metric(monkeypatch) -
 def test_reconciliation_can_remove_one_question_type_without_adding_another(monkeypatch) -> None:
     blueprint = {
         "tasks": {
+            "texture_identification": {
+                "description": "Identify the annotated texture.",
+                "require": "Requires a direct texture field.",
+                "response_format": "letter",
+            },
             "finding_attribute": {
+                "description": "Determine one observable regional property.",
+                "require": "Requires one property field per question type.",
                 "response_format": "letter",
             }
         }
@@ -354,6 +363,12 @@ def test_reconciliation_can_remove_one_question_type_without_adding_another(monk
     }
     draft = {
         "tasks": {
+            "texture_identification": {
+                "decision": "retain",
+                "supporting_fields": ["image.annotation.signal_intensity"],
+                "metric": "macro_f1",
+                "reason": "The direct texture field is available.",
+            },
             "finding_attribute": {
                 "decision": "retain",
                 "question_types": {
@@ -376,6 +391,12 @@ def test_reconciliation_can_remove_one_question_type_without_adding_another(monk
     }
     reviewed = {
         "tasks": {
+            "texture_identification": {
+                "decision": "retain",
+                "supporting_fields": ["image.annotation.signal_intensity"],
+                "metric": "macro_f1",
+                "reason": "The direct texture field remains supported.",
+            },
             "finding_attribute": {
                 "decision": "retain",
                 "question_types": {
@@ -386,7 +407,7 @@ def test_reconciliation_can_remove_one_question_type_without_adding_another(monk
                         "reason": "Shape remains supported.",
                     }
                 },
-                "reason": "The signal-intensity question was removed as a duplicate.",
+                "reason": "The texture question type was removed as a duplicate.",
             }
         }
     }
@@ -394,6 +415,48 @@ def test_reconciliation_can_remove_one_question_type_without_adding_another(monk
     result = screening._reconcile_task_plan(blueprint, profile, draft)
 
     assert set(result["tasks"]["finding_attribute"]["question_types"]) == {"shape"}
+    assert result["tasks"]["texture_identification"]["decision"] == "retain"
+
+
+def test_reconciliation_cannot_add_or_modify_surviving_question_types() -> None:
+    question_type = {
+        "description": "Determine shape.",
+        "supporting_fields": ["image.annotation.shape"],
+        "metric": "accuracy",
+        "reason": "Shape is available.",
+    }
+    draft = {
+        "tasks": {
+            "finding_attribute": {
+                "decision": "retain",
+                "question_types": {"shape": question_type},
+                "reason": "Shape is available.",
+            }
+        }
+    }
+
+    added = json.loads(json.dumps(draft))
+    added["tasks"]["finding_attribute"]["question_types"]["texture"] = {
+        **question_type,
+        "description": "Determine texture.",
+        "supporting_fields": ["image.annotation.texture"],
+    }
+    assert any(
+        "cannot add question types" in error
+        for error in screening._validate_reconciliation_changes(draft, added)
+    )
+
+    for field, value in (
+        ("description", "Changed description."),
+        ("supporting_fields", ["image.annotation.texture"]),
+        ("metric", "macro_f1"),
+    ):
+        changed = json.loads(json.dumps(draft))
+        changed["tasks"]["finding_attribute"]["question_types"]["shape"][field] = value
+        assert any(
+            f"cannot change {field}" in error
+            for error in screening._validate_reconciliation_changes(draft, changed)
+        )
 
 
 def test_visual_grounding_and_detection_can_both_be_retained() -> None:
@@ -461,6 +524,8 @@ def test_task_plan_prompt_checks_array_leaf_paths() -> None:
     assert "interpretation, diagnosis, assessment" in prompt
     assert "Metric selection rules" in prompt
     assert "macro_f1" in prompt
+    assert screening.VISUAL_GROUNDING_RULE in prompt
+    assert screening.VISUAL_GROUNDING_PAIRING_RULE in prompt
     assert "Task ID: assessment_category" in prompt
     assert "Task ID: diagnosis" not in prompt
     assert '"description": "Diagnose"' not in prompt
@@ -571,3 +636,27 @@ def test_task_revision_prompt_rejects_mask_as_bbox() -> None:
     )
 
     assert "A segmentation mask is not a bbox" in prompt
+
+
+def test_visual_grounding_rule_is_shared_by_initial_and_revision_prompts() -> None:
+    task = {"response_format": "bbox"}
+    profile = {
+        "fields": {
+            "image.annotation.findings[*].bbox[*]": {},
+            "image.annotation.findings[*].label": {},
+        }
+    }
+    initial = screening._task_plan_prompt("visual_grounding", task, profile)
+    revision = screening._task_revision_prompt(
+        "visual_grounding",
+        task,
+        {"decision": "drop", "supporting_fields": [], "metric": None, "reason": "No."},
+        profile,
+        "Review available fields.",
+    )
+
+    for prompt in (initial, revision):
+        assert screening.VISUAL_GROUNDING_RULE in prompt
+        assert screening.VISUAL_GROUNDING_PAIRING_RULE in prompt
+        assert "BI-RADS" not in prompt
+        assert "breast cancer" not in prompt.lower()
