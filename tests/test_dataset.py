@@ -158,6 +158,26 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
     assert prepare_annotation_dataset(annotation_path, tmp_path / "cache") == (profile, manifest)
 
 
+def test_profile_omits_null_only_bbox_parent_but_keeps_bbox_leaf(
+    tmp_path: Path,
+) -> None:
+    records = _records()
+    records[0]["image"]["annotation"]["findings"].append(
+        {"finding_type": "no_finding", "bbox": None}
+    )
+    profile, _manifest = prepare_annotation_dataset(
+        _write_annotation_dataset(tmp_path, records), tmp_path / "cache"
+    )
+
+    assert "image.annotation.findings[*].bbox" not in profile["fields"]
+    assert profile["fields"]["image.annotation.findings[*].bbox[*]"]["types"] == ["number"]
+    assert any(
+        structure["path"] == "image.annotation.findings[*].bbox"
+        and structure["kind"] == "array"
+        for structure in profile["structures"]
+    )
+
+
 def test_compact_profile_counts_non_empty_images_and_filters_raw_values(
     tmp_path: Path,
 ) -> None:

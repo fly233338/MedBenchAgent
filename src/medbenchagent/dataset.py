@@ -188,6 +188,19 @@ def _should_include_top_values(path: str) -> bool:
     return True
 
 
+def _is_null_only_bbox_parent(
+    path: str, item: dict[str, Any], structures: dict[str, dict[str, Any]]
+) -> bool:
+    structure = structures.get(path)
+    return (
+        path.endswith(".bbox")
+        and isinstance(structure, dict)
+        and structure.get("kind") == "array"
+        and item["types"] == {"null"}
+        and not item["non_empty_images"]
+    )
+
+
 def _profile_top_value(value: str, max_chars: int) -> object:
     rendered = json.loads(value)
     if isinstance(rendered, str) and len(rendered) > max_chars:
@@ -274,6 +287,8 @@ def build_dataset_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
     profile_settings = get_settings().dataset_profile
     for path in sorted(fields_stats):
         item = fields_stats[path]
+        if _is_null_only_bbox_parent(path, item, structures_stats):
+            continue
         value_types = item["types"]
         distinct_value_count = len(item["values"])
         field = {
