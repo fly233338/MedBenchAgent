@@ -178,32 +178,6 @@ def evidence_sha256(path: str, indices: list[int], value: object) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def validate_evidence(
-    record: dict[str, object],
-    supporting_fields: object,
-    evidence: object,
-) -> dict[str, object]:
-    """Validate an LLM-copied witness without normalizing its source value."""
-    if not isinstance(evidence, dict) or set(evidence) != {"path", "indices", "value"}:
-        raise ValueError("Evidence must contain only path, indices, and value.")
-    path, indices, value = evidence["path"], evidence["indices"], evidence["value"]
-    if (
-        not isinstance(path, str)
-        or not isinstance(supporting_fields, list)
-        or path not in supporting_fields
-    ):
-        raise ValueError("Evidence path must be one exact task supporting field.")
-    if not isinstance(indices, list) or not all(
-        isinstance(index, int) and not isinstance(index, bool) and index >= 0
-        for index in indices
-    ):
-        raise ValueError("Evidence indices must be non-negative integers.")
-    actual = evidence_value(record, path, indices)
-    if type(actual) is not type(value) or actual != value:
-        raise ValueError("Evidence value must exactly copy the indexed annotation value.")
-    return {"path": path, "indices": list(indices), "value": value}
-
-
 def evidence_provenance(
     evidence: dict[str, object] | list[dict[str, object]],
 ) -> dict[str, object] | list[dict[str, object]]:

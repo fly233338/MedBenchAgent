@@ -1,8 +1,19 @@
 import json
+import os
 from pathlib import Path
 
 from medbenchagent.run_artifacts import initialize_run
-from medbenchagent.settings import clear_settings_cache, get_settings, load_settings
+from medbenchagent.settings import clear_settings_cache, get_settings, load_project_env, load_settings
+
+
+def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / ".env").write_text("DEEPSEEK_MODEL=from-file\n", encoding="utf-8")
+    monkeypatch.setattr("medbenchagent.settings.PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("DEEPSEEK_MODEL", "from-process")
+
+    load_project_env()
+
+    assert os.environ["DEEPSEEK_MODEL"] == "from-process"
 
 
 def test_default_settings_preserve_current_runtime_defaults() -> None:

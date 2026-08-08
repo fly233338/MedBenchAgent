@@ -240,7 +240,7 @@ def _collect_profile_values(
             item["values"][_canonical_value(value)] += 1
 
 
-def build_dataset_profile(records: list[dict[str, Any]], content_hash: str) -> dict[str, Any]:
+def build_dataset_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Summarize task-supporting entity paths without inferring medical semantics."""
     fields_stats: dict[str, dict[str, Any]] = {}
     structures_stats: dict[str, dict[str, Any]] = {}
@@ -363,7 +363,7 @@ def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Pa
         )
 
     records = load_annotation_jsonl(source_path)
-    profile = build_dataset_profile(records, content_hash)
+    profile = build_dataset_profile(records)
     cache_dir.mkdir(parents=True, exist_ok=True)
     if database_path.exists():
         database_path.unlink()

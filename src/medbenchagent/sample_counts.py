@@ -13,36 +13,6 @@ def _category_weights() -> dict[str, float]:
     return dict(get_settings().category_weights)
 
 
-def distribute_sample_counts(
-    task_ids: list[str], total: int, fixed_counts: dict[str, int] | None = None
-) -> dict[str, int]:
-    """Keep explicit counts and distribute the remainder in task order."""
-    if not isinstance(total, int) or total <= 0:
-        raise ValueError("Benchmark sample_count must be a positive integer.")
-    if not task_ids or len(set(task_ids)) != len(task_ids):
-        raise ValueError("Task IDs must be non-empty and unique.")
-    fixed = dict(fixed_counts or {})
-    if unknown := set(fixed) - set(task_ids):
-        raise ValueError(f"Unknown task IDs in sample counts: {', '.join(sorted(unknown))}.")
-    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in fixed.values()):
-        raise ValueError("Task sample counts must be non-negative integers.")
-    fixed_total = sum(fixed.values())
-    if fixed_total > total:
-        raise ValueError("Fixed task sample counts exceed the benchmark sample_count.")
-    remaining_ids = [task_id for task_id in task_ids if task_id not in fixed]
-    remaining_total = total - fixed_total
-    if not remaining_ids:
-        if remaining_total:
-            raise ValueError("Complete task sample counts must sum to the benchmark sample_count.")
-        return {task_id: fixed[task_id] for task_id in task_ids}
-
-    quotient, remainder = divmod(remaining_total, len(remaining_ids))
-    distributed = dict(fixed)
-    for index, task_id in enumerate(remaining_ids):
-        distributed[task_id] = quotient + (index < remainder)
-    return {task_id: distributed[task_id] for task_id in task_ids}
-
-
 def _validate_weighted_tasks(tasks: dict[str, dict[str, Any]]) -> None:
     weights = _category_weights()
     if not tasks:

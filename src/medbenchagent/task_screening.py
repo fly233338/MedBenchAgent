@@ -606,11 +606,6 @@ def revise_task_plan(
     return validated
 
 
-def task_plan_entries(task_plan: dict[str, Any]) -> list[dict[str, Any]]:
-    """Adapt the stable Task Plan contract to downstream list-based consumers."""
-    return [{"task_id": task_id, **decision} for task_id, decision in task_plan["tasks"].items()]
-
-
 def write_task_plan_report(
     working_blueprint_path: str | Path, task_plan: dict[str, Any]
 ) -> dict[str, str | int]:

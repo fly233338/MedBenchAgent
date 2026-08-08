@@ -860,7 +860,7 @@ def test_generation_agent_keeps_request_snapshot_private(
     monkeypatch.setattr(
         generation_workflow,
         "finalize_generation",
-        lambda _request, _state: GenerationResult(
+        lambda _request: GenerationResult(
             raw_output_path=str(tmp_path / "raw.jsonl"),
             provenance_output_path=str(tmp_path / "provenance.jsonl"),
             item_count=1,
@@ -927,11 +927,12 @@ def test_generation_subgraph_checkpoints_and_streams_progress(
             update |= {"generation_stage_index": 3, "generation_stage": "", "generation_exhausted": True}
         return update
 
-    def finalize(_request: dict, state: dict) -> GenerationResult:
+    def finalize(_request: dict) -> GenerationResult:
         return GenerationResult(
             raw_output_path=str(tmp_path / "benchmark_items.raw.jsonl"),
-            item_count=state["generation_completed_counts"]["view"],
-            task_counts=state["generation_completed_counts"],
+            provenance_output_path=str(tmp_path / "item_provenance.jsonl"),
+            item_count=2,
+            task_counts={"view": 2},
         )
 
     monkeypatch.setattr(generation_workflow, "initialize_generation", initialize)

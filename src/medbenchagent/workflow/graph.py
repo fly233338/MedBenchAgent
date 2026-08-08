@@ -26,18 +26,6 @@ from medbenchagent.dataset_catalog import (
     load_dataset_catalog,
     resolve_annotation_path,
 )
-from medbenchagent.generation.graph import (
-    GenerationGraphState,
-    GenerationInputState,
-    GenerationOutputState,
-    compile_generation_subgraph,
-)
-from medbenchagent.rag.graph import (
-    RagDesignInputState,
-    RagDesignOutputState,
-    RagDesignState,
-    compile_rag_designs_subgraph,
-)
 from medbenchagent.run_artifacts import initialize_run, latest_versioned_json
 from medbenchagent.run_export import finalize_run
 from medbenchagent.settings import get_settings
@@ -46,16 +34,8 @@ __all__ = [
     "BenchmarkInputState",
     "BenchmarkOutputState",
     "BenchmarkState",
-    "GenerationGraphState",
-    "GenerationInputState",
-    "GenerationOutputState",
-    "RagDesignInputState",
-    "RagDesignOutputState",
-    "RagDesignState",
     "benchmark_graph",
     "compile_benchmark_graph",
-    "compile_generation_subgraph",
-    "compile_rag_designs_subgraph",
 ]
 
 
@@ -163,8 +143,6 @@ def _run_finalize_node(state: BenchmarkState) -> dict[str, Any]:
         provenance_output_path=state["provenance_output_path"],
         rag_designs_path=state["rag_designs_path"],
         construction_events_path=state["construction_events_path"],
-        task_counts=state["task_counts"],
-        shortfalls=state["generation_shortfalls"],
         dataset_catalog_entry=dataset,
         dataset_profile=state["dataset_profile"],
         dataset_access_manifest=state["dataset_access_manifest"],

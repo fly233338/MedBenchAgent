@@ -80,7 +80,7 @@ def _generation_step_node(state: GenerationGraphState) -> dict[str, Any]:
 
 
 def _generation_finalize_node(state: GenerationGraphState) -> dict[str, Any]:
-    result = finalize_generation(state["generation_request"], state)
+    result = finalize_generation(state["generation_request"])
     targets = state["generation_target_counts"]
     shortfalls = {
         task_id: max(0, target - result.task_counts.get(task_id, 0))

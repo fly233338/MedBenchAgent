@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from medbenchagent.run_export import benchmark_id, export_rag_designs, finalize_run
+from medbenchagent.run_artifacts import write_versioned_json
+from medbenchagent.run_export import benchmark_id, finalize_run, rag_designs_payload
 
 
 def _blueprint() -> dict:
@@ -51,14 +52,16 @@ def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: 
     effective_config.write_text('{"settings": {}}\n', encoding="utf-8")
     image_manifest = tmp_path / "image_manifest.jsonl"
     image_manifest.write_text("{}\n", encoding="utf-8")
-    rag = export_rag_designs(
-        _blueprint(), "run-1", ["guide.pdf"], tmp_path / "rag_designs" / "v2.json"
+    rag_artifact = write_versioned_json(
+        tmp_path,
+        "rag_designs",
+        rag_designs_payload(_blueprint(), "run-1", ["guide.pdf"]),
     )
+    rag = str(rag_artifact["path"])
 
     identifier, report, manifest = finalize_run(
         run_directory=tmp_path, run_id="run-1", blueprint_path=blueprint_path, raw_output_path=raw,
         provenance_output_path=provenance, rag_designs_path=rag, construction_events_path=events,
-        task_counts={"view": 1, "zero": 0}, shortfalls={"view": 0, "zero": 0},
         dataset_catalog_entry={"id": "vindr-mammo", "name": "VinDr-Mammo", "description": "Mammography."},
         dataset_profile={"schema_version": "profile.v1", "total_images": 1},
         dataset_access_manifest={"annotation_sha256": "a" * 64, "cache_format_version": "cache.v1"},
@@ -82,7 +85,7 @@ def test_exports_confirmed_rag_designs_and_content_addressed_manifest(tmp_path: 
         "image_format": "8bit_grayscale_png",
     }
     assert payload["artifacts"]["raw"]["path"] == raw.name
-    assert payload["artifacts"]["rag_designs"]["path"] == str(Path("rag_designs") / "v2.json")
+    assert payload["artifacts"]["rag_designs"]["path"] == str(Path("rag_designs") / "v1.json")
     assert payload["artifacts"]["effective_config"] == {
         "path": effective_config.name,
         "sha256": hashlib.sha256(effective_config.read_bytes()).hexdigest(),
@@ -134,8 +137,6 @@ def test_finalize_rejects_blueprint_without_metric(tmp_path: Path) -> None:
             provenance_output_path=tmp_path / "provenance.jsonl",
             rag_designs_path=tmp_path / "rag_designs.json",
             construction_events_path=tmp_path / "construction_events.jsonl",
-            task_counts={},
-            shortfalls={},
             dataset_catalog_entry={
                 "id": "vindr-mammo",
                 "name": "VinDr-Mammo",

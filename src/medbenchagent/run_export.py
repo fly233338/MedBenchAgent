@@ -62,13 +62,6 @@ def rag_designs_payload(
     }
 
 
-def export_rag_designs(
-    blueprint: dict[str, Any], run_id: str, selected_material_files: list[str], output_path: str | Path
-) -> str:
-    atomic_write_json(output_path, rag_designs_payload(blueprint, run_id, selected_material_files))
-    return str(output_path)
-
-
 def finalize_run(
     *,
     run_directory: str | Path,
@@ -78,8 +71,6 @@ def finalize_run(
     provenance_output_path: str | Path,
     rag_designs_path: str | Path,
     construction_events_path: str | Path,
-    task_counts: dict[str, int],
-    shortfalls: dict[str, int],
     dataset_catalog_entry: dict[str, str],
     dataset_profile: dict[str, Any],
     dataset_access_manifest: dict[str, Any],

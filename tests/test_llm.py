@@ -1,19 +1,7 @@
-import os
-from pathlib import Path
 from types import SimpleNamespace
 
 import medbenchagent.llm as llm
 from medbenchagent.settings import clear_settings_cache
-
-
-def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / ".env").write_text("DEEPSEEK_MODEL=from-file\n", encoding="utf-8")
-    monkeypatch.setattr("medbenchagent.settings.PROJECT_ROOT", tmp_path)
-    monkeypatch.setenv("DEEPSEEK_MODEL", "from-process")
-
-    llm.load_project_env()
-
-    assert os.environ["DEEPSEEK_MODEL"] == "from-process"
 
 
 def test_complete_json_uses_placeholder_key_for_unauthenticated_vllm(monkeypatch) -> None:

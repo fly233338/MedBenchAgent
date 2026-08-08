@@ -10,7 +10,7 @@ from langsmith.wrappers import wrap_openai
 from openai import APIError, OpenAI
 
 from medbenchagent.construction import record_llm_call
-from medbenchagent.settings import get_llm_api_key, get_settings, load_project_env as _load_project_env
+from medbenchagent.settings import get_llm_api_key, get_settings
 
 _CLIENT: OpenAI | None = None
 _CLIENT_CONFIG: tuple[str, str, float, int, str] | None = None
@@ -18,11 +18,6 @@ _CLIENT_CONFIG: tuple[str, str, float, int, str] | None = None
 
 class ModelUnavailable(RuntimeError):
     """Raised when the planning model is not configured or returns invalid JSON."""
-
-
-def load_project_env() -> None:
-    """Compatibility wrapper for the centralized environment loader."""
-    _load_project_env()
 
 
 def clear_client_cache() -> None:

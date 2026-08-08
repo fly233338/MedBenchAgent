@@ -1,27 +1,10 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from medbenchagent.sample_counts import (
-    distribute_sample_counts,
     distribute_weighted_sample_counts,
     write_sample_counts,
 )
-
-
-def test_distribution_is_stable_and_allows_zero_counts() -> None:
-    assert distribute_sample_counts(["a", "b", "c"], 2) == {"a": 1, "b": 1, "c": 0}
-    assert distribute_sample_counts(["a", "b", "c"], 7, {"b": 5}) == {
-        "a": 1,
-        "b": 5,
-        "c": 1,
-    }
-
-
-def test_complete_fixed_counts_must_match_total() -> None:
-    with pytest.raises(ValueError, match="must sum"):
-        distribute_sample_counts(["a", "b"], 3, {"a": 1, "b": 1})
 
 
 def test_weighted_distribution_normalizes_active_categories_and_splits_ties() -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NotRequired, Protocol, TypedDict
+from typing import NotRequired, TypedDict
 
 
 class BlueprintTask(TypedDict):
@@ -19,7 +19,7 @@ class BlueprintTask(TypedDict):
     generation_logic: str
     medical_task_description: str
     citations: list[dict[str, object]]
-    sample_count: int | None
+    sample_count: NotRequired[int]
     parent_task_id: NotRequired[str]
     question_type_id: NotRequired[str]
     options: NotRequired[list[str]]
@@ -58,9 +58,4 @@ class GenerationResult:
     raw_output_path: str
     item_count: int
     task_counts: dict[str, int]
-    provenance_output_path: str = ""
-
-
-class BenchmarkGenerator(Protocol):
-    def generate(self, request: GenerationRequest) -> GenerationResult:
-        """Write validated benchmark items and return a compact result."""
+    provenance_output_path: str

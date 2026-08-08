@@ -19,7 +19,6 @@ from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequ
 from medbenchagent.construction import GENERATION_AGENT, event_context, record_event
 from medbenchagent.llm import ModelUnavailable
 from medbenchagent.metrics import is_metric_supported
-from medbenchagent.sample_counts import distribute_sample_counts
 from medbenchagent.settings import get_settings
 
 _MISSING = object()
@@ -130,8 +129,6 @@ def _task_targets(request: GenerationRequest) -> dict[str, int]:
     raw_counts = [task.get("sample_count") for task in tasks.values() if isinstance(task, dict)]
     if len(raw_counts) != len(tasks):
         raise ValueError("Blueprint tasks must be objects.")
-    if all(count is None for count in raw_counts):
-        return distribute_sample_counts(list(tasks), target)
     if any(
         not isinstance(count, int) or isinstance(count, bool) or count < 0 for count in raw_counts
     ):
@@ -634,7 +631,7 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
     }
 
 
-def finalize_generation(request: GenerationRequest, state: dict[str, Any]) -> GenerationResult:
+def finalize_generation(request: GenerationRequest) -> GenerationResult:
     """Atomically merge staged progress into raw JSONL and remove temporary files."""
     tasks, targets = _validate_tasks(request)
     output_dir = Path(request["output_directory"])
@@ -673,4 +670,4 @@ def generate_raw_benchmark(request: GenerationRequest) -> GenerationResult:
     state = initialize_generation(request)
     while not generation_done(state):
         state.update(advance_generation(request, state))
-    return finalize_generation(request, state)
+    return finalize_generation(request)

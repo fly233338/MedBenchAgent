@@ -14,7 +14,6 @@ from medbenchagent.generation.context import (
     evidence_provenance,
     locate_bbox_evidence,
     locate_scalar_evidence,
-    validate_evidence,
 )
 
 
@@ -276,49 +275,6 @@ def test_bbox_and_free_text_review_prompts_use_design_fields(monkeypatch) -> Non
         assert "- Medical task description: Recognition task." in prompt
         assert "- Generation logic: Use the approved annotation and selected template to generate the question." in prompt
         assert "- Task definition:" not in prompt
-
-
-def test_vqa_evidence_requires_exact_scalar_source_location() -> None:
-    annotation = {
-        "findings": [
-            {"categories": ["mass", "asymmetry"]},
-            {"categories": ["mass"]},
-        ]
-    }
-    fields = ["image.annotation.findings[*].categories[*]"]
-    valid = {
-        "path": fields[0],
-        "indices": [1, 0],
-        "value": "mass",
-    }
-
-    record = _record(0, annotation)
-    assert validate_evidence(record, fields, valid) == valid
-    provenance = evidence_provenance(valid)
-    assert provenance == {
-        "path": fields[0],
-        "indices": [1, 0],
-        "evidence_sha256": provenance["evidence_sha256"],
-    }
-    assert "value" not in provenance
-
-    invalid = [
-        valid | {"path": "image.annotation.other"},
-        valid | {"indices": [1]},
-        valid | {"indices": [2, 0]},
-        valid | {"indices": [True, 0]},
-        valid | {"value": "Mass"},
-    ]
-    for evidence in invalid:
-        with pytest.raises(ValueError):
-            validate_evidence(record, fields, evidence)
-
-    with pytest.raises(ValueError, match="scalar"):
-        validate_evidence(
-            _record(0, {"findings": [{"categories": [["mass"]]}]}),
-            fields,
-            valid | {"indices": [0, 0], "value": ["mass"]},
-        )
 
 
 def test_direct_answer_evidence_requires_one_exact_source_location() -> None:
@@ -588,7 +544,12 @@ def test_free_text_requires_exact_unique_reference_text_and_repairs_once(tmp_pat
 
 
 def test_all_supporting_fields_must_be_nonempty_and_vqa_options_remain_normalized() -> None:
-    task = _task("letter", ["image.annotation.status", "image.annotation.laterality"], options=["A. benign", "B) malignant"])
+    task = _task(
+        "letter",
+        ["image.annotation.status", "image.annotation.laterality"],
+        options=["A. benign", "B) malignant"],
+        sample_count=1,
+    )
     request = {
         "dataset_id": "test-dataset",
         "tasks": {"vqa": task},
@@ -610,7 +571,7 @@ def test_all_supporting_fields_must_be_nonempty_and_vqa_options_remain_normalize
 
 
 def test_letter_tasks_require_structured_answer_mapping() -> None:
-    task = _task("letter", ["image.annotation.status"])
+    task = _task("letter", ["image.annotation.status"], sample_count=1)
     task.pop("answer_field")
     task.pop("answer_value_mapping")
     request = {
@@ -631,6 +592,14 @@ def test_generation_rejects_final_task_without_metric(tmp_path: Path) -> None:
     request = _request(tmp_path, [_record(0, {"status": "benign"})], {"task": task}, 1)
 
     with pytest.raises(ValueError, match="metric"):
+        generation.initialize_generation(request)
+
+
+def test_generation_rejects_final_task_without_sample_count(tmp_path: Path) -> None:
+    task = _task("letter", ["image.annotation.status"])
+    request = _request(tmp_path, [_record(0, {"status": "benign"})], {"task": task}, 1)
+
+    with pytest.raises(ValueError, match="sample_count"):
         generation.initialize_generation(request)
 
 
@@ -747,7 +716,7 @@ def test_stage_progress_is_resumed_and_cleaned_only_after_raw_merge(tmp_path: Pa
 
     state = generation.initialize_generation(request)
     assert generation.generation_done(state)
-    result = generation.finalize_generation(request, state)
+    result = generation.finalize_generation(request)
 
     assert _read_items(result.raw_output_path)[0]["id"] == "existing"
     assert _read_items(result.provenance_output_path)[0]["item_id"] == "existing"

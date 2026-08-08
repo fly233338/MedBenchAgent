@@ -12,9 +12,6 @@ from medbenchagent.construction import record_event
 from medbenchagent.settings import AppSettings, get_settings
 
 
-RUNS_ROOT = Path(__file__).resolve().parents[2] / "benchmarks" / "runs"
-
-
 def atomic_write_json(path: str | Path, value: object) -> None:
     """Atomically write readable UTF-8 JSON without exposing partial files."""
     destination = Path(path)
