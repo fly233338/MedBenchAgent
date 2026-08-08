@@ -14,7 +14,11 @@ from medbenchagent.evaluation.contracts import (
     TaskSpec,
 )
 from medbenchagent.evaluation.data import EvaluationDataError, load_benchmark
-from medbenchagent.evaluation.eval import _task_score, evaluate_inference
+from medbenchagent.evaluation.eval import (
+    _all_task_metric_groups,
+    _task_score,
+    evaluate_inference,
+)
 from medbenchagent.evaluation.inference import (
     DistributedContext,
     _mark_rank_complete,
@@ -472,6 +476,33 @@ def test_metric_groups_average_parent_tasks_instead_of_question_types(tmp_path: 
     assert report["tasks"]["finding_attribute.shape"]["parent_task_id"] == (
         "finding_attribute"
     )
+
+
+def test_metric_groups_do_not_infer_parent_tasks_from_task_names() -> None:
+    groups = _all_task_metric_groups(
+        {
+            "finding_attribute.shape": {
+                "parent_task_id": None,
+                "correct_rate": 1.0,
+                "score": 1.0,
+            },
+            "finding_attribute.margin": {
+                "parent_task_id": None,
+                "correct_rate": 0.0,
+                "score": 0.0,
+            },
+            "diagnosis": {
+                "parent_task_id": None,
+                "correct_rate": 1.0,
+                "score": 1.0,
+            },
+        }
+    )
+
+    assert groups == {
+        "accuracy": {"task_count": 3, "task_macro_score": pytest.approx(2 / 3)},
+        "f1": {"task_count": 3, "task_macro_score": pytest.approx(2 / 3)},
+    }
 
 
 def test_inference_requires_overwrite_for_existing_output(tmp_path: Path) -> None:

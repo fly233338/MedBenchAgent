@@ -40,6 +40,8 @@ role-specialized agents + deterministic orchestration：
    独立读取 DuckDB；每阶段仅投影任务获准字段、稳定随机排序候选，并按 seed、task、image 和 source row
    确定性选择一个问题模板后逐任务生成/审核。三种格式都把 `medical_task_description`、`generation_logic`
    和选定模板传入生成与 Reviewer prompt；答案和 evidence 均由代码根据获准 annotation/reference 固定，LLM 只生成题干。
+   supporting-field 路径校验、记录投影、有效值判断及 evidence 读取统一归属 `generation/context.py`；生成 engine 与 Audit
+   都只依赖该纯数据模块，不相互导入。
 7. 完成或数据耗尽后生成 raw JSONL；根图先记录 generation summary，再由 `AuditAgent` 硬审计图像完整性、题目契约、annotation witness、provenance 和重复项，平衡通过的选择题位置，最后按 task 稳定抽样进行 fail-open 的宽松 LLM 语义筛查。
 
 ## 状态、契约与产物
@@ -60,12 +62,19 @@ ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务�
 和 `image`；各实体拥有独立 annotation，任务字段路径与该层级保持一致。
 
 每次运行的核心产物是 working `blueprint.json`、版本化的 `task_plans/vN.json`、
-阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、首轮完整设计及每轮人工修订均追加的 `rag_designs/vN.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。construction events 除 LLM 元数据外还保存每轮完整、未脱敏的用户自然语言输入；初轮 artifact snapshot 记录版本路径与 SHA-256，修订事件以同一 interaction ID 关联用户输入、实际变更对象及新 artifact 路径与 SHA-256，因此运行目录可能含敏感信息。配置按代码回退值、`config/default.toml`、显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖；Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
+阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、首轮完整设计及每轮人工修订均追加的 `rag_designs/vN.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。construction events 除 LLM 元数据外还保存每轮完整、未脱敏的用户自然语言输入；初轮 artifact snapshot 记录版本路径与 SHA-256，修订事件以同一 interaction ID 关联用户输入、实际变更对象及新 artifact 路径与 SHA-256，因此运行目录可能含敏感信息。`config/default.toml` 是唯一默认值基线；显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖它，Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和固定 `8bit_grayscale_png` 格式只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
 `dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。确认后的设计采用
 `rag-designs.v2`；manifest 的展开任务记录可选 `parent_task_id` 与 `question_type_id`。模板数量由配置项
 `generation.question_template_count` 控制并写入生效配置快照，不属于 Graph 输入覆盖项。
 RAG 设计中的 `medical_task_description` 保持为“先描述评估能力，再说明医学依据”的一段话；
 `generation_logic` 是一条语义完整的指令句，描述如何利用获准标注语义和选定题目模板生成题目。
+
+生成边界要求每个 Blueprint task 都有非负整数 `sample_count`，且总和严格等于 BenchmarkInfo 目标题量；
+缺失或非整数题量直接失败，不再平均分配。`GenerationResult` 必须返回 raw 与 provenance 两条路径。
+收尾前，orchestrator 会确认 Blueprint、raw、provenance、版本化 RAG 设计、construction events、
+`effective_config.json` 以及 Audit 的 `audited`、`flagged`、`rejected`、`records`、`report`、
+`semantic_records` 均为运行目录内存在且可读的普通文件；预检通过后才写 `run_completed`，继而生成
+construction report 与 manifest。Audit 产物允许追加额外命名文件，但不能省略上述六项。
 
 ## 不变量与失败语义
 
@@ -90,7 +99,7 @@ RAG 设计中的 `medical_task_description` 保持为“先描述评估能力，
   仅在进程存活期间有效。
 - `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。LLM 事件使用五个固定 Agent 名称并记录 operation、模型逻辑名称、token 与 latency；`AuditAgent` 只有抽样语义筛查产生 LLM 调用，硬审计仍为确定性。每轮用户输入写为独立 `human_interaction`，包括解析失败的输入；修订完成后以同一 `interaction_id` 写入 `revision_applied`、实际变化对象及对应版本 artifact 的相对路径和 SHA-256。`construction-report.v2` 按 stage 汇总最终确认状态、成功修订轮数和实际修改对象数，materials 另计选择数量。
 - `run_started` 和 `run_completed` 使用 `orchestrator` component，不归属任何业务 Agent，也不进入五角色的 LLM 统计。
-- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变。硬审计使用 source row 回溯同一 annotation 文件并重算所有答案格式的 witness hash；free_text 必须与回放字符串完全一致，bbox 必须与四个回放坐标数值一致。letter 任务还必须满足回放 raw value、mapping、语义 option 与最终答案字母一致。随后仅平衡选择题答案位置。语义层每 task 最多稳定抽取十题，只宽松检查明显任务偏移、答案泄露、歧义/选项重叠及语义近重复/模板塌缩；失败时 fail-open，flag 不会 reject，`flagged.jsonl` 始终是 `audited.jsonl` 的观察性子集。`audit_report.json` 采用 `audit-report.v1`，分别在 `hard_audit` 与 `semantic_audit` 中表达两层计数。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
+- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变。硬审计从 Blueprint 的同一字节快照解析内容并计算哈希，使用 source row 回溯同一 annotation 文件并重算所有答案格式的 witness hash；provenance 的 `generation_call_ids` 与 `review_call_ids` 必须分别为 `list[str]` 且只能引用已记录调用，单题结构错误只拒绝该题。free_text 必须与回放字符串完全一致，bbox 必须与四个回放坐标数值一致；image manifest 尺寸无效时记录尺寸错误并跳过依赖尺寸的 bbox 边界判断。letter 任务还必须满足回放 raw value、mapping、语义 option 与最终答案字母一致。随后仅平衡选择题答案位置。语义层每 task 最多稳定抽取十题，只宽松检查明显任务偏移、答案泄露、歧义/选项重叠及语义近重复/模板塌缩；失败时 fail-open，flag 不会 reject，`flagged.jsonl` 始终是 `audited.jsonl` 的观察性子集。`audit_report.json` 采用 `audit-report.v1`，分别在 `hard_audit` 与 `semantic_audit` 中表达两层计数。PNG hash 分块读取且以 Pillow extrema 检查非恒定灰度像素；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
 
 ## 推理与评测边界
 
@@ -125,7 +134,7 @@ QoQ-Med-VL 7B/32B 使用其原生 medical reasoning prompt，要求 `<think>...<
 按模型协议提取终答时优先使用 `answer_text`：QoQ 使用最后一个 balanced `\boxed{...}`，Qwen3 Thinking
 使用最后一个 `</think>`，InternVL3.5 使用最后一个完整 `<answer>...</answer>` 并兼容旧 `</think>` 后缀，Chiron
 使用最后一个 `The final answer is:`（兼容前方存在或缺少 `###`），Hulu 对同一 output IDs 分别保留
-thinking 与无 thinking 解码，MedGemma 使用 `FINAL_ANSWER:` 或上述受限 legacy letter 协议。
+thinking 与无 thinking 解码，MedGemma 使用 `FINAL_ANSWER:` 或上述受限 observed protocol fallback letter 协议。
 分隔符缺失时回退完整响应，空终答保持为空并产生严格 parse error；推理产物只把完整响应写入
 `raw_prediction`，wire schema 仍是 `medbench-inference.v1`。
 
@@ -145,6 +154,7 @@ category/全局阈值正确率，并在逐题 `items` 中同时保留规范化 `
 `null`。选择题 macro-F1 使用选项文本而非平衡后的字母位置。`metric_groups` 不再按原生 metric
 拆组，而是输出 `accuracy` 与 `f1` 两个层级宏平均：先在每个父 task 内等权平均各 question type 的
 `correct_rate` 与原生 `score`，再在父 tasks 间等权平均。因此 question type 数量不改变父 task 权重；
+父 task 聚合只使用 manifest 中显式的 `parent_task_id`，缺失该字段时任务独立计分，不从带点号的任务名推断父级。
 其中 `f1` 是按评测展示约定命名的统一第二分数，对 free-text/bbox 实际仍分别来自 BLEU/mIoU，
 不是分类 F1。评测产物不修改 benchmark run 或其 manifest。
 

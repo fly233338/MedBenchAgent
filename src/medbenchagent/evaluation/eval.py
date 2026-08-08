@@ -166,21 +166,12 @@ def _task_macro_f1(rows: list[dict[str, Any]]) -> float | None:
     return macro_f1(gold, predicted)
 
 
-def _parent_task_id(task_id: str, parent_task_id: str | None) -> str:
-    if parent_task_id:
-        return parent_task_id
-    for decomposable in ("anatomy_attribute", "finding_attribute"):
-        if task_id.startswith(f"{decomposable}."):
-            return decomposable
-    return task_id
-
-
 def _all_task_metric_groups(tasks: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     grouped: dict[str, dict[str, list[float]]] = defaultdict(
         lambda: {"accuracy": [], "f1": []}
     )
     for task_id, task in tasks.items():
-        parent_task_id = _parent_task_id(task_id, task["parent_task_id"])
+        parent_task_id = task["parent_task_id"] or task_id
         grouped[parent_task_id]["accuracy"].append(task["correct_rate"])
         grouped[parent_task_id]["f1"].append(task["score"])
 

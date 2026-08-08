@@ -247,7 +247,7 @@ def test_medgemma_adds_a_model_specific_final_answer_protocol(tmp_path: Path) ->
         ("reasoning\nFINAL_ANSWER:", ""),
     ],
 )
-def test_medgemma_extracts_observed_legacy_letter_formats(
+def test_medgemma_extracts_observed_protocol_fallback_letter_formats(
     tmp_path: Path,
     raw_text: str,
     expected: str,
