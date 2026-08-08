@@ -36,12 +36,13 @@ VISUAL_GROUNDING_PAIRING_RULE = (
 )
 
 
-def _metric_prompt_rules(response_format: object) -> str:
-    catalog = (
+def _metric_prompt_rules(response_formats: set[str]) -> str:
+    catalog = "\n".join(
         metric_prompt_catalog(response_format)
-        if isinstance(response_format, str)
-        else "No registered metric is compatible with the missing response format."
+        for response_format in sorted(response_formats)
     )
+    if not catalog:
+        catalog = "No registered metric is compatible with the missing response format."
     return (
         "Metric selection rules:\n"
         "- A retained task must choose exactly one metric from the registered metrics compatible "
@@ -56,24 +57,29 @@ def _metric_prompt_rules(response_format: object) -> str:
     )
 
 
-def _task_plan_prompt(task_id: str, task: dict[str, Any], profile: dict[str, Any]) -> str:
-    response_format = task.get("response_format")
-    schema = (
-        "Return exactly one JSON object for this task. Ordinary tasks use "
+def _task_plan_prompt(
+    blueprint_tasks: dict[str, Any], profile: dict[str, Any]
+) -> str:
+    response_formats = {
+        task.get("response_format")
+        for task in blueprint_tasks.values()
+        if isinstance(task, dict) and isinstance(task.get("response_format"), str)
+    }
+    return (
+        "Create one complete Task Plan for all predefined medical VLM benchmark tasks using only "
+        "the supplied Blueprint definitions and dataset profile. Evaluate the tasks collectively "
+        "before returning the plan.\n\n"
+        'Return JSON only as `{"tasks": {...}}` and include every Blueprint task ID exactly once.\n'
+        "Ordinary task entries use "
         '{"decision":"retain|drop","supporting_fields":["exact.path"],'
-        '"metric":"registered_name_or_null","reason":"..."}. '
-        if task_id not in DECOMPOSABLE_TASK_IDS
-        else "Return exactly one JSON object for this task. Decomposable tasks use "
+        '"metric":"registered_name_or_null","reason":"..."}.\n'
+        "Decomposable task entries use "
         '{"decision":"retain|drop","question_types":{"lower_snake_case_id":'
         '{"description":"one observable property","supporting_fields":["exactly.one.path"],'
-        '"metric":"registered_name","reason":"..."}},"reason":"..."}. '
-    )
-    return (
-        "Determine whether this one predefined medical VLM benchmark task is supported by the "
-        "dataset's entity-scoped annotation fields. Use only this task and the supplied dataset profile.\n\n"
-        f"{schema}A dropped decomposable task uses an empty `question_types` object.\n\n"
+        '"metric":"registered_name","reason":"..."}},"reason":"..."}.\n'
+        "A dropped decomposable task uses an empty `question_types` object. Keep every reason concise.\n\n"
         "Rules:\n"
-        "1. Treat this task's `description` and `require` fields as the authoritative support criteria.\n"
+        "1. Treat each task's `description` and `require` fields as the authoritative support criteria.\n"
         "2. `supporting_fields` must contain only exact paths present in `dataset_profile.fields`.\n"
         "3. Do not invent fields, annotation values, medical meanings, or relationships that are not "
         "supported by the dataset profile.\n"
@@ -95,6 +101,16 @@ def _task_plan_prompt(task_id: str, task: dict[str, Any], profile: dict[str, Any
         "- Two fields belong to different question types when they answer different questions or cannot "
         "use one shared, mutually exclusive option taxonomy. Do not merge fields merely because they occur "
         "in the same annotation object or describe the same image or target.\n\n"
+        "Whole-plan consistency:\n"
+        "1. Treat each retained ordinary task and each retained question type as one atomic task.\n"
+        "2. Re-check every atomic task against its parent Blueprint definition and the dataset profile.\n"
+        "3. A decomposable attribute task is residual: omit any question type whose semantic answer axis "
+        "is represented more directly by a retained ordinary task.\n"
+        "4. Compare all atomic tasks by semantic question and answer axis. When two are duplicates, keep "
+        "the one whose Blueprint definition most directly represents that axis.\n"
+        "5. A shared supporting field alone does not establish duplication, and different metrics do not "
+        "distinguish duplicate semantics.\n"
+        "6. Remove unsupported or duplicate question types, and drop a decomposable parent when none remain.\n\n"
         "How to interpret the dataset profile:\n"
         "- For semantic fields, use `top_values` as the primary evidence when present. These are bounded, "
         "possibly truncated examples and are not the field's complete value space.\n"
@@ -119,6 +135,8 @@ def _task_plan_prompt(task_id: str, task: dict[str, Any], profile: dict[str, Any
         "Task-specific criteria:\n"
         "- `modality_identification` and `anatomy_identification`: require at least two semantically distinct "
         "annotated answer values. Drop either task when its answer field is constant.\n"
+        "- `anatomy_attribute`: acquisition view, projection, plane, and orientation belong to "
+        "`view_identification` and must not become anatomy question types.\n"
         "- `finding_presence` evaluates binary presence or absence when no direct categorical finding label is "
         "available. When a direct categorical finding label is available, prefer `finding_type` for the "
         "category-identification task. Require explicit positive and negative evidence; missing annotations, "
@@ -134,6 +152,8 @@ def _task_plan_prompt(task_id: str, task: dict[str, Any], profile: dict[str, Any
         "categories, benign/malignant status, and missing or non-diagnostic values are insufficient.\n"
         "- `pathology_status`: requires an explicit pathology or malignancy-status field. A diagnosis field "
         "alone is insufficient.\n"
+        "- `severity_grading`: ordered labels alone do not establish severity. The field must explicitly "
+        "encode severity, extent, grade, or stage rather than another clinical concept.\n"
         f"- {VISUAL_GROUNDING_RULE} {VISUAL_GROUNDING_PAIRING_RULE}\n"
         "- `detection`: requires candidate bbox support. Other finding or case annotations may coexist, but "
         "they must not be used to identify the target in a detection question.\n\n"
@@ -143,63 +163,20 @@ def _task_plan_prompt(task_id: str, task: dict[str, Any], profile: dict[str, Any
         "- If there is no candidate bbox support, drop both spatial tasks.\n"
         "- For tasks without additional criteria above, apply their Blueprint `description` and `require` "
         "fields directly.\n\n"
-        f"{_metric_prompt_rules(response_format)}"
-        f"Task ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n\n"
-        f"Dataset profile:\n{json.dumps(profile, ensure_ascii=False)}"
-    )
-
-
-def _task_plan_reconciliation_prompt(
-    blueprint_tasks: dict[str, Any],
-    profile: dict[str, Any],
-    draft_task_plan: dict[str, Any],
-) -> str:
-    return (
-        "Review the complete draft Task Plan for clear cross-task consistency problems.\n"
-        "This is a lightweight review of the existing decisions, not a new capability-screening pass.\n\n"
-        "Use only the Blueprint task definitions, the dataset profile, and the draft Task Plan.\n\n"
-        "Review procedure:\n"
-        "1. Treat each retained ordinary task as one atomic task and each retained question type as one "
-        "atomic task under its parent.\n"
-        "2. Re-check every atomic task against its parent Blueprint definition and the dataset profile.\n"
-        "3. Compare every pair by semantic question and answer axis. When they duplicate each other, keep "
-        "the more directly defined atomic task. A shared supporting field alone does not establish duplication, "
-        "and different metrics do not distinguish duplicate semantics.\n"
-        "4. Remove duplicate or unsupported atomic tasks and rebuild each decomposable task. Represent a removed "
-        "ordinary task as `drop`; omit a removed question type and drop its parent when none remain.\n\n"
-        "When a task is valid but its reason is inaccurate or poorly expressed, rewrite only the reason.\n"
-        "Do not restore a task that was already dropped.\n"
-        "Do not add tasks, supporting fields, question types, or metrics.\n"
-        "For retained atomic tasks, preserve the exact description, supporting fields, and metric from the draft.\n"
-        "If the evidence is ambiguous, preserve the draft decision for human review.\n\n"
-        "Return JSON only, using the same complete Task Plan schema:\n"
-        '{"tasks": {...}}\n\n'
+        f"{_metric_prompt_rules(response_formats)}"
         f"Blueprint task definitions:\n{json.dumps(blueprint_tasks, ensure_ascii=False)}\n\n"
-        f"Dataset profile:\n{json.dumps(profile, ensure_ascii=False)}\n\n"
-        f"Draft Task Plan:\n{json.dumps(draft_task_plan, ensure_ascii=False)}"
-    )
-
-
-def _task_plan_reconciliation_repair_prompt(errors: list[str]) -> str:
-    return (
-        "Your previous Task Plan review violated the required contract.\n\n"
-        "Return a complete valid Task Plan for the same Blueprint tasks.\n"
-        "Keep every original task unless there is a clear duplicate or a clearly unsupported retained conclusion.\n"
-        "Do not add tasks, supporting fields, question types, or metrics.\n"
-        "Retained tasks must preserve their original supporting fields and metric.\n"
-        "Dropped ordinary tasks must have an empty supporting_fields list and metric null.\n"
-        "Return JSON only.\n\n"
-        f"Validation errors to correct: {json.dumps(errors, ensure_ascii=False)}"
+        f"Dataset profile:\n{json.dumps(profile, ensure_ascii=False)}"
     )
 
 
 def _task_revision_prompt(
     task_id: str,
-    task: dict[str, Any],
-    current_plan: dict[str, Any],
+    blueprint_tasks: dict[str, Any],
+    current_task_plan: dict[str, Any],
     profile: dict[str, Any],
     feedback: str,
 ) -> str:
+    task = blueprint_tasks[task_id]
     decomposable = task_id in DECOMPOSABLE_TASK_IDS
     response_format = task.get("response_format")
     schema = (
@@ -211,7 +188,9 @@ def _task_revision_prompt(
         "supporting field; a dropped task needs no supporting fields and metric null."
     )
     return (
-        "Revise only this one Task Plan entry using the user's feedback. Return JSON only.\n\n"
+        "Revise only the selected Task Plan entry using the user's feedback. Use the complete "
+        "Blueprint and current Task Plan as consistency context, but do not return or change any "
+        "other entry. Return JSON only.\n\n"
         f"{schema}\n\nSupporting "
         "fields must exist in dataset_profile.fields. Use top_values as the primary field-semantic evidence; "
         "they may be truncated and are not exhaustive. Every retained letter-response task requires at least "
@@ -229,12 +208,20 @@ def _task_revision_prompt(
         "diagnoses, assessments, pathology results, prognoses, and suspicion labels are insufficient.\n\n"
         "For anatomy_attribute and finding_attribute, one question type represents one semantic answer axis; "
         "different properties require separate question types, each with one unique supporting field.\n\n"
+        "A decomposable attribute task is residual: omit any question type whose semantic answer axis is "
+        "represented more directly by a retained ordinary task. A shared field alone does not establish "
+        "duplication, and different metrics do not distinguish duplicate semantics.\n\n"
+        "For anatomy_attribute, acquisition view, projection, plane, and orientation belong to "
+        "view_identification. For severity_grading, ordered labels qualify only when the field explicitly "
+        "encodes severity, extent, grade, or stage.\n\n"
         f"{VISUAL_GROUNDING_RULE} {VISUAL_GROUNDING_PAIRING_RULE}\n\n"
         "detection requires a bbox and remains supported even when finding text coexists. Both spatial tasks "
         "may be retained. A segmentation mask is not a bbox and must not be treated or converted into one.\n\n"
-        f"{_metric_prompt_rules(response_format)}"
-        f"\nTask ID: {task_id}\nTask: {json.dumps(task, ensure_ascii=False)}\n\n"
-        f"Current task plan: {json.dumps(current_plan, ensure_ascii=False)}\n\n"
+        f"{_metric_prompt_rules({response_format} if isinstance(response_format, str) else set())}"
+        f"\nSelected Task ID: {task_id}\n"
+        f"Selected Blueprint task: {json.dumps(task, ensure_ascii=False)}\n\n"
+        f"All Blueprint task definitions: {json.dumps(blueprint_tasks, ensure_ascii=False)}\n\n"
+        f"Complete current Task Plan: {json.dumps(current_task_plan, ensure_ascii=False)}\n\n"
         f"User feedback: {feedback}\n\n"
         f"Dataset profile: {json.dumps(profile, ensure_ascii=False)}"
     )
@@ -418,161 +405,29 @@ def validate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any], respo
     return {"tasks": {task_id: normalized_tasks[task_id] for task_id in tasks}}, []
 
 
-def _validate_reconciliation_changes(
-    draft_task_plan: dict[str, Any], reviewed_task_plan: dict[str, Any]
-) -> list[str]:
-    draft_tasks = draft_task_plan.get("tasks")
-    reviewed_tasks = reviewed_task_plan.get("tasks")
-    if not isinstance(draft_tasks, dict) or not isinstance(reviewed_tasks, dict):
-        return ["reconciliation: both draft and reviewed plans must contain tasks objects"]
-    if set(draft_tasks) != set(reviewed_tasks):
-        return ["reconciliation: task IDs cannot be added or removed"]
-
-    errors: list[str] = []
-    for task_id, draft in draft_tasks.items():
-        reviewed = reviewed_tasks[task_id]
-        if not isinstance(draft, dict) or not isinstance(reviewed, dict):
-            errors.append(f"reconciliation: task {task_id} must remain an object")
-            continue
-        if draft.get("decision") == "drop":
-            if reviewed.get("decision") != "drop":
-                errors.append(f"reconciliation: dropped task {task_id} cannot be restored")
-            continue
-        if draft.get("decision") != "retain":
-            errors.append(f"reconciliation: draft task {task_id} has an invalid decision")
-            continue
-        if reviewed.get("decision") == "drop":
-            continue
-        if reviewed.get("decision") != "retain":
-            errors.append(f"reconciliation: task {task_id} must remain retained or be dropped")
-            continue
-        if task_id in DECOMPOSABLE_TASK_IDS:
-            draft_question_types = draft.get("question_types", {})
-            reviewed_question_types = reviewed.get("question_types", {})
-            if not isinstance(draft_question_types, dict) or not isinstance(reviewed_question_types, dict):
-                errors.append(f"reconciliation: {task_id} question_types must remain objects")
-                continue
-            if set(reviewed_question_types) - set(draft_question_types):
-                errors.append(f"reconciliation: {task_id} cannot add question types")
-                continue
-            for question_type_id, draft_question_type in draft_question_types.items():
-                reviewed_question_type = reviewed_question_types.get(question_type_id)
-                if reviewed_question_type is None:
-                    continue
-                if not isinstance(draft_question_type, dict) or not isinstance(reviewed_question_type, dict):
-                    errors.append(
-                        f"reconciliation: {task_id}.{question_type_id} must remain an object"
-                    )
-                    continue
-                for field in ("description", "supporting_fields", "metric"):
-                    if reviewed_question_type.get(field) != draft_question_type.get(field):
-                        errors.append(
-                            f"reconciliation: {task_id}.{question_type_id} cannot change {field}"
-                        )
-        else:
-            for field in ("supporting_fields", "metric"):
-                if reviewed.get(field) != draft.get(field):
-                    errors.append(f"reconciliation: {task_id} cannot change {field}")
-    return errors
-
-
-def _validate_reconciled_task_plan(
-    blueprint: dict[str, Any], profile: dict[str, Any], draft_task_plan: dict[str, Any], response: object
-) -> tuple[dict[str, Any] | None, list[str]]:
-    reviewed_task_plan, errors = validate_task_plan(blueprint, profile, response)
-    if reviewed_task_plan is not None:
-        errors.extend(_validate_reconciliation_changes(draft_task_plan, reviewed_task_plan))
-    return reviewed_task_plan, errors
-
-
-def _reconcile_task_plan(
-    blueprint: dict[str, Any], profile: dict[str, Any], draft_task_plan: dict[str, Any]
-) -> dict[str, Any]:
-    prompt = _task_plan_reconciliation_prompt(blueprint["tasks"], profile, draft_task_plan)
-    with event_operation("task_plan_reconcile"):
-        response = complete_json(prompt, "Return the reviewed complete Task Plan.")
-    reviewed_task_plan, errors = _validate_reconciled_task_plan(
-        blueprint, profile, draft_task_plan, response
-    )
-    if reviewed_task_plan is not None and not errors:
-        return reviewed_task_plan
-
-    with event_operation("repair"):
-        repaired = complete_json(
-            f"{prompt}\n\n{_task_plan_reconciliation_repair_prompt(errors)}",
-            "Return the corrected complete Task Plan.",
-        )
-    reviewed_task_plan, errors = _validate_reconciled_task_plan(
-        blueprint, profile, draft_task_plan, repaired
-    )
-    if reviewed_task_plan is None or errors:
-        if not errors:
-            errors = ["reviewed Task Plan did not pass reconciliation validation"]
-        raise TaskPlanReviewRequired(
-            repaired if isinstance(repaired, dict) else {"response": repaired},
-            [
-                error if error.startswith("reconciliation:") else f"reconciliation: {error}"
-                for error in errors
-            ],
-        )
-    return reviewed_task_plan
-
-
-def _generate_task_plan_entry(
-    task_id: str, task: dict[str, Any], profile: dict[str, Any]
-) -> dict[str, Any]:
-    """Generate and validate one task entry, repairing one invalid response."""
-    prompt = _task_plan_prompt(task_id, task, profile)
-    with event_context(task_id=task_id):
-        response = complete_json(prompt, f"Return the Task Plan entry for `{task_id}`.")
-    decision, errors = _normalize_task_decision(
-        task_id,
-        response,
-        set(profile.get("fields", {})),
-        profile,
-        task.get("response_format"),
-    )
-    if decision is not None:
-        return decision
-    with event_operation("repair"):
-        with event_context(task_id=task_id):
-            repaired = complete_json(
-                f"{prompt}\n\nYour previous response violated this contract: {errors}. "
-                "Retry once with a valid Task Plan entry for this task.",
-                f"Return the corrected Task Plan entry for `{task_id}`.",
-            )
-    decision, errors = _normalize_task_decision(
-        task_id,
-        repaired,
-        set(profile.get("fields", {})),
-        profile,
-        task.get("response_format"),
-    )
-    if decision is None:
-        raise TaskPlanReviewRequired(
-            repaired if isinstance(repaired, dict) else {"response": repaired},
-            errors,
-        )
-    return decision
-
-
 def generate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    """Generate independent task entries, then reconcile obvious cross-task issues."""
+    """Generate and validate one complete Task Plan, repairing one invalid response."""
     tasks = blueprint.get("tasks")
     if not isinstance(tasks, dict):
         raise ValueError("Working blueprint must contain a tasks object")
-    decisions = {
-        task_id: _generate_task_plan_entry(task_id, task, profile)
-        for task_id, task in tasks.items()
-        if isinstance(task, dict)
-    }
-    plan, errors = validate_task_plan(blueprint, profile, {"tasks": decisions})
+    prompt = _task_plan_prompt(tasks, profile)
+    response = complete_json(prompt, "Return the complete Task Plan.")
+    plan, errors = validate_task_plan(blueprint, profile, response)
+    if plan is not None:
+        return plan
+    with event_operation("repair"):
+        repaired = complete_json(
+            f"{prompt}\n\nYour previous response violated this contract: "
+            f"{json.dumps(errors, ensure_ascii=False)}. Retry once with a complete valid Task Plan.",
+            "Return the corrected complete Task Plan.",
+        )
+    plan, errors = validate_task_plan(blueprint, profile, repaired)
     if plan is None:
         raise TaskPlanReviewRequired(
-            {"tasks": decisions},
+            repaired if isinstance(repaired, dict) else {"response": repaired},
             errors,
         )
-    return _reconcile_task_plan(blueprint, profile, plan)
+    return plan
 
 
 def revise_task_plan(
@@ -583,7 +438,7 @@ def revise_task_plan(
     planned_tasks = draft_task_plan.get("tasks")
     if not isinstance(tasks, dict) or not isinstance(planned_tasks, dict) or task_id not in tasks or task_id not in planned_tasks:
         raise ValueError(f"Unknown task_id: {task_id}")
-    prompt = _task_revision_prompt(task_id, tasks[task_id], planned_tasks[task_id], profile, feedback)
+    prompt = _task_revision_prompt(task_id, tasks, draft_task_plan, profile, feedback)
     with event_context(task_id=task_id):
         response = complete_json(prompt, "Return the revised task plan entry.")
     decision, errors = _normalize_task_decision(

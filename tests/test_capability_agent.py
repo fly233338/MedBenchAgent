@@ -333,14 +333,14 @@ def test_task_plan_draft_is_written_before_human_review(tmp_path: Path, monkeypa
     assert snapshot["source"] == "initial_model_output"
 
 
-def test_task_plan_reconciliation_failure_does_not_write_artifact(
+def test_task_plan_generation_failure_does_not_write_artifact(
     tmp_path: Path, monkeypatch
 ) -> None:
     blueprint_path = tmp_path / "blueprint.json"
     events_path = tmp_path / "construction_events.jsonl"
     events_path.touch()
     blueprint_path.write_text(json.dumps({"tasks": {"view": _task()}}), encoding="utf-8")
-    error = TaskPlanReviewRequired({"tasks": {}}, ["reconciliation: invalid reviewed Task Plan"])
+    error = TaskPlanReviewRequired({"tasks": {}}, ["invalid complete Task Plan"])
 
     def fail_generate_task_plan(*_args):
         raise error

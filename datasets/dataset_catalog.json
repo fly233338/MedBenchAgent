@@ -12,28 +12,21 @@
       "name": "BUS-UCLM",
       "description": "A breast ultrasound dataset with image-level diagnostic labels, Doppler and mark indicators, and segmentation-mask references.",
       "annotation_path": "datasets/Normalized/BUSUCLM/annotation.jsonl",
-      "available": false
+      "available": true
     },
     {
       "id": "busbra",
       "name": "BUS-BRA",
       "description": "A breast ultrasound dataset with image-level histology, pathology, BI-RADS, acquisition-device, laterality, bounding-box, and segmentation-mask annotations.",
       "annotation_path": "datasets/Normalized/BUSBRA/annotation.jsonl",
-      "available": false
+      "available": true
     },
     {
-      "id": "cmmd",
-      "name": "CMMD",
-      "description": "A mammography dataset with patient demographics, study dates, image laterality, DICOM image metadata, and breast-side clinical abnormality, classification, and subtype annotations.",
-      "annotation_path": "datasets/Normalized/CMMD/annotation.jsonl",
-      "available": false
-    },
-    {
-      "id": "inbreast",
-      "name": "INbreast",
-      "description": "A mammography dataset with image-level laterality, view, ACR, BI-RADS, finding summaries, lesion ROIs, pectoral-muscle boundaries, and case-level medical reports.",
-      "annotation_path": "datasets/Normalized/INbreast/annotation.jsonl",
-      "available": false
+      "id": "vindr",
+      "name": "VinDr-Mammo",
+      "description": "A full-field digital mammography dataset with breast-level BI-RADS and density assessments, lesion findings, and bounding-box annotations.",
+      "annotation_path": "datasets/Normalized/VinDr/annotation.jsonl",
+      "available": true
     }
   ]
 }

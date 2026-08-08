@@ -23,6 +23,9 @@ def test_metric_prompt_catalog_contains_selection_guidance() -> None:
 
     assert "accuracy" in prompt
     assert "macro_f1" in prompt
-    assert "most- and least-frequent class statistics show a large disparity" in prompt
+    assert "answer classes are approximately balanced" in prompt
+    assert "class statistics indicate class imbalance" in prompt
     assert "high-risk diagnostic decision" in prompt
+    assert "default" not in prompt
+    assert "large disparity" not in prompt
     assert "multi-class" not in prompt

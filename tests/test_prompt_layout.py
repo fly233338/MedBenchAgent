@@ -34,17 +34,71 @@ def _assert_call_unchanged(
     _assert_content_unchanged(prompt_content_hashes, f"{name}_user", call[1])
 
 
+def test_complete_task_plan_prompt_only_changes_whitespace(
+    prompt_content_hashes: dict[str, str],
+) -> None:
+    tasks = {
+        "view_identification": {
+            "description": "Identify the acquisition view.",
+            "response_format": "letter",
+        },
+        "anatomy_attribute": {
+            "description": "Determine one global anatomical property.",
+            "response_format": "letter",
+        },
+        "severity_grading": {
+            "description": "Determine severity.",
+            "response_format": "letter",
+        },
+        "detection": {
+            "description": "Locate an abnormal region.",
+            "response_format": "bbox",
+        },
+        "report_generation": {
+            "description": "Generate a report.",
+            "response_format": "free_text",
+        },
+    }
+    profile = {
+        "fields": {
+            "image.annotation.view": {"distinct_value_count": 2},
+            "image.annotation.texture": {"distinct_value_count": 2},
+            "image.annotation.bbox[*]": {"distinct_value_count": 4},
+            "image.annotation.report": {"distinct_value_count": 2},
+        }
+    }
+
+    prompt = task_screening._task_plan_prompt(tasks, profile)
+
+    _assert_content_unchanged(prompt_content_hashes, "task_plan", prompt)
+    assert all(task_id in prompt for task_id in tasks)
+    assert "A decomposable attribute task is residual" in prompt
+    assert "ordered labels alone do not establish severity" in prompt
+    assert "accuracy" in prompt
+    assert "macro_f1" in prompt
+    assert "miou" in prompt
+    assert "bleu" in prompt
+    assert "BI-RADS" not in prompt
+    assert "breast cancer" not in prompt.lower()
+
+
 def test_task_revision_and_rag_design_prompts_only_change_whitespace(
     prompt_content_hashes: dict[str, str], monkeypatch
 ) -> None:
     revision = task_screening._task_revision_prompt(
         "view",
-        {"response_format": "letter", "description": "Identify view."},
         {
-            "decision": "retain",
-            "supporting_fields": ["image.annotation.view"],
-            "metric": "accuracy",
-            "reason": "Present.",
+            "view": {"response_format": "letter", "description": "Identify view."}
+        },
+        {
+            "tasks": {
+                "view": {
+                    "decision": "retain",
+                    "supporting_fields": ["image.annotation.view"],
+                    "metric": "accuracy",
+                    "reason": "Present.",
+                }
+            }
         },
         {
             "fields": {
@@ -60,8 +114,9 @@ def test_task_revision_and_rag_design_prompts_only_change_whitespace(
     _assert_content_unchanged(prompt_content_hashes, "task_revision", revision)
     assert "Return JSON only.\n\nReturn decision" in revision
     assert "do not qualify.\n\nfinding_presence" in revision
-    assert "\n\nTask ID: view\nTask:" in revision
-    assert "\n\nCurrent task plan:" in revision
+    assert "\nSelected Task ID: view\n" in revision
+    assert "\n\nAll Blueprint task definitions:" in revision
+    assert "\n\nComplete current Task Plan:" in revision
     assert "\n\nUser feedback:" in revision
     assert "\n\nDataset profile:" in revision
 

@@ -24,15 +24,15 @@ role-specialized agents + deterministic orchestration：
 2. `CapabilityAgent` 从 `datasets/dataset_catalog.json` 推荐并确认数据集。
    代码解析路径、校验 `annotation.jsonl`，再生成
    内容寻址的 DuckDB、dataset profile 和 access manifest。
-3. `CapabilityAgent` 根据 profile 为每个预定义任务顺序调用一次模型生成 Task Plan entry，再聚合为完整
-   Task Plan；随后执行一次轻量的全局一致性复核，删除明显重复或明显不受支持的保留任务并重写必要的 reason，
-   再交给人工逐项修订。全局复核不能新增 task、字段、question type 或 metric。每个保留的最终任务同时选择一个由共享 metric registry 提供、且与
+3. `CapabilityAgent` 将全部预定义任务和完整 profile 放入一次模型调用，统一完成支持性判断、跨任务语义去重和 metric 选择，直接生成完整
+   Task Plan；代码验证全部 task entry，仅在完整响应违反契约时允许一次 repair，再交给人工逐项修订。人工修订能看到完整 Blueprint 与当前 Task Plan，
+   但只能替换指定 task。每个保留的最终任务同时选择一个由共享 metric registry 提供、且与
    `response_format` 兼容的主指标。所有保留的 letter 任务必须有至少两个语义答案类别，代码以获准字段的
    `distinct_value_count >= 2` 作为必要条件兜底；`finding_presence` 表示在没有直接 finding 类别标签时对指定 finding
    做二元 presence/absence 判断，且必须同时具有显式正例和负例。
    `anatomy_attribute` 与 `finding_attribute` 按单一语义答案轴识别 question type，每个类型只使用一个字段，并展开为
    `<parent_task_id>.<question_type_id>` 独立任务；每个展开任务独立保存 metric。确认后，代码删除不支持的任务并写入
-   `supporting_fields` 与 metric；首轮逐任务输出经过全局复核后写入 `task_plans/v1.json`，每轮人工修订写入递增的 `vN.json`，不覆盖历史版本。
+   `supporting_fields` 与 metric；首轮完整输出写入 `task_plans/v1.json`，每轮人工修订写入递增的 `vN.json`，不覆盖历史版本。
 4. `CapabilityAgent` 按任务 category 稳定加权分配样本数：仅在保留类别间归一化默认权重，以最大余数法分配类别整数总数；类别内先在原始父任务之间分配，再在父任务的有效 question types 之间均分，因此拆分不会提高父任务权重。自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
 5. `ClinicalDesignAgent` 包装现有 `rag_designs` 子图，对每个非零任务使用医学 PDF 做 RAG，逐项把设计和引用写入 Blueprint，再由
    人工整体确认或定向重做。新设计为每个具体 question type 生成配置数量的唯一、语义等价模板，默认三个；letter 任务先请求一个获准字段的安全精确分类值摘要，再生成结构化 `answer_field` 与 `answer_value_mapping`。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。

@@ -162,7 +162,7 @@ def _dataset_profile_node(state: CapabilityAgentState) -> dict[str, Any]:
 
 
 def _task_plan_generate_node(state: CapabilityAgentState) -> dict[str, Any]:
-    """Generate one validated entry per task; this node never interrupts or edits Blueprint."""
+    """Generate one complete validated Task Plan without interrupting or editing Blueprint."""
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
     with llm_context(state, CAPABILITY_AGENT, "task_plan_generate"):
         task_plan = generate_task_plan(blueprint, state["dataset_profile"])
