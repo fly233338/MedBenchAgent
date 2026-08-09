@@ -451,8 +451,11 @@ answer fails strict parsing. Letter responses may be one bare valid letter, the
 Lingshu-style form with one trailing ASCII period such as `A.`, or a valid letter
 and period followed by option text or an explanation such as `A. Benign` or
 `A. because ...`. Multiple letters without this prefix form and other wrappers
-remain parse errors. Free text must be non-empty, and bbox responses must be exactly one
-`{"bbox":[x1,y1,x2,y2]}` JSON object.
+remain parse errors. Free text must be non-empty, and bbox responses must contain exactly
+one distinct box. The bbox parser accepts `bbox` or `bbox_2d` fields in JSON, Markdown,
+or surrounding text, plus a bare four-number list or tuple when it is the complete answer.
+Repeated identical boxes are deduplicated; zero or multiple distinct boxes remain parse
+errors before the existing coordinate-space checks and rescaling.
 
 The InternVL3.5 adapter installs a model-specific reasoning system prompt based on
 InternVL's optional Thinking Mode protocol. It requires all reasoning inside
@@ -476,6 +479,7 @@ PYTHONPATH=src python -m torch.distributed.run \
   --benchmark /path/to/benchmark.DATASET.audited.jsonl \
   --benchmark-manifest /path/to/benchmark_manifest.json \
   --image-manifest /path/to/image_manifest.jsonl \
+  --task-types letter bbox free_text \
   --output results/qwen2_5_vl_7b_instruct.json \
   --batch-size 4
 
@@ -492,7 +496,10 @@ are not limited by NCCL's default 10-minute process-group timeout. Generation is
 greedy, with
 defaults of 512 new tokens, SDPA, and 0.5 correctness thresholds for both BLEU
 and bbox IoU. Existing inference outputs and temporary parts are protected
-unless `--overwrite` is supplied; interrupted jobs do not resume.
+unless `--overwrite` is supplied; interrupted jobs do not resume. `--task-types`
+is required, accepts one or more unique values from `letter`, `bbox`, and `free_text`,
+and filters samples before model loading. Every requested type must be present in the
+benchmark. The selected order is recorded in inference metadata.
 
 The CLI default remains SDPA for portability. Pass
 `--attn-implementation flash_attention_2` to opt in. PyTorch SDPA may itself
@@ -506,8 +513,11 @@ data-parallel replicas and does not shard a 32B model across GPUs. A 32B BF16
 checkpoint therefore requires a GPU that can hold the complete model plus runtime
 memory; multi-GPU tensor parallelism and quantization are outside this evaluator.
 
-The evaluator recomputes item scores and checks the recorded result. It reports
-accuracy, semantic-option macro-F1, SacreBLEU, and mean IoU according to each
+The evaluator recomputes item scores and checks the recorded result. One report file
+is a response-format-keyed object whose selected `letter`, `bbox`, and `free_text`
+values are complete `medbench-evaluation.v1` reports. Each section independently
+contains `metadata`, `summary`, `metric_groups`, `categories`, `tasks`, and `items`.
+It reports accuracy, semantic-option macro-F1, SacreBLEU, and mean IoU according to each
 question type's manifest metric. `metric_groups` exposes two hierarchical task-macro
 values instead of grouping by those native metrics: each question type first contributes
 its `correct_rate` and native `score` to an equal-weight mean within its parent task, then
@@ -518,6 +528,10 @@ tasks its inputs remain BLEU or mIoU rather than classification F1. Optional
 correctness without rerunning the model. The report's per-item `items` list
 retains both the normalized `prediction` and the model's complete
 `raw_prediction` for output auditing.
+
+For bbox sections, task `score` is mIoU and `correct_rate` is Acc@IoU using the
+report's configurable `bbox_iou` threshold (0.5 by default). This single-box output
+contract has no confidence score, so the evaluator does not claim standard AP/mAP.
 
 Every letter task also records semantic-option `macro_f1`, regardless of its
 primary metric. Free-text and bbox tasks record `macro_f1: null`. Category and

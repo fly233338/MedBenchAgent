@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import math
+import re
 
 from medbenchagent.evaluation.contracts import InferenceSample, ModelOutput
 
@@ -12,14 +12,43 @@ class PredictionParseError(ValueError):
     """Raised when a model response cannot be safely normalized."""
 
 
-def _bbox_answer(raw_text: str) -> object:
-    try:
-        payload = json.loads(raw_text.strip())
-    except json.JSONDecodeError as exc:
-        raise PredictionParseError("bbox response is not valid JSON") from exc
-    if not isinstance(payload, dict) or set(payload) != {"bbox"}:
-        raise PredictionParseError("bbox response must contain exactly one bbox field")
-    return payload["bbox"]
+_NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+_BBOX_FIELD = re.compile(
+    r'(?i)(?<![A-Za-z0-9_])(?:["\']?bbox(?:_2d)?["\']?)(?![A-Za-z0-9_])'
+    r"\s*[:=]\s*(\[[^\[\]]*\]|\([^()]*\))"
+)
+_JSON_FENCE = re.compile(r"\A\s*```(?:json)?\s*(.*?)\s*```\s*\Z", re.IGNORECASE | re.DOTALL)
+
+
+def _coordinate_candidate(value: str) -> tuple[float, float, float, float] | None:
+    stripped = value.strip()
+    if len(stripped) < 2 or (stripped[0], stripped[-1]) not in {("[", "]"), ("(", ")")}:
+        return None
+    parts = [part.strip() for part in stripped[1:-1].split(",")]
+    if len(parts) != 4 or any(re.fullmatch(_NUMBER, part) is None for part in parts):
+        return None
+    coordinates = tuple(float(part) for part in parts)
+    if not all(math.isfinite(part) for part in coordinates):
+        return None
+    return coordinates
+
+
+def _bbox_answer(raw_text: str) -> list[float]:
+    candidates = {
+        candidate
+        for match in _BBOX_FIELD.finditer(raw_text)
+        if (candidate := _coordinate_candidate(match.group(1))) is not None
+    }
+    stripped = raw_text.strip()
+    fence = _JSON_FENCE.fullmatch(stripped)
+    if fence is not None:
+        stripped = fence.group(1).strip()
+    bare_candidate = _coordinate_candidate(stripped)
+    if bare_candidate is not None:
+        candidates.add(bare_candidate)
+    if len(candidates) != 1:
+        raise PredictionParseError("bbox response must contain exactly one distinct bounding box")
+    return list(candidates.pop())
 
 
 def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list[float]:

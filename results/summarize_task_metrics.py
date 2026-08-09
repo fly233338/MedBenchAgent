@@ -44,14 +44,44 @@ def task_metrics(data: dict[str, Any]) -> dict[str, dict[str, float]]:
     }
 
 
+def report_sections(data: dict[str, Any]) -> list[tuple[str | None, dict[str, Any]]]:
+    """Accept either one legacy report or response-format keyed reports."""
+    if isinstance(data.get("tasks"), dict):
+        return [(None, data)]
+    sections = []
+    for task_type, report in data.items():
+        if task_type not in {"letter", "bbox", "free_text"} or not isinstance(report, dict):
+            raise ValueError("Evaluation report has an unsupported grouped structure.")
+        if not isinstance(report.get("tasks"), dict):
+            raise ValueError(f"{task_type}: evaluation report is missing tasks.")
+        sections.append((task_type, report))
+    if not sections:
+        raise ValueError("Evaluation report contains no task sections.")
+    return sections
+
+
+def summary_lines(data: dict[str, Any]) -> list[str]:
+    lines = []
+    for task_type, report in report_sections(data):
+        if lines:
+            lines.append("")
+        if task_type is not None:
+            lines.append(task_type)
+        results = task_metrics(report)
+        tasks = list(results)
+        lines.append(",".join(tasks))
+        first_metric, second_metric = (
+            ("f1", "accuracy") if task_type == "bbox" else ("accuracy", "f1")
+        )
+        lines.append(",".join(f"{results[task][first_metric]:.4f}" for task in tasks))
+        lines.append(",".join(f"{results[task][second_metric]:.4f}" for task in tasks))
+    return lines
+
+
 def main() -> None:
     with JSON_PATH.open("r", encoding="utf-8") as source:
         data = json.load(source)
-    results = task_metrics(data)
-    tasks = list(results)
-    print(",".join(tasks))
-    print(",".join(f"{results[task]['accuracy']:.4f}" for task in tasks))
-    print(",".join(f"{results[task]['f1']:.4f}" for task in tasks))
+    print("\n".join(summary_lines(data)))
 
 
 if __name__ == "__main__":

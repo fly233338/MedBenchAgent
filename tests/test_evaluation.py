@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from runpy import run_path
 
 import pytest
 import torch
@@ -22,12 +23,19 @@ from medbenchagent.evaluation.eval import (
 from medbenchagent.evaluation.inference import (
     DistributedContext,
     _mark_rank_complete,
+    _parser as inference_parser,
+    _validate_args as validate_inference_args,
     _wait_for_rank_completion,
     run_inference,
     shard_indices,
 )
 from medbenchagent.evaluation.parsing import PredictionParseError, parse_prediction
 from medbenchagent.evaluation.scoring import bbox_iou, item_score, macro_f1, option_value
+
+
+summary_lines = run_path(
+    str(Path(__file__).resolve().parents[1] / "results" / "summarize_task_metrics.py")
+)["summary_lines"]
 
 
 def _sha256(path: Path) -> str:
@@ -113,6 +121,42 @@ def _fixture(
         },
     )
     return benchmark, manifest, image_manifest
+
+
+def _mixed_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    items = [
+        _letter_item(0),
+        {
+            **_letter_item(1),
+            "task_id": "detection",
+            "options": None,
+            "answer": [1, 1, 10, 8],
+        },
+        {
+            **_letter_item(2),
+            "task_id": "report_generation",
+            "options": None,
+            "answer": "No acute finding.",
+        },
+    ]
+    tasks = {
+        "diagnosis": {
+            "category": "clinical",
+            "response_format": "letter",
+            "metrics": ["accuracy"],
+        },
+        "detection": {
+            "category": "spatial_localization",
+            "response_format": "bbox",
+            "metrics": ["miou"],
+        },
+        "report_generation": {
+            "category": "report",
+            "response_format": "free_text",
+            "metrics": ["bleu"],
+        },
+    }
+    return _fixture(tmp_path, items=items, tasks=tasks)
 
 
 def _sample(response_format: str, answer: object, options: list[str] | None = None) -> InferenceSample:
@@ -266,17 +310,38 @@ def test_parse_bbox_rescales_internvl_normalized_coordinate_space() -> None:
 
 
 @pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("[10,5,50,25]", [20.0, 10.0, 100.0, 50.0]),
+        ('```json\n{"bbox":[10,5,50,25]}\n```', [20.0, 10.0, 100.0, 50.0]),
+        (
+            '```json\n{"bbox_2d":[10,5,50,25],"label":"lesion"}\n```',
+            [20.0, 10.0, 100.0, 50.0],
+        ),
+        ("The final bbox is bbox = (10, 5, 50, 25).", [20.0, 10.0, 100.0, 50.0]),
+        (
+            'bbox: [10,5,50,25]\nFinal answer: {"bbox":[10,5,50,25]}',
+            [20.0, 10.0, 100.0, 50.0],
+        ),
+    ],
+)
+def test_parse_bbox_accepts_one_distinct_candidate(raw: str, expected: list[float]) -> None:
+    sample = _sample("bbox", [20.0, 10.0, 100.0, 50.0])
+    assert parse_prediction(ModelOutput(raw, coordinate_size=(100, 50)), sample) == expected
+
+
+@pytest.mark.parametrize(
     "raw",
     [
         '{"answer":[10,5,50,25]}',
-        "[10,5,50,25]",
-        '```json\n{"bbox":[10,5,50,25]}\n```',
-        '{"bbox":[10,5,50,25],"label":"lesion"}',
         '{"bbox":[true,5,50,25]}',
         '{"bbox":[10,5,150,25]}',
+        'bbox: [10,5,50,25] then bbox_2d: [20,5,60,25]',
+        'bbox_2d: [[10,5,50,25]]',
+        'not_bbox: [10,5,50,25]',
     ],
 )
-def test_parse_bbox_rejects_outputs_outside_strict_contract(raw: str) -> None:
+def test_parse_bbox_rejects_missing_ambiguous_or_invalid_candidates(raw: str) -> None:
     sample = _sample("bbox", [20.0, 10.0, 100.0, 50.0])
     with pytest.raises(PredictionParseError):
         parse_prediction(ModelOutput(raw, coordinate_size=(100, 50)), sample)
@@ -303,13 +368,31 @@ class _FakeAdapter:
         ]
 
 
-def _args(benchmark: Path, manifest: Path, image_manifest: Path, output: Path) -> argparse.Namespace:
+class _MixedAdapter:
+    def generate(self, samples: list[InferenceSample], *, max_new_tokens: int) -> list[ModelOutput]:
+        outputs = {
+            "letter": ModelOutput("B"),
+            "bbox": ModelOutput('{"bbox_2d":[1,1,10,8],"label":"lesion"}'),
+            "free_text": ModelOutput("No acute finding."),
+        }
+        return [outputs[sample.task.response_format] for sample in samples]
+
+
+def _args(
+    benchmark: Path,
+    manifest: Path,
+    image_manifest: Path,
+    output: Path,
+    *,
+    task_types: tuple[str, ...] = ("letter",),
+) -> argparse.Namespace:
     return argparse.Namespace(
         adapter="fake",
         model_path="models/fake",
         benchmark=str(benchmark),
         benchmark_manifest=str(manifest),
         image_manifest=str(image_manifest),
+        task_types=list(task_types),
         output=str(output),
         batch_size=2,
         max_new_tokens=32,
@@ -321,6 +404,105 @@ def _args(benchmark: Path, manifest: Path, image_manifest: Path, output: Path) -
         bbox_iou_threshold=0.5,
         overwrite=False,
     )
+
+
+def test_inference_parser_requires_unique_task_types() -> None:
+    parser = inference_parser()
+    required = [
+        "--model-path",
+        "model",
+        "--benchmark",
+        "benchmark.jsonl",
+        "--benchmark-manifest",
+        "manifest.json",
+        "--image-manifest",
+        "images.jsonl",
+        "--output",
+        "output.json",
+    ]
+    with pytest.raises(SystemExit):
+        parser.parse_args(required)
+
+    args = parser.parse_args([*required, "--task-types", "letter", "bbox", "free_text"])
+    validate_inference_args(parser, args)
+    assert args.task_types == ["letter", "bbox", "free_text"]
+
+    duplicate_args = parser.parse_args([*required, "--task-types", "bbox", "bbox"])
+    with pytest.raises(SystemExit):
+        validate_inference_args(parser, duplicate_args)
+
+
+def test_load_benchmark_filters_formats_and_reindexes_samples(tmp_path: Path) -> None:
+    benchmark, manifest, image_manifest = _mixed_fixture(tmp_path)
+
+    loaded = load_benchmark(
+        benchmark,
+        manifest,
+        image_manifest,
+        task_types=("bbox", "letter"),
+    )
+
+    assert [sample.index for sample in loaded.samples] == [0, 1]
+    assert [sample.task.response_format for sample in loaded.samples] == ["letter", "bbox"]
+
+
+def test_inference_rejects_requested_format_without_loading_adapter(tmp_path: Path) -> None:
+    benchmark, manifest, image_manifest = _fixture(tmp_path)
+    adapter_loaded = False
+
+    def load_adapter(*_args: object, **_kwargs: object) -> _FakeAdapter:
+        nonlocal adapter_loaded
+        adapter_loaded = True
+        return _FakeAdapter()
+
+    with pytest.raises(EvaluationDataError, match="bbox"):
+        run_inference(
+            _args(
+                benchmark,
+                manifest,
+                image_manifest,
+                tmp_path / "inference.json",
+                task_types=("letter", "bbox"),
+            ),
+            DistributedContext(0, 1, 0, torch.device("cpu"), False),
+            adapter_loader=load_adapter,
+        )
+
+    assert adapter_loaded is False
+
+
+def test_evaluation_writes_response_format_keyed_reports(tmp_path: Path) -> None:
+    benchmark, manifest, image_manifest = _mixed_fixture(tmp_path)
+    inference_path = tmp_path / "inference.json"
+    task_types = ("free_text", "letter", "bbox")
+    run_inference(
+        _args(
+            benchmark,
+            manifest,
+            image_manifest,
+            inference_path,
+            task_types=task_types,
+        ),
+        DistributedContext(0, 1, 0, torch.device("cpu"), False),
+        adapter_loader=lambda *_args, **_kwargs: _MixedAdapter(),
+    )
+
+    report_path = tmp_path / "report.json"
+    evaluate_inference(inference_path, report_path)
+
+    inference = json.loads(inference_path.read_text(encoding="utf-8"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert inference["metadata"]["task_types"] == list(task_types)
+    assert list(report) == list(task_types)
+    for task_type in task_types:
+        section = report[task_type]
+        assert section["schema_version"] == "medbench-evaluation.v1"
+        assert section["metadata"]["task_type"] == task_type
+        assert section["summary"]["total"] == 1
+        assert {task["response_format"] for task in section["tasks"].values()} == {task_type}
+        assert len(section["items"]) == 1
+    assert report["bbox"]["tasks"]["detection"]["score"] == 1.0
+    assert report["bbox"]["tasks"]["detection"]["correct_rate"] == 1.0
 
 
 def test_inference_and_evaluation_end_to_end_with_fake_adapter(
@@ -358,6 +540,7 @@ def test_inference_and_evaluation_end_to_end_with_fake_adapter(
 
     inference = json.loads(output.read_text(encoding="utf-8"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    letter_report = report["letter"]
     assert result == str(output)
     assert progress["total"] == 2
     assert progress["desc"] == "rank 0"
@@ -368,7 +551,9 @@ def test_inference_and_evaluation_end_to_end_with_fake_adapter(
         "private reasoning",
         "private reasoning",
     ]
-    assert report["summary"] == {
+    assert inference["metadata"]["task_types"] == ["letter"]
+    assert letter_report["metadata"]["task_type"] == "letter"
+    assert letter_report["summary"] == {
         "total": 2,
         "correct": 2,
         "incorrect": 0,
@@ -377,10 +562,10 @@ def test_inference_and_evaluation_end_to_end_with_fake_adapter(
         "errors": 0,
         "error_counts": {},
     }
-    assert report["tasks"]["diagnosis"]["score"] == 1.0
-    assert report["tasks"]["diagnosis"]["macro_f1"] == 1.0
-    assert report["categories"]["clinical"]["macro_f1"] == 1.0
-    assert report["items"] == [
+    assert letter_report["tasks"]["diagnosis"]["score"] == 1.0
+    assert letter_report["tasks"]["diagnosis"]["macro_f1"] == 1.0
+    assert letter_report["categories"]["clinical"]["macro_f1"] == 1.0
+    assert letter_report["items"] == [
         {
             "index": 0,
             "item_id": "item-0",
@@ -430,7 +615,7 @@ def test_evaluation_macro_f1_uses_semantic_options_after_balancing(tmp_path: Pat
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert [row["prediction"] for row in json.loads(output.read_text())["items"]] == ["B", "A"]
-    assert report["tasks"]["diagnosis"]["score"] == 1.0
+    assert report["letter"]["tasks"]["diagnosis"]["score"] == 1.0
 
 
 def test_metric_groups_average_parent_tasks_instead_of_question_types(tmp_path: Path) -> None:
@@ -469,11 +654,11 @@ def test_metric_groups_average_parent_tasks_instead_of_question_types(tmp_path: 
     evaluate_inference(output, report_path)
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["metric_groups"] == {
+    assert report["letter"]["metric_groups"] == {
         "accuracy": {"task_count": 2, "task_macro_score": 0.75},
         "f1": {"task_count": 2, "task_macro_score": 0.75},
     }
-    assert report["tasks"]["finding_attribute.shape"]["parent_task_id"] == (
+    assert report["letter"]["tasks"]["finding_attribute.shape"]["parent_task_id"] == (
         "finding_attribute"
     )
 
@@ -503,6 +688,48 @@ def test_metric_groups_do_not_infer_parent_tasks_from_task_names() -> None:
         "accuracy": {"task_count": 3, "task_macro_score": pytest.approx(2 / 3)},
         "f1": {"task_count": 3, "task_macro_score": pytest.approx(2 / 3)},
     }
+
+
+def test_summary_helper_supports_legacy_and_grouped_reports() -> None:
+    legacy = {
+        "tasks": {
+            "diagnosis": {
+                "parent_task_id": None,
+                "correct_rate": 0.75,
+                "score": 0.5,
+            }
+        }
+    }
+    grouped = {
+        "letter": legacy,
+        "bbox": {
+            "tasks": {
+                "detection": {
+                    "parent_task_id": None,
+                    "correct_rate": 0.25,
+                    "score": 0.4,
+                },
+                "visual_grounding": {
+                    "parent_task_id": None,
+                    "correct_rate": 0.5,
+                    "score": 0.6,
+                },
+            }
+        },
+    }
+
+    assert summary_lines(legacy) == ["diagnosis", "0.7500", "0.5000"]
+    assert summary_lines(grouped) == [
+        "letter",
+        "diagnosis",
+        "0.7500",
+        "0.5000",
+        "",
+        "bbox",
+        "detection,visual_grounding",
+        "0.4000,0.6000",
+        "0.2500,0.5000",
+    ]
 
 
 def test_inference_requires_overwrite_for_existing_output(tmp_path: Path) -> None:
@@ -570,11 +797,12 @@ def test_eval_threshold_override_recomputes_correctness(tmp_path: Path) -> None:
     evaluate_inference(inference, report_path, bleu_threshold=0.0)
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["metadata"]["thresholds"]["overridden"] is True
-    assert report["summary"]["correct"] == 1
-    assert report["summary"]["macro_f1"] is None
-    assert report["tasks"]["report"]["macro_f1"] is None
-    assert report["categories"]["report"]["macro_f1"] is None
+    free_text_report = report["free_text"]
+    assert free_text_report["metadata"]["thresholds"]["overridden"] is True
+    assert free_text_report["summary"]["correct"] == 1
+    assert free_text_report["summary"]["macro_f1"] is None
+    assert free_text_report["tasks"]["report"]["macro_f1"] is None
+    assert free_text_report["categories"]["report"]["macro_f1"] is None
 
 
 def test_shard_indices_are_complete_and_non_overlapping() -> None:

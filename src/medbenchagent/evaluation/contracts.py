@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any
 
 
+RESPONSE_FORMATS = ("letter", "bbox", "free_text")
+
+
 @dataclass(frozen=True)
 class TaskSpec:
     task_id: str

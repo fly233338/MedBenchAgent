@@ -103,10 +103,12 @@ construction report 与 manifest。Audit 产物允许追加额外命名文件，
 
 ## 推理与评测边界
 
-评测入口显式接收 benchmark JSONL、`benchmark_manifest.json` 和数据集旁的
-`image_manifest.jsonl`。加载器依据共享 metric registry 验证三者哈希、task/response-format/metric 契约以及被引用 PNG
+评测入口显式接收 benchmark JSONL、`benchmark_manifest.json`、数据集旁的 `image_manifest.jsonl`，以及非空、
+无重复的 `letter`/`bbox`/`free_text` 类型列表。加载器依据共享 metric registry 验证三者哈希、
+task/response-format/metric 契约以及被引用 PNG
 的路径、尺寸和哈希，只通过 `image_id` 找图，不解释 `image_path`。当前稳定指标映射为
-letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。
+letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。完整输入校验后只保留指定类型并
+重新生成连续推理索引；任一指定类型无样本时在模型加载前失败。
 
 模型通过显式注册的 `ModelAdapter` 加载；每个具体模型拥有独立模块，共用族级实现。目前支持
 Qwen2.5-VL 7B/32B、InternVL3/3.5 8B、Qwen3-VL Instruct 8B/32B 与 Thinking 8B、
@@ -135,8 +137,10 @@ QoQ-Med-VL 7B/32B 使用其原生 medical reasoning prompt，要求 `<think>...<
 使用最后一个 `</think>`，InternVL3.5 使用最后一个完整 `<answer>...</answer>` 并兼容旧 `</think>` 后缀，Chiron
 使用最后一个 `The final answer is:`（兼容前方存在或缺少 `###`），Hulu 对同一 output IDs 分别保留
 thinking 与无 thinking 解码，MedGemma 使用 `FINAL_ANSWER:` 或上述受限 observed protocol fallback letter 协议。
-分隔符缺失时回退完整响应，空终答保持为空并产生严格 parse error；推理产物只把完整响应写入
-`raw_prediction`，wire schema 仍是 `medbench-inference.v1`。
+分隔符缺失时回退完整响应，空终答保持为空并产生严格 parse error；bbox 最终答案以确定性候选提取兼容
+`bbox`/`bbox_2d` 标签、Markdown 或外围文本，以及作为完整答案的裸四数数组/元组。只有唯一不同框才接受，
+随后仍按 adapter 坐标空间检查并缩放。推理产物只把完整响应写入 `raw_prediction`，所选有序类型写入
+metadata，wire schema 仍是 `medbench-inference.v1`。
 
 `torchrun` 单节点每 GPU 启动一个 rank，每个 rank 独立加载一份完整模型，以轮转切片和普通 batch
 循环推理，不使用 DDP 或 tensor parallel；32B checkpoint 也必须完整装入每个 rank 所属 GPU，增加 rank
@@ -147,8 +151,8 @@ thinking 与无 thinking 解码，MedGemma 使用 `FINAL_ANSWER:` 或上述受�
 写入工具不依赖 benchmark 构建运行时，因此可在只安装 `requirements/evaluation.txt` 的独立 Conda
 环境中通过源码 `PYTHONPATH` 运行。
 
-`medbench-evaluation.v1` 从推理 JSON 重新计算逐题结果、逐 question type 主指标以及
-category/全局阈值正确率，并在逐题 `items` 中同时保留规范化 `prediction` 与模型完整
+评测输出文件以 response format 为顶层键，每个所选键对应一份完整的 `medbench-evaluation.v1`，独立从推理
+JSON 重新计算逐题结果、逐 question type 主指标以及 category/类型内阈值正确率，并在逐题 `items` 中同时保留规范化 `prediction` 与模型完整
 `raw_prediction`。每个 letter task 不论主指标均额外记录基于选项文本的 `macro_f1`，free-text/bbox
 记录 `null`；category 和 summary 对可用的 letter task F1 做 task-macro 平均，无 letter task 时为
 `null`。选择题 macro-F1 使用选项文本而非平衡后的字母位置。`metric_groups` 不再按原生 metric
@@ -156,7 +160,8 @@ category/全局阈值正确率，并在逐题 `items` 中同时保留规范化 `
 `correct_rate` 与原生 `score`，再在父 tasks 间等权平均。因此 question type 数量不改变父 task 权重；
 父 task 聚合只使用 manifest 中显式的 `parent_task_id`，缺失该字段时任务独立计分，不从带点号的任务名推断父级。
 其中 `f1` 是按评测展示约定命名的统一第二分数，对 free-text/bbox 实际仍分别来自 BLEU/mIoU，
-不是分类 F1。评测产物不修改 benchmark run 或其 manifest。
+不是分类 F1。bbox task 的 `score` 为 mIoU，`correct_rate` 为可配置 IoU 阈值（默认 0.5）下的 Acc@IoU；
+单框输出不含 confidence，因此不报告标准 AP/mAP。评测产物不修改 benchmark run 或其 manifest。
 
 ## 维护边界
 

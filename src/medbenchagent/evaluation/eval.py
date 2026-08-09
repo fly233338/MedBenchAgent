@@ -9,7 +9,12 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from medbenchagent.evaluation.contracts import ImageEntry, InferenceSample, TaskSpec
+from medbenchagent.evaluation.contracts import (
+    ImageEntry,
+    InferenceSample,
+    RESPONSE_FORMATS,
+    TaskSpec,
+)
 from medbenchagent.evaluation.data import EvaluationDataError, METRICS_BY_FORMAT, file_sha256
 from medbenchagent.evaluation.io import atomic_write_json
 from medbenchagent.evaluation.scoring import (
@@ -188,88 +193,38 @@ def _all_task_metric_groups(tasks: dict[str, dict[str, Any]]) -> dict[str, dict[
     }
 
 
-def evaluate_inference(
-    input_path: str | Path,
-    output_path: str | Path,
-    *,
-    bleu_threshold: float | None = None,
-    bbox_iou_threshold: float | None = None,
-) -> str:
-    source_path = Path(input_path)
-    payload = _load_inference(source_path)
-    metadata, raw_results = payload["metadata"], payload["items"]
-    language = metadata.get("language")
-    if language not in {"en", "zh"}:
-        raise EvaluationDataError("Inference metadata has an invalid language.")
-    expected_count = metadata.get("inputs", {}).get("item_count")
-    if expected_count != len(raw_results):
-        raise EvaluationDataError("Inference item count does not match metadata.")
-    bleu, bbox, thresholds_overridden = _thresholds(
-        metadata,
-        bleu_threshold,
-        bbox_iou_threshold,
+def _ordered_task_types(
+    metadata: dict[str, Any], rows: list[dict[str, Any]]
+) -> tuple[str, ...]:
+    present_types = tuple(
+        dict.fromkeys(row["sample"].task.response_format for row in rows)
     )
+    raw_task_types = metadata.get("task_types")
+    if raw_task_types is None:
+        return present_types
+    if (
+        not isinstance(raw_task_types, list)
+        or not raw_task_types
+        or not all(task_type in RESPONSE_FORMATS for task_type in raw_task_types)
+        or len(set(raw_task_types)) != len(raw_task_types)
+    ):
+        raise EvaluationDataError("Inference metadata has invalid task_types.")
+    if set(raw_task_types) != set(present_types):
+        raise EvaluationDataError("Inference task_types do not match result response formats.")
+    return tuple(raw_task_types)
 
-    rows = []
-    seen_indices: set[int] = set()
-    seen_ids: set[str] = set()
-    error_counts: Counter[str] = Counter()
-    for result in raw_results:
-        if not isinstance(result, dict) or not isinstance(result.get("index"), int):
-            raise EvaluationDataError("Inference result must be an indexed JSON object.")
-        sample = _sample_from_result(result)
-        item_id = sample.item.get("id")
-        if (
-            sample.index in seen_indices
-            or not isinstance(item_id, str)
-            or item_id in seen_ids
-        ):
-            raise EvaluationDataError("Inference results contain duplicate indices or item ids.")
-        prediction = _prediction(result, sample)
-        raw_prediction = result.get("raw_prediction")
-        if not isinstance(raw_prediction, str):
-            raise EvaluationDataError(f"{item_id}: raw prediction must be text.")
-        score = item_score(sample, prediction, language)
-        correct = item_correct(
-            sample,
-            score,
-            bleu_threshold=bleu,
-            bbox_iou_threshold=bbox,
-        )
-        if result.get("error") is not None:
-            error_counts[result["error"]["code"]] += 1
-        recorded_score = result.get("item_score")
-        recorded_correct = result.get("correct")
-        if (
-            not isinstance(recorded_score, (int, float))
-            or isinstance(recorded_score, bool)
-            or not math.isfinite(recorded_score)
-            or not isinstance(recorded_correct, bool)
-        ):
-            raise EvaluationDataError(f"{item_id}: recorded item score or correctness is invalid.")
-        if not thresholds_overridden:
-            if (
-                not math.isclose(recorded_score, score, rel_tol=1e-9, abs_tol=1e-9)
-                or recorded_correct is not correct
-            ):
-                raise EvaluationDataError(
-                    f"{item_id}: recorded item score or correctness is inconsistent."
-                )
-        rows.append(
-            {
-                "sample": sample,
-                "prediction": prediction,
-                "raw_prediction": raw_prediction,
-                "score": score,
-                "correct": correct,
-                "error": result.get("error"),
-            }
-        )
-        seen_indices.add(sample.index)
-        seen_ids.add(item_id)
-    if seen_indices != set(range(len(rows))):
-        raise EvaluationDataError("Inference result indices are not contiguous.")
 
+def _report_for_rows(
+    source_path: Path,
+    metadata: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    task_type: str,
+    language: str,
+    bleu_threshold: float,
+    bbox_iou_threshold: float,
+    thresholds_overridden: bool,
+) -> dict[str, Any]:
     by_task: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_task[row["sample"].task.task_id].append(row)
@@ -312,18 +267,23 @@ def evaluate_inference(
                 sum(category_task_f1s) / len(category_task_f1s) if category_task_f1s else None
             ),
         }
+
+    error_counts = Counter(
+        row["error"]["code"] for row in rows if row["error"] is not None
+    )
     correct_total = sum(row["correct"] for row in rows)
     task_f1s = [task["macro_f1"] for task in tasks.values() if task["macro_f1"] is not None]
-    report = {
+    return {
         "schema_version": "medbench-evaluation.v1",
         "metadata": {
             "inference_sha256": file_sha256(source_path),
             "benchmark_id": metadata.get("benchmark_id"),
             "dataset_id": metadata.get("dataset_id"),
             "model": metadata.get("model"),
+            "task_type": task_type,
             "thresholds": {
-                "bleu": bleu,
-                "bbox_iou": bbox,
+                "bleu": bleu_threshold,
+                "bbox_iou": bbox_iou_threshold,
                 "overridden": thresholds_overridden,
             },
         },
@@ -331,7 +291,7 @@ def evaluate_inference(
             "total": len(rows),
             "correct": correct_total,
             "incorrect": len(rows) - correct_total,
-            "correct_rate": correct_total / len(rows) if rows else 0.0,
+            "correct_rate": correct_total / len(rows),
             "macro_f1": sum(task_f1s) / len(task_f1s) if task_f1s else None,
             "errors": sum(error_counts.values()),
             "error_counts": dict(sorted(error_counts.items())),
@@ -352,6 +312,100 @@ def evaluate_inference(
             }
             for row in rows
         ],
+    }
+
+
+def evaluate_inference(
+    input_path: str | Path,
+    output_path: str | Path,
+    *,
+    bleu_threshold: float | None = None,
+    bbox_iou_threshold: float | None = None,
+) -> str:
+    source_path = Path(input_path)
+    payload = _load_inference(source_path)
+    metadata, raw_results = payload["metadata"], payload["items"]
+    language = metadata.get("language")
+    if language not in {"en", "zh"}:
+        raise EvaluationDataError("Inference metadata has an invalid language.")
+    expected_count = metadata.get("inputs", {}).get("item_count")
+    if expected_count != len(raw_results):
+        raise EvaluationDataError("Inference item count does not match metadata.")
+    bleu, bbox, thresholds_overridden = _thresholds(
+        metadata,
+        bleu_threshold,
+        bbox_iou_threshold,
+    )
+
+    rows = []
+    seen_indices: set[int] = set()
+    seen_ids: set[str] = set()
+    for result in raw_results:
+        if not isinstance(result, dict) or not isinstance(result.get("index"), int):
+            raise EvaluationDataError("Inference result must be an indexed JSON object.")
+        sample = _sample_from_result(result)
+        item_id = sample.item.get("id")
+        if (
+            sample.index in seen_indices
+            or not isinstance(item_id, str)
+            or item_id in seen_ids
+        ):
+            raise EvaluationDataError("Inference results contain duplicate indices or item ids.")
+        prediction = _prediction(result, sample)
+        raw_prediction = result.get("raw_prediction")
+        if not isinstance(raw_prediction, str):
+            raise EvaluationDataError(f"{item_id}: raw prediction must be text.")
+        score = item_score(sample, prediction, language)
+        correct = item_correct(
+            sample,
+            score,
+            bleu_threshold=bleu,
+            bbox_iou_threshold=bbox,
+        )
+        recorded_score = result.get("item_score")
+        recorded_correct = result.get("correct")
+        if (
+            not isinstance(recorded_score, (int, float))
+            or isinstance(recorded_score, bool)
+            or not math.isfinite(recorded_score)
+            or not isinstance(recorded_correct, bool)
+        ):
+            raise EvaluationDataError(f"{item_id}: recorded item score or correctness is invalid.")
+        if not thresholds_overridden:
+            if (
+                not math.isclose(recorded_score, score, rel_tol=1e-9, abs_tol=1e-9)
+                or recorded_correct is not correct
+            ):
+                raise EvaluationDataError(
+                    f"{item_id}: recorded item score or correctness is inconsistent."
+                )
+        rows.append(
+            {
+                "sample": sample,
+                "prediction": prediction,
+                "raw_prediction": raw_prediction,
+                "score": score,
+                "correct": correct,
+                "error": result.get("error"),
+            }
+        )
+        seen_indices.add(sample.index)
+        seen_ids.add(item_id)
+    if seen_indices != set(range(len(rows))):
+        raise EvaluationDataError("Inference result indices are not contiguous.")
+    task_types = _ordered_task_types(metadata, rows)
+    report = {
+        task_type: _report_for_rows(
+            source_path,
+            metadata,
+            [row for row in rows if row["sample"].task.response_format == task_type],
+            task_type=task_type,
+            language=language,
+            bleu_threshold=bleu,
+            bbox_iou_threshold=bbox,
+            thresholds_overridden=thresholds_overridden,
+        )
+        for task_type in task_types
     }
     atomic_write_json(output_path, report)
     return str(output_path)

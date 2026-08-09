@@ -15,6 +15,7 @@ from medbenchagent.evaluation.contracts import (
     ImageEntry,
     InferenceSample,
     LoadedBenchmark,
+    RESPONSE_FORMATS,
     TaskSpec,
 )
 from medbenchagent.metrics import metrics_by_response_format
@@ -206,6 +207,7 @@ def load_benchmark(
     *,
     rank: int = 0,
     world_size: int = 1,
+    task_types: tuple[str, ...] | None = None,
 ) -> LoadedBenchmark:
     """Load and validate one generated benchmark for a specific inference rank."""
     benchmark_file = Path(benchmark_path)
@@ -213,6 +215,14 @@ def load_benchmark(
     image_manifest_file = Path(image_manifest_path)
     manifest = _read_json(manifest_file, "Benchmark manifest")
     tasks = _manifest_tasks(manifest)
+    selected_types = tuple(RESPONSE_FORMATS if task_types is None else task_types)
+    if (
+        not selected_types
+        or len(set(selected_types)) != len(selected_types)
+        or any(task_type not in RESPONSE_FORMATS for task_type in selected_types)
+    ):
+        raise EvaluationDataError("Task types must be unique supported response formats.")
+    selected_type_set = set(selected_types)
     benchmark_hash = file_sha256(benchmark_file)
     image_manifest_hash = file_sha256(image_manifest_file)
     _validate_artifact_hash(manifest, benchmark_hash)
@@ -253,11 +263,22 @@ def load_benchmark(
             raise EvaluationDataError(f"{item_id}: image_id is missing from image manifest.")
         task, image = tasks[task_id], images[image_id]
         _validate_item(item, task, image)
-        if index % world_size == rank and image_id not in validated_images:
+        if task.response_format not in selected_type_set:
+            seen_item_ids.add(item_id)
+            continue
+        selected_index = len(samples)
+        if selected_index % world_size == rank and image_id not in validated_images:
             _validate_png(image)
             validated_images.add(image_id)
         seen_item_ids.add(item_id)
-        samples.append(InferenceSample(index, item, task, image))
+        samples.append(InferenceSample(selected_index, item, task, image))
+
+    present_types = {sample.task.response_format for sample in samples}
+    missing_types = [task_type for task_type in selected_types if task_type not in present_types]
+    if task_types is not None and missing_types:
+        raise EvaluationDataError(
+            "Benchmark contains no samples for requested task types: " + ", ".join(missing_types)
+        )
 
     benchmark_id = manifest.get("benchmark_id")
     if not isinstance(benchmark_id, str) or not benchmark_id:

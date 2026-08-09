@@ -17,7 +17,7 @@ import torch.distributed as dist
 from torch.distributed.elastic.multiprocessing.errors import record
 from tqdm.auto import tqdm
 
-from medbenchagent.evaluation.contracts import InferenceSample, LoadedBenchmark
+from medbenchagent.evaluation.contracts import InferenceSample, LoadedBenchmark, RESPONSE_FORMATS
 from medbenchagent.evaluation.data import load_benchmark
 from medbenchagent.evaluation.io import atomic_write_json
 from medbenchagent.evaluation.models import load_model_adapter
@@ -229,6 +229,7 @@ def _metadata(args: argparse.Namespace, benchmark: LoadedBenchmark, context: Dis
             "bleu_threshold": args.bleu_threshold,
             "bbox_iou_threshold": args.bbox_iou_threshold,
         },
+        "task_types": list(args.task_types),
         "inputs": {
             "benchmark_sha256": benchmark.benchmark_sha256,
             "benchmark_manifest_sha256": benchmark.benchmark_manifest_sha256,
@@ -253,6 +254,7 @@ def run_inference(
         args.image_manifest,
         rank=context.rank,
         world_size=context.world_size,
+        task_types=tuple(args.task_types),
     )
     adapter = adapter_loader(
         args.adapter,
@@ -296,6 +298,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--benchmark", required=True)
     parser.add_argument("--benchmark-manifest", required=True)
     parser.add_argument("--image-manifest", required=True)
+    parser.add_argument("--task-types", nargs="+", choices=RESPONSE_FORMATS, required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=512)
@@ -319,6 +322,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if len(set(args.task_types)) != len(args.task_types):
+        parser.error("--task-types must not contain duplicates.")
     if args.batch_size <= 0:
         parser.error("--batch-size must be positive.")
     if args.max_new_tokens <= 0:
