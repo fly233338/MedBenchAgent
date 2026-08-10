@@ -111,10 +111,11 @@ letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。完整�
 重新生成连续推理索引；任一指定类型无样本时在模型加载前失败。
 
 模型通过显式注册的 `ModelAdapter` 加载；每个具体模型拥有独立模块，共用族级实现。目前支持
-Qwen2.5-VL 7B/32B、InternVL3/3.5 8B、Qwen3-VL Instruct 8B/32B 与 Thinking 8B、
+BreastGPT 8B、Qwen2.5-VL 7B/32B、InternVL3/3.5 8B、Qwen3-VL Instruct 8B/32B 与 Thinking 8B、
 Lingshu 7B/32B、Hulu-Med 7B/32B、QoQ-Med-VL 7B/32B、Chiron-o1 和 MedGemma 1.5 4B IT。
-Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron 以固定 `[0,1000]` 坐标空间
-解释 grounding，Hulu 以原 PNG 尺寸解释，MedGemma 以处理后的 896×896 图像解释。InternVL3-8B 的动态预处理
+Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron 与 BreastGPT 以固定 `[0,1000]` 坐标空间
+解释 grounding，Hulu 以原 PNG 尺寸解释，MedGemma 以处理后的 896×896 图像解释。BreastGPT-8B 从本地
+ModelScope checkpoint 的 `plugin/` 目录通过 MS-SWIFT 加载其专用模型与模板注册。InternVL3-8B 的动态预处理
 最多使用六个宽高比分块，并在多分块时保留一张缩略图，因此每张图最多产生七个 `448x448` 输入；
 InternVL3.5 与 Chiron 保持共享实现的 12 分块上限。letter VQA 的公共 system prompt 保持
 原始单字母回答要求，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也

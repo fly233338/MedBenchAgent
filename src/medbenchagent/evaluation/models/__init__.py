@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from medbenchagent.evaluation.models.base import ModelAdapter
+from medbenchagent.evaluation.models.breastgpt_8b import BreastGPT8BAdapter
 from medbenchagent.evaluation.models.chiron_o1_8b import ChironO1_8BAdapter
 from medbenchagent.evaluation.models.hulu_med_32b import HuluMed32BAdapter
 from medbenchagent.evaluation.models.hulu_med_7b import HuluMed7BAdapter
@@ -24,6 +25,7 @@ from medbenchagent.evaluation.models.qwen3_vl_8b_thinking import Qwen3VL8BThinki
 
 
 ADAPTERS = {
+    "breastgpt_8b": BreastGPT8BAdapter,
     "qwen2_5_vl": Qwen25VLAdapter,
     "qwen2_5_vl_7b_instruct": Qwen25VL7BInstructAdapter,
     "qwen2_5_vl_32b_instruct": Qwen25VL32BInstructAdapter,

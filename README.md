@@ -413,6 +413,7 @@ Supported adapter keys are:
 
 | Adapter key | Model family | Parsed bbox coordinate space |
 | --- | --- | --- |
+| `breastgpt_8b` | BreastGPT-8B | `[0,1000]` |
 | `qwen2_5_vl` | Backward-compatible Qwen2.5-VL key | Processed Qwen image |
 | `qwen2_5_vl_7b_instruct` | Qwen2.5-VL-7B-Instruct | Processed Qwen image |
 | `qwen2_5_vl_32b_instruct` | Qwen2.5-VL-32B-Instruct | Processed Qwen image |
@@ -430,6 +431,21 @@ Supported adapter keys are:
 | `chiron_o1_8b` | Chiron-o1-8B | `[0,1000]` |
 | `medgemma_1_5_4b_it` | MedGemma-1.5-4B-IT | Processed 896×896 image |
 
+BreastGPT requires the local ModelScope checkpoint directory, including its bundled
+`plugin/` package. Download the complete snapshot before running inference:
+
+```python
+from modelscope import snapshot_download
+
+snapshot_download("YYangYang/BreastGPT-8B", local_dir="/path/to/BreastGPT-8B")
+```
+
+Then use `--adapter breastgpt_8b --model-path /path/to/BreastGPT-8B`. The adapter loads
+the checkpoint's official `breastgpt` model and template registrations through
+MS-SWIFT. Its legacy `<|box_start|>...<|box_end|>` 2D grounding output is normalized
+to the evaluator's single-box contract while the complete response remains available
+as `raw_prediction`.
+
 InternVL3-8B limits dynamic preprocessing to six aspect-ratio tiles and keeps the
 official thumbnail when multiple tiles are used, for at most seven `448x448`
 inputs per image. Other InternVL-family adapters retain the official limit of 12.
@@ -441,7 +457,9 @@ with `FINAL_ANSWER:`. Its adapter prefers that boundary and otherwise recognizes
 checkpoint-observed `answer is`, `category is X.`, Markdown option, and `\boxed{X}`
 letter forms. Conflicting legacy candidates remain parse errors.
 
-Most adapters retain the original shared task prompts. QoQ uses its native medical
+Most adapters retain the original shared task prompts. BreastGPT uses the shared task
+prompts through its bundled MS-SWIFT template and reports grounding in `[0,1000]`.
+QoQ uses its native medical
 reasoning prompt and extracts the final balanced `\boxed{...}` payload. Qwen3
 Thinking extracts the suffix after the last `</think>`. InternVL3.5 uses explicit
 `<think>...</think>` reasoning and `<answer>...</answer>` final-answer sections. Chiron

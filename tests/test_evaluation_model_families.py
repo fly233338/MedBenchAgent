@@ -9,6 +9,7 @@ from PIL import Image
 from medbenchagent.evaluation.contracts import ImageEntry, InferenceSample, ModelOutput, TaskSpec
 from medbenchagent.evaluation.models import ADAPTERS
 from medbenchagent.evaluation.models.base import system_prompt, user_prompt
+from medbenchagent.evaluation.models.breastgpt_8b import BreastGPT8BAdapter
 from medbenchagent.evaluation.models.chiron_o1_8b import ChironO1_8BAdapter
 from medbenchagent.evaluation.models.hulu_med_32b import HuluMed32BAdapter
 from medbenchagent.evaluation.models.hulu_med_7b import HuluMed7BAdapter
@@ -30,6 +31,7 @@ from medbenchagent.evaluation.parsing import parse_prediction
 
 
 EXPECTED_ADAPTERS = {
+    "breastgpt_8b",
     "qwen2_5_vl",
     "qwen2_5_vl_7b_instruct",
     "qwen2_5_vl_32b_instruct",
@@ -83,6 +85,110 @@ def test_new_checkpoint_sizes_reuse_their_family_implementations() -> None:
     assert issubclass(HuluMed32BAdapter, HuluMed7BAdapter)
     assert issubclass(InternVL3_5_8BAdapter, InternVLAdapter)
     assert issubclass(QoQMedVL32BAdapter, Qwen25VLAdapter)
+
+
+def test_breastgpt_uses_bundled_swift_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeInferRequest:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    class FakeRequestConfig:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    class FakeEngine:
+        def __init__(self, model_path: str, **kwargs: object) -> None:
+            calls["engine"] = (model_path, kwargs)
+
+        def infer(
+            self,
+            requests: list[FakeInferRequest],
+            request_config: FakeRequestConfig,
+            **kwargs: object,
+        ) -> list[object]:
+            calls["requests"] = requests
+            calls["request_config"] = request_config.kwargs
+            calls["infer_kwargs"] = kwargs
+            texts = [
+                " A ",
+                " concise report ",
+                "finding <|box_start|>(100, 200), (800, 900)<|box_end|>",
+            ]
+            return [
+                types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=text))]
+                )
+                for text in texts
+            ]
+
+    swift = types.ModuleType("swift")
+    swift_infer_engine = types.ModuleType("swift.infer_engine")
+    swift_infer_engine.InferRequest = FakeInferRequest
+    swift_infer_engine.RequestConfig = FakeRequestConfig
+    swift_infer_engine.TransformersEngine = FakeEngine
+    swift.infer_engine = swift_infer_engine
+    monkeypatch.setitem(sys.modules, "swift", swift)
+    monkeypatch.setitem(sys.modules, "swift.infer_engine", swift_infer_engine)
+    monkeypatch.setattr(
+        "medbenchagent.evaluation.models.breastgpt_8b._load_checkpoint_plugin",
+        lambda model_path: calls.setdefault("plugin_path", model_path),
+    )
+    model_path = tmp_path / "BreastGPT-8B"
+    samples = [
+        _sample(tmp_path, "letter", 0),
+        _sample(tmp_path, "free_text", 1),
+        _sample(tmp_path, "bbox", 2),
+    ]
+
+    adapter = BreastGPT8BAdapter(
+        str(model_path),
+        device=torch.device("cpu"),
+        dtype="float32",
+    )
+    outputs = adapter.generate(samples, max_new_tokens=64)
+
+    assert calls["plugin_path"] == str(model_path)
+    assert calls["engine"] == (
+        str(model_path.resolve()),
+        {
+            "model_type": "breastgpt",
+            "template_type": "breastgpt",
+            "max_batch_size": 0,
+            "torch_dtype": torch.float32,
+            "attn_impl": "sdpa",
+            "device_map": "cpu",
+        },
+    )
+    requests = calls["requests"]
+    assert isinstance(requests, list)
+    assert requests[0].kwargs["messages"][0] == {
+        "role": "system",
+        "content": system_prompt(samples[0]),
+    }
+    assert requests[0].kwargs["messages"][1]["content"] == (
+        f"<image>\n{user_prompt(samples[0])}"
+    )
+    assert requests[1].kwargs["messages"] == [
+        {"role": "user", "content": f"<image>\n{user_prompt(samples[1])}"}
+    ]
+    assert requests[2].kwargs["images"] == [str(samples[2].image.png_path)]
+    assert calls["request_config"] == {"max_tokens": 64, "temperature": 0}
+    assert calls["infer_kwargs"] == {"use_tqdm": False}
+    assert [output.raw_text for output in outputs] == [
+        "A",
+        "concise report",
+        "finding <|box_start|>(100, 200), (800, 900)<|box_end|>",
+    ]
+    assert outputs[0].answer_text is None
+    assert outputs[1].answer_text is None
+    assert outputs[2].answer_text == '{"bbox": [100.0, 200.0, 800.0, 900.0]}'
+    assert all(output.coordinate_size == (1000, 1000) for output in outputs)
+    assert parse_prediction(outputs[2], samples[2]) == [2.0, 2.0, 16.0, 9.0]
 
 
 def test_internvl3_limits_dynamic_tiles_without_changing_other_family_models() -> None:
