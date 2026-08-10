@@ -114,7 +114,9 @@ letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。完整�
 Qwen2.5-VL 7B/32B、InternVL3/3.5 8B、Qwen3-VL Instruct 8B/32B 与 Thinking 8B、
 Lingshu 7B/32B、Hulu-Med 7B/32B、QoQ-Med-VL 7B/32B、Chiron-o1 和 MedGemma 1.5 4B IT。
 Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron 以固定 `[0,1000]` 坐标空间
-解释 grounding，Hulu 以原 PNG 尺寸解释，MedGemma 以处理后的 896×896 图像解释。letter VQA 的公共 system prompt 保持
+解释 grounding，Hulu 以原 PNG 尺寸解释，MedGemma 以处理后的 896×896 图像解释。InternVL3-8B 的动态预处理
+最多使用六个宽高比分块，并在多分块时保留一张缩略图，因此每张图最多产生七个 `448x448` 输入；
+InternVL3.5 与 Chiron 保持共享实现的 12 分块上限。letter VQA 的公共 system prompt 保持
 原始单字母回答要求，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
 接受裸单字母、Lingshu 风格的单字母加 ASCII 句点，或合法字母和句点后继续输出选项文本或解释；
 例如 `A. E.` 与 `A. because ...` 均解析为 `A`。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox

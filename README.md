@@ -430,6 +430,10 @@ Supported adapter keys are:
 | `chiron_o1_8b` | Chiron-o1-8B | `[0,1000]` |
 | `medgemma_1_5_4b_it` | MedGemma-1.5-4B-IT | Processed 896×896 image |
 
+InternVL3-8B limits dynamic preprocessing to six aspect-ratio tiles and keeps the
+official thumbnail when multiple tiles are used, for at most seven `448x448`
+inputs per image. Other InternVL-family adapters retain the official limit of 12.
+
 MedGemma is a gated checkpoint. Accept Google's Health AI Developer Foundations
 terms before downloading it, then point the adapter at the local model directory.
 MedGemma keeps the shared task prompt and appends a model-specific requirement to end

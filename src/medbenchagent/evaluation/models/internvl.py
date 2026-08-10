@@ -107,6 +107,7 @@ def load_image(path: str, *, input_size: int = 448, max_num: int = 12) -> torch.
 
 class InternVLAdapter:
     coordinate_size = (1000, 1000)
+    max_dynamic_tiles = 12
 
     def instruction_for(self, sample: InferenceSample) -> str | None:
         return system_prompt(sample)
@@ -165,7 +166,7 @@ class InternVLAdapter:
         max_new_tokens: int,
     ) -> list[ModelOutput]:
         pixel_values = [
-            load_image(str(sample.image.png_path), max_num=12).to(
+            load_image(str(sample.image.png_path), max_num=self.max_dynamic_tiles).to(
                 device=self.device,
                 dtype=self.compute_dtype,
             )

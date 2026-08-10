@@ -85,6 +85,13 @@ def test_new_checkpoint_sizes_reuse_their_family_implementations() -> None:
     assert issubclass(QoQMedVL32BAdapter, Qwen25VLAdapter)
 
 
+def test_internvl3_limits_dynamic_tiles_without_changing_other_family_models() -> None:
+    assert InternVL3_8BAdapter.max_dynamic_tiles == 6
+    assert InternVLAdapter.max_dynamic_tiles == 12
+    assert InternVL3_5_8BAdapter.max_dynamic_tiles == 12
+    assert ChironO1_8BAdapter.max_dynamic_tiles == 12
+
+
 def test_public_prompts_remain_qwen25_prompts(tmp_path: Path) -> None:
     letter = _sample(tmp_path, "letter")
     free_text = _sample(tmp_path, "free_text", 1)
@@ -507,9 +514,17 @@ def test_internvl_groups_by_system_prompt_and_restores_sample_order(
     transformers.AutoTokenizer = FakeTokenizer
     monkeypatch.setitem(sys.modules, "transformers", transformers)
     patch_counts = iter([2, 1, 3])
+    max_dynamic_tiles: list[int] = []
+
+    def fake_load_image(*_args: object, **kwargs: object) -> torch.Tensor:
+        max_num = kwargs["max_num"]
+        assert isinstance(max_num, int)
+        max_dynamic_tiles.append(max_num)
+        return torch.zeros((next(patch_counts), 3, 448, 448))
+
     monkeypatch.setattr(
         "medbenchagent.evaluation.models.internvl.load_image",
-        lambda *_args, **_kwargs: torch.zeros((next(patch_counts), 3, 448, 448)),
+        fake_load_image,
     )
     samples = [
         _sample(tmp_path, "letter", 0),
@@ -517,7 +532,7 @@ def test_internvl_groups_by_system_prompt_and_restores_sample_order(
         _sample(tmp_path, "bbox", 2),
     ]
 
-    adapter = InternVLAdapter("model", device=torch.device("cpu"))
+    adapter = InternVL3_8BAdapter("model", device=torch.device("cpu"))
     outputs = adapter.generate(samples, max_new_tokens=24)
 
     assert calls["model_load"] == {
@@ -527,6 +542,7 @@ def test_internvl_groups_by_system_prompt_and_restores_sample_order(
         "trust_remote_code": True,
     }
     assert calls["tokenizer_load"] == {"trust_remote_code": True, "use_fast": False}
+    assert max_dynamic_tiles == [6, 6, 6]
     assert [batch["system"] for batch in calls["batches"]] == [
         system_prompt(samples[0]),
         "",
