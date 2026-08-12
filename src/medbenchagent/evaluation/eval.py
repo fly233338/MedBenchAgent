@@ -345,6 +345,7 @@ def evaluate_inference(
     rows = []
     seen_indices: set[int] = set()
     seen_ids: set[str] = set()
+    reparsed_any = False
     for result in raw_results:
         if not isinstance(result, dict) or not isinstance(result.get("index"), int):
             raise EvaluationDataError("Inference result must be an indexed JSON object.")
@@ -359,16 +360,24 @@ def evaluate_inference(
         raw_prediction = result.get("raw_prediction")
         if not isinstance(raw_prediction, str):
             raise EvaluationDataError(f"{item_id}: raw prediction must be text.")
-        if reparse and sample.task.response_format == "letter":
+        recorded_error = result.get("error")
+        retry_parse_error = (
+            sample.task.response_format == "letter"
+            and isinstance(recorded_error, dict)
+            and recorded_error.get("code") == "parse_error"
+        )
+        item_reparsed = reparse or retry_parse_error
+        if item_reparsed and sample.task.response_format == "letter":
             try:
                 prediction = parse_prediction(ModelOutput(raw_prediction), sample)
                 error = None
             except PredictionParseError as exc:
                 prediction = None
                 error = {"code": "parse_error", "message": str(exc)}
+            reparsed_any = True
         else:
             prediction = _prediction(result, sample)
-            error = result.get("error")
+            error = recorded_error
         score = item_score(sample, prediction, language)
         correct = item_correct(
             sample,
@@ -378,14 +387,14 @@ def evaluate_inference(
         )
         recorded_score = result.get("item_score")
         recorded_correct = result.get("correct")
-        if not reparse and (
+        if not item_reparsed and (
             not isinstance(recorded_score, (int, float))
             or isinstance(recorded_score, bool)
             or not math.isfinite(recorded_score)
             or not isinstance(recorded_correct, bool)
         ):
             raise EvaluationDataError(f"{item_id}: recorded item score or correctness is invalid.")
-        if not reparse and not thresholds_overridden:
+        if not item_reparsed and not thresholds_overridden:
             if (
                 not math.isclose(recorded_score, score, rel_tol=1e-9, abs_tol=1e-9)
                 or recorded_correct is not correct
@@ -418,7 +427,7 @@ def evaluate_inference(
             bleu_threshold=bleu,
             bbox_iou_threshold=bbox,
             thresholds_overridden=thresholds_overridden,
-            reparsed_from_raw_prediction=reparse,
+            reparsed_from_raw_prediction=reparsed_any,
         )
         for task_type in task_types
     }
