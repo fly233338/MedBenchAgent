@@ -243,6 +243,8 @@ def test_load_benchmark_rejects_escaping_image_path(tmp_path: Path) -> None:
         ("A. E.", "A"),
         ("A. because this finding is characteristic", "A"),
         ("A. malignant", "A"),
+        ("(A)", "A"),
+        ("（B）", "B"),
     ],
 )
 def test_parse_letter_prediction(raw: str, expected: str) -> None:
@@ -256,7 +258,7 @@ def test_parse_letter_prediction(raw: str, expected: str) -> None:
         '{"answer":"B"}',
         "malignant",
         "The answer is B.",
-        "(B)",
+        "[B]",
     ],
 )
 def test_parse_letter_prediction_rejects_non_letter_output(raw: str) -> None:
@@ -503,6 +505,36 @@ def test_evaluation_writes_response_format_keyed_reports(tmp_path: Path) -> None
         assert len(section["items"]) == 1
     assert report["bbox"]["tasks"]["detection"]["score"] == 1.0
     assert report["bbox"]["tasks"]["detection"]["correct_rate"] == 1.0
+
+
+def test_evaluation_reparses_letter_raw_prediction_without_model_run(tmp_path: Path) -> None:
+    benchmark, manifest, image_manifest = _fixture(tmp_path)
+    inference_path = tmp_path / "inference.json"
+    run_inference(
+        _args(benchmark, manifest, image_manifest, inference_path),
+        DistributedContext(0, 1, 0, torch.device("cpu"), False),
+        adapter_loader=lambda *_args, **_kwargs: _FakeAdapter(),
+    )
+
+    payload = json.loads(inference_path.read_text(encoding="utf-8"))
+    payload["items"][0].update(
+        {
+            "raw_prediction": "（B）",
+            "prediction": None,
+            "item_score": 0.0,
+            "correct": False,
+            "error": {"code": "parse_error", "message": "old extractor"},
+        }
+    )
+    _write_json(inference_path, payload)
+
+    report_path = tmp_path / "reparsed.report.json"
+    evaluate_inference(inference_path, report_path, reparse=True)
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["letter"]["metadata"]["reparsed_from_raw_prediction"] is True
+    assert report["letter"]["items"][0]["prediction"] == "B"
+    assert report["letter"]["items"][0]["correct"] is True
 
 
 def test_inference_and_evaluation_end_to_end_with_fake_adapter(

@@ -12,11 +12,13 @@ from typing import Any
 from medbenchagent.evaluation.contracts import (
     ImageEntry,
     InferenceSample,
+    ModelOutput,
     RESPONSE_FORMATS,
     TaskSpec,
 )
 from medbenchagent.evaluation.data import EvaluationDataError, METRICS_BY_FORMAT, file_sha256
 from medbenchagent.evaluation.io import atomic_write_json
+from medbenchagent.evaluation.parsing import PredictionParseError, parse_prediction
 from medbenchagent.evaluation.scoring import (
     corpus_bleu,
     item_correct,
@@ -224,6 +226,7 @@ def _report_for_rows(
     bleu_threshold: float,
     bbox_iou_threshold: float,
     thresholds_overridden: bool,
+    reparsed_from_raw_prediction: bool,
 ) -> dict[str, Any]:
     by_task: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -286,6 +289,7 @@ def _report_for_rows(
                 "bbox_iou": bbox_iou_threshold,
                 "overridden": thresholds_overridden,
             },
+            "reparsed_from_raw_prediction": reparsed_from_raw_prediction,
         },
         "summary": {
             "total": len(rows),
@@ -321,6 +325,7 @@ def evaluate_inference(
     *,
     bleu_threshold: float | None = None,
     bbox_iou_threshold: float | None = None,
+    reparse: bool = False,
 ) -> str:
     source_path = Path(input_path)
     payload = _load_inference(source_path)
@@ -351,10 +356,19 @@ def evaluate_inference(
             or item_id in seen_ids
         ):
             raise EvaluationDataError("Inference results contain duplicate indices or item ids.")
-        prediction = _prediction(result, sample)
         raw_prediction = result.get("raw_prediction")
         if not isinstance(raw_prediction, str):
             raise EvaluationDataError(f"{item_id}: raw prediction must be text.")
+        if reparse and sample.task.response_format == "letter":
+            try:
+                prediction = parse_prediction(ModelOutput(raw_prediction), sample)
+                error = None
+            except PredictionParseError as exc:
+                prediction = None
+                error = {"code": "parse_error", "message": str(exc)}
+        else:
+            prediction = _prediction(result, sample)
+            error = result.get("error")
         score = item_score(sample, prediction, language)
         correct = item_correct(
             sample,
@@ -364,14 +378,14 @@ def evaluate_inference(
         )
         recorded_score = result.get("item_score")
         recorded_correct = result.get("correct")
-        if (
+        if not reparse and (
             not isinstance(recorded_score, (int, float))
             or isinstance(recorded_score, bool)
             or not math.isfinite(recorded_score)
             or not isinstance(recorded_correct, bool)
         ):
             raise EvaluationDataError(f"{item_id}: recorded item score or correctness is invalid.")
-        if not thresholds_overridden:
+        if not reparse and not thresholds_overridden:
             if (
                 not math.isclose(recorded_score, score, rel_tol=1e-9, abs_tol=1e-9)
                 or recorded_correct is not correct
@@ -386,7 +400,7 @@ def evaluate_inference(
                 "raw_prediction": raw_prediction,
                 "score": score,
                 "correct": correct,
-                "error": result.get("error"),
+                "error": error,
             }
         )
         seen_indices.add(sample.index)
@@ -404,6 +418,7 @@ def evaluate_inference(
             bleu_threshold=bleu,
             bbox_iou_threshold=bbox,
             thresholds_overridden=thresholds_overridden,
+            reparsed_from_raw_prediction=reparse,
         )
         for task_type in task_types
     }
@@ -417,6 +432,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, dest="output_path")
     parser.add_argument("--bleu-threshold", type=float)
     parser.add_argument("--bbox-iou-threshold", type=float)
+    parser.add_argument(
+        "--reparse",
+        action="store_true",
+        help="Re-extract letter answers from raw_prediction without rerunning the model.",
+    )
     return parser
 
 
@@ -433,6 +453,7 @@ def main() -> None:
             args.output_path,
             bleu_threshold=args.bleu_threshold,
             bbox_iou_threshold=args.bbox_iou_threshold,
+            reparse=args.reparse,
         )
     )
 

@@ -18,6 +18,9 @@ _BBOX_FIELD = re.compile(
     r"\s*[:=]\s*(\[[^\[\]]*\]|\([^()]*\))"
 )
 _JSON_FENCE = re.compile(r"\A\s*```(?:json)?\s*(.*?)\s*```\s*\Z", re.IGNORECASE | re.DOTALL)
+_PARENTHESIZED_LETTER = re.compile(
+    r"\A\s*(?:\(([A-Za-z])\)|（([A-Za-z])）)(?:\s|\Z)", re.DOTALL
+)
 
 
 def _coordinate_candidate(value: str) -> tuple[float, float, float, float] | None:
@@ -51,6 +54,16 @@ def _bbox_answer(raw_text: str) -> list[float]:
     return list(candidates.pop())
 
 
+def _letter_candidate(raw_answer: str) -> str:
+    """Extract the optional wrapper used by some letter-answer models."""
+    wrapped = _PARENTHESIZED_LETTER.match(raw_answer)
+    if wrapped is not None:
+        return wrapped.group(1) or wrapped.group(2) or ""
+    if len(raw_answer) >= 2 and raw_answer[1] == ".":
+        return raw_answer[0]
+    return raw_answer
+
+
 def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list[float]:
     """Parse one adapter output and return the benchmark's canonical prediction type."""
     response_format = sample.task.response_format
@@ -59,10 +72,7 @@ def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list
         options = sample.item["options"]
         assert isinstance(options, list)
         raw_answer = answer_text.strip()
-        if len(raw_answer) >= 2 and raw_answer[1] == ".":
-            candidate = raw_answer[0]
-        else:
-            candidate = raw_answer
+        candidate = _letter_candidate(raw_answer)
         if len(candidate) == 1 and "A" <= candidate.upper() <= "Z":
             letter = candidate.upper()
             option_index = ord(letter) - ord("A")

@@ -469,8 +469,9 @@ last occurrence. The extractor also accepts the checkpoint-observed form without
 the leading Markdown heading, `The final answer is:`. Hulu uses its processor's
 `use_think=False` decode as the answer. Full reasoning remains in `raw_prediction`; an absent
 official separator falls back to the full response, while an empty extracted
-answer fails strict parsing. Letter responses may be one bare valid letter, the
-Lingshu-style form with one trailing ASCII period such as `A.`, or a valid letter
+answer fails strict parsing. Letter responses may be one bare valid letter, a
+parenthesized letter such as `(A)` or `（A）`, the Lingshu-style form with one
+trailing ASCII period such as `A.`, or a valid letter
 and period followed by option text or an explanation such as `A. Benign` or
 `A. because ...`. Multiple letters without this prefix form and other wrappers
 remain parse errors. Free text must be non-empty, and bbox responses must contain exactly
@@ -522,6 +523,21 @@ unless `--overwrite` is supplied; interrupted jobs do not resume. `--task-types`
 is required, accepts one or more unique values from `letter`, `bbox`, and `free_text`,
 and filters samples before model loading. Every requested type must be present in the
 benchmark. The selected order is recorded in inference metadata.
+
+If an existing inference JSON contains BreastGPT letter outputs such as `（A）`,
+the model does not need to be run again. Recompute the report directly from the
+stored `raw_prediction` values:
+
+```bash
+PYTHONPATH=src python -m medbenchagent.evaluation.eval \
+  --input results/breastgpt_8b.json \
+  --output results/breastgpt_8b.reparsed.report.json \
+  --reparse
+```
+
+`--reparse` only re-extracts letter answers and recalculates their scores; bbox and
+free-text results continue to use their recorded predictions. The original inference
+JSON is not modified, and no checkpoint, GPU, or benchmark/image manifest is needed.
 
 The CLI default remains SDPA for portability. Pass
 `--attn-implementation flash_attention_2` to opt in. PyTorch SDPA may itself
