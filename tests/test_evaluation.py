@@ -244,8 +244,10 @@ def test_load_benchmark_rejects_escaping_image_path(tmp_path: Path) -> None:
         ("A. because this finding is characteristic", "A"),
         ("A. malignant", "A"),
         ("(A)", "A"),
+        ("(B) DENSITY B", "B"),
         ("(B. Asymmetry)", "B"),
         ("（B）", "B"),
+        ("（B） DENSITY B", "B"),
         ("（B．Asymmetry）", "B"),
     ],
 )

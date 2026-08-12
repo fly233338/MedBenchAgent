@@ -19,7 +19,7 @@ _BBOX_FIELD = re.compile(
 )
 _JSON_FENCE = re.compile(r"\A\s*```(?:json)?\s*(.*?)\s*```\s*\Z", re.IGNORECASE | re.DOTALL)
 _PARENTHESIZED_LETTER = re.compile(
-    r"\A\s*(?:\(([A-Za-z])(?:[.．]\s*.*?)?\)|（([A-Za-z])(?:[.．]\s*.*?)?）)\s*\Z",
+    r"\A\s*(?:\(([A-Za-z])(?:[.．]\s*.*?)?\)|（([A-Za-z])(?:[.．]\s*.*?)?）)(?:\s|\Z)",
     re.DOTALL,
 )
 
