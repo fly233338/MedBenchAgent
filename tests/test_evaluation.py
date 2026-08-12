@@ -509,10 +509,7 @@ def test_evaluation_writes_response_format_keyed_reports(tmp_path: Path) -> None
     assert report["bbox"]["tasks"]["detection"]["correct_rate"] == 1.0
 
 
-@pytest.mark.parametrize("reparse", [False, True])
-def test_evaluation_reparses_letter_raw_prediction_without_model_run(
-    tmp_path: Path, reparse: bool
-) -> None:
+def test_evaluation_reparses_letter_raw_prediction_without_model_run(tmp_path: Path) -> None:
     benchmark, manifest, image_manifest = _fixture(tmp_path)
     inference_path = tmp_path / "inference.json"
     run_inference(
@@ -534,7 +531,7 @@ def test_evaluation_reparses_letter_raw_prediction_without_model_run(
     _write_json(inference_path, payload)
 
     report_path = tmp_path / "reparsed.report.json"
-    evaluate_inference(inference_path, report_path, reparse=reparse)
+    evaluate_inference(inference_path, report_path, reparse=True)
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["letter"]["metadata"]["reparsed_from_raw_prediction"] is True

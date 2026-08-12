@@ -535,11 +535,9 @@ PYTHONPATH=src python -m medbenchagent.evaluation.eval \
   --reparse
 ```
 
-`--reparse` re-extracts all letter answers and recalculates their scores; bbox and
-free-text results continue to use their recorded predictions. Even without this flag,
-letter items previously recorded with `parse_error` are retried from `raw_prediction`.
-The original inference JSON is not modified, and no checkpoint, GPU, or benchmark/image
-manifest is needed.
+`--reparse` only re-extracts letter answers and recalculates their scores; bbox and
+free-text results continue to use their recorded predictions. The original inference
+JSON is not modified, and no checkpoint, GPU, or benchmark/image manifest is needed.
 
 The CLI default remains SDPA for portability. Pass
 `--attn-implementation flash_attention_2` to opt in. PyTorch SDPA may itself
