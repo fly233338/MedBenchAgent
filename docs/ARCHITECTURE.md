@@ -119,7 +119,7 @@ ModelScope checkpoint 的 `plugin/` 目录通过 MS-SWIFT 加载其专用模型�
 最多使用六个宽高比分块，并在多分块时保留一张缩略图，因此每张图最多产生七个 `448x448` 输入；
 InternVL3.5 与 Chiron 保持共享实现的 12 分块上限。letter VQA 的公共 system prompt 保持
 原始单字母回答要求，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
-接受裸单字母、ASCII 或全角括号包裹的单字母、Lingshu 风格的单字母加 ASCII 句点，或合法字母和句点后继续输出选项文本或解释；
+接受裸单字母、ASCII 或全角括号包裹的单字母（括号内也可带选项文本）、Lingshu 风格的单字母加 ASCII 句点，或合法字母和句点后继续输出选项文本或解释；
 例如 `A. E.` 与 `A. because ...` 均解析为 `A`。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
 任务统一由 system 要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含
 图像和题目（letter 另含选项），所有 adapter 复用同一公共 prompt 函数。InternVL3.5 adapter

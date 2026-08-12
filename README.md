@@ -470,7 +470,7 @@ the leading Markdown heading, `The final answer is:`. Hulu uses its processor's
 `use_think=False` decode as the answer. Full reasoning remains in `raw_prediction`; an absent
 official separator falls back to the full response, while an empty extracted
 answer fails strict parsing. Letter responses may be one bare valid letter, a
-parenthesized letter such as `(A)` or `（A）`, the Lingshu-style form with one
+parenthesized letter such as `(A)`, `(B. Asymmetry)`, or `（A）`, the Lingshu-style form with one
 trailing ASCII period such as `A.`, or a valid letter
 and period followed by option text or an explanation such as `A. Benign` or
 `A. because ...`. Multiple letters without this prefix form and other wrappers

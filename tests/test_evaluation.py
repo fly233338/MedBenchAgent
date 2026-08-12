@@ -244,7 +244,9 @@ def test_load_benchmark_rejects_escaping_image_path(tmp_path: Path) -> None:
         ("A. because this finding is characteristic", "A"),
         ("A. malignant", "A"),
         ("(A)", "A"),
+        ("(B. Asymmetry)", "B"),
         ("（B）", "B"),
+        ("（B．Asymmetry）", "B"),
     ],
 )
 def test_parse_letter_prediction(raw: str, expected: str) -> None:
