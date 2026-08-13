@@ -113,6 +113,29 @@ def record_llm_call(*, status: str, started: float, error_type: str | None = Non
     )
 
 
+def record_llm_validation_error(*, errors: list[str], model_output: object) -> None:
+    """Record a model response that failed deterministic contract validation."""
+    context = _CONTEXT.get()
+    if context is None or not context.get("construction_events_path"):
+        return
+    call_ids = context.get("call_ids")
+    call_id = call_ids[-1] if isinstance(call_ids, list) and call_ids else None
+    record_event(
+        str(context["construction_events_path"]),
+        "llm_validation_error",
+        run_id=context.get("run_id"),
+        dataset_id=context.get("dataset_id"),
+        task_id=context.get("task_id"),
+        agent=context.get("agent", "deepseek"),
+        operation=context.get("operation", "llm"),
+        component=context.get("component"),
+        model=context.get("model") or get_settings().llm.model,
+        validation_errors=errors,
+        model_output=model_output,
+        call_id=call_id,
+    )
+
+
 def record_human_interaction(
     path: str | Path,
     *,

@@ -112,7 +112,7 @@ def test_task_revision_and_rag_design_prompts_only_change_whitespace(
     )
 
     _assert_content_unchanged(prompt_content_hashes, "task_revision", revision)
-    assert "Return JSON only.\n\nReturn decision" in revision
+    assert "Return JSON only.\n\nReturn exactly this top-level JSON shape" in revision
     assert "do not qualify.\n\nfinding_presence" in revision
     assert "\nSelected Task ID: view\n" in revision
     assert "\n\nAll Blueprint task definitions:" in revision

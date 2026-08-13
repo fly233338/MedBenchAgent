@@ -3,6 +3,7 @@ from pathlib import Path
 
 import medbenchagent.task_screening as screening
 import pytest
+from medbenchagent.construction import event_context
 from medbenchagent.settings import get_settings
 
 
@@ -179,6 +180,82 @@ def test_task_plan_revisions_only_replace_the_target_task(monkeypatch) -> None:
     assert "Complete current Task Plan" in calls[0][0]
     assert "assessment_category" in calls[0][0]
     assert "diagnosis" in calls[0][0]
+
+
+def test_task_plan_revision_repairs_and_records_invalid_model_output(
+    tmp_path: Path, monkeypatch
+) -> None:
+    invalid = {
+        "decision": "retain",
+        "supporting_fields": ["image.annotation.findings[*].finding_type"],
+        "metric": "accuracy",
+        "reason": "Requested.",
+        "finding_field": "image.annotation.findings[*].finding_type",
+    }
+    valid = {key: value for key, value in invalid.items() if key != "finding_field"}
+    responses = iter([invalid, valid])
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        screening,
+        "complete_json",
+        lambda system, user: calls.append((system, user)) or next(responses),
+    )
+    events_path = tmp_path / "construction_events.jsonl"
+
+    with event_context(
+        construction_events_path=str(events_path),
+        run_id="run-1",
+        agent="CapabilityAgent",
+        operation="task_plan_revise",
+    ):
+        revised = screening.revise_task_plan(
+            _blueprint(), _profile(), _plan(), "diagnosis", "Keep this task."
+        )
+
+    assert revised["tasks"]["diagnosis"] == valid
+    assert len(calls) == 2
+    assert "previous response violated this contract" in calls[1][0]
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert events == [
+        {
+            "timestamp": events[0]["timestamp"],
+            "event_type": "llm_validation_error",
+            "run_id": "run-1",
+            "task_id": "diagnosis",
+            "agent": "CapabilityAgent",
+            "operation": "task_plan_revise",
+            "model": get_settings().llm.model,
+            "validation_errors": [
+                "diagnosis: decision must contain exactly decision, supporting_fields, metric, and reason"
+            ],
+            "model_output": invalid,
+        }
+    ]
+
+
+def test_task_plan_revision_records_invalid_repair_output(tmp_path: Path, monkeypatch) -> None:
+    responses = [
+        {"decision": "retain", "attempt": "initial"},
+        {"decision": "retain", "attempt": "repair"},
+    ]
+    remaining = iter(responses)
+    monkeypatch.setattr(screening, "complete_json", lambda _system, _user: next(remaining))
+    events_path = tmp_path / "construction_events.jsonl"
+
+    with event_context(
+        construction_events_path=str(events_path),
+        run_id="run-1",
+        agent="CapabilityAgent",
+        operation="task_plan_revise",
+    ):
+        with pytest.raises(screening.TaskPlanReviewRequired):
+            screening.revise_task_plan(
+                _blueprint(), _profile(), _plan(), "diagnosis", "Keep this task."
+            )
+
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert [event["model_output"] for event in events] == responses
+    assert [event["operation"] for event in events] == ["task_plan_revise", "repair"]
 
 
 def test_task_plan_rejects_unknown_tasks_and_all_dropped_tasks() -> None:
@@ -574,3 +651,5 @@ def test_visual_grounding_rule_is_shared_by_initial_and_revision_prompts() -> No
         assert screening.VISUAL_GROUNDING_PAIRING_RULE in prompt
         assert "BI-RADS" not in prompt
         assert "breast cancer" not in prompt.lower()
+    assert "without a task ID or `tasks` wrapper" in revision
+    assert "do not add finding_field or bbox_field keys" in revision

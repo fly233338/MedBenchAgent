@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from medbenchagent.llm import complete_json
-from medbenchagent.construction import event_context, event_operation
+from medbenchagent.construction import event_context, event_operation, record_llm_validation_error
 from medbenchagent.run_artifacts import write_versioned_json
 from medbenchagent.metrics import is_metric_supported, metric_prompt_catalog
 
@@ -184,8 +184,13 @@ def _task_revision_prompt(
         "a dropped task needs an empty question_types object. Each question type needs a lower_snake_case "
         "ID, description, exactly one supporting field, metric, and reason."
         if decomposable
-        else "Return decision, supporting_fields, metric, and reason. A retained task needs at least one "
-        "supporting field; a dropped task needs no supporting fields and metric null."
+        else "Return exactly this top-level JSON shape, without a task ID or `tasks` wrapper and without "
+        "additional fields: "
+        '{"decision":"retain|drop","supporting_fields":["exact.path"],'
+        '"metric":"registered_name_or_null","reason":"..."}. '
+        "A retained task needs at least one supporting field; a dropped task needs an empty "
+        "supporting_fields array and metric null. For visual_grounding, put both the paired finding "
+        "and bbox paths in supporting_fields; do not add finding_field or bbox_field keys."
     )
     return (
         "Revise only the selected Task Plan entry using the user's feedback. Use the complete "
@@ -439,22 +444,40 @@ def revise_task_plan(
     if not isinstance(tasks, dict) or not isinstance(planned_tasks, dict) or task_id not in tasks or task_id not in planned_tasks:
         raise ValueError(f"Unknown task_id: {task_id}")
     prompt = _task_revision_prompt(task_id, tasks, draft_task_plan, profile, feedback)
+
+    def validate_revision(response: object) -> tuple[dict[str, Any] | None, list[str]]:
+        decision, errors = _normalize_task_decision(
+            task_id,
+            response,
+            set(profile.get("fields", {})),
+            profile,
+            tasks[task_id].get("response_format"),
+        )
+        if decision is None:
+            return None, errors
+        merged = {"tasks": {**planned_tasks, task_id: decision}}
+        return validate_task_plan(blueprint, profile, merged)
+
     with event_context(task_id=task_id):
         response = complete_json(prompt, "Return the revised task plan entry.")
-    decision, errors = _normalize_task_decision(
-        task_id,
-        response,
-        set(profile.get("fields", {})),
-        profile,
-        tasks[task_id].get("response_format"),
-    )
-    if decision is None:
-        raise TaskPlanReviewRequired(response, errors)
-    merged = {"tasks": {**planned_tasks, task_id: decision}}
-    validated, errors = validate_task_plan(blueprint, profile, merged)
-    if validated is None:
-        raise TaskPlanReviewRequired(merged, errors)
-    return validated
+        validated, errors = validate_revision(response)
+        if validated is not None:
+            return validated
+
+        record_llm_validation_error(errors=errors, model_output=response)
+        with event_operation("repair"):
+            repaired = complete_json(
+                f"{prompt}\n\nYour previous response violated this contract: "
+                f"{json.dumps(errors, ensure_ascii=False)}. Previous response: "
+                f"{json.dumps(response, ensure_ascii=False)}. Retry once with only the corrected "
+                "selected task entry.",
+                "Return the corrected revised task plan entry.",
+            )
+            validated, errors = validate_revision(repaired)
+            if validated is None:
+                record_llm_validation_error(errors=errors, model_output=repaired)
+                raise TaskPlanReviewRequired(repaired, errors)
+        return validated
 
 
 def write_task_plan_report(
