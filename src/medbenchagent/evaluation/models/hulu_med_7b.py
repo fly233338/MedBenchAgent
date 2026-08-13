@@ -53,7 +53,13 @@ class HuluMed7BAdapter:
         outputs = []
         for sample in samples:
             conversation = []
-            instruction = system_prompt(sample)
+            instruction = system_prompt(
+                sample,
+                bbox_coordinate_space=(
+                    f"in the original PNG pixel space bounded by width {sample.image.width} "
+                    f"and height {sample.image.height}"
+                ),
+            )
             if instruction is not None:
                 conversation.append(
                     {

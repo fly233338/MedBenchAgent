@@ -31,7 +31,7 @@ class InternVL3_5_8BAdapter(InternVLAdapter):
         else:
             final_format = (
                 'only a JSON object containing the single bounding box under the "bbox" key '
-                "as four absolute xyxy coordinates"
+                "as four xyxy coordinates normalized to the fixed [0, 1000] range on each axis"
             )
         return (
             f"{super().prompt_for(sample)}\n\n"

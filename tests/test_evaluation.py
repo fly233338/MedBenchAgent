@@ -304,6 +304,29 @@ def test_parse_bbox_rescales_qwen_coordinate_space() -> None:
     assert parse_prediction(output, sample) == [20.0, 10.0, 100.0, 50.0]
 
 
+def test_parse_bbox_rescales_qwen3_fixed_coordinate_space() -> None:
+    sample = _sample("bbox", [138.8, 42.0, 184.0, 78.0])
+    output = ModelOutput(
+        '```json\n{"bbox":[694,420,920,780]}\n```',
+        coordinate_size=(1000, 1000),
+    )
+
+    assert parse_prediction(output, sample) == [138.8, 42.0, 184.0, 78.0]
+
+
+def test_parse_bbox_reports_declared_coordinate_space_for_outside_box() -> None:
+    sample = _sample("bbox", [20.0, 10.0, 100.0, 50.0])
+
+    with pytest.raises(
+        PredictionParseError,
+        match=r"\[694\.0, 420\.0, 920\.0, 780\.0\].*640x512",
+    ):
+        parse_prediction(
+            ModelOutput('{"bbox":[694,420,920,780]}', coordinate_size=(640, 512)),
+            sample,
+        )
+
+
 def test_parse_bbox_rescales_internvl_normalized_coordinate_space() -> None:
     sample = _sample("bbox", [20.0, 10.0, 100.0, 50.0])
     output = ModelOutput(
@@ -499,6 +522,11 @@ def test_evaluation_writes_response_format_keyed_reports(tmp_path: Path) -> None
     inference = json.loads(inference_path.read_text(encoding="utf-8"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert inference["metadata"]["task_types"] == list(task_types)
+    assert [item["coordinate_size"] for item in inference["items"]] == [
+        [20, 10],
+        [20, 10],
+        [20, 10],
+    ]
     assert list(report) == list(task_types)
     for task_type in task_types:
         section = report[task_type]
@@ -539,6 +567,86 @@ def test_evaluation_reparses_letter_raw_prediction_without_model_run(tmp_path: P
     assert report["letter"]["metadata"]["reparsed_from_raw_prediction"] is True
     assert report["letter"]["items"][0]["prediction"] == "B"
     assert report["letter"]["items"][0]["correct"] is True
+
+
+@pytest.mark.parametrize(
+    ("adapter", "raw_prediction"),
+    [
+        ("qwen3_vl_8b_instruct", '{"bbox":[50,100,500,800]}'),
+        (
+            "qwen3_vl_8b_thinking",
+            'reasoning with bbox [900,900,950,950]</think>{"bbox":[50,100,500,800]}',
+        ),
+    ],
+)
+def test_evaluation_reparses_legacy_qwen3_bbox_without_model_run(
+    tmp_path: Path, adapter: str, raw_prediction: str
+) -> None:
+    benchmark, manifest, image_manifest = _mixed_fixture(tmp_path)
+    inference_path = tmp_path / "inference.json"
+    run_inference(
+        _args(
+            benchmark,
+            manifest,
+            image_manifest,
+            inference_path,
+            task_types=("bbox",),
+        ),
+        DistributedContext(0, 1, 0, torch.device("cpu"), False),
+        adapter_loader=lambda *_args, **_kwargs: _MixedAdapter(),
+    )
+    payload = json.loads(inference_path.read_text(encoding="utf-8"))
+    payload["metadata"]["model"]["adapter"] = adapter
+    payload["items"][0].pop("coordinate_size")
+    payload["items"][0].update(
+        {
+            "raw_prediction": raw_prediction,
+            "prediction": None,
+            "item_score": 0.0,
+            "correct": False,
+            "error": {"code": "parse_error", "message": "legacy coordinate bug"},
+        }
+    )
+    _write_json(inference_path, payload)
+
+    report_path = tmp_path / "reparsed.report.json"
+    evaluate_inference(inference_path, report_path, reparse_bbox=True)
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))["bbox"]
+    assert report["metadata"]["reparsed_from_raw_prediction"] is True
+    assert report["summary"]["errors"] == 0
+    assert report["items"][0]["prediction"] == [1.0, 1.0, 10.0, 8.0]
+    assert report["items"][0]["item_score"] == 1.0
+    assert report["items"][0]["correct"] is True
+
+
+def test_bbox_reparse_rejects_legacy_dynamic_space_without_recorded_size(
+    tmp_path: Path,
+) -> None:
+    benchmark, manifest, image_manifest = _mixed_fixture(tmp_path)
+    inference_path = tmp_path / "inference.json"
+    run_inference(
+        _args(
+            benchmark,
+            manifest,
+            image_manifest,
+            inference_path,
+            task_types=("bbox",),
+        ),
+        DistributedContext(0, 1, 0, torch.device("cpu"), False),
+        adapter_loader=lambda *_args, **_kwargs: _MixedAdapter(),
+    )
+    payload = json.loads(inference_path.read_text(encoding="utf-8"))
+    payload["metadata"]["model"]["adapter"] = "qwen2_5_vl_7b_instruct"
+    payload["items"][0].pop("coordinate_size")
+    _write_json(inference_path, payload)
+
+    with pytest.raises(EvaluationDataError, match="recorded coordinate_size"):
+        evaluate_inference(
+            inference_path,
+            tmp_path / "report.json",
+            reparse_bbox=True,
+        )
 
 
 def test_inference_and_evaluation_end_to_end_with_fake_adapter(

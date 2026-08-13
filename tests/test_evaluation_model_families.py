@@ -176,6 +176,9 @@ def test_breastgpt_uses_bundled_swift_protocol(
     assert requests[1].kwargs["messages"] == [
         {"role": "user", "content": f"<image>\n{user_prompt(samples[1])}"}
     ]
+    assert "normalized to the fixed [0, 1000] range" in (
+        requests[2].kwargs["messages"][0]["content"]
+    )
     assert requests[2].kwargs["images"] == [str(samples[2].image.png_path)]
     assert calls["request_config"] == {"max_tokens": 64, "temperature": 0}
     assert calls["infer_kwargs"] == {"use_tqdm": False}
@@ -198,7 +201,7 @@ def test_internvl3_limits_dynamic_tiles_without_changing_other_family_models() -
     assert ChironO1_8BAdapter.max_dynamic_tiles == 12
 
 
-def test_public_prompts_remain_qwen25_prompts(tmp_path: Path) -> None:
+def test_public_prompts_default_to_original_image_coordinates(tmp_path: Path) -> None:
     letter = _sample(tmp_path, "letter")
     free_text = _sample(tmp_path, "free_text", 1)
     bbox = _sample(tmp_path, "bbox", 2)
@@ -209,7 +212,7 @@ def test_public_prompts_remain_qwen25_prompts(tmp_path: Path) -> None:
     assert user_prompt(free_text) == "Which view?"
     assert system_prompt(bbox) == (
         'Answer with only a JSON object containing the single bounding box under the "bbox" '
-        "key as four absolute pixel coordinates in x1, y1, x2, y2 order."
+        "key as four x1, y1, x2, y2 coordinates in the original image pixel coordinate space."
     )
 
 
@@ -230,6 +233,8 @@ def test_internvl35_uses_think_and_answer_tag_protocol(tmp_path: Path) -> None:
         "Which view?\n\nInside <answer> and </answer>, put only the concise final answer. "
         "Always complete both the <think>...</think> and <answer>...</answer> sections."
     )
+    bbox = _sample(tmp_path, "bbox", 2)
+    assert "normalized to the fixed [0, 1000] range" in adapter.prompt_for(bbox)
     assert adapter.generation_config(512) == {
         "max_new_tokens": 512,
         "do_sample": False,
@@ -250,6 +255,7 @@ def test_internvl3_keeps_the_shared_direct_answer_protocol(tmp_path: Path) -> No
 def test_qoq_uses_native_reasoning_prompt_and_boxed_final_answer(tmp_path: Path) -> None:
     adapter = object.__new__(QoQMedVL7BAdapter)
     letter = _sample(tmp_path, "letter")
+    bbox = _sample(tmp_path, "bbox", 1)
 
     assert adapter.instruction_for(letter) is None
     prompt = adapter.prompt_for(letter)
@@ -257,6 +263,9 @@ def test_qoq_uses_native_reasoning_prompt_and_boxed_final_answer(tmp_path: Path)
     assert "MUST BE enclosed within <think> </think> tags" in prompt
     assert "final answer MUST BE put in \\boxed{}" in prompt
     assert "Inside \\boxed{}, put exactly one valid option letter." in prompt
+    assert "absolute xyxy coordinates in the resized image space processed by the model" in (
+        adapter.prompt_for(bbox)
+    )
 
 
 def test_chiron_uses_official_reasoning_trigger_and_final_answer_boundary(tmp_path: Path) -> None:
@@ -275,7 +284,8 @@ def test_chiron_uses_official_reasoning_trigger_and_final_answer_boundary(tmp_pa
     )
     assert adapter.prompt_for(bbox).endswith(
         'exact marker ### The final answer is: followed by only a JSON object containing the '
-        'single bounding box under the "bbox" key as four absolute xyxy coordinates.'
+        'single bounding box under the "bbox" key as four xyxy coordinates normalized to the '
+        "fixed [0, 1000] range on each axis."
     )
     assert adapter.generation_config(1024) == {
         "max_new_tokens": 1024,
@@ -336,14 +346,28 @@ def test_chiron_checkpoint_boundary_produces_a_valid_letter_prediction(tmp_path:
 
 def test_medgemma_adds_a_model_specific_final_answer_protocol(tmp_path: Path) -> None:
     adapter = object.__new__(MedGemma15_4BITAdapter)
+    adapter.coordinate_size = (896, 896)
     letter = _sample(tmp_path, "letter")
     free_text = _sample(tmp_path, "free_text", 1)
+    bbox = _sample(tmp_path, "bbox", 2)
 
     assert adapter.prompt_for(letter).startswith(user_prompt(letter))
     assert "valid letters are A through B" in adapter.prompt_for(letter)
     assert "FINAL_ANSWER:" in adapter.prompt_for(letter)
     assert adapter.prompt_for(free_text).startswith(user_prompt(free_text))
     assert "only the concise final answer" in adapter.prompt_for(free_text)
+    assert "absolute xyxy coordinates in the processed 896 by 896 image space" in (
+        adapter.prompt_for(bbox)
+    )
+
+
+def test_fixed_coordinate_adapters_request_normalized_bbox_space(tmp_path: Path) -> None:
+    bbox = _sample(tmp_path, "bbox")
+    qwen3 = object.__new__(Qwen3VLAdapter)
+    internvl = object.__new__(InternVL3_8BAdapter)
+
+    assert "normalized to the fixed [0, 1000] range" in qwen3.instruction_for(bbox)
+    assert "normalized to the fixed [0, 1000] range" in internvl.instruction_for(bbox)
 
 
 @pytest.mark.parametrize(
@@ -460,7 +484,7 @@ def test_qwen3_uses_patch_size_16_without_second_resize(
     assert calls["messages"] == calls["vision_messages"]
     assert output.raw_text == "reasoning</think>A"
     assert output.answer_text == "A"
-    assert output.coordinate_size == (64, 32)
+    assert output.coordinate_size == (1000, 1000)
 
 
 def test_medgemma_uses_native_batched_chat_template_and_896_coordinate_space(
@@ -652,7 +676,7 @@ def test_internvl_groups_by_system_prompt_and_restores_sample_order(
     assert [batch["system"] for batch in calls["batches"]] == [
         system_prompt(samples[0]),
         "",
-        system_prompt(samples[2]),
+        adapter.instruction_for(samples[2]),
     ]
     assert [batch["num_patches_list"] for batch in calls["batches"]] == [[2], [1], [3]]
     assert [output.raw_text for output in outputs] == [
@@ -716,12 +740,16 @@ def test_hulu_processes_each_conversation_and_decodes_same_ids_twice(
     transformers.AutoModelForCausalLM = FakeModel
     transformers.AutoProcessor = FakeProcessor
     monkeypatch.setitem(sys.modules, "transformers", transformers)
-    samples = [_sample(tmp_path, "letter", 0), _sample(tmp_path, "free_text", 1)]
+    samples = [
+        _sample(tmp_path, "letter", 0),
+        _sample(tmp_path, "free_text", 1),
+        _sample(tmp_path, "bbox", 2),
+    ]
 
     adapter = HuluMed7BAdapter("model", device=torch.device("cpu"))
     outputs = adapter.generate(samples, max_new_tokens=32)
 
-    assert len(calls["conversations"]) == 2
+    assert len(calls["conversations"]) == 3
     first_conversation = calls["conversations"][0]
     assert first_conversation["add_system_prompt"] is False
     assert first_conversation["add_generation_prompt"] is True
@@ -730,11 +758,15 @@ def test_hulu_processes_each_conversation_and_decodes_same_ids_twice(
         "content": [{"type": "text", "text": system_prompt(samples[0])}],
     }
     assert calls["conversations"][1]["conversation"][0]["role"] == "user"
+    assert "original PNG pixel space bounded by width 20 and height 10" in (
+        calls["conversations"][2]["conversation"][0]["content"][0]["text"]
+    )
     assert all(call["do_sample"] is False for call in calls["generate"])
     assert all(call["pixel_values"].dtype == torch.float32 for call in calls["generate"])
-    assert [item for item, _kwargs in calls["decode"]] == [1, 1, 2, 2]
+    assert [item for item, _kwargs in calls["decode"]] == [1, 1, 2, 2, 3, 3]
     assert [(output.raw_text, output.answer_text) for output in outputs] == [
         ("reasoning-1", "A"),
         ("reasoning-2", "report"),
+        ("reasoning-3", "report"),
     ]
     assert all(output.coordinate_size == (20, 10) for output in outputs)

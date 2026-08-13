@@ -48,6 +48,17 @@ class Qwen3VLAdapter:
         ).to(device)
         self.model.eval()
 
+    def instruction_for(self, sample: InferenceSample) -> str | None:
+        return system_prompt(
+            sample,
+            bbox_coordinate_space=(
+                "normalized to the fixed [0, 1000] range on each image axis"
+            ),
+        )
+
+    def prompt_for(self, sample: InferenceSample) -> str:
+        return user_prompt(sample)
+
     def extract_answer(self, _text: str) -> str | None:
         return None
 
@@ -59,12 +70,11 @@ class Qwen3VLAdapter:
     ) -> list[ModelOutput]:
         conversations = []
         images = []
-        coordinate_sizes = []
         for sample in samples:
             with Image.open(sample.image.png_path) as source:
                 image = source.convert("RGB")
             messages = []
-            instruction = system_prompt(sample)
+            instruction = self.instruction_for(sample)
             if instruction is not None:
                 messages.append({"role": "system", "content": instruction})
             messages.append(
@@ -77,7 +87,7 @@ class Qwen3VLAdapter:
                             "min_pixels": self.min_pixels,
                             "max_pixels": self.max_pixels,
                         },
-                        {"type": "text", "text": user_prompt(sample)},
+                        {"type": "text", "text": self.prompt_for(sample)},
                     ],
                 }
             )
@@ -96,7 +106,6 @@ class Qwen3VLAdapter:
                 )
             )
             images.append(processed_image)
-            coordinate_sizes.append(processed_image.size)
 
         inputs = self.processor(
             text=conversations,
@@ -125,8 +134,8 @@ class Qwen3VLAdapter:
         return [
             ModelOutput(
                 raw_text=text,
-                coordinate_size=size,
+                coordinate_size=(1000, 1000),
                 answer_text=self.extract_answer(text),
             )
-            for text, size in zip(decoded, coordinate_sizes)
+            for text in decoded
         ]

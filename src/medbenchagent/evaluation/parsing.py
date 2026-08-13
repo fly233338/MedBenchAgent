@@ -107,7 +107,10 @@ def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list
         raise PredictionParseError("adapter returned an invalid coordinate size")
     box = [float(value) for value in answer]
     if not (0 <= box[0] < box[2] <= source_width and 0 <= box[1] < box[3] <= source_height):
-        raise PredictionParseError("bbox is outside the adapter coordinate space")
+        raise PredictionParseError(
+            f"bbox {box} is outside the adapter coordinate space "
+            f"{source_width}x{source_height}"
+        )
     x_scale = sample.image.width / source_width
     y_scale = sample.image.height / source_height
     return [

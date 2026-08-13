@@ -110,7 +110,12 @@ class InternVLAdapter:
     max_dynamic_tiles = 12
 
     def instruction_for(self, sample: InferenceSample) -> str | None:
-        return system_prompt(sample)
+        return system_prompt(
+            sample,
+            bbox_coordinate_space=(
+                "normalized to the fixed [0, 1000] range on each image axis"
+            ),
+        )
 
     def prompt_for(self, sample: InferenceSample) -> str:
         return user_prompt(sample)

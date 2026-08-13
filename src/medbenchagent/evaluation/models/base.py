@@ -17,13 +17,17 @@ class ModelAdapter(Protocol):
         """Generate one raw model output per input sample."""
 
 
-def system_prompt(sample: InferenceSample) -> str | None:
+def system_prompt(
+    sample: InferenceSample,
+    *,
+    bbox_coordinate_space: str = "in the original image pixel coordinate space",
+) -> str | None:
     if sample.task.response_format == "letter":
         return "Answer with the correct single letter answer."
     if sample.task.response_format == "bbox":
         return (
             'Answer with only a JSON object containing the single bounding box under the "bbox" '
-            "key as four absolute pixel coordinates in x1, y1, x2, y2 order."
+            f"key as four x1, y1, x2, y2 coordinates {bbox_coordinate_space}."
         )
     return None
 

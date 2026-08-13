@@ -45,7 +45,7 @@ class QoQMedVLAdapter(Qwen25VLAdapter):
             "free_text": "Inside \\boxed{}, put only the final free-text answer.",
             "bbox": (
                 'Inside \\boxed{}, put only a JSON object with the single "bbox" key and four '
-                "absolute xyxy coordinates."
+                "absolute xyxy coordinates in the resized image space processed by the model."
             ),
         }[sample.task.response_format]
         return f"{super().prompt_for(sample)}\n\n{QOQ_REASONING_PROMPT} {final_format}"

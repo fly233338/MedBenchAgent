@@ -52,7 +52,8 @@ def test_unknown_model_adapter_is_rejected() -> None:
         (
             "bbox",
             'Answer with only a JSON object containing the single bounding box under the "bbox" '
-            "key as four absolute pixel coordinates in x1, y1, x2, y2 order.",
+            "key as four x1, y1, x2, y2 coordinates in the absolute pixel coordinate space of "
+            "the resized image processed by the model.",
             "Which view?",
             '{"bbox":[1,1,10,8]}',
         ),

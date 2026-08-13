@@ -84,7 +84,8 @@ class MedGemma15_4BITAdapter:
         else:
             final_format = (
                 'only a JSON object containing the single bounding box under the "bbox" key '
-                "as four absolute xyxy coordinates"
+                f"as four absolute xyxy coordinates in the processed {self.coordinate_size[0]} by "
+                f"{self.coordinate_size[1]} image space"
             )
         return (
             f"{user_prompt(sample)}\n\n"
@@ -141,7 +142,13 @@ class MedGemma15_4BITAdapter:
             with Image.open(sample.image.png_path) as source:
                 image = source.convert("RGB")
             messages = []
-            instruction = system_prompt(sample)
+            instruction = system_prompt(
+                sample,
+                bbox_coordinate_space=(
+                    f"in the processed {self.coordinate_size[0]} by "
+                    f"{self.coordinate_size[1]} image space"
+                ),
+            )
             if instruction is not None:
                 messages.append(
                     {

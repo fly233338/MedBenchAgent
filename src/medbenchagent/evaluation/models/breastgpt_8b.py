@@ -133,7 +133,12 @@ class BreastGPT8BAdapter:
         requests = []
         for sample in samples:
             messages: list[dict[str, Any]] = []
-            instruction = system_prompt(sample)
+            instruction = system_prompt(
+                sample,
+                bbox_coordinate_space=(
+                    "normalized to the fixed [0, 1000] range on each image axis"
+                ),
+            )
             if instruction is not None:
                 messages.append({"role": "system", "content": instruction})
             messages.append(

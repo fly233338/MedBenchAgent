@@ -113,16 +113,17 @@ letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。完整�
 模型通过显式注册的 `ModelAdapter` 加载；每个具体模型拥有独立模块，共用族级实现。目前支持
 BreastGPT 8B、Qwen2.5-VL 7B/32B、InternVL3/3.5 8B、Qwen3-VL Instruct 8B/32B 与 Thinking 8B、
 Lingshu 7B/32B、Hulu-Med 7B/32B、QoQ-Med-VL 7B/32B、Chiron-o1 和 MedGemma 1.5 4B IT。
-Qwen2.5/Qwen3 以处理后图像尺寸解释绝对 bbox，InternVL3/3.5/Chiron 与 BreastGPT 以固定 `[0,1000]` 坐标空间
-解释 grounding，Hulu 以原 PNG 尺寸解释，MedGemma 以处理后的 896×896 图像解释。BreastGPT-8B 从本地
+Qwen2.5/Lingshu/QoQ-Med-VL 以处理后图像尺寸解释绝对 bbox，Qwen3、InternVL3/3.5、Chiron 与 BreastGPT
+以固定 `[0,1000]` 坐标空间解释 grounding，Hulu 以原 PNG 尺寸解释，MedGemma 以处理后的 896×896 图像解释。BreastGPT-8B 从本地
 ModelScope checkpoint 的 `plugin/` 目录通过 MS-SWIFT 加载其专用模型与模板注册。InternVL3-8B 的动态预处理
 最多使用六个宽高比分块，并在多分块时保留一张缩略图，因此每张图最多产生七个 `448x448` 输入；
 InternVL3.5 与 Chiron 保持共享实现的 12 分块上限。letter VQA 的公共 system prompt 保持
 原始单字母回答要求，user content 只含图像及题干与选项，不提供答案或输出格式示例；解析器也
 接受裸单字母、ASCII 或全角括号包裹的单字母（括号内也可带选项文本）、Lingshu 风格的单字母加 ASCII 句点，或合法字母和句点后继续输出选项文本或解释；
 例如 `A. E.` 与 `A. because ...` 均解析为 `A`。free-text VQA 不设置 system message，直接把完整非空终答作为预测；所有 bbox
-任务统一由 system 要求仅输出带唯一 `bbox` 字段的绝对 xyxy JSON 对象。三类 user content 都只含
-图像和题目（letter 另含选项），所有 adapter 复用同一公共 prompt 函数。InternVL3.5 adapter
+任务都要求仅输出带唯一 `bbox` 字段的 xyxy JSON 对象，并由各 adapter 明确其协议：固定 `[0,1000]`、
+处理后图像绝对坐标、896×896 处理空间或原 PNG 像素坐标。三类 user content 都只含
+图像和题目（letter 另含选项），adapter 复用公共 prompt 构造并注入族级 bbox 坐标说明。InternVL3.5 adapter
 使用模型专用 reasoning system prompt，要求推理完整置于 `<think>...</think>`，并按题型把终答置于
 `<answer>...</answer>`；InternVL3 adapter 则保持公共直接回答 prompt 和普通生成行为。MedGemma adapter
 在公共 user prompt 后要求以 `FINAL_ANSWER:`
@@ -142,8 +143,10 @@ QoQ-Med-VL 7B/32B 使用其原生 medical reasoning prompt，要求 `<think>...<
 thinking 与无 thinking 解码，MedGemma 使用 `FINAL_ANSWER:` 或上述受限 observed protocol fallback letter 协议。
 分隔符缺失时回退完整响应，空终答保持为空并产生严格 parse error；bbox 最终答案以确定性候选提取兼容
 `bbox`/`bbox_2d` 标签、Markdown 或外围文本，以及作为完整答案的裸四数数组/元组。只有唯一不同框才接受，
-随后仍按 adapter 坐标空间检查并缩放。推理产物只把完整响应写入 `raw_prediction`，所选有序类型写入
-metadata，wire schema 仍是 `medbench-inference.v1`。
+随后仍按 adapter 坐标空间严格检查 `0 <= x1 < x2 <= width`、`0 <= y1 < y2 <= height` 并缩放；越界框不裁剪、
+不猜测协议，错误同时记录实际 bbox 与声明空间。推理产物把完整响应写入 `raw_prediction`，并在每题写入解析时
+实际使用的 `coordinate_size: [width, height]`；该字段在向后兼容的 `medbench-inference.v1` 中可选，旧文件可以缺失。
+所选有序类型写入 metadata。
 
 `torchrun` 单节点每 GPU 启动一个 rank，每个 rank 独立加载一份完整模型，以轮转切片和普通 batch
 循环推理，不使用 DDP 或 tensor parallel；32B checkpoint 也必须完整装入每个 rank 所属 GPU，增加 rank
@@ -165,6 +168,10 @@ JSON 重新计算逐题结果、逐 question type 主指标以及 category/类�
 其中 `f1` 是按评测展示约定命名的统一第二分数，对 free-text/bbox 实际仍分别来自 BLEU/mIoU，
 不是分类 F1。bbox task 的 `score` 为 mIoU，`correct_rate` 为可配置 IoU 阈值（默认 0.5）下的 Acc@IoU；
 单框输出不含 confidence，因此不报告标准 AP/mAP。评测产物不修改 benchmark run 或其 manifest。
+report CLI 的 `--reparse` 仍只从 `raw_prediction` 重解析 letter；独立的 `--reparse-bbox` 使用逐题
+`coordinate_size` 重解析 bbox。旧 Qwen3 推理可根据 adapter metadata 恢复固定 1000×1000 空间，Thinking 型号
+只解析最后一个 `</think>` 后的终答；旧的动态坐标 adapter 若未记录坐标空间则明确失败，不做范围启发式猜测。
+两种重解析都只生成 report，不原地修改 inference JSON。
 
 ## 维护边界
 

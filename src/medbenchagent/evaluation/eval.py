@@ -28,6 +28,13 @@ from medbenchagent.evaluation.scoring import (
 )
 
 
+_QWEN3_ADAPTERS = {
+    "qwen3_vl_8b_instruct",
+    "qwen3_vl_8b_thinking",
+    "qwen3_vl_32b_instruct",
+}
+
+
 def _load_inference(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -111,6 +118,43 @@ def _prediction(result: dict[str, Any], sample: InferenceSample) -> str | list[f
     ):
         raise EvaluationDataError("Inference result has an invalid bbox prediction.")
     return [float(value) for value in prediction]
+
+
+def _bbox_reparse_output(
+    result: dict[str, Any], metadata: dict[str, Any], raw_prediction: str
+) -> ModelOutput:
+    model = metadata.get("model")
+    adapter = model.get("adapter") if isinstance(model, dict) else None
+    coordinate_size = result.get("coordinate_size")
+    if coordinate_size is None and adapter in _QWEN3_ADAPTERS:
+        effective_size = (1000, 1000)
+    elif (
+        isinstance(coordinate_size, list)
+        and len(coordinate_size) == 2
+        and all(
+            isinstance(value, int) and not isinstance(value, bool) and value > 0
+            for value in coordinate_size
+        )
+    ):
+        effective_size = (coordinate_size[0], coordinate_size[1])
+    else:
+        raise EvaluationDataError(
+            "BBox reparse requires a valid recorded coordinate_size; only legacy Qwen3-VL "
+            "outputs have a fixed coordinate-space fallback."
+        )
+    answer_text = None
+    if adapter == "qwen3_vl_8b_thinking":
+        marker = "</think>"
+        answer_text = (
+            raw_prediction.rpartition(marker)[2].strip()
+            if marker in raw_prediction
+            else raw_prediction
+        )
+    return ModelOutput(
+        raw_text=raw_prediction,
+        coordinate_size=effective_size,
+        answer_text=answer_text,
+    )
 
 
 def _thresholds(
@@ -326,6 +370,7 @@ def evaluate_inference(
     bleu_threshold: float | None = None,
     bbox_iou_threshold: float | None = None,
     reparse: bool = False,
+    reparse_bbox: bool = False,
 ) -> str:
     source_path = Path(input_path)
     payload = _load_inference(source_path)
@@ -359,9 +404,17 @@ def evaluate_inference(
         raw_prediction = result.get("raw_prediction")
         if not isinstance(raw_prediction, str):
             raise EvaluationDataError(f"{item_id}: raw prediction must be text.")
-        if reparse and sample.task.response_format == "letter":
+        row_reparsed = (reparse and sample.task.response_format == "letter") or (
+            reparse_bbox and sample.task.response_format == "bbox"
+        )
+        if row_reparsed:
+            output = (
+                _bbox_reparse_output(result, metadata, raw_prediction)
+                if sample.task.response_format == "bbox"
+                else ModelOutput(raw_prediction)
+            )
             try:
-                prediction = parse_prediction(ModelOutput(raw_prediction), sample)
+                prediction = parse_prediction(output, sample)
                 error = None
             except PredictionParseError as exc:
                 prediction = None
@@ -378,14 +431,14 @@ def evaluate_inference(
         )
         recorded_score = result.get("item_score")
         recorded_correct = result.get("correct")
-        if not reparse and (
+        if not row_reparsed and (
             not isinstance(recorded_score, (int, float))
             or isinstance(recorded_score, bool)
             or not math.isfinite(recorded_score)
             or not isinstance(recorded_correct, bool)
         ):
             raise EvaluationDataError(f"{item_id}: recorded item score or correctness is invalid.")
-        if not reparse and not thresholds_overridden:
+        if not row_reparsed and not thresholds_overridden:
             if (
                 not math.isclose(recorded_score, score, rel_tol=1e-9, abs_tol=1e-9)
                 or recorded_correct is not correct
@@ -418,7 +471,10 @@ def evaluate_inference(
             bleu_threshold=bleu,
             bbox_iou_threshold=bbox,
             thresholds_overridden=thresholds_overridden,
-            reparsed_from_raw_prediction=reparse,
+            reparsed_from_raw_prediction=(
+                (reparse and task_type == "letter")
+                or (reparse_bbox and task_type == "bbox")
+            ),
         )
         for task_type in task_types
     }
@@ -437,6 +493,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-extract letter answers from raw_prediction without rerunning the model.",
     )
+    parser.add_argument(
+        "--reparse-bbox",
+        action="store_true",
+        help="Re-extract bbox answers using recorded coordinate sizes without rerunning the model.",
+    )
     return parser
 
 
@@ -454,6 +515,7 @@ def main() -> None:
             bleu_threshold=args.bleu_threshold,
             bbox_iou_threshold=args.bbox_iou_threshold,
             reparse=args.reparse,
+            reparse_bbox=args.reparse_bbox,
         )
     )
 

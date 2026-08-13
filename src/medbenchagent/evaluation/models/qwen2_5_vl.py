@@ -13,7 +13,12 @@ from medbenchagent.evaluation.models.base import system_prompt, user_prompt
 
 class Qwen25VLAdapter:
     def instruction_for(self, sample: InferenceSample) -> str | None:
-        return system_prompt(sample)
+        return system_prompt(
+            sample,
+            bbox_coordinate_space=(
+                "in the absolute pixel coordinate space of the resized image processed by the model"
+            ),
+        )
 
     def prompt_for(self, sample: InferenceSample) -> str:
         return user_prompt(sample)

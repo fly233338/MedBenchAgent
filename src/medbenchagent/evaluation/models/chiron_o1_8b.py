@@ -16,7 +16,7 @@ class ChironO1_8BAdapter(InternVLAdapter):
             "free_text": "the concise final answer and nothing else",
             "bbox": (
                 'only a JSON object containing the single bounding box under the "bbox" key '
-                "as four absolute xyxy coordinates"
+                "as four xyxy coordinates normalized to the fixed [0, 1000] range on each axis"
             ),
         }[sample.task.response_format]
         return (

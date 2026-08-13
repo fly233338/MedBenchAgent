@@ -91,6 +91,7 @@ def _result_record(
     sample: InferenceSample,
     *,
     raw_prediction: str,
+    coordinate_size: tuple[int, int],
     prediction: str | list[float] | None,
     score: float,
     correct: bool,
@@ -112,6 +113,7 @@ def _result_record(
         },
         "prediction": prediction,
         "raw_prediction": raw_prediction,
+        "coordinate_size": list(coordinate_size),
         "item_score": score,
         "correct": correct,
         "error": error,
@@ -145,6 +147,10 @@ def _write_rank_results(
                 if len(outputs) != len(batch):
                     raise RuntimeError("Model adapter returned an unexpected number of outputs.")
                 for sample, output in zip(batch, outputs):
+                    coordinate_size = output.coordinate_size or (
+                        sample.image.width,
+                        sample.image.height,
+                    )
                     try:
                         prediction = parse_prediction(output, sample)
                         score = item_score(sample, prediction, language)
@@ -163,6 +169,7 @@ def _write_rank_results(
                             _result_record(
                                 sample,
                                 raw_prediction=output.raw_text,
+                                coordinate_size=coordinate_size,
                                 prediction=prediction,
                                 score=score,
                                 correct=correct,

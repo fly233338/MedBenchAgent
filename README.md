@@ -419,9 +419,9 @@ Supported adapter keys are:
 | `qwen2_5_vl_32b_instruct` | Qwen2.5-VL-32B-Instruct | Processed Qwen image |
 | `internvl3_8b` | InternVL3-8B | `[0,1000]` |
 | `internvl3_5_8b` | InternVL3.5-8B | `[0,1000]` |
-| `qwen3_vl_8b_instruct` | Qwen3-VL-8B-Instruct | Processed Qwen image |
-| `qwen3_vl_8b_thinking` | Qwen3-VL-8B-Thinking | Processed Qwen image |
-| `qwen3_vl_32b_instruct` | Qwen3-VL-32B-Instruct | Processed Qwen image |
+| `qwen3_vl_8b_instruct` | Qwen3-VL-8B-Instruct | Fixed `[0,1000]` |
+| `qwen3_vl_8b_thinking` | Qwen3-VL-8B-Thinking | Fixed `[0,1000]` |
+| `qwen3_vl_32b_instruct` | Qwen3-VL-32B-Instruct | Fixed `[0,1000]` |
 | `lingshu_7b` | Lingshu-7B | Processed Qwen image |
 | `lingshu_32b` | Lingshu-32B | Processed Qwen image |
 | `hulu_med_7b` | Hulu-Med-7B | Original PNG |
@@ -457,7 +457,11 @@ with `FINAL_ANSWER:`. Its adapter prefers that boundary and otherwise recognizes
 checkpoint-observed `answer is`, `category is X.`, Markdown option, and `\boxed{X}`
 letter forms. Conflicting legacy candidates remain parse errors.
 
-Most adapters retain the original shared task prompts. BreastGPT uses the shared task
+All bbox prompts state the coordinate protocol owned by their adapter family. Qwen3,
+InternVL, Chiron, and BreastGPT request fixed `[0,1000]` xyxy coordinates; Qwen2.5,
+Lingshu, and QoQ request absolute xyxy coordinates in the resized image processed by
+the model; MedGemma requests absolute coordinates in its processed `896x896` image;
+and Hulu requests original-PNG pixel coordinates. BreastGPT uses the shared task
 prompts through its bundled MS-SWIFT template and reports grounding in `[0,1000]`.
 QoQ uses its native medical
 reasoning prompt and extracts the final balanced `\boxed{...}` payload. Qwen3
@@ -523,6 +527,9 @@ unless `--overwrite` is supplied; interrupted jobs do not resume. `--task-types`
 is required, accepts one or more unique values from `letter`, `bbox`, and `free_text`,
 and filters samples before model loading. Every requested type must be present in the
 benchmark. The selected order is recorded in inference metadata.
+Each inference item also records the effective model `coordinate_size` used by the bbox
+parser. This field is optional in the backward-compatible `medbench-inference.v1`
+schema, so older files remain readable.
 
 If an existing inference JSON contains BreastGPT letter outputs such as `（A）`,
 the model does not need to be run again. Recompute the report directly from the
@@ -538,6 +545,23 @@ PYTHONPATH=src python -m medbenchagent.evaluation.eval \
 `--reparse` only re-extracts letter answers and recalculates their scores; bbox and
 free-text results continue to use their recorded predictions. The original inference
 JSON is not modified, and no checkpoint, GPU, or benchmark/image manifest is needed.
+
+To recover bbox predictions from an existing inference file, reparse its stored raw
+responses with the recorded coordinate space:
+
+```bash
+PYTHONPATH=src python -m medbenchagent.evaluation.eval \
+  --input results/qwen3_vl_8b_instruct.json \
+  --output results/qwen3_vl_8b_instruct.reparsed.report.json \
+  --reparse-bbox
+```
+
+`--reparse-bbox` prefers each item's `coordinate_size`. Legacy Qwen3-VL files may omit
+that field because their fixed `1000x1000` protocol is recoverable from adapter metadata;
+Qwen3 Thinking reparsing uses only the final answer after the last `</think>`. Older
+files from dynamic-coordinate adapters must contain `coordinate_size` and otherwise
+fail explicitly instead of guessing a protocol. Reparsing only writes the new report
+and never modifies the inference JSON.
 
 The CLI default remains SDPA for portability. Pass
 `--attn-implementation flash_attention_2` to opt in. PyTorch SDPA may itself
