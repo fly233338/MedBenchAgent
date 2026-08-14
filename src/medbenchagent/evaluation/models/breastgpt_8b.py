@@ -65,7 +65,7 @@ def _load_checkpoint_plugin(model_path: str) -> None:
     _loaded_plugin_root = plugin_root
 
 
-def _legacy_bbox_answer(text: str) -> str | None:
+def breastgpt_bbox_answer(text: str) -> str | None:
     candidates = set()
     for payload in _LEGACY_BOX.findall(text):
         values = re.findall(_NUMBER, payload)
@@ -121,7 +121,7 @@ class BreastGPT8BAdapter:
     @staticmethod
     def extract_answer(sample: InferenceSample, text: str) -> str | None:
         if sample.task.response_format == "bbox":
-            return _legacy_bbox_answer(text)
+            return breastgpt_bbox_answer(text)
         return None
 
     def generate(
@@ -133,11 +133,13 @@ class BreastGPT8BAdapter:
         requests = []
         for sample in samples:
             messages: list[dict[str, Any]] = []
-            instruction = system_prompt(
-                sample,
-                bbox_coordinate_space=(
-                    "normalized to the fixed [0, 1000] range on each image axis"
-                ),
+            instruction = (
+                "Respond with exactly one localized target in BreastGPT's native format: "
+                "<|object_ref_start|>target<|object_ref_end|>"
+                "<|box_start|>(x1,y1),(x2,y2)<|box_end|>. Normalize x and y to the fixed "
+                "[0, 1000] range and do not include any other text."
+                if sample.task.response_format == "bbox"
+                else system_prompt(sample)
             )
             if instruction is not None:
                 messages.append({"role": "system", "content": instruction})

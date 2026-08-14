@@ -570,17 +570,31 @@ def test_evaluation_reparses_letter_raw_prediction_without_model_run(tmp_path: P
 
 
 @pytest.mark.parametrize(
-    ("adapter", "raw_prediction"),
+    ("adapter", "raw_prediction", "coordinate_size"),
     [
-        ("qwen3_vl_8b_instruct", '{"bbox":[50,100,500,800]}'),
+        ("qwen3_vl_8b_instruct", '{"bbox":[50,100,500,800]}', None),
         (
             "qwen3_vl_8b_thinking",
             'reasoning with bbox [900,900,950,950]</think>{"bbox":[50,100,500,800]}',
+            None,
+        ),
+        (
+            "breastgpt_8b",
+            "finding <|box_start|>(50,100),(500,800)<|box_end|>",
+            [1000, 1000],
+        ),
+        (
+            "medgemma_1_5_4b_it",
+            '[{"label":"lesion","box_2d":[0.1,0.05,0.8,0.5]}]',
+            [896, 896],
         ),
     ],
 )
-def test_evaluation_reparses_legacy_qwen3_bbox_without_model_run(
-    tmp_path: Path, adapter: str, raw_prediction: str
+def test_evaluation_reparses_known_bbox_protocols_without_model_run(
+    tmp_path: Path,
+    adapter: str,
+    raw_prediction: str,
+    coordinate_size: list[int] | None,
 ) -> None:
     benchmark, manifest, image_manifest = _mixed_fixture(tmp_path)
     inference_path = tmp_path / "inference.json"
@@ -597,7 +611,10 @@ def test_evaluation_reparses_legacy_qwen3_bbox_without_model_run(
     )
     payload = json.loads(inference_path.read_text(encoding="utf-8"))
     payload["metadata"]["model"]["adapter"] = adapter
-    payload["items"][0].pop("coordinate_size")
+    if coordinate_size is None:
+        payload["items"][0].pop("coordinate_size")
+    else:
+        payload["items"][0]["coordinate_size"] = coordinate_size
     payload["items"][0].update(
         {
             "raw_prediction": raw_prediction,

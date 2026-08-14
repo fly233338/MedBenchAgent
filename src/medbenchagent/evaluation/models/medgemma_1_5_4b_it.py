@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 
@@ -13,6 +14,7 @@ from medbenchagent.evaluation.models.base import system_prompt, user_prompt
 
 
 _FINAL_ANSWER_MARKER = "FINAL_ANSWER:"
+_JSON_FENCE = re.compile(r"\A\s*```(?:json)?\s*(.*?)\s*```\s*\Z", re.IGNORECASE | re.DOTALL)
 _BOXED_LETTER = re.compile(r"\\boxed\{\s*([A-Z])\s*\}", re.IGNORECASE)
 _EXPLICIT_LETTER = re.compile(
     r"\b(?:the\s+)?(?:(?:final|correct)\s+)?answer\s+is\s*[:\-]?\s*"
@@ -35,6 +37,33 @@ def _image_coordinate_size(processor: object) -> tuple[int, int]:
         if isinstance(width, int) and width > 0 and isinstance(height, int) and height > 0:
             return width, height
     return 896, 896
+
+
+def medgemma_bbox_answer(text: str) -> str | None:
+    """Convert MedGemma's native normalized yxyx object to canonical xyxy JSON."""
+    answer = text.rpartition(_FINAL_ANSWER_MARKER)[2] if _FINAL_ANSWER_MARKER in text else text
+    fence = _JSON_FENCE.fullmatch(answer.strip())
+    if fence is not None:
+        answer = fence.group(1)
+    try:
+        payload = json.loads(answer)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
+        return None
+    box = payload[0].get("box_2d")
+    if (
+        not isinstance(box, list)
+        or len(box) != 4
+        or not all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) for value in box
+        )
+    ):
+        return None
+    y0, x0, y1, x1 = (float(value) for value in box)
+    if not (0 <= y0 < y1 <= 1 and 0 <= x0 < x1 <= 1):
+        return None
+    return json.dumps({"bbox": [x0, y0, x1, y1]})
 
 
 class MedGemma15_4BITAdapter:
@@ -82,10 +111,12 @@ class MedGemma15_4BITAdapter:
         elif sample.task.response_format == "free_text":
             final_format = "only the concise final answer"
         else:
-            final_format = (
-                'only a JSON object containing the single bounding box under the "bbox" key '
-                f"as four absolute xyxy coordinates in the processed {self.coordinate_size[0]} by "
-                f"{self.coordinate_size[1]} image space"
+            return (
+                f"{user_prompt(sample)}\n\n"
+                "Return only a JSON list containing exactly one object with a concise `label` and "
+                'a `box_2d` field in `[y0, x0, y1, x1]` order. Normalize every coordinate to '
+                "the [0, 1] range, where (y0, x0) is the top-left corner and (y1, x1) is "
+                "the bottom-right corner."
             )
         return (
             f"{user_prompt(sample)}\n\n"
@@ -95,6 +126,8 @@ class MedGemma15_4BITAdapter:
         )
 
     def extract_answer(self, sample: InferenceSample, text: str) -> str:
+        if sample.task.response_format == "bbox":
+            return medgemma_bbox_answer(text) or ""
         if _FINAL_ANSWER_MARKER in text:
             return text.rpartition(_FINAL_ANSWER_MARKER)[2].strip()
         if sample.task.response_format != "letter":
@@ -142,12 +175,8 @@ class MedGemma15_4BITAdapter:
             with Image.open(sample.image.png_path) as source:
                 image = source.convert("RGB")
             messages = []
-            instruction = system_prompt(
-                sample,
-                bbox_coordinate_space=(
-                    f"in the processed {self.coordinate_size[0]} by "
-                    f"{self.coordinate_size[1]} image space"
-                ),
+            instruction = (
+                None if sample.task.response_format == "bbox" else system_prompt(sample)
             )
             if instruction is not None:
                 messages.append(
@@ -192,7 +221,11 @@ class MedGemma15_4BITAdapter:
         return [
             ModelOutput(
                 raw_text=text.strip(),
-                coordinate_size=self.coordinate_size,
+                coordinate_size=(
+                    (1, 1)
+                    if sample.task.response_format == "bbox"
+                    else self.coordinate_size
+                ),
                 answer_text=self.extract_answer(sample, text.strip()),
             )
             for sample, text in zip(samples, decoded)

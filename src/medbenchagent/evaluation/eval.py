@@ -18,6 +18,8 @@ from medbenchagent.evaluation.contracts import (
 )
 from medbenchagent.evaluation.data import EvaluationDataError, METRICS_BY_FORMAT, file_sha256
 from medbenchagent.evaluation.io import atomic_write_json
+from medbenchagent.evaluation.models.breastgpt_8b import breastgpt_bbox_answer
+from medbenchagent.evaluation.models.medgemma_1_5_4b_it import medgemma_bbox_answer
 from medbenchagent.evaluation.parsing import PredictionParseError, parse_prediction
 from medbenchagent.evaluation.scoring import (
     corpus_bleu,
@@ -33,6 +35,7 @@ _QWEN3_ADAPTERS = {
     "qwen3_vl_8b_thinking",
     "qwen3_vl_32b_instruct",
 }
+_MEDGEMMA_ADAPTER = "medgemma_1_5_4b_it"
 
 
 def _load_inference(path: Path) -> dict[str, Any]:
@@ -126,7 +129,9 @@ def _bbox_reparse_output(
     model = metadata.get("model")
     adapter = model.get("adapter") if isinstance(model, dict) else None
     coordinate_size = result.get("coordinate_size")
-    if coordinate_size is None and adapter in _QWEN3_ADAPTERS:
+    if adapter == _MEDGEMMA_ADAPTER:
+        effective_size = (1, 1)
+    elif coordinate_size is None and adapter in _QWEN3_ADAPTERS:
         effective_size = (1000, 1000)
     elif (
         isinstance(coordinate_size, list)
@@ -150,6 +155,10 @@ def _bbox_reparse_output(
             if marker in raw_prediction
             else raw_prediction
         )
+    elif adapter == _MEDGEMMA_ADAPTER:
+        answer_text = medgemma_bbox_answer(raw_prediction) or ""
+    elif adapter == "breastgpt_8b":
+        answer_text = breastgpt_bbox_answer(raw_prediction) or ""
     return ModelOutput(
         raw_text=raw_prediction,
         coordinate_size=effective_size,

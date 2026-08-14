@@ -429,7 +429,7 @@ Supported adapter keys are:
 | `qoq_med_vl_7b` | QoQ-Med-VL-7B | Processed Qwen image |
 | `qoq_med_vl_32b` | QoQ-Med-VL-32B | Processed Qwen image |
 | `chiron_o1_8b` | Chiron-o1-8B | `[0,1000]` |
-| `medgemma_1_5_4b_it` | MedGemma-1.5-4B-IT | Processed 896×896 image |
+| `medgemma_1_5_4b_it` | MedGemma-1.5-4B-IT | Normalized `[0,1]` yxyx, converted to xyxy |
 
 BreastGPT requires the local ModelScope checkpoint directory, including its bundled
 `plugin/` package. Download the complete snapshot before running inference:
@@ -452,17 +452,21 @@ inputs per image. Other InternVL-family adapters retain the official limit of 12
 
 MedGemma is a gated checkpoint. Accept Google's Health AI Developer Foundations
 terms before downloading it, then point the adapter at the local model directory.
-MedGemma keeps the shared task prompt and appends a model-specific requirement to end
-with `FINAL_ANSWER:`. Its adapter prefers that boundary and otherwise recognizes the
+MedGemma keeps the shared task prompt for non-bbox tasks and appends a model-specific
+requirement to end with `FINAL_ANSWER:`. Its adapter prefers that boundary and otherwise
+recognizes the
 checkpoint-observed `answer is`, `category is X.`, Markdown option, and `\boxed{X}`
-letter forms. Conflicting legacy candidates remain parse errors.
+letter forms. For bbox tasks it follows MedGemma's native localization protocol: one
+JSON-list object with normalized `[y0,x0,y1,x1]` `box_2d` coordinates. The adapter
+strictly validates `[0,1]`, converts yxyx to canonical xyxy, and then scales to the
+original PNG. Conflicting or malformed candidates remain parse errors.
 
 All bbox prompts state the coordinate protocol owned by their adapter family. Qwen3,
 InternVL, Chiron, and BreastGPT request fixed `[0,1000]` xyxy coordinates; Qwen2.5,
 Lingshu, and QoQ request absolute xyxy coordinates in the resized image processed by
-the model; MedGemma requests absolute coordinates in its processed `896x896` image;
-and Hulu requests original-PNG pixel coordinates. BreastGPT uses the shared task
-prompts through its bundled MS-SWIFT template and reports grounding in `[0,1000]`.
+the model; MedGemma requests normalized `[0,1]` yxyx coordinates; and Hulu requests
+original-PNG pixel coordinates. BreastGPT requests its native grounding-token format
+through the bundled MS-SWIFT template and reports grounding in `[0,1000]`.
 QoQ uses its native medical
 reasoning prompt and extracts the final balanced `\boxed{...}` payload. Qwen3
 Thinking extracts the suffix after the last `</think>`. InternVL3.5 uses explicit
@@ -562,6 +566,9 @@ Qwen3 Thinking reparsing uses only the final answer after the last `</think>`. O
 files from dynamic-coordinate adapters must contain `coordinate_size` and otherwise
 fail explicitly instead of guessing a protocol. Reparsing only writes the new report
 and never modifies the inference JSON.
+
+For MedGemma, bbox reparsing applies the corrected native normalized-yxyx protocol even
+when an older inference item recorded the former, incorrect `896x896` coordinate space.
 
 The CLI default remains SDPA for portability. Pass
 `--attn-implementation flash_attention_2` to opt in. PyTorch SDPA may itself

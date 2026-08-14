@@ -176,9 +176,9 @@ def test_breastgpt_uses_bundled_swift_protocol(
     assert requests[1].kwargs["messages"] == [
         {"role": "user", "content": f"<image>\n{user_prompt(samples[1])}"}
     ]
-    assert "normalized to the fixed [0, 1000] range" in (
-        requests[2].kwargs["messages"][0]["content"]
-    )
+    bbox_instruction = requests[2].kwargs["messages"][0]["content"]
+    assert "BreastGPT's native format" in bbox_instruction
+    assert "[0, 1000] range" in bbox_instruction
     assert requests[2].kwargs["images"] == [str(samples[2].image.png_path)]
     assert calls["request_config"] == {"max_tokens": 64, "temperature": 0}
     assert calls["infer_kwargs"] == {"use_tqdm": False}
@@ -356,9 +356,8 @@ def test_medgemma_adds_a_model_specific_final_answer_protocol(tmp_path: Path) ->
     assert "FINAL_ANSWER:" in adapter.prompt_for(letter)
     assert adapter.prompt_for(free_text).startswith(user_prompt(free_text))
     assert "only the concise final answer" in adapter.prompt_for(free_text)
-    assert "absolute xyxy coordinates in the processed 896 by 896 image space" in (
-        adapter.prompt_for(bbox)
-    )
+    assert "`[y0, x0, y1, x1]` order" in adapter.prompt_for(bbox)
+    assert "[0, 1] range" in adapter.prompt_for(bbox)
 
 
 def test_fixed_coordinate_adapters_request_normalized_bbox_space(tmp_path: Path) -> None:
@@ -404,9 +403,19 @@ def test_medgemma_final_answer_protocol_handles_text_and_bbox(tmp_path: Path) ->
     assert adapter.extract_answer(free_text, "reasoning\nFINAL_ANSWER: concise report") == (
         "concise report"
     )
-    assert adapter.extract_answer(bbox, 'reasoning\nFINAL_ANSWER: {"bbox":[1,2,3,4]}') == (
-        '{"bbox":[1,2,3,4]}'
+    raw_bbox = (
+        '```json\n[{"label":"lesion","box_2d":[0.1,0.2,0.8,0.5]}]\n```'
     )
+    assert adapter.extract_answer(bbox, raw_bbox) == (
+        '{"bbox": [0.2, 0.1, 0.5, 0.8]}'
+    )
+    output = ModelOutput(
+        raw_bbox,
+        coordinate_size=(1, 1),
+        answer_text=adapter.extract_answer(bbox, raw_bbox),
+    )
+    assert parse_prediction(output, bbox) == [4.0, 1.0, 10.0, 8.0]
+    assert adapter.extract_answer(bbox, '[{"label":"lesion","box_2d":[1,2,3,4]}]') == ""
 
 
 def test_qwen3_uses_patch_size_16_without_second_resize(
@@ -487,7 +496,7 @@ def test_qwen3_uses_patch_size_16_without_second_resize(
     assert output.coordinate_size == (1000, 1000)
 
 
-def test_medgemma_uses_native_batched_chat_template_and_896_coordinate_space(
+def test_medgemma_uses_native_batched_chat_template_and_bbox_protocol(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -496,8 +505,8 @@ def test_medgemma_uses_native_batched_chat_template_and_896_coordinate_space(
     class FakeInputs(dict):
         def __init__(self) -> None:
             super().__init__(
-                input_ids=torch.tensor([[0, 1], [2, 3]]),
-                pixel_values=torch.ones((2, 3, 4, 4), dtype=torch.float64),
+                input_ids=torch.tensor([[0, 1], [2, 3], [4, 5]]),
+                pixel_values=torch.ones((3, 3, 4, 4), dtype=torch.float64),
             )
 
         def to(self, device: torch.device, *, dtype: torch.dtype) -> "FakeInputs":
@@ -530,6 +539,7 @@ def test_medgemma_uses_native_batched_chat_template_and_896_coordinate_space(
             return [
                 " reasoning\nFINAL_ANSWER: A ",
                 " reasoning\nFINAL_ANSWER: report ",
+                ' [{"label":"lesion","box_2d":[0.1,0.05,0.8,0.5]}] ',
             ]
 
     class FakeModel:
@@ -551,13 +561,17 @@ def test_medgemma_uses_native_batched_chat_template_and_896_coordinate_space(
         def generate(self, **kwargs: object) -> torch.Tensor:
             calls["generate"] = kwargs
             assert kwargs["pixel_values"].dtype == torch.float32
-            return torch.tensor([[0, 1, 9], [2, 3, 8]])
+            return torch.tensor([[0, 1, 9], [2, 3, 8], [4, 5, 7]])
 
     transformers = types.ModuleType("transformers")
     transformers.AutoModelForImageTextToText = FakeModel
     transformers.AutoProcessor = FakeProcessor
     monkeypatch.setitem(sys.modules, "transformers", transformers)
-    samples = [_sample(tmp_path, "letter", 0), _sample(tmp_path, "free_text", 1)]
+    samples = [
+        _sample(tmp_path, "letter", 0),
+        _sample(tmp_path, "free_text", 1),
+        _sample(tmp_path, "bbox", 2),
+    ]
 
     adapter = MedGemma15_4BITAdapter("model", device=torch.device("cpu"))
     outputs = adapter.generate(samples, max_new_tokens=24)
@@ -584,15 +598,26 @@ def test_medgemma_uses_native_batched_chat_template_and_896_coordinate_space(
         "text": adapter.prompt_for(samples[0]),
     }
     assert conversations[1][0]["role"] == "user"
+    assert conversations[2][0]["role"] == "user"
+    assert "`box_2d` field" in conversations[2][0]["content"][1]["text"]
     assert calls["generate"]["do_sample"] is False
     assert calls["generate"]["max_new_tokens"] == 24
-    assert torch.equal(calls["decoded_tokens"], torch.tensor([[9], [8]]))
+    assert torch.equal(calls["decoded_tokens"], torch.tensor([[9], [8], [7]]))
     assert [output.raw_text for output in outputs] == [
         "reasoning\nFINAL_ANSWER: A",
         "reasoning\nFINAL_ANSWER: report",
+        '[{"label":"lesion","box_2d":[0.1,0.05,0.8,0.5]}]',
     ]
-    assert [output.answer_text for output in outputs] == ["A", "report"]
-    assert all(output.coordinate_size == (896, 896) for output in outputs)
+    assert [output.answer_text for output in outputs] == [
+        "A",
+        "report",
+        '{"bbox": [0.05, 0.1, 0.5, 0.8]}',
+    ]
+    assert [output.coordinate_size for output in outputs] == [
+        (896, 896),
+        (896, 896),
+        (1, 1),
+    ]
 
 
 def test_internvl_dynamic_preprocess_adds_thumbnail_for_multiple_tiles() -> None:
