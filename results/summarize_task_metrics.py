@@ -1,4 +1,4 @@
-"""Print task-level accuracy and F1 rows from one evaluation report."""
+"""Print task-level native metric rows from one evaluation report."""
 
 from __future__ import annotations
 
@@ -26,14 +26,27 @@ def normalize_task(task_name: str, item: dict[str, Any]) -> str:
     return task_name
 
 
-def task_metrics(data: dict[str, Any]) -> dict[str, dict[str, float]]:
+def task_metrics(
+    data: dict[str, Any], task_type: str | None = None
+) -> dict[str, dict[str, float]]:
+    is_bbox = task_type == "bbox" or (
+        task_type is None
+        and any(item.get("response_format") == "bbox" for item in data["tasks"].values())
+    )
+    metric_names = ("acc_at_iou", "miou") if is_bbox else ("accuracy", "f1")
     grouped: dict[str, dict[str, list[float]]] = defaultdict(
-        lambda: {"accuracy": [], "f1": []}
+        lambda: {metric: [] for metric in metric_names}
     )
     for task_name, item in data["tasks"].items():
         task = normalize_task(task_name, item)
-        grouped[task]["accuracy"].append(float(item["correct_rate"]))
-        grouped[task]["f1"].append(float(item["score"]))
+        if is_bbox:
+            grouped[task]["acc_at_iou"].append(
+                float(item.get("acc_at_iou", item.get("correct_rate")))
+            )
+            grouped[task]["miou"].append(float(item.get("miou", item.get("score"))))
+        else:
+            grouped[task]["accuracy"].append(float(item["correct_rate"]))
+            grouped[task]["f1"].append(float(item["score"]))
 
     return {
         task: {
@@ -67,11 +80,11 @@ def summary_lines(data: dict[str, Any]) -> list[str]:
             lines.append("")
         if task_type is not None:
             lines.append(task_type)
-        results = task_metrics(report)
+        results = task_metrics(report, task_type)
         tasks = list(results)
         lines.append(",".join(tasks))
         first_metric, second_metric = (
-            ("f1", "accuracy") if task_type == "bbox" else ("accuracy", "f1")
+            ("miou", "acc_at_iou") if task_type == "bbox" else ("accuracy", "f1")
         )
         lines.append(",".join(f"{results[task][first_metric]:.4f}" for task in tasks))
         lines.append(",".join(f"{results[task][second_metric]:.4f}" for task in tasks))

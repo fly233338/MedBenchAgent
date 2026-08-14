@@ -159,16 +159,16 @@ letter 协议，对 bbox 将唯一 `box_2d` 从归一化 yxyx 换序为 xyxy。
 写入工具不依赖 benchmark 构建运行时，因此可在只安装 `requirements/evaluation.txt` 的独立 Conda
 环境中通过源码 `PYTHONPATH` 运行。
 
-评测输出文件以 response format 为顶层键，每个所选键对应一份完整的 `medbench-evaluation.v1`，独立从推理
+评测输出文件以 response format 为顶层键，每个所选键对应一份完整的 `medbench-evaluation.v2`，独立从推理
 JSON 重新计算逐题结果、逐 question type 主指标以及 category/类型内阈值正确率，并在逐题 `items` 中同时保留规范化 `prediction` 与模型完整
-`raw_prediction`。每个 letter task 不论主指标均额外记录基于选项文本的 `macro_f1`，free-text/bbox
-记录 `null`；category 和 summary 对可用的 letter task F1 做 task-macro 平均，无 letter task 时为
-`null`。选择题 macro-F1 使用选项文本而非平衡后的字母位置。`metric_groups` 不再按原生 metric
-拆组，而是输出 `accuracy` 与 `f1` 两个层级宏平均：先在每个父 task 内等权平均各 question type 的
-`correct_rate` 与原生 `score`，再在父 tasks 间等权平均。因此 question type 数量不改变父 task 权重；
+`raw_prediction`。每个 letter task 不论主指标均额外记录基于选项文本的 `macro_f1`，free-text
+记录 `null`，bbox 则不输出 macro-F1；category 和 summary 对可用的 letter task F1 做 task-macro 平均。
+选择题 macro-F1 使用选项文本而非平衡后的字母位置。letter/free-text 的 `metric_groups` 保持现有两列
+层级宏平均；bbox 则显式输出 `acc_at_iou` 与 `miou`：先在每个父 task 内等权平均各 question type 的
+阈值正确率与 mIoU，再在父 tasks 间等权平均。因此 question type 数量不改变父 task 权重；
 父 task 聚合只使用 manifest 中显式的 `parent_task_id`，缺失该字段时任务独立计分，不从带点号的任务名推断父级。
-其中 `f1` 是按评测展示约定命名的统一第二分数，对 free-text/bbox 实际仍分别来自 BLEU/mIoU，
-不是分类 F1。bbox task 的 `score` 为 mIoU，`correct_rate` 为可配置 IoU 阈值（默认 0.5）下的 Acc@IoU；
+其中 bbox 的 summary、category、task 与 metric group 均使用 `miou` 和 `acc_at_iou` 字段，逐题使用 `iou`；
+`acc_at_iou` 采用可配置 IoU 阈值（默认 0.5）；
 单框输出不含 confidence，因此不报告标准 AP/mAP。评测产物不修改 benchmark run 或其 manifest。
 report CLI 的 `--reparse` 仍只从 `raw_prediction` 重解析 letter；独立的 `--reparse-bbox` 使用逐题
 `coordinate_size` 重解析 bbox。旧 Qwen3 推理可根据 adapter metadata 恢复固定 1000×1000 空间，Thinking 型号

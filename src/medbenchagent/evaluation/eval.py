@@ -226,18 +226,26 @@ def _task_macro_f1(rows: list[dict[str, Any]]) -> float | None:
     return macro_f1(gold, predicted)
 
 
-def _all_task_metric_groups(tasks: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _all_task_metric_groups(
+    tasks: dict[str, dict[str, Any]], *, task_type: str
+) -> dict[str, dict[str, Any]]:
+    metric_fields = (
+        ("miou", "acc_at_iou") if task_type == "bbox" else ("accuracy", "f1")
+    )
+    source_fields = (
+        ("miou", "acc_at_iou") if task_type == "bbox" else ("correct_rate", "score")
+    )
     grouped: dict[str, dict[str, list[float]]] = defaultdict(
-        lambda: {"accuracy": [], "f1": []}
+        lambda: {metric: [] for metric in metric_fields}
     )
     for task_id, task in tasks.items():
         parent_task_id = task["parent_task_id"] or task_id
-        grouped[parent_task_id]["accuracy"].append(task["correct_rate"])
-        grouped[parent_task_id]["f1"].append(task["score"])
+        for metric, source in zip(metric_fields, source_fields):
+            grouped[parent_task_id][metric].append(task[source])
 
     parent_scores = {
         metric: [sum(values[metric]) / len(values[metric]) for values in grouped.values()]
-        for metric in ("accuracy", "f1")
+        for metric in metric_fields
     }
     return {
         metric: {
@@ -293,44 +301,97 @@ def _report_for_rows(
         score = _task_score(task.metric, task_rows, language)
         task_macro_f1 = _task_macro_f1(task_rows)
         correct_count = sum(row["correct"] for row in task_rows)
-        tasks[task_id] = {
+        task_report = {
             "category": task.category,
             "response_format": task.response_format,
             "metric": task.metric,
             "parent_task_id": task.parent_task_id,
             "count": len(task_rows),
-            "score": score,
-            "macro_f1": task_macro_f1,
             "correct": correct_count,
-            "correct_rate": correct_count / len(task_rows),
             "errors": sum(row["error"] is not None for row in task_rows),
         }
+        if task_type == "bbox":
+            task_report.update(
+                {
+                    "miou": score,
+                    "acc_at_iou": correct_count / len(task_rows),
+                }
+            )
+        else:
+            task_report.update(
+                {
+                    "score": score,
+                    "macro_f1": task_macro_f1,
+                    "correct_rate": correct_count / len(task_rows),
+                }
+            )
+        tasks[task_id] = task_report
 
     categories: dict[str, dict[str, int | float | None]] = {}
     for category in sorted({row["sample"].task.category for row in rows}):
         category_rows = [row for row in rows if row["sample"].task.category == category]
         correct_count = sum(row["correct"] for row in category_rows)
-        category_task_f1s = [
-            task["macro_f1"]
-            for task in tasks.values()
-            if task["category"] == category and task["macro_f1"] is not None
-        ]
-        categories[category] = {
+        category_report: dict[str, int | float | None] = {
             "count": len(category_rows),
             "correct": correct_count,
-            "correct_rate": correct_count / len(category_rows),
-            "macro_f1": (
-                sum(category_task_f1s) / len(category_task_f1s) if category_task_f1s else None
-            ),
         }
+        if task_type == "bbox":
+            category_report.update(
+                {
+                    "miou": sum(row["score"] for row in category_rows) / len(category_rows),
+                    "acc_at_iou": correct_count / len(category_rows),
+                }
+            )
+        else:
+            category_task_f1s = [
+                task["macro_f1"]
+                for task in tasks.values()
+                if task["category"] == category and task["macro_f1"] is not None
+            ]
+            category_report.update(
+                {
+                    "correct_rate": correct_count / len(category_rows),
+                    "macro_f1": (
+                        sum(category_task_f1s) / len(category_task_f1s)
+                        if category_task_f1s
+                        else None
+                    ),
+                }
+            )
+        categories[category] = category_report
 
     error_counts = Counter(
         row["error"]["code"] for row in rows if row["error"] is not None
     )
     correct_total = sum(row["correct"] for row in rows)
-    task_f1s = [task["macro_f1"] for task in tasks.values() if task["macro_f1"] is not None]
+    summary: dict[str, Any] = {
+        "total": len(rows),
+        "correct": correct_total,
+        "incorrect": len(rows) - correct_total,
+        "errors": sum(error_counts.values()),
+        "error_counts": dict(sorted(error_counts.items())),
+    }
+    if task_type == "bbox":
+        summary.update(
+            {
+                "miou": sum(row["score"] for row in rows) / len(rows),
+                "acc_at_iou": correct_total / len(rows),
+            }
+        )
+    else:
+        task_f1s = [
+            task["macro_f1"] for task in tasks.values() if task["macro_f1"] is not None
+        ]
+        summary.update(
+            {
+                "correct_rate": correct_total / len(rows),
+                "macro_f1": sum(task_f1s) / len(task_f1s) if task_f1s else None,
+            }
+        )
+
+    item_score_field = "iou" if task_type == "bbox" else "item_score"
     return {
-        "schema_version": "medbench-evaluation.v1",
+        "schema_version": "medbench-evaluation.v2",
         "metadata": {
             "inference_sha256": file_sha256(source_path),
             "benchmark_id": metadata.get("benchmark_id"),
@@ -344,16 +405,8 @@ def _report_for_rows(
             },
             "reparsed_from_raw_prediction": reparsed_from_raw_prediction,
         },
-        "summary": {
-            "total": len(rows),
-            "correct": correct_total,
-            "incorrect": len(rows) - correct_total,
-            "correct_rate": correct_total / len(rows),
-            "macro_f1": sum(task_f1s) / len(task_f1s) if task_f1s else None,
-            "errors": sum(error_counts.values()),
-            "error_counts": dict(sorted(error_counts.items())),
-        },
-        "metric_groups": _all_task_metric_groups(tasks),
+        "summary": summary,
+        "metric_groups": _all_task_metric_groups(tasks, task_type=task_type),
         "categories": categories,
         "tasks": tasks,
         "items": [
@@ -363,7 +416,7 @@ def _report_for_rows(
                 "task_id": row["sample"].task.task_id,
                 "prediction": row["prediction"],
                 "raw_prediction": row["raw_prediction"],
-                "item_score": row["score"],
+                item_score_field: row["score"],
                 "correct": row["correct"],
                 "error": row["error"],
             }

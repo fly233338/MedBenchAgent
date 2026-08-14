@@ -530,13 +530,30 @@ def test_evaluation_writes_response_format_keyed_reports(tmp_path: Path) -> None
     assert list(report) == list(task_types)
     for task_type in task_types:
         section = report[task_type]
-        assert section["schema_version"] == "medbench-evaluation.v1"
+        assert section["schema_version"] == "medbench-evaluation.v2"
         assert section["metadata"]["task_type"] == task_type
         assert section["summary"]["total"] == 1
         assert {task["response_format"] for task in section["tasks"].values()} == {task_type}
         assert len(section["items"]) == 1
-    assert report["bbox"]["tasks"]["detection"]["score"] == 1.0
-    assert report["bbox"]["tasks"]["detection"]["correct_rate"] == 1.0
+    bbox_report = report["bbox"]
+    assert bbox_report["summary"]["miou"] == 1.0
+    assert bbox_report["summary"]["acc_at_iou"] == 1.0
+    assert "correct_rate" not in bbox_report["summary"]
+    assert "macro_f1" not in bbox_report["summary"]
+    assert bbox_report["metric_groups"] == {
+        "miou": {"task_count": 1, "task_macro_score": 1.0},
+        "acc_at_iou": {"task_count": 1, "task_macro_score": 1.0},
+    }
+    assert bbox_report["categories"]["spatial_localization"] == {
+        "count": 1,
+        "correct": 1,
+        "miou": 1.0,
+        "acc_at_iou": 1.0,
+    }
+    assert bbox_report["tasks"]["detection"]["miou"] == 1.0
+    assert bbox_report["tasks"]["detection"]["acc_at_iou"] == 1.0
+    assert bbox_report["items"][0]["iou"] == 1.0
+    assert "item_score" not in bbox_report["items"][0]
 
 
 def test_evaluation_reparses_letter_raw_prediction_without_model_run(tmp_path: Path) -> None:
@@ -633,7 +650,7 @@ def test_evaluation_reparses_known_bbox_protocols_without_model_run(
     assert report["metadata"]["reparsed_from_raw_prediction"] is True
     assert report["summary"]["errors"] == 0
     assert report["items"][0]["prediction"] == [1.0, 1.0, 10.0, 8.0]
-    assert report["items"][0]["item_score"] == 1.0
+    assert report["items"][0]["iou"] == 1.0
     assert report["items"][0]["correct"] is True
 
 
@@ -842,7 +859,8 @@ def test_metric_groups_do_not_infer_parent_tasks_from_task_names() -> None:
                 "correct_rate": 1.0,
                 "score": 1.0,
             },
-        }
+        },
+        task_type="letter",
     )
 
     assert groups == {

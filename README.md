@@ -584,28 +584,28 @@ memory; multi-GPU tensor parallelism and quantization are outside this evaluator
 
 The evaluator recomputes item scores and checks the recorded result. One report file
 is a response-format-keyed object whose selected `letter`, `bbox`, and `free_text`
-values are complete `medbench-evaluation.v1` reports. Each section independently
+values are complete `medbench-evaluation.v2` reports. Each section independently
 contains `metadata`, `summary`, `metric_groups`, `categories`, `tasks`, and `items`.
 It reports accuracy, semantic-option macro-F1, SacreBLEU, and mean IoU according to each
-question type's manifest metric. `metric_groups` exposes two hierarchical task-macro
-values instead of grouping by those native metrics: each question type first contributes
-its `correct_rate` and native `score` to an equal-weight mean within its parent task, then
-the parent-task values are averaged with equal weight as `accuracy` and `f1`. Thus the
-reported `f1` group is the requested metric-independent second score column; for non-letter
-tasks its inputs remain BLEU or mIoU rather than classification F1. Optional
+question type's manifest metric. For letter and free-text sections, `metric_groups` keeps
+the existing two hierarchical display values. For bbox sections it instead exposes the
+native `acc_at_iou` and `miou` names: each question type first contributes its threshold
+accuracy and mean IoU to an equal-weight mean within its parent task, then the parent-task
+values are averaged with equal weight. Optional
 `--bleu-threshold` and `--bbox-iou-threshold` values recompute report
 correctness without rerunning the model. The report's per-item `items` list
 retains both the normalized `prediction` and the model's complete
 `raw_prediction` for output auditing.
 
-For bbox sections, task `score` is mIoU and `correct_rate` is Acc@IoU using the
-report's configurable `bbox_iou` threshold (0.5 by default). This single-box output
-contract has no confidence score, so the evaluator does not claim standard AP/mAP.
+For bbox sections, summary, category, task, and metric-group records use `miou` and
+`acc_at_iou`; per-item records use `iou`. Acc@IoU uses the report's configurable
+`bbox_iou` threshold (0.5 by default). This single-box output contract has no confidence
+score, so the evaluator does not claim standard AP/mAP.
 
 Every letter task also records semantic-option `macro_f1`, regardless of its
-primary metric. Free-text and bbox tasks record `macro_f1: null`. Category and
-summary macro-F1 values average the available letter-task macro-F1 values and are
-`null` when no letter task is present.
+primary metric. Free-text tasks record `macro_f1: null`; bbox sections omit macro-F1
+entirely. Category and summary macro-F1 values average the available letter-task
+macro-F1 values and are `null` when no letter task is present.
 
 Model integrations live under `medbenchagent.evaluation.models`. Add one model
 module implementing `ModelAdapter.generate`, then add its explicit name and
