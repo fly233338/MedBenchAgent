@@ -1,4 +1,4 @@
-"""Strict loading of generated benchmark items and their audited PNG mapping."""
+"""Strict loading of generated benchmark items and their audited image mapping."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from medbenchagent.metrics import metrics_by_response_format
 
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 METRICS_BY_FORMAT = metrics_by_response_format()
+SUPPORTED_IMAGE_FORMATS = frozenset({"PNG", "JPEG"})
 
 
 class EvaluationDataError(ValueError):
@@ -184,20 +185,23 @@ def _validate_item(item: dict[str, Any], task: TaskSpec, image: ImageEntry) -> N
             raise EvaluationDataError(f"{item['id']}: invalid bbox response contract.")
 
 
-def _validate_png(image: ImageEntry) -> None:
+def _validate_image(image: ImageEntry) -> None:
     if not image.png_path.is_file():
-        raise EvaluationDataError(f"{image.image_id}: PNG is missing: {image.png_path}")
+        raise EvaluationDataError(f"{image.image_id}: image is missing: {image.png_path}")
     if file_sha256(image.png_path) != image.sha256:
-        raise EvaluationDataError(f"{image.image_id}: PNG sha256 does not match image manifest.")
+        raise EvaluationDataError(f"{image.image_id}: image sha256 does not match image manifest.")
     try:
-        with Image.open(image.png_path) as png:
-            png.load()
-            if png.format != "PNG" or png.size != (image.width, image.height):
+        with Image.open(image.png_path) as source:
+            source.load()
+            if source.format not in SUPPORTED_IMAGE_FORMATS or source.size != (
+                image.width,
+                image.height,
+            ):
                 raise EvaluationDataError(
-                    f"{image.image_id}: PNG format or dimensions do not match image manifest."
+                    f"{image.image_id}: image format or dimensions do not match image manifest."
                 )
     except OSError as exc:
-        raise EvaluationDataError(f"{image.image_id}: PNG could not be decoded.") from exc
+        raise EvaluationDataError(f"{image.image_id}: image could not be decoded.") from exc
 
 
 def load_benchmark(
@@ -268,7 +272,7 @@ def load_benchmark(
             continue
         selected_index = len(samples)
         if selected_index % world_size == rank and image_id not in validated_images:
-            _validate_png(image)
+            _validate_image(image)
             validated_images.add(image_id)
         seen_item_ids.add(item_id)
         samples.append(InferenceSample(selected_index, item, task, image))

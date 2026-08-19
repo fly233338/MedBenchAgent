@@ -1,0 +1,314 @@
+{
+  "dataset_id": "isic2018",
+  "dataset_name": "ISIC 2018 Challenge",
+  "source_root": "E:/MedicalData/ISIC2018",
+  "inventory_scope": {
+    "authoritative_population": "The extracted Task 1-2 test input joined with extracted Task 1 and Task 2 test ground truth, plus the extracted Task 3 test input joined with its test ground-truth CSV.",
+    "planned_output_records": 2512,
+    "source_images_are_read_only": true,
+    "duplicate_archives_not_joined_again": true
+  },
+  "sources": [
+    {
+      "path": "ISIC2018_Task1-2_Test_Input/ISIC2018_Task1-2_Test_Input",
+      "kind": "image_directory",
+      "row_granularity": "one image file per row",
+      "file_counts": {
+        ".jpg": 1000,
+        ".txt": 2
+      },
+      "inferred_image_types": {
+        "format": {
+          "JPEG": 1000
+        },
+        "mode": {
+          "RGB": 1000
+        },
+        "unique_dimensions": 114,
+        "dominant_dimensions": [
+          {
+            "width": 3072,
+            "height": 2304,
+            "count": 379
+          },
+          {
+            "width": 640,
+            "height": 480,
+            "count": 304
+          },
+          {
+            "width": 2048,
+            "height": 1536,
+            "count": 45
+          },
+          {
+            "width": 3872,
+            "height": 2592,
+            "count": 42
+          },
+          {
+            "width": 1024,
+            "height": 768,
+            "count": 21
+          }
+        ]
+      },
+      "candidate_image_id": {
+        "derivation": "JPEG basename without .jpg",
+        "unique_count": 1000,
+        "duplicate_count": 0
+      }
+    },
+    {
+      "path": "ISIC2018_Task1_Test_GroundTruth/ISIC2018_Task1_Test_GroundTruth",
+      "kind": "segmentation_mask_directory",
+      "row_granularity": "one segmentation mask per image",
+      "file_counts": {
+        "*_segmentation.png": 1000,
+        ".txt": 2
+      },
+      "inferred_mask_types": {
+        "format": {
+          "PNG": 1000
+        },
+        "mode": {
+          "L": 1000
+        },
+        "dimensions_match_task12_input": 1000,
+        "nonzero_mask_count": 1000,
+        "all_zero_mask_count": 0,
+        "pixel_extrema_counts": {
+          "[0, 255]": 999,
+          "[255, 255]": 1
+        },
+        "tight_bbox_rule": "Pillow-style nonzero-pixel extent: [min_x, min_y, max_x_exclusive, max_y_exclusive]."
+      },
+      "candidate_image_id": {
+        "derivation": "Remove _segmentation.png",
+        "unique_count": 1000,
+        "duplicate_count": 0
+      }
+    },
+    {
+      "path": "ISIC2018_Task2_Test_GroundTruth/ISIC2018_Task2_Test_GroundTruth",
+      "kind": "attribute_mask_directory",
+      "row_granularity": "one image-attribute mask per row",
+      "file_counts": {
+        "attribute_png": 5000,
+        ".txt": 2
+      },
+      "attribute_names_from_filename": [
+        "globules",
+        "milia_like_cyst",
+        "negative_network",
+        "pigment_network",
+        "streaks"
+      ],
+      "attribute_file_counts": {
+        "globules": 1000,
+        "milia_like_cyst": 1000,
+        "negative_network": 1000,
+        "pigment_network": 1000,
+        "streaks": 1000
+      },
+      "mask_presence_rule_observed": "A mask with maximum grayscale value 0 is all black and represents an absent attribute; a mask with a nonzero pixel represents a present attribute.",
+      "black_mask_counts": {
+        "globules": 794,
+        "milia_like_cyst": 915,
+        "negative_network": 924,
+        "pigment_network": 352,
+        "streaks": 923
+      },
+      "nonblack_mask_counts": {
+        "globules": 206,
+        "milia_like_cyst": 85,
+        "negative_network": 76,
+        "pigment_network": 648,
+        "streaks": 77
+      },
+      "per_image_present_attribute_count": {
+        "0": 182,
+        "1": 574,
+        "2": 217,
+        "3": 24,
+        "4": 3,
+        "5": 0
+      },
+      "dimensions_match_task12_input": 5000,
+      "candidate_image_id": {
+        "derivation": "Prefix before _attribute_",
+        "unique_count": 1000,
+        "duplicate_count": 0
+      }
+    },
+    {
+      "path": "ISIC2018_Task3_Test_Input/ISIC2018_Task3_Test_Input",
+      "kind": "image_directory",
+      "row_granularity": "one image file per row",
+      "file_counts": {
+        ".jpg": 1512,
+        ".txt": 2
+      },
+      "inferred_image_types": {
+        "format": {
+          "JPEG": 1512
+        },
+        "mode": {
+          "RGB": 1512
+        },
+        "unique_dimensions": 1,
+        "dimensions": {
+          "width": 600,
+          "height": 450,
+          "count": 1512
+        }
+      },
+      "candidate_image_id": {
+        "derivation": "JPEG basename without .jpg",
+        "unique_count": 1512,
+        "duplicate_count": 0
+      }
+    },
+    {
+      "path": "ISIC2018_Task3_Test_GroundTruth/ISIC2018_Task3_Test_GroundTruth/ISIC2018_Task3_Test_GroundTruth.csv",
+      "kind": "csv",
+      "row_granularity": "one image diagnosis row",
+      "row_count_excluding_header": 1512,
+      "columns": [
+        "image",
+        "MEL",
+        "NV",
+        "BCC",
+        "AKIEC",
+        "BKL",
+        "DF",
+        "VASC"
+      ],
+      "inferred_types": {
+        "image": "string",
+        "MEL": "float_one_hot",
+        "NV": "float_one_hot",
+        "BCC": "float_one_hot",
+        "AKIEC": "float_one_hot",
+        "BKL": "float_one_hot",
+        "DF": "float_one_hot",
+        "VASC": "float_one_hot"
+      },
+      "null_counts": {
+        "image": 0,
+        "MEL": 0,
+        "NV": 0,
+        "BCC": 0,
+        "AKIEC": 0,
+        "BKL": 0,
+        "DF": 0,
+        "VASC": 0
+      },
+      "unique_counts": {
+        "image": 1512,
+        "MEL": 2,
+        "NV": 2,
+        "BCC": 2,
+        "AKIEC": 2,
+        "BKL": 2,
+        "DF": 2,
+        "VASC": 2
+      },
+      "one_hot_validation": {
+        "rows_with_exactly_one_active_class": 1512,
+        "rows_with_zero_or_multiple_active_classes": 0,
+        "class_counts": {
+          "MEL": 171,
+          "NV": 909,
+          "BCC": 93,
+          "AKIEC": 43,
+          "BKL": 217,
+          "DF": 44,
+          "VASC": 35
+        }
+      }
+    }
+  ],
+  "archive_sources": [
+    {
+      "path": "ISIC2018_Task1_Test_GroundTruth.zip",
+      "size_bytes": 9680101,
+      "entries": 1003,
+      "contents": "1000 segmentation PNGs plus ATTRIBUTION.txt and LICENSE.txt",
+      "role": "duplicate of extracted Task 1 test ground truth"
+    },
+    {
+      "path": "ISIC2018_Task1-2_Test_Input.zip",
+      "size_bytes": 2370457338,
+      "entries": 1003,
+      "contents": "1000 JPEGs plus ATTRIBUTION.txt and LICENSE.txt",
+      "role": "duplicate of extracted Task 1-2 test input"
+    },
+    {
+      "path": "ISIC2018_Task1-2_Training_Input.zip",
+      "size_bytes": 11165358566,
+      "entries": 2597,
+      "contents": "2594 JPEGs plus ATTRIBUTION.txt and LICENSE.txt; no supplied Task 1 or Task 2 training ground truth",
+      "role": "excluded from annotated population pending matching ground truth"
+    },
+    {
+      "path": "ISIC2018_Task2_Test_GroundTruth.zip",
+      "size_bytes": 11806819,
+      "entries": 5003,
+      "contents": "5000 attribute PNGs plus ATTRIBUTION.txt and LICENSE.txt",
+      "role": "duplicate of extracted Task 2 test ground truth"
+    },
+    {
+      "path": "ISIC2018_Task3_Test_GroundTruth.zip",
+      "size_bytes": 12202,
+      "entries": 4,
+      "contents": "ISIC2018_Task3_Test_GroundTruth.csv plus ATTRIBUTION.txt and LICENSE.txt",
+      "role": "duplicate of extracted Task 3 test ground truth"
+    },
+    {
+      "path": "ISIC2018_Task3_Test_Input.zip",
+      "size_bytes": 420586171,
+      "entries": 1515,
+      "contents": "1512 JPEGs plus ATTRIBUTION.txt and LICENSE.txt",
+      "role": "duplicate of extracted Task 3 test input"
+    }
+  ],
+  "joins": [
+    {
+      "join": "Task 1-2 JPEG basename = Task 1 segmentation mask prefix = Task 2 attribute mask prefix",
+      "image_count": 1000,
+      "task1_missing_images": 0,
+      "task1_orphan_masks": 0,
+      "task2_missing_images": 0,
+      "task2_orphan_image_ids": 0,
+      "task2_rows_per_image": {
+        "minimum": 5,
+        "maximum": 5,
+        "exactly_five_for": 1000
+      },
+      "ambiguous_matches": 0
+    },
+    {
+      "join": "Task 3 JPEG basename = Task 3 CSV image column",
+      "image_count": 1512,
+      "csv_rows_missing_images": 0,
+      "image_files_missing_csv_rows": 0,
+      "ambiguous_matches": 0
+    },
+    {
+      "join": "Task 1-2 image_id versus Task 3 image_id",
+      "intersection_count": 0,
+      "duplicate_output_image_ids": 0
+    }
+  ],
+  "entity_scope_observations": {
+    "patient": "No patient identifier or patient-scoped annotation is supplied; keep patient_id null and annotation empty.",
+    "case": "No case/episode grouping is supplied; keep case_id null and annotation empty.",
+    "study": "No study/session grouping is supplied; keep study_id null and annotation empty.",
+    "image": "All supplied labels are image-level or image-mask-level facts; store them under image.annotation.",
+    "modality_and_anatomy": "The local extracted source files and attribution texts do not provide an explicit modality/anatomy field; leave both canonical fields null rather than infer them."
+  },
+  "unresolved_source_items": [
+    "The training input archive contains 2594 images but no matching Task 1/Task 2 training ground truth in this source root, so it is not part of the proposed 2512-record annotated population."
+  ]
+}

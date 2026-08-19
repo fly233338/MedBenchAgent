@@ -70,6 +70,26 @@ def _required_readable_file(path: str | Path, name: str) -> Path:
     return resolved
 
 
+def _image_manifest_format(path: Path) -> str:
+    """Return a stable format label while keeping the legacy manifest shape."""
+    suffixes: set[str] = set()
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            relative = row.get("png_path") if isinstance(row, dict) else None
+            if isinstance(relative, str):
+                suffixes.add(Path(relative).suffix.lower())
+    except (OSError, json.JSONDecodeError):
+        return "unknown_raster_image"
+    if not suffixes or suffixes == {".png"}:
+        return "8bit_grayscale_png"
+    if suffixes <= {".jpg", ".jpeg"}:
+        return "original_jpeg"
+    return "mixed_raster_images"
+
+
 def rag_designs_payload(
     blueprint: dict[str, Any], run_id: str, selected_material_files: list[str]
 ) -> dict[str, Any]:
@@ -174,7 +194,7 @@ def finalize_run(
                 "profile_schema_version": dataset_profile["schema_version"],
                 "cache_schema_version": dataset_access_manifest["cache_format_version"],
                 "total_images": dataset_profile["total_images"],
-                "image_format": "8bit_grayscale_png",
+                "image_format": _image_manifest_format(image_manifest),
             },
             "tasks": {
                 task_id: {

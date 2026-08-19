@@ -6,7 +6,12 @@ import pytest
 
 from medbenchagent.dataset import CACHE_FORMAT_VERSION, PROFILE_SCHEMA_VERSION
 from medbenchagent.run_artifacts import write_versioned_json
-from medbenchagent.run_export import benchmark_id, finalize_run, rag_designs_payload
+from medbenchagent.run_export import (
+    _image_manifest_format,
+    benchmark_id,
+    finalize_run,
+    rag_designs_payload,
+)
 
 
 def _blueprint() -> dict:
@@ -38,6 +43,17 @@ def _blueprint() -> dict:
             },
         },
     }
+
+
+def test_image_manifest_format_detects_original_jpeg(tmp_path: Path) -> None:
+    manifest = tmp_path / "image_manifest.jsonl"
+    manifest.write_text(
+        '{"image_id":"image-one","png_path":"images/image-one.jpg",'
+        '"width":20,"height":10,"sha256":"' + "a" * 64 + '"}\n',
+        encoding="utf-8",
+    )
+
+    assert _image_manifest_format(manifest) == "original_jpeg"
 
 
 def _audit_artifacts(run_directory: Path) -> dict[str, str]:

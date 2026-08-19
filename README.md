@@ -11,7 +11,7 @@ and a SHA-256 manifest. Per-task `sample_count` values are generation targets:
 the files contain the accepted items produced before all targets are met or the
 dataset is exhausted.
 
-After generation, the hard audit resolves PNG files only through
+After generation, the hard audit resolves prepared image files only through
 `image_id` and the adjacent `image_manifest.jsonl`. It does not read source
 DICOM files, locate PNGs through `image_path`, or reassess medical answer
 correctness. A separate fail-open semantic screen samples up to ten final items
@@ -90,8 +90,8 @@ to manual path input.
 The working Blueprint keeps only `dataset.dataset_id`; it never embeds catalog metadata,
 cache details, hashes, or local paths. `benchmark_manifest.json` carries the final dataset
 record assembled from the catalog, profile, access manifest, and adjacent
-`image_manifest.jsonl`, including annotation/image-manifest hashes and the fixed
-`8bit_grayscale_png` image-format contract.
+`image_manifest.jsonl`, including annotation/image-manifest hashes and the recorded
+image-format contract (`8bit_grayscale_png` or `original_jpeg`).
 
 The downstream workflow accepts only an `annotation.jsonl` file. Each line represents one image
 and contains `patient`, `case`, `study`, and `image` objects. Every entity has its own
@@ -344,7 +344,7 @@ total and per-agent LLM usage, generation/audit item counts, wall-clock time, fi
 status, applied revision rounds, actual modified-object counts, and the selected material count.
 Run lifecycle events use the `orchestrator` component and are not attributed to a sixth Agent.
 
-Hard Audit verifies the image-manifest mapping, streams PNG hashes, decodes 8-bit grayscale PNGs,
+Hard Audit verifies the image-manifest mapping, streams image hashes, and decodes supported PNG/JPEG assets,
 and checks every item's source row against the exact annotation file used by Generation. For
 every response format it replays the evidence path and source indices, then verifies the witness
 hash. Free-text answers must exactly equal the replayed string, and bbox answers must equal the
@@ -372,7 +372,7 @@ uv run medbenchagent balance-answers --input RAW --output COPY --seed 0
 The evaluation package runs generated benchmark artifacts against local Medical
 VLM checkpoints. Use the audited JSONL when available. The loader requires the
 matching `benchmark_manifest.json` and the normalized dataset's
-`image_manifest.jsonl`; it verifies their hashes and resolves every PNG by
+`image_manifest.jsonl`; it verifies their hashes and resolves every image by
 `image_id`. The opaque source `image_path` stored in benchmark items is never
 used for inference.
 
@@ -459,13 +459,13 @@ checkpoint-observed `answer is`, `category is X.`, Markdown option, and `\boxed{
 letter forms. For bbox tasks it follows MedGemma's native localization protocol: one
 JSON-list object with normalized `[y0,x0,y1,x1]` `box_2d` coordinates. The adapter
 strictly validates `[0,1]`, converts yxyx to canonical xyxy, and then scales to the
-original PNG. Conflicting or malformed candidates remain parse errors.
+original image. Conflicting or malformed candidates remain parse errors.
 
 All bbox prompts state the coordinate protocol owned by their adapter family. Qwen3,
 InternVL, Chiron, and BreastGPT request fixed `[0,1000]` xyxy coordinates; Qwen2.5,
 Lingshu, and QoQ request absolute xyxy coordinates in the resized image processed by
 the model; MedGemma requests normalized `[0,1]` yxyx coordinates; and Hulu requests
-original-PNG pixel coordinates. BreastGPT requests its native grounding-token format
+original-image pixel coordinates. BreastGPT requests its native grounding-token format
 through the bundled MS-SWIFT template and reports grounding in `[0,1000]`.
 QoQ uses its native medical
 reasoning prompt and extracts the final balanced `\boxed{...}` payload. Qwen3

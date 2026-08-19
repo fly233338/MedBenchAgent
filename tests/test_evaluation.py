@@ -189,6 +189,33 @@ def test_load_benchmark_validates_manifest_and_png(tmp_path: Path) -> None:
     assert loaded.samples[0].task.metric == "accuracy"
 
 
+def test_load_benchmark_accepts_jpeg_manifest_asset(tmp_path: Path) -> None:
+    benchmark, manifest, image_manifest = _fixture(tmp_path)
+    jpeg_path = tmp_path / "images/image-one.jpg"
+    jpeg = Image.new("RGB", (20, 10), 100)
+    jpeg.putpixel((0, 0), (255, 0, 0))
+    jpeg.save(jpeg_path, format="JPEG")
+    _write_jsonl(
+        image_manifest,
+        [
+            {
+                "image_id": "image-one",
+                "png_path": "images/image-one.jpg",
+                "width": 20,
+                "height": 10,
+                "sha256": _sha256(jpeg_path),
+            }
+        ],
+    )
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["dataset"]["image_manifest_sha256"] = _sha256(image_manifest)
+    _write_json(manifest, payload)
+
+    loaded = load_benchmark(benchmark, manifest, image_manifest)
+
+    assert loaded.samples[0].image.png_path == jpeg_path.resolve()
+
+
 def test_load_benchmark_rejects_unrecorded_benchmark_hash(tmp_path: Path) -> None:
     benchmark, manifest, image_manifest = _fixture(tmp_path)
     benchmark.write_text(benchmark.read_text(encoding="utf-8") + "\n", encoding="utf-8")
@@ -201,7 +228,7 @@ def test_load_benchmark_rejects_changed_png(tmp_path: Path) -> None:
     benchmark, manifest, image_manifest = _fixture(tmp_path)
     Image.new("L", (20, 10), 100).save(tmp_path / "images/image-one.png")
 
-    with pytest.raises(EvaluationDataError, match="PNG sha256"):
+    with pytest.raises(EvaluationDataError, match="image sha256"):
         load_benchmark(benchmark, manifest, image_manifest)
 
 
