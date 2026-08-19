@@ -32,21 +32,25 @@ MedBenchAgent 不应只把现有 `CapabilityAgent` 和 `ClinicalDesignAgent` 改
 
 - Agent 负责开放且需要观察反馈的决策：搜索词、候选资源比较、字段和 join 语义、检索纠正、证据
   充分性、何时请求人工判断；
-- 受控代码负责下载、解压、hash、文件清单和注册等副作用；确定性代码负责行级转换、图像转换、
-  schema validation、答案构造、provenance 和 Audit；
+- Dataset Preparation Harness 允许 Agent 在隔离 sandbox 中下载、阅读文件、编写并执行数据集专用脚本、
+  观察错误并迭代；sandbox 外的 schema admission、catalog 注册、答案构造、provenance 和 Audit 仍由
+  确定性代码负责；
 - policy engine 决定哪些下载或转换可以自动执行，哪些必须先取得用户批准；
 - 人工确认保留在许可/体量、不可逆的映射歧义、医学图像编码和最终方案等高风险边界。
 
 ReAct 的引入必须对应实际功能。本计划认可四个 Agent 决策区：
 
-1. **Dataset Discovery**：根据搜索结果和 dataset card 继续搜索、比较或停止；
-2. **Dataset Onboarding**：根据 source inventory 和 join/cardinality observation 修订声明式映射；
+1. **Dataset Preparation Harness / discovery phase**：根据搜索结果和 dataset card 继续搜索、比较、
+   下载或停止；
+2. **Dataset Preparation Harness / execution phase**：加载数据准备 skills，在 sandbox 中检查文件、
+   编写转换程序、运行并根据 validator 错误继续修复；
 3. **Capability Research**：按需深查字段语义和值分布，再决定任务是否可支持；
 4. **Agentic RAG**：根据 passage 相关性和 claim coverage 改写查询、切换检索策略、补充资料或声明证据
    不足。
 
-下载、转换、注册、样本分配、逐题生成和硬审计不是 ReAct 场景。模型可以提议或触发一个已批准的
-确定性 job，但不能自行实现这些操作。
+下载、文件分析和转换调试属于这个通用 Agent loop 的真实行动；catalog 注册、样本分配、逐题生成和
+硬审计则不属于 ReAct。Agent 可以在 sandbox 内自由实现当前数据集需要的转换，但只有通过 admission
+gate 的 bundle 才能进入现有工作流。
 
 ## 2. 当前不优雅之处与改造必要性
 
@@ -73,11 +77,11 @@ plane。
 | 优先级 | 能力 | 原因 |
 |---|---|---|
 | 必须先做 | annotation v2 单一真相源、durable jobs、resource manifests、tool-call runtime | 其他自治能力的可靠性基础 |
-| 必须做 | Dataset Discovery/Acquisition、Tier A/B Onboarding、catalog v2 | 直接解决数据必须由用户提前准备的问题 |
+| 必须做 | Codex-like Dataset Preparation Harness、sandbox、skill loader、catalog v2 | 直接解决数据必须由用户提前准备的问题 |
 | 必须做 | Reference Curation、corpus version、corrective Agentic RAG、evidence ledger | 直接解决资料缺失和固定单次检索的问题 |
 | 应做 | Capability 按需字段研究、validated memory、resource 快速复用 | 能减少错误任务和重复工作，但必须用 eval 证明收益 |
 | 条件式 | 新医学数据源 connector、hybrid retrieval、并行 task workers | 只在现有来源/检索/吞吐确有瓶颈时引入 |
-| 暂缓 | 自由 supervisor、角色型多 Agent、任意 Web/代码执行、自动生成并执行 custom adapter | 风险和复杂度高，当前没有必要 |
+| 暂缓 | 自由 supervisor、角色型多 Agent、sandbox 外任意 Web/代码执行 | 风险和复杂度高，当前没有必要 |
 
 ## 3. 参考项目、标准和研究经验
 
@@ -85,7 +89,8 @@ plane。
 
 | 来源 | 可迁移经验 | 本项目决策 |
 |---|---|---|
-| [ReAct](https://arxiv.org/abs/2210.03629) | 推理、行动、观察交替，外部 observation 可以修正计划 | 用于资源搜索、映射核查和纠正检索，不用于确定性转换 |
+| [OpenAI Docs: Build skills](https://learn.chatgpt.com/docs/build-skills) | skill 将指令、resources 和可执行 scripts 打包，并在匹配任务时按需加载完整 `SKILL.md` | Harness 实现同类 progressive skill loading，让通用 loop 复用现有下载和医学数据准备 workflows |
+| [ReAct](https://arxiv.org/abs/2210.03629) | 推理、行动、观察交替，外部 observation 可以修正计划 | 用于资源搜索、sandbox 编码/调试和纠正检索；最终批量转换仍由脚本执行 |
 | [Open Deep Research](https://github.com/langchain-ai/open_deep_research) | research brief、显式完成工具、迭代和并发预算 | 每个研究 loop 有 brief、工具集、完成动作和硬预算 |
 | [GPT Researcher](https://github.com/assafelovic/gpt-researcher) | planner、information gathering、publisher 分离，来源贯穿全流程 | 分离资源研究、证据研究和 benchmark 构建，不让生成阶段重新找来源 |
 | [STORM / Co-STORM](https://github.com/stanford-oval/storm) | 先做知识整理和提纲，再生成；人可以中途调整研究方向 | 先形成 Evidence-backed Proposal，再生成题目 |
@@ -102,24 +107,26 @@ plane。
 
 ## 4. 可行性反思与架构决策
 
-### 4.1 Agent 能否把任意下载数据集自动变成 annotation v2
+### 4.1 能否实现类似 Codex 的通用 Dataset Preparation Harness
 
-**初步目标**：下载任意医学影像数据集后，全自动生成合法 `annotation.jsonl`。
+**目标**：Agent 不依赖预置 adapter 或固定 mapping DSL，而是像当前 Codex 使用 skills 一样，在一个
+受控 workspace 中搜索/下载数据、阅读文档和表格、编写数据集专用转换脚本、执行脚本、读取错误并
+反复修复，直到生成当前 workflow 接受的接口。
 
-**反思**：任意数据集可能包含多表多对多 join、不明 entity scope、病灶级重复行、非标准 bbox、mask、
-压缩或加密图像、DICOM series、WSI、许可限制和文档缺失。模型无法从列名或数值可靠推断这些医学与
-数据语义。承诺“任意数据集全自动”不可行，也不安全。
+**可行性判断**：可行，而且比维护越来越大的 adapter registry 更符合项目希望的通用性。现有
+`research-downloads`、`prepare-medical-annotations`、`prepare-medical-images` 和
+`convert-medical-images-to-png` 已经描述了完整工作方法、输出契约和验证规则；Harness 需要做的是把
+Codex 当前拥有的 skill loader、filesystem、command execution 和 validation loop 产品化，而不是把
+skill 内容重新编码成大量业务分支。
 
-**决策**：采用三级摄取能力，而不是任意代码生成。
+**关键边界**：通用不等于保证任何数据集都必然成功。Agent 可以为陌生格式动态写代码，但不能从来源
+无法确定的信息中创造医学语义。identity、join、entity scope、bbox convention、mask 处理或图像编码
+存在实质歧义时，它应携带已经完成的 inventory、脚本和失败证据请求用户判断；用户回答后继续同一
+loop，而不是转交一个预先定义的 adapter 层级。
 
-| 层级 | 支持范围 | 自治程度 |
-|---|---|---|
-| A：已知 adapter | 已有测试的 dataset/version adapter | policy 允许时全自动下载、转换、验证和注册 |
-| B：声明式 mapping | 常见 CSV/TSV/XLSX/JSON/Parquet，join 和 grouping 可由 mapping contract 表达 | Agent 提出映射，代码验证，用户首次确认后由通用 engine 执行 |
-| C：custom adapter required | mapping contract 无法表达、文档/坐标/实体语义不明确、复杂医学格式 | Agent 输出 inventory 和阻断原因，由工程师实现并审核 adapter |
-
-首版产品完成 A 和 B。C 不是失败隐藏项，而是明确的 `adapter_required` 终止状态。Agent 不生成并直接
-执行任意 Python。后续可以让 Agent 起草 adapter patch，但仍需代码审查、测试和独立批准后才能运行。
+**决策**：用一个长运行、可恢复的 code-writing Agent loop 取代“已知 adapter / 声明式 mapping /
+工程适配”三级模型。每个 job 的数据集专用脚本都是该次准备任务的可复现 artifact，由 Agent 在
+sandbox 中按需生成、测试和保留，不要求开发前先注册到应用代码。
 
 ### 4.2 数据集能否自主搜索和下载
 
@@ -156,14 +163,19 @@ Face 搜索候选，读取 dataset card/metadata，比较模态、疾病、annot
 - `dataset_bundle.json` 记录 annotation schema ID/hash 和 converter version；
 - 未通过 v2 schema、join reconciliation 和 determinism check 的数据集不能注册为 available。
 
-### 4.4 行级转换应该由 Agent 还是代码完成
+### 4.4 Agent 是否应该自己编写和执行转换代码
 
-**反思**：模型逐行转换不可复现、昂贵，也容易添加源数据没有的医学解释。现有数据准备 skill 已明确
-要求 deterministic converter。
+**反思**：让模型逐行直接吐出 annotation 不可复现；但禁止它写代码又失去了通用 harness 的核心能力。
+正确边界不是“Agent 或代码二选一”，而是“Agent 编写程序，程序确定性处理数据”。
 
-**决策**：Agent 只读取 bounded inventory 和文档摘要，输出 `ConversionPlanV2`；通用 mapping engine
-根据已批准 plan 生成字节稳定的 annotation v2。重复运行必须 byte-identical。原始表、完整记录、患者
-标识符和图像不会发送给外部模型。
+**决策**：Agent 在 sandbox 中读取 bounded samples 和来源文档，先保存 `source_inventory.json` 与
+`conversion_plan.json`，再编写数据集专用 `prepare_annotations.py` / `prepare_images.py`。它可以运行脚本、
+查看 stdout/stderr、检查中间报告并修改代码。最终脚本必须一次性处理完整数据，重复运行 byte-identical，
+并通过 sandbox 外的 annotation v2、image manifest、source reconciliation 和 path safety admission。
+
+当前 DeepSeek endpoint 是本地服务，因此 Harness 可以在明确的数据本地性 policy 下查看必要的 bounded
+原始样例；若未来切换到外部模型，含 PHI 或未经脱敏的数据集必须禁止把原始内容送入模型，只允许本地
+模型或人工完成该部分。
 
 ### 4.5 Agentic RAG 是否只是给检索加 ReAct
 
@@ -198,7 +210,7 @@ Web 内容里的指令一律是不可信数据。不可下载或受限来源保�
 **决策**：根图增加代码控制的 `ResourceCoordinator`：
 
 - catalog 有合适且 ready 的数据集时走现有选择；
-- 没有合适数据集或用户要求新数据时进入 Dataset Discovery/Onboarding；
+- 没有合适数据集或用户要求新数据时进入 Dataset Preparation Harness；
 - materials corpus 满足任务 evidence policy 时直接进入 Task Evidence Agent；
 - corpus gap 时进入 Reference Curation；
 - Generation、Audit 和 finalize 永远不能被模型跳过。
@@ -236,19 +248,20 @@ mapping plan 可以在 source revision/hash 相同时复用，但必须重新运
 2. SpecificationAgent 提取 BenchmarkInfo，用户确认
 3. ResourceCoordinator 检查现有资源
 4. 如果需要新数据集：
-   4.1 Dataset Discovery Agent 搜索和比较候选
+   4.1 Dataset Preparation Harness 加载下载 skill，搜索和比较候选
    4.2 用户/policy 批准 AcquisitionPlan
-   4.3 确定性 downloader 获取并生成 source manifest
-   4.4 Dataset Onboarding Agent 读取 inventory，提出 ConversionPlanV2
-   4.5 用户确认存在语义影响的映射和图像编码
-   4.6 确定性 engine 生成 annotation v2、图像资产和 bundle manifest
-   4.7 validator 通过后注册 catalog
-5. Capability Research Agent 提出 Task Plan，用户确认
-6. Reference Curation Agent 检查/补充医学资料，用户或 policy 确认来源范围
-7. Task Evidence Agent 执行 Agentic RAG，生成 Evidence-backed Design Proposal
-8. 用户确认或定向修改设计
-9. GenerationAgent 确定性生成题目
-10. AuditAgent 审计并交付 benchmark、manifest 和研究报告
+   4.3 Dataset Preparation Harness 创建隔离 sandbox 并加载匹配 skills
+   4.4 Agent 下载数据、阅读文件/文档、编写并运行转换脚本
+   4.5 Agent 调用 admission validator，根据错误继续修改脚本
+   4.6 遇到真实语义歧义时用户回答，Agent 从原 checkpoint 继续
+   4.7 admission 全部通过后发布 PreparedDatasetHandle
+5. 当前 CapabilityAgent 的 dataset selection 在现有 catalog + 本次 prepared handles 中选择和确认
+6. Capability Research Agent 提出 Task Plan，用户确认
+7. Reference Curation Agent 检查/补充医学资料，用户或 policy 确认来源范围
+8. Task Evidence Agent 执行 Agentic RAG，生成 Evidence-backed Design Proposal
+9. 用户确认或定向修改设计
+10. GenerationAgent 确定性生成题目
+11. AuditAgent 审计并交付 benchmark、manifest 和研究报告
 ```
 
 ### 5.3 目标架构
@@ -256,14 +269,16 @@ mapping plan 可以在 source revision/hash 相同时复用，但必须重新运
 ```text
                          ┌──────────────── Resource Plane ────────────────┐
 BenchmarkInfo ──────────→│ ResourceCoordinator                            │
-                         │   ├─ Dataset Discovery Agent ↔ source tools     │
-                         │   ├─ Acquisition Job → source manifest          │
-                         │   ├─ Dataset Onboarding Agent ↔ inventory tools │
-                         │   ├─ Deterministic Normalization/Image Jobs     │
+                         │   ├─ Skill Registry → matched SKILL.md          │
+                         │   ├─ Dataset Preparation Harness                │
+                         │   │    ↔ search / download / fs / exec / validate│
+                         │   ├─ Admission Gate → PreparedDatasetHandle     │
                          │   └─ Reference Curation Agent ↔ source tools    │
                          └────────────────────┬────────────────────────────┘
                                               ↓ ready resource manifests
                          ┌──────────────── Benchmark Control Plane ───────┐
+                         │ Existing Dataset Selection                     │
+                         │   ↓ confirmed ready dataset                    │
                          │ Capability Research Agent                      │
                          │   ↓ confirmed Task Plan                        │
                          │ Task Evidence Agent ↔ Agentic RAG tools        │
@@ -272,8 +287,9 @@ BenchmarkInfo ──────────→│ ResourceCoordinator          
                          └─────────────────────────────────────────────────┘
 ```
 
-Resource Plane 的所有大文件和转换结果只以 manifest/path/hash 跨入 control plane。模型上下文不传原始数据
-行、完整 archive、图像像素或任意本地路径。
+Resource Plane 的大文件和转换结果只以 manifest/path/hash 跨入 control plane。Harness 私有上下文可在
+数据本地性 policy 下查看 bounded rows、metadata 和 sandbox-relative paths；这些内容不会进入根图状态，
+也不暴露 host absolute paths、完整 archive 或图像像素。
 
 ### 5.4 运行模式
 
@@ -325,14 +341,15 @@ Agent 提交 `AcquisitionPlan`，代码检查：
 - downloader 命令模板和 connector version；
 - approval token 的 scope、过期时间和一次性语义。
 
-下载优先级和命令实现遵循 `research-downloads` 的环境约定。每次 job 输出：
+下载优先级和命令实现遵循 `research-downloads` 的环境约定。acquisition 是同一 preparation job 的阶段，
+输出：
 
 ```text
-<dataset_source_job>/
+<dataset_prep_job>/
 ├── acquisition_plan.json
 ├── source_manifest.jsonl
 ├── source_metadata.json
-├── downloads/
+├── workspace/source/
 └── acquisition_report.json
 ```
 
@@ -340,53 +357,69 @@ Agent 提交 `AcquisitionPlan`，代码检查：
 下载到 staging/quarantine，安全检查 archive path traversal、symlink、重复路径和体量后再发布。失败重试以
 revision 和 hash 幂等，不覆盖不同内容，也不自动删除用户数据。
 
-### 6.3 SourceInventory 与 ConversionPlanV2
+### 6.3 Skill-driven Dataset Preparation Harness
 
-确定性 inventory job 读取 source manifest，输出：
+Harness 不是新的业务 DSL，而是一个通用 agent runtime。启动 job 时只给模型简短 skill catalog；模型
+根据任务加载完整 `research-downloads`、`prepare-medical-annotations`、`prepare-medical-images`、
+`convert-medical-images-to-png` 及其直接 references/scripts。这个 progressive disclosure 与 Codex skills
+的使用方式一致：skill 提供工作方法和验收契约，Agent 仍可根据当前数据自由组合工具和编写代码。
 
-- annotation tables/sheets/JSON 的行数、列、类型、null/unique counts；
-- candidate image/patient/case/study identifiers；
-- candidate join keys 及实测 cardinality；
-- source-row granularity；
-- 图像文件内容格式、尺寸、帧/volume/WSI 状态；
-- annotation reference 与 image path 的 exact/missing/ambiguous matches；
-- dataset documentation 和已提取的 mapping statements；
-- 不含完整原始行或不必要 PHI 的 bounded examples。
+每个 job 创建独立 sandbox：
 
-Dataset Onboarding Agent 根据 inventory 和来源文档提出 `ConversionPlanV2`：
+```text
+<dataset_prep_job>/
+├── workspace/              # Agent 可读写和执行
+│   ├── source/             # 下载或只读挂载的数据
+│   ├── work/               # 脚本、中间结果和日志
+│   └── candidate_output/   # 待 admission 的结果
+├── checkpoints/
+├── tool_events.jsonl
+└── job_report.json
+```
 
-- authoritative image population 和稳定顺序；
-- image/patient/case/study ID 与 `image.image_path` 规则；
-- joins、cardinalities、grouping 和 entity scope；
-- source column → annotation v2 field mappings；
-- modality/anatomy provenance；
-- bbox source convention 和精确转换公式；
-- included/excluded fields、missing/orphan/duplicate/conflict policy；
-- image preparation policy；
-- expected input/output counts；
-- unresolved decisions 和所需 approval。
+Agent loop 可以：
 
-Validator 不只检查 JSON 结构，还要把 plan 的 join 和 field references 对照 inventory。存在无法由来源文档
-确定的 identity、entity scope、bbox 约定、mask 处理或 image encoding 时返回 `needs_human` 或
-`adapter_required`。
+1. 列目录、按范围读取文本、表格 schema、bounded rows 和图像/医学格式 metadata；
+2. 执行 provider download tool，将数据放入 `source/`；
+3. 用 Python/PowerShell/Linux shell 在 `work/` 编写和运行一次性探索脚本；
+4. 保存 skill 要求的 `source_inventory.json` 和 `conversion_plan.json`；
+5. 编写数据集专用 `prepare_annotations.py` / `prepare_images.py`；
+6. 执行脚本并读取 stdout、stderr、hash、count reconciliation 和 validator errors；
+7. 根据 observation 修改脚本或 plan，直到成功、预算耗尽或需要用户回答。
 
-### 6.4 通用 deterministic mapping engine
+模型不逐行生成最终 JSONL；它生成程序，由程序处理完整数据。sandbox 中允许通用代码执行，但进程没有
+host filesystem、项目 secrets 或默认网络权限，只有 job workspace 和只读的 schemas/skill resources。
+网络下载必须走单独的 allowlisted download tool。
 
-首版 engine 支持可以声明式表达的常见操作：
+### 6.4 Admission Gate 与 PreparedDatasetHandle
 
-- 读取 CSV、TSV、XLSX、JSON/JSONL 和 Parquet；
-- exact-key joins 和显式 cardinality 约束；
-- 按 authoritative image group；
-- 按 source row 保留重复 annotation object；
-- 字段复制、JSON-compatible 类型解析和显式 null policy；
-- 已文档化的 bbox corner、xywh、center-xywh 转换；
-- 稳定排序、临时写入和原子发布。
+Sandbox 内 Agent 判断“完成”不代表数据可进入项目。`publish_prepared_dataset` 首先在 sandbox 外运行
+不可绕过的 admission：
 
-它不支持 fuzzy join、从图像或文件名推断标签、医学术语归一化、自动合并类别、未知 mask-to-bbox、自动
-选 volume slice 或 WSI region。无法表达时停止到 Tier C。
+- annotation v2 schema、每图一行、ID/path 唯一和 path containment；
+- source row/count/join reconciliation 与 unresolved issue 状态；
+- bbox、image manifest、尺寸、hash、格式和像素检查；
+- converter 重跑 determinism 和 source immutability；
+- required inventory/plan/report/script artifacts；
+- 输出中不存在 escaping symlink、绝对路径或未引用大文件。
 
-为了复现，每个 dataset bundle 仍保留一个 plan-hash 固定的 invocation script；脚本只调用通用 engine，
-不包含模型临时生成的行级逻辑。
+失败只返回结构化 errors 和 artifact refs，Agent 回到 sandbox 继续修复。全部通过后，代码原子复制 bundle
+到 normalized root 并返回 run-scoped `PreparedDatasetHandle`：
+
+```json
+{
+  "dataset_id": "prepared-...",
+  "name": "...",
+  "description": "...",
+  "annotation_path": ".../annotation.jsonl",
+  "image_manifest_path": ".../image_manifest.jsonl",
+  "bundle_manifest_path": ".../dataset_bundle.json",
+  "readiness": "ready"
+}
+```
+
+当前 dataset selection 不需要直接理解 sandbox。它只需把 run-scoped ready handles 与静态 catalog entries
+合并后继续现有推荐和确认；失败或未 admission 的 job 永远不可见。
 
 ### 6.5 图像准备
 
@@ -395,7 +428,7 @@ Validator 不只检查 JSON 结构，还要把 plan 的 join 和 field reference
 - 已支持的安全 PNG/JPEG 可以按明确 policy 原样使用或复制，保留 bytes/hash；
 - 单帧 DICOM、2D NIfTI/NRRD/MHA/MHD 等由受测试 converter 生成确定性 8-bit display PNG；
 - multi-frame、true volume、WSI、pyramidal/multi-page 文件拒绝，不让 Agent 选 slice；
-- 不 resize/crop/rotate/flip；任何编码选择必须来自用户批准或已知 adapter policy；
+- 不 resize/crop/rotate/flip；任何编码选择必须来自来源文档、用户批准或当前 job 的明确 policy；
 - annotation 与最终图像 manifest 必须一一对应并验证尺寸、hash 和非恒定像素。
 
 ### 6.6 DatasetBundleManifest 与 catalog v2
@@ -419,37 +452,42 @@ Validator 不只检查 JSON 结构，还要把 plan 的 join 和 field reference
 ID/hash、plan hash、converter/tool versions、annotation/image manifest hashes、record/image counts、format、
 validation status 和 unresolved risks。
 
-catalog v2 不再直接把 `annotation_path` 当作全部事实，而是指向 bundle manifest。加载器从 bundle 解析
-annotation 和 image manifest，并复核 hash/readiness。迁移期读取 legacy catalog v1，但所有新自动注册项
-只写 v2。catalog 更新由代码原子完成；Agent 只能提交 registration candidate。
+当前运行优先使用 `PreparedDatasetHandle`，因此不必在 dataset selection 前修改全局 catalog。用户选择
+长期保留该资源时，catalog v2 再把 entry 指向 bundle manifest；加载器从 bundle 解析 annotation 和 image
+manifest，并复核 hash/readiness。迁移期继续读取 legacy catalog v1。catalog promotion 由代码原子完成，
+Agent 没有全局 catalog 写权限。
 
 ## 7. Agent 工具与权限模型
 
 工具按阶段动态装载。任一 Agent 同时看到的工具不超过 5 个，避免功能重叠和上下文污染。
 
-### 7.1 Dataset Discovery 工具
+### 7.1 Dataset Preparation discovery-phase 工具
 
 | 工具 | 功能 | 副作用 |
 |---|---|---|
 | `dataset_search` | 在允许 connectors 中搜索，返回 bounded candidates | 无 |
 | `dataset_describe` | 获取一个 candidate 的 card/Croissant/文件摘要和 metadata provenance | 无 |
 | `dataset_submit_acquisition_plan` | 代码验证下载提议并请求/签发 approval | 只写 plan artifact |
-| `dataset_acquire` | 使用 scoped approval token 启动或恢复 downloader job | 下载到 staging |
+| `dataset_acquire` | 使用 scoped approval token 启动或恢复 downloader job | 下载到 sandbox `source/` |
 
-Agent 可以根据第一次搜索结果改变关键词、provider 或候选，但不能直接调用 shell 命令、传任意 URL 或
-选择任意本地目录。
+Agent 可以根据第一次搜索结果改变关键词、provider 或候选，但 discovery phase 不能传任意 URL、选择
+host 目录或直接调用 host shell；下载完成后才在同一 job 的 sandbox 中获得代码执行工具。
 
-### 7.2 Dataset Onboarding 工具
+### 7.2 Dataset Preparation Harness 工具
+
+Skill 匹配阶段可以使用 `skill_load`；完整 skill 载入后移除该工具，再提供五个 sandbox 工具：
 
 | 工具 | 功能 | 副作用 |
 |---|---|---|
-| `ingestion_inventory` | 启动/读取 deterministic source inventory job | 只写 inventory artifact |
-| `ingestion_check_mapping` | 验证 `ConversionPlanV2` 对 inventory 的引用和约束 | 无 |
-| `ingestion_submit_mapping` | 保存通过验证的 candidate mapping 并进入 approval | 只写 candidate artifact |
-| `ingestion_build_bundle` | 对 approved plan 执行 annotation/image jobs | 写独立 normalized staging |
-| `ingestion_register_bundle` | 复核所有报告和 hash 后原子注册 catalog v2 | 修改 catalog，需 approval/policy |
+| `sandbox_inspect` | 列目录，读取 bounded text/table rows，探测文件和图像 metadata | 无 |
+| `sandbox_apply_patch` | 在 `work/` 和 `candidate_output/` 创建或修改脚本、plan 和报告 | 仅 sandbox workspace |
+| `sandbox_exec` | 在受限进程中运行 Python、PowerShell 或 shell 命令并返回 stdout/stderr | 仅 sandbox workspace |
+| `dataset_validate_candidate` | 对 candidate output 运行完整 admission，返回结构化 errors | 只写 validation report |
+| `dataset_publish_candidate` | 重跑 admission，通过后原子发布并返回 `PreparedDatasetHandle` | 写 normalized bundle |
 
-`ingestion_build_bundle` 是 job trigger，不是模型执行代码。工具拒绝没有 approved mapping hash 的调用。
+下载阶段的 `dataset_acquire` 把文件放入当前 sandbox 的 `source/`，随后从 Agent 工具集中移除网络工具。
+`sandbox_exec` 可以运行 Agent 编写的数据集专用代码，但没有 host filesystem、任意网络、credentials 或
+catalog 写权限。它是通用能力的核心，不应再被拆成一组预设 mapping transforms。
 
 ### 7.3 Capability 工具
 
@@ -569,7 +607,7 @@ Design generator 只能使用 accepted ledger 和 dataset field observation。Va
 
 ### 8.4 预算与终止
 
-| 限制 | Dataset Discovery | Dataset Onboarding | Capability | 单 task Agentic RAG |
+| 限制 | Dataset prep discovery | Dataset prep execution | Capability | 单 task Agentic RAG |
 |---|---:|---:|---:|---:|
 | 最大模型决策轮数 | 10 | 10 | 12 | 10 |
 | 最大 search/retrieval calls | 6 | 0 | 0 | 5 |
@@ -583,7 +621,7 @@ Design generator 只能使用 accepted ledger 和 dataset field observation。Va
 - `needs_approval`；
 - `needs_human`；
 - `not_found`；
-- `adapter_required`；
+- `preparation_blocked`；
 - `evidence_insufficient`；
 - `budget_exhausted`；
 - `model_protocol_error`；
@@ -644,7 +682,7 @@ ref、tokens、latency、预算、approval、termination reason。用户界面�
 
 1. 以 `src/medbenchagent/schemas/annotation.v2.schema.json` 为唯一 schema。
 2. 升级或 deprecated 旧 v1 normalization skill；让 preparation skills 和 validator 检查同一 schema hash。
-3. 定义 `DatasetCandidate`、`AcquisitionPlan`、`SourceInventory`、`ConversionPlanV2`、
+3. 定义 `DatasetCandidate`、`AcquisitionPlan`、`SandboxJob`、`PreparedDatasetHandle`、
    `DatasetBundleManifest`、`ReferenceCandidate`、`EvidenceLedger` contract。
 4. 建立 workflow/RAG/dataset-preparation baseline eval。
 5. 用无副作用探针验证单/多轮 tool call、tool result、并行 call、strict arguments、thinking message 回传。
@@ -667,9 +705,9 @@ ref、tokens、latency、预算、approval、termination reason。用户界面�
 - 连续四轮 tool call/result 可正确回传和恢复；
 - 本地 serving 达不到门槛时停止 Agent 实施，不用 prompt 文本 `Thought/Action` 冒充工具调用。
 
-### Phase 1：Durable Resource Job Runtime
+### Phase 1：Durable Job 与 Sandbox Harness Runtime
 
-**目标**：先建立可恢复、有 provenance 的资源作业层，不立即引入 Agent 搜索。
+**目标**：建立可恢复、有 provenance 的资源作业层，以及 Agent 可以安全读写和执行代码的通用 sandbox。
 
 工作项：
 
@@ -677,20 +715,25 @@ ref、tokens、latency、预算、approval、termination reason。用户界面�
 2. 通用 job 状态机：planned → approval_pending → running → validating → ready/failed/cancelled。
 3. staging、原子 publish、idempotency、hash manifest、disk quota 和安全 archive extraction。
 4. 配置 dataset source、normalized、materials source、RAG corpus 和 state roots。
-5. 现有本地数据集和 PDF 可导入生成 bundle/corpus manifest。
+5. 实现 per-job sandbox：隔离 workspace、只读 schema/skill mounts、进程/时间/内存/磁盘限制、默认断网。
+6. 实现 skill catalog 和 progressive `SKILL.md`/references/scripts loader；先接入现有四个 dataset skills。
+7. 实现 `sandbox_inspect`、`sandbox_apply_patch`、`sandbox_exec`、candidate validation/publish tools。
+8. 现有本地数据集和 PDF 可导入生成 bundle/corpus manifest。
 
 预计关键文件：
 
 - `src/medbenchagent/jobs.py`、`src/medbenchagent/resource_artifacts.py`；
+- `src/medbenchagent/harness/sandbox.py`、`skills.py`、`tools.py`；
 - `src/medbenchagent/settings.py`、`config/default.toml`；
 - `src/medbenchagent/cli.py`；
 - `src/medbenchagent/construction.py`；
 - job、path safety、resume 和 fault-injection tests。
 
-硬门：在 download/inventory/conversion/indexing 的每个阶段终止后都能恢复；同一 job 不产生重复文件或
-artifact；越界路径、archive traversal、hash mismatch 和 quota overflow 均明确失败。
+硬门：在 download/inspection/code execution/validation/indexing 的每个阶段终止后都能恢复；同一 job
+不产生重复文件或 artifact；sandbox 无法读取 host/workspace 外路径或 secrets，默认无法任意联网；越界
+路径、archive traversal、hash mismatch、command timeout 和 quota overflow 均明确失败。
 
-### Phase 2：Dataset Discovery 与 Acquisition Agent
+### Phase 2：Dataset Preparation Harness 的搜索与下载闭环
 
 **目标**：从自然语言 benchmark 目标搜索候选数据集并在 policy 内完成下载。
 
@@ -698,7 +741,8 @@ artifact；越界路径、archive traversal、hash mismatch 和 quota overflow �
 
 1. 实现 ModelScope、OpenDataLab/OpenXLab、Hugging Face connectors 和统一 candidate metadata。
 2. 读取 dataset card/Croissant/README/file listing，保留 metadata provenance 和 unknown。
-3. 实现 Dataset Discovery ReAct loop 和四个 discovery/acquisition tools。
+3. 在 `DatasetPreparationState` 中实现 discovery phase 和四个 discovery/acquisition tools；下载完成后同一
+   Agent state 进入 sandbox execution phase。
 4. 实现 `manual` 与 `open_under_limit` acquisition policy、scoped approval token 和 credential injection。
 5. 生成 source manifest、metadata 和 acquisition report。
 
@@ -706,8 +750,8 @@ artifact；越界路径、archive traversal、hash mismatch 和 quota overflow �
 
 - `src/medbenchagent/resources/dataset_sources.py`；
 - `src/medbenchagent/resources/acquisition.py`；
-- `src/medbenchagent/agents/dataset_discovery.py`；
-- `src/medbenchagent/tools/dataset_discovery.py`；
+- `src/medbenchagent/agents/dataset_preparation.py`；
+- `src/medbenchagent/harness/source_tools.py`；
 - connector contract tests、recorded metadata fixtures、download integration tests。
 
 硬门：
@@ -718,40 +762,46 @@ artifact；越界路径、archive traversal、hash mismatch 和 quota overflow �
 - downloaded files 与 source manifest 100% hash 对应；
 - 搜索不到合适数据集时能正确 `not_found`，不会为完成任务选择明显不匹配资源。
 
-### Phase 3：Dataset Onboarding 与 annotation v2 自动规范化
+### Phase 3：通用 Dataset Preparation Agent Loop
 
-**目标**：对 Tier A/B 数据集自动生成可复现 bundle 并注册。
+**目标**：让一个没有预置 dataset adapter 的 Agent 使用 skills 和 sandbox tools，自主完成陌生数据集的
+探索、脚本编写、执行、验证、修复和发布。
 
 工作项：
 
-1. 把 `prepare-medical-annotations` 的 inventory、mapping、review、deterministic conversion 和 report contract
-   下沉为应用模块；skill 调用相同代码。
-2. 实现 common table inventory 和 `ConversionPlanV2` validator。
-3. 实现声明式 mapping engine、bbox transforms、stable grouping/order 和 atomic output。
-4. 把 `prepare-medical-images` / `convert-medical-images-to-png` 的受支持转换下沉为受测试 image job；同步
-   当前应用的 PNG/JPEG format contract，不再让旧 skill 隐式假定所有非 PNG 都必须重编码。
-5. 实现 Dataset Onboarding Agent，遇到语义歧义时请求用户，无法表达时 `adapter_required`。
-6. 实现 bundle manifest、catalog v2、legacy migration 和原子注册。
+1. 扩展 Phase 2 的 `DatasetPreparationState`：benchmark brief、sandbox/job ID、loaded skills、messages、
+   tool budget、candidate output、validation errors、用户待决问题和 termination reason。
+2. 实现 model ↔ sandbox tools 通用 loop；模型可以自行决定下一次读哪个文件、运行什么探索命令、创建
+   哪个脚本或重新执行哪个 validator。
+3. 让现有 `research-downloads`、`prepare-medical-annotations`、`prepare-medical-images` 和
+   `convert-medical-images-to-png` skills 可被 Harness 按需加载，并修复 annotation v1/v2 冲突。
+4. Agent 产出 skill 规定的 inventory、conversion plan、dataset-specific scripts、annotation/image reports；
+   不把这些步骤重写为 application mapping DSL。
+5. 实现 sandbox 外 admission gate；错误以结构化 tool result 返回 Agent，成功生成
+   `PreparedDatasetHandle`。
+6. 将 handle 注入 run-scoped dataset entries；修改当前 dataset selection 的输入适配器，使其同时看到
+   静态 catalog 和本次准备成功的数据集。
+7. 保留可选 persistent catalog promotion，但不要求每个临时 prepared dataset 修改全局 catalog。
 
 预计关键文件：
 
-- `src/medbenchagent/ingestion/inventory.py`；
-- `src/medbenchagent/ingestion/mapping.py`；
-- `src/medbenchagent/ingestion/engine.py`；
-- `src/medbenchagent/ingestion/images.py`；
-- `src/medbenchagent/agents/dataset_onboarding.py`；
-- `src/medbenchagent/dataset_catalog.py`；
-- `.codex/skills/prepare-medical-annotations/`、`.codex/skills/prepare-medical-images/`；
-- mapping fixtures、determinism、bbox、image、catalog migration 和 end-to-end tests。
+- `src/medbenchagent/agents/dataset_preparation.py`；
+- `src/medbenchagent/harness/sandbox.py`、`skills.py`、`tools.py`；
+- `src/medbenchagent/harness/admission.py`；
+- `src/medbenchagent/resource_contracts.py`；
+- `src/medbenchagent/dataset_catalog.py`、`src/medbenchagent/agents/capability.py`；
+- `research-downloads` skill registry dependency 及仓库内三个医学数据准备 skills；
+- scripted agent trajectories、sandbox isolation、陌生 fixture datasets、determinism 和 end-to-end tests。
 
 硬门：
 
-- 每个 ready bundle 是一图一行、v2 schema valid、ID/path 唯一；
-- source rows、joins、missing/orphan/duplicate/conflict 全部 reconciled；
-- 同输入重复运行 annotation、images 和 manifests byte-identical；
-- 原始 source 不修改，完整记录和 PHI 不进入模型/event；
-- 未批准 mapping 或 image encoding 不能执行；
-- Tier C 数据集稳定输出 `adapter_required` 和可操作 inventory，而不是猜测。
+- 至少三个结构不同、没有预置 adapter 的 fixture dataset 能由同一 Harness 生成 ready bundle；
+- Agent 必须真实编写/修改并执行 dataset-specific scripts，validation error 能驱动下一轮修复；
+- 每个 ready bundle 一图一行、v2 schema valid、ID/path 唯一，source rows/counts/joins 可核查；
+- 同一脚本和输入重复运行 annotation、images 和 manifests byte-identical；
+- source 只读，代码执行不逃逸 sandbox，不泄露 host secrets 或使用未授权网络；
+- 医学语义不明确时能用自然语言请求用户并在回答后继续，而不是伪造映射；
+- 无法在预算内完成时保留脚本、日志和 validator errors，终止为 `preparation_blocked`。
 
 ### Phase 4：Capability Research Agent
 
@@ -817,15 +867,15 @@ artifact；越界路径、archive traversal、hash mismatch 和 quota overflow �
 
 - Phase 2–5 全部质量、安全和恢复门通过；
 - 从无本地 dataset 的受支持 case 能完成 discovery → ready bundle → benchmark；
-- 从本地原始 dataset 的受支持 case 能完成 onboarding → benchmark；
+- 从本地原始 dataset 的受支持 case 能完成 preparation → benchmark；
 - final hard-audit rejection rate 不高于 workflow 基线；
 - 没有高严重度许可、路径、PHI、source injection 或未批准副作用问题；
 - token、wall time、磁盘和人工修订成本都有报告，产品收益支持额外开销。
 
 ### Phase 7：可选扩展
 
-只在前述产品稳定后考虑：TCIA/Grand Challenge 等新 connector、更多 declarative transforms、受审查的
-custom adapter drafting、并行 task evidence workers、Postgres/对象存储、多用户权限和分布式 jobs。
+只在前述产品稳定后考虑：TCIA/Grand Challenge 等新 connector、从成功轨迹沉淀或改进 skills、并行
+task evidence workers、Postgres/对象存储、多用户权限和分布式 sandbox jobs。
 
 多 Agent 试验只有同时满足：单 task 质量稳定；Evidence research 占总耗时超过 60%；任务无共享可变
 状态；固定总 token 下并发提升吞吐且不降低 citation validity；worker 失败不会丢失或重复其他 artifacts。
@@ -841,11 +891,12 @@ custom adapter drafting、并行 task evidence workers、Postgres/对象存储�
 
 ### 11.2 Ingestion eval
 
+- skill selection accuracy、sandbox tool success 和 generated-script repair rate；
 - authoritative image population、join cardinality 和 source-row reconciliation；
 - annotation v2 schema、entity scope、bbox conversion 和 value preservation；
 - image mapping、format handling、dimension/hash/non-constant checks；
 - same-input byte determinism、source immutability、catalog readiness；
-- `needs_human`/`adapter_required` 对真实歧义的 precision。
+- `needs_human`/`preparation_blocked` 对真实歧义和预算失败的 precision。
 
 ### 11.3 Agentic RAG eval
 
@@ -866,18 +917,21 @@ custom adapter drafting、并行 task evidence workers、Postgres/对象存储�
 核心运行指标包括 valid tool-call rate、重复调用率、budget exhaustion、resume success、duplicate artifact、
 tokens、wall time、disk bytes、峰值 state、越权调用和敏感数据泄漏。
 
-每次修改模型、tool schema/description、connector、mapping engine、image converter、retriever、reranker、
-chunker 或 memory policy 都运行对应固定 eval suite。单个成功 demo 不能作为阶段完成标准。
+每次修改模型、skill、tool schema/description、connector、sandbox image、admission validator、retriever、
+reranker、chunker 或 memory policy 都运行对应固定 eval suite。单个成功 demo 不能作为阶段完成标准。
 
 ## 12. 安全与治理边界
 
 - Agent 不代表用户接受数据许可、隐私协议、付费或 gated access 条款。
 - credentials 只由 runtime 注入，不出现在模型消息、tool arguments、events 或 manifest。
 - 下载仅通过 allowlisted connectors，目标位于隔离 source root，经过 quota、hash 和安全解压。
-- 不提供任意 shell、Python、SQL、URL 或文件读取工具。
-- 模型只有 read/research、submit candidate 和带 approval token 的 job trigger；没有直接 artifact write。
-- 原始表、完整记录、PHI 和图像像素不发送到外部模型。
-- 行级转换、图像转换、schema validation、catalog 注册和 Blueprint apply 均由确定性代码执行。
+- 允许 sandbox 内通用 Python/shell 和文件读写，但不提供 host shell、host filesystem、任意网络或 secrets。
+- sandbox source 默认只读；Agent 只能写 `work/` 和 `candidate_output/`，发布只能经过 admission tool。
+- 下载只通过 allowlisted tool；下载完成后 preparation phase 默认移除所有网络工具。
+- 本地模型可以按 policy 读取完成任务所需的 bounded source samples；原始内容不写 events/长期记忆。外部
+  模型不得读取含 PHI、受限或未脱敏的数据。
+- Agent 编写的程序执行行级和图像转换；sandbox 外代码负责 schema/image admission、原子发布、catalog
+  promotion 和 Blueprint apply。
 - Web/PDF 文本只作为不可信数据，不能改变 system/tool/policy；Web 不可直接成为 citation。
 - mapping identity、entity scope、bbox convention、mask conversion 和 medical image encoding 不明确时停止。
 - 长期记忆可查看、可删除、按 source/schema/tool hash 失效，不保存 raw chain-of-thought。
@@ -885,14 +939,15 @@ chunker 或 memory policy 都运行对应固定 eval suite。单个成功 demo �
 
 ## 13. 明确不做的事情
 
-- 不声称支持任意医学数据集全自动转换。
+- 不承诺任意医学数据集一定能在固定预算内完成，但 Harness 本身不以预置 adapter 限制尝试范围。
 - 不让 Agent 根据列名、文件名、图像外观或医学常识补充源数据没有的标签。
-- 不让模型逐行处理 annotation 或生成后直接执行任意 dataset-specific Python。
+- 不让模型逐行直接生成 annotation；允许它在 sandbox 中编写、执行和调试 dataset-specific Python。
 - 不把 provider CLI、filesystem、DuckDB 或 HTTP client 的全部底层 API 暴露为工具。
-- 不为了 ReAct 把下载、hash、转换、注册、样本分配、生成和硬审计改成模型决策。
+- 不允许生成代码逃逸 sandbox、读取 host secrets、访问未授权网络或绕过 admission。
+- 不为了 ReAct 把 catalog promotion、样本分配、生成和硬审计改成模型决策。
 - 不把五个角色改成互相闲聊的人格 Agent，不让模型跳过 Generation/Audit/finalize。
 - 不把模型自己的 evidence grade 当作最终 citation truth。
-- 不在无 eval 的情况下默认开放 Web、多 Agent、并行研究或 custom code execution。
+- 不在无 eval 的情况下默认开放 Web、多 Agent、并行研究或 sandbox 外 code execution。
 - 不把全部历史消息、原始数据或 construction events 塞入向量库当作“记忆”。
 
 ## 14. 产品完成定义
@@ -901,9 +956,10 @@ chunker 或 memory policy 都运行对应固定 eval suite。单个成功 demo �
 
 1. 用户只给 benchmark 目标时，系统能搜索、比较并提出可核验的数据集和医学资料 acquisition plan。
 2. policy 允许的开放资源可以自动下载；其他资源在明确许可/体量/访问确认后恢复执行。
-3. Tier A/B 数据集能从 source manifest 经 inventory、mapping、annotation v2、image preparation、validation
-   和 catalog v2 注册形成可复现 bundle。
-4. 未知或歧义数据稳定停止为 `needs_human`/`adapter_required`，不静默猜测。
+3. 对没有预置 adapter 的受支持数据集，Harness 能加载 skills、检查文件、编写和执行数据集专用脚本、
+   根据 admission errors 自主修复，并发布 annotation v2/image bundle。
+4. 未知或歧义数据会在保留脚本、日志和已完成 inventory 的情况下请求用户或停止为
+   `preparation_blocked`，不静默猜测。
 5. Capability Agent 在需要额外观察的 case 中会依据字段工具结果改变任务决策。
 6. Agentic RAG 会依据 retrieval observation 改写查询、换策略、补 corpus 或声明证据不足，而不是固定调用
    序列。
