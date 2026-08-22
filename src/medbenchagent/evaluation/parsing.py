@@ -114,8 +114,8 @@ def parse_prediction(output: ModelOutput, sample: InferenceSample) -> str | list
     x_scale = sample.image.width / source_width
     y_scale = sample.image.height / source_height
     return [
-        box[0] * x_scale,
-        box[1] * y_scale,
-        box[2] * x_scale,
-        box[3] * y_scale,
+        min(box[0] * x_scale, float(sample.image.width)),
+        min(box[1] * y_scale, float(sample.image.height)),
+        min(box[2] * x_scale, float(sample.image.width)),
+        min(box[3] * y_scale, float(sample.image.height)),
     ]
