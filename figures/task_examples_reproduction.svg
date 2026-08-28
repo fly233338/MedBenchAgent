@@ -134,7 +134,7 @@
       <tspan x="645" dy="21">mammogram? Please draw a bounding box around it.</tspan>
     </text>
     <text class="body" x="645" y="833">
-      <tspan class="body-label">Reference:</tspan><tspan>&#160;Bounding box</tspan>
+      <tspan class="body-label">Answer:</tspan><tspan>&#160;[1298.21, 1479.98, 1625.63, 1773.81]</tspan>
     </text>
   </g>
 
@@ -150,7 +150,7 @@
       <tspan class="body-label">Query:</tspan><tspan>&#160;Can you draw a bounding box around the Mass in this mammogram?</tspan>
     </text>
     <text class="body" x="645" y="934">
-      <tspan class="body-label">Reference:</tspan><tspan>&#160;Bounding box</tspan>
+      <tspan class="body-label">Answer:</tspan><tspan>&#160;[1020.48, 1275.31, 1209.85, 1437.63]</tspan>
     </text>
   </g>
 </svg>
