@@ -205,7 +205,7 @@ def test_task_plan_revision_repairs_and_records_invalid_model_output(
     with event_context(
         construction_events_path=str(events_path),
         run_id="run-1",
-        agent="CapabilityAgent",
+        agent="TaskPlanningAgent",
         operation="task_plan_revise",
     ):
         revised = screening.revise_task_plan(
@@ -222,7 +222,7 @@ def test_task_plan_revision_repairs_and_records_invalid_model_output(
             "event_type": "llm_validation_error",
             "run_id": "run-1",
             "task_id": "diagnosis",
-            "agent": "CapabilityAgent",
+            "agent": "TaskPlanningAgent",
             "operation": "task_plan_revise",
             "model": get_settings().llm.model,
             "validation_errors": [
@@ -245,7 +245,7 @@ def test_task_plan_revision_records_invalid_repair_output(tmp_path: Path, monkey
     with event_context(
         construction_events_path=str(events_path),
         run_id="run-1",
-        agent="CapabilityAgent",
+        agent="TaskPlanningAgent",
         operation="task_plan_revise",
     ):
         with pytest.raises(screening.TaskPlanReviewRequired):

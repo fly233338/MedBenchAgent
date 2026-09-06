@@ -8,15 +8,15 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 
 from medbenchagent.agents import (
     compile_audit_agent,
-    compile_capability_agent,
-    compile_clinical_design_agent,
+    compile_task_planning_agent,
+    compile_medical_align_agent,
     compile_generation_agent,
     compile_specification_agent,
 )
 from medbenchagent.agents.contracts import (
     AUDIT_AGENT,
-    CAPABILITY_AGENT,
-    CLINICAL_DESIGN_AGENT,
+    TASK_PLANNING_AGENT,
+    MEDICAL_ALIGN_AGENT,
     GENERATION_AGENT,
     SPECIFICATION_AGENT,
 )
@@ -165,8 +165,8 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     )
     graph.add_node("run_initialize", _run_initialize_node)
     graph.add_node(SPECIFICATION_AGENT, compile_specification_agent())
-    graph.add_node(CAPABILITY_AGENT, compile_capability_agent())
-    graph.add_node(CLINICAL_DESIGN_AGENT, compile_clinical_design_agent())
+    graph.add_node(TASK_PLANNING_AGENT, compile_task_planning_agent())
+    graph.add_node(MEDICAL_ALIGN_AGENT, compile_medical_align_agent())
     graph.add_node("rag_design_export", _rag_design_export_node)
     graph.add_node(GENERATION_AGENT, compile_generation_agent())
     graph.add_node("generation_summary", _generation_summary_node)
@@ -174,9 +174,9 @@ def compile_benchmark_graph(*, checkpointer: Any = None):
     graph.add_node("run_finalize", _run_finalize_node)
     graph.add_edge(START, "run_initialize")
     graph.add_edge("run_initialize", SPECIFICATION_AGENT)
-    graph.add_edge(SPECIFICATION_AGENT, CAPABILITY_AGENT)
-    graph.add_edge(CAPABILITY_AGENT, CLINICAL_DESIGN_AGENT)
-    graph.add_edge(CLINICAL_DESIGN_AGENT, "rag_design_export")
+    graph.add_edge(SPECIFICATION_AGENT, TASK_PLANNING_AGENT)
+    graph.add_edge(TASK_PLANNING_AGENT, MEDICAL_ALIGN_AGENT)
+    graph.add_edge(MEDICAL_ALIGN_AGENT, "rag_design_export")
     graph.add_edge("rag_design_export", GENERATION_AGENT)
     graph.add_edge(GENERATION_AGENT, "generation_summary")
     graph.add_edge("generation_summary", AUDIT_AGENT)

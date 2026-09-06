@@ -4,15 +4,15 @@ from pathlib import Path
 import medbenchagent.workflow.graph as workflow
 from medbenchagent.agents import (
     compile_audit_agent,
-    compile_capability_agent,
-    compile_clinical_design_agent,
+    compile_task_planning_agent,
+    compile_medical_align_agent,
     compile_generation_agent,
     compile_specification_agent,
 )
 from medbenchagent.agents.contracts import (
     AUDIT_AGENT,
-    CAPABILITY_AGENT,
-    CLINICAL_DESIGN_AGENT,
+    TASK_PLANNING_AGENT,
+    MEDICAL_ALIGN_AGENT,
     GENERATION_AGENT,
     SPECIFICATION_AGENT,
 )
@@ -30,8 +30,8 @@ def test_compiled_graph_exposes_rag_and_generation_as_expandable_subgraphs() -> 
         "__end__",
         "run_initialize",
         SPECIFICATION_AGENT,
-        CAPABILITY_AGENT,
-        CLINICAL_DESIGN_AGENT,
+        TASK_PLANNING_AGENT,
+        MEDICAL_ALIGN_AGENT,
         "rag_design_export",
         GENERATION_AGENT,
         "generation_summary",
@@ -66,8 +66,8 @@ def test_rag_design_export_uses_latest_versioned_artifact(tmp_path: Path) -> Non
 def test_role_agents_expose_strict_input_and_output_contracts() -> None:
     agents = (
         compile_specification_agent(),
-        compile_capability_agent(),
-        compile_clinical_design_agent(),
+        compile_task_planning_agent(),
+        compile_medical_align_agent(),
         compile_generation_agent(),
         compile_audit_agent(),
     )

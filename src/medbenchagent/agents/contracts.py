@@ -9,8 +9,8 @@ from langgraph.graph import MessagesState
 from medbenchagent.construction import (
     AGENT_NAMES,
     AUDIT_AGENT,
-    CAPABILITY_AGENT,
-    CLINICAL_DESIGN_AGENT,
+    TASK_PLANNING_AGENT,
+    MEDICAL_ALIGN_AGENT,
     GENERATION_AGENT,
     SPECIFICATION_AGENT,
 )
@@ -39,14 +39,14 @@ class SpecificationAgentOutputState(TypedDict):
     working_blueprint_path: str
 
 
-class CapabilityAgentInputState(TypedDict):
+class TaskPlanningAgentInputState(TypedDict):
     benchmark_info: dict[str, Any]
     working_blueprint_path: str
     run_id: str
     construction_events_path: str
 
 
-class CapabilityAgentState(CapabilityAgentInputState, total=False):
+class TaskPlanningAgentState(TaskPlanningAgentInputState, total=False):
     dataset_recommendation: dict[str, str]
     selected_dataset_id: str
     dataset_confirmed: bool
@@ -63,7 +63,7 @@ class CapabilityAgentState(CapabilityAgentInputState, total=False):
     material_selection_error: str
 
 
-class CapabilityAgentOutputState(TypedDict):
+class TaskPlanningAgentOutputState(TypedDict):
     working_blueprint_path: str
     selected_dataset_id: str
     dataset_profile: dict[str, Any]
@@ -72,7 +72,7 @@ class CapabilityAgentOutputState(TypedDict):
     selected_material_files: list[str]
 
 
-class ClinicalDesignAgentInputState(TypedDict):
+class MedicalAlignAgentInputState(TypedDict):
     benchmark_info: dict[str, Any]
     working_blueprint_path: str
     selected_material_files: list[str]
@@ -83,7 +83,7 @@ class ClinicalDesignAgentInputState(TypedDict):
     construction_events_path: str
 
 
-class ClinicalDesignAgentState(ClinicalDesignAgentInputState, total=False):
+class MedicalAlignAgentState(MedicalAlignAgentInputState, total=False):
     rag_task_queue: list[str]
     rag_task_feedback: dict[str, str]
     rag_current_task_id: str
@@ -92,7 +92,7 @@ class ClinicalDesignAgentState(ClinicalDesignAgentInputState, total=False):
     designs_confirmed: bool
 
 
-class ClinicalDesignAgentOutputState(TypedDict):
+class MedicalAlignAgentOutputState(TypedDict):
     working_blueprint_path: str
 
 
@@ -159,14 +159,14 @@ __all__ = [
     "AuditAgentInputState",
     "AuditAgentOutputState",
     "AuditAgentState",
-    "CAPABILITY_AGENT",
-    "CLINICAL_DESIGN_AGENT",
-    "CapabilityAgentInputState",
-    "CapabilityAgentOutputState",
-    "CapabilityAgentState",
-    "ClinicalDesignAgentInputState",
-    "ClinicalDesignAgentOutputState",
-    "ClinicalDesignAgentState",
+    "TASK_PLANNING_AGENT",
+    "MEDICAL_ALIGN_AGENT",
+    "TaskPlanningAgentInputState",
+    "TaskPlanningAgentOutputState",
+    "TaskPlanningAgentState",
+    "MedicalAlignAgentInputState",
+    "MedicalAlignAgentOutputState",
+    "MedicalAlignAgentState",
     "GENERATION_AGENT",
     "GenerationAgentInputState",
     "GenerationAgentOutputState",

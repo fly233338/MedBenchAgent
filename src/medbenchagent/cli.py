@@ -17,8 +17,8 @@ OutputFunction = Callable[[str], None]
 _NODE_LABELS = {
     "run_initialize": "initialize run directory",
     "SpecificationAgent": "parse benchmark requirement",
-    "CapabilityAgent": "plan dataset and tasks",
-    "ClinicalDesignAgent": "design medical questions",
+    "TaskPlanningAgent": "plan dataset and tasks",
+    "MedicalAlignAgent": "design medical questions",
     "rag_design_export": "export RAG designs",
     "GenerationAgent": "generate benchmark",
     "generation_summary": "summarize generation",

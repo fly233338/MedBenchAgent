@@ -11,7 +11,7 @@ from medbenchagent.rag import graph as rag_workflow
 from graph_test_support import _rag_fields, _task
 
 
-def test_design_review_action_supports_multiple_targeted_revisions(monkeypatch) -> None:
+def test_medical_align_review_supports_multiple_targeted_revisions(monkeypatch) -> None:
     monkeypatch.setattr(
         rag_workflow,
         "complete_json",

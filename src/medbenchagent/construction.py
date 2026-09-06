@@ -16,14 +16,14 @@ from medbenchagent.settings import get_settings
 _CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("construction_context", default=None)
 
 SPECIFICATION_AGENT = "SpecificationAgent"
-CAPABILITY_AGENT = "CapabilityAgent"
-CLINICAL_DESIGN_AGENT = "ClinicalDesignAgent"
+TASK_PLANNING_AGENT = "TaskPlanningAgent"
+MEDICAL_ALIGN_AGENT = "MedicalAlignAgent"
 GENERATION_AGENT = "GenerationAgent"
 AUDIT_AGENT = "AuditAgent"
 AGENT_NAMES = (
     SPECIFICATION_AGENT,
-    CAPABILITY_AGENT,
-    CLINICAL_DESIGN_AGENT,
+    TASK_PLANNING_AGENT,
+    MEDICAL_ALIGN_AGENT,
     GENERATION_AGENT,
     AUDIT_AGENT,
 )

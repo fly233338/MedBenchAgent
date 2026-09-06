@@ -13,7 +13,7 @@ from langgraph.types import interrupt
 from medbenchagent.agents._context import human_interaction, revision_applied
 from medbenchagent.contracts import RAG_DESIGN_FIELDS
 from medbenchagent.construction import (
-    CLINICAL_DESIGN_AGENT,
+    MEDICAL_ALIGN_AGENT,
     changed_mapping_keys,
     event_context,
     event_operation,
@@ -109,7 +109,7 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
         "run_id": state.get("run_id"),
         "dataset_id": state.get("selected_dataset_id"),
         "task_id": task_id,
-        "agent": CLINICAL_DESIGN_AGENT,
+        "agent": MEDICAL_ALIGN_AGENT,
         "operation": "rag_design",
         "model": settings.llm.model,
     }
@@ -126,7 +126,7 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
     if state.get("construction_events_path"):
         record_event(
             state["construction_events_path"], "rag_retrieval", run_id=state.get("run_id"),
-            dataset_id=state.get("selected_dataset_id"), task_id=task_id, agent=CLINICAL_DESIGN_AGENT,
+            dataset_id=state.get("selected_dataset_id"), task_id=task_id, agent=MEDICAL_ALIGN_AGENT,
             operation="retrieve", status="success"
         )
     write_task_design(blueprint_path, task_id, design)
@@ -151,7 +151,7 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
                 state["construction_events_path"],
                 run_id=state["run_id"],
                 dataset_id=state.get("selected_dataset_id"),
-                agent=CLINICAL_DESIGN_AGENT,
+                agent=MEDICAL_ALIGN_AGENT,
                 stage="rag_design",
                 artifact_type="rag_design",
                 artifact=artifact,
@@ -182,7 +182,7 @@ def _rag_design_task_node(state: RagDesignState) -> dict[str, Any]:
         }
         revision_applied(
             state,
-            agent=CLINICAL_DESIGN_AGENT,
+            agent=MEDICAL_ALIGN_AGENT,
             stage="rag_design",
             interaction_id=interaction_id,
             modified_object_ids=changed_mapping_keys(before, after),
@@ -263,7 +263,7 @@ def _design_review_node(state: RagDesignState) -> dict[str, Any]:
             construction_events_path=state.get("construction_events_path"),
             run_id=state.get("run_id"),
             dataset_id=state.get("selected_dataset_id"),
-            agent=CLINICAL_DESIGN_AGENT,
+            agent=MEDICAL_ALIGN_AGENT,
             operation="rag_design_review",
             model=get_settings().llm.model,
         ):
@@ -271,7 +271,7 @@ def _design_review_node(state: RagDesignState) -> dict[str, Any]:
     except Exception as exc:
         human_interaction(
             state,
-            agent=CLINICAL_DESIGN_AGENT,
+            agent=MEDICAL_ALIGN_AGENT,
             stage="rag_design",
             user_input=answer,
             parse_status="failed",
@@ -280,7 +280,7 @@ def _design_review_node(state: RagDesignState) -> dict[str, Any]:
         raise
     interaction_id = human_interaction(
         state,
-        agent=CLINICAL_DESIGN_AGENT,
+        agent=MEDICAL_ALIGN_AGENT,
         stage="rag_design",
         user_input=answer,
         parse_status="success",

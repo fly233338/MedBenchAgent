@@ -171,13 +171,13 @@
   <g>
     <rect x="40" y="779" width="269" height="49" rx="13" fill="#fff" stroke="#d6d8d5" stroke-width="1.4"/>
     <use xlink:href="#icon-robot" x="52" y="783" width="42" height="42" color="#3b6fb4"/>
-    <text x="101" y="800" class="role-name blue">CapabilityAgent</text>
+    <text x="101" y="800" class="role-name blue">TaskPlanningAgent</text>
     <text x="101" y="817" class="role-desc">· Plan</text>
   </g>
   <g>
     <rect x="40" y="838" width="269" height="49" rx="13" fill="#fff" stroke="#d6d8d5" stroke-width="1.4"/>
     <use xlink:href="#icon-robot" x="52" y="842" width="42" height="42" color="#7653a9"/>
-    <text x="101" y="859" class="role-name purple">ClinicalDesignAgent</text>
+    <text x="101" y="859" class="role-name purple">MedicalAlignAgent</text>
     <text x="101" y="876" class="role-desc">· Refine Clinically</text>
   </g>
   <g>

@@ -205,8 +205,8 @@ disables LangSmith tracing, Hugging Face online downloads, and Chroma telemetry
 for its process, regardless of these optional tracing settings.
 
 The graph entry point is `medbenchagent.workflow.graph:compile_benchmark_graph`.
-The deterministic root graph runs `SpecificationAgent`, `CapabilityAgent`,
-`ClinicalDesignAgent`, `GenerationAgent`, and `AuditAgent` in that fixed order, with
+The deterministic root graph runs `SpecificationAgent`, `TaskPlanningAgent`,
+`MedicalAlignAgent`, `GenerationAgent`, and `AuditAgent` in that fixed order, with
 only run initialization/finalization and artifact adapters between them. Agent-internal
 confirmation, revision, RAG, and generation loops are visible with `xray=True`.
 

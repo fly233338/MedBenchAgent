@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from medbenchagent import task_screening
-from medbenchagent.agents import capability, specification
+from medbenchagent.agents import specification, task_planning
 from medbenchagent.rag import graph as rag_graph
 from medbenchagent.rag import pdf as rag_pdf
 
@@ -163,7 +163,7 @@ def test_task_revision_and_rag_design_prompts_only_change_whitespace(
     assert "\n\nPDF excerpts:" in user
 
 
-def test_capability_action_and_repair_prompts_only_change_whitespace(
+def test_task_planning_action_and_repair_prompts_only_change_whitespace(
     prompt_content_hashes: dict[str, str], monkeypatch
 ) -> None:
     calls: list[tuple[str, str]] = []
@@ -172,8 +172,8 @@ def test_capability_action_and_repair_prompts_only_change_whitespace(
         calls.append((system, user))
         return {"action": "confirm"}
 
-    monkeypatch.setattr(capability, "complete_json", confirm)
-    capability._dataset_review_action(
+    monkeypatch.setattr(task_planning, "complete_json", confirm)
+    task_planning._dataset_review_action(
         "accept",
         [
             {
@@ -190,14 +190,14 @@ def test_capability_action_and_repair_prompts_only_change_whitespace(
     assert "another available dataset.\n\nDataset catalog:" in calls[-1][1]
     assert "\n\nUser response: accept" in calls[-1][1]
 
-    capability._review_action("accept", ["view", "report"])
+    task_planning._review_action("accept", ["view", "report"])
     _assert_call_unchanged(prompt_content_hashes, "cap_task_plan", calls[-1])
     assert "requested change\"}\n\nConfirm only" in calls[-1][1]
     assert "change in feedback.\n\nAvailable task ids:" in calls[-1][1]
     assert "\n\nUser response: accept" in calls[-1][1]
 
     monkeypatch.setattr(
-        capability,
+        task_planning,
         "get_settings",
         lambda: SimpleNamespace(
             category_weights={"image_acquisition_and_basic_information": 0.1}
@@ -209,8 +209,8 @@ def test_capability_action_and_repair_prompts_only_change_whitespace(
         calls.append((system, user))
         return next(sample_responses)
 
-    monkeypatch.setattr(capability, "complete_json", sample_response)
-    capability._sample_count_review_action(
+    monkeypatch.setattr(task_planning, "complete_json", sample_response)
+    task_planning._sample_count_review_action(
         "accept",
         {"view": 2},
         2,
@@ -230,8 +230,8 @@ def test_capability_action_and_repair_prompts_only_change_whitespace(
         calls.append((system, user))
         return next(material_responses)
 
-    monkeypatch.setattr(capability, "complete_json", material_response)
-    capability._material_selection_action(
+    monkeypatch.setattr(task_planning, "complete_json", material_response)
+    task_planning._material_selection_action(
         "choose guide",
         [{"category": "Guideline", "file": "Guideline/guide.pdf"}],
     )

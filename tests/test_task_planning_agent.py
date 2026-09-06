@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import medbenchagent.agents.capability as capability_agent
+import medbenchagent.agents.task_planning as task_planning_agent
 from medbenchagent.construction import construction_report
 from medbenchagent.task_screening import TaskPlanReviewRequired
 
@@ -32,14 +32,14 @@ def _datasets() -> list[dict]:
 
 
 def test_dataset_recommendation_and_profile_keep_paths_private(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
+    monkeypatch.setattr(task_planning_agent, "load_dataset_catalog", _datasets)
     monkeypatch.setattr(
-        capability_agent,
+        task_planning_agent,
         "recommend_dataset",
         lambda _benchmark_info, _datasets: {"dataset_id": "vindr-mammo", "reason": "Matches."},
     )
 
-    result = capability_agent._dataset_recommend_node(
+    result = task_planning_agent._dataset_recommend_node(
         {"benchmark_info": {"modality": "mammography"}}
     )
 
@@ -57,7 +57,7 @@ def test_dataset_recommendation_and_profile_keep_paths_private(tmp_path: Path, m
     blueprint_path.write_text(json.dumps(blueprint), encoding="utf-8")
     expected_path = tmp_path / "annotation.jsonl"
     monkeypatch.setattr(
-        capability_agent,
+        task_planning_agent,
         "resolve_annotation_path",
         lambda _dataset: expected_path,
     )
@@ -71,9 +71,9 @@ def test_dataset_recommendation_and_profile_keep_paths_private(tmp_path: Path, m
             "cache_format_version": "annotation-cache.v6",
         }
 
-    monkeypatch.setattr(capability_agent, "prepare_annotation_dataset", prepare)
+    monkeypatch.setattr(task_planning_agent, "prepare_annotation_dataset", prepare)
 
-    profile_result = capability_agent._dataset_profile_node(
+    profile_result = task_planning_agent._dataset_profile_node(
         {"selected_dataset_id": "vindr-mammo", "working_blueprint_path": str(blueprint_path)}
     )
 
@@ -104,32 +104,32 @@ def test_dataset_review_confirms_reselects_and_rejects_unavailable_datasets(
             "reason": "Matches.",
         },
     }
-    monkeypatch.setattr(capability_agent, "load_dataset_catalog", _datasets)
-    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "确认")
-    monkeypatch.setattr(capability_agent, "complete_json", lambda *_args: {"action": "confirm"})
-    confirmed = capability_agent._dataset_review_node(state)
+    monkeypatch.setattr(task_planning_agent, "load_dataset_catalog", _datasets)
+    monkeypatch.setattr(task_planning_agent, "interrupt", lambda _payload: "确认")
+    monkeypatch.setattr(task_planning_agent, "complete_json", lambda *_args: {"action": "confirm"})
+    confirmed = task_planning_agent._dataset_review_node(state)
     assert confirmed == {"selected_dataset_id": "vindr-mammo", "dataset_confirmed": True}
     assert json.loads(blueprint_path.read_text(encoding="utf-8"))["dataset"] == {
         "dataset_id": "vindr-mammo"
     }
 
-    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "使用 VinDr")
+    monkeypatch.setattr(task_planning_agent, "interrupt", lambda _payload: "使用 VinDr")
     monkeypatch.setattr(
-        capability_agent,
+        task_planning_agent,
         "complete_json",
         lambda *_args: {"action": "select", "dataset_id": "vindr-mammo"},
     )
-    reselected = capability_agent._dataset_review_node(state)
+    reselected = task_planning_agent._dataset_review_node(state)
     assert reselected["dataset_confirmed"] is False
     assert reselected["selected_dataset_id"] == ""
 
     monkeypatch.setattr(
-        capability_agent,
+        task_planning_agent,
         "complete_json",
         lambda *_args: {"action": "select", "dataset_id": "future"},
     )
-    with pytest.raises(capability_agent.DatasetCatalogError, match="not available"):
-        capability_agent._dataset_review_action("使用 Future Dataset", _datasets())
+    with pytest.raises(task_planning_agent.DatasetCatalogError, match="not available"):
+        task_planning_agent._dataset_review_action("使用 Future Dataset", _datasets())
 
 
 def test_dataset_reselection_records_actual_dataset_change(tmp_path: Path, monkeypatch) -> None:
@@ -150,15 +150,15 @@ def test_dataset_reselection_records_actual_dataset_change(tmp_path: Path, monke
             "reason": "Matches.",
         },
     }
-    monkeypatch.setattr(capability_agent, "load_dataset_catalog", lambda: datasets)
-    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "使用 future")
+    monkeypatch.setattr(task_planning_agent, "load_dataset_catalog", lambda: datasets)
+    monkeypatch.setattr(task_planning_agent, "interrupt", lambda _payload: "使用 future")
     monkeypatch.setattr(
-        capability_agent,
+        task_planning_agent,
         "complete_json",
         lambda *_args: {"action": "select", "dataset_id": "future"},
     )
 
-    capability_agent._dataset_review_node(state)
+    task_planning_agent._dataset_review_node(state)
 
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     assert events[0]["action"] == "revise"
@@ -179,10 +179,10 @@ def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_ch
             "file": "Standard/guide.pdf",
         }
     ]
-    monkeypatch.setattr(capability_agent, "discover_medical_materials", lambda _root: materials)
-    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "选择指南")
+    monkeypatch.setattr(task_planning_agent, "discover_medical_materials", lambda _root: materials)
+    monkeypatch.setattr(task_planning_agent, "interrupt", lambda _payload: "选择指南")
     monkeypatch.setattr(
-        capability_agent,
+        task_planning_agent,
         "complete_json",
         lambda *_args: {"selected_files": [materials[0]["file"]]},
     )
@@ -190,7 +190,7 @@ def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_ch
     events_path = tmp_path / "construction_events.jsonl"
     events_path.touch()
     state = {"run_id": "run", "construction_events_path": str(events_path)}
-    selected = capability_agent._materials_choose_node(state)
+    selected = task_planning_agent._materials_choose_node(state)
 
     assert selected == {
         "selected_material_files": [materials[0]["file"]],
@@ -198,11 +198,11 @@ def test_material_selection_uses_exact_scanned_paths_and_reprompts_on_invalid_ch
     }
 
     monkeypatch.setattr(
-        capability_agent,
+        task_planning_agent,
         "complete_json",
         lambda *_args: {"selected_files": ["missing.pdf"]},
     )
-    invalid = capability_agent._materials_choose_node(state)
+    invalid = task_planning_agent._materials_choose_node(state)
 
     assert invalid["selected_material_files"] == []
     assert "Unknown medical PDF selection" in invalid["material_selection_error"]
@@ -243,13 +243,13 @@ def test_sample_counts_are_weighted_prepared_and_written_only_after_confirmation
         "benchmark_info": {"sample_count": 5},
     }
 
-    prepared = capability_agent._sample_count_prepare_node(state)
+    prepared = task_planning_agent._sample_count_prepare_node(state)
     assert prepared["draft_sample_counts"] == {"view": 2, "diagnosis": 3}
     assert "sample_count" not in json.loads(path.read_text(encoding="utf-8"))["tasks"]["view"]
 
-    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "确认")
-    monkeypatch.setattr(capability_agent, "complete_json", lambda *_args: {"action": "confirm"})
-    reviewed = capability_agent._sample_count_review_node(state | prepared)
+    monkeypatch.setattr(task_planning_agent, "interrupt", lambda _payload: "确认")
+    monkeypatch.setattr(task_planning_agent, "complete_json", lambda *_args: {"action": "confirm"})
+    reviewed = task_planning_agent._sample_count_review_node(state | prepared)
 
     assert reviewed["sample_counts_confirmed"] is True
     tasks = json.loads(path.read_text(encoding="utf-8"))["tasks"]
@@ -275,17 +275,17 @@ def test_task_plan_revision_records_only_tasks_with_actual_changes(
         "dataset_profile": {},
         "draft_task_plan": original,
     }
-    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "保留 view")
+    monkeypatch.setattr(task_planning_agent, "interrupt", lambda _payload: "保留 view")
     monkeypatch.setattr(
-        capability_agent,
+        task_planning_agent,
         "complete_json",
         lambda *_args: {"action": "revise", "task_id": "view", "feedback": "Keep it."},
     )
-    monkeypatch.setattr(capability_agent, "revise_task_plan", lambda *_args: revised)
-    capability_agent.write_task_plan_report(blueprint_path, original)
+    monkeypatch.setattr(task_planning_agent, "revise_task_plan", lambda *_args: revised)
+    task_planning_agent.write_task_plan_report(blueprint_path, original)
 
-    review = capability_agent._task_plan_review_node(state)
-    revised_state = capability_agent._task_plan_revise_node(state | review)
+    review = task_planning_agent._task_plan_review_node(state)
+    revised_state = task_planning_agent._task_plan_revise_node(state | review)
 
     report = Path(revised_state["task_screening_report_path"])
     assert report == tmp_path / "task_plans" / "v2.json"
@@ -312,9 +312,9 @@ def test_task_plan_draft_is_written_before_human_review(tmp_path: Path, monkeypa
             }
         }
     }
-    monkeypatch.setattr(capability_agent, "generate_task_plan", lambda *_args: plan)
+    monkeypatch.setattr(task_planning_agent, "generate_task_plan", lambda *_args: plan)
 
-    result = capability_agent._task_plan_generate_node(
+    result = task_planning_agent._task_plan_generate_node(
         {
             "run_id": "run",
             "construction_events_path": str(events_path),
@@ -345,10 +345,10 @@ def test_task_plan_generation_failure_does_not_write_artifact(
     def fail_generate_task_plan(*_args):
         raise error
 
-    monkeypatch.setattr(capability_agent, "generate_task_plan", fail_generate_task_plan)
+    monkeypatch.setattr(task_planning_agent, "generate_task_plan", fail_generate_task_plan)
 
     with pytest.raises(TaskPlanReviewRequired):
-        capability_agent._task_plan_generate_node(
+        task_planning_agent._task_plan_generate_node(
             {
                 "run_id": "run",
                 "construction_events_path": str(events_path),
@@ -378,14 +378,14 @@ def test_sample_count_revision_records_all_redistributed_tasks(tmp_path: Path, m
         "benchmark_info": {"sample_count": 5},
         "draft_sample_counts": {"view": 2, "report": 3},
     }
-    monkeypatch.setattr(capability_agent, "interrupt", lambda _payload: "view 改为 4")
+    monkeypatch.setattr(task_planning_agent, "interrupt", lambda _payload: "view 改为 4")
     monkeypatch.setattr(
-        capability_agent,
+        task_planning_agent,
         "complete_json",
         lambda *_args: {"action": "adjust", "counts": {"view": 4}},
     )
 
-    result = capability_agent._sample_count_review_node(state)
+    result = task_planning_agent._sample_count_review_node(state)
 
     assert result["draft_sample_counts"] == {"view": 4, "report": 1}
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
@@ -399,7 +399,7 @@ def test_sample_count_revision_records_all_redistributed_tasks(tmp_path: Path, m
 
 def test_partial_sample_count_adjustment_redistributes_unspecified_tasks(monkeypatch) -> None:
     monkeypatch.setattr(
-        capability_agent,
+        task_planning_agent,
         "complete_json",
         lambda *_args: {"action": "adjust", "counts": {"view": 4}},
     )
@@ -408,7 +408,7 @@ def test_partial_sample_count_adjustment_redistributes_unspecified_tasks(monkeyp
         "view": _task(category="image_acquisition_and_basic_information"),
         "report": _task("free_text", category="report_generation"),
     }
-    action = capability_agent._sample_count_review_action(
+    action = task_planning_agent._sample_count_review_action(
         "view 改为 4",
         {"view": 2, "report": 2},
         5,
@@ -416,7 +416,7 @@ def test_partial_sample_count_adjustment_redistributes_unspecified_tasks(monkeyp
     )
 
     assert action == {"action": "adjust", "counts": {"view": 4}}
-    assert capability_agent.distribute_weighted_sample_counts(tasks, 5, action["counts"]) == {
+    assert task_planning_agent.distribute_weighted_sample_counts(tasks, 5, action["counts"]) == {
         "view": 4,
         "report": 1,
     }

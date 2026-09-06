@@ -1,4 +1,4 @@
-"""CapabilityAgent: dataset, task-plan, allocation, and material confirmation."""
+"""TaskPlanningAgent: dataset, task-plan, allocation, and material confirmation."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from langgraph.types import interrupt
 
 from medbenchagent.agents._context import artifact_snapshot, human_interaction, llm_context, revision_applied
 from medbenchagent.agents.contracts import (
-    CAPABILITY_AGENT,
-    CapabilityAgentInputState,
-    CapabilityAgentOutputState,
-    CapabilityAgentState,
+    TASK_PLANNING_AGENT,
+    TaskPlanningAgentInputState,
+    TaskPlanningAgentOutputState,
+    TaskPlanningAgentState,
 )
 from medbenchagent.construction import changed_mapping_keys, event_operation
 from medbenchagent.dataset import AnnotationValidationError, prepare_annotation_dataset
@@ -39,9 +39,9 @@ from medbenchagent.task_screening import (
     write_task_plan_report,
 )
 
-def _dataset_recommend_node(state: CapabilityAgentState) -> dict[str, Any]:
+def _dataset_recommend_node(state: TaskPlanningAgentState) -> dict[str, Any]:
     datasets = load_dataset_catalog()
-    with llm_context(state, CAPABILITY_AGENT, "dataset_recommend"):
+    with llm_context(state, TASK_PLANNING_AGENT, "dataset_recommend"):
         recommendation = recommend_dataset(state["benchmark_info"], datasets)
     dataset = dataset_by_id(datasets, recommendation["dataset_id"])
     return {
@@ -79,7 +79,7 @@ def _dataset_review_action(answer: object, datasets: list[DatasetEntry]) -> dict
     raise ValueError("Dataset review response could not be mapped to one valid confirm or select action.")
 
 
-def _dataset_review_node(state: CapabilityAgentState) -> dict[str, Any]:
+def _dataset_review_node(state: TaskPlanningAgentState) -> dict[str, Any]:
     datasets = load_dataset_catalog()
     recommendation = state["dataset_recommendation"]
     answer = interrupt(
@@ -91,12 +91,12 @@ def _dataset_review_node(state: CapabilityAgentState) -> dict[str, Any]:
         }
     )
     try:
-        with llm_context(state, CAPABILITY_AGENT, "dataset_review"):
+        with llm_context(state, TASK_PLANNING_AGENT, "dataset_review"):
             action = _dataset_review_action(answer, datasets)
     except Exception as exc:
         human_interaction(
             state,
-            agent=CAPABILITY_AGENT,
+            agent=TASK_PLANNING_AGENT,
             stage="dataset",
             user_input=answer,
             parse_status="failed",
@@ -106,7 +106,7 @@ def _dataset_review_node(state: CapabilityAgentState) -> dict[str, Any]:
     event_action = "confirm" if action["action"] == "confirm" else "revise"
     interaction_id = human_interaction(
         state,
-        agent=CAPABILITY_AGENT,
+        agent=TASK_PLANNING_AGENT,
         stage="dataset",
         user_input=answer,
         parse_status="success",
@@ -119,7 +119,7 @@ def _dataset_review_node(state: CapabilityAgentState) -> dict[str, Any]:
     dataset = dataset_by_id(datasets, action["dataset_id"])
     revision_applied(
         state,
-        agent=CAPABILITY_AGENT,
+        agent=TASK_PLANNING_AGENT,
         stage="dataset",
         interaction_id=interaction_id,
         modified_object_ids=(
@@ -138,7 +138,7 @@ def _dataset_review_node(state: CapabilityAgentState) -> dict[str, Any]:
     }
 
 
-def _dataset_profile_node(state: CapabilityAgentState) -> dict[str, Any]:
+def _dataset_profile_node(state: TaskPlanningAgentState) -> dict[str, Any]:
     dataset_id = state.get("selected_dataset_id")
     if not dataset_id:
         raise DatasetCatalogError("A confirmed dataset is required before profiling.")
@@ -161,15 +161,15 @@ def _dataset_profile_node(state: CapabilityAgentState) -> dict[str, Any]:
     }
 
 
-def _task_plan_generate_node(state: CapabilityAgentState) -> dict[str, Any]:
+def _task_plan_generate_node(state: TaskPlanningAgentState) -> dict[str, Any]:
     """Generate one complete validated Task Plan without interrupting or editing Blueprint."""
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
-    with llm_context(state, CAPABILITY_AGENT, "task_plan_generate"):
+    with llm_context(state, TASK_PLANNING_AGENT, "task_plan_generate"):
         task_plan = generate_task_plan(blueprint, state["dataset_profile"])
     artifact = write_task_plan_report(state["working_blueprint_path"], task_plan)
     artifact_snapshot(
         state,
-        agent=CAPABILITY_AGENT,
+        agent=TASK_PLANNING_AGENT,
         stage="task_plan",
         artifact_type="task_plan",
         artifact=artifact,
@@ -211,7 +211,7 @@ def _review_action(answer: object, task_ids: list[str]) -> dict[str, str]:
     raise ValueError("Task Plan review response could not be mapped to one valid confirm or revise action.")
 
 
-def _task_plan_review_node(state: CapabilityAgentState) -> dict[str, Any]:
+def _task_plan_review_node(state: TaskPlanningAgentState) -> dict[str, Any]:
     """Receive one review action, interpreting natural language only when needed."""
     answer = interrupt(
         {
@@ -223,12 +223,12 @@ def _task_plan_review_node(state: CapabilityAgentState) -> dict[str, Any]:
     )
     task_ids = list(state["draft_task_plan"]["tasks"])
     try:
-        with llm_context(state, CAPABILITY_AGENT, "task_plan_revise"):
+        with llm_context(state, TASK_PLANNING_AGENT, "task_plan_revise"):
             action = _review_action(answer, task_ids)
     except Exception as exc:
         human_interaction(
             state,
-            agent=CAPABILITY_AGENT,
+            agent=TASK_PLANNING_AGENT,
             stage="task_plan",
             user_input=answer,
             parse_status="failed",
@@ -237,7 +237,7 @@ def _task_plan_review_node(state: CapabilityAgentState) -> dict[str, Any]:
         raise
     interaction_id = human_interaction(
         state,
-        agent=CAPABILITY_AGENT,
+        agent=TASK_PLANNING_AGENT,
         stage="task_plan",
         user_input=answer,
         parse_status="success",
@@ -252,14 +252,14 @@ def _task_plan_review_node(state: CapabilityAgentState) -> dict[str, Any]:
     }
 
 
-def _task_plan_revise_node(state: CapabilityAgentState) -> dict[str, Any]:
+def _task_plan_revise_node(state: TaskPlanningAgentState) -> dict[str, Any]:
     """Replace one reviewed entry; all other draft entries are retained verbatim."""
     feedback = state.get("pending_task_feedback")
     if not feedback:
         raise ValueError("Task Plan revision requires pending task feedback.")
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
     before_tasks = state["draft_task_plan"].get("tasks", {})
-    with llm_context(state, CAPABILITY_AGENT, "task_plan_revise"):
+    with llm_context(state, TASK_PLANNING_AGENT, "task_plan_revise"):
         revised_task_plan = revise_task_plan(
             blueprint,
             state["dataset_profile"],
@@ -271,7 +271,7 @@ def _task_plan_revise_node(state: CapabilityAgentState) -> dict[str, Any]:
     artifact = write_task_plan_report(state["working_blueprint_path"], revised_task_plan)
     revision_applied(
         state,
-        agent=CAPABILITY_AGENT,
+        agent=TASK_PLANNING_AGENT,
         stage="task_plan",
         interaction_id=state.get("pending_task_interaction_id", ""),
         modified_object_ids=changed_mapping_keys(before_tasks, after_tasks),
@@ -287,7 +287,7 @@ def _task_plan_revise_node(state: CapabilityAgentState) -> dict[str, Any]:
     }
 
 
-def _apply_task_plan_node(state: CapabilityAgentState) -> dict[str, Any]:
+def _apply_task_plan_node(state: TaskPlanningAgentState) -> dict[str, Any]:
     """Mutate the working Blueprint only after explicit Task Plan confirmation."""
     report_path = apply_task_plan(
         state["working_blueprint_path"],
@@ -298,7 +298,7 @@ def _apply_task_plan_node(state: CapabilityAgentState) -> dict[str, Any]:
     return {"task_screening_report_path": report_path}
 
 
-def _sample_count_prepare_node(state: CapabilityAgentState) -> dict[str, Any]:
+def _sample_count_prepare_node(state: TaskPlanningAgentState) -> dict[str, Any]:
     """Prepare a stable category-weighted allocation without mutating the working Blueprint."""
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
     tasks = blueprint.get("tasks")
@@ -370,7 +370,7 @@ def _sample_count_review_action(
         return _validate_sample_count_action(repaired, task_ids)
 
 
-def _sample_count_review_node(state: CapabilityAgentState) -> dict[str, Any]:
+def _sample_count_review_node(state: TaskPlanningAgentState) -> dict[str, Any]:
     counts = state["draft_sample_counts"]
     total = int(state["benchmark_info"]["sample_count"])
     blueprint = json.loads(Path(state["working_blueprint_path"]).read_text(encoding="utf-8"))
@@ -386,12 +386,12 @@ def _sample_count_review_node(state: CapabilityAgentState) -> dict[str, Any]:
         }
     )
     try:
-        with llm_context(state, CAPABILITY_AGENT, "sample_count_review"):
+        with llm_context(state, TASK_PLANNING_AGENT, "sample_count_review"):
             action = _sample_count_review_action(answer, counts, total, tasks)
     except Exception as exc:
         human_interaction(
             state,
-            agent=CAPABILITY_AGENT,
+            agent=TASK_PLANNING_AGENT,
             stage="sample_count",
             user_input=answer,
             parse_status="failed",
@@ -401,7 +401,7 @@ def _sample_count_review_node(state: CapabilityAgentState) -> dict[str, Any]:
     event_action = "confirm" if action["action"] == "confirm" else "revise"
     interaction_id = human_interaction(
         state,
-        agent=CAPABILITY_AGENT,
+        agent=TASK_PLANNING_AGENT,
         stage="sample_count",
         user_input=answer,
         parse_status="success",
@@ -413,7 +413,7 @@ def _sample_count_review_node(state: CapabilityAgentState) -> dict[str, Any]:
     revised_counts = distribute_weighted_sample_counts(tasks, total, action["counts"])
     revision_applied(
         state,
-        agent=CAPABILITY_AGENT,
+        agent=TASK_PLANNING_AGENT,
         stage="sample_count",
         interaction_id=interaction_id,
         modified_object_ids=changed_mapping_keys(counts, revised_counts),
@@ -464,7 +464,7 @@ def _material_selection_action(answer: object, materials: list[dict[str, str]]) 
         return _validate_material_selection(repaired, materials)
 
 
-def _materials_choose_node(state: CapabilityAgentState) -> dict[str, Any]:
+def _materials_choose_node(state: TaskPlanningAgentState) -> dict[str, Any]:
     materials = discover_medical_materials(get_settings().paths.materials_root)
     answer = interrupt(
         {
@@ -475,12 +475,12 @@ def _materials_choose_node(state: CapabilityAgentState) -> dict[str, Any]:
         }
     )
     try:
-        with llm_context(state, CAPABILITY_AGENT, "material_selection"):
+        with llm_context(state, TASK_PLANNING_AGENT, "material_selection"):
             selected_files = _material_selection_action(answer, materials)
     except ValueError as exc:
         human_interaction(
             state,
-            agent=CAPABILITY_AGENT,
+            agent=TASK_PLANNING_AGENT,
             stage="materials",
             user_input=answer,
             parse_status="failed",
@@ -490,7 +490,7 @@ def _materials_choose_node(state: CapabilityAgentState) -> dict[str, Any]:
     except Exception as exc:
         human_interaction(
             state,
-            agent=CAPABILITY_AGENT,
+            agent=TASK_PLANNING_AGENT,
             stage="materials",
             user_input=answer,
             parse_status="failed",
@@ -499,7 +499,7 @@ def _materials_choose_node(state: CapabilityAgentState) -> dict[str, Any]:
         raise
     human_interaction(
         state,
-        agent=CAPABILITY_AGENT,
+        agent=TASK_PLANNING_AGENT,
         stage="materials",
         user_input=answer,
         parse_status="success",
@@ -509,12 +509,12 @@ def _materials_choose_node(state: CapabilityAgentState) -> dict[str, Any]:
     return {"selected_material_files": selected_files, "material_selection_error": ""}
 
 
-def compile_capability_agent(*, checkpointer: Any = None):
-    """Build the checkpointable CapabilityAgent planning loop."""
+def compile_task_planning_agent(*, checkpointer: Any = None):
+    """Build the checkpointable TaskPlanningAgent planning loop."""
     graph = StateGraph(
-        CapabilityAgentState,
-        input_schema=CapabilityAgentInputState,
-        output_schema=CapabilityAgentOutputState,
+        TaskPlanningAgentState,
+        input_schema=TaskPlanningAgentInputState,
+        output_schema=TaskPlanningAgentOutputState,
     )
     graph.add_node("dataset_recommend", _dataset_recommend_node)
     graph.add_node("dataset_review", _dataset_review_node)
@@ -557,4 +557,4 @@ def compile_capability_agent(*, checkpointer: Any = None):
         lambda state: END if state.get("selected_material_files") else "materials_choose",
         {END: END, "materials_choose": "materials_choose"},
     )
-    return graph.compile(checkpointer=checkpointer, name=CAPABILITY_AGENT)
+    return graph.compile(checkpointer=checkpointer, name=TASK_PLANNING_AGENT)

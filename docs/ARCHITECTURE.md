@@ -16,15 +16,15 @@ VLM；`image.image_path` 仅作为不透明元数据随题目输出，题目事�
 LangGraph 入口是 `medbenchagent.workflow.graph:benchmark_graph`。根图采用固定的
 role-specialized agents + deterministic orchestration：
 
-`run_initialize → SpecificationAgent → CapabilityAgent → ClinicalDesignAgent → rag_design_export → GenerationAgent → generation_summary → AuditAgent → run_finalize`
+`run_initialize → SpecificationAgent → TaskPlanningAgent → MedicalAlignAgent → rag_design_export → GenerationAgent → generation_summary → AuditAgent → run_finalize`
 
 各角色内部保留自己的确认、修订和逐项处理循环，根图不做动态路由：
 
 1. `SpecificationAgent` 在首次 DeepSeek 调用前取得已预分配的 run 路径，将自然语言需求提取为 BenchmarkInfo，经人工确认后创建 working Blueprint。
-2. `CapabilityAgent` 从 `datasets/dataset_catalog.json` 推荐并确认数据集。
+2. `TaskPlanningAgent` 从 `datasets/dataset_catalog.json` 推荐并确认数据集。
    代码解析路径、校验 `annotation.jsonl`，再生成
    内容寻址的 DuckDB、dataset profile 和 access manifest。
-3. `CapabilityAgent` 将全部预定义任务和完整 profile 放入一次模型调用，统一完成支持性判断、跨任务语义去重和 metric 选择，直接生成完整
+3. `TaskPlanningAgent` 将全部预定义任务和完整 profile 放入一次模型调用，统一完成支持性判断、跨任务语义去重和 metric 选择，直接生成完整
    Task Plan；代码验证全部 task entry，仅在完整响应违反契约时允许一次 repair，再交给人工逐项修订。人工修订能看到完整 Blueprint 与当前 Task Plan，
    但只能替换指定 task。每个保留的最终任务同时选择一个由共享 metric registry 提供、且与
    `response_format` 兼容的主指标。所有保留的 letter 任务必须有至少两个语义答案类别，代码以获准字段的
@@ -33,8 +33,8 @@ role-specialized agents + deterministic orchestration：
    `anatomy_attribute` 与 `finding_attribute` 按单一语义答案轴识别 question type，每个类型只使用一个字段，并展开为
    `<parent_task_id>.<question_type_id>` 独立任务；每个展开任务独立保存 metric。确认后，代码删除不支持的任务并写入
    `supporting_fields` 与 metric；首轮完整输出写入 `task_plans/v1.json`，每轮人工修订写入递增的 `vN.json`，不覆盖历史版本。
-4. `CapabilityAgent` 按任务 category 稳定加权分配样本数：仅在保留类别间归一化默认权重，以最大余数法分配类别整数总数；类别内先在原始父任务之间分配，再在父任务的有效 question types 之间均分，因此拆分不会提高父任务权重。自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
-5. `ClinicalDesignAgent` 包装现有 `rag_designs` 子图，对每个非零任务使用医学 PDF 做 RAG，逐项把设计和引用写入 Blueprint，再由
+4. `TaskPlanningAgent` 按任务 category 稳定加权分配样本数：仅在保留类别间归一化默认权重，以最大余数法分配类别整数总数；类别内先在原始父任务之间分配，再在父任务的有效 question types 之间均分，因此拆分不会提高父任务权重。自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
+5. `MedicalAlignAgent` 包装现有 `rag_designs` 子图，对每个非零任务使用医学 PDF 做 RAG，逐项把设计和引用写入 Blueprint，再由
    人工整体确认或定向重做。新设计为每个具体 question type 生成配置数量的唯一、语义等价模板，默认三个；letter 任务先请求一个获准字段的安全精确分类值摘要，再生成结构化 `answer_field` 与 `answer_value_mapping`。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
 6. `GenerationAgent` 在私有状态中从确认后的 Blueprint 构造 `GenerationRequest`。现有生成子图按 letter、bbox、free_text 三个阶段
    独立读取 DuckDB；每阶段仅投影任务获准字段、稳定随机排序候选，并按 seed、task、image 和 source row
@@ -53,7 +53,7 @@ cursor、`GenerationRequest` 或数据集行；`BenchmarkOutputState` 则只返�
 ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务计数和 shortfall。
 
 五个角色的 Input、Output 和私有状态 contract 位于 `agents/contracts.py`，领域 contract 仍只定义在
-顶层 `contracts.py`。`ClinicalDesignAgent` 内的 `rag_designs` 子图以 Blueprint 路径、BenchmarkInfo、已选资料、dataset profile 和 access manifest 为输入。`task-capability-profile.v3` 对安全语义字段提供稳定 top values，并提供其计数、比例、一个来自完整非空集合的最低频值及截断状态，供 Task Plan 结合任务语义选择 metric；设计 letter mapping 时，模型可按需选择一个获准字段，代码再从 DuckDB 返回最多 32 个高频精确 scalar、计数、总 distinct count 和截断状态。字符串最长 200 字符，identifier、文件引用、DICOM metadata、bbox 坐标、长自由文本和原始数据行不会进入提示。
+顶层 `contracts.py`。`MedicalAlignAgent` 内的 `rag_designs` 子图以 Blueprint 路径、BenchmarkInfo、已选资料、dataset profile 和 access manifest 为输入。`task-capability-profile.v3` 对安全语义字段提供稳定 top values，并提供其计数、比例、一个来自完整非空集合的最低频值及截断状态，供 Task Plan 结合任务语义选择 metric；设计 letter mapping 时，模型可按需选择一个获准字段，代码再从 DuckDB 返回最多 32 个高频精确 scalar、计数、总 distinct count 和截断状态。字符串最长 200 字符，identifier、文件引用、DICOM metadata、bbox 坐标、长自由文本和原始数据行不会进入提示。
 其任务队列、定向重做反馈、当前任务和完成计数只保存在该 Agent checkpoint。GenerationAgent 先在私有状态中构造 request，现有生成子图仍以只包含 `generation_request` 的输入契约开始，
 并只向根图返回 raw 路径、题目计数、任务计数和 shortfall。阶段、游标、目标/完成计数、progress 路径、
 拒绝计数和耗尽标记属于 GenerationAgent 私有 checkpoint，不进入根图状态或公共输出。稳定类型位于 `contracts.py`：`BlueprintTask`（包含稳定 `category`）是规划到生成

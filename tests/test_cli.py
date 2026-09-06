@@ -141,7 +141,7 @@ class _FakeGraph:
             )
             return
         yield (
-            ("ClinicalDesignAgent:task",),
+            ("MedicalAlignAgent:task",),
             "custom",
             {"kind": "rag_progress", "task_id": "view", "completed": 1, "total": 1, "remaining": 0},
         )
