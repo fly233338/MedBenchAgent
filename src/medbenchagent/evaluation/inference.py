@@ -28,8 +28,14 @@ from medbenchagent.evaluation.scoring import item_correct, item_score
 
 
 AdapterLoader = Callable[..., ModelAdapter]
-BLANK_IMAGE_COLOR = (128, 128, 128)
-BLANK_IMAGE_SIZE = (224, 224)
+INTERFERENCE_IMAGE_SIZE = (128, 128)
+INTERFERENCE_IMAGE_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "scripts"
+    / "experiments"
+    / "interference"
+    / "gaussian_blur.png"
+)
 
 
 @dataclass(frozen=True)
@@ -123,15 +129,27 @@ def _result_record(
     }
 
 
-def _blank_image_samples(
+def _validate_interference_image(path: Path) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(f"Interference image is missing: {path}")
+    try:
+        with Image.open(path) as image:
+            image.load()
+            if image.size != INTERFERENCE_IMAGE_SIZE:
+                raise ValueError(
+                    "Interference image must be 128x128: "
+                    f"{path} has size {image.size}."
+                )
+    except OSError as error:
+        raise ValueError(f"Interference image could not be decoded: {path}") from error
+
+
+def _interference_image_samples(
     samples: list[InferenceSample],
-    blank_image_path: Path,
+    interference_image_path: Path,
 ) -> list[InferenceSample]:
-    if samples and not blank_image_path.is_file():
-        blank_image_path.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", BLANK_IMAGE_SIZE, BLANK_IMAGE_COLOR).save(blank_image_path)
     return [
-        replace(sample, image=replace(sample.image, png_path=blank_image_path))
+        replace(sample, image=replace(sample.image, png_path=interference_image_path))
         for sample in samples
     ]
 
@@ -146,11 +164,10 @@ def _write_rank_results(
     max_new_tokens: int,
     bleu_threshold: float,
     bbox_iou_threshold: float,
-    blank_image_directory: Path,
+    interference_image_path: Path,
 ) -> None:
     indices = list(shard_indices(len(benchmark.samples), context.rank, context.world_size))
     language = benchmark.benchmark_info["language"]
-    blank_image_path = blank_image_directory / "blank.png"
     with path.open("w", encoding="utf-8", newline="\n") as destination:
         with tqdm(
             total=len(indices),
@@ -161,9 +178,9 @@ def _write_rank_results(
         ) as progress:
             for start in range(0, len(indices), batch_size):
                 batch = [benchmark.samples[index] for index in indices[start : start + batch_size]]
-                model_batch = _blank_image_samples(
+                model_batch = _interference_image_samples(
                     batch,
-                    blank_image_path,
+                    interference_image_path,
                 )
                 outputs = adapter.generate(model_batch, max_new_tokens=max_new_tokens)
                 if len(outputs) != len(batch):
@@ -277,6 +294,7 @@ def run_inference(
     output = Path(args.output)
     parts = _parts_directory(output)
     _prepare_output(output, parts, args.overwrite, context)
+    _validate_interference_image(INTERFERENCE_IMAGE_PATH)
     benchmark = load_benchmark(
         args.benchmark,
         args.benchmark_manifest,
@@ -303,7 +321,7 @@ def run_inference(
         max_new_tokens=args.max_new_tokens,
         bleu_threshold=args.bleu_threshold,
         bbox_iou_threshold=args.bbox_iou_threshold,
-        blank_image_directory=parts / f"blank-images-rank-{context.rank}",
+        interference_image_path=INTERFERENCE_IMAGE_PATH,
     )
     _mark_rank_complete(parts, context.rank)
     if context.rank == 0:
