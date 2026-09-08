@@ -7,11 +7,12 @@ import json
 import os
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from PIL import Image
 import torch
 import torch.distributed as dist
 from torch.distributed.elastic.multiprocessing.errors import record
@@ -27,6 +28,7 @@ from medbenchagent.evaluation.scoring import item_correct, item_score
 
 
 AdapterLoader = Callable[..., ModelAdapter]
+BLANK_IMAGE_COLOR = (128, 128, 128)
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,25 @@ def _result_record(
     }
 
 
+def _blank_image_samples(
+    samples: list[InferenceSample],
+    directory: Path,
+    cache: dict[tuple[int, int], Path],
+) -> list[InferenceSample]:
+    blank_samples = []
+    for sample in samples:
+        size = (sample.image.width, sample.image.height)
+        blank_path = cache.get(size)
+        if blank_path is None:
+            directory.mkdir(parents=True, exist_ok=True)
+            blank_path = directory / f"blank-{size[0]}x{size[1]}.png"
+            Image.new("RGB", size, BLANK_IMAGE_COLOR).save(blank_path)
+            cache[size] = blank_path
+        blank_image = replace(sample.image, png_path=blank_path)
+        blank_samples.append(replace(sample, image=blank_image))
+    return blank_samples
+
+
 def _write_rank_results(
     path: Path,
     benchmark: LoadedBenchmark,
@@ -130,9 +151,11 @@ def _write_rank_results(
     max_new_tokens: int,
     bleu_threshold: float,
     bbox_iou_threshold: float,
+    blank_image_directory: Path,
 ) -> None:
     indices = list(shard_indices(len(benchmark.samples), context.rank, context.world_size))
     language = benchmark.benchmark_info["language"]
+    blank_image_paths: dict[tuple[int, int], Path] = {}
     with path.open("w", encoding="utf-8", newline="\n") as destination:
         with tqdm(
             total=len(indices),
@@ -143,7 +166,12 @@ def _write_rank_results(
         ) as progress:
             for start in range(0, len(indices), batch_size):
                 batch = [benchmark.samples[index] for index in indices[start : start + batch_size]]
-                outputs = adapter.generate(batch, max_new_tokens=max_new_tokens)
+                model_batch = _blank_image_samples(
+                    batch,
+                    blank_image_directory,
+                    blank_image_paths,
+                )
+                outputs = adapter.generate(model_batch, max_new_tokens=max_new_tokens)
                 if len(outputs) != len(batch):
                     raise RuntimeError("Model adapter returned an unexpected number of outputs.")
                 for sample, output in zip(batch, outputs):
@@ -281,6 +309,7 @@ def run_inference(
         max_new_tokens=args.max_new_tokens,
         bleu_threshold=args.bleu_threshold,
         bbox_iou_threshold=args.bbox_iou_threshold,
+        blank_image_directory=parts / f"blank-images-rank-{context.rank}",
     )
     _mark_rank_complete(parts, context.rank)
     if context.rank == 0:
