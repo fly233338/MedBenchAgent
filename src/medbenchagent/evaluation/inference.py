@@ -29,6 +29,7 @@ from medbenchagent.evaluation.scoring import item_correct, item_score
 
 AdapterLoader = Callable[..., ModelAdapter]
 BLANK_IMAGE_COLOR = (128, 128, 128)
+BLANK_IMAGE_SIZE = (224, 224)
 
 
 @dataclass(frozen=True)
@@ -124,21 +125,15 @@ def _result_record(
 
 def _blank_image_samples(
     samples: list[InferenceSample],
-    directory: Path,
-    cache: dict[tuple[int, int], Path],
+    blank_image_path: Path,
 ) -> list[InferenceSample]:
-    blank_samples = []
-    for sample in samples:
-        size = (sample.image.width, sample.image.height)
-        blank_path = cache.get(size)
-        if blank_path is None:
-            directory.mkdir(parents=True, exist_ok=True)
-            blank_path = directory / f"blank-{size[0]}x{size[1]}.png"
-            Image.new("RGB", size, BLANK_IMAGE_COLOR).save(blank_path)
-            cache[size] = blank_path
-        blank_image = replace(sample.image, png_path=blank_path)
-        blank_samples.append(replace(sample, image=blank_image))
-    return blank_samples
+    if samples and not blank_image_path.is_file():
+        blank_image_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", BLANK_IMAGE_SIZE, BLANK_IMAGE_COLOR).save(blank_image_path)
+    return [
+        replace(sample, image=replace(sample.image, png_path=blank_image_path))
+        for sample in samples
+    ]
 
 
 def _write_rank_results(
@@ -155,7 +150,7 @@ def _write_rank_results(
 ) -> None:
     indices = list(shard_indices(len(benchmark.samples), context.rank, context.world_size))
     language = benchmark.benchmark_info["language"]
-    blank_image_paths: dict[tuple[int, int], Path] = {}
+    blank_image_path = blank_image_directory / "blank.png"
     with path.open("w", encoding="utf-8", newline="\n") as destination:
         with tqdm(
             total=len(indices),
@@ -168,8 +163,7 @@ def _write_rank_results(
                 batch = [benchmark.samples[index] for index in indices[start : start + batch_size]]
                 model_batch = _blank_image_samples(
                     batch,
-                    blank_image_directory,
-                    blank_image_paths,
+                    blank_image_path,
                 )
                 outputs = adapter.generate(model_batch, max_new_tokens=max_new_tokens)
                 if len(outputs) != len(batch):
