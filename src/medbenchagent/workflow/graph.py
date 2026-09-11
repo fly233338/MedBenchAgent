@@ -1,188 +1,183 @@
-"""Deterministic root orchestration for the five role-specialized Agents."""
-
+"""Supervisor-driven benchmark construction with persistent tool boundaries."""
 from __future__ import annotations
-
+import json
+import shutil
+from collections import Counter
+from pathlib import Path
 from typing import Any, TypedDict
-
-from langgraph.graph import END, START, MessagesState, StateGraph
-
-from medbenchagent.agents import (
-    compile_audit_agent,
-    compile_task_planning_agent,
-    compile_medical_align_agent,
-    compile_generation_agent,
-    compile_specification_agent,
-)
-from medbenchagent.agents.contracts import (
-    AUDIT_AGENT,
-    TASK_PLANNING_AGENT,
-    MEDICAL_ALIGN_AGENT,
-    GENERATION_AGENT,
-    SPECIFICATION_AGENT,
-)
-from medbenchagent.construction import record_event
-from medbenchagent.dataset_catalog import (
-    dataset_by_id,
-    load_dataset_catalog,
-    resolve_annotation_path,
-)
-from medbenchagent.run_artifacts import initialize_run, latest_versioned_json
+from langgraph.graph import StateGraph, START, END
+from medbenchagent.agents.generation import compile_generation_agent, run_generation
+from medbenchagent.agents.audit import run_audit
+from medbenchagent.agents.task_planning import compile_task_planning_agent
+from medbenchagent.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
+from medbenchagent.harness import compile_agent, result
+from medbenchagent.run_artifacts import initialize_run
 from medbenchagent.run_export import finalize_run
 from medbenchagent.settings import get_settings
 
-__all__ = [
-    "BenchmarkInputState",
-    "BenchmarkOutputState",
-    "BenchmarkState",
-    "benchmark_graph",
-    "compile_benchmark_graph",
-]
-
-
 class BenchmarkInputState(TypedDict, total=False):
-    """Values accepted when starting or resuming the root graph."""
-
     messages: list[Any]
     user_requirement: str
     seed: int
     max_tasks_per_image: int
     question_temperature: float
 
-
-class BenchmarkState(MessagesState, total=False):
-    """Cross-Agent values and stable artifact paths checkpointed by the root graph."""
-
-    user_requirement: str
-    seed: int
-    max_tasks_per_image: int
-    question_temperature: float
-    benchmark_info: dict[str, Any]
+class BenchmarkState(BenchmarkInputState, total=False):
+    context: dict[str, Any]
+    result: dict[str, Any]
     run_id: str
     run_directory: str
-    construction_events_path: str
     working_blueprint_path: str
+    construction_events_path: str
+    benchmark_info: dict
     selected_dataset_id: str
-    dataset_profile: dict[str, Any]
-    dataset_access_manifest: dict[str, Any]
-    task_screening_report_path: str
-    selected_material_files: list[str]
     raw_output_path: str
-    provenance_output_path: str
-    rag_designs_path: str
-    construction_report_path: str
+    audit_artifacts: dict
     manifest_path: str
     benchmark_id: str
-    audit_artifacts: dict[str, str]
-    generation_shortfalls: dict[str, int]
+    generation_shortfalls: dict
     item_count: int
-    task_counts: dict[str, int]
+    task_counts: dict
+    status: str
+    summary: str
 
-
-class BenchmarkOutputState(TypedDict):
-    """Stable result returned by the root benchmark graph."""
-
-    benchmark_info: dict[str, Any]
+class BenchmarkOutputState(TypedDict, total=False):
     run_id: str
-    selected_dataset_id: str
+    run_directory: str
     working_blueprint_path: str
-    task_screening_report_path: str
-    raw_output_path: str
-    provenance_output_path: str
-    rag_designs_path: str
     construction_events_path: str
-    construction_report_path: str
+    benchmark_info: dict
+    selected_dataset_id: str
+    raw_output_path: str
+    audit_artifacts: dict
     manifest_path: str
     benchmark_id: str
-    audit_artifacts: dict[str, str]
+    generation_shortfalls: dict
     item_count: int
-    task_counts: dict[str, int]
-    generation_shortfalls: dict[str, int]
+    task_counts: dict
+    status: str
+    summary: str
 
+def specify(context, arguments):
+    """Extract or correct the benchmark brief from the user's requirement: {}."""
+    info = extract_benchmark_info(context["user_requirement"], context.get("benchmark_info"))
+    if missing := missing_fields(info):
+        return result("success", "Brief needs clarification: " + ", ".join(missing), benchmark_info=info, brief_ready=False)
+    path = Path(context["operation_directory"]) / "blueprint.json"
+    write_working_blueprint(info, path)
+    return result("success", "Benchmark brief extracted", benchmark_info=info, brief_ready=True,
+                  working_blueprint_path=str(path), planned=False, generated=False, audited=False)
 
-def _run_initialize_node(state: BenchmarkState) -> dict[str, Any]:
-    """Create persistent run artifacts before any LLM-backed Agent."""
-    if state.get("run_id"):
-        return {}
-    overrides = {
-        key: state[key]
-        for key in ("seed", "max_tasks_per_image", "question_temperature")
-        if key in state
-    }
-    return initialize_run(settings=get_settings(), graph_overrides=overrides)
+def _child_updates(output):
+    return {k: v for k, v in output["context"].items() if k not in {"operation_directory", "feedback", "dataset_profile"}}
 
+def describe(context):
+    return {key: context.get(key) for key in ("user_requirement", "benchmark_info", "brief_ready",
+        "selected_dataset_id", "annotation_path", "planned", "generated", "audited", "generation_shortfalls",
+        "audit_summary", "last_agent_result", "reworks")}
 
-def _rag_design_export_node(state: BenchmarkState) -> dict[str, Any]:
-    artifact = latest_versioned_json(state["run_directory"], "rag_designs")
-    if artifact is None:
-        raise ValueError("RAG design review completed without a persisted design artifact.")
-    return {"rag_designs_path": str(artifact["path"])}
+def compile_benchmark_graph(*, checkpointer=None):
+    planning = compile_task_planning_agent()
+    generation = compile_generation_agent()
 
+    def plan(context, arguments):
+        """Delegate task planning: {feedback?: string}. Requires a complete benchmark brief."""
+        if not context.get("brief_ready"):
+            raise ValueError("Extract and clarify the brief first")
+        child_context = dict(context, feedback=arguments.get("feedback", ""))
+        if context.get("dataset_access_manifest"):
+            child_context["dataset_profile"] = json.loads(Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8"))
+        output = planning.invoke({"context": child_context})
+        updates = _child_updates(output)
+        updates.update(planned=output["result"]["status"] == "complete", generated=False, audited=False,
+                       last_agent_result=output["result"]["summary"])
+        return result("success" if updates["planned"] else "failed", output["result"]["summary"], **updates)
 
-def _generation_summary_node(state: BenchmarkState) -> dict[str, Any]:
-    record_event(
-        state["construction_events_path"],
-        "generation_summary",
-        run_id=state["run_id"],
-        dataset_id=state["selected_dataset_id"],
-        agent=GENERATION_AGENT,
-        operation="summary",
-        status="complete",
-        task_counts=state["task_counts"],
-        shortfalls=state["generation_shortfalls"],
-    )
-    return {}
+    def prepare_data(context, arguments):
+        """Prepare raw 2D data: {source_root: string, dataset_id: lowercase-slug, feedback?: string}. Standard data skips this."""
+        from medbenchagent.agents.data_processing import compile_data_processing_agent, preparation_context
+        source = arguments.get("source_root")
+        if not isinstance(source, str) or not Path(source).is_dir():
+            raise ValueError("Provide the existing raw source directory from the user's request")
+        prepared = preparation_context(context, str(Path(source).resolve()), arguments.get("dataset_id"))
+        prepared["feedback"] = arguments.get("feedback", "")
+        output = compile_data_processing_agent().invoke({"context": prepared})
+        updates = _child_updates(output)
+        updates.update(planned=False, generated=False, audited=False, last_agent_result=output["result"]["summary"])
+        return result("success" if output["result"]["status"] == "complete" else "failed",
+                      output["result"]["summary"], **updates)
 
+    def generate(context, arguments):
+        """Build/review templates and instantiate questions: {feedback?: string}. Requires a complete plan."""
+        return run_generation(context, arguments, generation)
 
-def _run_finalize_node(state: BenchmarkState) -> dict[str, Any]:
-    dataset = dataset_by_id(load_dataset_catalog(), state["selected_dataset_id"])
-    identifier, report_path, manifest_path = finalize_run(
-        run_directory=state["run_directory"],
-        run_id=state["run_id"],
-        blueprint_path=state["working_blueprint_path"],
-        raw_output_path=state["raw_output_path"],
-        provenance_output_path=state["provenance_output_path"],
-        rag_designs_path=state["rag_designs_path"],
-        construction_events_path=state["construction_events_path"],
-        dataset_catalog_entry=dataset,
-        dataset_profile=state["dataset_profile"],
-        dataset_access_manifest=state["dataset_access_manifest"],
-        image_manifest_path=resolve_annotation_path(dataset).parent / "image_manifest.jsonl",
-        audit_artifacts=state["audit_artifacts"],
-    )
-    return {
-        "benchmark_id": identifier,
-        "construction_report_path": report_path,
-        "manifest_path": manifest_path,
-    }
+    def finish(context, arguments):
+        if not context.get("audited"):
+            raise ValueError("Audit the current batch before finishing")
+        directory = Path(context["run_directory"])
+        published = {}
+        for key, source in {"working_blueprint_path": context["working_blueprint_path"],
+                            "raw_output_path": context["raw_output_path"], **context["audit_artifacts"]}.items():
+            source = Path(source)
+            destination = directory / source.name
+            if source.resolve() != destination.resolve():
+                shutil.copyfile(source, destination)
+            published[key] = str(destination)
+        templates = Path(context["working_blueprint_path"]).parent / "templates.json"
+        if templates.is_file():
+            shutil.copyfile(templates, directory / "templates.json")
+        context.update(working_blueprint_path=published["working_blueprint_path"], raw_output_path=published["raw_output_path"],
+                       audit_artifacts={"audited": published["audited"], "report": published["report"]})
+        blueprint = json.loads(Path(context["working_blueprint_path"]).read_text(encoding="utf-8"))
+        counts = Counter(json.loads(line)["task_id"] for line in Path(published["audited"]).read_text(encoding="utf-8").splitlines() if line)
+        shortfalls = {key: max(0, task["sample_count"] - counts[key]) for key, task in blueprint["tasks"].items()}
+        identifier, manifest = finalize_run(run_directory=context["run_directory"], run_id=context["run_id"],
+            blueprint_path=context["working_blueprint_path"], raw_output_path=context["raw_output_path"],
+            construction_events_path=context["construction_events_path"],
+            dataset_catalog_entry=context["dataset_entry"], dataset_profile=json.loads(Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8")),
+            dataset_access_manifest=context["dataset_access_manifest"],
+            image_manifest_path=Path(context["annotation_path"]).parent / "image_manifest.jsonl",
+            audit_artifacts=context["audit_artifacts"])
+        return result("complete", "Benchmark completed; any deficits are reported", manifest_path=manifest, benchmark_id=identifier,
+                      working_blueprint_path=context["working_blueprint_path"], raw_output_path=context["raw_output_path"],
+                      audit_artifacts=context["audit_artifacts"], item_count=sum(counts.values()),
+                      task_counts=dict(counts), generation_shortfalls=shortfalls)
 
+    supervisor = compile_agent("SupervisorAgent",
+        "Build the requested Medical VLM benchmark. Extract the brief. If the user supplies raw data, prepare it; "
+        "otherwise planning can select catalog data. Delegate planning, generation and audit as needed. "
+        "You alone ask the user when a brief, source semantics or unresolved agent result needs clarification. "
+        "No routine stage confirmations. Review audit feedback and shortfalls before finishing; rework the "
+        "responsible module only when evidence suggests it can help. Never silently lower the requested target. "
+        "Finite data exhaustion can finish with explicit shortfalls. Semantic flags are advisory, not automatic rejection.",
+        {"specify": specify, "plan": plan, "prepare_data": prepare_data, "generate": generate, "audit": run_audit},
+        describe, finish, human=True)
 
-def compile_benchmark_graph(*, checkpointer: Any = None):
-    """Build the deterministic five-Agent benchmark workflow."""
-    graph = StateGraph(
-        BenchmarkState,
-        input_schema=BenchmarkInputState,
-        output_schema=BenchmarkOutputState,
-    )
-    graph.add_node("run_initialize", _run_initialize_node)
-    graph.add_node(SPECIFICATION_AGENT, compile_specification_agent())
-    graph.add_node(TASK_PLANNING_AGENT, compile_task_planning_agent())
-    graph.add_node(MEDICAL_ALIGN_AGENT, compile_medical_align_agent())
-    graph.add_node("rag_design_export", _rag_design_export_node)
-    graph.add_node(GENERATION_AGENT, compile_generation_agent())
-    graph.add_node("generation_summary", _generation_summary_node)
-    graph.add_node(AUDIT_AGENT, compile_audit_agent())
-    graph.add_node("run_finalize", _run_finalize_node)
-    graph.add_edge(START, "run_initialize")
-    graph.add_edge("run_initialize", SPECIFICATION_AGENT)
-    graph.add_edge(SPECIFICATION_AGENT, TASK_PLANNING_AGENT)
-    graph.add_edge(TASK_PLANNING_AGENT, MEDICAL_ALIGN_AGENT)
-    graph.add_edge(MEDICAL_ALIGN_AGENT, "rag_design_export")
-    graph.add_edge("rag_design_export", GENERATION_AGENT)
-    graph.add_edge(GENERATION_AGENT, "generation_summary")
-    graph.add_edge("generation_summary", AUDIT_AGENT)
-    graph.add_edge(AUDIT_AGENT, "run_finalize")
-    graph.add_edge("run_finalize", END)
+    def initialize(state):
+        overrides = {key: state[key] for key in ("seed", "max_tasks_per_image", "question_temperature") if key in state}
+        run = initialize_run(graph_overrides=overrides)
+        requirement = state.get("user_requirement") or next(
+            (getattr(m, "content", "") for m in reversed(state.get("messages", [])) if getattr(m, "type", "") == "human"), "")
+        if not requirement:
+            raise ValueError("A natural-language benchmark requirement is required")
+        context = dict(run, **overrides, user_requirement=requirement,
+                       operation_directory=str(Path(run["run_directory"]) / ".runtime"),
+                       limits=get_settings().harness)
+        return dict(run, context=context)
+
+    def run_supervisor(state):
+        output = supervisor.invoke({"context": state["context"]})
+        public = {key: value for key, value in output["context"].items() if key in BenchmarkState.__annotations__}
+        return dict(public, context=output["context"], result=output["result"],
+                    status=output["result"]["status"], summary=output["result"]["summary"])
+
+    graph = StateGraph(BenchmarkState, input_schema=BenchmarkInputState, output_schema=BenchmarkOutputState)
+    graph.add_node("initialize", initialize)
+    graph.add_node("supervisor", run_supervisor)
+    graph.add_edge(START, "initialize")
+    graph.add_edge("initialize", "supervisor")
+    graph.add_edge("supervisor", END)
     return graph.compile(checkpointer=checkpointer)
 
-
 benchmark_graph = compile_benchmark_graph()
+

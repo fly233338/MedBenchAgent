@@ -1,4 +1,4 @@
-"""Append-only construction events and their compact derived report."""
+"""Append-only construction events for model calls and tool execution."""
 
 from __future__ import annotations
 
@@ -15,15 +15,15 @@ from medbenchagent.settings import get_settings
 
 _CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("construction_context", default=None)
 
-SPECIFICATION_AGENT = "SpecificationAgent"
+SUPERVISOR_AGENT = "SupervisorAgent"
 TASK_PLANNING_AGENT = "TaskPlanningAgent"
-MEDICAL_ALIGN_AGENT = "MedicalAlignAgent"
+DATA_PROCESSING_AGENT = "DataProcessingAgent"
 GENERATION_AGENT = "GenerationAgent"
 AUDIT_AGENT = "AuditAgent"
 AGENT_NAMES = (
-    SPECIFICATION_AGENT,
+    SUPERVISOR_AGENT,
     TASK_PLANNING_AGENT,
-    MEDICAL_ALIGN_AGENT,
+    DATA_PROCESSING_AGENT,
     GENERATION_AGENT,
     AUDIT_AGENT,
 )
@@ -180,7 +180,6 @@ def record_revision_applied(
     artifact_type: str | None = None,
     artifact_version: int | None = None,
     artifact_path: str | None = None,
-    artifact_sha256: str | None = None,
 ) -> None:
     """Record one successfully completed revision and its actual changed objects."""
     record_event(
@@ -196,7 +195,6 @@ def record_revision_applied(
         artifact_type=artifact_type,
         artifact_version=artifact_version,
         artifact_path=artifact_path,
-        artifact_sha256=artifact_sha256,
     )
 
 
@@ -222,94 +220,7 @@ def record_artifact_snapshot(
         artifact_type=artifact_type,
         artifact_version=artifact["version"],
         artifact_path=artifact["relative_path"],
-        artifact_sha256=artifact["sha256"],
         source=source,
     )
 
 
-def construction_report(events_path: str | Path) -> dict[str, object]:
-    events = [json.loads(line) for line in Path(events_path).read_text(encoding="utf-8").splitlines() if line]
-    llm = [event for event in events if event.get("event_type") == "llm_call"]
-    started = next((event for event in events if event.get("event_type") == "run_started"), {})
-    completed = next((event for event in reversed(events) if event.get("event_type") == "run_completed"), {})
-    elapsed = None
-    if isinstance(started.get("timestamp"), str) and isinstance(completed.get("timestamp"), str):
-        elapsed = round(
-            (
-                datetime.fromisoformat(completed["timestamp"].replace("Z", "+00:00"))
-                - datetime.fromisoformat(started["timestamp"].replace("Z", "+00:00"))
-            ).total_seconds(),
-            3,
-        )
-    summary = next((event for event in reversed(events) if event.get("event_type") == "generation_summary"), {})
-    task_counts = summary.get("task_counts", {}) if isinstance(summary.get("task_counts"), dict) else {}
-    shortfalls = summary.get("shortfalls", {}) if isinstance(summary.get("shortfalls"), dict) else {}
-    raw_items = sum(value for value in task_counts.values() if isinstance(value, int))
-    shortfall = sum(value for value in shortfalls.values() if isinstance(value, int))
-    target = raw_items + shortfall
-    audit_summary = next(
-        (event for event in reversed(events) if event.get("event_type") == "audit_summary"), {}
-    )
-    audited = audit_summary.get("audited", raw_items)
-    rejected = audit_summary.get("rejected", 0)
-    if not isinstance(audited, int) or audited < 0:
-        audited = raw_items
-    if not isinstance(rejected, int) or rejected < 0:
-        rejected = 0
-    agent_metrics = {
-        name: {
-            "calls": sum(event.get("agent") == name for event in llm),
-            "input_tokens": sum(int(event.get("input_tokens", 0)) for event in llm if event.get("agent") == name),
-            "output_tokens": sum(int(event.get("output_tokens", 0)) for event in llm if event.get("agent") == name),
-            "latency_ms": sum(float(event.get("latency_ms", 0)) for event in llm if event.get("agent") == name),
-        }
-        for name in AGENT_NAMES
-    }
-    human_stages = {
-        stage: {"confirmed": 0, "revision_rounds": 0, "modified_objects": 0}
-        for stage in ("benchmark_info", "dataset", "task_plan", "sample_count", "materials", "rag_design")
-    }
-    human_stages["materials"]["selected_objects"] = 0
-    for event in events:
-        if event.get("stage") not in human_stages:
-            continue
-        stage = human_stages[event["stage"]]
-        if (
-            event.get("event_type") == "human_interaction"
-            and event.get("parse_status") == "success"
-            and event.get("action") == "confirm"
-        ):
-            stage["confirmed"] = 1
-            selected = event.get("selected_objects")
-            if event.get("stage") == "materials" and isinstance(selected, int) and selected >= 0:
-                stage["selected_objects"] = selected
-        elif event.get("event_type") == "revision_applied":
-            stage["revision_rounds"] += 1
-            modified = event.get("modified_objects", 0)
-            if isinstance(modified, int) and modified >= 0:
-                stage["modified_objects"] += modified
-    input_tokens = sum(int(event.get("input_tokens", 0)) for event in llm)
-    output_tokens = sum(int(event.get("output_tokens", 0)) for event in llm)
-    return {
-        "schema_version": "construction-report.v2",
-        "wall_clock_seconds": elapsed,
-        "llm": {
-            "calls": len(llm),
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "latency_ms": sum(float(event.get("latency_ms", 0)) for event in llm),
-            "per_audited_item": {
-                "calls": len(llm) / audited if audited else None,
-                "tokens": (input_tokens + output_tokens) / audited if audited else None,
-            },
-        },
-        "items": {
-            "target": target,
-            "raw": raw_items,
-            "audited": audited,
-            "rejected": rejected,
-            "shortfall": shortfall,
-        },
-        "agents": agent_metrics,
-        "human_stages": human_stages,
-    }

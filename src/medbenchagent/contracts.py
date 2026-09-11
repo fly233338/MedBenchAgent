@@ -41,7 +41,6 @@ class GenerationRequest(TypedDict):
     benchmark_info: dict[str, object]
     run_id: str
     dataset_id: str
-    blueprint_sha256: str
     construction_events_path: str
     dataset_access_manifest: dict[str, object]
     tasks: dict[str, BlueprintTask]
@@ -68,4 +67,3 @@ class GenerationResult:
     raw_output_path: str
     item_count: int
     task_counts: dict[str, int]
-    provenance_output_path: str

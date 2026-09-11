@@ -47,8 +47,7 @@ Write `image_manifest.jsonl` beside `annotation.jsonl` with exactly one row per 
   "image_id": "image-001",
   "png_path": "images/image-001.png",
   "width": 1024,
-  "height": 1024,
-  "sha256": "64 lowercase hexadecimal characters"
+  "height": 1024
 }
 ```
 
@@ -56,6 +55,6 @@ Keep `png_path` relative to the manifest directory. The converted PNG files and 
 
 ### 4. Validate
 
-Verify that every manifest row matches its annotation `image.image_id`, resolves to a unique PNG beneath the artifact directory, and has correct dimensions and SHA-256. Open every PNG and require format `PNG`, positive dimensions, and non-constant pixels. For copied PNG sources, verify byte-identical output; for converted non-PNG sources, verify the user-approved output encoding.
+Verify that every manifest row matches its annotation `image.image_id`, resolves to a unique PNG beneath the artifact directory, and has correct dimensions. Open every PNG and require format `PNG`, positive dimensions, and non-constant pixels. For copied PNG sources, verify byte-identical output; for converted non-PNG sources, verify the user-approved output encoding.
 
 Run the generated script again with unchanged inputs. Finish only when it produces byte-identical PNG and manifest bytes, no unreferenced source image was converted, and all source files remain unchanged.

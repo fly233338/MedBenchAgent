@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import random
 import re
@@ -13,17 +12,16 @@ from typing import Any
 import duckdb
 
 from medbenchagent.answer_mapping import canonical_answer_scalar
+from medbenchagent.generation.templates import render
 from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
-from medbenchagent.construction import GENERATION_AGENT, event_context, record_event
+from medbenchagent.construction import GENERATION_AGENT, record_event
 from medbenchagent.generation import free_text, grounding, vqa
 from medbenchagent.generation.context import (
-    evidence_provenance,
     has_meaningful_value,
     is_supporting_field_path,
     project_supporting_record,
     scalar_evidence_candidates,
 )
-from medbenchagent.llm import ModelUnavailable
 from medbenchagent.metrics import is_metric_supported
 from medbenchagent.settings import get_settings
 
@@ -167,8 +165,7 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
 
 
 def _item_identity(candidate: _Candidate) -> str:
-    raw = f"{candidate.task_id}:{candidate.record['image']['image_id']}:{candidate.source_row}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+    return json.dumps([candidate.task_id, candidate.record["image"]["image_id"]], separators=(",", ":"))
 
 
 def _build_item(
@@ -207,8 +204,7 @@ def _write_jsonl(path: Path, items: list[dict[str, Any]]) -> None:
 
 
 def _progress_item(entry: dict[str, Any]) -> dict[str, Any]:
-    item = entry.get("item", entry)
-    return item if isinstance(item, dict) else {}
+    return entry
 
 
 def _progress_counts(items: list[dict[str, Any]], task_ids: list[str]) -> dict[str, int]:
@@ -241,18 +237,15 @@ def _row_record(row: tuple[Any, ...]) -> dict[str, Any]:
 
 
 def _shuffle_candidates(candidates: list[_Candidate], seed: int, image_id: str) -> None:
-    digest = hashlib.sha256(f"{seed}:{image_id}".encode("utf-8")).digest()
-    random.Random(int.from_bytes(digest, "big")).shuffle(candidates)
+    random.Random(seed + int.from_bytes(image_id.encode("utf-8"), "big")).shuffle(candidates)
 
 
 def _select_question_template(
     task: BlueprintTask, seed: int, task_id: str, image_id: str, source_row: int
 ) -> str:
     templates = task["question_templates"]
-    digest = hashlib.sha256(
-        f"{seed}:{task_id}:{image_id}:{source_row}".encode("utf-8")
-    ).digest()
-    return templates[int.from_bytes(digest, "big") % len(templates)]
+    identity = json.dumps([task_id, image_id, source_row]).encode("utf-8")
+    return random.Random(seed + int.from_bytes(identity, "big")).choice(templates)
 
 
 def _all_supporting_fields_present(record: dict[str, Any], supporting_fields: list[str]) -> bool:
@@ -414,6 +407,13 @@ def _enter_stage(
 def initialize_generation(request: GenerationRequest) -> dict[str, Any]:
     """Validate a request and initialize the first resumable generation stage."""
     tasks, targets = _validate_tasks(request)
+    raw = Path(request["output_directory"]) / f"benchmark.{request['dataset_id']}.raw.jsonl"
+    if raw.is_file():
+        items = _read_jsonl(raw)
+        completed = _progress_counts(items, list(tasks))
+        return {"generation_target_counts": targets, "generation_completed_counts": completed,
+                "generation_rejections": {}, "generation_stage_index": len(_STAGES),
+                "generation_stage": "", "generation_cursor": 0, "generation_exhausted": True}
     completed = _all_completed_counts(Path(request["output_directory"]), tasks, targets)
     state = {
         "generation_target_counts": targets,
@@ -459,68 +459,30 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
 
     accepted: list[dict[str, Any]] = []
     max_tasks = int(request["max_tasks_per_image"])
-    temperature = float(request["question_temperature"])
+    existing = _read_jsonl(_stage_progress_path(output_dir, phase))
+    image_id = candidates[0].record["image"]["image_id"] if candidates else None
+    existing_count = sum(item["image_id"] == image_id for item in existing)
+    existing_ids = {item["id"] for item in existing}
     for candidate in candidates:
-        if len(accepted) >= max_tasks:
+        if len(accepted) + existing_count >= max_tasks:
             break
         item_id = _item_identity(candidate)
+        if item_id in existing_ids:
+            continue
         record_event(
             request["construction_events_path"], "generation_attempt", run_id=request["run_id"],
             dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id,
             agent=GENERATION_AGENT, operation="generate", component=phase, status="started"
         )
-        with event_context(
-            construction_events_path=request["construction_events_path"], run_id=request["run_id"],
-            dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id,
-            agent=GENERATION_AGENT, operation="generate", component=phase,
-            model=get_settings().llm.model,
-        ) as generation_call_ids:
-            try:
-                generated = handler.generate(candidate, request["benchmark_info"], temperature)
-            except ModelUnavailable:
-                rejections[f"{phase}_generation_model_unavailable"] = rejections.get(
-                    f"{phase}_generation_model_unavailable", 0
-                ) + 1
-                record_event(request["construction_events_path"], "generation_failure", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="generate", component=phase, status="failure", error_type="model_unavailable")
-                continue
-            except ValueError:
-                rejections[f"{phase}_generation_contract"] = rejections.get(
-                    f"{phase}_generation_contract", 0
-                ) + 1
-                record_event(request["construction_events_path"], "generation_failure", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="generate", component=phase, status="failure", error_type="contract")
-                continue
-        with event_context(
-            construction_events_path=request["construction_events_path"], run_id=request["run_id"],
-            dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id,
-            agent=GENERATION_AGENT, operation="review", component=phase,
-            model=get_settings().llm.model,
-        ) as review_call_ids:
-            try:
-                approved, _reason = handler.review(candidate, generated, request["benchmark_info"])
-            except ModelUnavailable:
-                rejections[f"{phase}_review_model_unavailable"] = rejections.get(
-                    f"{phase}_review_model_unavailable", 0
-                ) + 1
-                record_event(request["construction_events_path"], "review_failure", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="review", component=phase, status="failure", error_type="model_unavailable")
-                continue
-        if approved:
+        try:
+            generated = handler._validate(candidate, {"question": render(candidate)})
             item = _build_item(candidate, generated, handler, request["dataset_id"])
-            provenance = {
-                "item_id": item["id"], "run_id": request["run_id"], "dataset_id": request["dataset_id"],
-                "task_id": candidate.task_id, "image_id": item["image_id"], "source_row": candidate.source_row,
-                "supporting_fields": candidate.task["supporting_fields"],
-                "generation_call_ids": generation_call_ids, "review_call_ids": review_call_ids,
-                "generation_attempt_count": len(generation_call_ids), "review_attempt_count": len(review_call_ids),
-                "blueprint_hash": request["blueprint_sha256"],
-            }
-            provenance["answer_evidence"] = evidence_provenance(generated["evidence"])
-            accepted.append({"item": item, "provenance": provenance})
-            record_event(request["construction_events_path"], "review_accept", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="review", component=phase, status="success")
-        else:
-            rejections[f"{phase}_review_rejected"] = rejections.get(
-                f"{phase}_review_rejected", 0
-            ) + 1
-            record_event(request["construction_events_path"], "review_reject", run_id=request["run_id"], dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id, agent=GENERATION_AGENT, operation="review", component=phase, status="rejected")
+            accepted.append(item)
+        except ValueError as exc:
+            rejections[f"{phase}_contract"] = rejections.get(f"{phase}_contract", 0) + 1
+            record_event(request["construction_events_path"], "generation_reject",
+                         run_id=request["run_id"], task_id=candidate.task_id, item_id=item_id,
+                         agent=GENERATION_AGENT, operation="instantiate", status="rejected", reason=str(exc))
 
     progress_path = _stage_progress_path(output_dir, phase)
     if accepted:
@@ -543,8 +505,11 @@ def finalize_generation(request: GenerationRequest) -> GenerationResult:
     """Atomically merge staged progress into raw JSONL and remove temporary files."""
     tasks, targets = _validate_tasks(request)
     output_dir = Path(request["output_directory"])
+    output = output_dir / f"benchmark.{request['dataset_id']}.raw.jsonl"
+    if output.is_file():
+        items = _read_jsonl(output)
+        return GenerationResult(str(output), len(items), _progress_counts(items, list(tasks)))
     kept: list[dict[str, Any]] = []
-    kept_provenance: list[dict[str, Any]] = []
     counts = {task_id: 0 for task_id in tasks}
     progress_paths: list[Path] = []
     for phase, response_format, _handler in _STAGES:
@@ -553,24 +518,16 @@ def finalize_generation(request: GenerationRequest) -> GenerationResult:
         stage_tasks = _stage_tasks(tasks, targets, response_format)
         for entry in _read_jsonl(progress_path):
             item = _progress_item(entry)
-            provenance = entry.get("provenance")
-            if not isinstance(entry.get("item"), dict) or not isinstance(provenance, dict):
-                raise ValueError("Generation progress entries must contain item and provenance.")
-            if provenance.get("item_id") != item.get("id"):
-                raise ValueError("Generation progress provenance must match its item.")
             task_id = str(item.get("task_id"))
             if task_id in stage_tasks and counts[task_id] < targets[task_id]:
                 kept.append(item)
-                kept_provenance.append(provenance)
                 counts[task_id] += 1
     output = output_dir / f"benchmark.{request['dataset_id']}.raw.jsonl"
     _write_jsonl(output, kept)
-    provenance_path = output_dir / "item_provenance.jsonl"
-    _write_jsonl(provenance_path, kept_provenance)
     for progress_path in progress_paths:
         if progress_path.exists():
             progress_path.unlink()
-    return GenerationResult(str(output), len(kept), counts, str(provenance_path))
+    return GenerationResult(str(output), len(kept), counts)
 
 
 def generate_raw_benchmark(request: GenerationRequest) -> GenerationResult:

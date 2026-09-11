@@ -75,7 +75,6 @@ def revision_applied(
         artifact_type=artifact_type,
         artifact_version=artifact["version"] if artifact else None,
         artifact_path=artifact["relative_path"] if artifact else None,
-        artifact_sha256=artifact["sha256"] if artifact else None,
     )
 
 

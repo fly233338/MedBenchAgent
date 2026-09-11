@@ -16,9 +16,9 @@ OutputFunction = Callable[[str], None]
 
 _NODE_LABELS = {
     "run_initialize": "initialize run directory",
-    "SpecificationAgent": "parse benchmark requirement",
+    "SupervisorAgent": "coordinate benchmark construction",
     "TaskPlanningAgent": "plan dataset and tasks",
-    "MedicalAlignAgent": "design medical questions",
+    "DataProcessingAgent": "prepare raw data",
     "rag_design_export": "export RAG designs",
     "GenerationAgent": "generate benchmark",
     "generation_summary": "summarize generation",
@@ -31,10 +31,7 @@ _ARTIFACT_PATH_KEYS = {
     "effective_config_path",
     "construction_events_path",
     "task_screening_report_path",
-    "rag_designs_path",
     "raw_output_path",
-    "provenance_output_path",
-    "construction_report_path",
     "manifest_path",
 }
 
@@ -70,7 +67,6 @@ def _read_nonempty(prompt: str, input_fn: InputFunction, output: OutputFunction)
 
 def _preflight_errors(settings: Any) -> list[str]:
     """Return all local-resource problems that would prevent a complete run."""
-    from medbenchagent.dataset_catalog import load_dataset_catalog, resolve_annotation_path
     from medbenchagent.rag.pdf import RagUnavailable, discover_medical_materials
 
     errors: list[str] = []
@@ -91,29 +87,6 @@ def _preflight_errors(settings: Any) -> list[str]:
     except RagUnavailable as exc:
         errors.append(str(exc))
 
-    try:
-        datasets = load_dataset_catalog(settings.paths.dataset_catalog)
-    except ValueError as exc:
-        errors.append(str(exc))
-    else:
-        viable_datasets = 0
-        dataset_problems: list[str] = []
-        for dataset in datasets:
-            if not dataset["available"]:
-                continue
-            annotation_path = resolve_annotation_path(dataset)
-            missing: list[str] = []
-            if not annotation_path.is_file():
-                missing.append(f"annotation.jsonl: {annotation_path}")
-            image_manifest = annotation_path.parent / "image_manifest.jsonl"
-            if not image_manifest.is_file():
-                missing.append(f"image_manifest.jsonl: {image_manifest}")
-            if missing:
-                dataset_problems.append(f"{dataset['id']} is missing " + "; ".join(missing))
-            else:
-                viable_datasets += 1
-        if viable_datasets == 0:
-            errors.append("No dataset is ready for a complete run: " + "; ".join(dataset_problems))
     return errors
 
 
@@ -330,7 +303,8 @@ def _print_settings(settings: Any, output: OutputFunction) -> None:
 
 def _print_result(values: dict[str, Any], output: OutputFunction) -> None:
     output("")
-    output("=== Benchmark construction completed ===")
+    output(f"=== Benchmark construction: {values.get('status', 'complete')} ===")
+    output(values.get("summary", ""))
     output(f"Run ID: {values.get('run_id')}")
     run_directory = values.get("run_directory")
     if not run_directory and isinstance(values.get("manifest_path"), str):
@@ -343,8 +317,6 @@ def _print_result(values: dict[str, Any], output: OutputFunction) -> None:
     artifacts = values.get("audit_artifacts", {})
     if isinstance(artifacts, dict):
         output(f"Audited JSONL: {artifacts.get('audited')}")
-        output(f"Flagged JSONL: {artifacts.get('flagged')}")
-        output(f"Rejected JSONL: {artifacts.get('rejected')}")
         output(f"Audit report: {artifacts.get('report')}")
         report_path = artifacts.get("report")
         if isinstance(report_path, str) and Path(report_path).is_file():
@@ -392,13 +364,15 @@ def run_interactive_build(
     output: OutputFunction = print,
     settings: Any = None,
     graph: Any = None,
+    resume: str | None = None,
 ) -> int:
     """Run the benchmark graph as a local, terminal-driven conversation."""
     _enforce_offline_mode()
     config: dict[str, Any] | None = None
+    checkpoint_connection = None
     announced_run_directory: str | None = None
     try:
-        requirement = _read_nonempty(
+        requirement = "" if resume else _read_nonempty(
             "Describe the Medical VLM benchmark to build: ", input_fn, output
         )
         if settings is None:
@@ -414,18 +388,32 @@ def run_interactive_build(
                 output(f"- {error}")
             return 2
 
-        from langgraph.checkpoint.memory import MemorySaver
+        import sqlite3
+        from langgraph.checkpoint.sqlite import SqliteSaver
         from langgraph.types import Command
 
         if graph is None:
             from medbenchagent.workflow.graph import compile_benchmark_graph
 
-            graph = compile_benchmark_graph(checkpointer=MemorySaver())
+            settings.paths.runs_root.mkdir(parents=True, exist_ok=True)
+            checkpoint_connection = sqlite3.connect(str(settings.paths.runs_root / "checkpoints.sqlite"), check_same_thread=False)
+            graph = compile_benchmark_graph(checkpointer=SqliteSaver(checkpoint_connection))
         config = {
-            "configurable": {"thread_id": str(uuid.uuid4())},
+            "configurable": {"thread_id": resume or str(uuid.uuid4())},
             "recursion_limit": 1_000,
         }
+        output(f"Resume identifier: {config['configurable']['thread_id']}")
         next_input: object = {"user_requirement": requirement}
+        if resume:
+            previous = graph.get_state(config)
+            if not previous.values:
+                raise ValueError("Unknown resume identifier")
+            pending = [i for task in previous.tasks for i in task.interrupts]
+            if pending:
+                _render_interrupt(pending[0].value, output)
+                next_input = Command(resume=_read_nonempty("Your response: ", input_fn, output))
+            else:
+                next_input = None
 
         while True:
             interrupt: dict[str, Any] | None = None
@@ -461,12 +449,11 @@ def run_interactive_build(
                 next_input = None
                 continue
             _print_result(snapshot.values, output)
-            return 0
+            return 0 if snapshot.values.get("status", "complete") == "complete" else 1
     except (EOFError, KeyboardInterrupt):
         output("")
         output(
-            "Run interrupted. This CLI uses an in-memory checkpoint and cannot resume "
-            "after the process exits."
+            "Run interrupted. Resume with: medbenchagent build --resume <resume identifier>."
         )
         if run_directory := _run_directory(graph, config):
             output(f"Preserved run artifacts: {run_directory}")
@@ -475,21 +462,24 @@ def run_interactive_build(
         output("")
         output(f"Benchmark construction failed: {type(exc).__name__}: {exc}")
         output(
-            "Files already written are preserved, but this CLI cannot resume the Graph "
-            "after the process exits."
+            "Files and checkpoints are preserved. Use build --resume <resume identifier>."
         )
         if run_directory := _run_directory(graph, config):
             output(f"Preserved run artifacts: {run_directory}")
         return 1
+    finally:
+        if checkpoint_connection is not None:
+            checkpoint_connection.close()
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="medbenchagent")
     subcommands = parser.add_subparsers(dest="command")
-    subcommands.add_parser(
+    build = subcommands.add_parser(
         "build",
         help="Run the benchmark graph as an offline interactive terminal workflow.",
     )
+    build.add_argument("--resume", help="Resume a persisted task by its printed identifier.")
     balance = subcommands.add_parser("balance-answers", help="Write a balanced JSONL copy.")
     balance.add_argument("--input", required=True, dest="input_path")
     balance.add_argument("--output", required=True, dest="output_path")
@@ -501,7 +491,7 @@ def main() -> None:
     parser = _parser()
     args = parser.parse_args()
     if args.command == "build":
-        exit_code = run_interactive_build()
+        exit_code = run_interactive_build(resume=args.resume)
         if exit_code:
             raise SystemExit(exit_code)
         return

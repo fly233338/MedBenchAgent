@@ -3,7 +3,7 @@ from pathlib import Path
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from medbenchagent.agents import (
+from medbenchagent.agents.generation import (
     compile_generation_agent,
 )
 from medbenchagent.contracts import GenerationResult
@@ -32,7 +32,7 @@ def test_generation_agent_keeps_request_snapshot_private(tmp_path: Path, monkeyp
             "generation_cursor": 1,
             "generation_progress_path": str(tmp_path / "progress.jsonl"),
             "generation_rejections": {},
-            "generation_exhausted": False,
+            "generation_exhausted": True,
         },
     )
     monkeypatch.setattr(
@@ -40,7 +40,6 @@ def test_generation_agent_keeps_request_snapshot_private(tmp_path: Path, monkeyp
         "finalize_generation",
         lambda _request: GenerationResult(
             raw_output_path=str(tmp_path / "raw.jsonl"),
-            provenance_output_path=str(tmp_path / "provenance.jsonl"),
             item_count=1,
             task_counts={"view": 1},
         ),
@@ -61,7 +60,6 @@ def test_generation_agent_keeps_request_snapshot_private(tmp_path: Path, monkeyp
 
     assert set(result) == {
         "raw_output_path",
-        "provenance_output_path",
         "item_count",
         "task_counts",
         "generation_shortfalls",
@@ -110,7 +108,6 @@ def test_generation_subgraph_checkpoints_and_streams_progress(tmp_path: Path, mo
     def finalize(_request: dict) -> GenerationResult:
         return GenerationResult(
             raw_output_path=str(tmp_path / "benchmark_items.raw.jsonl"),
-            provenance_output_path=str(tmp_path / "item_provenance.jsonl"),
             item_count=2,
             task_counts={"view": 2},
         )

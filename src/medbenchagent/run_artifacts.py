@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import uuid
@@ -44,7 +43,6 @@ def write_versioned_json(
         "version": version,
         "path": str(destination),
         "relative_path": destination.relative_to(run_path).as_posix(),
-        "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
     }
 
 
@@ -66,7 +64,6 @@ def latest_versioned_json(
         "version": version,
         "path": str(path),
         "relative_path": path.relative_to(run_path).as_posix(),
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
 
 
@@ -113,5 +110,3 @@ def update_blueprint_dataset(blueprint_path: str | Path, dataset_id: str) -> Non
     atomic_write_json(path, blueprint)
 
 
-def blueprint_sha256(blueprint_path: str | Path) -> str:
-    return hashlib.sha256(Path(blueprint_path).read_bytes()).hexdigest()

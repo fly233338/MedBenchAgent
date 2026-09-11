@@ -37,7 +37,7 @@ uv run --script .codex\skills\collect-medical-reference-materials\scripts\fetch_
 ## Output Contract
 
 - `candidate_sources.jsonl`: canonical copy of screened inputs.
-- `reference_manifest.jsonl`: one result per candidate with provenance, fetch status, hashes, local paths, and RAG compatibility.
+- `reference_manifest.jsonl`: one result per candidate with provenance, fetch status, local paths, and RAG compatibility.
 - `rag_ready/*.pdf`: downloaded PDFs with enough extractable text for current RAG.
 - `downloads/*`: downloaded HTML, office files, binary files, and PDFs without sufficient text.
 - `collection_report.md`: counts, ready directory, link-only sources, and errors.

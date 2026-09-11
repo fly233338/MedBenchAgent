@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import math
 from typing import Any
 
@@ -264,29 +262,5 @@ def locate_bbox_evidence(
     return matches[0]
 
 
-def evidence_sha256(path: str, indices: list[int], value: object) -> str:
-    payload = json.dumps(
-        {"path": path, "indices": indices, "value": value},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def evidence_provenance(
-    evidence: dict[str, object] | list[dict[str, object]],
-) -> dict[str, object] | list[dict[str, object]]:
-    def compact(item: dict[str, object]) -> dict[str, object]:
-        path = str(item["path"])
-        indices = list(item["indices"]) if isinstance(item["indices"], list) else []
-        return {
-            "path": path,
-            "indices": indices,
-            "evidence_sha256": evidence_sha256(path, indices, item["value"]),
-        }
-
-    if isinstance(evidence, list):
-        return [compact(item) for item in evidence]
-    return compact(evidence)

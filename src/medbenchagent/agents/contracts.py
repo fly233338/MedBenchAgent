@@ -1,100 +1,8 @@
-"""Role-level state contracts for the five benchmark-construction agents."""
-
+"""Private generation and audit state contracts."""
 from __future__ import annotations
-
 from typing import Any, TypedDict
-
-from langgraph.graph import MessagesState
-
-from medbenchagent.construction import (
-    AGENT_NAMES,
-    AUDIT_AGENT,
-    TASK_PLANNING_AGENT,
-    MEDICAL_ALIGN_AGENT,
-    GENERATION_AGENT,
-    SPECIFICATION_AGENT,
-)
+from medbenchagent.construction import GENERATION_AGENT as GENERATION_AGENT, AUDIT_AGENT as AUDIT_AGENT
 from medbenchagent.contracts import GenerationRequest
-
-
-class SpecificationAgentInputState(MessagesState, total=False):
-    user_requirement: str
-    benchmark_info: dict[str, Any]
-    run_id: str
-    construction_events_path: str
-    working_blueprint_path: str
-
-
-class SpecificationAgentState(SpecificationAgentInputState, total=False):
-    benchmark_feedback: str
-    benchmark_confirmed: bool
-    initial_requirement_recorded: bool
-    pending_benchmark_interaction_id: str
-    pending_benchmark_info: dict[str, Any]
-
-
-class SpecificationAgentOutputState(TypedDict):
-    user_requirement: str
-    benchmark_info: dict[str, Any]
-    working_blueprint_path: str
-
-
-class TaskPlanningAgentInputState(TypedDict):
-    benchmark_info: dict[str, Any]
-    working_blueprint_path: str
-    run_id: str
-    construction_events_path: str
-
-
-class TaskPlanningAgentState(TaskPlanningAgentInputState, total=False):
-    dataset_recommendation: dict[str, str]
-    selected_dataset_id: str
-    dataset_confirmed: bool
-    dataset_profile: dict[str, Any]
-    dataset_access_manifest: dict[str, Any]
-    draft_task_plan: dict[str, Any]
-    pending_task_feedback: dict[str, str] | None
-    pending_task_interaction_id: str
-    task_plan_confirmed: bool
-    task_screening_report_path: str
-    draft_sample_counts: dict[str, int]
-    sample_counts_confirmed: bool
-    selected_material_files: list[str]
-    material_selection_error: str
-
-
-class TaskPlanningAgentOutputState(TypedDict):
-    working_blueprint_path: str
-    selected_dataset_id: str
-    dataset_profile: dict[str, Any]
-    dataset_access_manifest: dict[str, Any]
-    task_screening_report_path: str
-    selected_material_files: list[str]
-
-
-class MedicalAlignAgentInputState(TypedDict):
-    benchmark_info: dict[str, Any]
-    working_blueprint_path: str
-    selected_material_files: list[str]
-    dataset_profile: dict[str, Any]
-    dataset_access_manifest: dict[str, Any]
-    run_id: str
-    selected_dataset_id: str
-    construction_events_path: str
-
-
-class MedicalAlignAgentState(MedicalAlignAgentInputState, total=False):
-    rag_task_queue: list[str]
-    rag_task_feedback: dict[str, str]
-    rag_current_task_id: str
-    rag_completed_count: int
-    rag_total_count: int
-    designs_confirmed: bool
-
-
-class MedicalAlignAgentOutputState(TypedDict):
-    working_blueprint_path: str
-
 
 class GenerationAgentInputState(TypedDict, total=False):
     benchmark_info: dict[str, Any]
@@ -119,7 +27,6 @@ class GenerationAgentState(GenerationAgentInputState, total=False):
     generation_rejections: dict[str, int]
     generation_exhausted: bool
     raw_output_path: str
-    provenance_output_path: str
     item_count: int
     task_counts: dict[str, int]
     generation_shortfalls: dict[str, int]
@@ -127,7 +34,6 @@ class GenerationAgentState(GenerationAgentInputState, total=False):
 
 class GenerationAgentOutputState(TypedDict):
     raw_output_path: str
-    provenance_output_path: str
     item_count: int
     task_counts: dict[str, int]
     generation_shortfalls: dict[str, int]
@@ -135,7 +41,6 @@ class GenerationAgentOutputState(TypedDict):
 
 class AuditAgentInputState(TypedDict, total=False):
     raw_output_path: str
-    provenance_output_path: str
     working_blueprint_path: str
     selected_dataset_id: str
     construction_events_path: str
@@ -153,26 +58,3 @@ class AuditAgentOutputState(TypedDict):
     audit_artifacts: dict[str, str]
 
 
-__all__ = [
-    "AGENT_NAMES",
-    "AUDIT_AGENT",
-    "AuditAgentInputState",
-    "AuditAgentOutputState",
-    "AuditAgentState",
-    "TASK_PLANNING_AGENT",
-    "MEDICAL_ALIGN_AGENT",
-    "TaskPlanningAgentInputState",
-    "TaskPlanningAgentOutputState",
-    "TaskPlanningAgentState",
-    "MedicalAlignAgentInputState",
-    "MedicalAlignAgentOutputState",
-    "MedicalAlignAgentState",
-    "GENERATION_AGENT",
-    "GenerationAgentInputState",
-    "GenerationAgentOutputState",
-    "GenerationAgentState",
-    "SPECIFICATION_AGENT",
-    "SpecificationAgentInputState",
-    "SpecificationAgentOutputState",
-    "SpecificationAgentState",
-]

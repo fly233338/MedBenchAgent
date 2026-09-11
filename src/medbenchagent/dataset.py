@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -20,7 +19,7 @@ ENTITY_FIELDS = {
     "image": {"image_id", "image_path", "modality", "anatomy", "annotation"},
 }
 PROFILE_SCHEMA_VERSION = "task-capability-profile.v3"
-CACHE_FORMAT_VERSION = "annotation-cache.v6"
+CACHE_FORMAT_VERSION = "annotation-cache.v7"
 
 TOP_VALUE_EXCLUDED_PREFIXES = (
     "image.annotation.dicom_metadata.",
@@ -57,12 +56,6 @@ def annotation_schema_path() -> Path:
     return Path(__file__).parent / "schemas" / "annotation.v2.schema.json"
 
 
-def _content_hash(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _canonical_value(value: object) -> str:
@@ -385,21 +378,23 @@ def _write_database(records: list[dict[str, Any]], database_path: Path) -> None:
         connection.close()
 
 
-def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Validate JSONL and build or reuse its content-addressed DuckDB/profile cache."""
+def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Path, *, revision: str = "1", refresh: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate JSONL and build or reuse its explicitly versioned DuckDB/profile cache."""
     source_path = Path(annotation_path).expanduser().resolve()
     if source_path.name != "annotation.jsonl":
         raise AnnotationValidationError("Input file must be named annotation.jsonl.")
     if not source_path.is_file():
         raise AnnotationValidationError(f"annotation.jsonl does not exist: {source_path}")
-    content_hash = _content_hash(source_path)
+    if not revision or not revision.isalnum():
+        raise ValueError("Cache revision must be alphanumeric.")
+    source_key = source_path.as_posix().replace(":", "").lstrip("/")
     profile_settings = get_settings().dataset_profile
     profile_key = f"top-{profile_settings.max_top_values}-chars-{profile_settings.max_top_value_chars}"
-    cache_dir = Path(cache_root) / CACHE_FORMAT_VERSION / profile_key / content_hash
+    cache_dir = Path(cache_root) / CACHE_FORMAT_VERSION / profile_key / source_key / revision
     database_path = cache_dir / "dataset.duckdb"
     profile_path = cache_dir / "dataset_profile.json"
     manifest_path = cache_dir / "dataset_access_manifest.json"
-    if database_path.is_file() and profile_path.is_file() and manifest_path.is_file():
+    if not refresh and database_path.is_file() and profile_path.is_file() and manifest_path.is_file():
         return (
             json.loads(profile_path.read_text(encoding="utf-8")),
             json.loads(manifest_path.read_text(encoding="utf-8")),
@@ -413,11 +408,10 @@ def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Pa
     _write_database(records, database_path)
     manifest = {
         "annotation_path": str(source_path),
-        "annotation_sha256": content_hash,
+        "revision": revision,
         "cache_format_version": CACHE_FORMAT_VERSION,
         "duckdb_path": str(database_path),
         "table": "images",
-        "provenance_fields": ["_source_row"],
         "profile_path": str(profile_path),
     }
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")

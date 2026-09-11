@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections import Counter
@@ -59,8 +58,6 @@ def discover_medical_materials(materials_root: str | Path) -> list[dict[str, str
     return materials
 
 
-def _file_hash(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _page_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -101,7 +98,7 @@ def extract_pdf_chunks(
     chunk_size: int | None = None,
     overlap: int | None = None,
 ) -> tuple[str, list[dict[str, object]]]:
-    """Extract page-local chunks and return a fingerprint of inputs and chunking rules."""
+    """Extract page-local chunks and return a description of sources and chunking rules."""
     root = Path(materials_root).expanduser().resolve()
     settings = get_settings().rag
     chunk_size = settings.chunk_size if chunk_size is None else chunk_size
@@ -132,16 +129,16 @@ def extract_pdf_chunks(
     if not pdfs:
         raise RagUnavailable("No PDF medical materials were found.")
 
-    fingerprint_items = [CACHE_SCHEMA_VERSION, str(chunk_size), str(overlap)]
+    source_description = [CACHE_SCHEMA_VERSION, str(chunk_size), str(overlap)]
     chunks: list[dict[str, object]] = []
     for pdf in pdfs:
         relative_path = pdf.relative_to(root).as_posix()
-        fingerprint_items.extend((relative_path, _file_hash(pdf)))
+        source_description.append(relative_path)
         try:
             reader = PdfReader(str(pdf))
         except Exception as exc:  # PyPDF exceptions are version-specific.
             raise RagUnavailable(f"Cannot parse PDF: {relative_path}") from exc
-        path_key = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:12]
+        path_key = relative_path
         for page_number, page in enumerate(reader.pages, start=1):
             text = (page.extract_text() or "").strip()
             for index, chunk_text in enumerate(_page_chunks(text, chunk_size, overlap)):
@@ -155,8 +152,8 @@ def extract_pdf_chunks(
                 )
     if not chunks:
         raise RagUnavailable("PDF materials contain no extractable text.")
-    fingerprint = hashlib.sha256("\0".join(fingerprint_items).encode("utf-8")).hexdigest()
-    return fingerprint, chunks
+    source_identity = json.dumps(source_description)
+    return source_identity, chunks
 
 
 _EMBEDDERS: dict[str, Any] = {}
@@ -181,13 +178,6 @@ def clear_embedding_cache() -> None:
         _EMBEDDERS.clear()
 
 
-def _model_fingerprint(path: Path) -> str:
-    parts = [str(path.resolve())]
-    for name in ("config.json", "modules.json", "sentence_bert_config.json"):
-        config = path / name
-        if config.is_file():
-            parts.extend((name, _file_hash(config)))
-    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
 
 
 class LocalPdfRag:
@@ -198,8 +188,9 @@ class LocalPdfRag:
         materials_root: str | Path,
         cache_root: str | Path,
         selected_files: list[str] | None = None,
+        *, revision: str = "1", refresh: bool = False,
     ) -> None:
-        source_hash, self.chunks = extract_pdf_chunks(materials_root, selected_files)
+        source_identity, self.chunks = extract_pdf_chunks(materials_root, selected_files)
         settings = get_settings().rag
         if not settings.embedding_model or not settings.reranker_model:
             raise RagUnavailable("Local embedding and reranker model directories must be configured.")
@@ -207,10 +198,23 @@ class LocalPdfRag:
         reranker_path = settings.reranker_model
         if not embedding_path.is_dir() or not reranker_path.is_dir():
             raise RagUnavailable("Local embedding and reranker model directories must be configured.")
-        cache_key = hashlib.sha256(
-            f"{source_hash}:{_model_fingerprint(embedding_path)}".encode("utf-8")
-        ).hexdigest()
-        self.cache_dir = Path(cache_root) / cache_key
+        if not revision.isalnum():
+            raise ValueError("RAG revision must be alphanumeric.")
+        identity = {"sources": source_identity, "model": str(embedding_path.resolve()), "revision": revision}
+        cache = Path(cache_root) / ("pdf-v" + CACHE_SCHEMA_VERSION)
+        cache.mkdir(parents=True, exist_ok=True)
+        entries = sorted(cache.glob("*/sources.json"))
+        match = next((p.parent for p in entries if json.loads(p.read_text(encoding="utf-8")) == identity), None)
+        if match is None or refresh:
+            from uuid import uuid4
+            match = cache / str(uuid4())
+            match.mkdir()
+            (match / "sources.json").write_text(json.dumps(identity), encoding="utf-8")
+            if refresh:
+                for entry in entries:
+                    if json.loads(entry.read_text(encoding="utf-8")) == identity:
+                        entry.unlink()
+        self.cache_dir = match
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.embedding_path = str(embedding_path)
         self.reranker_path = str(reranker_path)
@@ -270,10 +274,8 @@ class LocalPdfRag:
 
 
 def _design_schema(response_format: object) -> str:
-    template_count = get_settings().generation.question_template_count
     common = (
-        f'{{"question_templates":["exactly {template_count} distinct non-empty templates"],'
-        '"generation_logic":"one semantically complete instruction sentence describing how to use approved annotation semantics and the selected question template to generate the question",'
+        '{"generation_logic":"one semantically complete instruction sentence describing how to use approved annotation semantics and the selected question template to generate the question",'
         '"medical_task_description":"one paragraph: assessed capability, then medical basis"}'
     )
     if response_format == "letter":
@@ -301,33 +303,15 @@ def validate_task_design(
     response_format = task.get("response_format")
     if response_format not in {"letter", "bbox", "free_text"}:
         raise ValueError(f"{task_id}: unsupported response_format {response_format}.")
-    expected = {"question_templates", "generation_logic", "medical_task_description"}
+    expected = {"generation_logic", "medical_task_description"}
     if response_format == "letter":
         expected.update({"options", "answer_field", "answer_value_mapping"})
     if set(response) != expected:
         raise ValueError(f"{task_id}: RAG design must contain exactly {sorted(expected)}.")
-    templates = response["question_templates"]
-    template_count = get_settings().generation.question_template_count
-    normalized_templates = (
-        [template.strip() for template in templates]
-        if isinstance(templates, list) and all(isinstance(template, str) for template in templates)
-        else []
-    )
-    if (
-        not isinstance(templates, list)
-        or len(templates) != template_count
-        or not all(normalized_templates)
-        or len(set(normalized_templates)) != len(normalized_templates)
-    ):
-        raise ValueError(
-            f"{task_id}: question_templates must contain exactly {template_count} "
-            "unique non-empty strings."
-        )
     for field in ("generation_logic", "medical_task_description"):
         if not isinstance(response[field], str) or not response[field].strip():
             raise ValueError(f"{task_id}: {field} must be a non-empty string.")
     normalized: dict[str, Any] = {
-        "question_templates": normalized_templates,
         "generation_logic": response["generation_logic"].strip(),
         "medical_task_description": response["medical_task_description"].strip(),
     }
@@ -438,10 +422,7 @@ def _design_prompt(
         return system, user
     system += f"\n\nReturn exactly this complete design object and no other fields:\n{schema}.\n\n"
     system += (
-        f"Use the requested benchmark language. Return exactly {get_settings().generation.question_template_count} "
-        "question templates. They must assess the same capability and medical concept while using meaningfully "
-        "different question structures, and none may require information unavailable from the image and requested "
-        "response format.\n\ngeneration_logic must be one semantically complete instruction sentence "
+        "Use the requested benchmark language. generation_logic must be one semantically complete instruction sentence "
         "describing how to use approved annotation semantics and the selected question template to "
         "generate the question. It must not invent facts, infer an unsupported diagnosis, or use PDF "
         "text as annotation evidence.\n\n"

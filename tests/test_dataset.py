@@ -132,7 +132,7 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
         {"path": "patient.annotation", "kind": "object", "children": []},
         {"path": "study.annotation", "kind": "object", "children": []},
     ]
-    assert manifest["cache_format_version"] == "annotation-cache.v6"
+    assert manifest["cache_format_version"] == "annotation-cache.v7"
     connection = duckdb.connect(manifest["duckdb_path"])
     try:
         assert connection.execute("SELECT COUNT(*) FROM images").fetchone()[0] == 2

@@ -30,7 +30,7 @@ def _sample(tmp_path: Path, response_format: str = "letter") -> InferenceSample:
             "answer": answer,
         },
         TaskSpec("view", "acquisition", response_format, metric),
-        ImageEntry("image", image_path, "image.png", 20, 10, "a" * 64),
+        ImageEntry("image", image_path, "image.png", 20, 10),
     )
 
 

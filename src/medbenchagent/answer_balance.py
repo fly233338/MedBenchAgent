@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import random
 from collections import defaultdict
@@ -11,8 +10,7 @@ from typing import Any
 
 
 def _rng(seed: int, task_id: str) -> random.Random:
-    value = hashlib.sha256(f"{seed}:{task_id}".encode("utf-8")).digest()
-    return random.Random(int.from_bytes(value[:8], "big"))
+    return random.Random(seed + int.from_bytes(task_id.encode("utf-8"), "big"))
 
 
 def _validate_group(task_id: str, items: list[dict[str, Any]]) -> tuple[str, ...]:

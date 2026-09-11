@@ -26,7 +26,6 @@ class ImageEntry:
     relative_png_path: str
     width: int
     height: int
-    sha256: str
 
 
 @dataclass(frozen=True)
@@ -50,6 +49,3 @@ class LoadedBenchmark:
     benchmark_id: str
     dataset_id: str
     samples: list[InferenceSample]
-    benchmark_sha256: str
-    benchmark_manifest_sha256: str
-    image_manifest_sha256: str

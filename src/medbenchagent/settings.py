@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import tomllib
 from dataclasses import dataclass
@@ -75,19 +74,19 @@ class DatasetProfileSettings:
 @dataclass(frozen=True)
 class AppSettings:
     paths: PathSettings
+    harness: dict[str, int]
+    data_processing: dict[str, Any]
     llm: LlmSettings
     rag: RagSettings
     generation: GenerationSettings
     dataset_profile: DatasetProfileSettings
     category_weights: tuple[tuple[str, float], ...]
     default_config_path: Path
-    default_config_sha256: str
     local_config_path: Path | None
-    local_config_sha256: str | None
     environment_overrides: tuple[str, ...]
 
     def snapshot(self, graph_overrides: dict[str, object] | None = None) -> dict[str, object]:
-        """Return provenance-safe settings without API or LangSmith credentials."""
+        """Return non-sensitive settings without API or LangSmith credentials."""
         normalized_overrides = graph_overrides or {}
         generation = {
             key: getattr(self.generation, key) for key in self.generation.__dataclass_fields__
@@ -97,6 +96,8 @@ class AppSettings:
                 generation[key] = normalized_overrides[key]
         return {
             "settings": {
+                "harness": self.harness,
+                "data_processing": self.data_processing,
                 "paths": {key: str(getattr(self.paths, key)) for key in self.paths.__dataclass_fields__},
                 "llm": {
                     key: getattr(self.llm, key)
@@ -117,9 +118,9 @@ class AppSettings:
                 "sample_allocation": {"category_weights": dict(self.category_weights)},
             },
             "config_sources": {
-                "default": {"path": str(self.default_config_path), "sha256": self.default_config_sha256},
+                "default": {"path": str(self.default_config_path)},
                 "local": (
-                    {"path": str(self.local_config_path), "sha256": self.local_config_sha256}
+                    {"path": str(self.local_config_path)}
                     if self.local_config_path
                     else None
                 ),
@@ -201,8 +202,6 @@ def _number(value: object, key: str, *, minimum: float, maximum: float) -> float
     return result
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path | None, env_keys: list[str]) -> AppSettings:
@@ -225,6 +224,9 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     if chunk_overlap >= chunk_size:
         raise ValueError("rag.chunk_overlap must be smaller than rag.chunk_size.")
     return AppSettings(
+        harness={key: _integer(value, f"harness.{key}", minimum=1) for key, value in values["harness"].items()},
+        data_processing={"image": _string(values["data_processing"]["image"], "data_processing.image"),
+                         "timeout_seconds": _integer(values["data_processing"]["timeout_seconds"], "data_processing.timeout_seconds", minimum=1)},
         paths=PathSettings(
             **{key: _resolve_path(value, f"paths.{key}") for key, value in paths.items()}
         ),
@@ -265,9 +267,7 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
         ),
         category_weights=normalized_weights,
         default_config_path=default_path,
-        default_config_sha256=_sha256(default_path),
         local_config_path=local_path,
-        local_config_sha256=_sha256(local_path) if local_path else None,
         environment_overrides=tuple(env_keys),
     )
 

@@ -20,11 +20,6 @@ def _task(response_format: str = "letter") -> dict:
 
 def _design(response_format: str = "letter") -> dict:
     design = {
-        "question_templates": [
-            "Which view is shown?",
-            "Identify the view depicted in the image.",
-            "What imaging view does this image represent?",
-        ],
         "generation_logic": "Use the approved view annotation with the selected template to generate the question without inventing facts.",
         "medical_task_description": "This assesses view recognition; imaging guidance supports the terminology.",
     }
@@ -94,9 +89,9 @@ def test_validate_task_design_accepts_only_embedded_rag_fields() -> None:
         validate(_design() | {"validation_rules": []})
     with pytest.raises(ValueError, match="options"):
         validate(_design() | {"options": ["CC"]})
-    with pytest.raises(ValueError, match="exactly 3"):
+    with pytest.raises(ValueError, match="exactly"):
         validate(_design() | {"question_templates": ["one", "two"]})
-    with pytest.raises(ValueError, match="unique"):
+    with pytest.raises(ValueError, match="exactly"):
         validate(
             _design() | {"question_templates": ["one", "one", "three"]},
         )
@@ -135,19 +130,6 @@ def test_validate_task_design_rejects_invalid_answer_mappings() -> None:
             _summaries(),
         )
 
-
-def test_validate_task_design_uses_configured_template_count(monkeypatch) -> None:
-    monkeypatch.setattr(
-        pdf_rag,
-        "get_settings",
-        lambda: SimpleNamespace(generation=SimpleNamespace(question_template_count=2)),
-    )
-    design = _design() | {"question_templates": ["Which view?", "What view is shown?"]}
-
-    assert pdf_rag.validate_task_design("view", _task(), design, _summaries())["question_templates"] == [
-        "Which view?",
-        "What view is shown?",
-    ]
 
 
 def test_design_task_repairs_one_invalid_response(tmp_path: Path, monkeypatch) -> None:
@@ -285,7 +267,7 @@ def test_discover_and_extract_selected_categorized_medical_pdfs(
             "file": "Standard/selected.pdf",
         },
     ]
-    assert len(fingerprint) == 64
+    assert isinstance(fingerprint, str) and fingerprint
     assert unchanged_fingerprint == fingerprint
     assert {chunk["pdf"] for chunk in chunks} == {
         "Standard/selected.pdf"
@@ -332,7 +314,7 @@ def test_design_prompt_keeps_letter_candidate_sets_compact() -> None:
     )
 
     assert "Use 2-4 options by default" in system
-    assert "Return exactly 3 question templates" in system
+    assert "question_templates" not in system
     assert "one semantically complete instruction sentence describing how to use approved annotation semantics and the selected question template to generate the question" in system
     assert "generation_logic must be one semantically complete instruction sentence" in system
     assert "generation_logic must use only approved supporting fields" not in system

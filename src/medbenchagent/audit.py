@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -10,6 +9,8 @@ import unicodedata
 from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
+from types import SimpleNamespace
+from medbenchagent.generation import grounding, free_text
 
 from PIL import Image
 
@@ -17,8 +18,9 @@ from medbenchagent.answer_balance import balance_items
 from medbenchagent.construction import AUDIT_AGENT, record_event
 from medbenchagent.dataset import load_annotation_jsonl
 from medbenchagent.generation.context import (
-    evidence_sha256,
-    evidence_value,
+    locate_scalar_evidence,
+    locate_bbox_evidence,
+    scalar_evidence_candidates,
     has_meaningful_value,
     normalized_bbox,
     project_supporting_record,
@@ -40,12 +42,6 @@ def _normal(text: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text).casefold()).strip()
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while block := source.read(1024 * 1024):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _image_errors(entry: dict[str, Any], root: Path) -> list[str]:
@@ -58,8 +54,6 @@ def _image_errors(entry: dict[str, Any], root: Path) -> list[str]:
     image_path = root.joinpath(*path.parts)
     if not image_path.is_file() or image_path.stat().st_size == 0:
         return ["image_missing"]
-    if _sha256(image_path) != entry.get("sha256"):
-        return ["image_hash"]
     try:
         with Image.open(image_path) as image:
             image.load()
@@ -128,134 +122,34 @@ def _contract(
     return errors
 
 
-def _valid_call_references(source: dict[str, Any], known_call_ids: set[str]) -> bool:
-    values: list[str] = []
-    for field in ("generation_call_ids", "review_call_ids"):
-        references = source.get(field)
-        if not isinstance(references, list) or not all(
-            isinstance(call_id, str) for call_id in references
-        ):
-            return False
-        values.extend(references)
-    return set(values) <= known_call_ids
 
 
-def _replay_witness(
-    record: dict[str, object],
-    supporting_fields: list[str],
-    witness: object,
-) -> tuple[str, list[int], object]:
-    if not isinstance(witness, dict) or set(witness) != {
-        "path",
-        "indices",
-        "evidence_sha256",
-    }:
-        raise ValueError("Evidence witness has an invalid structure.")
-    path, indices = witness.get("path"), witness.get("indices")
-    if not isinstance(path, str) or path not in supporting_fields:
-        raise ValueError("Evidence path is not a supporting field.")
-    if not isinstance(indices, list):
-        raise ValueError("Evidence indices must be a list.")
-    value = evidence_value(record, path, indices)
-    if evidence_sha256(path, indices, value) != witness.get("evidence_sha256"):
-        raise ValueError("Evidence hash mismatch.")
-    return path, indices, value
 
 
-def _answer_evidence_matches(
-    item: dict[str, Any],
-    task: dict[str, Any],
-    source: dict[str, Any],
-    record: dict[str, object],
-    supporting_fields: list[str],
-) -> bool:
-    try:
-        witness = source.get("answer_evidence")
-        if task.get("response_format") != "bbox":
-            path, _indices, value = _replay_witness(record, supporting_fields, witness)
-            if task.get("response_format") == "letter":
-                if not isinstance(task.get("answer_value_mapping"), list):
-                    return False
-                options, answer = item.get("options"), item.get("answer")
-                if (
-                    path != task.get("answer_field")
-                    or not isinstance(options, list)
-                    or not isinstance(answer, str)
-                    or len(answer) != 1
-                    or not 0 <= ord(answer.upper()) - ord("A") < len(options)
-                ):
-                    return False
-                expected_option = options[ord(answer.upper()) - ord("A")]
-                matches = [
-                    mapping
-                    for mapping in task["answer_value_mapping"]
-                    if isinstance(mapping, dict)
-                    and type(mapping.get("raw_value")) is type(value)
-                    and mapping.get("raw_value") == value
-                    and mapping.get("option") == expected_option
-                ]
-                return len(matches) == 1
-            return task.get("response_format") != "free_text" or (
-                isinstance(value, str) and value == item.get("answer")
-            )
-        if not isinstance(witness, list) or len(witness) != 4:
-            return False
-        replayed = [
-            _replay_witness(record, supporting_fields, coordinate)
-            for coordinate in witness
-        ]
-        paths = [path for path, _indices, _value in replayed]
-        indices = [coordinate_indices for _path, coordinate_indices, _value in replayed]
-        if (
-            len(set(paths)) != 1
-            or not paths[0].endswith("[*]")
-            or any(not coordinate_indices for coordinate_indices in indices)
-            or any(
-                coordinate_indices[:-1] != indices[0][:-1]
-                or coordinate_indices[-1] != coordinate
-                for coordinate, coordinate_indices in enumerate(indices)
-            )
-        ):
-            return False
-        source_bbox = normalized_bbox([value for _path, _indices, value in replayed])
-        return source_bbox is not None and source_bbox == normalized_bbox(item.get("answer"))
-    except (TypeError, ValueError):
-        return False
 
 
 def audit_run(
     *,
     raw_path: str | Path,
     blueprint_path: str | Path,
-    provenance_path: str | Path,
     events_path: str | Path,
     manifest_path: str | Path,
     annotation_path: str | Path,
-    annotation_sha256: str,
     output_directory: str | Path,
     run_id: str,
     seed: int = 0,
 ) -> dict[str, str | int]:
     blueprint_bytes = Path(blueprint_path).read_bytes()
     blueprint = json.loads(blueprint_bytes)
-    blueprint_hash = hashlib.sha256(blueprint_bytes).hexdigest()
     tasks = blueprint["tasks"]
     annotation_source = Path(annotation_path)
-    annotation_hash_matches = _sha256(annotation_source) == annotation_sha256
     annotation_rows = {
-        record["_source_row"]: record for record in load_annotation_jsonl(annotation_source)
+        record["image"]["image_id"]: record for record in load_annotation_jsonl(annotation_source)
     }
     manifest = {
         row["image_id"]: row
         for row in _rows(Path(manifest_path))
         if isinstance(row.get("image_id"), str)
-    }
-    provenance = {row.get("item_id"): row for row in _rows(Path(provenance_path))}
-    call_ids = {
-        call_id
-        for row in _rows(Path(events_path))
-        if row.get("event_type") == "llm_call"
-        and isinstance((call_id := row.get("call_id")), str)
     }
     image_errors: dict[str, list[str]] = {}
     candidates = []
@@ -274,56 +168,18 @@ def audit_run(
             errors += image_errors[image_id]
         if isinstance(task, dict) and entry is not None:
             errors += _contract(item, task, _image_dimensions(entry))
-        source = provenance.get(item_id)
-        if (
-            not isinstance(source, dict)
-            or source.get("image_id") != image_id
-            or source.get("task_id") != task_id
-            or source.get("dataset_id") != item.get("dataset")
-            or (
-                isinstance(task, dict)
-                and source.get("supporting_fields") != task.get("supporting_fields")
-            )
-            or source.get("blueprint_hash") != blueprint_hash
-        ):
-            errors.append("provenance")
-        elif not _valid_call_references(source, call_ids):
-            errors.append("provenance_calls")
-        if not annotation_hash_matches:
-            errors.append("annotation_hash")
-        if isinstance(source, dict):
-            source_row = source.get("source_row")
-            annotation_record = (
-                annotation_rows.get(source_row)
-                if isinstance(source_row, int) and not isinstance(source_row, bool)
-                else None
-            )
-            if (
-                not isinstance(annotation_record, dict)
-                or not isinstance(annotation_record.get("image"), dict)
-                or annotation_record["image"].get("image_id") != image_id
-            ):
-                errors.append("annotation_source")
-            elif isinstance(task, dict):
-                supporting_fields = task.get("supporting_fields")
-                if (
-                    not isinstance(supporting_fields, list)
-                    or not all(
-                        has_meaningful_value(
-                            project_supporting_record(annotation_record, [field])
-                        )
-                        for field in supporting_fields
-                    )
-                ):
+        annotation_record = annotation_rows.get(image_id)
+        if annotation_record is None:
+            errors.append("annotation_source")
+        elif isinstance(task, dict):
+            fields = task.get("supporting_fields", [])
+            try:
+                if not fields or not all(has_meaningful_value(project_supporting_record(annotation_record, [field])) for field in fields):
                     errors.append("annotation_evidence")
-                elif not _answer_evidence_matches(
-                    item,
-                    task,
-                    source,
-                    annotation_record,
-                    supporting_fields,
-                ):
+                elif not _answer_matches(item, task, annotation_record):
                     errors.append("answer_evidence")
+            except (ValueError, TypeError, KeyError):
+                errors.append("answer_evidence")
         candidates.append((item, errors))
     seen_ids: set[object] = set()
     seen_items: set[str] = set()
@@ -355,7 +211,7 @@ def audit_run(
         seen_ids.add(item_id)
         seen_items.add(canonical_item)
         seen_questions.add(normalized_question)
-        records.append({"item_id": item.get("id"), "status": status, "reasons": errors})
+        records.append({"item_id": item.get("id"), "task_id": item.get("task_id"), "status": status, "reasons": errors})
         record_event(
             events_path,
             f"audit_{status}",
@@ -370,19 +226,12 @@ def audit_run(
     output = Path(output_directory)
     prefix = f"benchmark.{blueprint['dataset']['dataset_id']}"
     balanced = balance_items(audited, seed)
-    audited_path, flagged_path, rejected_path = (
-        output / f"{prefix}.audited.jsonl",
-        output / f"{prefix}.flagged.jsonl",
-        output / f"{prefix}.rejected.jsonl",
-    )
-    records_path = output / "audit_records.jsonl"
+    audited_path = output / f"{prefix}.audited.jsonl"
     report_path = output / "audit_report.json"
     _write(audited_path, balanced)
-    _write(flagged_path, [])
-    _write(rejected_path, rejected)
-    _write(records_path, records)
     report = {
-        "schema_version": "audit-report.v1",
+        "schema_version": "audit-report.v2",
+        "records": records,
         "input": len(candidates),
         "hard_audit": {
             "accepted": len(audited),
@@ -426,9 +275,36 @@ def audit_run(
     )
     return {
         "audited_path": str(audited_path),
-        "flagged_path": str(flagged_path),
-        "rejected_path": str(rejected_path),
-        "records_path": str(records_path),
         "report_path": str(report_path),
         "item_count": len(audited),
     }
+
+
+def _answer_matches(item: dict, task: dict, record: dict) -> bool:
+    fields = task["supporting_fields"]
+    fmt = task["response_format"]
+    if fmt == "letter":
+        values = scalar_evidence_candidates(record, task["answer_field"])
+        if len(values) != 1:
+            return False
+        value = values[0]["value"]
+        matches = [m["option"] for m in task["answer_value_mapping"]
+                   if type(m["raw_value"]) is type(value) and m["raw_value"] == value]
+        options, answer = item.get("options"), item.get("answer")
+        return (len(matches) == 1 and options == task["options"]
+                and isinstance(answer, str) and len(answer) == 1
+                and 0 <= ord(answer) - 65 < len(options)
+                and options[ord(answer) - 65] == matches[0])
+    candidate = SimpleNamespace(record=record, task=task, task_id=item["task_id"],
+                                supporting_record=project_supporting_record(record, fields))
+    if fmt == "free_text":
+        if free_text._reference_text(candidate) != item["answer"]:
+            return False
+        locate_scalar_evidence(record, fields, item["answer"])
+        return True
+    if fmt == "bbox":
+        if not grounding.supports(candidate) or grounding._target_bbox(candidate) != normalized_bbox(item["answer"]):
+            return False
+        locate_bbox_evidence(record, fields, item["answer"])
+        return normalized_bbox(item["answer"]) is not None
+    return False

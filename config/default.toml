@@ -1,6 +1,6 @@
 [paths]
 dataset_catalog = "datasets/dataset_catalog.json"
-blueprint_template = "blueprint.json"
+blueprint_template = "config/blueprint.json"
 materials_root = "materials"
 runs_root = "benchmarks/runs"
 dataset_cache_root = "benchmarks/dataset_cache"
@@ -42,3 +42,13 @@ finding_recognition_and_characterization = 0.20
 clinical_assessment_and_diagnosis = 0.20
 report_generation = 0.10
 spatial_localization = 0.20
+
+[harness]
+max_calls = 60
+max_seconds = 3600
+max_failures = 3
+max_reworks = 3
+
+[data_processing]
+image = "medbench-data:local"
+timeout_seconds = 600

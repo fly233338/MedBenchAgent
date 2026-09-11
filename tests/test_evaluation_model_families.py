@@ -70,7 +70,7 @@ def _sample(tmp_path: Path, response_format: str, index: int = 0) -> InferenceSa
             "answer": answer,
         },
         TaskSpec("view", "acquisition", response_format, metric),
-        ImageEntry(f"image-{index}", image_path, image_path.name, 20, 10, "a" * 64),
+        ImageEntry(f"image-{index}", image_path, image_path.name, 20, 10),
     )
 
 

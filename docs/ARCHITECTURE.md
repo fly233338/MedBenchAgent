@@ -1,112 +1,105 @@
 # MedBenchAgent 架构
 
-本文是压缩上下文或开启新任务后的架构恢复入口，只记录稳定事实与边界。执行规范见
-`AGENTS.md`；若本文与实现冲突，以代码契约为准，并在同一次改动中修正文档。
+本文记录当前实现与模块边界。执行约定见 AGENTS.md；接口、职责或产物改变时同步更新本文。
 
 ## 项目定位
 
-MedBenchAgent 从自然语言需求、目录注册的图像级 `annotation.jsonl` 和医学 PDF 出发，生成
-Medical VLM benchmark 题目。当前系统实际是 annotation-driven：不读取图像内容，也不调用
-VLM；`image.image_path` 仅作为不透明元数据随题目输出，题目事实必须来自获准的实体字段。
-独立的 `medbenchagent.evaluation` 子系统在构建完成后才读取审计图像和 benchmark 题目，
-用于本地 Medical VLM 推理与指标统计，不进入 LangGraph 构建流程或 Agent 状态。
+项目基于 LangGraph，从自然语言需求、标准图像级标注和医学 PDF 构建 Medical VLM benchmark。
+构建仍以 annotation 为事实来源，不调用视觉模型推断标签。图像处理与独立 evaluation 子系统各自保持边界。
 
-## 主流程
+## 自主编排
 
-LangGraph 入口是 `medbenchagent.workflow.graph:benchmark_graph`。根图采用固定的
-role-specialized agents + deterministic orchestration：
+入口为 `medbenchagent.workflow.graph:benchmark_graph`。
+根图初始化运行目录，随后执行 SupervisorAgent；它通过受限 JSON 行动调用工具，根据反馈继续、求助或结束。
 
-`run_initialize → SpecificationAgent → TaskPlanningAgent → MedicalAlignAgent → rag_design_export → GenerationAgent → generation_summary → AuditAgent → run_finalize`
+- Supervisor 的 specify 工具复用需求提取；完整性由代码检查，不推断缺失目标。
+- TaskPlanningAgent 使用独立行动循环，工具覆盖数据集选择、profile、完整 Task Plan、单任务修订、
+  题量分配、资料选择和医学设计。规划与指标选择复用原有领域函数。
+- DataProcessingAgent 是可选的数据接入入口，检查原始来源，编写和执行转换脚本，输出标准 annotation、
+  图像及 manifest。标准数据可以绕过它。
+- GenerationAgent 先构建、审核模板，再以原有生成子图遍历候选、固定答案并实例化题干。
+- Audit 使用确定性检查与抽样语义筛查，向 Supervisor 返回拒绝原因、问题任务和计数。
 
-各角色内部保留自己的确认、修订和逐项处理循环，根图不做动态路由：
+Specification 与 MedicalAlign 不再是固定角色阶段。医学设计属于规划，模板属于生成。
+例行人工确认已移除；专业 Agent 返回未解决的问题，由 Supervisor 发起自然语言澄清。
+Supervisor 可以选择返工，但不能绕过规划完整性、生成契约和最终审计。
 
-1. `SpecificationAgent` 在首次 DeepSeek 调用前取得已预分配的 run 路径，将自然语言需求提取为 BenchmarkInfo，经人工确认后创建 working Blueprint。
-2. `TaskPlanningAgent` 从 `datasets/dataset_catalog.json` 推荐并确认数据集。
-   代码解析路径、校验 `annotation.jsonl`，再生成
-   内容寻址的 DuckDB、dataset profile 和 access manifest。
-3. `TaskPlanningAgent` 将全部预定义任务和完整 profile 放入一次模型调用，统一完成支持性判断、跨任务语义去重和 metric 选择，直接生成完整
-   Task Plan；代码验证全部 task entry，仅在完整响应违反契约时允许一次 repair，再交给人工逐项修订。人工修订能看到完整 Blueprint 与当前 Task Plan，
-   但只能替换指定 task。每个保留的最终任务同时选择一个由共享 metric registry 提供、且与
-   `response_format` 兼容的主指标。所有保留的 letter 任务必须有至少两个语义答案类别，代码以获准字段的
-   `distinct_value_count >= 2` 作为必要条件兜底；`finding_presence` 表示在没有直接 finding 类别标签时对指定 finding
-   做二元 presence/absence 判断，且必须同时具有显式正例和负例。
-   `anatomy_attribute` 与 `finding_attribute` 按单一语义答案轴识别 question type，每个类型只使用一个字段，并展开为
-   `<parent_task_id>.<question_type_id>` 独立任务；每个展开任务独立保存 metric。确认后，代码删除不支持的任务并写入
-   `supporting_fields` 与 metric；首轮完整输出写入 `task_plans/v1.json`，每轮人工修订写入递增的 `vN.json`，不覆盖历史版本。
-4. `TaskPlanningAgent` 按任务 category 稳定加权分配样本数：仅在保留类别间归一化默认权重，以最大余数法分配类别整数总数；类别内先在原始父任务之间分配，再在父任务的有效 question types 之间均分，因此拆分不会提高父任务权重。自然语言调整由模型转为 JSON，经校验和确认后写入 Blueprint。
-5. `MedicalAlignAgent` 包装现有 `rag_designs` 子图，对每个非零任务使用医学 PDF 做 RAG，逐项把设计和引用写入 Blueprint，再由
-   人工整体确认或定向重做。新设计为每个具体 question type 生成配置数量的唯一、语义等价模板，默认三个；letter 任务先请求一个获准字段的安全精确分类值摘要，再生成结构化 `answer_field` 与 `answer_value_mapping`。检索使用本地 Qwen embedding/reranker 与持久化 Chroma 缓存。
-6. `GenerationAgent` 在私有状态中从确认后的 Blueprint 构造 `GenerationRequest`。现有生成子图按 letter、bbox、free_text 三个阶段
-   独立读取 DuckDB；每阶段仅投影任务获准字段、稳定随机排序候选，并按 seed、task、image 和 source row
-   确定性选择一个问题模板后逐任务生成/审核。三种格式都把 `medical_task_description`、`generation_logic`
-   和选定模板传入生成与 Reviewer prompt；答案和 evidence 均由代码根据获准 annotation/reference 固定，LLM 只生成题干。
-   supporting-field 路径校验、记录投影、有效值判断及 evidence 读取统一归属 `generation/context.py`；生成 engine 与 Audit
-   都只依赖该纯数据模块，不相互导入。
-7. 完成或数据耗尽后生成 raw JSONL；根图先记录 generation summary，再由 `AuditAgent` 硬审计图像完整性、题目契约、annotation witness、provenance 和重复项，平衡通过的选择题位置，最后按 task 稳定抽样进行 fail-open 的宽松 LLM 语义筛查。
+## Harness、状态与恢复
 
-## 状态、契约与产物
+`harness.py` 提供共享的模型行动循环，行动包含 tool、arguments、reason。
+只允许注册工具和 finish/ask_user；参数由工具验证，工具返回 status、summary、updates。
+专业 Agent 的 needs_input 返回 Supervisor；只有 Supervisor 的 ask_user 使用 interrupt。
 
-根图以 `BenchmarkInputState` 接收可选的 `messages`、`user_requirement`、`seed`、
-`max_tasks_per_image` 和 `question_temperature`。`BenchmarkState` 只保存跨 Agent 输入、
-运行上下文、紧凑摘要和稳定产物路径，不保存任何角色的 draft、feedback、confirmed、queue、
-cursor、`GenerationRequest` 或数据集行；`BenchmarkOutputState` 则只返回 BenchmarkInfo、选择的数据集
-ID、Blueprint/Task Plan 报告/raw 路径，以及最终题目计数、任务计数和 shortfall。
+根图公开输出只包含结果、状态与路径；context 属于内部运行状态。
+模型决策只接收角色需要的摘要，完整记录不进入 Supervisor 提示。
+规划的完整 profile 位于私有上下文；返回根图时使用 access manifest 中的 profile 路径。
 
-五个角色的 Input、Output 和私有状态 contract 位于 `agents/contracts.py`，领域 contract 仍只定义在
-顶层 `contracts.py`。`MedicalAlignAgent` 内的 `rag_designs` 子图以 Blueprint 路径、BenchmarkInfo、已选资料、dataset profile 和 access manifest 为输入。`task-capability-profile.v3` 对安全语义字段提供稳定 top values，并提供其计数、比例、一个来自完整非空集合的最低频值及截断状态，供 Task Plan 结合任务语义选择 metric；设计 letter mapping 时，模型可按需选择一个获准字段，代码再从 DuckDB 返回最多 32 个高频精确 scalar、计数、总 distinct count 和截断状态。字符串最长 200 字符，identifier、文件引用、DICOM metadata、bbox 坐标、长自由文本和原始数据行不会进入提示。
-其任务队列、定向重做反馈、当前任务和完成计数只保存在该 Agent checkpoint。GenerationAgent 先在私有状态中构造 request，现有生成子图仍以只包含 `generation_request` 的输入契约开始，
-并只向根图返回 raw 路径、题目计数、任务计数和 shortfall。阶段、游标、目标/完成计数、progress 路径、
-拒绝计数和耗尽标记属于 GenerationAgent 私有 checkpoint，不进入根图状态或公共输出。稳定类型位于 `contracts.py`：`BlueprintTask`（包含稳定 `category`）是规划到生成
-的任务快照，`GenerationRequest` 是生成边界，`BenchmarkItem` 是输出题目契约。输入记录契约由
-`schemas/annotation.v2.schema.json` 定义。每行仍代表一张图，顶层为 `patient`、`case`、`study`
-和 `image`；各实体拥有独立 annotation，任务字段路径与该层级保持一致。
+终端入口使用 SQLite checkpoint，支持 `build --resume <identifier>`。
+内部 `.runtime/` 保存完成操作的回执和工作产物；重放相同操作复用已有结果，不重复执行已完成工具。
+生成子图保留逐行 checkpoint、阶段游标及进度合并。raw 已存在时复用完成结果。
+运行恢复要求输入与配置不变；不存在内容指纹或自动输入变更检测。
 
-每次运行的核心产物是 working `blueprint.json`、版本化的 `task_plans/vN.json`、
-阶段临时 `benchmark_items.*.progress.jsonl` 和 `benchmark.<dataset_id>.raw.jsonl`；raw 写入成功后删除临时 progress 文件。运行目录还输出 `item_provenance.jsonl`、`audit_records.jsonl`、`semantic_audit_records.jsonl`、append-only `construction_events.jsonl`、事件聚合的 `construction_report.json`、首轮完整设计及每轮人工修订均追加的 `rag_designs/vN.json`、非敏感的 `effective_config.json` 和 `benchmark_manifest.json`。construction events 除 LLM 元数据外还保存每轮完整、未脱敏的用户自然语言输入；Task Plan 修订响应校验失败时还保存完整模型 JSON 与校验错误。初轮 artifact snapshot 记录版本路径与 SHA-256，修订事件以同一 interaction ID 关联用户输入、实际变更对象及新 artifact 路径与 SHA-256，因此运行目录可能含敏感信息。`config/default.toml` 是唯一默认值基线；显式 `MEDBENCH_CONFIG` 和非空环境变量依次覆盖它，Graph 的三个 generation 输入只覆盖本次运行。快照记录生效值、配置源哈希和覆盖键，不记录密钥。Blueprint 的 `dataset` 仅含 `dataset_id`；catalog 名称/描述、annotation hash、profile/cache 版本、图像数、image manifest hash 和实际 `image_format`（例如 `8bit_grayscale_png` 或 `original_jpeg`）只写入最终 manifest。manifest 中路径相对运行目录，除自身外记录 SHA-256；`benchmark_id` 是最终 BenchmarkInfo、dataset ID 及任务定义的规范化内容哈希，和 `run_id` 无关。数据集缓存按 annotation 内容哈希与缓存版本隔离，包含
-`dataset.duckdb`、`dataset_profile.json` 和 `dataset_access_manifest.json`。确认后的设计采用
-`rag-designs.v2`；manifest 的展开任务记录可选 `parent_task_id` 与 `question_type_id`。模板数量由配置项
-`generation.question_template_count` 控制并写入生效配置快照，不属于 Graph 输入覆盖项。
-RAG 设计中的 `medical_task_description` 保持为“先描述评估能力，再说明医学依据”的一段话；
-`generation_logic` 是一条语义完整的指令句，描述如何利用获准标注语义和选定题目模板生成题目。
+配置中的 harness 限制每个 Agent 的行动次数、执行时间、连续失败和相同行动的重复次数。
+预算耗尽返回 blocked。工具异常携带可操作原因；语义筛查的模型失败仍采用观察性 fail-open。
+重新规划或重新处理数据使生成和审计状态失效；重新生成使审计失效。
+各次执行的工作目录独立，避免原地修改已完成批次。
 
-生成边界要求每个 Blueprint task 都有非负整数 `sample_count`，且总和严格等于 BenchmarkInfo 目标题量；
-缺失或非整数题量直接失败，不再平均分配。`GenerationResult` 必须返回 raw 与 provenance 两条路径。
-收尾前，orchestrator 会确认 Blueprint、raw、provenance、版本化 RAG 设计、construction events、
-`effective_config.json` 以及 Audit 的 `audited`、`flagged`、`rejected`、`records`、`report`、
-`semantic_records` 均为运行目录内存在且可读的普通文件；预检通过后才写 `run_completed`，继而生成
-construction report 与 manifest。Audit 产物允许追加额外命名文件，但不能省略上述六项。
+## 数据与答案契约
 
-## 不变量与失败语义
+标准输入仍由 `schemas/annotation.v2.schema.json` 定义：
+每行一张图，包含 patient、case、study、image，各实体拥有独立 annotation。
+数据处理输出同一接口；模型不能从文件名、图像外观或医学知识补造标签和实体关系。
 
-- 语义型用户输入和审核先由 DeepSeek 转为受限 JSON，再由代码验证；RAG 前固定扫描 `materials/` 下
-  分类目录中的 PDF，用户自然语言选择的精确相对路径经验证后才参与检索。
-- 数据集目录路径不进入推荐提示或人工审核；生成提示只接收当前任务的获准字段投影。
-- 初始 Blueprint 模板不预填 metric；Task Plan 与样本分配只在确认后改变 Blueprint，确认时才写入每个保留最终任务的 metric。Task Plan 和 RAG 设计的每个审核版本均作为不可变 JSON 保存，RAG 设计仍逐项写入 Blueprint 后通过确认/修订闭环收敛。
-- 同一 task/image 最多生成一题；默认每阶段每图最多接受二十题。确定性 ID 和幂等合并保证 checkpoint 与文件状态可安全重放。
-- 三种答案格式都保留可回放的 annotation witness。letter 任务由代码从 `answer_field` 唯一定位原始 scalar，并通过 `answer_value_mapping` 固定正确 option；free_text 由代码唯一定位直接答案字符串；规范 annotation 中的每个 bbox 均为同一标注对象下的绝对像素 `[xmin, ymin, xmax, ymax]`，准备阶段只按来源已确认的角点或 width/height 语义完成转换，代码再按该 xyxy 顺序定位同一字段及共同外层索引下的四个原始坐标。三种格式的 LLM 都只生成题干，代码在 Reviewer 前精确固定并验证答案与 evidence；raw item 不保留 witness，provenance 只保存 path、indices 和覆盖原始值的 hash。
-- bbox 任务只接受恰有一个合法标注框且能唯一定位四坐标 witness 的候选，不接受 mask 或运行期
-  mask-to-bbox 转换。`visual_grounding` 还必须有与该框配对、能明确标识单一局部且图像可观察 finding 或 imaging sign 的字段；
-  `detection` 仅定位泛化 lesion/abnormal region，不能泄露 finding 名称。两者是独立能力，可同时保留。
-  bbox 与自由文本保持各自的直接 annotation 答案契约。
-- `diagnosis` 允许影像或病理确认的具体诊断作为 reference；letter VQA 仅接受能由
-  `answer_field` 和 `answer_value_mapping` 唯一确定正确 option 的候选。
-- 数据耗尽是带 per-task shortfall 的成功结果；答案平衡不覆盖 raw 文件，也不改 bbox/自由文本题。
-- 根图默认只展示五个角色及确定性适配节点；xray 图、LangSmith 与使用
-  `stream_mode=["updates", "custom"]`、`subgraphs=True` 仍可展开角色子图并接收每个 RAG 任务与每条生成记录的进度。启用 LangSmith 后，DeepSeek 调用显示为所属 Agent 下可展开的 LLM span。
-- 内网交互入口 `medbenchagent build` 在当前进程中用 `MemorySaver` 编译同一根图，从终端收集
-  requirement 和每次自然语言确认，并消费 `tasks`、`updates`、`custom` 子图事件展示进度。
-  该入口不改变 Graph 契约或产物，强制关闭可选外部 tracing、模型下载与遥测；checkpoint
-  仅在进程存活期间有效。
-- `BenchmarkItem` 包含稳定的 `dataset` 字段。provenance 只覆盖写入 raw 的 reviewer-approved item；失败和拒绝记录在 construction events。LLM 事件使用五个固定 Agent 名称并记录 operation、模型逻辑名称、token 与 latency；`AuditAgent` 只有抽样语义筛查产生 LLM 调用，硬审计仍为确定性。每轮用户输入写为独立 `human_interaction`，包括解析失败的输入；修订完成后以同一 `interaction_id` 写入 `revision_applied`、实际变化对象及对应版本 artifact 的相对路径和 SHA-256。`construction-report.v2` 按 stage 汇总最终确认状态、成功修订轮数和实际修改对象数，materials 另计选择数量。
-- `run_started` 和 `run_completed` 使用 `orchestrator` component，不归属任何业务 Agent，也不进入五角色的 LLM 统计。
-- Audit 不重新判断医学事实或调用视觉模型；raw 保持不可变。硬审计从 Blueprint 的同一字节快照解析内容并计算哈希，使用 source row 回溯同一 annotation 文件并重算所有答案格式的 witness hash；provenance 的 `generation_call_ids` 与 `review_call_ids` 必须分别为 `list[str]` 且只能引用已记录调用，单题结构错误只拒绝该题。free_text 必须与回放字符串完全一致，bbox 必须与四个回放坐标数值一致；image manifest 尺寸无效时记录尺寸错误并跳过依赖尺寸的 bbox 边界判断。letter 任务还必须满足回放 raw value、mapping、语义 option 与最终答案字母一致。随后仅平衡选择题答案位置。语义层每 task 最多稳定抽取十题，只宽松检查明显任务偏移、答案泄露、歧义/选项重叠及语义近重复/模板塌缩；失败时 fail-open，flag 不会 reject，`flagged.jsonl` 始终是 `audited.jsonl` 的观察性子集。`audit_report.json` 采用 `audit-report.v1`，分别在 `hard_audit` 与 `semantic_audit` 中表达两层计数。image hash 分块读取且以 Pillow 检查非恒定像素；PNG 与 JPEG 均可作为受支持的图像资产；重复 item ID 和完整 canonical item 会拒绝，重复问题只写入统计。
+image manifest 每行仅含 image_id、png_path、width、height，路径相对 manifest。
+数据处理脚本由本地 Docker 镜像执行：源目录只读、输出目录可写、网络关闭，并限制资源和时间。
+二维格式检查复用已有医学图像转换参考实现。准备完成后独立检查源图像格式和空间尺寸，
+PNG/JPEG 保持原始字节；不支持体数据、多帧、金字塔和全切片。
+
+DuckDB/profile 缓存按源路径、显式 revision 和缓存格式版本组织。
+PDF 缓存按资料路径、分块配置、模型路径与显式 revision 描述组织。
+输入更新后通过 refresh 参数重建；原始数据与旧运行不自动迁移或删除。
+
+保留现有答案规则：
+- letter：唯一获准 scalar 经 answer_value_mapping 确定正确选项。
+- free_text：答案必须唯一对应直接参考字符串。
+- bbox：唯一合法标注框，绝对像素 xyxy；visual_grounding 还要求与框配对的目标名称。
+- 答案由代码固定；PDF 只能提供任务设计依据。
+- 同一 task/image 最多一题，保留每阶段每图限制与任务题量限制。
+
+模板在生成前统一构建和审核，数量由 generation.question_template_count 配置。
+模板只能使用 modality 槽位；visual_grounding 额外要求 target。
+逐题阶段无模型生成或 Reviewer 调用；代码校验继续执行，最终按任务抽样做语义检查。
+固定 seed 和稳定数据身份用于模板选择与答案位置平衡。
+
+## 产物与交付
+
+静态模板在 `config/blueprint.json`；运行不修改共享配置。
+规划快照统一保存为 `blueprints/vN.json`，完整 Task Plan 嵌入 Blueprint。
+内部工作产物位于 `.runtime/`，最终交付的选定版本复制到运行根目录：
+
+- blueprint.json、templates.json。
+- benchmark.<dataset_id>.raw.jsonl 与 audited.jsonl。
+- audit_report.json：硬审计记录、统计及抽样语义记录。
+- construction_events.jsonl：工具结果、模型调用与成本、异常和生命周期。
+- effective_config.json：非敏感配置。
+- benchmark_manifest.json：运行标识、数据集、任务指标及相对产物路径。
+
+不生成逐题 provenance 文件、独立 witness 链或事件聚合报告。
+审计通过 image_id 和任务规则直接检查 annotation，保留图片解码、尺寸、重复项与答案检查。
+语义 flag 不自动拒绝题目；最终题量和 shortfall 按硬审计通过的题目计算。
+数据耗尽允许带明确缺额完成；未审计的批次不能交付。
+
+manifest 使用 benchmark-manifest.v2，image manifest 使用上述精简字段。
+旧契约需要重新准备后再进入新评测入口，不增加兼容兜底。
+
+
 
 ## 推理与评测边界
 
 评测入口显式接收 benchmark JSONL、`benchmark_manifest.json`、数据集旁的 `image_manifest.jsonl`，以及非空、
-无重复的 `letter`/`bbox`/`free_text` 类型列表。加载器依据共享 metric registry 验证三者哈希、
+无重复的 `letter`/`bbox`/`free_text` 类型列表。加载器依据共享 metric registry 验证
 task/response-format/metric 契约以及被引用图像
-的路径、尺寸和哈希，只通过 `image_id` 找图，不解释 `image_path`。当前稳定指标映射为
+的路径和尺寸，只通过 `image_id` 找图，不解释 `image_path`。当前稳定指标映射为
 letter 的 accuracy/macro-F1、free_text 的 SacreBLEU、bbox 的 mIoU。完整输入校验后只保留指定类型并
 重新生成连续推理索引；任一指定类型无样本时在模型加载前失败。
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
+import random
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -59,11 +59,8 @@ def _sample(items: list[dict[str, Any]], seed: int) -> dict[str, list[dict[str, 
     for item in items:
         grouped[str(item["task_id"])].append(item)
     for task_id, task_items in grouped.items():
-        task_items.sort(
-            key=lambda item: hashlib.sha256(
-                f"{seed}:{task_id}:{item['id']}".encode("utf-8")
-            ).digest()
-        )
+        task_items.sort(key=lambda item: item["id"])
+        random.Random(seed + int.from_bytes(task_id.encode("utf-8"), "big")).shuffle(task_items)
         grouped[task_id] = task_items[:SAMPLES_PER_TASK]
     return dict(sorted(grouped.items()))
 
@@ -116,7 +113,6 @@ def _validate_response(response: object, expected_ids: set[str]) -> list[dict[st
 def semantic_audit_run(
     *,
     audited_path: str | Path,
-    flagged_path: str | Path,
     report_path: str | Path,
     blueprint_path: str | Path,
     events_path: str | Path,
@@ -210,9 +206,6 @@ def semantic_audit_run(
                     )
 
     flagged = [item for item in audited if str(item.get("id")) in flagged_ids]
-    semantic_records_path = Path(output_directory) / "semantic_audit_records.jsonl"
-    _write(Path(flagged_path), flagged)
-    _write(semantic_records_path, records)
 
     report_file = Path(report_path)
     report = json.loads(report_file.read_text(encoding="utf-8"))
@@ -220,6 +213,7 @@ def semantic_audit_run(
     violation_counts = Counter(
         violation for record in completed for violation in record["violations"]
     )
+    report["semantic_records"] = records
     report["semantic_audit"] = {
         "eligible": len(audited),
         "sampled": len(records),
@@ -242,7 +236,5 @@ def semantic_audit_run(
         **report["semantic_audit"],
     )
     return {
-        "semantic_records_path": str(semantic_records_path),
-        "flagged_path": str(flagged_path),
         "report_path": str(report_path),
     }

@@ -78,7 +78,7 @@ After exploration, present `source_inventory.json`, `conversion_plan.json`, and 
 
 Set `review.status` in `conversion_plan.json` to `pending`. Do not write conversion code or `annotation.jsonl` until the user explicitly approves the mapping. Treat silence or an ambiguous response as unapproved.
 
-Apply user feedback as structured changes to `conversion_plan.json`, show the revised decisions, and request approval again. On approval, set `review.status` to `approved` and `review.approved_mapping_sha256` to the SHA-256 of the canonical mapping content excluding review metadata. Do not store the conversation or hidden reasoning.
+Apply user feedback as structured changes to `conversion_plan.json`, show the revised decisions, and request approval again. On approval, set `review.status` to `approved`. Do not store the conversation or hidden reasoning.
 
 ### 4. Implement deterministic conversion
 
@@ -106,7 +106,7 @@ Assign fields by source-supported entity scope, not by identifier names or row l
 
 ### 5. Validate and report
 
-Run the generated converter twice with unchanged inputs and compare SHA-256 hashes. Validate the result with this skill's `scripts/validate_annotations.py` and its local `annotation.v2.schema.json`.
+Run the generated converter twice with unchanged inputs and compare output bytes. Validate the result with this skill's `scripts/validate_annotations.py` and its local `annotation.v2.schema.json`.
 
 Verify:
 
@@ -122,7 +122,7 @@ Verify:
   recognized source coordinate components remain in the canonical annotations.
 - Both converter runs produce byte-identical output.
 
-Write `annotation_report.json` with input and converter hashes, output hash and count, reconciliation counts, validation results, determinism results, observable mapping decisions (including bbox source conventions and conversion formulas), and unresolved issues. Do not include complete source rows, unnecessary protected information, or hidden reasoning.
+Write `annotation_report.json` with input and converter paths, output count, reconciliation counts, validation results, determinism results, observable mapping decisions (including bbox source conventions and conversion formulas), and unresolved issues. Do not include complete source rows, unnecessary protected information, or hidden reasoning.
 
 ## Output
 Artifact_dir should be a subdirectory of datasets/Normalized

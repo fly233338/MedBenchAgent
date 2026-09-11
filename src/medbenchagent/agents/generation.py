@@ -15,8 +15,11 @@ from medbenchagent.agents.contracts import (
     GenerationAgentState,
 )
 from medbenchagent.contracts import GenerationRequest
+from medbenchagent.construction import event_context
+from medbenchagent.generation.templates import build_templates
+from medbenchagent.harness import result
+from medbenchagent.run_artifacts import atomic_write_json
 from medbenchagent.generation.graph import compile_generation_subgraph
-from medbenchagent.run_artifacts import blueprint_sha256
 from medbenchagent.settings import get_settings
 
 
@@ -31,7 +34,6 @@ def _generation_request_node(state: GenerationAgentState) -> dict[str, Any]:
         "benchmark_info": benchmark_info,
         "run_id": state["run_id"],
         "dataset_id": state["selected_dataset_id"],
-        "blueprint_sha256": blueprint_sha256(state["working_blueprint_path"]),
         "construction_events_path": state["construction_events_path"],
         "dataset_access_manifest": state["dataset_access_manifest"],
         "tasks": tasks,
@@ -57,3 +59,32 @@ def compile_generation_agent(*, checkpointer: Any = None):
     graph.add_edge("generation_request", "generate_raw_benchmark")
     graph.add_edge("generate_raw_benchmark", END)
     return graph.compile(checkpointer=checkpointer, name=GENERATION_AGENT)
+
+
+def run_generation(context, arguments, graph):
+    """Build/review templates and instantiate questions: {feedback?: string}. Requires a complete plan."""
+    if not context.get("planned"):
+        raise ValueError("Finish planning first")
+    batch = Path(context["operation_directory"]) / "batch"
+    batch.mkdir(parents=True, exist_ok=True)
+    blueprint_file = batch / "blueprint.json"
+    if not blueprint_file.is_file():
+        blueprint = json.loads(Path(context["working_blueprint_path"]).read_text(encoding="utf-8"))
+        for index, (task_id, task) in enumerate(blueprint["tasks"].items()):
+            if task.get("sample_count", 0) == 0:
+                continue
+            saved = batch / ".templates" / f"{index}.json"
+            if saved.is_file():
+                templates = json.loads(saved.read_text(encoding="utf-8"))
+            else:
+                with event_context(agent="GenerationAgent", task_id=task_id, operation="templates"):
+                    templates = build_templates(task_id, task, context["benchmark_info"], arguments.get("feedback", ""))
+                atomic_write_json(saved, templates)
+            task["question_templates"] = templates
+        atomic_write_json(blueprint_file, blueprint)
+        atomic_write_json(batch / "templates.json", {key: value.get("question_templates", [])
+            for key, value in blueprint["tasks"].items()})
+    output = graph.invoke(dict(context, working_blueprint_path=str(blueprint_file)))
+    return result("success", "Batch generated", **output, working_blueprint_path=str(blueprint_file),
+                  generated=True, audited=False)
+

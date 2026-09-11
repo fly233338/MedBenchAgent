@@ -484,7 +484,10 @@ def write_task_plan_report(
     working_blueprint_path: str | Path, task_plan: dict[str, Any]
 ) -> dict[str, str | int]:
     """Persist the current Task Plan as a new immutable run artifact version."""
-    return write_versioned_json(Path(working_blueprint_path).parent, "task_plans", task_plan)
+    path = Path(working_blueprint_path)
+    blueprint = json.loads(path.read_text(encoding="utf-8"))
+    blueprint["task_plan"] = task_plan
+    return write_versioned_json(path.parent, "blueprints", blueprint)
 
 
 def apply_task_plan(

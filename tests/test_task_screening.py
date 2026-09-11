@@ -84,9 +84,9 @@ def test_task_plan_retries_one_invalid_complete_response_and_applies_only_after_
     assert list(updated["tasks"]) == ["assessment_category"]
     assert updated["tasks"]["assessment_category"]["supporting_fields"] == ["image.annotation.breast_birads"]
     assert updated["tasks"]["assessment_category"]["metric"] == "macro_f1"
-    assert json.loads(report_path.read_text(encoding="utf-8")) == plan
+    assert json.loads(report_path.read_text(encoding="utf-8"))["task_plan"] == plan
     second_report_path = Path(screening.apply_task_plan(blueprint_path, plan, _profile()))
-    assert json.loads(second_report_path.read_text(encoding="utf-8")) == plan
+    assert json.loads(second_report_path.read_text(encoding="utf-8"))["task_plan"] == plan
 
 
 def test_complete_blueprint_task_plan_calls_model_once(monkeypatch) -> None:
@@ -555,7 +555,7 @@ def test_attribute_task_plan_expands_question_types_into_independent_tasks(tmp_p
     assert tasks["finding_attribute.shape"]["question_type_id"] == "shape"
     assert tasks["finding_attribute.shape"]["metric"] == "accuracy"
     assert tasks["finding_attribute.signal_intensity"]["metric"] == "macro_f1"
-    assert json.loads(Path(report).read_text(encoding="utf-8")) == plan
+    assert json.loads(Path(report).read_text(encoding="utf-8"))["task_plan"] == plan
 
 
 def test_attribute_task_plan_rejects_reused_or_constant_fields() -> None:

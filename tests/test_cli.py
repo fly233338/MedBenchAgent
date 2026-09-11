@@ -273,9 +273,9 @@ def test_preflight_aggregates_missing_local_resources(tmp_path: Path) -> None:
     assert "Embedding model is not configured" in errors
     assert "Reranker model directory does not exist" in errors
     assert "No categorized PDF medical materials were found" in errors
-    assert "No dataset is ready for a complete run" in errors
-    assert "annotation.jsonl" in errors
-    assert "image_manifest.jsonl" in errors
+    assert "No dataset is ready for a complete run" not in errors
+    assert "annotation.jsonl" not in errors
+    assert "image_manifest.jsonl" not in errors
 
 
 def test_preflight_accepts_complete_local_resources(tmp_path: Path) -> None:
@@ -335,7 +335,7 @@ def test_build_handles_eof_and_keyboard_interrupt(tmp_path: Path) -> None:
         )
 
         assert result == 130
-        assert "cannot resume after the process exits" in "\n".join(output)
+        assert "build --resume" in "\n".join(output)
 
 
 def test_build_failure_reports_preserved_run_directory(tmp_path: Path, monkeypatch) -> None:

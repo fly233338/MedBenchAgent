@@ -16,7 +16,7 @@ from medbenchagent.evaluation.contracts import (
     RESPONSE_FORMATS,
     TaskSpec,
 )
-from medbenchagent.evaluation.data import EvaluationDataError, METRICS_BY_FORMAT, file_sha256
+from medbenchagent.evaluation.data import EvaluationDataError, METRICS_BY_FORMAT
 from medbenchagent.evaluation.io import atomic_write_json
 from medbenchagent.evaluation.models.breastgpt_8b import breastgpt_bbox_answer
 from medbenchagent.evaluation.models.medgemma_1_5_4b_it import medgemma_bbox_answer
@@ -90,7 +90,6 @@ def _sample_from_result(result: dict[str, Any]) -> InferenceSample:
             relative_png_path=str(image.get("png_path", "")),
             width=width,
             height=height,
-            sha256="",
         ),
     )
 
@@ -393,7 +392,6 @@ def _report_for_rows(
     return {
         "schema_version": "medbench-evaluation.v2",
         "metadata": {
-            "inference_sha256": file_sha256(source_path),
             "benchmark_id": metadata.get("benchmark_id"),
             "dataset_id": metadata.get("dataset_id"),
             "model": metadata.get("model"),

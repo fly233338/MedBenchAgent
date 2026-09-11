@@ -238,9 +238,6 @@ def _metadata(args: argparse.Namespace, benchmark: LoadedBenchmark, context: Dis
         },
         "task_types": list(args.task_types),
         "inputs": {
-            "benchmark_sha256": benchmark.benchmark_sha256,
-            "benchmark_manifest_sha256": benchmark.benchmark_manifest_sha256,
-            "image_manifest_sha256": benchmark.image_manifest_sha256,
             "item_count": len(benchmark.samples),
         },
     }

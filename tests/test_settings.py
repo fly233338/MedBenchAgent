@@ -81,5 +81,4 @@ def test_initialize_run_writes_secret_free_effective_configuration(tmp_path: Pat
     assert snapshot["settings"]["generation"]["seed"] == 9
     assert snapshot["settings"]["generation"]["question_temperature"] == 0.2
     assert snapshot["settings"]["generation"]["question_template_count"] == 3
-    assert snapshot["config_sources"]["default"]["sha256"]
     assert "not-in-snapshot" not in json.dumps(snapshot)

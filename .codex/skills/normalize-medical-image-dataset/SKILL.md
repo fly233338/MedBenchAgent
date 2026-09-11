@@ -182,7 +182,7 @@ Verify that:
 - Fields originating from the same source row remain grouped together.
 - Source values and JSON-compatible types are preserved as intended.
 
-Run the conversion a second time and compare the SHA-256 hashes of both outputs.
+Run the conversion a second time and compare both outputs byte for byte.
 
 Write `conversion_report.json` beside `annotation.jsonl`.
 
