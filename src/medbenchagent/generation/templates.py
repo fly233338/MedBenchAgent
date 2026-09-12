@@ -1,4 +1,5 @@
 """Build reviewed templates once, then render questions without per-item model calls."""
+
 from __future__ import annotations
 
 import json
@@ -12,9 +13,12 @@ from medbenchagent.settings import get_settings
 
 def validate_templates(task_id: str, task: dict, templates: object) -> list[str]:
     count = get_settings().generation.question_template_count
-    if (not isinstance(templates, list) or len(templates) != count
-            or not all(isinstance(t, str) and t.strip() for t in templates)
-            or len(set(templates)) != len(templates)):
+    if (
+        not isinstance(templates, list)
+        or len(templates) != count
+        or not all(isinstance(t, str) and t.strip() for t in templates)
+        or len({t.strip() for t in templates}) != len(templates)
+    ):
         raise ValueError(f"{task_id}: provide {count} distinct nonempty templates")
     allowed = {"modality"}
     if task_id == "visual_grounding":
@@ -27,28 +31,48 @@ def validate_templates(task_id: str, task: dict, templates: object) -> list[str]
                     raise ValueError(f"{task_id}: unsupported template slot")
                 fields.add(field)
         if task_id == "visual_grounding" and "target" not in fields:
-            raise ValueError("Visual grounding templates must name the annotated target using {target}")
+            raise ValueError(
+                "Visual grounding templates must name the annotated target using {target}"
+            )
     return [t.strip() for t in templates]
 
 
-def build_templates(task_id: str, task: dict, benchmark_info: dict, feedback: str = "") -> list[str]:
+def build_templates(
+    task_id: str,
+    task: dict,
+    benchmark_info: dict,
+    feedback: str = "",
+    *,
+    temperature: float | None = None,
+) -> list[str]:
     count = get_settings().generation.question_template_count
     prompt = (
         f"Create exactly {count} semantically equivalent but varied ready-to-render medical VLM question templates. "
         'Return {"templates":["question"]}. No instructions to a future writer. '
-        'Only optional {modality} is supported; visual_grounding MUST use {target} to identify the finding. '
-        'Other tasks must not use {target}. Never insert an answer or annotation label into the question. '
-        'Detection asks for a generic lesion/abnormal region without naming its finding. '
-        'Free text asks for the reference content without revealing it. Use the requested language. '
-        'All templates must apply to every eligible record under this task; do not assume unprovided facts.'
+        "Only optional {modality} is supported; visual_grounding MUST use {target} to identify the finding. "
+        "Other tasks must not use {target}. Never insert an answer or annotation label into the question. "
+        "Detection asks for a generic lesion/abnormal region without naming its finding. "
+        "Free text asks for the reference content without revealing it. Use the requested language. "
+        "All templates must apply to every eligible record under this task; do not assume unprovided facts."
     )
-    payload = {"task_id": task_id, "task": task, "benchmark_info": benchmark_info, "feedback": feedback}
+    payload = {
+        "task_id": task_id,
+        "task": task,
+        "benchmark_info": benchmark_info,
+        "feedback": feedback,
+    }
     for attempt in range(2):
-        response = complete_json(prompt, json.dumps(payload, ensure_ascii=False))
+        response = complete_json(
+            prompt,
+            json.dumps(payload, ensure_ascii=False),
+            temperature=get_settings().generation.question_temperature
+            if temperature is None
+            else temperature,
+        )
         try:
             templates = validate_templates(task_id, task, response.get("templates"))
             review = complete_json(
-                'Review all supplied templates for task consistency, answer leakage, ambiguity, applicable slots, '
+                "Review all supplied templates for task consistency, answer leakage, ambiguity, applicable slots, "
                 'and meaningful expression diversity. Return {"approved":true|false,"reason":"specific reason"}.',
                 json.dumps({**payload, "templates": templates}, ensure_ascii=False),
             )

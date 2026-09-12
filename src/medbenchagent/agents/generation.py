@@ -40,7 +40,9 @@ def _generation_request_node(state: GenerationAgentState) -> dict[str, Any]:
         "target_sample_count": int(benchmark_info["sample_count"]),
         "seed": int(state.get("seed", defaults.seed)),
         "max_tasks_per_image": int(state.get("max_tasks_per_image", defaults.max_tasks_per_image)),
-        "question_temperature": float(state.get("question_temperature", defaults.question_temperature)),
+        "question_temperature": float(
+            state.get("question_temperature", defaults.question_temperature)
+        ),
         "output_directory": str(Path(state["working_blueprint_path"]).parent),
     }
     return {"generation_request": request}
@@ -78,13 +80,32 @@ def run_generation(context, arguments, graph):
                 templates = json.loads(saved.read_text(encoding="utf-8"))
             else:
                 with event_context(agent="GenerationAgent", task_id=task_id, operation="templates"):
-                    templates = build_templates(task_id, task, context["benchmark_info"], arguments.get("feedback", ""))
+                    templates = build_templates(
+                        task_id,
+                        task,
+                        context["benchmark_info"],
+                        arguments.get("feedback", ""),
+                        temperature=context.get("question_temperature"),
+                    )
                 atomic_write_json(saved, templates)
             task["question_templates"] = templates
         atomic_write_json(blueprint_file, blueprint)
-        atomic_write_json(batch / "templates.json", {key: value.get("question_templates", [])
-            for key, value in blueprint["tasks"].items()})
-    output = graph.invoke(dict(context, working_blueprint_path=str(blueprint_file)))
-    return result("success", "Batch generated", **output, working_blueprint_path=str(blueprint_file),
-                  generated=True, audited=False)
-
+        atomic_write_json(
+            batch / "templates.json",
+            {key: value.get("question_templates", []) for key, value in blueprint["tasks"].items()},
+        )
+    profile = json.loads(
+        Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8")
+    )
+    output = graph.invoke(
+        dict(context, working_blueprint_path=str(blueprint_file)),
+        config={"recursion_limit": max(1000, 4 * profile["total_images"] + 100)},
+    )
+    return result(
+        "success",
+        "Batch generated",
+        **output,
+        working_blueprint_path=str(blueprint_file),
+        generated=True,
+        audited=False,
+    )

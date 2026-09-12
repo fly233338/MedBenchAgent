@@ -62,7 +62,9 @@ def _generation_initialize_node(state: GenerationGraphState) -> dict[str, Any]:
 
 def _generation_step_node(state: GenerationGraphState) -> dict[str, Any]:
     update = advance_generation(state["generation_request"], state)
-    completed_counts = update.get("generation_completed_counts", state["generation_completed_counts"])
+    completed_counts = update.get(
+        "generation_completed_counts", state["generation_completed_counts"]
+    )
     _emit_custom_event(
         {
             "kind": "generation_progress",

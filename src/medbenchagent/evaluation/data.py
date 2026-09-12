@@ -16,6 +16,7 @@ from medbenchagent.evaluation.contracts import (
     RESPONSE_FORMATS,
     TaskSpec,
 )
+from medbenchagent.image_assets import ImageManifestError, load_image_manifest
 from medbenchagent.metrics import metrics_by_response_format
 
 
@@ -78,55 +79,10 @@ def _manifest_tasks(manifest: dict[str, Any]) -> dict[str, TaskSpec]:
 
 
 def _load_image_manifest(path: Path) -> dict[str, ImageEntry]:
-    root = path.parent.resolve()
-    images: dict[str, ImageEntry] = {}
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise EvaluationDataError(f"Image manifest could not be read: {path}") from exc
-    if not lines:
-        raise EvaluationDataError("Image manifest must not be empty.")
-    expected = {"image_id", "png_path", "width", "height"}
-    for line_number, line in enumerate(lines, start=1):
-        try:
-            raw = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise EvaluationDataError(
-                f"Image manifest line {line_number} is not valid JSON."
-            ) from exc
-        if not isinstance(raw, dict) or set(raw) != expected:
-            raise EvaluationDataError(
-                f"Image manifest line {line_number} must contain exactly {sorted(expected)}."
-            )
-        image_id, relative = raw["image_id"], raw["png_path"]
-        width, height = raw["width"], raw["height"]
-        if not isinstance(image_id, str) or not image_id or image_id in images:
-            raise EvaluationDataError(f"Image manifest line {line_number} has an invalid image_id.")
-        if not isinstance(relative, str) or not relative:
-            raise EvaluationDataError(f"{image_id}: png_path must be a non-empty string.")
-        relative_path = Path(relative)
-        if relative_path.is_absolute():
-            raise EvaluationDataError(f"{image_id}: png_path must be relative.")
-        resolved = (root / relative_path).resolve()
-        if not resolved.is_relative_to(root):
-            raise EvaluationDataError(f"{image_id}: png_path escapes the manifest directory.")
-        if (
-            not isinstance(width, int)
-            or isinstance(width, bool)
-            or width <= 0
-            or not isinstance(height, int)
-            or isinstance(height, bool)
-            or height <= 0
-        ):
-            raise EvaluationDataError(f"{image_id}: invalid dimensions.")
-        images[image_id] = ImageEntry(
-            image_id=image_id,
-            png_path=resolved,
-            relative_png_path=relative_path.as_posix(),
-            width=width,
-            height=height,
-        )
-    return images
+        return load_image_manifest(path)
+    except ImageManifestError as exc:
+        raise EvaluationDataError(str(exc)) from exc
 
 
 def _validate_item(item: dict[str, Any], task: TaskSpec, image: ImageEntry) -> None:

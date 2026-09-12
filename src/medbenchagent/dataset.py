@@ -403,6 +403,7 @@ def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Pa
     records = load_annotation_jsonl(source_path)
     profile = build_dataset_profile(records)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path.unlink(missing_ok=True)
     if database_path.exists():
         database_path.unlink()
     _write_database(records, database_path)

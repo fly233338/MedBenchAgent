@@ -1,4 +1,5 @@
 """Run inside the data container after conversion, independently of the generated script."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -12,9 +13,16 @@ def validate(source_root: Path, output_root: Path, converter: Path) -> None:
     spec = importlib.util.spec_from_file_location("conversion", converter)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    annotations = [json.loads(line) for line in (output_root / "annotation.jsonl").read_text().splitlines()]
-    images = {row["image_id"]: row for row in
-              (json.loads(line) for line in (output_root / "image_manifest.jsonl").read_text().splitlines())}
+    annotations = [
+        json.loads(line) for line in (output_root / "annotation.jsonl").read_text().splitlines()
+    ]
+    images = {
+        row["image_id"]: row
+        for row in (
+            json.loads(line)
+            for line in (output_root / "image_manifest.jsonl").read_text().splitlines()
+        )
+    }
     for row in annotations:
         source = (source_root / row["image"]["image_path"]).resolve()
         if not source.is_relative_to(source_root) or not source.is_file():
@@ -27,7 +35,9 @@ def validate(source_root: Path, output_root: Path, converter: Path) -> None:
         detected = module.detect_format(source)
         if detected and detected.startswith("raster:"):
             with Image.open(source) as original:
-                if getattr(original, "n_frames", 1) != 1 or (original.format == "TIFF" and original.tag_v2.get(330)):
+                if getattr(original, "n_frames", 1) != 1 or (
+                    original.format == "TIFF" and original.tag_v2.get(330)
+                ):
                     raise ValueError("Multiframe or pyramidal images are unsupported")
                 original_size = original.size
         else:

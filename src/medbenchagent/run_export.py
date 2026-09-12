@@ -63,7 +63,7 @@ def _image_manifest_format(path: Path) -> str:
     except (OSError, json.JSONDecodeError):
         return "unknown_raster_image"
     if not suffixes or suffixes == {".png"}:
-        return "8bit_grayscale_png"
+        return "png"
     if suffixes <= {".jpg", ".jpeg"}:
         return "original_jpeg"
     return "mixed_raster_images"

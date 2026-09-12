@@ -1,4 +1,4 @@
-# MedBenchAgent
+# MedBenchAgent v2
 
 MedBenchAgent uses LangGraph to construct annotation-driven Medical VLM benchmarks.
 A Supervisor selects task planning, optional raw-data preparation, template generation and audit tools.
@@ -39,7 +39,8 @@ Place `image_manifest.jsonl` beside the annotations. Each line has exactly:
 
 The path is relative to the manifest, and may refer to a supported PNG or JPEG.
 IDs and paths must be unique. Use explicit pixel xyxy bounding boxes.
-Existing standard data bypasses DataProcessingAgent.
+Existing standard data bypasses DataProcessingAgent. A supplied annotation path and dataset ID can also be
+selected directly without registering it in the catalog.
 
 Dataset caches use source paths and explicit revisions. Call
 `prepare_annotation_dataset(annotation_path, cache_root, refresh=True)` to refresh changed data.
@@ -97,6 +98,7 @@ The manifest uses `benchmark-manifest.v2`; old manifest contracts must be regene
 Historical outputs are not migrated or deleted automatically.
 
 The `[harness]` settings limit agent actions, elapsed execution time, consecutive failures and repeated rework.
+Human waiting time is excluded from the execution budget. Each agent retains bounded private tool observations.
 Runtime receipts let an interrupted action reuse completed outputs. An exhausted budget returns a blocked status,
 rather than reporting a completed benchmark. Semantic uncertainty is surfaced to the user.
 

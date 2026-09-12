@@ -10,7 +10,6 @@ from typing import Any
 
 from medbenchagent.llm import complete_json
 from medbenchagent.construction import event_context, event_operation, record_llm_validation_error
-from medbenchagent.run_artifacts import write_versioned_json
 from medbenchagent.metrics import is_metric_supported, metric_prompt_catalog
 
 
@@ -480,23 +479,12 @@ def revise_task_plan(
         return validated
 
 
-def write_task_plan_report(
-    working_blueprint_path: str | Path, task_plan: dict[str, Any]
-) -> dict[str, str | int]:
-    """Persist the current Task Plan as a new immutable run artifact version."""
-    path = Path(working_blueprint_path)
-    blueprint = json.loads(path.read_text(encoding="utf-8"))
-    blueprint["task_plan"] = task_plan
-    return write_versioned_json(path.parent, "blueprints", blueprint)
-
-
 def apply_task_plan(
     working_blueprint_path: str | Path,
     task_plan: dict[str, Any],
     profile: dict[str, Any] | None = None,
-    report_path: str | Path | None = None,
 ) -> str:
-    """Apply a confirmed Task Plan once and preserve the complete plan in its report."""
+    """Apply a validated Task Plan and embed it in the working Blueprint."""
     blueprint_path = Path(working_blueprint_path)
     blueprint = json.loads(blueprint_path.read_text(encoding="utf-8"))
     if not isinstance(task_plan.get("tasks"), dict):
@@ -537,6 +525,7 @@ def apply_task_plan(
     validated, errors = validate_task_plan(validation_blueprint, validation_profile, task_plan)
     if validated is None:
         raise ValueError(f"Cannot apply invalid Task Plan: {', '.join(errors)}")
+    blueprint["task_plan"] = validated
     tasks = current_tasks
     if not already_expanded:
         for task_id in list(tasks):
@@ -586,6 +575,4 @@ def apply_task_plan(
     written = json.loads(blueprint_path.read_text(encoding="utf-8"))
     if set(written.get("tasks", {})) != expected_retained:
         raise ValueError("Working Blueprint does not match the confirmed retained tasks")
-    if report_path is not None:
-        return str(report_path)
-    return str(write_task_plan_report(blueprint_path, validated)["path"])
+    return str(blueprint_path)

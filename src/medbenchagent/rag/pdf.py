@@ -200,7 +200,7 @@ class LocalPdfRag:
             raise RagUnavailable("Local embedding and reranker model directories must be configured.")
         if not revision.isalnum():
             raise ValueError("RAG revision must be alphanumeric.")
-        identity = {"sources": source_identity, "model": str(embedding_path.resolve()), "revision": revision}
+        identity = {"root": str(Path(materials_root).resolve()), "sources": source_identity, "model": str(embedding_path.resolve()), "revision": revision}
         cache = Path(cache_root) / ("pdf-v" + CACHE_SCHEMA_VERSION)
         cache.mkdir(parents=True, exist_ok=True)
         entries = sorted(cache.glob("*/sources.json"))
@@ -615,30 +615,3 @@ def design_task(
         {key: item[key] for key in ("pdf", "page", "chunk_id")} for item in citations
     ]
     return normalized
-
-
-def write_task_design(
-    blueprint_path: str | Path,
-    task_id: str,
-    design: dict[str, Any],
-) -> None:
-    """Atomically replace one task's embedded RAG fields in the working Blueprint."""
-    path = Path(blueprint_path)
-    blueprint = json.loads(path.read_text(encoding="utf-8"))
-    tasks = blueprint.get("tasks")
-    if not isinstance(tasks, dict) or not isinstance(tasks.get(task_id), dict):
-        raise ValueError(f"Working Blueprint does not contain task: {task_id}")
-    task = tasks[task_id]
-    for field in RAG_DESIGN_FIELDS:
-        task.pop(field, None)
-    task.update(design)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    try:
-        temporary.write_text(
-            json.dumps(blueprint, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()

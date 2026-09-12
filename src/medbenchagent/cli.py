@@ -19,7 +19,6 @@ _NODE_LABELS = {
     "SupervisorAgent": "coordinate benchmark construction",
     "TaskPlanningAgent": "plan dataset and tasks",
     "DataProcessingAgent": "prepare raw data",
-    "rag_design_export": "export RAG designs",
     "GenerationAgent": "generate benchmark",
     "generation_summary": "summarize generation",
     "AuditAgent": "audit benchmark",
@@ -102,78 +101,12 @@ def _interrupt_question(payload: dict[str, Any]) -> str:
 
 
 def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
-    kind = str(payload.get("kind", ""))
     question = _interrupt_question(payload)
     output("")
     output(f"=== {question} ===")
-    if kind == "benchmark_info_confirmation":
-        _print_json(payload.get("benchmark_info", {}), output)
-    elif kind == "dataset_selection_confirmation":
-        output("Recommended dataset:")
-        _print_json(payload.get("recommendation", {}), output)
-        datasets = payload.get("datasets", [])
-        output("Available datasets: " + ", ".join(
-            f"{item.get('id')} ({item.get('name')})"
-            for item in datasets
-            if isinstance(item, dict) and item.get("available")
-        ))
-    elif kind == "task_plan_review":
-        profile = payload.get("dataset_profile", {})
-        if isinstance(profile, dict):
-            output(
-                "Dataset profile: "
-                f"{profile.get('total_images', '?')} images, "
-                f"{len(profile.get('fields', {}))} fields"
-            )
-        tasks = payload.get("task_plan", {}).get("tasks", {})
-        for task_id, decision in tasks.items():
-            fields = decision.get("supporting_fields", [])
-            metric = decision.get("metric")
-            if isinstance(decision.get("question_types"), dict):
-                fields = {
-                    question_type_id: question_type.get("supporting_fields", [])
-                    for question_type_id, question_type in decision["question_types"].items()
-                    if isinstance(question_type, dict)
-                }
-                metric = {
-                    question_type_id: question_type.get("metric")
-                    for question_type_id, question_type in decision["question_types"].items()
-                    if isinstance(question_type, dict)
-                }
-            output(
-                f"- {task_id}: {decision.get('decision')} | "
-                f"metric={metric} | fields={fields} | "
-                f"{decision.get('reason', '')}"
-            )
-    elif kind == "sample_count_confirmation":
-        output(f"Total questions: {payload.get('total')}")
-        _print_json(payload.get("sample_counts", {}), output)
-    elif kind == "materials_choose":
-        if payload.get("error"):
-            output(f"Previous selection was invalid: {payload['error']}")
-        for material in payload.get("materials", []):
-            if isinstance(material, dict):
-                output(f"- [{material.get('category')}] {material.get('file')}")
-    elif kind == "question_design_confirmation":
-        for task_id, task in payload.get("tasks", {}).items():
-            design = {
-                key: task[key]
-                for key in (
-                    "question_templates",
-                    "options",
-                    "answer_field",
-                    "answer_value_mapping",
-                    "generation_logic",
-                    "medical_task_description",
-                    "citations",
-                )
-                if key in task
-            }
-            output(f"{task_id}:")
-            _print_json(design, output)
-    else:
-        _print_json(payload, output)
-    output(question)
+    details = {key: value for key, value in payload.items() if key not in {"kind", "question"}}
+    if details:
+        _print_json(details, output)
 
 
 def _interrupt_payload(value: object) -> dict[str, Any] | None:
@@ -217,8 +150,7 @@ def _render_artifact_paths(payload: object, output: OutputFunction) -> None:
         for key, nested in value.items():
             is_audit_artifacts = key == "audit_artifacts"
             if isinstance(nested, str) and (
-                key in _ARTIFACT_PATH_KEYS
-                or (in_audit_artifacts and key in _AUDIT_ARTIFACT_KEYS)
+                key in _ARTIFACT_PATH_KEYS or (in_audit_artifacts and key in _AUDIT_ARTIFACT_KEYS)
             ):
                 found.append((key, nested))
             elif isinstance(nested, dict):
@@ -235,7 +167,7 @@ def _render_update(namespace: tuple[str, ...], payload: object, output: OutputFu
         output(f"[waiting] {_interrupt_question(interrupt)}")
         return
     name = _node_name(namespace, payload)
-    if not name or any(part in name for part in ("generation_step", "rag_design_task")):
+    if not name or any(part in name for part in ("generation_step",)):
         return
     leaf = name.rsplit(" / ", 1)[-1]
     output(f"[done] {_NODE_LABELS.get(leaf, name)}")
@@ -249,7 +181,7 @@ def _render_task(namespace: tuple[str, ...], payload: object, output: OutputFunc
         return
     names = [part.split(":", 1)[0] for part in namespace] + [task_name]
     name = " / ".join(names)
-    if any(part in name for part in ("generation_step", "rag_design_task")):
+    if any(part in name for part in ("generation_step",)):
         return
     output(f"[start] {_NODE_LABELS.get(task_name, name)}")
 
@@ -372,8 +304,10 @@ def run_interactive_build(
     checkpoint_connection = None
     announced_run_directory: str | None = None
     try:
-        requirement = "" if resume else _read_nonempty(
-            "Describe the Medical VLM benchmark to build: ", input_fn, output
+        requirement = (
+            ""
+            if resume
+            else _read_nonempty("Describe the Medical VLM benchmark to build: ", input_fn, output)
         )
         if settings is None:
             from medbenchagent.settings import get_settings
@@ -396,7 +330,9 @@ def run_interactive_build(
             from medbenchagent.workflow.graph import compile_benchmark_graph
 
             settings.paths.runs_root.mkdir(parents=True, exist_ok=True)
-            checkpoint_connection = sqlite3.connect(str(settings.paths.runs_root / "checkpoints.sqlite"), check_same_thread=False)
+            checkpoint_connection = sqlite3.connect(
+                str(settings.paths.runs_root / "checkpoints.sqlite"), check_same_thread=False
+            )
             graph = compile_benchmark_graph(checkpointer=SqliteSaver(checkpoint_connection))
         config = {
             "configurable": {"thread_id": resume or str(uuid.uuid4())},
@@ -452,18 +388,14 @@ def run_interactive_build(
             return 0 if snapshot.values.get("status", "complete") == "complete" else 1
     except (EOFError, KeyboardInterrupt):
         output("")
-        output(
-            "Run interrupted. Resume with: medbenchagent build --resume <resume identifier>."
-        )
+        output("Run interrupted. Resume with: medbenchagent build --resume <resume identifier>.")
         if run_directory := _run_directory(graph, config):
             output(f"Preserved run artifacts: {run_directory}")
         return 130
     except Exception as exc:
         output("")
         output(f"Benchmark construction failed: {type(exc).__name__}: {exc}")
-        output(
-            "Files and checkpoints are preserved. Use build --resume <resume identifier>."
-        )
+        output("Files and checkpoints are preserved. Use build --resume <resume identifier>.")
         if run_directory := _run_directory(graph, config):
             output(f"Preserved run artifacts: {run_directory}")
         return 1

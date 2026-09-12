@@ -13,7 +13,12 @@ import duckdb
 
 from medbenchagent.answer_mapping import canonical_answer_scalar
 from medbenchagent.generation.templates import render
-from medbenchagent.contracts import BenchmarkItem, BlueprintTask, GenerationRequest, GenerationResult
+from medbenchagent.contracts import (
+    BenchmarkItem,
+    BlueprintTask,
+    GenerationRequest,
+    GenerationResult,
+)
 from medbenchagent.construction import GENERATION_AGENT, record_event
 from medbenchagent.generation import free_text, grounding, vqa
 from medbenchagent.generation.context import (
@@ -68,9 +73,7 @@ def _normalized_options(options: object) -> list[str]:
     if not isinstance(options, list):
         return []
     return [
-        re.sub(r"^\s*[A-Za-z]\s*[.)]\s*", "", option).strip()
-        if isinstance(option, str)
-        else ""
+        re.sub(r"^\s*[A-Za-z]\s*[.)]\s*", "", option).strip() if isinstance(option, str) else ""
         for option in options
     ]
 
@@ -79,9 +82,7 @@ def _validate_answer_mapping(task_id: str, task: BlueprintTask, options: list[st
     answer_field = task.get("answer_field")
     mappings = task.get("answer_value_mapping")
     if answer_field is None or mappings is None:
-        raise ValueError(
-            f"{task_id}: letter tasks require answer_field and answer_value_mapping."
-        )
+        raise ValueError(f"{task_id}: letter tasks require answer_field and answer_value_mapping.")
     supporting_fields = task.get("supporting_fields")
     if (
         not isinstance(answer_field, str)
@@ -126,8 +127,10 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
                 f"response format {response_format}."
             )
         supporting = task.get("supporting_fields")
-        if not isinstance(supporting, list) or not supporting or not all(
-            is_supporting_field_path(field) for field in supporting
+        if (
+            not isinstance(supporting, list)
+            or not supporting
+            or not all(is_supporting_field_path(field) for field in supporting)
         ):
             raise ValueError(f"{task_id}: supporting_fields must contain v2 entity field paths.")
         templates = task.get("question_templates")
@@ -165,7 +168,9 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
 
 
 def _item_identity(candidate: _Candidate) -> str:
-    return json.dumps([candidate.task_id, candidate.record["image"]["image_id"]], separators=(",", ":"))
+    return json.dumps(
+        [candidate.task_id, candidate.record["image"]["image_id"]], separators=(",", ":")
+    )
 
 
 def _build_item(
@@ -196,7 +201,9 @@ def _write_jsonl(path: Path, items: list[dict[str, Any]]) -> None:
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as destination:
             for item in items:
-                destination.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
+                destination.write(
+                    json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n"
+                )
         temporary.replace(path)
     finally:
         if temporary.exists():
@@ -214,7 +221,9 @@ def _progress_counts(items: list[dict[str, Any]], task_ids: list[str]) -> dict[s
     }
 
 
-def _merge_progress(path: Path, additions: list[dict[str, Any]], task_order: dict[str, int]) -> list[dict[str, Any]]:
+def _merge_progress(
+    path: Path, additions: list[dict[str, Any]], task_order: dict[str, int]
+) -> list[dict[str, Any]]:
     by_id = {str(_progress_item(item)["id"]): item for item in _read_jsonl(path)}
     by_id.update({_progress_item(item)["id"]: item for item in additions})
     items = list(by_id.values())
@@ -382,7 +391,9 @@ def _enter_stage(
     while stage_index < len(_STAGES):
         phase, response_format, _handler = _STAGES[stage_index]
         stage_tasks = _stage_tasks(tasks, targets, response_format)
-        if stage_tasks and not all(completed[task_id] >= targets[task_id] for task_id in stage_tasks):
+        if stage_tasks and not all(
+            completed[task_id] >= targets[task_id] for task_id in stage_tasks
+        ):
             return {
                 "generation_stage_index": stage_index,
                 "generation_stage": phase,
@@ -411,9 +422,15 @@ def initialize_generation(request: GenerationRequest) -> dict[str, Any]:
     if raw.is_file():
         items = _read_jsonl(raw)
         completed = _progress_counts(items, list(tasks))
-        return {"generation_target_counts": targets, "generation_completed_counts": completed,
-                "generation_rejections": {}, "generation_stage_index": len(_STAGES),
-                "generation_stage": "", "generation_cursor": 0, "generation_exhausted": True}
+        return {
+            "generation_target_counts": targets,
+            "generation_completed_counts": completed,
+            "generation_rejections": {},
+            "generation_stage_index": len(_STAGES),
+            "generation_stage": "",
+            "generation_cursor": 0,
+            "generation_exhausted": True,
+        }
     completed = _all_completed_counts(Path(request["output_directory"]), tasks, targets)
     state = {
         "generation_target_counts": targets,
@@ -424,9 +441,9 @@ def initialize_generation(request: GenerationRequest) -> dict[str, Any]:
 
 
 def generation_done(state: dict[str, Any]) -> bool:
-    return bool(state.get("generation_exhausted")) and int(state.get("generation_stage_index", 0)) >= len(
-        _STAGES
-    )
+    return bool(state.get("generation_exhausted")) and int(
+        state.get("generation_stage_index", 0)
+    ) >= len(_STAGES)
 
 
 def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dict[str, Any]:
@@ -451,9 +468,14 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
     )
     if candidates is None:
         record_event(
-            request["construction_events_path"], "dataset_exhaustion", run_id=request["run_id"],
-            dataset_id=request["dataset_id"], agent=GENERATION_AGENT, operation="generate", component=phase,
-            status="complete"
+            request["construction_events_path"],
+            "dataset_exhaustion",
+            run_id=request["run_id"],
+            dataset_id=request["dataset_id"],
+            agent=GENERATION_AGENT,
+            operation="generate",
+            component=phase,
+            status="complete",
         )
         return _enter_stage(request, tasks, targets, completed, stage_index + 1, rejections)
 
@@ -470,9 +492,16 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
         if item_id in existing_ids:
             continue
         record_event(
-            request["construction_events_path"], "generation_attempt", run_id=request["run_id"],
-            dataset_id=request["dataset_id"], task_id=candidate.task_id, item_id=item_id,
-            agent=GENERATION_AGENT, operation="generate", component=phase, status="started"
+            request["construction_events_path"],
+            "generation_attempt",
+            run_id=request["run_id"],
+            dataset_id=request["dataset_id"],
+            task_id=candidate.task_id,
+            item_id=item_id,
+            agent=GENERATION_AGENT,
+            operation="generate",
+            component=phase,
+            status="started",
         )
         try:
             generated = handler._validate(candidate, {"question": render(candidate)})
@@ -480,13 +509,23 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
             accepted.append(item)
         except ValueError as exc:
             rejections[f"{phase}_contract"] = rejections.get(f"{phase}_contract", 0) + 1
-            record_event(request["construction_events_path"], "generation_reject",
-                         run_id=request["run_id"], task_id=candidate.task_id, item_id=item_id,
-                         agent=GENERATION_AGENT, operation="instantiate", status="rejected", reason=str(exc))
+            record_event(
+                request["construction_events_path"],
+                "generation_reject",
+                run_id=request["run_id"],
+                task_id=candidate.task_id,
+                item_id=item_id,
+                agent=GENERATION_AGENT,
+                operation="instantiate",
+                status="rejected",
+                reason=str(exc),
+            )
 
     progress_path = _stage_progress_path(output_dir, phase)
     if accepted:
-        _merge_progress(progress_path, accepted, {task_id: index for index, task_id in enumerate(stage_tasks)})
+        _merge_progress(
+            progress_path, accepted, {task_id: index for index, task_id in enumerate(stage_tasks)}
+        )
         completed = _all_completed_counts(output_dir, tasks, targets)
     if all(completed[task_id] >= targets[task_id] for task_id in stage_tasks):
         return _enter_stage(request, tasks, targets, completed, stage_index + 1, rejections)

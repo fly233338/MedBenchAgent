@@ -14,9 +14,7 @@ def _merge_projection(left: object, right: object) -> object:
         merged = copy.deepcopy(left)
         for key, value in right.items():
             merged[key] = (
-                _merge_projection(merged[key], value)
-                if key in merged
-                else copy.deepcopy(value)
+                _merge_projection(merged[key], value) if key in merged else copy.deepcopy(value)
             )
         return merged
     if isinstance(left, list) and isinstance(right, list):
@@ -99,8 +97,7 @@ def has_meaningful_value(value: object) -> bool:
         return False
     if isinstance(value, dict):
         return any(
-            key != "_source_index" and has_meaningful_value(item)
-            for key, item in value.items()
+            key != "_source_index" and has_meaningful_value(item) for key, item in value.items()
         )
     if isinstance(value, list):
         return any(has_meaningful_value(item) for item in value)
@@ -156,9 +153,7 @@ def evidence_value(record: dict[str, object], path: str, indices: list[int]) -> 
     return current
 
 
-def _evidence_candidates(
-    record: dict[str, object], path: str
-) -> list[dict[str, object]]:
+def _evidence_candidates(record: dict[str, object], path: str) -> list[dict[str, object]]:
     if not is_supporting_field_path(path):
         raise ValueError("Evidence path must be one supported v2 entity field path.")
     segments = path.split(".")
@@ -193,9 +188,7 @@ def _evidence_candidates(
     return candidates
 
 
-def scalar_evidence_candidates(
-    record: dict[str, object], path: str
-) -> list[dict[str, object]]:
+def scalar_evidence_candidates(record: dict[str, object], path: str) -> list[dict[str, object]]:
     """Return every non-empty scalar witness for one approved field path."""
     return _evidence_candidates(record, path)
 
@@ -223,9 +216,7 @@ def normalized_bbox(value: object) -> list[float] | None:
         not isinstance(value, list)
         or len(value) != 4
         or not all(
-            isinstance(item, (int, float))
-            and not isinstance(item, bool)
-            and math.isfinite(item)
+            isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item)
             for item in value
         )
     ):
@@ -260,7 +251,3 @@ def locate_bbox_evidence(
     if len(matches) != 1:
         raise ValueError("Answer must match exactly one supporting bbox.")
     return matches[0]
-
-
-
-

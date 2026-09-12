@@ -17,7 +17,9 @@ def atomic_write_json(path: str | Path, value: object) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     try:
-        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         temporary.replace(destination)
     finally:
         if temporary.exists():
@@ -108,5 +110,3 @@ def update_blueprint_dataset(blueprint_path: str | Path, dataset_id: str) -> Non
     blueprint = json.loads(path.read_text(encoding="utf-8"))
     blueprint["dataset"] = {"dataset_id": dataset_id.strip()}
     atomic_write_json(path, blueprint)
-
-

@@ -1,19 +1,26 @@
 """Supervisor-driven benchmark construction with persistent tool boundaries."""
+
 from __future__ import annotations
 import json
 import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Any, TypedDict
+from langchain_core.messages import convert_to_messages
 from langgraph.graph import StateGraph, START, END
 from medbenchagent.agents.generation import compile_generation_agent, run_generation
 from medbenchagent.agents.audit import run_audit
 from medbenchagent.agents.task_planning import compile_task_planning_agent
-from medbenchagent.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
+from medbenchagent.benchmark_info import (
+    extract_benchmark_info,
+    missing_fields,
+    write_working_blueprint,
+)
 from medbenchagent.harness import compile_agent, result
 from medbenchagent.run_artifacts import initialize_run
 from medbenchagent.run_export import finalize_run
 from medbenchagent.settings import get_settings
+
 
 class BenchmarkInputState(TypedDict, total=False):
     messages: list[Any]
@@ -21,6 +28,7 @@ class BenchmarkInputState(TypedDict, total=False):
     seed: int
     max_tasks_per_image: int
     question_temperature: float
+
 
 class BenchmarkState(BenchmarkInputState, total=False):
     context: dict[str, Any]
@@ -41,6 +49,7 @@ class BenchmarkState(BenchmarkInputState, total=False):
     status: str
     summary: str
 
+
 class BenchmarkOutputState(TypedDict, total=False):
     run_id: str
     run_directory: str
@@ -58,23 +67,58 @@ class BenchmarkOutputState(TypedDict, total=False):
     status: str
     summary: str
 
+
 def specify(context, arguments):
     """Extract or correct the benchmark brief from the user's requirement: {}."""
     info = extract_benchmark_info(context["user_requirement"], context.get("benchmark_info"))
     if missing := missing_fields(info):
-        return result("success", "Brief needs clarification: " + ", ".join(missing), benchmark_info=info, brief_ready=False)
+        return result(
+            "success",
+            "Brief needs clarification: " + ", ".join(missing),
+            benchmark_info=info,
+            brief_ready=False,
+        )
     path = Path(context["operation_directory"]) / "blueprint.json"
     write_working_blueprint(info, path)
-    return result("success", "Benchmark brief extracted", benchmark_info=info, brief_ready=True,
-                  working_blueprint_path=str(path), planned=False, generated=False, audited=False)
+    return result(
+        "success",
+        "Benchmark brief extracted",
+        benchmark_info=info,
+        brief_ready=True,
+        working_blueprint_path=str(path),
+        planned=False,
+        generated=False,
+        audited=False,
+    )
+
 
 def _child_updates(output):
-    return {k: v for k, v in output["context"].items() if k not in {"operation_directory", "feedback", "dataset_profile"}}
+    return {
+        k: v
+        for k, v in output["context"].items()
+        if k not in {"operation_directory", "feedback", "dataset_profile"}
+    }
+
 
 def describe(context):
-    return {key: context.get(key) for key in ("user_requirement", "benchmark_info", "brief_ready",
-        "selected_dataset_id", "annotation_path", "planned", "generated", "audited", "generation_shortfalls",
-        "audit_summary", "last_agent_result", "reworks")}
+    return {
+        key: context.get(key)
+        for key in (
+            "user_requirement",
+            "benchmark_info",
+            "brief_ready",
+            "selected_dataset_id",
+            "annotation_path",
+            "planned",
+            "generated",
+            "audited",
+            "generation_shortfalls",
+            "audit_summary",
+            "last_agent_result",
+            "reworks",
+        )
+    }
+
 
 def compile_benchmark_graph(*, checkpointer=None):
     planning = compile_task_planning_agent()
@@ -86,26 +130,48 @@ def compile_benchmark_graph(*, checkpointer=None):
             raise ValueError("Extract and clarify the brief first")
         child_context = dict(context, feedback=arguments.get("feedback", ""))
         if context.get("dataset_access_manifest"):
-            child_context["dataset_profile"] = json.loads(Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8"))
+            child_context["dataset_profile"] = json.loads(
+                Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8")
+            )
         output = planning.invoke({"context": child_context})
         updates = _child_updates(output)
-        updates.update(planned=output["result"]["status"] == "complete", generated=False, audited=False,
-                       last_agent_result=output["result"]["summary"])
-        return result("success" if updates["planned"] else "failed", output["result"]["summary"], **updates)
+        updates.update(
+            planned=output["result"]["status"] == "complete",
+            generated=False,
+            audited=False,
+            last_agent_result=output["result"]["summary"],
+        )
+        return result(
+            "success" if updates["planned"] else "failed", output["result"]["summary"], **updates
+        )
 
     def prepare_data(context, arguments):
         """Prepare raw 2D data: {source_root: string, dataset_id: lowercase-slug, feedback?: string}. Standard data skips this."""
-        from medbenchagent.agents.data_processing import compile_data_processing_agent, preparation_context
+        from medbenchagent.agents.data_processing import (
+            compile_data_processing_agent,
+            preparation_context,
+        )
+
         source = arguments.get("source_root")
         if not isinstance(source, str) or not Path(source).is_dir():
             raise ValueError("Provide the existing raw source directory from the user's request")
-        prepared = preparation_context(context, str(Path(source).resolve()), arguments.get("dataset_id"))
+        prepared = preparation_context(
+            context, str(Path(source).resolve()), arguments.get("dataset_id")
+        )
         prepared["feedback"] = arguments.get("feedback", "")
         output = compile_data_processing_agent().invoke({"context": prepared})
         updates = _child_updates(output)
-        updates.update(planned=False, generated=False, audited=False, last_agent_result=output["result"]["summary"])
-        return result("success" if output["result"]["status"] == "complete" else "failed",
-                      output["result"]["summary"], **updates)
+        updates.update(
+            planned=False,
+            generated=False,
+            audited=False,
+            last_agent_result=output["result"]["summary"],
+        )
+        return result(
+            "success" if output["result"]["status"] == "complete" else "failed",
+            output["result"]["summary"],
+            **updates,
+        )
 
     def generate(context, arguments):
         """Build/review templates and instantiate questions: {feedback?: string}. Requires a complete plan."""
@@ -116,8 +182,11 @@ def compile_benchmark_graph(*, checkpointer=None):
             raise ValueError("Audit the current batch before finishing")
         directory = Path(context["run_directory"])
         published = {}
-        for key, source in {"working_blueprint_path": context["working_blueprint_path"],
-                            "raw_output_path": context["raw_output_path"], **context["audit_artifacts"]}.items():
+        for key, source in {
+            "working_blueprint_path": context["working_blueprint_path"],
+            "raw_output_path": context["raw_output_path"],
+            **context["audit_artifacts"],
+        }.items():
             source = Path(source)
             destination = directory / source.name
             if source.resolve() != destination.resolve():
@@ -126,52 +195,117 @@ def compile_benchmark_graph(*, checkpointer=None):
         templates = Path(context["working_blueprint_path"]).parent / "templates.json"
         if templates.is_file():
             shutil.copyfile(templates, directory / "templates.json")
-        context.update(working_blueprint_path=published["working_blueprint_path"], raw_output_path=published["raw_output_path"],
-                       audit_artifacts={"audited": published["audited"], "report": published["report"]})
+        context.update(
+            working_blueprint_path=published["working_blueprint_path"],
+            raw_output_path=published["raw_output_path"],
+            audit_artifacts={"audited": published["audited"], "report": published["report"]},
+        )
         blueprint = json.loads(Path(context["working_blueprint_path"]).read_text(encoding="utf-8"))
-        counts = Counter(json.loads(line)["task_id"] for line in Path(published["audited"]).read_text(encoding="utf-8").splitlines() if line)
-        shortfalls = {key: max(0, task["sample_count"] - counts[key]) for key, task in blueprint["tasks"].items()}
-        identifier, manifest = finalize_run(run_directory=context["run_directory"], run_id=context["run_id"],
-            blueprint_path=context["working_blueprint_path"], raw_output_path=context["raw_output_path"],
+        counts = Counter(
+            json.loads(line)["task_id"]
+            for line in Path(published["audited"]).read_text(encoding="utf-8").splitlines()
+            if line
+        )
+        shortfalls = {
+            key: max(0, task["sample_count"] - counts[key])
+            for key, task in blueprint["tasks"].items()
+        }
+        identifier, manifest = finalize_run(
+            run_directory=context["run_directory"],
+            run_id=context["run_id"],
+            blueprint_path=context["working_blueprint_path"],
+            raw_output_path=context["raw_output_path"],
             construction_events_path=context["construction_events_path"],
-            dataset_catalog_entry=context["dataset_entry"], dataset_profile=json.loads(Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8")),
+            dataset_catalog_entry=context["dataset_entry"],
+            dataset_profile=json.loads(
+                Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8")
+            ),
             dataset_access_manifest=context["dataset_access_manifest"],
             image_manifest_path=Path(context["annotation_path"]).parent / "image_manifest.jsonl",
-            audit_artifacts=context["audit_artifacts"])
-        return result("complete", "Benchmark completed; any deficits are reported", manifest_path=manifest, benchmark_id=identifier,
-                      working_blueprint_path=context["working_blueprint_path"], raw_output_path=context["raw_output_path"],
-                      audit_artifacts=context["audit_artifacts"], item_count=sum(counts.values()),
-                      task_counts=dict(counts), generation_shortfalls=shortfalls)
+            audit_artifacts=context["audit_artifacts"],
+        )
+        return result(
+            "complete",
+            "Benchmark completed; any deficits are reported",
+            manifest_path=manifest,
+            benchmark_id=identifier,
+            working_blueprint_path=context["working_blueprint_path"],
+            raw_output_path=context["raw_output_path"],
+            audit_artifacts=context["audit_artifacts"],
+            item_count=sum(counts.values()),
+            task_counts=dict(counts),
+            generation_shortfalls=shortfalls,
+        )
 
-    supervisor = compile_agent("SupervisorAgent",
+    supervisor = compile_agent(
+        "SupervisorAgent",
         "Build the requested Medical VLM benchmark. Extract the brief. If the user supplies raw data, prepare it; "
         "otherwise planning can select catalog data. Delegate planning, generation and audit as needed. "
         "You alone ask the user when a brief, source semantics or unresolved agent result needs clarification. "
         "No routine stage confirmations. Review audit feedback and shortfalls before finishing; rework the "
         "responsible module only when evidence suggests it can help. Never silently lower the requested target. "
         "Finite data exhaustion can finish with explicit shortfalls. Semantic flags are advisory, not automatic rejection.",
-        {"specify": specify, "plan": plan, "prepare_data": prepare_data, "generate": generate, "audit": run_audit},
-        describe, finish, human=True)
+        {
+            "specify": specify,
+            "plan": plan,
+            "prepare_data": prepare_data,
+            "generate": generate,
+            "audit": run_audit,
+        },
+        describe,
+        finish,
+        human=True,
+    )
 
     def initialize(state):
-        overrides = {key: state[key] for key in ("seed", "max_tasks_per_image", "question_temperature") if key in state}
-        run = initialize_run(graph_overrides=overrides)
+        overrides = {
+            key: state[key]
+            for key in ("seed", "max_tasks_per_image", "question_temperature")
+            if key in state
+        }
         requirement = state.get("user_requirement") or next(
-            (getattr(m, "content", "") for m in reversed(state.get("messages", [])) if getattr(m, "type", "") == "human"), "")
-        if not requirement:
+            (
+                getattr(m, "content", "")
+                for m in reversed(convert_to_messages(state.get("messages", [])))
+                if getattr(m, "type", "") == "human"
+            ),
+            "",
+        )
+        if not isinstance(requirement, str) or not requirement.strip():
             raise ValueError("A natural-language benchmark requirement is required")
-        context = dict(run, **overrides, user_requirement=requirement,
-                       operation_directory=str(Path(run["run_directory"]) / ".runtime"),
-                       limits=get_settings().harness)
+        settings = get_settings()
+        defaults = {
+            key: getattr(settings.generation, key)
+            for key in ("seed", "max_tasks_per_image", "question_temperature")
+        }
+        run = initialize_run(graph_overrides=overrides)
+        context = dict(
+            run,
+            **(defaults | overrides),
+            user_requirement=requirement,
+            operation_directory=str(Path(run["run_directory"]) / ".runtime"),
+            limits=settings.harness,
+        )
         return dict(run, context=context)
 
     def run_supervisor(state):
         output = supervisor.invoke({"context": state["context"]})
-        public = {key: value for key, value in output["context"].items() if key in BenchmarkState.__annotations__}
-        return dict(public, context=output["context"], result=output["result"],
-                    status=output["result"]["status"], summary=output["result"]["summary"])
+        public = {
+            key: value
+            for key, value in output["context"].items()
+            if key in BenchmarkState.__annotations__
+        }
+        return dict(
+            public,
+            context=output["context"],
+            result=output["result"],
+            status=output["result"]["status"],
+            summary=output["result"]["summary"],
+        )
 
-    graph = StateGraph(BenchmarkState, input_schema=BenchmarkInputState, output_schema=BenchmarkOutputState)
+    graph = StateGraph(
+        BenchmarkState, input_schema=BenchmarkInputState, output_schema=BenchmarkOutputState
+    )
     graph.add_node("initialize", initialize)
     graph.add_node("supervisor", run_supervisor)
     graph.add_edge(START, "initialize")
@@ -179,5 +313,5 @@ def compile_benchmark_graph(*, checkpointer=None):
     graph.add_edge("supervisor", END)
     return graph.compile(checkpointer=checkpointer)
 
-benchmark_graph = compile_benchmark_graph()
 
+benchmark_graph = compile_benchmark_graph()

@@ -1,8 +1,12 @@
-"""Private generation and audit state contracts."""
+"""Private generation state contracts."""
+
 from __future__ import annotations
 from typing import Any, TypedDict
-from medbenchagent.construction import GENERATION_AGENT as GENERATION_AGENT, AUDIT_AGENT as AUDIT_AGENT
+from medbenchagent.construction import (
+    GENERATION_AGENT as GENERATION_AGENT,
+)
 from medbenchagent.contracts import GenerationRequest
+
 
 class GenerationAgentInputState(TypedDict, total=False):
     benchmark_info: dict[str, Any]
@@ -37,24 +41,3 @@ class GenerationAgentOutputState(TypedDict):
     item_count: int
     task_counts: dict[str, int]
     generation_shortfalls: dict[str, int]
-
-
-class AuditAgentInputState(TypedDict, total=False):
-    raw_output_path: str
-    working_blueprint_path: str
-    selected_dataset_id: str
-    construction_events_path: str
-    run_directory: str
-    run_id: str
-    seed: int
-    dataset_access_manifest: dict[str, Any]
-
-
-class AuditAgentState(AuditAgentInputState, total=False):
-    audit_artifacts: dict[str, str]
-
-
-class AuditAgentOutputState(TypedDict):
-    audit_artifacts: dict[str, str]
-
-

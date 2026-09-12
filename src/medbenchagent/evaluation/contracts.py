@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from medbenchagent.image_assets import ImageEntry as ImageEntry
 from typing import Any
 
 
@@ -17,15 +17,6 @@ class TaskSpec:
     response_format: str
     metric: str
     parent_task_id: str | None = None
-
-
-@dataclass(frozen=True)
-class ImageEntry:
-    image_id: str
-    png_path: Path
-    relative_png_path: str
-    width: int
-    height: int
 
 
 @dataclass(frozen=True)
