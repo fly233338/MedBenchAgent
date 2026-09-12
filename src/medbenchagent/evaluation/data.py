@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from medbenchagent.image_assets import validate_image_asset
 
 from medbenchagent.evaluation.contracts import (
     ImageEntry,
@@ -119,20 +119,20 @@ def _validate_item(item: dict[str, Any], task: TaskSpec, image: ImageEntry) -> N
 
 
 def _validate_image(image: ImageEntry) -> None:
-    if not image.png_path.is_file():
-        raise EvaluationDataError(f"{image.image_id}: image is missing: {image.png_path}")
-    try:
-        with Image.open(image.png_path) as source:
-            source.load()
-            if source.format not in SUPPORTED_IMAGE_FORMATS or source.size != (
-                image.width,
-                image.height,
-            ):
-                raise EvaluationDataError(
-                    f"{image.image_id}: image format or dimensions do not match image manifest."
-                )
-    except OSError as exc:
-        raise EvaluationDataError(f"{image.image_id}: image could not be decoded.") from exc
+    errors = validate_image_asset(
+        {"png_path": image.png_path.name, "width": image.width, "height": image.height},
+        image.png_path.parent,
+        check_uniform=False,
+        supported_formats=SUPPORTED_IMAGE_FORMATS,
+    )
+    if errors:
+        messages = {
+            "image_missing": f"image is missing: {image.png_path}",
+            "image_decode": "image could not be decoded.",
+            "image_format": "image format or dimensions do not match image manifest.",
+            "image_dimensions": "image format or dimensions do not match image manifest.",
+        }
+        raise EvaluationDataError(f"{image.image_id}: {messages.get(errors[0], errors[0])}")
 
 
 def load_benchmark(

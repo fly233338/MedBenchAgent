@@ -14,7 +14,7 @@ def test_dataset_switch_discards_old_plan(tmp_path):
         "working_blueprint_path": "old.json",
         "plan_binding": ["old.jsonl", "1"],
     }
-    outcome = select_dataset(context, {"annotation_path": str(annotation), "dataset_id": "new"})
+    outcome = select_dataset(context, annotation_path=str(annotation), dataset_id="new")
     blueprint = json.loads(
         open(outcome["updates"]["working_blueprint_path"], encoding="utf-8").read()
     )
@@ -36,7 +36,6 @@ def test_finish_rejects_stale_dataset_binding(tmp_path):
                 "annotation_path": "new.jsonl",
                 "plan_binding": ["old.jsonl", "1"],
             },
-            {},
         )
 
 
@@ -60,7 +59,7 @@ def test_allocation_tool_preserves_task_design(tmp_path):
         "operation_directory": str(tmp_path / "op"),
         "benchmark_info": {"sample_count": 4},
     }
-    output = allocate(context, {})
+    output = allocate(context)
     blueprint = json.loads(
         open(output["updates"]["working_blueprint_path"], encoding="utf-8").read()
     )
@@ -90,5 +89,4 @@ def test_planning_finish_requires_complete_design(tmp_path):
                 "annotation_path": "annotation.jsonl",
                 "plan_binding": ["annotation.jsonl", "1"],
             },
-            {},
         )

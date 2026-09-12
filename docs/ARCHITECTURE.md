@@ -27,7 +27,11 @@ Supervisor 可以选择返工，但不能绕过规划完整性、生成契约和
 ## Harness、状态与恢复
 
 `harness.py` 提供共享的模型行动循环，行动包含 tool、arguments、reason。
-只允许注册工具和 finish/ask_user；参数由工具验证，工具返回 status、summary、updates。
+只允许注册工具和 finish/ask_user；`tool_contracts.py` 定义严格的 Pydantic 参数模型，
+Harness 向模型提供 JSON Schema，并在调用前统一验证必填字段、类型、范围和额外字段。
+普通工具通过 LangChain StructuredTool 接收验证后的具名参数；无参工具、finish 和 ask_user
+也遵循同一契约。参数错误返回带字段位置的 errors；内部 KeyError/TypeError 向外传播，
+不伪装成可修复的模型参数错误。领域前置条件仍由工具检查，工具返回 status、summary、updates。
 专业 Agent 的 needs_input 返回 Supervisor；只有 Supervisor 的 ask_user 使用 interrupt。
 各 Agent 保留有界的私有工具观察记录；数据处理提示还包含当前脚本与映射说明，供连续修订。
 
@@ -55,6 +59,8 @@ Supervisor 可以选择返工，但不能绕过规划完整性、生成契约和
 
 image manifest 每行仅含 image_id、png_path、width、height，路径相对 manifest。
 共享契约位于 image_assets.py，数据准备与构建不依赖 evaluation 模块。
+公共 `validate_image_asset` 负责路径、可读性和尺寸检查；DataProcessing 与 Audit 保留纯色图检查，
+Evaluation 不拒绝纯色图，但限定 PNG/JPEG 编码。消费者不再导入 Audit 的私有图像校验函数。
 数据处理脚本由本地 Docker 镜像执行：源目录只读、输出目录可写、网络关闭，并限制资源和时间。
 二维格式检查复用已有医学图像转换参考实现。准备完成后独立检查源图像格式和空间尺寸，
 PNG/JPEG 保持原始字节；不支持体数据、多帧、金字塔和全切片。

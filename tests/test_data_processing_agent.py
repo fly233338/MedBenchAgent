@@ -6,13 +6,13 @@ from medbenchagent.agents.data_processing import finish, preparation_context, wr
 def test_invalid_script_is_a_repairable_error(tmp_path):
     with pytest.raises(ValueError, match="Invalid Python"):
         write_script(
-            {"data_workspace": str(tmp_path)}, {"code": "if :", "mapping": "Source mapping"}
+            {"data_workspace": str(tmp_path)}, code="if :", mapping="Source mapping"
         )
 
 
 def test_execution_alone_cannot_publish_data():
     with pytest.raises(ValueError, match="validate"):
-        finish({"script_executed": True, "data_validated": False}, {})
+        finish({"script_executed": True, "data_validated": False})
 
 
 def test_reworking_completed_data_uses_a_new_workspace(tmp_path):

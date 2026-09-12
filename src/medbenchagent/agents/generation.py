@@ -63,8 +63,8 @@ def compile_generation_agent(*, checkpointer: Any = None):
     return graph.compile(checkpointer=checkpointer, name=GENERATION_AGENT)
 
 
-def run_generation(context, arguments, graph):
-    """Build/review templates and instantiate questions: {feedback?: string}. Requires a complete plan."""
+def run_generation(context, graph, *, feedback: str = ""):
+    """Build/review templates and instantiate questions. Requires a complete plan."""
     if not context.get("planned"):
         raise ValueError("Finish planning first")
     batch = Path(context["operation_directory"]) / "batch"
@@ -84,7 +84,7 @@ def run_generation(context, arguments, graph):
                         task_id,
                         task,
                         context["benchmark_info"],
-                        arguments.get("feedback", ""),
+                        feedback,
                         temperature=context.get("question_temperature"),
                     )
                 atomic_write_json(saved, templates)

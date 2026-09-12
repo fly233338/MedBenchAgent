@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Any
 from dataclasses import dataclass
+
+from PIL import Image
 
 
 class ImageManifestError(ValueError):
@@ -71,3 +74,41 @@ def load_image_manifest(path: Path) -> dict[str, ImageEntry]:
     if len({entry.png_path for entry in images.values()}) != len(images):
         raise ImageManifestError("Image manifest paths must be unique")
     return images
+
+
+def validate_image_asset(
+    entry: dict[str, Any], root: Path, *,
+    check_uniform: bool = True, supported_formats: frozenset[str] | None = None,
+) -> list[str]:
+    """Check a referenced image; consumers choose pixel and encoding policy."""
+    png = entry.get("png_path")
+    if not isinstance(png, str):
+        return ["image_manifest_path"]
+    path = PurePosixPath(png)
+    if path.is_absolute() or ".." in path.parts:
+        return ["image_manifest_path"]
+    image_path = root.joinpath(*path.parts).resolve()
+    if not image_path.is_relative_to(root.resolve()):
+        return ["image_manifest_path"]
+    if not image_path.is_file() or image_path.stat().st_size == 0:
+        return ["image_missing"]
+    try:
+        with Image.open(image_path) as image:
+            image.load()
+            if supported_formats is not None and image.format not in supported_formats:
+                return ["image_format"]
+            if (
+                image.width <= 0
+                or image.height <= 0
+                or image.width != entry.get("width")
+                or image.height != entry.get("height")
+            ):
+                return ["image_dimensions"]
+            if check_uniform:
+                thumbnail = image.convert("L").resize((256, 256))
+                minimum, maximum = thumbnail.getextrema()
+                if minimum == maximum:
+                    return ["image_pixels"]
+    except (OSError, ValueError):
+        return ["image_decode"]
+    return []

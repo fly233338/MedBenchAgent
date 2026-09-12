@@ -8,8 +8,8 @@ from medbenchagent.harness import result
 from medbenchagent.semantic_audit import semantic_audit_run
 
 
-def run_audit(context, arguments):
-    """Audit the current generated batch and return actionable problems: {}."""
+def run_audit(context):
+    """Audit the current generated batch and return actionable problems."""
     if not context.get("generated"):
         raise ValueError("Generate the current plan first")
     folder = Path(context["raw_output_path"]).parent

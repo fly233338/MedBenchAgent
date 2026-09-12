@@ -18,7 +18,7 @@ def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monke
     monkeypatch.setattr("medbenchagent.harness.complete_json", lambda *a, **k: next(actions))
     calls = []
 
-    def compute(context, args):
+    def compute(context):
         calls.append(1)
         return result("success", "Computed", value=3)
 
@@ -27,7 +27,7 @@ def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monke
         "Test",
         {"compute": compute},
         lambda c: c,
-        lambda c, a: result("complete", "Done"),
+        lambda c: result("complete", "Done"),
         checkpointer=MemorySaver(),
     )
     context = {
@@ -44,7 +44,7 @@ def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monke
 def test_harness_stops_repeated_invalid_actions(tmp_path, monkeypatch):
     monkeypatch.setattr("medbenchagent.harness.complete_json", lambda *a, **k: {"invalid": True})
     graph = compile_agent(
-        "TestAgent", "Test", {}, lambda c: {}, lambda c, a: result("complete", "Done")
+        "TestAgent", "Test", {}, lambda c: {}, lambda c: result("complete", "Done")
     )
     output = graph.invoke(
         {
@@ -77,7 +77,7 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
     monkeypatch.setattr("medbenchagent.harness.complete_json", lambda *a, **k: next(actions))
     calls = []
 
-    def compute(context, arguments):
+    def compute(context):
         calls.append(1)
         return result("success", "Input examined")
 
@@ -87,7 +87,7 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
             "Test",
             {"compute": compute},
             lambda c: c,
-            lambda c, a: result("complete", "Done"),
+            lambda c: result("complete", "Done"),
             human=True,
             checkpointer=SqliteSaver(connection),
         )

@@ -1,7 +1,8 @@
+from medbenchagent.image_assets import validate_image_asset
 import json
 from pathlib import Path
 from PIL import Image
-from medbenchagent.audit import _answer_matches, _contract, _image_errors, audit_run
+from medbenchagent.audit import _answer_matches, _contract, audit_run
 from medbenchagent.semantic_audit import semantic_audit_run
 from medbenchagent.llm import ModelUnavailable
 
@@ -101,7 +102,7 @@ def test_audit_rejects_wrong_answers_and_duplicate_ids(tmp_path):
 
 def test_constant_image_rejected(tmp_path):
     Image.new("L", (2, 2)).save(tmp_path / "im.png")
-    assert _image_errors({"png_path": "im.png", "width": 2, "height": 2}, tmp_path) == [
+    assert validate_image_asset({"png_path": "im.png", "width": 2, "height": 2}, tmp_path) == [
         "image_pixels"
     ]
 
@@ -129,3 +130,20 @@ def test_semantic_failure_remains_observational(tmp_path, monkeypatch):
     assert report["semantic_audit"]["not_run"] == 1
     assert report["hard_audit"]["accepted"] == 1
     assert len(report["semantic_records"]) == 1
+
+
+def test_shared_image_validation_preserves_consumer_policies(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "image.png"
+    Image.new("RGB", (2, 2), "black").save(path)
+    entry = {"png_path": path.name, "width": 2, "height": 2}
+    assert validate_image_asset(entry, tmp_path) == ["image_pixels"]
+    assert validate_image_asset(
+        entry, tmp_path, check_uniform=False, supported_formats=frozenset({"PNG", "JPEG"})
+    ) == []
+    Image.new("RGB", (2, 2), "black").save(path, format="BMP")
+    assert validate_image_asset(
+        entry, tmp_path, check_uniform=False, supported_formats=frozenset({"PNG", "JPEG"})
+    ) == ["image_format"]
+    assert validate_image_asset(dict(entry, width=3), tmp_path) == ["image_dimensions"]

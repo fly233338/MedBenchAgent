@@ -17,6 +17,7 @@ from medbenchagent.benchmark_info import (
     write_working_blueprint,
 )
 from medbenchagent.harness import compile_agent, result
+from medbenchagent.tool_contracts import FeedbackArguments, PrepareDataArguments
 from medbenchagent.run_artifacts import initialize_run
 from medbenchagent.run_export import finalize_run
 from medbenchagent.settings import get_settings
@@ -68,8 +69,8 @@ class BenchmarkOutputState(TypedDict, total=False):
     summary: str
 
 
-def specify(context, arguments):
-    """Extract or correct the benchmark brief from the user's requirement: {}."""
+def specify(context):
+    """Extract or correct the benchmark brief from the user's requirement."""
     info = extract_benchmark_info(context["user_requirement"], context.get("benchmark_info"))
     if missing := missing_fields(info):
         return result(
@@ -124,11 +125,11 @@ def compile_benchmark_graph(*, checkpointer=None):
     planning = compile_task_planning_agent()
     generation = compile_generation_agent()
 
-    def plan(context, arguments):
-        """Delegate task planning: {feedback?: string}. Requires a complete benchmark brief."""
+    def plan(context, *, feedback: str = ""):
+        """Delegate task planning. Requires a complete benchmark brief."""
         if not context.get("brief_ready"):
             raise ValueError("Extract and clarify the brief first")
-        child_context = dict(context, feedback=arguments.get("feedback", ""))
+        child_context = dict(context, feedback=feedback)
         if context.get("dataset_access_manifest"):
             child_context["dataset_profile"] = json.loads(
                 Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8")
@@ -145,20 +146,20 @@ def compile_benchmark_graph(*, checkpointer=None):
             "success" if updates["planned"] else "failed", output["result"]["summary"], **updates
         )
 
-    def prepare_data(context, arguments):
-        """Prepare raw 2D data: {source_root: string, dataset_id: lowercase-slug, feedback?: string}. Standard data skips this."""
+    def prepare_data(context, *, source_root: str, dataset_id: str, feedback: str = ""):
+        """Prepare raw 2D data. Standard data skips this."""
         from medbenchagent.agents.data_processing import (
             compile_data_processing_agent,
             preparation_context,
         )
 
-        source = arguments.get("source_root")
+        source = source_root
         if not isinstance(source, str) or not Path(source).is_dir():
             raise ValueError("Provide the existing raw source directory from the user's request")
         prepared = preparation_context(
-            context, str(Path(source).resolve()), arguments.get("dataset_id")
+            context, str(Path(source).resolve()), dataset_id
         )
-        prepared["feedback"] = arguments.get("feedback", "")
+        prepared["feedback"] = feedback
         output = compile_data_processing_agent().invoke({"context": prepared})
         updates = _child_updates(output)
         updates.update(
@@ -173,11 +174,11 @@ def compile_benchmark_graph(*, checkpointer=None):
             **updates,
         )
 
-    def generate(context, arguments):
-        """Build/review templates and instantiate questions: {feedback?: string}. Requires a complete plan."""
-        return run_generation(context, arguments, generation)
+    def generate(context, *, feedback: str = ""):
+        """Build/review templates and instantiate questions. Requires a complete plan."""
+        return run_generation(context, generation, feedback=feedback)
 
-    def finish(context, arguments):
+    def finish(context):
         if not context.get("audited"):
             raise ValueError("Audit the current batch before finishing")
         directory = Path(context["run_directory"])
@@ -254,6 +255,11 @@ def compile_benchmark_graph(*, checkpointer=None):
         },
         describe,
         finish,
+        args_schemas={
+            "plan": FeedbackArguments,
+            "prepare_data": PrepareDataArguments,
+            "generate": FeedbackArguments,
+        },
         human=True,
     )
 

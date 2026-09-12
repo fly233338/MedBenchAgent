@@ -15,6 +15,10 @@ from medbenchagent.dataset_catalog import (
     resolve_annotation_path,
 )
 from medbenchagent.harness import compile_agent, result
+from medbenchagent.tool_contracts import (
+    AllocateArguments, MaterialsArguments, MedicalDesignArguments, ProfileArguments,
+    ReviseTaskArguments, SelectDatasetArguments,
+)
 from medbenchagent.rag.pdf import LocalPdfRag, design_task, discover_medical_materials
 from medbenchagent.run_artifacts import atomic_write_json, write_versioned_json
 from medbenchagent.sample_counts import distribute_weighted_sample_counts
@@ -32,13 +36,13 @@ def _save(context, blueprint):
     return str(path)
 
 
-def select_dataset(context, arguments):
-    """Select standard data: {dataset_id?: string, annotation_path?: string}; omit both to recommend catalog data."""
-    if arguments.get("annotation_path"):
-        identifier = arguments.get("dataset_id")
+def select_dataset(context, *, dataset_id: str | None = None, annotation_path: str | None = None):
+    """Select standard data; omit both to recommend catalog data."""
+    if annotation_path:
+        identifier = dataset_id
         if not isinstance(identifier, str) or not DATASET_ID_PATTERN.fullmatch(identifier):
             raise ValueError("Direct standard input requires a lowercase dataset_id")
-        path = Path(arguments["annotation_path"]).expanduser().resolve()
+        path = Path(annotation_path).expanduser().resolve()
         if path.name != "annotation.jsonl" or not path.is_file():
             raise ValueError("Provide an existing standard annotation.jsonl")
         entry = {
@@ -51,7 +55,7 @@ def select_dataset(context, arguments):
     else:
         catalog = load_dataset_catalog()
         identifier = (
-            arguments.get("dataset_id")
+            dataset_id
             or recommend_dataset(context["benchmark_info"], catalog)["dataset_id"]
         )
         entry = dataset_by_id(catalog, identifier)
@@ -70,16 +74,16 @@ def select_dataset(context, arguments):
     )
 
 
-def profile_dataset(context, arguments):
-    """Validate selected annotations and build profile: {refresh?: boolean, revision?: string}."""
+def profile_dataset(context, *, revision: str = "1", refresh: bool = False):
+    """Validate selected annotations and build profile."""
     if not context.get("annotation_path"):
         raise ValueError("Select or prepare a dataset first")
     load_image_manifest(Path(context["annotation_path"]).parent / "image_manifest.jsonl")
     profile, access = prepare_annotation_dataset(
         context["annotation_path"],
         get_settings().paths.dataset_cache_root,
-        revision=arguments.get("revision", "1"),
-        refresh=arguments.get("refresh", False),
+        revision=revision,
+        refresh=refresh,
     )
     return result(
         "success",
@@ -90,8 +94,8 @@ def profile_dataset(context, arguments):
     )
 
 
-def plan_tasks(context, arguments):
-    """Generate the complete task plan using existing logic: {}. Requires a dataset profile."""
+def plan_tasks(context):
+    """Generate the complete task plan using existing logic. Requires a dataset profile."""
     if not context.get("dataset_profile"):
         raise ValueError("Profile the dataset first")
     blueprint = json.loads(get_settings().paths.blueprint_template.read_text(encoding="utf-8"))
@@ -109,8 +113,8 @@ def plan_tasks(context, arguments):
     )
 
 
-def revise_task(context, arguments):
-    """Revise a single parent task: {task_id: string, feedback: string}."""
+def revise_task(context, *, task_id: str, feedback: str):
+    """Revise a single parent task."""
     current = _read(context)
     base = json.loads(get_settings().paths.blueprint_template.read_text(encoding="utf-8"))
     base.update(benchmark_info=context["benchmark_info"], dataset=current["dataset"])
@@ -118,14 +122,14 @@ def revise_task(context, arguments):
         base,
         context["dataset_profile"],
         current["task_plan"],
-        arguments["task_id"],
-        arguments["feedback"],
+        task_id,
+        feedback,
     )
     base["task_plan"] = plan
     path = _save(context, base)
     apply_task_plan(path, plan, context["dataset_profile"])
     updated = _read({"working_blueprint_path": path})
-    parent = arguments["task_id"]
+    parent = task_id
     for task_id, task in updated["tasks"].items():
         if task.get("parent_task_id", task_id) != parent and task_id in current["tasks"]:
             updated["tasks"][task_id] = current["tasks"][task_id]
@@ -136,11 +140,11 @@ def revise_task(context, arguments):
     )
 
 
-def allocate(context, arguments):
-    """Allocate sample counts with the existing weighted algorithm: {counts?: {task_id: integer}}."""
+def allocate(context, *, counts: dict[str, int] | None = None):
+    """Allocate sample counts with the existing weighted algorithm."""
     blueprint = _read(context)
     counts = distribute_weighted_sample_counts(
-        blueprint["tasks"], context["benchmark_info"]["sample_count"], arguments.get("counts")
+        blueprint["tasks"], context["benchmark_info"]["sample_count"], counts
     )
     for task_id, count in counts.items():
         blueprint["tasks"][task_id]["sample_count"] = count
@@ -149,10 +153,9 @@ def allocate(context, arguments):
     )
 
 
-def select_materials(context, arguments):
-    """Choose exact discovered PDF paths: {files: [string]}. Available paths are in state.materials."""
+def select_materials(context, *, files: list[str]):
+    """Choose exact discovered PDF paths. Available paths are in state.materials."""
     available = {m["file"] for m in discover_medical_materials(get_settings().paths.materials_root)}
-    files = arguments.get("files")
     if (
         not isinstance(files, list)
         or not files
@@ -173,10 +176,9 @@ def select_materials(context, arguments):
     )
 
 
-def medical_design(context, arguments):
-    """Retrieve evidence and design one task: {task_id: string, feedback?: string}."""
+def medical_design(context, *, task_id: str, feedback: str = ""):
+    """Retrieve evidence and design one task."""
     blueprint = _read(context)
-    task_id = arguments["task_id"]
     if task_id not in blueprint["tasks"] or not context.get("selected_material_files"):
         raise ValueError("A planned task and selected materials are required")
     rag = LocalPdfRag(
@@ -191,7 +193,7 @@ def medical_design(context, arguments):
         blueprint["tasks"][task_id],
         dataset_profile=context["dataset_profile"],
         dataset_access_manifest=context["dataset_access_manifest"],
-        feedback=arguments.get("feedback", ""),
+        feedback=feedback,
     )
     blueprint["tasks"][task_id].update(design)
     blueprint["tasks"][task_id].pop("question_templates", None)
@@ -200,7 +202,7 @@ def medical_design(context, arguments):
     )
 
 
-def finish(context, arguments):
+def finish(context):
     blueprint = _read(context)
     if (
         blueprint.get("dataset", {}).get("dataset_id") != context.get("selected_dataset_id")
@@ -268,5 +270,13 @@ def compile_task_planning_agent(*, checkpointer=None):
         },
         describe,
         finish,
+        args_schemas={
+            "select_dataset": SelectDatasetArguments,
+            "profile_dataset": ProfileArguments,
+            "revise_task": ReviseTaskArguments,
+            "allocate": AllocateArguments,
+            "select_materials": MaterialsArguments,
+            "medical_design": MedicalDesignArguments,
+        },
         checkpointer=checkpointer,
     )

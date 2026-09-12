@@ -7,11 +7,13 @@ import subprocess
 from uuid import uuid4
 from pathlib import Path
 
-from medbenchagent.audit import _image_errors
 from medbenchagent.dataset import load_annotation_jsonl
 from medbenchagent.dataset_catalog import DATASET_ID_PATTERN
-from medbenchagent.image_assets import load_image_manifest
+from medbenchagent.image_assets import load_image_manifest, validate_image_asset
 from medbenchagent.harness import compile_agent, result
+from medbenchagent.tool_contracts import (
+    InspectFilesArguments, ReadTextArguments, WriteScriptArguments,
+)
 from medbenchagent.settings import get_settings
 
 
@@ -21,14 +23,14 @@ def _workspace(context):
     return path
 
 
-def inspect_files(context, arguments):
-    """List source files by relative directory: {directory?: string, offset?: integer}. Returns up to 100 entries."""
+def inspect_files(context, *, directory: str = "", offset: int = 0):
+    """List source files by relative directory. Returns up to 100 entries."""
     root = Path(context["source_root"])
-    folder = (root / arguments.get("directory", "")).resolve()
+    folder = (root / directory).resolve()
     if not folder.is_relative_to(root) or not folder.is_dir():
         raise ValueError("Inspect a directory inside the source root")
     files = sorted(folder.iterdir())
-    offset = int(arguments.get("offset", 0))
+    offset = int(offset)
     listing = [
         {
             "path": p.relative_to(root).as_posix(),
@@ -42,21 +44,20 @@ def inspect_files(context, arguments):
     )
 
 
-def read_text(context, arguments):
-    """Read source documentation or text annotations: {path: string, offset?: integer}. Up to 12000 characters."""
+def read_text(context, *, path: str, offset: int = 0):
+    """Read source documentation or text annotations. Up to 12000 characters."""
     root = Path(context["source_root"])
-    path = (root / arguments["path"]).resolve()
+    path = (root / path).resolve()
     if not path.is_relative_to(root) or not path.is_file():
         raise ValueError("Read a file inside the source root")
     with path.open(encoding="utf-8") as source:
-        source.seek(int(arguments.get("offset", 0)))
+        source.seek(int(offset))
         text = source.read(12000)
     return result("success", text)
 
 
-def write_script(context, arguments):
-    """Write a reproducible preparation or inspection script: {code: string, mapping: string}. No execution yet."""
-    code, mapping = arguments.get("code"), arguments.get("mapping")
+def write_script(context, *, code: str, mapping: str):
+    """Write a reproducible preparation or inspection script. No execution yet."""
     if (
         not isinstance(code, str)
         or not code.strip()
@@ -80,8 +81,8 @@ def write_script(context, arguments):
     )
 
 
-def execute_script(context, arguments):
-    """Execute the saved script in the configured local Docker image: {}. Source is /source, outputs /work."""
+def execute_script(context):
+    """Execute the saved script in the configured local Docker image. Source is /source, outputs /work."""
     if not context.get("script_ready"):
         raise ValueError("Write a script first")
     settings = get_settings().data_processing
@@ -163,7 +164,7 @@ def execute_script(context, arguments):
     )
 
 
-def finish(context, arguments):
+def finish(context):
     if not context.get("script_executed") or not context.get("data_validated"):
         raise ValueError("Execute and validate a preparation script first")
     work = _workspace(context)
@@ -176,7 +177,7 @@ def finish(context, arguments):
     if len(set(paths)) != len(paths):
         raise ValueError("Image manifest paths must be unique")
     for entry in images.values():
-        errors = _image_errors(
+        errors = validate_image_asset(
             {"png_path": entry.relative_png_path, "width": entry.width, "height": entry.height},
             work,
         )
@@ -238,6 +239,11 @@ def compile_data_processing_agent(*, checkpointer=None):
         },
         describe,
         finish,
+        args_schemas={
+            "inspect_files": InspectFilesArguments,
+            "read_text": ReadTextArguments,
+            "write_script": WriteScriptArguments,
+        },
         checkpointer=checkpointer,
     )
     return agent

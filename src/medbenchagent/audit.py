@@ -7,12 +7,12 @@ import math
 import re
 import unicodedata
 from collections import Counter
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 from types import SimpleNamespace
 from medbenchagent.generation import grounding, free_text
 
-from PIL import Image
+from medbenchagent.image_assets import validate_image_asset
 
 from medbenchagent.answer_balance import balance_items
 from medbenchagent.construction import AUDIT_AGENT, record_event
@@ -42,35 +42,6 @@ def _normal(text: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text).casefold()).strip()
 
 
-
-
-def _image_errors(entry: dict[str, Any], root: Path) -> list[str]:
-    png = entry.get("png_path")
-    if not isinstance(png, str):
-        return ["image_manifest_path"]
-    path = PurePosixPath(png)
-    if path.is_absolute() or ".." in path.parts:
-        return ["image_manifest_path"]
-    image_path = root.joinpath(*path.parts)
-    if not image_path.is_file() or image_path.stat().st_size == 0:
-        return ["image_missing"]
-    try:
-        with Image.open(image_path) as image:
-            image.load()
-            if (
-                image.width <= 0
-                or image.height <= 0
-                or image.width != entry.get("width")
-                or image.height != entry.get("height")
-            ):
-                return ["image_dimensions"]
-            thumbnail = image.convert("L").resize((256, 256))
-            minimum, maximum = thumbnail.getextrema()
-            if minimum == maximum:
-                return ["image_pixels"]
-    except (OSError, ValueError):
-        return ["image_decode"]
-    return []
 
 
 def _image_dimensions(entry: dict[str, Any]) -> tuple[int, int] | None:
@@ -164,7 +135,7 @@ def audit_run(
         if entry is None:
             errors.append("image_manifest")
         else:
-            image_errors.setdefault(image_id, _image_errors(entry, Path(manifest_path).parent))
+            image_errors.setdefault(image_id, validate_image_asset(entry, Path(manifest_path).parent))
             errors += image_errors[image_id]
         if isinstance(task, dict) and entry is not None:
             errors += _contract(item, task, _image_dimensions(entry))
