@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from typing import Any, TypedDict
-from medbenchagent.construction import (
+from medbenchagent.runtime.construction import (
     GENERATION_AGENT as GENERATION_AGENT,
 )
 from medbenchagent.contracts import GenerationRequest

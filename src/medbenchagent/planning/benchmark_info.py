@@ -7,8 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from medbenchagent.llm import complete_json
-from medbenchagent.run_artifacts import atomic_write_json
+from medbenchagent.runtime.llm import complete_json
+from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_settings
 
 REQUIRED_FIELDS = ("disease", "modality", "description", "language", "sample_count")

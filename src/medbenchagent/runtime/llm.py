@@ -9,7 +9,7 @@ from typing import Any
 from langsmith.wrappers import wrap_openai
 from openai import APIError, OpenAI
 
-from medbenchagent.construction import record_llm_call
+from medbenchagent.runtime.construction import record_llm_call
 from medbenchagent.settings import get_llm_api_key, get_settings
 
 _CLIENT: OpenAI | None = None

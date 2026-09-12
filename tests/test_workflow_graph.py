@@ -1,5 +1,5 @@
 from langgraph.checkpoint.memory import MemorySaver
-from medbenchagent.harness import compile_agent, result
+from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.workflow.graph import compile_benchmark_graph
 
 
@@ -15,7 +15,9 @@ def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monke
             {"tool": "finish", "arguments": {}, "reason": "Done"},
         ]
     )
-    monkeypatch.setattr("medbenchagent.harness.complete_json", lambda *a, **k: next(actions))
+    monkeypatch.setattr(
+        "medbenchagent.runtime.harness.complete_json", lambda *a, **k: next(actions)
+    )
     calls = []
 
     def compute(context):
@@ -42,7 +44,9 @@ def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monke
 
 
 def test_harness_stops_repeated_invalid_actions(tmp_path, monkeypatch):
-    monkeypatch.setattr("medbenchagent.harness.complete_json", lambda *a, **k: {"invalid": True})
+    monkeypatch.setattr(
+        "medbenchagent.runtime.harness.complete_json", lambda *a, **k: {"invalid": True}
+    )
     graph = compile_agent(
         "TestAgent", "Test", {}, lambda c: {}, lambda c: result("complete", "Done")
     )
@@ -66,7 +70,7 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
     from langgraph.types import Command
 
     clock = [0.0]
-    monkeypatch.setattr("medbenchagent.harness.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("medbenchagent.runtime.harness.time.monotonic", lambda: clock[0])
     actions = iter(
         [
             {"tool": "compute", "arguments": {}, "reason": "Read input"},
@@ -74,7 +78,9 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
             {"tool": "finish", "arguments": {}, "reason": "Complete"},
         ]
     )
-    monkeypatch.setattr("medbenchagent.harness.complete_json", lambda *a, **k: next(actions))
+    monkeypatch.setattr(
+        "medbenchagent.runtime.harness.complete_json", lambda *a, **k: next(actions)
+    )
     calls = []
 
     def compute(context):
@@ -88,7 +94,6 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
             {"compute": compute},
             lambda c: c,
             lambda c: result("complete", "Done"),
-            human=True,
             checkpointer=SqliteSaver(connection),
         )
 
@@ -108,6 +113,6 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
         resumed = build(connection).invoke(Command(resume="English"), config)
     assert calls == [1]
     assert resumed["result"]["status"] == "complete"
-    assert resumed["context"]["user_requirement"].endswith("English")
+    assert resumed["context"]["clarification"]["answer"] == "English"
     assert resumed["elapsed"] == 0
     assert resumed["observations"][0]["summary"] == "Input examined"

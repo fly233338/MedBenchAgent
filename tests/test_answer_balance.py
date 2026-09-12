@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from medbenchagent.answer_balance import balance_jsonl
+from medbenchagent.audit.answer_balance import balance_jsonl
 
 
 def _item(index: int, answer_value: str) -> dict:
@@ -67,6 +67,6 @@ def test_balance_passes_through_bbox_and_free_text_items() -> None:
         },
     ]
 
-    from medbenchagent.answer_balance import balance_items
+    from medbenchagent.audit.answer_balance import balance_items
 
     assert balance_items(records, seed=5) == records

@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from medbenchagent.image_assets import validate_image_asset
+from medbenchagent.data.image_assets import validate_image_asset
 
 from medbenchagent.evaluation.contracts import (
     ImageEntry,
@@ -16,7 +16,7 @@ from medbenchagent.evaluation.contracts import (
     RESPONSE_FORMATS,
     TaskSpec,
 )
-from medbenchagent.image_assets import ImageManifestError, load_image_manifest
+from medbenchagent.data.image_assets import ImageManifestError, load_image_manifest
 from medbenchagent.metrics import metrics_by_response_format
 
 

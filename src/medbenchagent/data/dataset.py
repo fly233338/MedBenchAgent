@@ -7,17 +7,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-import duckdb
 
 from medbenchagent.settings import get_settings
+from medbenchagent.data.validation import AnnotationValidationError, RECORD_ENTITIES, load_annotation_jsonl
 
-RECORD_ENTITIES = ("patient", "case", "study", "image")
-ENTITY_FIELDS = {
-    "patient": {"patient_id", "annotation"},
-    "case": {"case_id", "annotation"},
-    "study": {"study_id", "annotation"},
-    "image": {"image_id", "image_path", "modality", "anatomy", "annotation"},
-}
 PROFILE_SCHEMA_VERSION = "task-capability-profile.v3"
 CACHE_FORMAT_VERSION = "annotation-cache.v7"
 
@@ -48,12 +41,8 @@ FILE_REFERENCE_SUFFIXES = (
 )
 
 
-class AnnotationValidationError(ValueError):
-    """An annotation JSONL record does not meet the stable input contract."""
-
-
 def annotation_schema_path() -> Path:
-    return Path(__file__).parent / "schemas" / "annotation.v2.schema.json"
+    return Path(__file__).parents[1] / "schemas" / "annotation.v2.schema.json"
 
 
 
@@ -78,88 +67,6 @@ def _value_type(value: object) -> str:
 
 def _is_non_empty(value: object) -> bool:
     return value is not None and value not in ("", [], {})
-
-
-def _validate_optional_id(value: object, field: str, line_number: int) -> None:
-    if value is not None and (not isinstance(value, str) or not value.strip()):
-        raise AnnotationValidationError(f"Line {line_number}: {field} must be a non-empty string or null.")
-
-
-def load_annotation_jsonl(annotation_path: str | Path) -> list[dict[str, Any]]:
-    """Validate entity-scoped image records without accessing image files."""
-    path = Path(annotation_path).expanduser().resolve()
-    if path.name != "annotation.jsonl":
-        raise AnnotationValidationError("Input file must be named annotation.jsonl.")
-    if not path.is_file():
-        raise AnnotationValidationError(f"annotation.jsonl does not exist: {path}")
-
-    records: list[dict[str, Any]] = []
-    image_ids: set[str] = set()
-    image_paths: set[str] = set()
-    with path.open("r", encoding="utf-8") as source:
-        for line_number, line in enumerate(source, start=1):
-            if not line.strip():
-                raise AnnotationValidationError(f"Line {line_number}: blank lines are not allowed.")
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise AnnotationValidationError(f"Line {line_number}: invalid JSON.") from exc
-            if not isinstance(record, dict):
-                raise AnnotationValidationError(f"Line {line_number}: record must be a JSON object.")
-            if set(record) != set(RECORD_ENTITIES):
-                raise AnnotationValidationError(
-                    f"Line {line_number}: record must contain only patient, case, study, and image."
-                )
-            for entity_name in RECORD_ENTITIES:
-                entity = record[entity_name]
-                if not isinstance(entity, dict) or set(entity) != ENTITY_FIELDS[entity_name]:
-                    expected = ", ".join(sorted(ENTITY_FIELDS[entity_name]))
-                    raise AnnotationValidationError(
-                        f"Line {line_number}: {entity_name} must contain only {expected}."
-                    )
-                if not isinstance(entity["annotation"], dict):
-                    raise AnnotationValidationError(
-                        f"Line {line_number}: {entity_name}.annotation must be a JSON object."
-                    )
-
-            patient = record["patient"]
-            case = record["case"]
-            study = record["study"]
-            image = record["image"]
-            _validate_optional_id(patient["patient_id"], "patient.patient_id", line_number)
-            _validate_optional_id(case["case_id"], "case.case_id", line_number)
-            _validate_optional_id(study["study_id"], "study.study_id", line_number)
-
-            image_id = image["image_id"]
-            if not isinstance(image_id, str) or not image_id.strip():
-                raise AnnotationValidationError(
-                    f"Line {line_number}: image.image_id must be a non-empty string."
-                )
-            if image_id in image_ids:
-                raise AnnotationValidationError(
-                    f"Line {line_number}: duplicate image.image_id: {image_id}."
-                )
-            image_ids.add(image_id)
-            image_path = image["image_path"]
-            if not isinstance(image_path, str) or not image_path.strip():
-                raise AnnotationValidationError(
-                    f"Line {line_number}: image.image_path must be a non-empty string."
-                )
-            if image_path in image_paths:
-                raise AnnotationValidationError(
-                    f"Line {line_number}: duplicate image.image_path: {image_path}."
-                )
-            image_paths.add(image_path)
-            for field in ("modality", "anatomy"):
-                value = image[field]
-                if value is not None and (not isinstance(value, str) or not value.strip()):
-                    raise AnnotationValidationError(
-                        f"Line {line_number}: image.{field} must be a non-empty string or null."
-                    )
-            records.append({**record, "_source_row": line_number})
-    if not records:
-        raise AnnotationValidationError("annotation.jsonl contains no records.")
-    return records
 
 
 def _should_include_top_values(path: str) -> bool:
@@ -342,6 +249,7 @@ def build_dataset_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _write_database(records: list[dict[str, Any]], database_path: Path) -> None:
+    import duckdb
     connection = duckdb.connect(str(database_path))
     try:
         connection.execute(
@@ -379,7 +287,7 @@ def _write_database(records: list[dict[str, Any]], database_path: Path) -> None:
 
 
 def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Path, *, revision: str = "1", refresh: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Validate JSONL and build or reuse its explicitly versioned DuckDB/profile cache."""
+    """Build/reuse one run-local input cache; callers isolate new runs and input versions."""
     source_path = Path(annotation_path).expanduser().resolve()
     if source_path.name != "annotation.jsonl":
         raise AnnotationValidationError("Input file must be named annotation.jsonl.")
@@ -387,14 +295,19 @@ def prepare_annotation_dataset(annotation_path: str | Path, cache_root: str | Pa
         raise AnnotationValidationError(f"annotation.jsonl does not exist: {source_path}")
     if not revision or not revision.isalnum():
         raise ValueError("Cache revision must be alphanumeric.")
-    source_key = source_path.as_posix().replace(":", "").lstrip("/")
     profile_settings = get_settings().dataset_profile
     profile_key = f"top-{profile_settings.max_top_values}-chars-{profile_settings.max_top_value_chars}"
-    cache_dir = Path(cache_root) / CACHE_FORMAT_VERSION / profile_key / source_key / revision
+    cache_dir = Path(cache_root) / CACHE_FORMAT_VERSION / profile_key / revision
+    if refresh:
+        from uuid import uuid4
+        cache_dir = cache_dir / str(uuid4())
     database_path = cache_dir / "dataset.duckdb"
     profile_path = cache_dir / "dataset_profile.json"
     manifest_path = cache_dir / "dataset_access_manifest.json"
     if not refresh and database_path.is_file() and profile_path.is_file() and manifest_path.is_file():
+        saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if saved["annotation_path"] != str(source_path):
+            raise ValueError("Use a new run-local cache directory for a different dataset")
         return (
             json.loads(profile_path.read_text(encoding="utf-8")),
             json.loads(manifest_path.read_text(encoding="utf-8")),

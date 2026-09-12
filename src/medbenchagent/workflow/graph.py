@@ -11,16 +11,17 @@ from langgraph.graph import StateGraph, START, END
 from medbenchagent.agents.generation import compile_generation_agent, run_generation
 from medbenchagent.agents.audit import run_audit
 from medbenchagent.agents.task_planning import compile_task_planning_agent
-from medbenchagent.benchmark_info import (
+from medbenchagent.planning.benchmark_info import (
     extract_benchmark_info,
     missing_fields,
     write_working_blueprint,
 )
-from medbenchagent.harness import compile_agent, result
-from medbenchagent.tool_contracts import FeedbackArguments, PrepareDataArguments
-from medbenchagent.run_artifacts import initialize_run
-from medbenchagent.run_export import finalize_run
-from medbenchagent.settings import get_settings
+from medbenchagent.runtime.harness import compile_agent, result
+from medbenchagent.runtime.tool_contracts import FeedbackArguments, PrepareDataArguments
+from medbenchagent.runtime.run_artifacts import initialize_run
+from medbenchagent.runtime.run_export import finalize_run
+from medbenchagent.settings import get_settings, run_settings
+from medbenchagent.runtime.dependencies import publish, require, initialize_dependencies, verify_resume
 
 
 class BenchmarkInputState(TypedDict, total=False):
@@ -87,9 +88,7 @@ def specify(context):
         benchmark_info=info,
         brief_ready=True,
         working_blueprint_path=str(path),
-        planned=False,
-        generated=False,
-        audited=False,
+        **publish(context, "Requirement", {"path": str(path), "brief": info}, ()),
     )
 
 
@@ -110,9 +109,8 @@ def describe(context):
             "brief_ready",
             "selected_dataset_id",
             "annotation_path",
-            "planned",
-            "generated",
-            "audited",
+            "artifact_versions",
+            "global_issue",
             "generation_shortfalls",
             "audit_summary",
             "last_agent_result",
@@ -130,20 +128,11 @@ def compile_benchmark_graph(*, checkpointer=None):
         if not context.get("brief_ready"):
             raise ValueError("Extract and clarify the brief first")
         child_context = dict(context, feedback=feedback)
-        if context.get("dataset_access_manifest"):
-            child_context["dataset_profile"] = json.loads(
-                Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8")
-            )
         output = planning.invoke({"context": child_context})
         updates = _child_updates(output)
-        updates.update(
-            planned=output["result"]["status"] == "complete",
-            generated=False,
-            audited=False,
-            last_agent_result=output["result"]["summary"],
-        )
+        updates.update(last_agent_result=output["result"]["summary"])
         return result(
-            "success" if updates["planned"] else "failed", output["result"]["summary"], **updates
+            "success" if output["result"]["status"] in {"complete", "escalate"} else "failed", output["result"]["summary"], **updates
         )
 
     def prepare_data(context, *, source_root: str, dataset_id: str, feedback: str = ""):
@@ -154,7 +143,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         )
 
         source = source_root
-        if not isinstance(source, str) or not Path(source).is_dir():
+        if context.get("original_source_root") != str(Path(source).resolve()) and not Path(source).is_dir():
             raise ValueError("Provide the existing raw source directory from the user's request")
         prepared = preparation_context(
             context, str(Path(source).resolve()), dataset_id
@@ -163,13 +152,10 @@ def compile_benchmark_graph(*, checkpointer=None):
         output = compile_data_processing_agent().invoke({"context": prepared})
         updates = _child_updates(output)
         updates.update(
-            planned=False,
-            generated=False,
-            audited=False,
             last_agent_result=output["result"]["summary"],
         )
         return result(
-            "success" if output["result"]["status"] == "complete" else "failed",
+            "success" if output["result"]["status"] in {"complete", "escalate"} else "failed",
             output["result"]["summary"],
             **updates,
         )
@@ -179,8 +165,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         return run_generation(context, generation, feedback=feedback)
 
     def finish(context):
-        if not context.get("audited"):
-            raise ValueError("Audit the current batch before finishing")
+        require(context, "Audit")
         directory = Path(context["run_directory"])
         published = {}
         for key, source in {
@@ -242,7 +227,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         "SupervisorAgent",
         "Build the requested Medical VLM benchmark. Extract the brief. If the user supplies raw data, prepare it; "
         "otherwise planning can select catalog data. Delegate planning, generation and audit as needed. "
-        "You alone ask the user when a brief, source semantics or unresolved agent result needs clarification. "
+        "Ask the user about global goals or a global_issue escalated by a specialist. Specialists ask local questions directly. "
         "No routine stage confirmations. Review audit feedback and shortfalls before finishing; rework the "
         "responsible module only when evidence suggests it can help. Never silently lower the requested target. "
         "Finite data exhaustion can finish with explicit shortfalls. Semantic flags are advisory, not automatic rejection.",
@@ -260,7 +245,6 @@ def compile_benchmark_graph(*, checkpointer=None):
             "prepare_data": PrepareDataArguments,
             "generate": FeedbackArguments,
         },
-        human=True,
     )
 
     def initialize(state):
@@ -292,10 +276,13 @@ def compile_benchmark_graph(*, checkpointer=None):
             operation_directory=str(Path(run["run_directory"]) / ".runtime"),
             limits=settings.harness,
         )
+        initialize_dependencies(context, settings)
         return dict(run, context=context)
 
     def run_supervisor(state):
-        output = supervisor.invoke({"context": state["context"]})
+        verify_resume(state["context"])
+        with run_settings(state["context"]["effective_config_path"]):
+            output = supervisor.invoke({"context": state["context"]})
         public = {
             key: value
             for key, value in output["context"].items()

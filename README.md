@@ -22,7 +22,8 @@ and telemetry; the configured language-model API is still used.
 
 The static task template is `config/blueprint.json`. Runs never write back to this file.
 The CLI stores checkpoints in the configured runs directory and prints a resume identifier before execution.
-Keep source data, configuration and prepared model assets unchanged while resuming a run.
+Resume reads the saved run configuration and input snapshots. Code or runtime-contract changes require a new run.
+Keep the run directory and prepared model assets intact; external input changes are picked up by a new run.
 
 ## Standard data interface
 
@@ -42,11 +43,10 @@ IDs and paths must be unique. Use explicit pixel xyxy bounding boxes.
 Existing standard data bypasses DataProcessingAgent. A supplied annotation path and dataset ID can also be
 selected directly without registering it in the catalog.
 
-Dataset caches use source paths and explicit revisions. Call
-`prepare_annotation_dataset(annotation_path, cache_root, refresh=True)` to refresh changed data.
-PDF caches use an explicit source/model description and revision; use
-`LocalPdfRag(materials_root, cache_root, selected_files, refresh=True)` to rebuild.
-There is no content-based invalidation: changes to inputs require an explicit refresh.
+Each run copies selected inputs and builds its own DuckDB/profile and PDF caches. Prepared inputs are reused
+within that run; no cache is shared with another run merely because the source path is unchanged.
+Refreshing a profile creates a new Dataset version from the saved input. There is no content fingerprinting
+or detection of out-of-band changes to the run directory. Start a new run to adopt external input changes.
 
 ## Optional raw-data preparation
 
@@ -64,12 +64,18 @@ The image name and timeout are configured in `[data_processing]`.
 Generated scripts run with no network, a read-only source mount and a writable preparation directory.
 The repository does not execute generated scripts directly on the host.
 Only two-dimensional images are in scope. Ambiguous joins, labels or display transformations require clarification.
-Conversion scripts and a concise mapping description are retained with prepared data.
+Preparation proceeds through source inventory, structured mapping, annotation validation, image encoding
+selection and joint validation. Annotation and image scripts are separate; the image stage mounts annotation
+read-only. PNG/JPEG bytes are copied unchanged, while other supported 2D formats preserve representable
+pixels in PNG. A display window requires reliable source evidence or a recorded user decision. Each stage
+can be revised independently; the inventory, plans, scripts and one validation result are retained.
 
 ## Planning, templates and audit
 
-TaskPlanningAgent reuses the complete-task planning, targeted revision, weighted sample allocation,
-field-value queries and medical-design logic. PDF retrieval supplies medical context, not per-item answers.
+TaskPlanningAgent queries tasks, fields and references progressively, screens one existing task category at
+a time, then globally reconciles compact decisions before expanding the Blueprint. Family drafts cannot be
+generated directly. Revisions re-screen affected families and repeat global coordination, preserving
+unchanged designs when their references are unchanged. Weighted allocation and medical task rules remain. PDF retrieval supplies medical context, not per-item answers.
 
 GenerationAgent builds and reviews a template library once per task. The number of variants is controlled by
 `generation.question_template_count`. Templates are rendered by code; the batch does not make per-item
@@ -85,7 +91,7 @@ The Supervisor can request bounded rework and reports data exhaustion through pe
 
 The final run directory contains:
 
-- `blueprint.json` and versioned planning snapshots under `blueprints/`.
+- `blueprint.json` and immutable planning versions under `.runtime/`.
 - `templates.json`, raw items and the audited benchmark JSONL.
 - `benchmark_manifest.json` with task metrics and relative artifact paths.
 - One `audit_report.json` with hard and semantic decisions.
@@ -99,7 +105,9 @@ Historical outputs are not migrated or deleted automatically.
 
 The `[harness]` settings limit agent actions, elapsed execution time, consecutive failures and repeated rework.
 Human waiting time is excluded from the execution budget. Each agent retains bounded private tool observations.
-Runtime receipts let an interrupted action reuse completed outputs. An exhausted budget returns a blocked status,
+Specialists ask local questions directly; only global goal/resource decisions go through the Supervisor.
+Runtime receipts bind validated parameters and dependency versions to completed outputs. The compact
+`.runtime/artifacts.json` index makes stale Plans, Generations and Audits ineligible for delivery. An exhausted budget returns a blocked status,
 rather than reporting a completed benchmark. Semantic uncertainty is surfaced to the user.
 
 ## Development

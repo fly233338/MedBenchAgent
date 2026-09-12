@@ -2,7 +2,7 @@ import json
 import re
 from pathlib import Path
 
-from medbenchagent.run_artifacts import initialize_run
+from medbenchagent.runtime.run_artifacts import initialize_run
 
 
 def test_initialize_run_prepares_uuid_directory_and_event_file(tmp_path: Path) -> None:

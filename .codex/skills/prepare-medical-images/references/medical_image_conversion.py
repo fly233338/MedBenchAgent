@@ -1,16 +1,10 @@
-"""Reference functions for converting one 2D medical image to grayscale PNG.
-
-Copy only the handlers needed by the current dataset into its generated
-conversion script. Expected packages are numpy, Pillow, pydicom with the
-required pixel decoders, nibabel, and SimpleITK.
-"""
+"""Content detection and explicit, geometry-preserving 2D image conversion."""
 
 from __future__ import annotations
 
 import gzip
 import struct
 from pathlib import Path
-from typing import Any
 
 WSI_SUFFIXES = {".bif", ".mrxs", ".ndpi", ".scn", ".svs"}
 NIFTI_SUFFIXES = {".nii"}
@@ -87,6 +81,14 @@ def detect_format(path: Path) -> str | None:
     lower_name = path.name.lower()
     if path.suffix.lower() in WSI_SUFFIXES:
         raise UnsupportedMedicalImage(f"whole-slide image is unsupported: {path.name}")
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            if image.format in RASTER_FORMATS:
+                return f"raster:{image.format.lower()}"
+    except (OSError, ValueError):
+        pass
     if lower_name.endswith(".nii.gz") or path.suffix.lower() in NIFTI_SUFFIXES:
         return "nifti"
     if path.suffix.lower() in ITK_SUFFIXES:
@@ -97,192 +99,102 @@ def detect_format(path: Path) -> str | None:
         return "itk"
     if _looks_like_dicom(path):
         return "dicom"
-    try:
-        from PIL import Image
-
-        with Image.open(path) as image:
-            if image.format in RASTER_FORMATS:
-                return f"raster:{image.format.lower()}"
-    except Exception:
-        return None
     return None
 
 
-def _normalize_numeric(array: Any) -> tuple[Any, str]:
-    import numpy as np
-
-    values = np.asarray(array, dtype=np.float64)
-    finite = np.isfinite(values)
-    if not finite.any():
-        raise ConversionError("image contains no finite pixel values")
-    finite_values = values[finite]
-    low, high = np.percentile(finite_values, [0.5, 99.5])
-    if high <= low:
-        return np.zeros(values.shape, dtype=np.uint8), "constant_to_zero"
-    scaled = np.clip((values - low) / (high - low), 0.0, 1.0)
-    scaled[~finite] = 0.0
-    return np.rint(scaled * 255.0).astype(np.uint8), "percentile_0.5_99.5"
-
-
-def _scalar_image(array: Any) -> tuple[Any, str]:
-    from PIL import Image
-
-    gray, normalization = _normalize_numeric(array)
-    return Image.fromarray(gray), normalization
-
-
-def _grayscale_color_image(array: Any) -> tuple[Any, str]:
-    """Accept grayscale stored in color channels and reject genuine color."""
+def _pixels(path):
     import numpy as np
     from PIL import Image
-
-    values = np.asarray(array)
-    if values.ndim != 3 or values.shape[-1] not in {3, 4}:
-        raise ConversionError(f"expected HxWx3/4 color pixels, got {values.shape}")
-    if values.dtype == np.uint8:
-        rendered = values
-        normalization = "preserved_uint8_channels"
-    else:
-        rendered, normalization = _normalize_numeric(values)
-    red, green, blue = rendered[..., 0], rendered[..., 1], rendered[..., 2]
-    if not (np.array_equal(red, green) and np.array_equal(red, blue)):
-        raise UnsupportedMedicalImage("genuinely color images require explicit user direction")
-    gray = red
-    if rendered.shape[-1] == 4:
-        alpha = rendered[..., 3].astype(np.float64) / 255.0
-        gray = np.rint(gray.astype(np.float64) * alpha).astype(np.uint8)
-        normalization += "+alpha_on_black"
-    return Image.fromarray(gray), normalization
-
-
-def _convert_raster(path: Path) -> tuple[Any, str]:
-    import numpy as np
-    from PIL import Image
-
-    with Image.open(path) as source:
-        if getattr(source, "n_frames", 1) != 1:
-            raise UnsupportedMedicalImage(f"multi-page raster is unsupported: {path.name}")
-        if source.format == "TIFF" and source.tag_v2.get(330):
-            raise UnsupportedMedicalImage(f"pyramidal TIFF is unsupported: {path.name}")
-        source.load()
-        if source.mode in {"I", "I;16", "I;16B", "I;16L", "F"}:
-            return _scalar_image(np.asarray(source))
-        if source.mode in {"1", "L"}:
-            return source.convert("L"), "preserved_display_values"
-        has_alpha = source.mode in {"LA", "RGBA"} or "transparency" in source.info
-        rendered = source.convert("RGBA") if has_alpha else source.convert("RGB")
-        return _grayscale_color_image(np.asarray(rendered))
-
-
-def _convert_dicom(path: Path) -> tuple[Any, str]:
-    import numpy as np
-    from PIL import Image
-    from pydicom import dcmread
-    from pydicom.pixels import (
-        apply_color_lut,
-        apply_modality_lut,
-        apply_voi_lut,
-        convert_color_space,
-    )
-
-    dataset = dcmread(path)
-    frames = int(getattr(dataset, "NumberOfFrames", 1) or 1)
-    if frames != 1:
-        raise UnsupportedMedicalImage(f"multi-frame DICOM is unsupported: {path.name}")
-    if hasattr(dataset, "pixel_array_options"):
-        dataset.pixel_array_options(raw=True)
-    try:
-        pixels = dataset.pixel_array
-    except Exception as exc:
-        syntax = getattr(getattr(dataset, "file_meta", None), "TransferSyntaxUID", "unknown")
-        raise ConversionError(f"cannot decode DICOM transfer syntax {syntax}: {exc}") from exc
-
-    photometric = str(getattr(dataset, "PhotometricInterpretation", "")).upper()
-    if photometric == "PALETTE COLOR":
-        image, normalization = _grayscale_color_image(apply_color_lut(pixels, dataset))
-        return image, f"dicom_palette_color_lut+{normalization}"
-    if photometric in {"RGB", "YBR_FULL", "YBR_FULL_422"}:
-        color = np.asarray(pixels)
-        normalization = "dicom_rgb"
-        if photometric.startswith("YBR"):
-            color = convert_color_space(color, photometric, "RGB")
-            normalization = "dicom_ybr_to_rgb"
-        image, channel_normalization = _grayscale_color_image(color)
-        return image, f"{normalization}+{channel_normalization}"
-    if np.asarray(pixels).ndim != 2:
-        raise ConversionError(f"unsupported DICOM pixel shape: {np.asarray(pixels).shape}")
-
-    transformed = apply_modality_lut(pixels, dataset)
-    steps = ["dicom_modality_lut_or_rescale"]
-    has_voi = hasattr(dataset, "VOILUTSequence") or (
-        hasattr(dataset, "WindowCenter") and hasattr(dataset, "WindowWidth")
-    )
-    if has_voi:
-        transformed = apply_voi_lut(transformed, dataset, index=0)
-        steps.append("voi_lut_or_window_0")
-    gray, normalization = _normalize_numeric(transformed)
-    steps.append(normalization)
-    inverse = (
-        photometric == "MONOCHROME1"
-        or str(getattr(dataset, "PresentationLUTShape", "")).upper() == "INVERSE"
-    )
-    if inverse:
-        gray = 255 - gray
-        steps.append("inverse")
-    return Image.fromarray(gray), "+".join(steps)
-
-
-def _convert_nifti(path: Path) -> tuple[Any, str]:
-    import nibabel as nib
-    import numpy as np
-
-    image = nib.load(path)
-    data = np.squeeze(image.get_fdata(dtype=np.float32, caching="unchanged"))
-    if data.ndim != 2:
-        raise UnsupportedMedicalImage(f"NIfTI must squeeze to 2D, got {data.shape}: {path.name}")
-    converted, normalization = _scalar_image(data)
-    return converted, f"nifti_scaled+{normalization}"
-
-
-def _convert_itk(path: Path) -> tuple[Any, str]:
-    import numpy as np
-    import SimpleITK as sitk
-
-    image = sitk.ReadImage(str(path))
-    data = np.squeeze(sitk.GetArrayFromImage(image))
-    if data.ndim != 2:
-        raise UnsupportedMedicalImage(f"ITK image must squeeze to 2D: {path.name}")
-    converted, normalization = _scalar_image(data)
-    return converted, f"itk_scaled+{normalization}"
-
-
-def convert_image(path: Path) -> tuple[Any, str, str]:
-    """Return a grayscale Pillow image, detected format, and normalization."""
     detected = detect_format(path)
-    if detected is None:
-        raise ConversionError(f"unrecognized image format: {path.name}")
-    if detected.startswith("raster:"):
-        image, normalization = _convert_raster(path)
-    elif detected == "dicom":
-        image, normalization = _convert_dicom(path)
+    window = None
+    inverse = False
+    if detected and detected.startswith("raster:"):
+        with Image.open(path) as image:
+            if getattr(image, "n_frames", 1) != 1 or (image.format == "TIFF" and image.tag_v2.get(330)):
+                raise UnsupportedMedicalImage("Multiframe or pyramidal raster is unsupported")
+            image.load()
+            return image.copy(), detected, window, inverse
+    if detected == "dicom":
+        from pydicom import dcmread
+        from pydicom.pixels import apply_modality_lut
+        dataset = dcmread(path)
+        if int(getattr(dataset, "NumberOfFrames", 1)) != 1:
+            raise UnsupportedMedicalImage("Multiframe DICOM is unsupported")
+        pixels = apply_modality_lut(dataset.pixel_array, dataset)
+        if str(getattr(dataset, "PhotometricInterpretation", "")) not in {"MONOCHROME1", "MONOCHROME2"}:
+            raise UnsupportedMedicalImage("Color DICOM requires a documented color conversion")
+        inverse = str(dataset.PhotometricInterpretation) == "MONOCHROME1"
+        center, width = getattr(dataset, "WindowCenter", None), getattr(dataset, "WindowWidth", None)
+        # A single linear window is source-supported; never choose among multiple windows.
+        if isinstance(center, (int, float)) and isinstance(width, (int, float)) and float(width) > 1:
+            if str(getattr(dataset, "VOILUTFunction", "LINEAR")) == "LINEAR":
+                window = [float(center) - 0.5 - (float(width)-1)/2,
+                          float(center) - 0.5 + (float(width)-1)/2]
     elif detected == "nifti":
-        image, normalization = _convert_nifti(path)
+        import nibabel as nib
+        pixels = np.squeeze(np.asanyarray(nib.load(path).dataobj))
+    elif detected == "itk":
+        import SimpleITK as sitk
+        pixels = np.squeeze(sitk.GetArrayFromImage(sitk.ReadImage(str(path))))
     else:
-        image, normalization = _convert_itk(path)
-    if image.mode != "L":
-        raise ConversionError(f"conversion did not produce grayscale pixels: {path.name}")
-    return image, detected, normalization
+        raise UnsupportedMedicalImage(f"Unsupported image: {path.name}")
+    if pixels.ndim != 2:
+        raise UnsupportedMedicalImage(f"Only 2D images are supported, got {pixels.shape}")
+    return pixels, detected, window, inverse
 
 
-def write_png(source_path: Path, output_path: Path) -> dict[str, object]:
-    """Convert one source image and write a deterministic grayscale PNG."""
-    image, detected, normalization = convert_image(source_path)
+def inspect_image(path):
+    """Return format/geometry and any source-supported display window, without transforming pixels."""
+    import numpy as np
+    from PIL import Image
+    pixels, detected, window, inverse = _pixels(Path(path))
+    if isinstance(pixels, Image.Image):
+        size, mode = pixels.size, pixels.mode
+        safe = mode in {"1", "L", "LA", "RGB", "RGBA", "P", "I;16"}
+    else:
+        size, mode = (pixels.shape[1], pixels.shape[0]), str(pixels.dtype)
+        safe = pixels.dtype in (np.dtype("uint8"), np.dtype("uint16")) and not inverse
+    return {"format": detected, "width": size[0], "height": size[1], "mode": mode,
+            "copy": detected in {"raster:png", "raster:jpeg"}, "preserve_supported": safe,
+            "window": window, "invert": inverse}
+
+
+def convert_image(path, policy=None):
+    """Preserve representable pixels or apply an explicitly selected linear display window."""
+    import numpy as np
+    from PIL import Image
+    policy = policy or {"encoding": "preserve"}
+    pixels, detected, window, inverse = _pixels(Path(path))
+    info = inspect_image(path)
+    if policy["encoding"] == "preserve":
+        if not info["preserve_supported"]:
+            raise ConversionError("A documented display window or explicit user decision is required")
+        image = pixels if isinstance(pixels, Image.Image) else Image.fromarray(pixels)
+    elif policy["encoding"] == "window":
+        low, high = policy["low"], policy["high"]
+        if not np.isfinite([low, high]).all() or low >= high:
+            raise ConversionError("Display window requires finite low < high")
+        values = np.asarray(pixels, dtype=np.float64)
+        if values.ndim != 2 or not np.isfinite(values).all():
+            raise ConversionError("Windowing requires finite scalar 2D pixels")
+        rendered = np.rint(np.clip((values-low)/(high-low), 0, 1)*255).astype(np.uint8)
+        if policy.get("invert", False):
+            rendered = 255-rendered
+        image = Image.fromarray(rendered)
+    else:
+        raise ConversionError("Unknown image encoding")
+    return image, detected, policy["encoding"]
+
+
+def write_image(source_path, output_path, policy=None):
+    """Copy PNG/JPEG bytes; write other supported 2D inputs as PNG without spatial changes."""
+    import shutil
+    source_path, output_path = Path(source_path), Path(output_path)
+    info = inspect_image(source_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(output_path, format="PNG", compress_level=9)
-    return {
-        "detected_format": detected,
-        "width": image.width,
-        "height": image.height,
-        "mode": image.mode,
-        "normalization": normalization,
-    }
+    if info["copy"]:
+        shutil.copyfile(source_path, output_path)
+    else:
+        image, _, _ = convert_image(source_path, policy)
+        image.save(output_path, format="PNG", compress_level=9)
+    return info

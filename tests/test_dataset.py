@@ -4,7 +4,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from medbenchagent.dataset import (
+from medbenchagent.data.dataset import (
     AnnotationValidationError,
     annotation_schema_path,
     prepare_annotation_dataset,
@@ -67,7 +67,7 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
 ) -> None:
     annotation_path = _write_annotation_dataset(tmp_path, _records())
     monkeypatch.setattr(
-        "medbenchagent.llm.complete_json", lambda *_args: pytest.fail("LLM must not be called")
+        "medbenchagent.runtime.llm.complete_json", lambda *_args: pytest.fail("LLM must not be called")
     )
 
     profile, manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
@@ -153,7 +153,7 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
         connection.close()
 
     monkeypatch.setattr(
-        "medbenchagent.dataset.load_annotation_jsonl", lambda _path: pytest.fail("cache not used")
+        "medbenchagent.data.dataset.load_annotation_jsonl", lambda _path: pytest.fail("cache not used")
     )
     assert prepare_annotation_dataset(annotation_path, tmp_path / "cache") == (profile, manifest)
 
@@ -229,7 +229,7 @@ def test_compact_profile_deduplicates_repeated_findings_and_limits_values(
                         "long_text": f"value-{index:02d}-" + "x" * 220,
                         "source_path": f"private/value-{index}.txt",
                         "findings": [{"kind": "mass"}, {"kind": "mass"}],
-                        "bbox": [index, index + 1],
+                        "bbox": [index, index + 1, index + 2, index + 3],
                     },
                 },
             }

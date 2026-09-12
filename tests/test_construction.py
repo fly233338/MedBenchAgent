@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from medbenchagent.construction import (
+from medbenchagent.runtime.construction import (
     event_context,
     record_llm_call,
 )

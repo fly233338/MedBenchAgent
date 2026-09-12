@@ -15,12 +15,13 @@ from medbenchagent.agents.contracts import (
     GenerationAgentState,
 )
 from medbenchagent.contracts import GenerationRequest
-from medbenchagent.construction import event_context
+from medbenchagent.runtime.construction import event_context
 from medbenchagent.generation.templates import build_templates
-from medbenchagent.harness import result
-from medbenchagent.run_artifacts import atomic_write_json
+from medbenchagent.runtime.harness import result
+from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.generation.graph import compile_generation_subgraph
 from medbenchagent.settings import get_settings
+from medbenchagent.runtime.dependencies import publish, require
 
 
 def _generation_request_node(state: GenerationAgentState) -> dict[str, Any]:
@@ -65,8 +66,7 @@ def compile_generation_agent(*, checkpointer: Any = None):
 
 def run_generation(context, graph, *, feedback: str = ""):
     """Build/review templates and instantiate questions. Requires a complete plan."""
-    if not context.get("planned"):
-        raise ValueError("Finish planning first")
+    require(context, "Plan")
     batch = Path(context["operation_directory"]) / "batch"
     batch.mkdir(parents=True, exist_ok=True)
     blueprint_file = batch / "blueprint.json"
@@ -94,6 +94,7 @@ def run_generation(context, graph, *, feedback: str = ""):
             batch / "templates.json",
             {key: value.get("question_templates", []) for key, value in blueprint["tasks"].items()},
         )
+    publish(context, "Templates", {"path": str(batch / "templates.json")})
     profile = json.loads(
         Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8")
     )
@@ -106,6 +107,9 @@ def run_generation(context, graph, *, feedback: str = ""):
         "Batch generated",
         **output,
         working_blueprint_path=str(blueprint_file),
-        generated=True,
-        audited=False,
+        **publish(
+            context,
+            "Generation",
+            {"raw": output["raw_output_path"], "blueprint": str(blueprint_file)},
+        ),
     )

@@ -7,102 +7,125 @@
 项目基于 LangGraph，从自然语言需求、标准图像级标注和医学 PDF 构建 Medical VLM benchmark。
 构建仍以 annotation 为事实来源，不调用视觉模型推断标签。图像处理与独立 evaluation 子系统各自保持边界。
 
-## 自主编排
+## 模块边界
 
-入口为 `medbenchagent.workflow.graph:benchmark_graph`。
-根图初始化运行目录，随后执行 SupervisorAgent；它通过受限 JSON 行动调用工具，根据反馈继续、求助或结束。
+- `runtime/`：JSON 行动 Harness、Pydantic 工具契约、依赖版本、运行产物、事件、模型客户端。
+- `planning/`：需求提取、任务族筛选、全局协调、题量分配。
+- `data/`：数据目录与缓存、profile、公共标注/图像校验、来源检查和二维图像转换。
+- `audit/`：硬审计、语义审查和答案位置平衡。
+- `agents/`、`generation/`、`rag/`、`evaluation/`、`workflow/` 保持角色与业务边界。
 
-- Supervisor 的 specify 工具复用需求提取；完整性由代码检查，不推断缺失目标。
-- TaskPlanningAgent 使用独立行动循环，工具覆盖数据集选择、profile、完整 Task Plan、单任务修订、
-  题量分配、资料选择和医学设计。规划与指标选择复用原有领域函数。
-- DataProcessingAgent 是可选的数据接入入口，检查原始来源，编写和执行转换脚本，输出标准 annotation、
-  图像及 manifest。标准数据可以绕过它。
-- GenerationAgent 先构建、审核模板，再以原有生成子图遍历候选、固定答案并实例化题干。
-- Audit 使用确定性检查与抽样语义筛查，向 Supervisor 返回拒绝原因、问题任务和计数。
+原根目录模块路径已删除，不提供转发层。公共标注 Schema 仍在 `schemas/annotation.v2.schema.json`。
 
-Specification 与 MedicalAlign 不再是固定角色阶段。医学设计属于规划，模板属于生成。
-例行人工确认已移除；专业 Agent 返回未解决的问题，由 Supervisor 发起自然语言澄清。
-Supervisor 可以选择返工，但不能绕过规划完整性、生成契约和最终审计。
+## 自主编排与工具契约
 
-## Harness、状态与恢复
+入口为 `medbenchagent.workflow.graph:benchmark_graph`。根图初始化运行目录后执行 SupervisorAgent；
+它通过受限 JSON 行动选择需求提取、数据准备、规划、生成或审计。医学任务、答案规则和指标不变。
 
-`harness.py` 提供共享的模型行动循环，行动包含 tool、arguments、reason。
-只允许注册工具和 finish/ask_user；`tool_contracts.py` 定义严格的 Pydantic 参数模型，
-Harness 向模型提供 JSON Schema，并在调用前统一验证必填字段、类型、范围和额外字段。
-普通工具通过 LangChain StructuredTool 接收验证后的具名参数；无参工具、finish 和 ask_user
-也遵循同一契约。参数错误返回带字段位置的 errors；内部 KeyError/TypeError 向外传播，
-不伪装成可修复的模型参数错误。领域前置条件仍由工具检查，工具返回 status、summary、updates。
-专业 Agent 的 needs_input 返回 Supervisor；只有 Supervisor 的 ask_user 使用 interrupt。
-各 Agent 保留有界的私有工具观察记录；数据处理提示还包含当前脚本与映射说明，供连续修订。
+`runtime/harness.py` 提供共享行动循环，行动包含 tool、arguments、reason。
+`runtime/tool_contracts.py` 定义严格 Pydantic 模型；模型看到 JSON Schema，调用前验证必填字段、
+类型、枚举、范围与额外字段。普通工具经 LangChain StructuredTool 接收具名参数；finish 和 ask_user
+采用相同参数校验。参数错误返回定位到字段的 errors；内部 KeyError/TypeError 向外传播。
+领域工具负责数据存在性、字段可用性和阶段前置条件。
 
-根图公开输出只包含结果、状态与路径；context 属于内部运行状态。
-模型决策只接收角色需要的摘要，完整记录不进入 Supervisor 提示。
-规划的完整 profile 位于私有上下文；返回根图时使用 access manifest 中的 profile 路径。
+专业 Agent 使用共享 ask_user 直接 interrupt，记录角色、问题、方案引用与回答，CLI 统一展示并恢复原
+checkpoint。相同角色/方案/问题复用已记录决定。scope=global 的跨职责问题返回 Supervisor；局部问题
+不需要 Supervisor 转述，不作为失败计数。Supervisor 澄清需求后产生新的需求版本，必须重新提取完整 brief。
 
-终端入口使用 SQLite checkpoint，支持 `build --resume <identifier>`。
-内部 `.runtime/` 保存完成操作的回执和工作产物；重放相同操作复用已有结果，不重复执行已完成工具。
-生成子图保留逐行 checkpoint、阶段游标及进度合并。raw 已存在时复用完成结果。
-运行恢复要求输入与配置不变；不存在内容指纹或自动输入变更检测。
+各 Agent 的私有观察最多保留六条，每条摘要最多 800 字符并附回执引用；最近工具结果最多向模型展示
+6000 字符。完整产物与回执在运行目录中。需求摘要、当前版本、进度和待处理问题进入 describe，完整 profile、
+Blueprint、脚本与 PDF 内容通过查询工具渐进读取。公开图输出只含结果、状态和路径。
 
-配置中的 harness 限制每个 Agent 的行动次数、执行时间、连续失败和相同行动的重复次数。
-人工等待不计入执行时间。预算耗尽返回 blocked。工具异常携带可操作原因；语义筛查的模型失败仍采用观察性 fail-open。
-重新规划或重新处理数据使生成和审计状态失效；重新生成使审计失效。
-规划绑定 annotation 路径与显式数据版本；切换数据或刷新 profile 后必须重新规划。
-更换资料会清除旧医学设计，已完成数据准备的返工使用新目录。
-各次执行的工作目录独立，避免原地修改已完成批次。
+## 运行快照、依赖与恢复
 
-## 数据与答案契约
+新运行使用独立目录，保存有效配置、任务模板、数据目录和可选医学资料库的本地快照。
+选中标准数据时复制 annotation、manifest 及其精确引用图像；原始数据准备首次接入时复制来源目录。
+同一运行后续处理使用保存的输入。DuckDB/profile 与 PDF 分块/索引位于运行内部，不跨运行按路径复用。
+profile refresh 创建新 Dataset 版本；PDF refresh 创建新缓存目录并保留旧缓存。没有输入内容指纹或散列检测。
+需要采用外部新输入时启动新运行；系统不检测用户绕过系统修改运行目录的行为。
 
-标准输入仍由 `schemas/annotation.v2.schema.json` 定义：
-每行一张图，包含 patient、case、study、image，各实体拥有独立 annotation。
-数据处理输出同一接口；模型不能从文件名、图像外观或医学知识补造标签和实体关系。
+`.runtime/artifacts.json` 记录每个版本的 ID、类型、产物引用与直接依赖，以及当前版本引用。
+当前版本同时由 LangGraph context/checkpoint 保存，旧版本仍可保留，但不能通过当前交付检查。
 
-image manifest 每行仅含 image_id、png_path、width、height，路径相对 manifest。
-共享契约位于 image_assets.py，数据准备与构建不依赖 evaluation 模块。
-公共 `validate_image_asset` 负责路径、可读性和尺寸检查；DataProcessing 与 Audit 保留纯色图检查，
-Evaluation 不拒绝纯色图，但限定 PNG/JPEG 编码。消费者不再导入 Audit 的私有图像校验函数。
-数据处理脚本由本地 Docker 镜像执行：源目录只读、输出目录可写、网络关闭，并限制资源和时间。
-二维格式检查复用已有医学图像转换参考实现。准备完成后独立检查源图像格式和空间尺寸，
-PNG/JPEG 保持原始字节；不支持体数据、多帧、金字塔和全切片。
+| 版本 | 主要直接依赖 |
+| --- | --- |
+| Dataset | DataConfig、DatasetSelection（准备输入另依赖 PreparedDataset） |
+| Plan | Requirement、Dataset、Materials、PlanningConfig、BlueprintDraft |
+| Templates | Plan、TemplateConfig |
+| Generation | Dataset、Plan、Templates、GenerationConfig |
+| Audit | Generation、Dataset、Plan、AuditConfig |
 
-DuckDB/profile 缓存按源路径、显式 revision 和缓存格式版本组织。
-PDF 缓存按资料路径、分块配置、模型路径与显式 revision 描述组织。
-输入更新后通过 refresh 参数重建；原始数据与旧运行不自动迁移或删除。
+PlanningDraft、BlueprintDraft 和数据准备阶段也登记直接依赖。统一 require 检查递归失效，替代
+planned/generated/audited 与 plan_binding；生成、审计、交付使用这套检查。改动上游时只切换当前引用。
+内容相关配置按职责登记；日志、超时等运行参数不加入内容依赖。
 
-保留现有答案规则：
-- letter：唯一获准 scalar 经 answer_value_mapping 确定正确选项。
-- free_text：答案必须唯一对应直接参考字符串。
-- bbox：唯一合法标注框，绝对像素 xyxy；visual_grounding 还要求与框配对的目标名称。
-- 答案由代码固定；PDF 只能提供任务设计依据。
-- 同一 task/image 最多一题，保留每阶段每图限制与任务题量限制。
+终端使用 SQLite checkpoint，支持 `build --resume <identifier>`。回执绑定验证后的参数与输入依赖版本，
+匹配时复用完成结果；数据容器操作还有同样绑定的内部完成回执。恢复读取运行保存的配置和输入。
+`.runtime/contract.json` 保存运行时契约版本、Git commit 与源码工作区差异；代码或契约变化拒绝恢复，
+明确要求新运行，不迁移旧 checkpoint。生成子图保留逐行 checkpoint、阶段游标及进度。
 
-模板在生成前统一构建和审核，数量由 generation.question_template_count 配置。
-模板只能使用 modality 槽位；visual_grounding 额外要求 target。
-逐题阶段无模型生成或 Reviewer 调用；代码校验继续执行，最终按任务抽样做语义检查。
-固定 seed 和稳定数据身份用于模板选择与答案位置平衡。
+harness 限制行动次数、执行时间、连续失败和相同行动重复次数。人工等待不计入执行时间，预算耗尽返回
+blocked；未审计批次不能交付。语义筛查模型失败继续使用观察性 fail-open。
+
+## TaskPlanning
+
+一个 TaskPlanningAgent 管理完整规划：
+
+1. 查询预定义任务目录、具体定义及类别；分页查询字段路径和指定字段的统计、分布与结构。
+2. 分页查询资料、读取 PDF 元数据、选择资料并检索相关段落。
+3. 按现有 category 输入相关字段子集，保存每个任务 retain/drop、支持字段、question types、metric 和理由的草案。
+4. 全局协调仅接收任务定义与紧凑决策，不重新输入完整 profile；检查重复语义、残余属性答案轴和覆盖。
+5. 代码验证完整任务覆盖及证据契约，再复用原展开、题量分配和医学设计逻辑，最后发布 Plan。
+
+关键词查询只是发现工具，不决定任务删除。任务族允许全部 drop；完整计划仍需至少一个保留任务。
+全局协调不能引入草案未检查的新支持字段或新答案轴，必须先修订对应任务族。
+修订保存新的族草案并重新协调；未变化任务的设计可复用，资料变化时不复用旧医学设计。
+草案版本不能直接进入生成。
+
+## 数据准备与公共校验
+
+DataProcessingAgent 的阶段为 Source/Inventory → Mapping → AnnotationScript/Annotation →
+ImageInventory/ImagePlan → PreparedDataset → Dataset。每个阶段检查直接依赖，完成后登记结构化结果；
+来源或映射变化使后续版本自动失效。固定工具检查文件、表格、sheet、列类型/空值/唯一值与连接匹配计数；
+Agent 决定实体语义、字段映射、冲突与未匹配项处理，无法据来源确定时直接询问。
+
+数据集特定标注脚本在 Docker 中执行，源与项目代码只读，输出可写，网络关闭且限制资源和时间。
+脚本两次运行比较字节，验证标准结构、唯一 image_id/image_path、来源引用、bbox 和计划图像数。
+图像阶段只处理 annotation 引用文件，annotation 目录另以只读方式挂载；固定生成的 per-dataset 图像脚本
+使用显式图像方案，两次执行后验证精确集合、编码、原始尺寸与可重复性。
+最终保留来源盘点、结构化准备/图像方案、脚本和一份 validation.json；内部运行目录保留重放所需工作产物。
+
+`data/validation.py` 提供公开标注、bbox 和图像集合校验；`data/image_assets.py` 提供 manifest 和
+validate_image_asset。DataProcessing、Audit、Evaluation 不互相调用私有函数，也不从 skill 目录导入实现。
+独立 skill 保留自包含资源，并与项目标准接口、图像策略同步。
+
+PNG/JPEG 按内容识别并复制原始字节；其他支持的二维输入默认保留可表示的像素值、颜色和位深输出 PNG。
+需要显示窗时使用单一可靠来源窗或绑定方案的用户决定，不自动百分位拉伸、选窗、丢弃颜色或位深。
+不自动选体数据切片或全切片区域，拒绝多帧与金字塔。DataProcessing 与 Audit 保留纯色图检查；
+Evaluation 不拒绝纯色图但限定 PNG/JPEG 编码。
+
+## 答案与生成契约
+
+每条标准标注代表一张图，含 patient、case、study、image，各实体独立 annotation。
+图像 manifest 恰含 image_id、png_path、width、height；路径相对 manifest，历史键 png_path 也允许 JPEG。
+
+- letter：唯一获准 scalar 经 answer_value_mapping 固定正确选项。
+- free_text：唯一直接参考字符串。
+- bbox：唯一合法绝对像素 xyxy；visual_grounding 要求与框配对的目标名称。
+- 答案由代码固定，PDF 仅作为医学设计依据，不补造标签或实体关系。
+- 同一 task/image 最多一题，保留每阶段每图限制和任务题量限制。
+
+生成前按 generation.question_template_count 统一构建、审核模板，只允许 modality 槽位，visual_grounding
+额外要求 target。逐题阶段没有模型生成或 Reviewer 调用。最终硬审计检查图像、答案与重复，抽样语义
+flag 不自动拒绝题目。题量与 shortfall 以硬审计通过样本计算，数据耗尽允许带明确缺额完成。
 
 ## 产物与交付
 
-静态模板在 `config/blueprint.json`；运行不修改共享配置。
-规划快照统一保存为 `blueprints/vN.json`，完整 Task Plan 嵌入 Blueprint。
-内部工作产物位于 `.runtime/`，最终交付的选定版本复制到运行根目录：
-
-- blueprint.json、templates.json。
-- benchmark.<dataset_id>.raw.jsonl 与 audited.jsonl。
-- audit_report.json：硬审计记录、统计及抽样语义记录。
-- construction_events.jsonl：工具结果、模型调用与成本、异常和生命周期。
-- effective_config.json：非敏感配置。
-- benchmark_manifest.json：运行标识、数据集、任务指标及相对产物路径。
-
-不生成逐题 provenance 文件、独立 witness 链或事件聚合报告。
-审计通过 image_id 和任务规则直接检查 annotation，保留图片解码、尺寸、重复项与答案检查。
-语义 flag 不自动拒绝题目；最终题量和 shortfall 按硬审计通过的题目计算。
-数据耗尽允许带明确缺额完成；未审计的批次不能交付。
-
-manifest 使用 benchmark-manifest.v2，image manifest 使用上述精简字段。
-旧契约需要重新准备后再进入新评测入口，不增加兼容兜底。
-
-
+版本工作产物在 `.runtime/` 的独立操作目录中，完整 Task Plan 嵌入 Blueprint；系统不覆盖已完成版本。
+最终选择的有效版本复制到运行根目录：blueprint.json、templates.json、raw/audited JSONL、audit_report.json、
+construction_events.jsonl、effective_config.json 和 benchmark_manifest.json。
+不生成逐题 provenance、哈希链、多份事件汇总报告；现有 benchmark-manifest.v2 与图像 manifest 格式不变。
+旧内部接口、checkpoint 和废弃工具不提供兼容层。
 
 ## 推理与评测边界
 

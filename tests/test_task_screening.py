@@ -1,9 +1,8 @@
 import json
 from pathlib import Path
 
-import medbenchagent.task_screening as screening
+import medbenchagent.planning.task_screening as screening
 import pytest
-from medbenchagent.construction import event_context
 from medbenchagent.settings import get_settings
 
 
@@ -156,106 +155,10 @@ def test_task_plan_requires_human_review_after_second_invalid_response(monkeypat
     assert "unknown supporting fields" in error.value.errors[0]
 
 
-def test_task_plan_revisions_only_replace_the_target_task(monkeypatch) -> None:
-    original = _plan()
-    calls: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        screening,
-        "complete_json",
-        lambda system, user: calls.append((system, user))
-        or {
-                "decision": "retain",
-                "supporting_fields": ["image.annotation.findings[*].finding_type"],
-                "metric": "accuracy",
-                "reason": "Requested.",
-            },
-    )
-
-    revised = screening.revise_task_plan(_blueprint(), _profile(), original, "diagnosis", "Keep this task.")
-
-    assert revised["tasks"]["assessment_category"] == original["tasks"]["assessment_category"]
-    assert revised["tasks"]["diagnosis"]["decision"] == "retain"
-    assert len(calls) == 1
-    assert "All Blueprint task definitions" in calls[0][0]
-    assert "Complete current Task Plan" in calls[0][0]
-    assert "assessment_category" in calls[0][0]
-    assert "diagnosis" in calls[0][0]
 
 
-def test_task_plan_revision_repairs_and_records_invalid_model_output(
-    tmp_path: Path, monkeypatch
-) -> None:
-    invalid = {
-        "decision": "retain",
-        "supporting_fields": ["image.annotation.findings[*].finding_type"],
-        "metric": "accuracy",
-        "reason": "Requested.",
-        "finding_field": "image.annotation.findings[*].finding_type",
-    }
-    valid = {key: value for key, value in invalid.items() if key != "finding_field"}
-    responses = iter([invalid, valid])
-    calls: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        screening,
-        "complete_json",
-        lambda system, user: calls.append((system, user)) or next(responses),
-    )
-    events_path = tmp_path / "construction_events.jsonl"
-
-    with event_context(
-        construction_events_path=str(events_path),
-        run_id="run-1",
-        agent="TaskPlanningAgent",
-        operation="task_plan_revise",
-    ):
-        revised = screening.revise_task_plan(
-            _blueprint(), _profile(), _plan(), "diagnosis", "Keep this task."
-        )
-
-    assert revised["tasks"]["diagnosis"] == valid
-    assert len(calls) == 2
-    assert "previous response violated this contract" in calls[1][0]
-    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
-    assert events == [
-        {
-            "timestamp": events[0]["timestamp"],
-            "event_type": "llm_validation_error",
-            "run_id": "run-1",
-            "task_id": "diagnosis",
-            "agent": "TaskPlanningAgent",
-            "operation": "task_plan_revise",
-            "model": get_settings().llm.model,
-            "validation_errors": [
-                "diagnosis: decision must contain exactly decision, supporting_fields, metric, and reason"
-            ],
-            "model_output": invalid,
-        }
-    ]
 
 
-def test_task_plan_revision_records_invalid_repair_output(tmp_path: Path, monkeypatch) -> None:
-    responses = [
-        {"decision": "retain", "attempt": "initial"},
-        {"decision": "retain", "attempt": "repair"},
-    ]
-    remaining = iter(responses)
-    monkeypatch.setattr(screening, "complete_json", lambda _system, _user: next(remaining))
-    events_path = tmp_path / "construction_events.jsonl"
-
-    with event_context(
-        construction_events_path=str(events_path),
-        run_id="run-1",
-        agent="TaskPlanningAgent",
-        operation="task_plan_revise",
-    ):
-        with pytest.raises(screening.TaskPlanReviewRequired):
-            screening.revise_task_plan(
-                _blueprint(), _profile(), _plan(), "diagnosis", "Keep this task."
-            )
-
-    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
-    assert [event["model_output"] for event in events] == responses
-    assert [event["operation"] for event in events] == ["task_plan_revise", "repair"]
 
 
 def test_task_plan_rejects_unknown_tasks_and_all_dropped_tasks() -> None:
@@ -593,63 +496,3 @@ def test_attribute_task_plan_rejects_reused_or_constant_fields() -> None:
     assert plan is None
     assert any("reused by multiple question types" in error for error in errors)
     assert any("distinct_value_count >= 2" in error for error in errors)
-
-
-def test_task_revision_prompt_rejects_mask_as_bbox() -> None:
-    prompt = screening._task_revision_prompt(
-        "detection",
-        {
-            "detection": {"response_format": "bbox"},
-        },
-        {
-            "tasks": {
-                "detection": {
-                    "decision": "drop",
-                    "supporting_fields": [],
-                    "metric": None,
-                    "reason": "No bbox field.",
-                }
-            }
-        },
-        _profile(),
-        "Retain detection using the mask.",
-    )
-
-    assert "A segmentation mask is not a bbox" in prompt
-
-
-def test_visual_grounding_rule_is_shared_by_initial_and_revision_prompts() -> None:
-    task = {"response_format": "bbox"}
-    profile = {
-        "fields": {
-            "image.annotation.findings[*].bbox[*]": {},
-            "image.annotation.findings[*].label": {},
-        }
-    }
-    blueprint_tasks = {"visual_grounding": task}
-    current_plan = {
-        "tasks": {
-            "visual_grounding": {
-                "decision": "drop",
-                "supporting_fields": [],
-                "metric": None,
-                "reason": "No.",
-            }
-        }
-    }
-    initial = screening._task_plan_prompt(blueprint_tasks, profile)
-    revision = screening._task_revision_prompt(
-        "visual_grounding",
-        blueprint_tasks,
-        current_plan,
-        profile,
-        "Review available fields.",
-    )
-
-    for prompt in (initial, revision):
-        assert screening.VISUAL_GROUNDING_RULE in prompt
-        assert screening.VISUAL_GROUNDING_PAIRING_RULE in prompt
-        assert "BI-RADS" not in prompt
-        assert "breast cancer" not in prompt.lower()
-    assert "without a task ID or `tasks` wrapper" in revision
-    assert "do not add finding_field or bbox_field keys" in revision

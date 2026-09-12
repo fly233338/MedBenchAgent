@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 import tomllib
+import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,8 +33,6 @@ class PathSettings:
     blueprint_template: Path
     materials_root: Path
     runs_root: Path
-    dataset_cache_root: Path
-    rag_cache_root: Path
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,19 @@ class AppSettings:
 
 
 _SETTINGS: AppSettings | None = None
+_RUN_SETTINGS: ContextVar[AppSettings | None] = ContextVar("run_settings", default=None)
+
+
+@contextmanager
+def run_settings(path):
+    """Use the saved run configuration, never reinterpret current external configuration."""
+    snapshot = json.loads(Path(path).read_text(encoding="utf-8"))
+    saved = _settings_from(snapshot["settings"], Path(path), None, [])
+    token = _RUN_SETTINGS.set(saved)
+    try:
+        yield saved
+    finally:
+        _RUN_SETTINGS.reset(token)
 
 
 def load_project_env() -> None:
@@ -292,6 +306,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
 def get_settings() -> AppSettings:
     """Return process-cached settings; clear_settings_cache is intended for tests and reloads."""
     global _SETTINGS
+    if active := _RUN_SETTINGS.get():
+        return active
     if _SETTINGS is None:
         _SETTINGS = load_settings()
     return _SETTINGS

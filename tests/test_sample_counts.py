@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from medbenchagent.sample_counts import (
+from medbenchagent.planning.sample_counts import (
     distribute_weighted_sample_counts,
     write_sample_counts,
 )

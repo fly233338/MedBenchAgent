@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from medbenchagent.answer_balance import balance_jsonl
+from medbenchagent.audit.answer_balance import balance_jsonl
 
 InputFunction = Callable[[str], str]
 OutputFunction = Callable[[str], None]
@@ -314,7 +314,7 @@ def run_interactive_build(
 
             settings = get_settings()
         _print_settings(settings, output)
-        errors = _preflight_errors(settings)
+        errors = [] if resume else _preflight_errors(settings)
         if errors:
             output("")
             output("Local preflight failed:")
@@ -344,6 +344,8 @@ def run_interactive_build(
             previous = graph.get_state(config)
             if not previous.values:
                 raise ValueError("Unknown resume identifier")
+            from medbenchagent.runtime.dependencies import verify_resume
+            verify_resume(previous.values["context"])
             pending = [i for task in previous.tasks for i in task.interrupts]
             if pending:
                 _render_interrupt(pending[0].value, output)

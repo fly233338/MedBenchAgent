@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from medbenchagent.image_assets import ImageEntry as ImageEntry
+from medbenchagent.data.image_assets import ImageEntry as ImageEntry
 from typing import Any
 
 

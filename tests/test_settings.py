@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from medbenchagent.run_artifacts import initialize_run
+from medbenchagent.runtime.run_artifacts import initialize_run
 from medbenchagent.settings import clear_settings_cache, get_settings, load_project_env, load_settings
 
 

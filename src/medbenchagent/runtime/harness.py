@@ -13,10 +13,10 @@ from langgraph.types import interrupt
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ValidationError
 
-from medbenchagent.construction import event_context, record_event
-from medbenchagent.llm import ModelUnavailable, complete_json
-from medbenchagent.run_artifacts import atomic_write_json
-from medbenchagent.tool_contracts import AskUserArguments, NoArguments
+from medbenchagent.runtime.construction import event_context, record_event
+from medbenchagent.runtime.llm import ModelUnavailable, complete_json
+from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.runtime.tool_contracts import AskUserArguments, NoArguments
 
 
 class AgentState(TypedDict, total=False):
@@ -45,7 +45,6 @@ def compile_agent(
     finish: Tool,
     *,
     args_schemas: dict[str, type[BaseModel]] | None = None,
-    human: bool = False,
     checkpointer: Any = None,
 ):
     """Run registered tools serially, retaining private state and completed operations."""
@@ -98,7 +97,7 @@ def compile_agent(
                 action = complete_json(
                     instructions
                     + '\nReturn exactly {"tool":"name","arguments":{},"reason":"brief reason"}. '
-                    'Choose a registered tool, finish, or ask_user according to its JSON Schema. '
+                    "Choose a registered tool, finish, or ask_user according to its JSON Schema. "
                     "Do not invent source facts. Do not repeat an unsuccessful action unchanged. "
                     "Use finish only when all required outputs exist. Tools execute serially.",
                     json.dumps(
@@ -107,7 +106,9 @@ def compile_agent(
                             "state": describe(context),
                             "recent_observations": state.get("observations", []),
                             "last_result": {
-                                k: v for k, v in state["result"].items() if k != "updates"
+                                k: (v[:6000] if isinstance(v, str) else v)
+                                for k, v in state["result"].items()
+                                if k != "updates"
                             },
                         },
                         ensure_ascii=False,
@@ -145,6 +146,7 @@ def compile_agent(
                 "step": step,
             }
         operation = Path(context["operation_directory"]) / name / f"{step}.json"
+        dependencies = dict(context.get("artifact_versions", {}))
         try:
             arguments = schemas[tool_name].model_validate(arguments).model_dump()
             parameter_error = None
@@ -158,23 +160,67 @@ def compile_agent(
             outcome["errors"] = parameter_error
         elif operation.is_file():
             saved = json.loads(operation.read_text(encoding="utf-8"))
-            if saved["action"] != action:
-                raise ValueError("Operation identity was reused for a different action")
+            if (
+                saved["tool"] != tool_name
+                or saved["arguments"] != arguments
+                or saved["dependencies"] != dependencies
+            ):
+                raise ValueError(
+                    "Operation arguments or dependencies changed; start a new operation"
+                )
             outcome = saved["result"]
         elif tool_name == "ask_user":
             question = arguments["question"]
-            if human:
-                answer = interrupt({"kind": "clarification", "question": question})
+            reference = (
+                arguments["reference"]
+                or context.get("draft_path")
+                or context.get("preparation_plan_path")
+                or json.dumps(dependencies, sort_keys=True)
+            )
+            decision_key = json.dumps([name, reference, question], ensure_ascii=False)
+            decisions = dict(context.get("decisions", {}))
+            if arguments["scope"] == "global" and name != "SupervisorAgent":
+                outcome = result(
+                    "escalate",
+                    question,
+                    global_issue={"role": name, "question": question, "reference": reference},
+                )
+            else:
+                answer = decisions.get(decision_key)
+                already_answered = answer is not None
+                if answer is None:
+                    answer = interrupt(
+                        {
+                            "kind": "clarification",
+                            "role": name,
+                            "question": question,
+                            "reference": reference,
+                        }
+                    )
                 if not isinstance(answer, str) or not answer.strip():
                     outcome = result("failed", "A natural-language answer is required")
                 else:
+                    decisions[decision_key] = answer
+                    updates = {
+                        "decisions": decisions,
+                        "clarification": {"reference": reference, "answer": answer},
+                    }
+                    if name == "SupervisorAgent" and not already_answered:
+                        updates["user_requirement"] = context["user_requirement"] + "\n" + answer
+                        updates["brief_ready"] = False
+                        updates["global_issue"] = None
+                        from medbenchagent.runtime.dependencies import publish
+
+                        updates.update(
+                            publish(
+                                context, "Requirement", {"text": updates["user_requirement"]}, ()
+                            )
+                        )
                     outcome = result(
                         "success",
                         "User clarification received",
-                        user_requirement=context["user_requirement"] + "\n" + answer,
+                        **updates,
                     )
-            else:
-                outcome = result("needs_input", question)
         else:
             tool_context = dict(context, operation_directory=str(operation.with_suffix("")))
             with event_context(
@@ -196,7 +242,15 @@ def compile_agent(
                     outcome = result("failed", f"{type(exc).__name__}: {exc}")
         context.update(outcome.get("updates", {}))
         if not operation.is_file():
-            atomic_write_json(operation, {"action": action, "result": outcome})
+            atomic_write_json(
+                operation,
+                {
+                    "tool": tool_name,
+                    "arguments": arguments,
+                    "dependencies": dependencies,
+                    "result": outcome,
+                },
+            )
             record_event(
                 context["construction_events_path"],
                 "tool_result",
@@ -209,8 +263,13 @@ def compile_agent(
             )
         observations = [
             *state.get("observations", []),
-            {"tool": tool_name, "status": outcome["status"], "summary": outcome["summary"][:6000]},
-        ][-12:]
+            {
+                "tool": tool_name,
+                "status": outcome["status"],
+                "summary": outcome["summary"][:800],
+                "reference": str(operation),
+            },
+        ][-6:]
         return {
             "context": context,
             "result": outcome,
@@ -239,8 +298,6 @@ def compile_agent(
     )
     graph.add_conditional_edges(
         "execute",
-        lambda s: (
-            END if s["result"]["status"] in {"complete", "needs_input", "blocked"} else "decide"
-        ),
+        lambda s: END if s["result"]["status"] in {"complete", "escalate", "blocked"} else "decide",
     )
     return graph.compile(checkpointer=checkpointer, name=name)

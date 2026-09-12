@@ -2,17 +2,18 @@
 
 import json
 from pathlib import Path
-from medbenchagent.audit import audit_run
-from medbenchagent.construction import event_context
-from medbenchagent.harness import result
-from medbenchagent.semantic_audit import semantic_audit_run
+from medbenchagent.audit.hard import audit_run
+from medbenchagent.runtime.construction import event_context
+from medbenchagent.runtime.harness import result
+from medbenchagent.audit.semantic_audit import semantic_audit_run
+from medbenchagent.runtime.dependencies import publish, require
 
 
 def run_audit(context):
     """Audit the current generated batch and return actionable problems."""
-    if not context.get("generated"):
-        raise ValueError("Generate the current plan first")
-    folder = Path(context["raw_output_path"]).parent
+    require(context, "Generation")
+    folder = Path(context["operation_directory"]) / "audit"
+    folder.mkdir(parents=True, exist_ok=True)
     report = audit_run(
         raw_path=context["raw_output_path"],
         blueprint_path=context["working_blueprint_path"],
@@ -38,7 +39,9 @@ def run_audit(context):
     return result(
         "success",
         "Audit complete; inspect rejected counts and semantic flags",
-        audited=True,
+        **publish(
+            context, "Audit", {"audited": report["audited_path"], "report": report["report_path"]}
+        ),
         audit_artifacts={"audited": report["audited_path"], "report": report["report_path"]},
         audit_summary={
             "hard_audit": payload["hard_audit"],

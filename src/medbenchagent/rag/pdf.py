@@ -14,9 +14,9 @@ from pypdf import PdfReader
 
 from medbenchagent.answer_mapping import canonical_answer_scalar
 from medbenchagent.contracts import RAG_DESIGN_FIELDS
-from medbenchagent.construction import event_operation
+from medbenchagent.runtime.construction import event_operation
 from medbenchagent.generation.context import scalar_evidence_candidates
-from medbenchagent.llm import complete_json
+from medbenchagent.runtime.llm import complete_json
 from medbenchagent.rag.reranker import score_pairs
 from medbenchagent.settings import get_settings
 
@@ -190,7 +190,6 @@ class LocalPdfRag:
         selected_files: list[str] | None = None,
         *, revision: str = "1", refresh: bool = False,
     ) -> None:
-        source_identity, self.chunks = extract_pdf_chunks(materials_root, selected_files)
         settings = get_settings().rag
         if not settings.embedding_model or not settings.reranker_model:
             raise RagUnavailable("Local embedding and reranker model directories must be configured.")
@@ -200,7 +199,9 @@ class LocalPdfRag:
             raise RagUnavailable("Local embedding and reranker model directories must be configured.")
         if not revision.isalnum():
             raise ValueError("RAG revision must be alphanumeric.")
-        identity = {"root": str(Path(materials_root).resolve()), "sources": source_identity, "model": str(embedding_path.resolve()), "revision": revision}
+        identity = {"root": str(Path(materials_root).resolve()), "sources": selected_files,
+                    "chunk_size": settings.chunk_size, "overlap": settings.chunk_overlap,
+                    "model": str(embedding_path.resolve()), "revision": revision}
         cache = Path(cache_root) / ("pdf-v" + CACHE_SCHEMA_VERSION)
         cache.mkdir(parents=True, exist_ok=True)
         entries = sorted(cache.glob("*/sources.json"))
@@ -209,11 +210,11 @@ class LocalPdfRag:
             from uuid import uuid4
             match = cache / str(uuid4())
             match.mkdir()
+            _, self.chunks = extract_pdf_chunks(materials_root, selected_files)
+            (match / "chunks.json").write_text(json.dumps(self.chunks), encoding="utf-8")
             (match / "sources.json").write_text(json.dumps(identity), encoding="utf-8")
-            if refresh:
-                for entry in entries:
-                    if json.loads(entry.read_text(encoding="utf-8")) == identity:
-                        entry.unlink()
+        else:
+            self.chunks = json.loads((match / "chunks.json").read_text(encoding="utf-8"))
         self.cache_dir = match
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.embedding_path = str(embedding_path)

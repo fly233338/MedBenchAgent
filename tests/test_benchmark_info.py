@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-import medbenchagent.benchmark_info as benchmark_info
-from medbenchagent.benchmark_info import (
+import medbenchagent.planning.benchmark_info as benchmark_info
+from medbenchagent.planning.benchmark_info import (
     merge_info,
     missing_fields,
     write_working_blueprint,

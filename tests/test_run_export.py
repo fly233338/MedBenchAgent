@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import pytest
-from medbenchagent.run_export import finalize_run
+from medbenchagent.runtime.run_export import finalize_run
 
 
 def inputs(tmp_path):

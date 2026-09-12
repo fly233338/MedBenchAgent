@@ -1,10 +1,10 @@
-from medbenchagent.image_assets import validate_image_asset
+from medbenchagent.data.image_assets import validate_image_asset
 import json
 from pathlib import Path
 from PIL import Image
-from medbenchagent.audit import _answer_matches, _contract, audit_run
-from medbenchagent.semantic_audit import semantic_audit_run
-from medbenchagent.llm import ModelUnavailable
+from medbenchagent.audit.hard import _answer_matches, _contract, audit_run
+from medbenchagent.audit.semantic_audit import semantic_audit_run
+from medbenchagent.runtime.llm import ModelUnavailable
 
 
 def record():
@@ -115,7 +115,7 @@ def test_semantic_failure_remains_observational(tmp_path, monkeypatch):
     def fail(*args, **kwargs):
         raise ModelUnavailable("offline")
 
-    monkeypatch.setattr("medbenchagent.semantic_audit.complete_json", fail)
+    monkeypatch.setattr("medbenchagent.audit.semantic_audit.complete_json", fail)
     semantic_audit_run(
         audited_path=tmp_path / "audited.jsonl",
         report_path=tmp_path / "report.json",

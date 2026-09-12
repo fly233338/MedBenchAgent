@@ -8,8 +8,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from medbenchagent.llm import complete_json
-from medbenchagent.construction import event_context, event_operation, record_llm_validation_error
+from medbenchagent.runtime.llm import complete_json
+from medbenchagent.runtime.construction import event_operation
 from medbenchagent.metrics import is_metric_supported, metric_prompt_catalog
 
 
@@ -168,69 +168,6 @@ def _task_plan_prompt(
     )
 
 
-def _task_revision_prompt(
-    task_id: str,
-    blueprint_tasks: dict[str, Any],
-    current_task_plan: dict[str, Any],
-    profile: dict[str, Any],
-    feedback: str,
-) -> str:
-    task = blueprint_tasks[task_id]
-    decomposable = task_id in DECOMPOSABLE_TASK_IDS
-    response_format = task.get("response_format")
-    schema = (
-        "Return decision, question_types, and reason. A retained task needs at least one question type; "
-        "a dropped task needs an empty question_types object. Each question type needs a lower_snake_case "
-        "ID, description, exactly one supporting field, metric, and reason."
-        if decomposable
-        else "Return exactly this top-level JSON shape, without a task ID or `tasks` wrapper and without "
-        "additional fields: "
-        '{"decision":"retain|drop","supporting_fields":["exact.path"],'
-        '"metric":"registered_name_or_null","reason":"..."}. '
-        "A retained task needs at least one supporting field; a dropped task needs an empty "
-        "supporting_fields array and metric null. For visual_grounding, put both the paired finding "
-        "and bbox paths in supporting_fields; do not add finding_field or bbox_field keys."
-    )
-    return (
-        "Revise only the selected Task Plan entry using the user's feedback. Use the complete "
-        "Blueprint and current Task Plan as consistency context, but do not return or change any "
-        "other entry. Return JSON only.\n\n"
-        f"{schema}\n\nSupporting "
-        "fields must exist in dataset_profile.fields. Use top_values as the primary field-semantic evidence; "
-        "they may be truncated and are not exhaustive. Every retained letter-response task requires at least "
-        "two semantically distinct values that can be correct answers; distinct_value_count >= 2 is necessary "
-        "but spelling variants, synonyms, or raw values mapping to one answer class do not qualify.\n\n"
-        "finding_presence evaluates binary presence or absence when no direct categorical finding label is "
-        "available. When a direct categorical finding label is available, prefer finding_type for the "
-        "category-identification task. Require explicit positive and negative evidence; missing "
-        "annotations, missing boxes, or missing masks do not establish absence.\n\nfinding_description requires "
-        "paired expert-written "
-        "natural-language text, not categorical labels, delimiter-joined terms, diagnoses, or isolated "
-        "attributes.\n\ndiagnosis requires one clinically specific imaging or pathology-confirmed diagnosis, "
-        "not a finding type, assessment category, benign/malignant status, or missing value.\n\n"
-        "finding_type requires values that directly name visual finding categories; interpretations, "
-        "diagnoses, assessments, pathology results, prognoses, and suspicion labels are insufficient.\n\n"
-        "For anatomy_attribute and finding_attribute, one question type represents one semantic answer axis; "
-        "different properties require separate question types, each with one unique supporting field.\n\n"
-        "A decomposable attribute task is residual: omit any question type whose semantic answer axis is "
-        "represented more directly by a retained ordinary task. A shared field alone does not establish "
-        "duplication, and different metrics do not distinguish duplicate semantics.\n\n"
-        "For anatomy_attribute, acquisition view, projection, plane, and orientation belong to "
-        "view_identification. For severity_grading, ordered labels qualify only when the field explicitly "
-        "encodes severity, extent, grade, or stage.\n\n"
-        f"{VISUAL_GROUNDING_RULE} {VISUAL_GROUNDING_PAIRING_RULE}\n\n"
-        "detection requires a bbox and remains supported even when finding text coexists. Both spatial tasks "
-        "may be retained. A segmentation mask is not a bbox and must not be treated or converted into one.\n\n"
-        f"{_metric_prompt_rules({response_format} if isinstance(response_format, str) else set())}"
-        f"\nSelected Task ID: {task_id}\n"
-        f"Selected Blueprint task: {json.dumps(task, ensure_ascii=False)}\n\n"
-        f"All Blueprint task definitions: {json.dumps(blueprint_tasks, ensure_ascii=False)}\n\n"
-        f"Complete current Task Plan: {json.dumps(current_task_plan, ensure_ascii=False)}\n\n"
-        f"User feedback: {feedback}\n\n"
-        f"Dataset profile: {json.dumps(profile, ensure_ascii=False)}"
-    )
-
-
 def _field_has_multiple_values(path: str, profile: dict[str, Any]) -> bool:
     field = profile.get("fields", {}).get(path)
     count = field.get("distinct_value_count") if isinstance(field, dict) else None
@@ -356,7 +293,7 @@ def _normalize_task_decision(
     }, []
 
 
-def validate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any], response: object) -> tuple[dict[str, Any] | None, list[str]]:
+def validate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any], response: object, *, allow_empty: bool = False) -> tuple[dict[str, Any] | None, list[str]]:
     """Validate a complete Task Plan without relying on model judgement."""
     tasks = blueprint.get("tasks")
     if not isinstance(tasks, dict):
@@ -402,21 +339,21 @@ def validate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any], respo
                         f"{task_id}: retained letter tasks need a supporting field with "
                         "distinct_value_count >= 2"
                     )
-    if not errors and not any(plan["decision"] == "retain" for plan in normalized_tasks.values()):
+    if not allow_empty and not errors and not any(plan["decision"] == "retain" for plan in normalized_tasks.values()):
         errors.append("at least one task must be retained")
     if errors:
         return None, errors
     return {"tasks": {task_id: normalized_tasks[task_id] for task_id in tasks}}, []
 
 
-def generate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+def generate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any], *, allow_empty: bool = False, feedback: str = "") -> dict[str, Any]:
     """Generate and validate one complete Task Plan, repairing one invalid response."""
     tasks = blueprint.get("tasks")
     if not isinstance(tasks, dict):
         raise ValueError("Working blueprint must contain a tasks object")
-    prompt = _task_plan_prompt(tasks, profile)
+    prompt = _task_plan_prompt(tasks, profile) + "\nRevision feedback: " + feedback
     response = complete_json(prompt, "Return the complete Task Plan.")
-    plan, errors = validate_task_plan(blueprint, profile, response)
+    plan, errors = validate_task_plan(blueprint, profile, response, allow_empty=allow_empty)
     if plan is not None:
         return plan
     with event_operation("repair"):
@@ -425,58 +362,13 @@ def generate_task_plan(blueprint: dict[str, Any], profile: dict[str, Any]) -> di
             f"{json.dumps(errors, ensure_ascii=False)}. Retry once with a complete valid Task Plan.",
             "Return the corrected complete Task Plan.",
         )
-    plan, errors = validate_task_plan(blueprint, profile, repaired)
+    plan, errors = validate_task_plan(blueprint, profile, repaired, allow_empty=allow_empty)
     if plan is None:
         raise TaskPlanReviewRequired(
             repaired if isinstance(repaired, dict) else {"response": repaired},
             errors,
         )
     return plan
-
-
-def revise_task_plan(
-    blueprint: dict[str, Any], profile: dict[str, Any], draft_task_plan: dict[str, Any], task_id: str, feedback: str
-) -> dict[str, Any]:
-    """Return a replacement for exactly one draft Task Plan entry."""
-    tasks = blueprint.get("tasks")
-    planned_tasks = draft_task_plan.get("tasks")
-    if not isinstance(tasks, dict) or not isinstance(planned_tasks, dict) or task_id not in tasks or task_id not in planned_tasks:
-        raise ValueError(f"Unknown task_id: {task_id}")
-    prompt = _task_revision_prompt(task_id, tasks, draft_task_plan, profile, feedback)
-
-    def validate_revision(response: object) -> tuple[dict[str, Any] | None, list[str]]:
-        decision, errors = _normalize_task_decision(
-            task_id,
-            response,
-            set(profile.get("fields", {})),
-            profile,
-            tasks[task_id].get("response_format"),
-        )
-        if decision is None:
-            return None, errors
-        merged = {"tasks": {**planned_tasks, task_id: decision}}
-        return validate_task_plan(blueprint, profile, merged)
-
-    with event_context(task_id=task_id):
-        response = complete_json(prompt, "Return the revised task plan entry.")
-        validated, errors = validate_revision(response)
-        if validated is not None:
-            return validated
-
-        record_llm_validation_error(errors=errors, model_output=response)
-        with event_operation("repair"):
-            repaired = complete_json(
-                f"{prompt}\n\nYour previous response violated this contract: "
-                f"{json.dumps(errors, ensure_ascii=False)}. Previous response: "
-                f"{json.dumps(response, ensure_ascii=False)}. Retry once with only the corrected "
-                "selected task entry.",
-                "Return the corrected revised task plan entry.",
-            )
-            validated, errors = validate_revision(repaired)
-            if validated is None:
-                record_llm_validation_error(errors=errors, model_output=repaired)
-                raise TaskPlanReviewRequired(repaired, errors)
-        return validated
 
 
 def apply_task_plan(
@@ -576,3 +468,43 @@ def apply_task_plan(
     if set(written.get("tasks", {})) != expected_retained:
         raise ValueError("Working Blueprint does not match the confirmed retained tasks")
     return str(blueprint_path)
+
+
+def coordinate_task_plan(blueprint, profile, drafts):
+    """Reconcile compact task decisions without sending the full profile to the model."""
+    normalized, errors = validate_task_plan(blueprint, profile, {"tasks": drafts})
+    if errors:
+        raise ValueError("Complete all task families before coordination: " + "; ".join(errors))
+    prompt = (
+        "Coordinate these evidence-checked task-family drafts globally. Return JSON {\"tasks\": {...}} "
+        "containing every predefined task exactly once, using the same entry shapes as the drafts. "
+        "Treat each retained ordinary task and each question type as an atomic semantic answer axis. "
+        "Compare all axes; when duplicates exist, retain the task whose definition represents the axis "
+        "most directly. A decomposable attribute task is residual: remove axes represented by ordinary "
+        "tasks, and drop its parent when no types remain. Shared supporting fields alone do not prove "
+        "duplication; different metrics do not distinguish duplicate semantics. Check capability coverage "
+        "and answer-axis conflicts. Visual grounding and generic detection can both remain. "
+        "Keep concise reasons. Do not retain a previously dropped task or introduce new supporting "
+        "fields/question types: new evidence requires re-screening its family. Dropped tasks have empty "
+        "supporting_fields and metric null, or empty question_types for decomposable parents.\n"
+        "Definitions: " + json.dumps(blueprint["tasks"], ensure_ascii=False)
+        + "\nEvidence-checked decisions: " + json.dumps(normalized, ensure_ascii=False)
+    )
+    response = complete_json(prompt, "Return the globally coordinated Task Plan.")
+    plan, errors = validate_task_plan(blueprint, profile, response)
+    if errors:
+        raise TaskPlanReviewRequired(response, errors)
+    for key, decision in plan["tasks"].items():
+        old = normalized["tasks"][key]
+        if decision["decision"] == "drop":
+            continue
+        if old["decision"] != "retain":
+            raise ValueError(f"{key}: revise its family before retaining new evidence")
+        if "question_types" in decision:
+            for qid, item in decision["question_types"].items():
+                previous = old["question_types"].get(qid)
+                if previous is None or item["supporting_fields"] != previous["supporting_fields"]:
+                    raise ValueError(f"{key}: revise its family before introducing a new answer axis")
+        elif decision["supporting_fields"] != old["supporting_fields"]:
+            raise ValueError(f"{key}: global coordination cannot replace its supporting evidence")
+    return plan

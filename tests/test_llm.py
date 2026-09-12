@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-import medbenchagent.llm as llm
+import medbenchagent.runtime.llm as llm
 from medbenchagent.settings import clear_settings_cache
 
 

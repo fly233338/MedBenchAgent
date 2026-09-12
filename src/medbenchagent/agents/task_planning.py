@@ -1,223 +1,414 @@
-"""Task planning tools reuse the existing planning, allocation and medical design logic."""
+"""Task planning with bounded evidence queries, family drafts and global reconciliation."""
 
 from __future__ import annotations
+
 import json
+import shutil
 from pathlib import Path
-from medbenchagent.dataset import prepare_annotation_dataset
-from medbenchagent.image_assets import load_image_manifest
-from medbenchagent.contracts import RAG_DESIGN_FIELDS
-from medbenchagent.dataset_catalog import (
-    DATASET_ID_PATTERN,
+
+from medbenchagent.data.dataset import prepare_annotation_dataset
+from medbenchagent.data.dataset_catalog import (
     dataset_by_id,
     load_dataset_catalog,
     public_dataset_entries,
     recommend_dataset,
     resolve_annotation_path,
 )
-from medbenchagent.harness import compile_agent, result
-from medbenchagent.tool_contracts import (
-    AllocateArguments, MaterialsArguments, MedicalDesignArguments, ProfileArguments,
-    ReviseTaskArguments, SelectDatasetArguments,
+from medbenchagent.runtime.dependencies import publish, require, snapshot_dataset
+from medbenchagent.runtime.harness import compile_agent, result
+from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.runtime.tool_contracts import (
+    AllocateArguments,
+    MaterialsArguments,
+    MedicalDesignArguments,
+    ProfileArguments,
+    SelectDatasetArguments,
+    PageArguments,
+    FieldArguments,
+    TaskArguments,
+    FamilyArguments,
+    MaterialArguments,
+    SearchArguments,
 )
 from medbenchagent.rag.pdf import LocalPdfRag, design_task, discover_medical_materials
-from medbenchagent.run_artifacts import atomic_write_json, write_versioned_json
-from medbenchagent.sample_counts import distribute_weighted_sample_counts
+from medbenchagent.planning.sample_counts import distribute_weighted_sample_counts
+from medbenchagent.planning.task_screening import (
+    apply_task_plan,
+    generate_task_plan,
+    coordinate_task_plan,
+)
 from medbenchagent.settings import get_settings
-from medbenchagent.task_screening import apply_task_plan, generate_task_plan, revise_task_plan
 
 
-def _read(context):
-    return json.loads(Path(context["working_blueprint_path"]).read_text(encoding="utf-8"))
+def _read(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _base(context):
+    blueprint = _read(get_settings().paths.blueprint_template)
+    blueprint.update(
+        benchmark_info=context["benchmark_info"],
+        dataset={"dataset_id": context.get("selected_dataset_id")},
+    )
+    return blueprint
+
+
+def _profile(context):
+    require(context, "Dataset")
+    return _read(context["dataset_access_manifest"]["profile_path"])
 
 
 def _save(context, blueprint):
+    blueprint["materials_version"] = context["artifact_versions"]["Materials"]
     path = Path(context["operation_directory"]) / "blueprint.json"
     atomic_write_json(path, blueprint)
+    publish(
+        context,
+        "BlueprintDraft",
+        {"path": str(path)},
+        ("Dataset", "Requirement", "Materials", "PlanningDraft", "PlanningConfig"),
+    )
     return str(path)
 
 
-def select_dataset(context, *, dataset_id: str | None = None, annotation_path: str | None = None):
-    """Select standard data; omit both to recommend catalog data."""
+def select_dataset(context, *, dataset_id=None, annotation_path=None):
+    """Select standard inputs; omit both arguments to recommend catalog data."""
+    require(context, "Requirement")
+    if (
+        dataset_id is not None
+        and dataset_id == context.get("selected_dataset_id")
+        and (
+            annotation_path is None
+            or annotation_path == context.get("dataset_entry", {}).get("annotation_path")
+        )
+    ):
+        require(context, "DatasetSelection")
+        return result("success", "This dataset is already selected in the run")
     if annotation_path:
-        identifier = dataset_id
-        if not isinstance(identifier, str) or not DATASET_ID_PATTERN.fullmatch(identifier):
-            raise ValueError("Direct standard input requires a lowercase dataset_id")
-        path = Path(annotation_path).expanduser().resolve()
-        if path.name != "annotation.jsonl" or not path.is_file():
-            raise ValueError("Provide an existing standard annotation.jsonl")
+        if dataset_id is None:
+            raise ValueError("Direct input requires dataset_id")
         entry = {
-            "id": identifier,
-            "name": identifier,
+            "id": dataset_id,
+            "name": dataset_id,
+            "annotation_path": annotation_path,
             "description": "Standard local dataset",
-            "annotation_path": str(path),
             "available": True,
         }
     else:
         catalog = load_dataset_catalog()
-        identifier = (
-            dataset_id
-            or recommend_dataset(context["benchmark_info"], catalog)["dataset_id"]
+        dataset_id = (
+            dataset_id or recommend_dataset(context["benchmark_info"], catalog)["dataset_id"]
         )
-        entry = dataset_by_id(catalog, identifier)
-    blueprint = json.loads(get_settings().paths.blueprint_template.read_text(encoding="utf-8"))
-    blueprint.update(benchmark_info=context["benchmark_info"], dataset={"dataset_id": identifier})
+        entry = dataset_by_id(catalog, dataset_id)
+    path = snapshot_dataset(
+        resolve_annotation_path(entry), Path(context["operation_directory"]) / "input"
+    )
+    versions = publish(
+        context, "DatasetSelection", {"path": str(path), "dataset_id": dataset_id}, ()
+    )
     return result(
         "success",
-        "Dataset selected",
-        selected_dataset_id=identifier,
-        annotation_path=str(resolve_annotation_path(entry)),
+        "Dataset input snapshot selected; build its profile next",
+        selected_dataset_id=dataset_id,
+        annotation_path=str(path),
         dataset_entry=entry,
-        plan_binding=None,
-        dataset_profile=None,
         dataset_access_manifest=None,
-        working_blueprint_path=_save(context, blueprint),
+        **versions,
     )
 
 
-def profile_dataset(context, *, revision: str = "1", refresh: bool = False):
-    """Validate selected annotations and build profile."""
-    if not context.get("annotation_path"):
-        raise ValueError("Select or prepare a dataset first")
-    load_image_manifest(Path(context["annotation_path"]).parent / "image_manifest.jsonl")
+def profile_dataset(context, *, revision="1", refresh=False):
+    """Build this run's dataset cache; refresh creates a new immutable Dataset version."""
+    require(context, "DatasetSelection")
+    if not refresh and context.get("dataset_access_manifest"):
+        require(context, "Dataset")
+        return result("success", "Current Dataset is already prepared")
     profile, access = prepare_annotation_dataset(
         context["annotation_path"],
-        get_settings().paths.dataset_cache_root,
+        Path(context["operation_directory"]) / "cache",
         revision=revision,
-        refresh=refresh,
+    )
+    from medbenchagent.data.validation import load_annotation_jsonl, validate_dataset
+    from medbenchagent.data.image_assets import load_image_manifest
+
+    validate_dataset(
+        load_annotation_jsonl(context["annotation_path"]),
+        load_image_manifest(Path(context["annotation_path"]).parent / "image_manifest.jsonl"),
+    )
+    versions = publish(
+        context,
+        "Dataset",
+        {"annotation": context["annotation_path"], "access": access},
+        ("DataConfig", "DatasetSelection"),
     )
     return result(
         "success",
-        "Dataset profile available",
-        dataset_profile=profile,
+        f"Dataset ready: {profile['total_images']} images, {len(profile['fields'])} fields",
         dataset_access_manifest=access,
-        plan_binding=None,
+        **versions,
     )
 
 
-def plan_tasks(context):
-    """Generate the complete task plan using existing logic. Requires a dataset profile."""
-    if not context.get("dataset_profile"):
-        raise ValueError("Profile the dataset first")
-    blueprint = json.loads(get_settings().paths.blueprint_template.read_text(encoding="utf-8"))
-    blueprint["benchmark_info"] = context["benchmark_info"]
-    blueprint["dataset"] = {"dataset_id": context["selected_dataset_id"]}
-    plan = generate_task_plan(blueprint, context["dataset_profile"])
-    blueprint["task_plan"] = plan
-    path = _save(context, blueprint)
-    apply_task_plan(path, plan, context["dataset_profile"])
+def list_tasks(context, *, offset=0, limit=20, query=""):
+    """Page through predefined task IDs, families and short descriptions."""
+    tasks = [
+        {"task_id": key, "category": value["category"], "description": value["description"]}
+        for key, value in _base(context)["tasks"].items()
+        if query.casefold() in (key + " " + value["category"]).casefold()
+    ]
     return result(
         "success",
-        "Complete task plan generated",
-        working_blueprint_path=path,
-        plan_binding=[context["annotation_path"], context["dataset_access_manifest"]["revision"]],
+        json.dumps(
+            {"total": len(tasks), "tasks": tasks[offset : offset + limit]}, ensure_ascii=False
+        ),
     )
 
 
-def revise_task(context, *, task_id: str, feedback: str):
-    """Revise a single parent task."""
-    current = _read(context)
-    base = json.loads(get_settings().paths.blueprint_template.read_text(encoding="utf-8"))
-    base.update(benchmark_info=context["benchmark_info"], dataset=current["dataset"])
-    plan = revise_task_plan(
-        base,
-        context["dataset_profile"],
-        current["task_plan"],
-        task_id,
-        feedback,
+def read_task(context, *, task_id):
+    """Read one task definition, family draft and current design."""
+    tasks = _base(context)["tasks"]
+    if task_id not in tasks:
+        raise ValueError("Unknown predefined task")
+    draft = _read(context["draft_path"]) if context.get("draft_path") else {}
+    blueprint = (
+        _read(context["working_blueprint_path"])
+        if context.get("working_blueprint_path")
+        and Path(context["working_blueprint_path"]).is_file()
+        else {}
     )
-    base["task_plan"] = plan
+    return result(
+        "success",
+        json.dumps(
+            {
+                "definition": tasks[task_id],
+                "draft": draft.get("tasks", {}).get(task_id),
+                "design": blueprint.get("tasks", {}).get(task_id),
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
+def list_fields(context, *, offset=0, limit=20, query=""):
+    """Page field paths and availability; text search helps discovery but never drops tasks."""
+    fields = _profile(context)["fields"]
+    rows = [
+        {"path": key, "types": value["types"], "non_empty_images": value["non_empty_images"]}
+        for key, value in fields.items()
+        if query.casefold() in key.casefold()
+    ]
+    return result(
+        "success", json.dumps({"total": len(rows), "fields": rows[offset : offset + limit]})
+    )
+
+
+def read_fields(context, *, fields):
+    """Read selected field distributions and their object/array structure."""
+    return result("success", json.dumps(_subset(_profile(context), fields), ensure_ascii=False))
+
+
+def _subset(profile, fields):
+    unknown = set(fields) - set(profile["fields"])
+    if unknown:
+        raise ValueError(f"Unknown fields: {sorted(unknown)}")
+    return {
+        "total_images": profile["total_images"],
+        "fields": {key: profile["fields"][key] for key in fields},
+        "structures": [
+            item
+            for item in profile["structures"]
+            if any(field.startswith(item["path"]) for field in fields)
+        ],
+    }
+
+
+def screen_family(context, *, category, fields, feedback=""):
+    """Screen or revise one task family using queried evidence; save an unpublishable draft."""
+    require(context, "Dataset", "Requirement", "Materials")
+    base = _base(context)
+    tasks = {key: value for key, value in base["tasks"].items() if value["category"] == category}
+    if not tasks:
+        raise ValueError("Unknown task category")
+    previous = {}
+    if context.get("draft_path"):
+        try:
+            require(context, "PlanningDraft")
+            previous = _read(context["draft_path"])["tasks"]
+        except ValueError:
+            previous = {}
+    plan = generate_task_plan(
+        {"tasks": tasks},
+        _subset(_profile(context), fields),
+        allow_empty=True,
+        feedback=feedback + "\n" + json.dumps(context.get("clarification", {})),
+    )
+    merged = {**previous, **plan["tasks"]}
+    path = Path(context["operation_directory"]) / "family_drafts.json"
+    atomic_write_json(path, {"tasks": merged})
+    versions = publish(
+        context,
+        "PlanningDraft",
+        {"path": str(path)},
+        ("Dataset", "Requirement", "Materials", "PlanningConfig"),
+    )
+    return result(
+        "success",
+        f"Family draft saved; {len(merged)}/{len(base['tasks'])} tasks decided",
+        draft_path=str(path),
+        **versions,
+    )
+
+
+def coordinate(context):
+    """Globally reconcile all family decisions and expand the resulting complete Task Plan."""
+    require(context, "PlanningDraft")
+    base = _base(context)
+    profile = _profile(context)
+    plan = coordinate_task_plan(base, profile, _read(context["draft_path"])["tasks"])
+    old = (
+        _read(context["working_blueprint_path"])
+        if context.get("working_blueprint_path")
+        and Path(context["working_blueprint_path"]).is_file()
+        else {}
+    )
     path = _save(context, base)
-    apply_task_plan(path, plan, context["dataset_profile"])
-    updated = _read({"working_blueprint_path": path})
-    parent = task_id
-    for task_id, task in updated["tasks"].items():
-        if task.get("parent_task_id", task_id) != parent and task_id in current["tasks"]:
-            updated["tasks"][task_id] = current["tasks"][task_id]
+    apply_task_plan(path, plan, profile)
+    updated = _read(path)
+    for key, task in updated["tasks"].items():
+        parent = task.get("parent_task_id", key)
+        if (
+            old.get("materials_version") == context["artifact_versions"]["Materials"]
+            and old.get("task_plan", {}).get("tasks", {}).get(parent) == plan["tasks"][parent]
+            and key in old.get("tasks", {})
+        ):
+            updated["tasks"][key] = old["tasks"][key]
+    atomic_write_json(path, updated)
     return result(
         "success",
-        "Task revised; reallocate and design changed tasks",
-        working_blueprint_path=_save(context, updated),
+        "Global plan coordinated; allocate and design active tasks",
+        working_blueprint_path=path,
+        artifact_versions=context["artifact_versions"],
     )
 
 
-def allocate(context, *, counts: dict[str, int] | None = None):
-    """Allocate sample counts with the existing weighted algorithm."""
-    blueprint = _read(context)
+def allocate(context, *, counts=None):
+    """Allocate requested samples using the existing weighted algorithm."""
+    require(context, "BlueprintDraft")
+    blueprint = _read(context["working_blueprint_path"])
     counts = distribute_weighted_sample_counts(
         blueprint["tasks"], context["benchmark_info"]["sample_count"], counts
     )
-    for task_id, count in counts.items():
-        blueprint["tasks"][task_id]["sample_count"] = count
-    return result(
-        "success", "Sample counts allocated", working_blueprint_path=_save(context, blueprint)
-    )
-
-
-def select_materials(context, *, files: list[str]):
-    """Choose exact discovered PDF paths. Available paths are in state.materials."""
-    available = {m["file"] for m in discover_medical_materials(get_settings().paths.materials_root)}
-    if (
-        not isinstance(files, list)
-        or not files
-        or not all(isinstance(f, str) and f in available for f in files)
-    ):
-        raise ValueError("Select existing PDF paths")
-    updates = {"selected_material_files": list(dict.fromkeys(files))}
-    if files != context.get("selected_material_files"):
-        blueprint = _read(context)
-        for task in blueprint["tasks"].values():
-            for field in RAG_DESIGN_FIELDS:
-                task.pop(field, None)
-        updates["working_blueprint_path"] = _save(context, blueprint)
+    for key, count in counts.items():
+        blueprint["tasks"][key]["sample_count"] = count
+    path = _save(context, blueprint)
     return result(
         "success",
-        "Medical references selected; changed references require fresh designs",
-        **updates,
+        "Sample counts allocated",
+        working_blueprint_path=path,
+        artifact_versions=context["artifact_versions"],
     )
 
 
-def medical_design(context, *, task_id: str, feedback: str = ""):
-    """Retrieve evidence and design one task."""
-    blueprint = _read(context)
-    if task_id not in blueprint["tasks"] or not context.get("selected_material_files"):
-        raise ValueError("A planned task and selected materials are required")
-    rag = LocalPdfRag(
-        get_settings().paths.materials_root,
-        get_settings().paths.rag_cache_root,
+def list_materials(context, *, offset=0, limit=20, query=""):
+    """Page available run-local medical references."""
+    files = [
+        m
+        for m in discover_medical_materials(get_settings().paths.materials_root)
+        if query.casefold() in m["file"].casefold()
+    ]
+    return result(
+        "success", json.dumps({"total": len(files), "materials": files[offset : offset + limit]})
+    )
+
+
+def read_material(context, *, file):
+    """Read one PDF's metadata and page count without dumping its contents."""
+    from pypdf import PdfReader
+
+    available = {m["file"] for m in discover_medical_materials(get_settings().paths.materials_root)}
+    if file not in available:
+        raise ValueError("Unknown PDF")
+    reader = PdfReader(get_settings().paths.materials_root / file)
+    return result(
+        "success",
+        json.dumps(
+            {"file": file, "pages": len(reader.pages), "metadata": str(reader.metadata)[:2000]},
+            ensure_ascii=False,
+        ),
+    )
+
+
+def select_materials(context, *, files):
+    """Select medical references and retain an immutable copy for this run."""
+    available = {m["file"] for m in discover_medical_materials(get_settings().paths.materials_root)}
+    if not set(files) <= available:
+        raise ValueError("Select existing PDF paths")
+    files = list(dict.fromkeys(files))
+    if files == context.get("selected_material_files"):
+        require(context, "Materials")
+        return result("success", "These references are already selected")
+    root = Path(context["operation_directory"]) / "materials"
+    for file in files:
+        destination = root / file
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(get_settings().paths.materials_root / file, destination)
+    versions = publish(context, "Materials", {"root": str(root), "files": files}, ())
+    return result(
+        "success",
+        "References selected; reconcile affected planning evidence",
+        selected_material_files=files,
+        materials_root=str(root),
+        **versions,
+    )
+
+
+def _rag(context):
+    require(context, "Materials")
+    return LocalPdfRag(
+        context["materials_root"],
+        Path(context["run_directory"]) / ".runtime/rag",
         context["selected_material_files"],
     )
+
+
+def search_materials(context, *, query, limit=5):
+    """Retrieve relevant paragraphs from selected references."""
+    return result("success", json.dumps(_rag(context).retrieve(query, limit), ensure_ascii=False))
+
+
+def medical_design(context, *, task_id, feedback=""):
+    """Design one expanded task from its supporting fields and selected medical references."""
+    require(context, "BlueprintDraft")
+    blueprint = _read(context["working_blueprint_path"])
+    if task_id not in blueprint["tasks"]:
+        raise ValueError("Unknown expanded task")
+    task = blueprint["tasks"][task_id]
     design = design_task(
-        rag,
+        _rag(context),
         context["benchmark_info"],
         task_id,
-        blueprint["tasks"][task_id],
-        dataset_profile=context["dataset_profile"],
+        task,
+        dataset_profile=_subset(_profile(context), task["supporting_fields"]),
         dataset_access_manifest=context["dataset_access_manifest"],
         feedback=feedback,
     )
-    blueprint["tasks"][task_id].update(design)
-    blueprint["tasks"][task_id].pop("question_templates", None)
+    task.update(design)
+    task.pop("question_templates", None)
+    path = _save(context, blueprint)
     return result(
-        "success", "Medical task design ready", working_blueprint_path=_save(context, blueprint)
+        "success",
+        "Medical design ready",
+        working_blueprint_path=path,
+        artifact_versions=context["artifact_versions"],
     )
 
 
 def finish(context):
-    blueprint = _read(context)
-    if (
-        blueprint.get("dataset", {}).get("dataset_id") != context.get("selected_dataset_id")
-        or not context.get("dataset_profile")
-        or not context.get("dataset_access_manifest")
-        or "task_plan" not in blueprint
-    ):
-        raise ValueError("Profile and plan the current dataset before finishing")
-    if context.get("plan_binding") != [
-        context.get("annotation_path"),
-        context["dataset_access_manifest"].get("revision"),
-    ]:
-        raise ValueError("Task plan belongs to a different dataset revision; replan first")
+    """Publish a fully coordinated, allocated and medically designed Plan version."""
+    require(context, "BlueprintDraft")
+    blueprint = _read(context["working_blueprint_path"])
     tasks = blueprint["tasks"]
-    counts = [t.get("sample_count") for t in tasks.values()]
+    counts = [task.get("sample_count") for task in tasks.values()]
     if (
         not tasks
         or any(type(n) is not int or n < 0 for n in counts)
@@ -225,57 +416,90 @@ def finish(context):
     ):
         raise ValueError("Allocate the requested sample count before finishing")
     for task in tasks.values():
-        if task.get("sample_count", 0) and not all(
-            k in task for k in ("generation_logic", "medical_task_description", "citations")
+        if task["sample_count"] and not all(
+            key in task for key in ("generation_logic", "medical_task_description", "citations")
         ):
             raise ValueError("Every active task needs a medical design")
-    blueprint["selected_material_files"] = context["selected_material_files"]
-    artifact = write_versioned_json(context["run_directory"], "blueprints", blueprint)
-    return result("complete", "Task planning complete", working_blueprint_path=artifact["path"])
+    versions = publish(
+        context,
+        "Plan",
+        {"blueprint": context["working_blueprint_path"]},
+        ("Requirement", "Dataset", "Materials", "PlanningConfig", "BlueprintDraft"),
+    )
+    return result("complete", "Plan published", **versions)
 
 
 def describe(context):
-    try:
-        catalog = public_dataset_entries(load_dataset_catalog())
-    except ValueError as exc:
-        catalog = {"unavailable": str(exc)}
-    path = context.get("working_blueprint_path")
+    drafts = _read(context["draft_path"])["tasks"] if context.get("draft_path") else {}
+    blueprint = (
+        _read(context["working_blueprint_path"])
+        if context.get("working_blueprint_path")
+        and Path(context["working_blueprint_path"]).is_file()
+        else {}
+    )
     return {
-        "requirement": context["user_requirement"],
+        "requirement": context["user_requirement"][:2000],
         "benchmark_info": context["benchmark_info"],
         "dataset": context.get("selected_dataset_id"),
-        "profile": context.get("dataset_profile"),
-        "blueprint": _read(context) if path and Path(path).is_file() else None,
-        "catalog": catalog,
-        "materials": discover_medical_materials(get_settings().paths.materials_root),
-        "selected_materials": context.get("selected_material_files"),
+        "versions": context.get("artifact_versions", {}),
+        "families": sorted({task["category"] for task in _base(context)["tasks"].values()}),
+        "draft_count": len(drafts),
+        "draft_reference": context.get("draft_path"),
+        "active_tasks": [
+            {"id": key, "count": task.get("sample_count"), "designed": "generation_logic" in task}
+            for key, task in blueprint.get("tasks", {}).items()
+        ],
         "feedback": context.get("feedback"),
+        "clarification": context.get("clarification"),
+        "dataset_catalog": public_dataset_entries(load_dataset_catalog())
+        if not context.get("selected_dataset_id")
+        else None,
     }
 
 
 def compile_task_planning_agent(*, checkpointer=None):
+    tools = {
+        function.__name__: function
+        for function in (
+            select_dataset,
+            profile_dataset,
+            list_tasks,
+            read_task,
+            list_fields,
+            read_fields,
+            screen_family,
+            coordinate,
+            allocate,
+            list_materials,
+            read_material,
+            select_materials,
+            search_materials,
+            medical_design,
+        )
+    }
     return compile_agent(
         "TaskPlanningAgent",
-        "Plan medical benchmark tasks. Use tools for dataset selection, profiling, complete task planning, "
-        "allocation and medical design. Reuse completed work. Every nonzero task needs a medical design. "
-        "Use ask_user for unresolved semantics, not routine confirmation.",
-        {
-            "select_dataset": select_dataset,
-            "profile_dataset": profile_dataset,
-            "plan_tasks": plan_tasks,
-            "revise_task": revise_task,
-            "allocate": allocate,
-            "select_materials": select_materials,
-            "medical_design": medical_design,
-        },
+        "Plan predefined medical benchmark tasks. Select/profile data and references, list task families, "
+        "query candidate fields and structures, then screen each family. Never drop a task solely because "
+        "a keyword search failed; query more evidence or ask_user. Coordinate all family drafts globally, "
+        "allocate, then design every nonzero expanded task. Revise only affected families and coordinate again. "
+        "Use local ask_user for source semantics; scope global only for cross-role goals or resource decisions.",
+        tools,
         describe,
         finish,
         args_schemas={
             "select_dataset": SelectDatasetArguments,
             "profile_dataset": ProfileArguments,
-            "revise_task": ReviseTaskArguments,
+            "list_tasks": PageArguments,
+            "read_task": TaskArguments,
+            "list_fields": PageArguments,
+            "read_fields": FieldArguments,
+            "screen_family": FamilyArguments,
             "allocate": AllocateArguments,
+            "list_materials": PageArguments,
+            "read_material": MaterialArguments,
             "select_materials": MaterialsArguments,
+            "search_materials": SearchArguments,
             "medical_design": MedicalDesignArguments,
         },
         checkpointer=checkpointer,

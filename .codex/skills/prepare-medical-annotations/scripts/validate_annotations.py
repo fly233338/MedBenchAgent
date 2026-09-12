@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -15,14 +14,6 @@ _NON_CANONICAL_BBOX_FIELDS = (
     frozenset({"x", "y", "width", "height"}),
     frozenset({"cx", "cy", "width", "height"}),
 )
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while block := source.read(1024 * 1024):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _relative(value: object, field: str) -> str:
@@ -61,6 +52,8 @@ def _rows(path: Path) -> list[dict[str, Any]]:
 
 
 def _validate_bbox(value: object, path: str) -> None:
+    if value is None:
+        return
     if (
         not isinstance(value, list)
         or len(value) != 4
@@ -163,7 +156,6 @@ def validate(annotation_path: Path, schema_path: Path, source_root: Path) -> dic
     return {
         "records": len(rows),
         "referenced_files_checked": len(rows),
-        "annotation_sha256": _sha256(annotation_path),
     }
 
 

@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from medbenchagent.harness import compile_agent, result
-from medbenchagent.tool_contracts import ProfileArguments
+from medbenchagent.runtime.harness import compile_agent, result
+from medbenchagent.runtime.tool_contracts import ProfileArguments
 
 
 @pytest.mark.parametrize(
@@ -31,7 +31,7 @@ def test_invalid_arguments_are_reported_before_execution(
         prompts.append(json.loads(prompt))
         return next(actions)
 
-    monkeypatch.setattr("medbenchagent.harness.complete_json", decide)
+    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", decide)
     calls = []
     graph = compile_agent(
         "Test",
@@ -40,7 +40,6 @@ def test_invalid_arguments_are_reported_before_execution(
         lambda context: {},
         lambda context: result("complete", "Done"),
         args_schemas={"profile": ProfileArguments},
-        human=True,
     )
     output = graph.invoke(
         {
@@ -66,7 +65,7 @@ def test_validated_defaults_reach_named_parameters(tmp_path, monkeypatch):
             {"tool": "finish", "arguments": {}, "reason": "Done"},
         ]
     )
-    monkeypatch.setattr("medbenchagent.harness.complete_json", lambda *a: next(actions))
+    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *a: next(actions))
 
     def profile(context, *, revision, refresh):
         assert revision == "1"
@@ -96,7 +95,7 @@ def test_validated_defaults_reach_named_parameters(tmp_path, monkeypatch):
 @pytest.mark.parametrize("error", [KeyError("internal"), TypeError("internal")])
 def test_internal_programming_errors_are_not_parameter_feedback(tmp_path, monkeypatch, error):
     monkeypatch.setattr(
-        "medbenchagent.harness.complete_json",
+        "medbenchagent.runtime.harness.complete_json",
         lambda *a: {
             "tool": "broken",
             "arguments": {},

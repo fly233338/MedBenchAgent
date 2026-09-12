@@ -7,7 +7,7 @@ from string import Formatter
 
 from medbenchagent.generation.context import image_modality
 from medbenchagent.generation.grounding import _visual_target_text
-from medbenchagent.llm import complete_json
+from medbenchagent.runtime.llm import complete_json
 from medbenchagent.settings import get_settings
 
 

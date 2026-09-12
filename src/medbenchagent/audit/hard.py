@@ -12,11 +12,11 @@ from typing import Any
 from types import SimpleNamespace
 from medbenchagent.generation import grounding, free_text
 
-from medbenchagent.image_assets import validate_image_asset
+from medbenchagent.data.image_assets import validate_image_asset
 
-from medbenchagent.answer_balance import balance_items
-from medbenchagent.construction import AUDIT_AGENT, record_event
-from medbenchagent.dataset import load_annotation_jsonl
+from medbenchagent.audit.answer_balance import balance_items
+from medbenchagent.runtime.construction import AUDIT_AGENT, record_event
+from medbenchagent.data.validation import load_annotation_jsonl
 from medbenchagent.generation.context import (
     locate_scalar_evidence,
     locate_bbox_evidence,

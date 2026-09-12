@@ -19,7 +19,7 @@ from medbenchagent.contracts import (
     GenerationRequest,
     GenerationResult,
 )
-from medbenchagent.construction import GENERATION_AGENT, record_event
+from medbenchagent.runtime.construction import GENERATION_AGENT, record_event
 from medbenchagent.generation import free_text, grounding, vqa
 from medbenchagent.generation.context import (
     has_meaningful_value,

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-import medbenchagent.dataset_catalog as catalog
+import medbenchagent.data.dataset_catalog as catalog
 
 
 def _entry(dataset_id: str, *, available: bool = True) -> dict:

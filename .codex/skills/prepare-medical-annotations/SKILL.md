@@ -76,22 +76,20 @@ After exploration, present `source_inventory.json`, `conversion_plan.json`, and 
 - Annotation mappings, including `modality` and `anatomy` provenance or omission.
 - Excluded fields, conflicts, unmatched records, and unresolved decisions.
 
-Set `review.status` in `conversion_plan.json` to `pending`. Do not write conversion code or `annotation.jsonl` until the user explicitly approves the mapping. Treat silence or an ambiguous response as unapproved.
-
-Apply user feedback as structured changes to `conversion_plan.json`, show the revised decisions, and request approval again. On approval, set `review.status` to `approved`. Do not store the conversation or hidden reasoning.
+Proceed when source-supported mappings and reconciliation rules are complete. Do not require routine approval for every mapping. Ask the user only when entity scope, joins, coordinate conventions, conflicts, or extra derivations remain unresolved; record the answer against this plan version. Save revisions as new versions, preserving completed outputs.
 
 ### 4. Implement deterministic conversion
 
-Write `<artifact_dir>/scripts/prepare_annotations.py` with all dataset-specific logic documented in the approved conversion plan.
+Write `<artifact_dir>/scripts/prepare_annotations.py` with all dataset-specific logic documented in the recorded conversion plan.
 
 Require explicit input and output paths. Read sources without modifying them, group all annotations belonging to an image, and emit exactly one canonical v2 record per authoritative image. Preserve source values, JSON-compatible types, and fields originating from the same source row. Use stable record and array-item ordering.
 
-Emit each approved bounding box only in canonical `bbox: [xmin, ymin, xmax, ymax]` form on
+Emit each source-supported bounding box only in canonical `bbox: [xmin, ymin, xmax, ymax]` form on
 its corresponding object. Do not also emit the source coordinate components unless they have
 an independently documented non-bounding-box meaning. Preserve numeric precision and require
 finite, non-negative coordinates with `xmin < xmax` and `ymin < ymax`.
 
-Write to a temporary file and replace `annotation.jsonl` only after complete success. Keep every `image.image_path` relative to the source-image root. Except for an approved mask-to-bbox derivation, do not decode images or add PNG metadata during this stage.
+Write to a temporary file and replace `annotation.jsonl` only after complete success. Keep every `image.image_path` relative to the source-image root. Except for an explicitly authorized mask-to-bbox derivation, do not decode images or add PNG metadata during this stage.
 
 Assign fields by source-supported entity scope, not by identifier names or row layout.
 
@@ -122,7 +120,7 @@ Verify:
   recognized source coordinate components remain in the canonical annotations.
 - Both converter runs produce byte-identical output.
 
-Write `annotation_report.json` with input and converter paths, output count, reconciliation counts, validation results, determinism results, observable mapping decisions (including bbox source conventions and conversion formulas), and unresolved issues. Do not include complete source rows, unnecessary protected information, or hidden reasoning.
+Write `validation.json` with input and converter paths, output count, reconciliation counts, validation results, determinism results, observable mapping decisions (including bbox source conventions and conversion formulas), and unresolved issues. Do not include complete source rows, unnecessary protected information, or hidden reasoning.
 
 ## Output
 Artifact_dir should be a subdirectory of datasets/Normalized
@@ -132,7 +130,7 @@ Artifact_dir should be a subdirectory of datasets/Normalized
 ├── annotation.jsonl
 ├── source_inventory.json
 ├── conversion_plan.json
-└── annotation_report.json
+└── validation.json
 ```
 
 Finish only when no source file was modified, every source-supported annotation was included or accounted for, canonical records are valid, identifiers and source-relative paths are unique, referenced files resolve beneath the source root, counts reconcile, and unchanged reruns are byte-identical.

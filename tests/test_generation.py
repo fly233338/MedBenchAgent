@@ -6,7 +6,7 @@ import pytest
 import medbenchagent.generation.engine as generation
 import medbenchagent.generation.grounding as grounding
 from medbenchagent.answer_mapping import canonical_answer_scalar
-from medbenchagent.dataset import prepare_annotation_dataset
+from medbenchagent.data.dataset import prepare_annotation_dataset
 from medbenchagent.generation.context import locate_bbox_evidence, locate_scalar_evidence
 from medbenchagent.generation.templates import validate_templates
 from medbenchagent.settings import get_settings
@@ -237,8 +237,8 @@ def test_three_stages_run_in_order_and_write_compact_raw(tmp_path: Path, monkeyp
     )
     calls: list[tuple[str, float]] = []
     fake = _fake_model(calls)
-    monkeypatch.setattr("medbenchagent.llm.complete_json", fake)
-    monkeypatch.setattr("medbenchagent.llm.complete_json", fake)
+    monkeypatch.setattr("medbenchagent.runtime.llm.complete_json", fake)
+    monkeypatch.setattr("medbenchagent.runtime.llm.complete_json", fake)
     result = generation.generate_raw_benchmark(request)
     items = _read_items(result.raw_output_path)
     assert [item["task_id"] for item in items] == ["vqa", "grounding", "report"]
@@ -289,7 +289,7 @@ def test_each_stage_applies_its_own_three_task_image_limit(tmp_path: Path, monke
     request = _request(tmp_path, [_record(0, annotation)], tasks, 8)
     calls: list[tuple[str, float]] = []
     fake = _fake_model(calls)
-    monkeypatch.setattr("medbenchagent.llm.complete_json", fake)
+    monkeypatch.setattr("medbenchagent.runtime.llm.complete_json", fake)
     result = generation.generate_raw_benchmark(request)
     items = _read_items(result.raw_output_path)
     assert len([item for item in items if item["task_id"].startswith("vqa_")]) == 3
@@ -307,7 +307,7 @@ def test_stage_shortfall_does_not_block_later_stage(tmp_path: Path, monkeypatch)
         },
         2,
     )
-    monkeypatch.setattr("medbenchagent.llm.complete_json", _fake_model([]))
+    monkeypatch.setattr("medbenchagent.runtime.llm.complete_json", _fake_model([]))
     result = generation.generate_raw_benchmark(request)
     assert result.task_counts == {"vqa": 0, "grounding": 1}
 
@@ -390,7 +390,7 @@ def test_structured_mapping_skips_unmapped_or_multiple_evidence(
         1,
     )
     monkeypatch.setattr(
-        "medbenchagent.llm.complete_json", lambda *_args, **_kwargs: pytest.fail("model called")
+        "medbenchagent.runtime.llm.complete_json", lambda *_args, **_kwargs: pytest.fail("model called")
     )
     assert generation.generate_raw_benchmark(unmapped).item_count == 0
     multiple_task = _task(
