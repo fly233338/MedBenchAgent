@@ -116,3 +116,31 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
     assert resumed["context"]["clarification"]["answer"] == "English"
     assert resumed["elapsed"] == 0
     assert resumed["observations"][0]["summary"] == "Input examined"
+
+
+def test_dynamic_catalog_and_execution_use_same_gate(tmp_path, monkeypatch):
+    import json
+    prompts = []
+    actions = iter(["guarded", "finish"])
+    def model(_, prompt):
+        prompts.append(json.loads(prompt))
+        return {"tool": next(actions), "arguments": {}, "reason": "Attempt"}
+    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", model)
+    calls = []
+    graph = compile_agent("Gate", "Gate", {"guarded": lambda c: calls.append(1)}, lambda c: {},
+                          lambda c: result("complete", "Done"), available_tools=lambda c: {"finish", "ask_user"})
+    graph.invoke({"context": {"run_id": "gate", "operation_directory": str(tmp_path / "ops"),
+                              "construction_events_path": str(tmp_path / "events")}})
+    assert not calls
+    assert "guarded" not in prompts[0]["tools"]
+    assert prompts[1]["last_result"]["status"] == "failed"
+
+
+def test_global_needs_input_is_structured(tmp_path, monkeypatch):
+    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *args: {
+        "tool": "ask_user", "arguments": {"question": "Clarify target", "scope": "global"}, "reason": "Ambiguous"})
+    graph = compile_agent("Child", "Child", {}, lambda c: {}, lambda c: result("complete", "Done"))
+    output = graph.invoke({"context": {"run_id": "input", "operation_directory": str(tmp_path / "ops"),
+                                       "construction_events_path": str(tmp_path / "events")}})
+    assert output["result"]["status"] == "needs_input"
+    assert output["result"]["unresolved_questions"] == ["Clarify target"]

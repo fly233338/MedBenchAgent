@@ -5,12 +5,11 @@ from medbenchagent.settings import get_settings
 
 def test_blueprint_defines_all_categories_and_spatial_tasks() -> None:
     blueprint = json.loads(get_settings().paths.blueprint_template.read_text(encoding="utf-8"))
-    tasks = blueprint["tasks"]
+    tasks = blueprint["concepts"]
 
     assert all("metric" not in task for task in tasks.values())
 
-    assert tasks["visual_grounding"]["response_format"] == "bbox"
-    assert tasks["detection"]["response_format"] == "bbox"
+    assert all("response_format" not in concept and concept["origin"] == "core" for concept in tasks.values())
     assert tasks["detection"]["category"] == "spatial_localization"
     assert tasks["visual_grounding"]["category"] == "spatial_localization"
     assert tasks["visual_grounding"]["description"] == (

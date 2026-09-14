@@ -91,10 +91,10 @@ def finalize_run(
         raise ValueError("Dataset catalog entry does not match the confirmed Blueprint dataset ID.")
     image_manifest = _required_readable_file(image_manifest_path, "image_manifest.jsonl")
     for task_id, task in blueprint["tasks"].items():
-        if not is_metric_supported(task.get("response_format"), task.get("metric")):
+        if not is_metric_supported(task["protocol"].get("response_format"), task["protocol"].get("metric")):
             raise ValueError(
                 f"{task_id}: final Blueprint task must contain a metric compatible with "
-                f"response format {task.get('response_format')}."
+                f"response format {task['protocol'].get('response_format')}."
             )
     if not isinstance(audit_artifacts, dict):
         raise ValueError("audit_artifacts must be a dictionary.")
@@ -148,23 +148,16 @@ def finalize_run(
                 "total_images": dataset_profile["total_images"],
                 "image_format": _image_manifest_format(image_manifest),
             },
+            "concepts": blueprint["concepts"],
+            "allocation": blueprint["allocation"],
             "tasks": {
                 task_id: {
                     "category": task["category"],
-                    "response_format": task["response_format"],
-                    "supporting_fields": task["supporting_fields"],
+                    "response_format": task["protocol"]["response_format"],
+                    "supporting_fields": task["protocol"]["data_binding"]["supporting_fields"],
                     "sample_count": task["sample_count"],
-                    "metrics": [task["metric"]],
-                    **(
-                        {"parent_task_id": task["parent_task_id"]}
-                        if isinstance(task.get("parent_task_id"), str)
-                        else {}
-                    ),
-                    **(
-                        {"question_type_id": task["question_type_id"]}
-                        if isinstance(task.get("question_type_id"), str)
-                        else {}
-                    ),
+                    "metrics": [task["protocol"]["metric"]],
+                    "concept_id": task["concept_id"],
                 }
                 for task_id, task in blueprint["tasks"].items()
             },

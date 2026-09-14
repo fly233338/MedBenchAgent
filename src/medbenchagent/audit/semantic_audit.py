@@ -148,9 +148,9 @@ def semantic_audit_run(
                     for key in (
                         "description",
                         "require",
-                        "question_type_id",
+                        "concept_id",
                         "question_templates",
-                        "medical_task_description",
+                        "protocol",
                     )
                     if key in task
                 },

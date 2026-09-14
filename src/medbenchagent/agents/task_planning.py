@@ -1,43 +1,46 @@
-"""Task planning with bounded evidence queries, family drafts and global reconciliation."""
+"""Incremental two-level medical concept and leaf planning."""
 
 from __future__ import annotations
-
 import json
 import shutil
 from pathlib import Path
-
 from medbenchagent.data.dataset import prepare_annotation_dataset
 from medbenchagent.data.dataset_catalog import (
     dataset_by_id,
     load_dataset_catalog,
-    public_dataset_entries,
     recommend_dataset,
     resolve_annotation_path,
 )
 from medbenchagent.runtime.dependencies import publish, require, snapshot_dataset
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.rag.pdf import LocalPdfRag, RagUnavailable, discover_medical_materials
+from medbenchagent.settings import get_settings
 from medbenchagent.runtime.tool_contracts import (
-    AllocateArguments,
-    MaterialsArguments,
-    MedicalDesignArguments,
-    ProfileArguments,
     SelectDatasetArguments,
+    ProfileArguments,
     PageArguments,
     FieldArguments,
-    TaskArguments,
-    FamilyArguments,
     MaterialArguments,
+    MaterialsArguments,
     SearchArguments,
 )
-from medbenchagent.rag.pdf import LocalPdfRag, design_task, discover_medical_materials
-from medbenchagent.planning.sample_counts import distribute_weighted_sample_counts
-from medbenchagent.planning.task_screening import (
-    apply_task_plan,
-    generate_task_plan,
-    coordinate_task_plan,
+from medbenchagent.planning.tree import (
+    LeafArguments,
+    ConceptArguments,
+    NodeArguments,
+    ExtensionArguments,
+    WeightsArguments,
+    FieldValuesArguments,
+    concepts_complete,
+    validate_plan,
+    ExtensionDecision,
+    GlobalReview,
 )
-from medbenchagent.settings import get_settings
+from medbenchagent.planning.protocol import validate_dataset_protocol
+from medbenchagent.planning.sample_counts import allocate_leaf_counts
+from medbenchagent.runtime.llm import complete_json
+from medbenchagent.data.validation import load_annotation_jsonl
 
 
 def _read(path):
@@ -56,19 +59,6 @@ def _base(context):
 def _profile(context):
     require(context, "Dataset")
     return _read(context["dataset_access_manifest"]["profile_path"])
-
-
-def _save(context, blueprint):
-    blueprint["materials_version"] = context["artifact_versions"]["Materials"]
-    path = Path(context["operation_directory"]) / "blueprint.json"
-    atomic_write_json(path, blueprint)
-    publish(
-        context,
-        "BlueprintDraft",
-        {"path": str(path)},
-        ("Dataset", "Requirement", "Materials", "PlanningDraft", "PlanningConfig"),
-    )
-    return str(path)
 
 
 def select_dataset(context, *, dataset_id=None, annotation_path=None):
@@ -149,46 +139,6 @@ def profile_dataset(context, *, revision="1", refresh=False):
     )
 
 
-def list_tasks(context, *, offset=0, limit=20, query=""):
-    """Page through predefined task IDs, families and short descriptions."""
-    tasks = [
-        {"task_id": key, "category": value["category"], "description": value["description"]}
-        for key, value in _base(context)["tasks"].items()
-        if query.casefold() in (key + " " + value["category"]).casefold()
-    ]
-    return result(
-        "success",
-        json.dumps(
-            {"total": len(tasks), "tasks": tasks[offset : offset + limit]}, ensure_ascii=False
-        ),
-    )
-
-
-def read_task(context, *, task_id):
-    """Read one task definition, family draft and current design."""
-    tasks = _base(context)["tasks"]
-    if task_id not in tasks:
-        raise ValueError("Unknown predefined task")
-    draft = _read(context["draft_path"]) if context.get("draft_path") else {}
-    blueprint = (
-        _read(context["working_blueprint_path"])
-        if context.get("working_blueprint_path")
-        and Path(context["working_blueprint_path"]).is_file()
-        else {}
-    )
-    return result(
-        "success",
-        json.dumps(
-            {
-                "definition": tasks[task_id],
-                "draft": draft.get("tasks", {}).get(task_id),
-                "design": blueprint.get("tasks", {}).get(task_id),
-            },
-            ensure_ascii=False,
-        ),
-    )
-
-
 def list_fields(context, *, offset=0, limit=20, query=""):
     """Page field paths and availability; text search helps discovery but never drops tasks."""
     fields = _profile(context)["fields"]
@@ -207,6 +157,26 @@ def read_fields(context, *, fields):
     return result("success", json.dumps(_subset(_profile(context), fields), ensure_ascii=False))
 
 
+def read_field_values(context, *, field, offset=0, limit=20):
+    """Page exact annotation values and counts; profile examples may be truncated."""
+    from collections import Counter
+    from medbenchagent.generation.context import scalar_evidence_candidates
+
+    _subset(_profile(context), [field])
+    counts = Counter(
+        json.dumps(v["value"], ensure_ascii=False)
+        for row in load_annotation_jsonl(context["annotation_path"])
+        for v in scalar_evidence_candidates(row, field)
+    )
+    rows = [{"value": json.loads(value), "count": count} for value, count in sorted(counts.items())]
+    return result(
+        "success",
+        json.dumps(
+            {"total": len(rows), "values": rows[offset : offset + limit]}, ensure_ascii=False
+        ),
+    )
+
+
 def _subset(profile, fields):
     unknown = set(fields) - set(profile["fields"])
     if unknown:
@@ -220,93 +190,6 @@ def _subset(profile, fields):
             if any(field.startswith(item["path"]) for field in fields)
         ],
     }
-
-
-def screen_family(context, *, category, fields, feedback=""):
-    """Screen or revise one task family using queried evidence; save an unpublishable draft."""
-    require(context, "Dataset", "Requirement", "Materials")
-    base = _base(context)
-    tasks = {key: value for key, value in base["tasks"].items() if value["category"] == category}
-    if not tasks:
-        raise ValueError("Unknown task category")
-    previous = {}
-    if context.get("draft_path"):
-        try:
-            require(context, "PlanningDraft")
-            previous = _read(context["draft_path"])["tasks"]
-        except ValueError:
-            previous = {}
-    plan = generate_task_plan(
-        {"tasks": tasks},
-        _subset(_profile(context), fields),
-        allow_empty=True,
-        feedback=feedback + "\n" + json.dumps(context.get("clarification", {})),
-    )
-    merged = {**previous, **plan["tasks"]}
-    path = Path(context["operation_directory"]) / "family_drafts.json"
-    atomic_write_json(path, {"tasks": merged})
-    versions = publish(
-        context,
-        "PlanningDraft",
-        {"path": str(path)},
-        ("Dataset", "Requirement", "Materials", "PlanningConfig"),
-    )
-    return result(
-        "success",
-        f"Family draft saved; {len(merged)}/{len(base['tasks'])} tasks decided",
-        draft_path=str(path),
-        **versions,
-    )
-
-
-def coordinate(context):
-    """Globally reconcile all family decisions and expand the resulting complete Task Plan."""
-    require(context, "PlanningDraft")
-    base = _base(context)
-    profile = _profile(context)
-    plan = coordinate_task_plan(base, profile, _read(context["draft_path"])["tasks"])
-    old = (
-        _read(context["working_blueprint_path"])
-        if context.get("working_blueprint_path")
-        and Path(context["working_blueprint_path"]).is_file()
-        else {}
-    )
-    path = _save(context, base)
-    apply_task_plan(path, plan, profile)
-    updated = _read(path)
-    for key, task in updated["tasks"].items():
-        parent = task.get("parent_task_id", key)
-        if (
-            old.get("materials_version") == context["artifact_versions"]["Materials"]
-            and old.get("task_plan", {}).get("tasks", {}).get(parent) == plan["tasks"][parent]
-            and key in old.get("tasks", {})
-        ):
-            updated["tasks"][key] = old["tasks"][key]
-    atomic_write_json(path, updated)
-    return result(
-        "success",
-        "Global plan coordinated; allocate and design active tasks",
-        working_blueprint_path=path,
-        artifact_versions=context["artifact_versions"],
-    )
-
-
-def allocate(context, *, counts=None):
-    """Allocate requested samples using the existing weighted algorithm."""
-    require(context, "BlueprintDraft")
-    blueprint = _read(context["working_blueprint_path"])
-    counts = distribute_weighted_sample_counts(
-        blueprint["tasks"], context["benchmark_info"]["sample_count"], counts
-    )
-    for key, count in counts.items():
-        blueprint["tasks"][key]["sample_count"] = count
-    path = _save(context, blueprint)
-    return result(
-        "success",
-        "Sample counts allocated",
-        working_blueprint_path=path,
-        artifact_versions=context["artifact_versions"],
-    )
 
 
 def list_materials(context, *, offset=0, limit=20, query=""):
@@ -340,7 +223,11 @@ def read_material(context, *, file):
 
 def select_materials(context, *, files):
     """Select medical references and retain an immutable copy for this run."""
-    available = {m["file"] for m in discover_medical_materials(get_settings().paths.materials_root)}
+    available = (
+        {m["file"] for m in discover_medical_materials(get_settings().paths.materials_root)}
+        if files
+        else set()
+    )
     if not set(files) <= available:
         raise ValueError("Select existing PDF paths")
     files = list(dict.fromkeys(files))
@@ -348,6 +235,7 @@ def select_materials(context, *, files):
         require(context, "Materials")
         return result("success", "These references are already selected")
     root = Path(context["operation_directory"]) / "materials"
+    root.mkdir(parents=True, exist_ok=True)
     for file in files:
         destination = root / file
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -358,6 +246,7 @@ def select_materials(context, *, files):
         "References selected; reconcile affected planning evidence",
         selected_material_files=files,
         materials_root=str(root),
+        retrieved_evidence=[],
         **versions,
     )
 
@@ -373,134 +262,457 @@ def _rag(context):
 
 def search_materials(context, *, query, limit=5):
     """Retrieve relevant paragraphs from selected references."""
-    return result("success", json.dumps(_rag(context).retrieve(query, limit), ensure_ascii=False))
+    try:
+        chunks = _rag(context).retrieve(query, limit)
+    except RagUnavailable as exc:
+        return result("failed", str(exc))
+    evidence = list(context.get("retrieved_evidence", []))
+    for chunk in chunks:
+        ref = {key: chunk[key] for key in ("pdf", "page", "chunk_id")}
+        if ref not in evidence:
+            evidence.append(ref)
+    return result("success", json.dumps(chunks, ensure_ascii=False), retrieved_evidence=evidence)
 
 
-def medical_design(context, *, task_id, feedback=""):
-    """Design one expanded task from its supporting fields and selected medical references."""
-    require(context, "BlueprintDraft")
-    blueprint = _read(context["working_blueprint_path"])
-    if task_id not in blueprint["tasks"]:
-        raise ValueError("Unknown expanded task")
-    task = blueprint["tasks"][task_id]
-    design = design_task(
-        _rag(context),
-        context["benchmark_info"],
-        task_id,
-        task,
-        dataset_profile=_subset(_profile(context), task["supporting_fields"]),
-        dataset_access_manifest=context["dataset_access_manifest"],
-        feedback=feedback,
+def _tree(context):
+    previous = {}
+    if context.get("draft_path"):
+        previous = _read(context["draft_path"])
+        try:
+            require(context, "PlanningDraft")
+        except ValueError:
+            # Keep identities and draft work; every decision must be revalidated.
+            previous["revision"] += 1
+            previous["review"] = {}
+            previous["correction_open"] = False
+            previous["discovery_complete"] = False
+            previous.pop("allocation", None)
+            previous.pop("coverage", None)
+            for concept in previous["concepts"].values():
+                concept["status"] = "pending"
+            for proposal in previous["proposals"].values():
+                proposal["decision"] = None
+            return previous
+        else:
+            return previous
+    tree = _base(context)
+    for concept in tree["concepts"].values():
+        concept.update(status="pending", reason="")
+    tree.update(
+        tasks={},
+        revision=0,
+        proposals={},
+        discovery_complete=False,
+        review={},
+        reworks_used=previous.get("reworks_used", 0),
+        correction_open=False,
+        retired_ids=previous.get("retired_ids", []) + list(previous.get("tasks", {})),
     )
-    task.update(design)
-    task.pop("question_templates", None)
-    path = _save(context, blueprint)
+    return tree
+
+
+def _persist(context, tree, *, changed=False):
+    require(context, "Dataset", "Requirement", "Materials")
+    if changed:
+        review = tree.get("review", {})
+        if review and not tree["correction_open"]:
+            if tree["reworks_used"] >= context.get("limits", {}).get("max_reworks", 3):
+                return result(
+                    "blocked",
+                    "Planning rework budget exhausted",
+                    unresolved_questions=review.get("issues", []),
+                )
+            tree["reworks_used"] += 1
+            tree["correction_open"] = True
+        tree["revision"] += 1
+        tree.pop("allocation", None)
+    path = Path(context["operation_directory"]) / "planning_tree.json"
+    atomic_write_json(path, tree)
+    versions = publish(
+        context,
+        "PlanningDraft",
+        {"path": str(path)},
+        ("Dataset", "Requirement", "Materials", "PlanningConfig"),
+    )
     return result(
         "success",
-        "Medical design ready",
-        working_blueprint_path=path,
-        artifact_versions=context["artifact_versions"],
+        "Planning tree saved",
+        draft_path=str(path),
+        readiness={"planning": False},
+        artifacts={"draft": str(path)},
+        **versions,
     )
+
+
+def read_node(context, *, node_id):
+    """Read one concept, leaf or extension proposal by its opaque identity."""
+    tree = _tree(context)
+    for section in ("concepts", "tasks", "proposals"):
+        if node_id in tree[section]:
+            return result("success", json.dumps(tree[section][node_id], ensure_ascii=False))
+    raise ValueError("Unknown node")
+
+
+def _validate_evidence(context, evidence):
+    retrieved = context.get("retrieved_evidence", [])
+    if any(e not in retrieved for e in evidence):
+        raise ValueError("Medical evidence must reference a retrieved paragraph")
+
+
+def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence):
+    """Create or revise a stable leaf identity, including reparenting; execution is entirely Protocol-defined."""
+    tree = _tree(context)
+    if (
+        concept_id not in tree["concepts"]
+        or leaf_id in tree["concepts"]
+        or leaf_id in tree["retired_ids"]
+    ):
+        raise ValueError("Unknown concept or unavailable leaf identity")
+    _validate_evidence(context, evidence)
+    _subset(_profile(context), protocol["data_binding"]["supporting_fields"])
+    validate_dataset_protocol(protocol, load_annotation_jsonl(context["annotation_path"]))
+    previous = tree["tasks"].get(leaf_id)
+    if previous and previous["concept_id"] != concept_id:
+        tree["concepts"][previous["concept_id"]]["status"] = "pending"
+    tree["tasks"][leaf_id] = {
+        "concept_id": concept_id,
+        "description": description,
+        "protocol": protocol,
+        "evidence": evidence,
+        "category": tree["concepts"][concept_id]["category"],
+    }
+    tree["concepts"][concept_id]["status"] = "pending"
+    output = _persist(context, tree, changed=True)
+    output["affected_node_ids"] = [leaf_id, concept_id]
+    return output
+
+
+def remove_leaf(context, *, node_id):
+    """Remove a duplicate leaf; merge by revising the survivor and removing the redundant identity."""
+    tree = _tree(context)
+    if node_id not in tree["tasks"]:
+        raise ValueError("Unknown leaf")
+    leaf = tree["tasks"].pop(node_id)
+    tree["retired_ids"].append(node_id)
+    tree["concepts"][leaf["concept_id"]]["status"] = "pending"
+    return _persist(context, tree, changed=True)
+
+
+def complete_concept(context, *, concept_id, status, reason):
+    """Close a concept after designing its leaves or establish that annotation cannot support it."""
+    tree = _tree(context)
+    if concept_id not in tree["concepts"]:
+        raise ValueError("Unknown concept")
+    children = [leaf for leaf in tree["tasks"].values() if leaf["concept_id"] == concept_id]
+    if (status == "complete") != bool(children):
+        raise ValueError("Complete concepts require leaves; unsupported concepts must have none")
+    if children:
+        records = load_annotation_jsonl(context["annotation_path"])
+        for leaf in children:
+            _subset(_profile(context), leaf["protocol"]["data_binding"]["supporting_fields"])
+            validate_dataset_protocol(leaf["protocol"], records)
+            _validate_evidence(context, leaf["evidence"])
+    tree["concepts"][concept_id].update(status=status, reason=reason)
+    return _persist(context, tree, changed=True)
+
+
+def coverage_gap(context):
+    """After core planning, inspect annotation coverage and propose genuinely uncovered capabilities."""
+    tree = _tree(context)
+    if not concepts_complete(tree, core_only=True):
+        raise ValueError("Complete core planning first")
+    used = {
+        p
+        for leaf in tree["tasks"].values()
+        for p in leaf["protocol"]["data_binding"]["supporting_fields"]
+    }
+    tree["coverage"] = {
+        "used_fields": sorted(used),
+        "unused_fields": sorted(set(_profile(context)["fields"]) - used),
+    }
+    outcome = _persist(context, tree)
+    outcome["summary"] = json.dumps(tree["coverage"], ensure_ascii=False)
+    return outcome
+
+
+def propose_extension(context, **proposal):
+    """Validate a late extension proposal using annotation facts and explicit semantic criteria."""
+    tree = _tree(context)
+    if not concepts_complete(tree, core_only=True) or "coverage" not in tree:
+        raise ValueError("Inspect coverage after core planning first")
+    key = proposal["concept_id"]
+    if key in tree["tasks"] or (
+        key in tree["concepts"] and tree["concepts"][key]["origin"] == "core"
+    ):
+        raise ValueError("Identity already in use")
+    _subset(_profile(context), proposal["fields"])
+    if not all(_profile(context)["fields"][p]["non_empty_images"] > 0 for p in proposal["fields"]):
+        raise ValueError("Extension requires direct nonempty annotation evidence")
+    _validate_evidence(context, proposal["evidence"])
+    decision = complete_json(
+        'Review the extension against annotation evidence and the benchmark goal. Return {"accepted":bool,"reason":str}. '
+        "Accept only a distinct clinically meaningful evaluation capability relevant to the goal that cannot fit any existing concept; "
+        "a new descriptor or renamed leaf is not a new concept. Do not invent labels.",
+        json.dumps(
+            {
+                "proposal": proposal,
+                "requirement": context["benchmark_info"],
+                "concepts": tree["concepts"],
+                "leaves": tree["tasks"],
+                "dataset": _subset(_profile(context), proposal["fields"]),
+            },
+            ensure_ascii=False,
+        ),
+    )
+    decision = ExtensionDecision.model_validate(decision).model_dump()
+    tree["proposals"][key] = {**proposal, "decision": decision}
+    if decision["accepted"]:
+        tree["concepts"][key] = {
+            "description": proposal["description"],
+            "category": proposal["category"],
+            "origin": "extension",
+            "status": "pending",
+            "reason": decision["reason"],
+        }
+    elif key in tree["concepts"]:
+        if any(leaf["concept_id"] == key for leaf in tree["tasks"].values()):
+            raise ValueError("Rejected extension still has leaves; reparent or remove them first")
+        del tree["concepts"][key]
+    tree["discovery_complete"] = False
+    return _persist(context, tree, changed=True)
+
+
+def finish_discovery(context):
+    """Record that coverage gaps and all proposed extensions have been resolved."""
+    tree = _tree(context)
+    if "coverage" not in tree or not concepts_complete(tree):
+        raise ValueError("Inspect coverage and finish all accepted concepts first")
+    if any(proposal.get("decision") is None for proposal in tree["proposals"].values()):
+        raise ValueError("Revalidate extension proposals against current inputs")
+    tree["discovery_complete"] = True
+    return _persist(context, tree, changed=True)
+
+
+def review_tree(context):
+    """Review compact concept/leaf summaries; correction rounds consume persistent Harness rework budget."""
+    tree = _tree(context)
+    if not concepts_complete(tree) or not tree["discovery_complete"]:
+        raise ValueError("Finish concepts and extension discovery first")
+    if tree.get("review", {}).get("revision") == tree["revision"]:
+        return result("success", json.dumps(tree["review"]))
+    leaves = {}
+    for key, leaf in tree["tasks"].items():
+        protocol = leaf["protocol"]
+        leaves[key] = {
+            "concept_id": leaf["concept_id"],
+            "description": leaf["description"],
+            "execution_type": protocol["execution_type"],
+            "metric": protocol["metric"],
+            "data_binding": protocol["data_binding"],
+            "question_intent": protocol["question_intent"],
+            "medical_constraints": protocol["medical_constraints"],
+            "options": protocol["answer_contract"]["options"],
+            "mapped_value_count": len(protocol["answer_contract"]["value_mapping"]),
+        }
+    review = complete_json(
+        "Review concept hierarchy, duplicated semantics, overlapping leaves, missing siblings and conflicting Protocols. "
+        'Return {"issues":[{"action":"merge|remove|reparent|revise|add_leaf","node_ids":["id"],"reason":"specific correction"}]}. '
+        "An empty list means approved. Propose targeted changes, never rewrite the entire tree.",
+        json.dumps(
+            {
+                "requirement": context["benchmark_info"],
+                "concepts": tree["concepts"],
+                "leaves": leaves,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    issues = GlobalReview.model_validate(review).model_dump()["issues"]
+    if any(not set(i["node_ids"]) <= set(tree["concepts"]) | set(tree["tasks"]) for i in issues):
+        raise ValueError("Review references unknown nodes")
+    tree["review"] = {"revision": tree["revision"], "issues": issues}
+    tree["correction_open"] = False
+    outcome = _persist(context, tree)
+    outcome["summary"] = json.dumps(tree["review"], ensure_ascii=False)
+    if issues and tree["reworks_used"] >= context.get("limits", {}).get("max_reworks", 3):
+        outcome["status"] = "blocked"
+        outcome["unresolved_questions"] = issues
+    return outcome
+
+
+def allocate(context, *, weights):
+    """Allocate final relative weights against exact eligible image capacities, then report only final total shortage."""
+    tree = _tree(context)
+    if tree.get("review", {}).get("revision") != tree["revision"] or tree["review"]["issues"]:
+        raise ValueError("Current global review must pass before allocation")
+    if not tree["tasks"]:
+        return result(
+            "blocked", "No executable leaves have eligible data", readiness={"planning": False}
+        )
+    if set(weights) != set(tree["tasks"]):
+        raise ValueError("Provide weights and reasons for exactly all leaves")
+    records = load_annotation_jsonl(context["annotation_path"])
+    capacities = {
+        key: validate_dataset_protocol(leaf["protocol"], records)
+        for key, leaf in tree["tasks"].items()
+    }
+    allocation = allocate_leaf_counts(
+        {k: v["weight"] for k, v in weights.items()},
+        capacities,
+        context["benchmark_info"]["sample_count"],
+    )
+    allocation.update(
+        revision=tree["revision"], weight_reasons={k: v["reason"] for k, v in weights.items()}
+    )
+    tree["allocation"] = allocation
+    for key, count in allocation["counts"].items():
+        tree["tasks"][key]["sample_count"] = count
+    outcome = _persist(context, tree)
+    outcome["summary"] = json.dumps(allocation)
+    if not allocation["allocated_count"]:
+        outcome["status"] = "blocked"
+    return outcome
 
 
 def finish(context):
-    """Publish a fully coordinated, allocated and medically designed Plan version."""
-    require(context, "BlueprintDraft")
-    blueprint = _read(context["working_blueprint_path"])
-    tasks = blueprint["tasks"]
-    counts = [task.get("sample_count") for task in tasks.values()]
-    if (
-        not tasks
-        or any(type(n) is not int or n < 0 for n in counts)
-        or sum(counts) != context["benchmark_info"]["sample_count"]
-    ):
-        raise ValueError("Allocate the requested sample count before finishing")
-    for task in tasks.values():
-        if task["sample_count"] and not all(
-            key in task for key in ("generation_logic", "medical_task_description", "citations")
-        ):
-            raise ValueError("Every active task needs a medical design")
+    """Publish only a validated, reviewed current Plan; explicit final planning shortage is allowed."""
+    tree = _tree(context)
+    errors = validate_plan(tree)
+    if errors:
+        raise ValueError("; ".join(errors))
+    path = Path(context["operation_directory"]) / "blueprint.json"
+    atomic_write_json(path, tree)
     versions = publish(
         context,
         "Plan",
-        {"blueprint": context["working_blueprint_path"]},
-        ("Requirement", "Dataset", "Materials", "PlanningConfig", "BlueprintDraft"),
+        {"blueprint": str(path)},
+        ("Requirement", "Dataset", "Materials", "PlanningConfig", "PlanningDraft"),
     )
-    return result("complete", "Plan published", **versions)
+    return result(
+        "complete",
+        "Plan published",
+        working_blueprint_path=str(path),
+        readiness={"planning": True},
+        artifacts={"plan": str(path)},
+        affected_node_ids=list(tree["tasks"]),
+        warnings=[f"Planning shortfall: {tree['allocation']['planning_shortfall']}"]
+        if tree["allocation"]["planning_shortfall"]
+        else [],
+        **versions,
+    )
 
 
 def describe(context):
-    drafts = _read(context["draft_path"])["tasks"] if context.get("draft_path") else {}
-    blueprint = (
-        _read(context["working_blueprint_path"])
-        if context.get("working_blueprint_path")
-        and Path(context["working_blueprint_path"]).is_file()
-        else {}
-    )
+    try:
+        tree = _tree(context)
+    except ValueError:
+        return {
+            "requirement": context.get("benchmark_info"),
+            "stale_draft": True,
+            "versions": context.get("artifact_versions", {}),
+        }
     return {
-        "requirement": context["user_requirement"][:2000],
-        "benchmark_info": context["benchmark_info"],
-        "dataset": context.get("selected_dataset_id"),
-        "versions": context.get("artifact_versions", {}),
-        "families": sorted({task["category"] for task in _base(context)["tasks"].values()}),
-        "draft_count": len(drafts),
-        "draft_reference": context.get("draft_path"),
-        "active_tasks": [
-            {"id": key, "count": task.get("sample_count"), "designed": "generation_logic" in task}
-            for key, task in blueprint.get("tasks", {}).items()
-        ],
+        "requirement": context.get("benchmark_info"),
+        "concepts": {
+            k: {"description": v["description"], "origin": v["origin"], "status": v["status"]}
+            for k, v in tree["concepts"].items()
+        },
+        "leaves": {
+            k: {"concept_id": v["concept_id"], "description": v["description"]}
+            for k, v in tree["tasks"].items()
+        },
+        "review": tree["review"],
+        "reworks_used": tree["reworks_used"],
+        "discovery_complete": tree["discovery_complete"],
+        "allocation": tree.get("allocation"),
         "feedback": context.get("feedback"),
         "clarification": context.get("clarification"),
-        "dataset_catalog": public_dataset_entries(load_dataset_catalog())
-        if not context.get("selected_dataset_id")
-        else None,
+        "dataset": context.get("selected_dataset_id"),
     }
+
+
+def available_tools(context):
+    available = {
+        "select_dataset",
+        "profile_dataset",
+        "list_materials",
+        "read_material",
+        "select_materials",
+        "ask_user",
+    }
+    try:
+        require(context, "Dataset")
+    except ValueError:
+        return available
+    available |= {"list_fields", "read_fields", "read_field_values", "read_node"}
+    try:
+        require(context, "Materials")
+    except ValueError:
+        return available
+    available |= {"search_materials", "save_leaf", "remove_leaf", "complete_concept"}
+    tree = _tree(context)
+    if concepts_complete(tree, core_only=True):
+        available |= {"coverage_gap", "propose_extension", "finish_discovery"}
+    if concepts_complete(tree) and tree["discovery_complete"]:
+        available.add("review_tree")
+    if tree.get("review", {}).get("revision") == tree["revision"] and not tree["review"]["issues"]:
+        available.add("allocate")
+    if not validate_plan(tree):
+        available.add("finish")
+    return available
 
 
 def compile_task_planning_agent(*, checkpointer=None):
-    tools = {
-        function.__name__: function
-        for function in (
-            select_dataset,
-            profile_dataset,
-            list_tasks,
-            read_task,
-            list_fields,
-            read_fields,
-            screen_family,
-            coordinate,
-            allocate,
-            list_materials,
-            read_material,
-            select_materials,
-            search_materials,
-            medical_design,
-        )
-    }
+    functions = (
+        select_dataset,
+        profile_dataset,
+        list_fields,
+        read_fields,
+        read_field_values,
+        list_materials,
+        read_material,
+        select_materials,
+        search_materials,
+        read_node,
+        save_leaf,
+        remove_leaf,
+        complete_concept,
+        coverage_gap,
+        propose_extension,
+        finish_discovery,
+        review_tree,
+        allocate,
+    )
     return compile_agent(
         "TaskPlanningAgent",
-        "Plan predefined medical benchmark tasks. Select/profile data and references, list task families, "
-        "query candidate fields and structures, then screen each family. Never drop a task solely because "
-        "a keyword search failed; query more evidence or ask_user. Coordinate all family drafts globally, "
-        "allocate, then design every nonzero expanded task. Revise only affected families and coordinate again. "
-        "Use local ask_user for source semantics; scope global only for cross-role goals or resource decisions.",
-        tools,
+        "Build a two-level Medical Concept -> executable Leaf plan. First select/profile data and select references (an empty selection is allowed). "
+        "Understand each core concept using field inspection and optional RAG BEFORE and during leaf expansion. "
+        "Create opaque stable leaf IDs at runtime; never infer execution from IDs. All behavior belongs to Protocol. "
+        "Finish every core concept, inspect coverage gaps, propose only genuinely new capabilities, and finish accepted extensions. "
+        "RAG can be called at any concept, leaf, protocol or extension step, with revised queries as needed; annotations alone establish labels. "
+        "Finish discovery, review globally, make targeted corrections within the rework budget, then assign relative weights with reasons and allocate. "
+        "A zero weight deliberately excludes a leaf from allocation. Use ask_user for unresolved source semantics. "
+        "When revising after feedback, preserve unchanged leaf identities and protocols. Finish only when validation permits.",
+        {f.__name__: f for f in functions},
         describe,
         finish,
         args_schemas={
             "select_dataset": SelectDatasetArguments,
             "profile_dataset": ProfileArguments,
-            "list_tasks": PageArguments,
-            "read_task": TaskArguments,
             "list_fields": PageArguments,
             "read_fields": FieldArguments,
-            "screen_family": FamilyArguments,
-            "allocate": AllocateArguments,
+            "read_field_values": FieldValuesArguments,
             "list_materials": PageArguments,
             "read_material": MaterialArguments,
             "select_materials": MaterialsArguments,
             "search_materials": SearchArguments,
-            "medical_design": MedicalDesignArguments,
+            "read_node": NodeArguments,
+            "remove_leaf": NodeArguments,
+            "save_leaf": LeafArguments,
+            "complete_concept": ConceptArguments,
+            "propose_extension": ExtensionArguments,
+            "allocate": WeightsArguments,
         },
+        available_tools=available_tools,
         checkpointer=checkpointer,
     )

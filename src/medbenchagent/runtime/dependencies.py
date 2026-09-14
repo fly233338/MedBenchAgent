@@ -9,7 +9,7 @@ from pathlib import Path
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-CONTRACT_VERSION = "agent-runtime.v3"
+CONTRACT_VERSION = "agent-runtime.v4"
 DEPENDENCIES = {
     "Dataset": ("DataConfig",),
     "Plan": ("Requirement", "Dataset", "Materials", "PlanningConfig"),
@@ -108,7 +108,6 @@ def initialize_dependencies(context, settings):
         },
         "PlanningConfig": {
             "rag": snapshot["rag"],
-            "allocation": snapshot["sample_allocation"],
             "model": snapshot["llm"]["model"],
             "temperature": snapshot["llm"]["default_temperature"],
         },

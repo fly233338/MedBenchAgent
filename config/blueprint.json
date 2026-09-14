@@ -6,150 +6,102 @@
     "language": "en",
     "sample_count": 0
   },
-
-  "tasks": {
+  "concepts": {
     "modality_identification": {
       "description": "Identify the medical imaging modality shown in the image.",
       "require": "This task requires at least two semantically distinct imaging modality values that can serve as correct answers and can be reliably determined from the annotation, image metadata, or dataset description.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
       "category": "image_acquisition_and_basic_information",
-      "sample_count": null
+      "origin": "core"
     },
-
     "view_identification": {
       "description": "Identify the imaging view, projection, plane, or acquisition orientation.",
       "require": "This task requires a view, projection, or plane field with values such as CC, MLO, AP, PA, lateral, axial, coronal, or sagittal.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
       "category": "image_acquisition_and_basic_information",
-      "sample_count": null
+      "origin": "core"
     },
-
     "image_quality_assessment": {
       "description": "Determine whether the image has sufficient diagnostic quality or identify the primary image-quality issue.",
       "require": "This task requires a quality or artifact field with values such as diagnostic, non-diagnostic, motion artifact, blur, underexposure, or overexposure.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
       "category": "image_acquisition_and_basic_information",
-      "sample_count": null
+      "origin": "core"
     },
-
     "anatomy_identification": {
       "description": "Identify the dominant anatomical region or primary body structure represented in the image.",
       "require": "This task requires at least two semantically distinct anatomical regions or primary body structures that can serve as correct answers and can be reliably determined from the annotation, image metadata, or dataset description.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
       "category": "anatomy_and_global_tissue_characteristics",
-      "sample_count": null
+      "origin": "core"
     },
-
     "anatomy_attribute": {
       "description": "Determine one explicitly annotated, image-observable global property of the depicted anatomy or background tissue.",
-      "require": "This task requires a structured categorical field that directly describes one image-observable global anatomical property, such as tissue composition, organ size, developmental state, or background texture. Different semantic properties must be represented as separate question types, each using exactly one answer-bearing field with at least two semantically distinct values that can serve as correct answers. Acquisition metadata, localized finding attributes, clinical interpretations, assessments, diagnoses, and pathology results do not support this task.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
+      "require": "This task requires a structured categorical field that directly describes one image-observable global anatomical property, such as tissue composition, organ size, developmental state, or background texture. Different semantic properties must be represented as separate leaves, each using exactly one answer-bearing field with at least two semantically distinct values that can serve as correct answers. Acquisition metadata, localized finding attributes, clinical interpretations, assessments, diagnoses, and pathology results do not support this task.",
       "category": "anatomy_and_global_tissue_characteristics",
-      "sample_count": null
+      "origin": "core"
     },
-
     "finding_presence": {
       "description": "Determine whether a specified imaging finding or abnormality is present in the image.",
       "require": "This task evaluates the binary presence or absence of a specified imaging finding or abnormality when no direct categorical label for that finding is available; if such a label is available, the category-identification task is preferred, and support requires explicit positive and negative evidence because missing finding annotations or bounding boxes do not establish absence.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
       "category": "finding_recognition_and_characterization",
-      "sample_count": null
+      "origin": "core"
     },
-
     "finding_type": {
       "description": "Identify the explicitly annotated visual category of the primary imaging finding.",
       "require": "This task requires a structured categorical field whose values directly name visual finding categories at one consistent taxonomy level, such as a mass, fracture, effusion, or consolidation, with at least two categories able to serve as correct answers. The category must be explicitly annotated rather than inferred from a clinical interpretation, differential diagnosis, named disease, malignancy suspicion, assessment category, prognosis, or pathology result.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
       "category": "finding_recognition_and_characterization",
-      "sample_count": null
+      "origin": "core"
     },
-
     "finding_attribute": {
       "description": "Determine one explicitly annotated, image-observable property of a target finding or abnormal region.",
-      "require": "This task requires a structured categorical field that directly describes one observable property of the same target finding or abnormal region, such as shape, boundary, orientation, signal intensity, or enhancement pattern. Fields describing different semantic properties must become separate question types, each using exactly one answer-bearing field with at least two semantically distinct values that can serve as correct answers. Finding categories, clinical interpretations, assessments, diagnoses, prognoses, and pathology results are not finding attributes.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
+      "require": "This task requires a structured categorical field that directly describes one observable property of the same target finding or abnormal region, such as shape, boundary, orientation, signal intensity, or enhancement pattern. Fields describing different semantic properties must become separate leaves, each using exactly one answer-bearing field with at least two semantically distinct values that can serve as correct answers. Finding categories, clinical interpretations, assessments, diagnoses, prognoses, and pathology results are not finding attributes.",
       "category": "finding_recognition_and_characterization",
-      "sample_count": null
+      "origin": "core"
     },
-
     "finding_description": {
       "description": "Describe the clinically relevant visual characteristics of a specific imaging finding.",
       "require": "This task requires a paired expert-written natural-language finding description that can be used directly as the reference answer. Categorical labels, delimiter-joined terms, diagnoses, and isolated structured attributes such as finding type, shape, margin, location, distribution, or imaging appearance do not support this task by themselves.",
-      "task_type": "open_vqa",
-      "response_format": "free_text",
       "category": "finding_recognition_and_characterization",
-      "sample_count": null
+      "origin": "core"
     },
-
     "assessment_category": {
       "description": "Determine the standardized reporting category assigned to an imaging finding or case.",
       "require": "This task requires a categorical field drawn from a formal clinical reporting or risk-stratification scheme whose labels have predefined clinical meanings.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
       "category": "clinical_assessment_and_diagnosis",
-      "sample_count": null
+      "origin": "core"
     },
-
     "severity_grading": {
       "description": "Determine how severe or extensive an imaging abnormality or disease is, expressed as an ordered grade or stage.",
       "require": "This task requires a field that directly encodes the severity or extent of an abnormality or disease through ordered levels, grades, or stages, such as mild, moderate, and severe; grade 1–3; or stage I–IV.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
       "category": "clinical_assessment_and_diagnosis",
-      "sample_count": null
+      "origin": "core"
     },
-
     "diagnosis": {
       "description": "Determine the most likely diagnosis for the imaged finding or case.",
       "require": "This task requires an explicit expert-confirmed diagnosis field associated with the imaged finding or case and containing one clinically specific disease or condition label. An imaging diagnosis or pathology-confirmed diagnosis may serve as the reference diagnosis. Generic finding types, standardized assessment categories, benign or malignant status, and missing or non-diagnostic values such as unknown, not available, or not applicable do not support this task.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
       "category": "clinical_assessment_and_diagnosis",
-      "sample_count": null
+      "origin": "core"
     },
-
     "pathology_status": {
       "description": "Determine the benign, malignant, or other pathological status associated with the imaging finding or case.",
       "require": "This task requires an explicit pathology or malignancy-status field with values such as benign, malignant, atypical, high-risk, in situ, or invasive. The label may describe the target lesion or the corresponding case, but it must be explicitly provided rather than inferred from the diagnosis name.",
-      "task_type": "close_vqa",
-      "response_format": "letter",
       "category": "clinical_assessment_and_diagnosis",
-      "sample_count": null
+      "origin": "core"
     },
-
     "report_generation": {
       "description": "Generate a complete medical imaging report based on the provided image or image set.",
       "require": "This task requires a paired report field containing a complete expert-written medical imaging report for each corresponding case.",
-      "task_type": "open_vqa",
-      "response_format": "free_text",
       "category": "report_generation",
-      "sample_count": null
+      "origin": "core"
     },
-
     "detection": {
       "description": "Locate a lesion or abnormal region in the image without identifying the target by a specific finding name or description.",
       "require": "This task requires one valid lesion-level bounding box that unambiguously defines the target region for the generated item. Finding names, descriptions, diagnoses, or case-level labels may coexist in the annotation, but they are not used to identify the target in the question and do not make detection unsupported.",
-      "task_type": "open_vqa",
-      "response_format": "bbox",
       "category": "spatial_localization",
-      "sample_count": null
+      "origin": "core"
     },
-
     "visual_grounding": {
       "description": "Locate the single image region corresponding to one clearly specified, localized, image-observable finding or imaging sign.",
       "require": "This task requires one valid lesion-level bounding box and a finding name, structured finding label, or textual finding description paired with that box. A flat annotation record containing the selected finding field and a unique bounding box may be treated as paired; for array-valued or multi-finding annotations, the finding and bounding box must belong to the same finding item. The finding identifies the target in the question, while the bounding box is the answer.",
-      "task_type": "open_vqa",
-      "response_format": "bbox",
       "category": "spatial_localization",
-      "sample_count": null
+      "origin": "core"
     }
   }
 }

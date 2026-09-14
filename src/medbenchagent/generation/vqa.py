@@ -28,5 +28,5 @@ def _validate(candidate: Any, response: object) -> dict[str, Any]:
 
 
 def encode_answer(candidate: Any, generated: dict[str, Any]) -> tuple[list[str], str]:
-    options = list(candidate.task["options"])
+    options = list(candidate.task["protocol"]["answer_contract"]["options"])
     return options, chr(ord("A") + options.index(generated["answer"]))

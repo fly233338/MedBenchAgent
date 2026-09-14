@@ -17,9 +17,9 @@ def test_template_slots_exclude_answers_and_object_access():
     for slot in ("answer", "modality.__class__", "target"):
         templates = [f"Question {index}: {{{slot}}}?" for index in range(count)]
         with pytest.raises(ValueError, match="slot"):
-            validate_templates("diagnosis", {}, templates)
+            validate_templates("diagnosis", {"protocol": {"template_slots": ["modality"]}}, templates)
     templates = [f"Question {index}: locate {{target}}." for index in range(count)]
-    assert validate_templates("visual_grounding", {}, templates) == templates
+    assert validate_templates("opaque-identity", {"protocol": {"template_slots": ["modality", "target"]}}, templates) == templates
 
 
 
@@ -40,31 +40,24 @@ def _record(index: int, annotation: dict) -> dict:
 
 
 def _task(response_format: str, fields: list[str], **extra) -> dict:
-    task = {
-        "task_type": "close_vqa" if response_format == "letter" else "open_vqa",
-        "response_format": response_format,
-        "description": f"{response_format} task",
-        "require": "Use approved annotation",
-        "metric": {"letter": "accuracy", "free_text": "bleu", "bbox": "miou"}[response_format],
-        "supporting_fields": fields,
-        "dataset_support_reason": "Available.",
-        "question_templates": ["What is shown in this image?"],
-        "generation_logic": "Use the approved annotation and selected template to generate the question.",
-        "medical_task_description": "Recognition task.",
-        "citations": [],
+    options = extra.pop("options", ["benign", "malignant"] if response_format == "letter" else [])
+    options = [re.sub(r"^\s*[A-Za-z]\s*[.)]\s*", "", option).strip() for option in options]
+    answer_field = extra.pop("answer_field", next((p for p in fields if ".bbox" in p), fields[0]))
+    target_field = extra.pop("target_field", None)
+    mapping = extra.pop("answer_value_mapping", [{"raw_value": o, "option": o} for o in options])
+    return {
+        "concept_id": "concept", "description": f"{response_format} task", "category": "test",
+        "protocol": {
+            "execution_type": {"letter": "letter_classification", "bbox": "bbox_grounding", "free_text": "free_text"}[response_format],
+            "response_format": response_format,
+            "metric": {"letter": "accuracy", "free_text": "bleu", "bbox": "miou"}[response_format],
+            "data_binding": {"supporting_fields": fields, "answer_field": answer_field, "target_field": target_field},
+            "answer_contract": {"options": options, "value_mapping": mapping},
+            "question_intent": "Identify the annotated property", "medical_constraints": [],
+            "template_slots": ["modality", "target"] if target_field else ["modality"],
+        },
+        "evidence": [], "question_templates": ["What is shown in this image?"], **extra,
     }
-    if response_format == "letter":
-        task["options"] = ["benign", "malignant"]
-    task.update(extra)
-    if response_format == "letter" and "answer_value_mapping" not in task:
-        task["answer_field"] = task.get("answer_field", fields[0])
-        normalized_options = [
-            re.sub("^\\s*[A-Za-z]\\s*[.)]\\s*", "", option).strip() for option in task["options"]
-        ]
-        task["answer_value_mapping"] = [
-            {"raw_value": option, "option": option} for option in normalized_options
-        ]
-    return task
 
 
 def _request(tmp_path: Path, records: list[dict], tasks: dict, target: int, seed: int = 0) -> dict:
@@ -107,10 +100,10 @@ def _candidate(task_id: str, annotation: dict, supporting_data: dict, task: dict
     record["image"]["modality"] = modality
     expected_answer = None
     expected_evidence = None
-    if task.get("response_format") == "letter":
-        expected_answer = task["options"][0]
+    if task["protocol"]["response_format"] == "letter":
+        expected_answer = task["protocol"]["answer_contract"]["options"][0]
         expected_evidence = {
-            "path": task["answer_field"],
+            "path": task["protocol"]["data_binding"]["answer_field"],
             "indices": [],
             "value": supporting_data[next(iter(supporting_data))],
         }
@@ -211,6 +204,7 @@ def test_grounding_modes_require_different_annotation_context() -> None:
                 "image.annotation.findings[*].finding_categories[*]",
                 "image.annotation.findings[*].bbox[*]",
             ],
+            target_field="image.annotation.findings[*].finding_categories[*]",
         ),
     )
     unnamed_visual = _candidate(
@@ -221,6 +215,8 @@ def test_grounding_modes_require_different_annotation_context() -> None:
     )
     assert grounding.supports(detection)
     assert grounding.supports(visual)
+    assert grounding.supports(unnamed_visual)  # ID alone cannot impose named-target behavior
+    unnamed_visual.task["protocol"]["data_binding"]["target_field"] = "image.annotation.name"
     assert not grounding.supports(unnamed_visual)
 
 
@@ -327,22 +323,22 @@ def test_all_supporting_fields_must_be_nonempty_and_vqa_options_remain_normalize
         "question_temperature": 0.7,
     }
     generation._validate_tasks(request)
-    assert task["options"] == ["benign", "malignant"]
+    assert task["protocol"]["answer_contract"]["options"] == ["benign", "malignant"]
     task["question_templates"] = ["duplicate", "duplicate"]
     with pytest.raises(ValueError, match="unique non-empty"):
         generation._validate_tasks(request)
     assert not generation._all_supporting_fields_present(
-        _record(0, {"status": "benign", "laterality": ""}), task["supporting_fields"]
+        _record(0, {"status": "benign", "laterality": ""}), task["protocol"]["data_binding"]["supporting_fields"]
     )
     assert generation._all_supporting_fields_present(
-        _record(0, {"status": "benign", "laterality": False}), task["supporting_fields"]
+        _record(0, {"status": "benign", "laterality": False}), task["protocol"]["data_binding"]["supporting_fields"]
     )
 
 
 def test_letter_tasks_require_structured_answer_mapping() -> None:
     task = _task("letter", ["image.annotation.status"], sample_count=1)
-    task.pop("answer_field")
-    task.pop("answer_value_mapping")
+    task["protocol"]["data_binding"].pop("answer_field")
+    task["protocol"]["answer_contract"].pop("value_mapping")
     request = {
         "dataset_id": "test-dataset",
         "tasks": {"vqa": task},
@@ -350,13 +346,13 @@ def test_letter_tasks_require_structured_answer_mapping() -> None:
         "max_tasks_per_image": 3,
         "question_temperature": 0.7,
     }
-    with pytest.raises(ValueError, match="require answer_field and answer_value_mapping"):
+    with pytest.raises(ValueError, match="answer_field"):
         generation._validate_tasks(request)
 
 
 def test_generation_rejects_final_task_without_metric(tmp_path: Path) -> None:
     task = _task("letter", ["image.annotation.status"], sample_count=1)
-    task.pop("metric")
+    task["protocol"].pop("metric")
     request = _request(tmp_path, [_record(0, {"status": "benign"})], {"task": task}, 1)
     with pytest.raises(ValueError, match="metric"):
         generation.initialize_generation(request)

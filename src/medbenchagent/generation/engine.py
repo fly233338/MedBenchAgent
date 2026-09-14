@@ -11,7 +11,7 @@ from typing import Any
 
 import duckdb
 
-from medbenchagent.answer_mapping import canonical_answer_scalar
+from medbenchagent.planning.protocol import Protocol, resolve_answer
 from medbenchagent.generation.templates import render
 from medbenchagent.contracts import (
     BenchmarkItem,
@@ -25,7 +25,6 @@ from medbenchagent.generation.context import (
     has_meaningful_value,
     is_supporting_field_path,
     project_supporting_record,
-    scalar_evidence_candidates,
 )
 from medbenchagent.metrics import is_metric_supported
 from medbenchagent.settings import get_settings
@@ -69,46 +68,6 @@ def _task_targets(request: GenerationRequest) -> dict[str, int]:
     return counts
 
 
-def _normalized_options(options: object) -> list[str]:
-    if not isinstance(options, list):
-        return []
-    return [
-        re.sub(r"^\s*[A-Za-z]\s*[.)]\s*", "", option).strip() if isinstance(option, str) else ""
-        for option in options
-    ]
-
-
-def _validate_answer_mapping(task_id: str, task: BlueprintTask, options: list[str]) -> None:
-    answer_field = task.get("answer_field")
-    mappings = task.get("answer_value_mapping")
-    if answer_field is None or mappings is None:
-        raise ValueError(f"{task_id}: letter tasks require answer_field and answer_value_mapping.")
-    supporting_fields = task.get("supporting_fields")
-    if (
-        not isinstance(answer_field, str)
-        or not isinstance(supporting_fields, list)
-        or answer_field not in supporting_fields
-    ):
-        raise ValueError(f"{task_id}: answer_field must be one approved supporting field.")
-    if not isinstance(mappings, list) or not mappings:
-        raise ValueError(f"{task_id}: answer_value_mapping must be a non-empty list.")
-    seen: set[str] = set()
-    mapped_options: set[str] = set()
-    for mapping in mappings:
-        if not isinstance(mapping, dict) or set(mapping) != {"raw_value", "option"}:
-            raise ValueError(f"{task_id}: answer mappings need only raw_value and option.")
-        canonical = canonical_answer_scalar(mapping["raw_value"])
-        option = mapping["option"]
-        if canonical is None or canonical in seen:
-            raise ValueError(f"{task_id}: mapped raw values must be unique non-empty scalars.")
-        if not isinstance(option, str) or option not in options:
-            raise ValueError(f"{task_id}: every mapped option must exactly match one option.")
-        seen.add(canonical)
-        mapped_options.add(option)
-    if len(mapped_options) < 2:
-        raise ValueError(f"{task_id}: answer mapping must support at least two answer options.")
-
-
 def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask], dict[str, int]]:
     dataset_id = request.get("dataset_id")
     if not isinstance(dataset_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", dataset_id):
@@ -118,15 +77,16 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
     for task_id, task in tasks.items():
         if targets[task_id] == 0:
             continue
-        response_format = task.get("response_format")
+        Protocol.model_validate(task["protocol"])
+        response_format = task["protocol"].get("response_format")
         if response_format not in {"letter", "bbox", "free_text"}:
             raise ValueError(f"{task_id}: unsupported response_format {response_format}.")
-        if not is_metric_supported(response_format, task.get("metric")):
+        if not is_metric_supported(response_format, task["protocol"].get("metric")):
             raise ValueError(
                 f"{task_id}: final Blueprint task must contain a metric compatible with "
                 f"response format {response_format}."
             )
-        supporting = task.get("supporting_fields")
+        supporting = task["protocol"]["data_binding"]["supporting_fields"]
         if (
             not isinstance(supporting, list)
             or not supporting
@@ -143,17 +103,6 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask
             raise ValueError(
                 f"{task_id}: question_templates must contain unique non-empty strings."
             )
-        for field in ("generation_logic", "medical_task_description"):
-            if not isinstance(task.get(field), str) or not str(task[field]).strip():
-                raise ValueError(f"{task_id}: {field} must be a non-empty string.")
-        options = _normalized_options(task.get("options"))
-        if response_format == "letter":
-            if not 2 <= len(options) <= 26 or not all(options) or len(set(options)) != len(options):
-                raise ValueError(f"{task_id}: letter tasks need 2-26 unique options.")
-            task["options"] = options
-            _validate_answer_mapping(task_id, task, options)
-        elif task.get("options") is not None:
-            raise ValueError(f"{task_id}: options are allowed only for letter tasks.")
     max_tasks = request.get("max_tasks_per_image")
     if not isinstance(max_tasks, int) or isinstance(max_tasks, bool) or max_tasks <= 0:
         raise ValueError("max_tasks_per_image must be a positive integer.")
@@ -267,25 +216,8 @@ def _all_supporting_fields_present(record: dict[str, Any], supporting_fields: li
 def _mapped_answer(
     record: dict[str, Any], task: BlueprintTask
 ) -> tuple[str, dict[str, object]] | None:
-    answer_field = task.get("answer_field")
-    mappings = task.get("answer_value_mapping")
-    if not isinstance(answer_field, str) or not isinstance(mappings, list):
-        return None
-    mapping_by_value = {
-        canonical: mapping["option"]
-        for mapping in mappings
-        if isinstance(mapping, dict)
-        and (canonical := canonical_answer_scalar(mapping.get("raw_value"))) is not None
-        and isinstance(mapping.get("option"), str)
-    }
-    matches = [
-        (mapping_by_value[canonical], evidence)
-        for evidence in scalar_evidence_candidates(record, answer_field)
-        if (canonical := canonical_answer_scalar(evidence["value"])) in mapping_by_value
-    ]
-    if len(matches) != 1:
-        return None
-    return matches[0]
+    resolved = resolve_answer(record, task["protocol"])
+    return (resolved["answer"], resolved["evidence"]) if resolved else None
 
 
 def _next_candidate_record(
@@ -318,16 +250,18 @@ def _next_candidate_record(
                 for task_id, task in tasks.items():
                     if completed[task_id] >= targets[task_id]:
                         continue
-                    if not _all_supporting_fields_present(record, task["supporting_fields"]):
+                    if not _all_supporting_fields_present(record, task["protocol"]["data_binding"]["supporting_fields"]):
                         continue
-                    projected = project_supporting_record(record, task["supporting_fields"])
+                    if resolve_answer(record, task["protocol"]) is None:
+                        continue
+                    projected = project_supporting_record(record, task["protocol"]["data_binding"]["supporting_fields"])
                     image_id = str(record["image"]["image_id"])
                     mapped = (
                         _mapped_answer(record, task)
-                        if task["response_format"] == "letter"
+                        if task["protocol"]["response_format"] == "letter"
                         else None
                     )
-                    if task["response_format"] == "letter" and mapped is None:
+                    if task["protocol"]["response_format"] == "letter" and mapped is None:
                         continue
                     candidate = _Candidate(
                         task_id,
@@ -362,7 +296,7 @@ def _stage_tasks(
     return {
         task_id: task
         for task_id, task in tasks.items()
-        if task["response_format"] == response_format and targets[task_id] > 0
+        if task["protocol"]["response_format"] == response_format and targets[task_id] > 0
     }
 
 

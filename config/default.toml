@@ -33,14 +33,6 @@ question_template_count = 3
 max_top_values = 3
 max_top_value_chars = 200
 
-[sample_allocation.category_weights]
-image_acquisition_and_basic_information = 0.10
-anatomy_and_global_tissue_characteristics = 0.20
-finding_recognition_and_characterization = 0.20
-clinical_assessment_and_diagnosis = 0.20
-report_generation = 0.10
-spatial_localization = 0.20
-
 [harness]
 max_calls = 60
 max_seconds = 3600

@@ -29,6 +29,8 @@ def _generation_request_node(state: GenerationAgentState) -> dict[str, Any]:
     tasks = blueprint.get("tasks")
     if not isinstance(tasks, dict) or not tasks:
         raise ValueError("Working Blueprint contains no tasks for generation.")
+    templates = json.loads((Path(state["working_blueprint_path"]).parent / "templates.json").read_text(encoding="utf-8"))
+    tasks = {key: {**leaf, "question_templates": templates.get(key, [])} for key, leaf in tasks.items()}
     benchmark_info = blueprint.get("benchmark_info", state["benchmark_info"])
     defaults = get_settings().generation
     request: GenerationRequest = {
@@ -38,7 +40,7 @@ def _generation_request_node(state: GenerationAgentState) -> dict[str, Any]:
         "construction_events_path": state["construction_events_path"],
         "dataset_access_manifest": state["dataset_access_manifest"],
         "tasks": tasks,
-        "target_sample_count": int(benchmark_info["sample_count"]),
+        "target_sample_count": int(blueprint["allocation"]["allocated_count"]),
         "seed": int(state.get("seed", defaults.seed)),
         "max_tasks_per_image": int(state.get("max_tasks_per_image", defaults.max_tasks_per_image)),
         "question_temperature": float(
@@ -72,6 +74,7 @@ def run_generation(context, graph, *, feedback: str = ""):
     blueprint_file = batch / "blueprint.json"
     if not blueprint_file.is_file():
         blueprint = json.loads(Path(context["working_blueprint_path"]).read_text(encoding="utf-8"))
+        template_results = {}
         for index, (task_id, task) in enumerate(blueprint["tasks"].items()):
             if task.get("sample_count", 0) == 0:
                 continue
@@ -88,12 +91,12 @@ def run_generation(context, graph, *, feedback: str = ""):
                         temperature=context.get("question_temperature"),
                     )
                 atomic_write_json(saved, templates)
-            task["question_templates"] = templates
-        atomic_write_json(blueprint_file, blueprint)
+            template_results[task_id] = templates
         atomic_write_json(
             batch / "templates.json",
-            {key: value.get("question_templates", []) for key, value in blueprint["tasks"].items()},
+            template_results,
         )
+        atomic_write_json(blueprint_file, blueprint)
     publish(context, "Templates", {"path": str(batch / "templates.json")})
     profile = json.loads(
         Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8")

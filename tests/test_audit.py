@@ -1,3 +1,4 @@
+from test_generation import _task
 from medbenchagent.data.image_assets import validate_image_asset
 import json
 from pathlib import Path
@@ -23,16 +24,7 @@ def record():
 
 
 def task():
-    return {
-        "response_format": "letter",
-        "supporting_fields": ["image.annotation.label"],
-        "options": ["benign", "malignant"],
-        "answer_field": "image.annotation.label",
-        "answer_value_mapping": [
-            {"raw_value": "benign", "option": "benign"},
-            {"raw_value": "malignant", "option": "malignant"},
-        ],
-    }
+    return _task("letter", ["image.annotation.label"])
 
 
 def item():
@@ -53,19 +45,19 @@ def test_answers_checked_against_unique_annotation():
     assert not _answer_matches(dict(item(), answer="B"), task(), record())
     assert _answer_matches(
         dict(item(), answer="Normal."),
-        {"response_format": "free_text", "supporting_fields": ["image.annotation.report"]},
+        _task("free_text", ["image.annotation.report"]),
         record(),
     )
     assert _answer_matches(
         dict(item(), task_id="detection", answer=[0, 0, 1, 1]),
-        {"response_format": "bbox", "supporting_fields": ["image.annotation.bbox[*]"]},
+        _task("bbox", ["image.annotation.bbox[*]"]),
         record(),
     )
 
 
 def test_invalid_options_and_dimensions():
     assert _contract(dict(item(), options=[{}]), task(), None) == ["letter_answer"]
-    assert _contract(dict(item(), answer=[0, 0, 5, 5]), {"response_format": "bbox"}, (2, 2)) == [
+    assert _contract(dict(item(), answer=[0, 0, 5, 5]), _task("bbox", ["image.annotation.bbox[*]"]), (2, 2)) == [
         "bbox"
     ]
 

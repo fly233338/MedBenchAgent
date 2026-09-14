@@ -10,14 +10,15 @@ from medbenchagent.contracts import GenerationResult
 from medbenchagent.generation import graph as generation_workflow
 
 
-from graph_test_support import _rag_fields, _task
+from test_generation import _task
 
 
 def test_generation_agent_keeps_request_snapshot_private(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "blueprint.json"
-    task = _task() | _rag_fields() | {"sample_count": 1}
+    task = _task("letter", ["image.annotation.view"], sample_count=1)
+    (tmp_path / "templates.json").write_text(json.dumps({"view": task["question_templates"]}), encoding="utf-8")
     path.write_text(
-        json.dumps({"benchmark_info": {"sample_count": 1}, "tasks": {"view": task}}),
+        json.dumps({"benchmark_info": {"sample_count": 1}, "allocation": {"allocated_count": 1}, "tasks": {"view": task}}),
         encoding="utf-8",
     )
 

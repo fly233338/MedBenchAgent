@@ -9,8 +9,7 @@ import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import Any
-from types import SimpleNamespace
-from medbenchagent.generation import grounding, free_text
+from medbenchagent.planning.protocol import resolve_answer
 
 from medbenchagent.data.image_assets import validate_image_asset
 
@@ -18,11 +17,7 @@ from medbenchagent.audit.answer_balance import balance_items
 from medbenchagent.runtime.construction import AUDIT_AGENT, record_event
 from medbenchagent.data.validation import load_annotation_jsonl
 from medbenchagent.generation.context import (
-    locate_scalar_evidence,
-    locate_bbox_evidence,
-    scalar_evidence_candidates,
     has_meaningful_value,
-    normalized_bbox,
     project_supporting_record,
 )
 
@@ -59,7 +54,7 @@ def _contract(
     errors = []
     if not isinstance(item.get("question"), str) or not item["question"].strip():
         errors.append("question")
-    fmt = task.get("response_format")
+    fmt = task["protocol"]["response_format"]
     if fmt == "letter":
         options, answer = item.get("options"), item.get("answer")
         if (
@@ -143,7 +138,7 @@ def audit_run(
         if annotation_record is None:
             errors.append("annotation_source")
         elif isinstance(task, dict):
-            fields = task.get("supporting_fields", [])
+            fields = task["protocol"]["data_binding"]["supporting_fields"]
             try:
                 if not fields or not all(has_meaningful_value(project_supporting_record(annotation_record, [field])) for field in fields):
                     errors.append("annotation_evidence")
@@ -252,30 +247,13 @@ def audit_run(
 
 
 def _answer_matches(item: dict, task: dict, record: dict) -> bool:
-    fields = task["supporting_fields"]
-    fmt = task["response_format"]
-    if fmt == "letter":
-        values = scalar_evidence_candidates(record, task["answer_field"])
-        if len(values) != 1:
-            return False
-        value = values[0]["value"]
-        matches = [m["option"] for m in task["answer_value_mapping"]
-                   if type(m["raw_value"]) is type(value) and m["raw_value"] == value]
+    resolved = resolve_answer(record, task["protocol"])
+    if resolved is None:
+        return False
+    if task["protocol"]["response_format"] == "letter":
         options, answer = item.get("options"), item.get("answer")
-        return (len(matches) == 1 and options == task["options"]
+        return (options == task["protocol"]["answer_contract"]["options"]
                 and isinstance(answer, str) and len(answer) == 1
                 and 0 <= ord(answer) - 65 < len(options)
-                and options[ord(answer) - 65] == matches[0])
-    candidate = SimpleNamespace(record=record, task=task, task_id=item["task_id"],
-                                supporting_record=project_supporting_record(record, fields))
-    if fmt == "free_text":
-        if free_text._reference_text(candidate) != item["answer"]:
-            return False
-        locate_scalar_evidence(record, fields, item["answer"])
-        return True
-    if fmt == "bbox":
-        if not grounding.supports(candidate) or grounding._target_bbox(candidate) != normalized_bbox(item["answer"]):
-            return False
-        locate_bbox_evidence(record, fields, item["answer"])
-        return normalized_bbox(item["answer"]) is not None
-    return False
+                and options[ord(answer) - 65] == resolved["answer"])
+    return item.get("answer") == resolved["answer"]

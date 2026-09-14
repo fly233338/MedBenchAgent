@@ -81,7 +81,6 @@ class AppSettings:
     rag: RagSettings
     generation: GenerationSettings
     dataset_profile: DatasetProfileSettings
-    category_weights: tuple[tuple[str, float], ...]
     default_config_path: Path
     local_config_path: Path | None
     environment_overrides: tuple[str, ...]
@@ -106,7 +105,7 @@ class AppSettings:
                 },
                 "rag": {
                     key: (
-                        str(value) if isinstance(value, Path) else value
+                        str(value) if isinstance(value, Path) else "" if value is None else value
                     )
                     for key in self.rag.__dataclass_fields__
                     for value in (getattr(self.rag, key),)
@@ -116,7 +115,6 @@ class AppSettings:
                     key: getattr(self.dataset_profile, key)
                     for key in self.dataset_profile.__dataclass_fields__
                 },
-                "sample_allocation": {"category_weights": dict(self.category_weights)},
             },
             "config_sources": {
                 "default": {"path": str(self.default_config_path)},
@@ -224,15 +222,7 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     rag = values["rag"]
     generation = values["generation"]
     profile = values["dataset_profile"]
-    weights = values["sample_allocation"]["category_weights"]
-    if not isinstance(weights, dict) or not weights:
-        raise ValueError("sample_allocation.category_weights must be a non-empty table.")
-    normalized_weights = tuple(
-        (key, _number(value, f"sample_allocation.category_weights.{key}", minimum=0, maximum=float("inf")))
-        for key, value in weights.items()
-    )
-    if sum(value for _, value in normalized_weights) <= 0:
-        raise ValueError("sample_allocation.category_weights must sum to a positive value.")
+
     chunk_size = _integer(rag["chunk_size"], "rag.chunk_size", minimum=1)
     chunk_overlap = _integer(rag["chunk_overlap"], "rag.chunk_overlap", minimum=0)
     if chunk_overlap >= chunk_size:
@@ -279,7 +269,6 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                 profile["max_top_value_chars"], "dataset_profile.max_top_value_chars", minimum=1
             ),
         ),
-        category_weights=normalized_weights,
         default_config_path=default_path,
         local_config_path=local_path,
         environment_overrides=tuple(env_keys),

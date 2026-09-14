@@ -46,6 +46,8 @@ class BenchmarkState(BenchmarkInputState, total=False):
     manifest_path: str
     benchmark_id: str
     generation_shortfalls: dict
+    planning_shortfall: int
+    total_shortfall: int
     item_count: int
     task_counts: dict
     status: str
@@ -64,6 +66,8 @@ class BenchmarkOutputState(TypedDict, total=False):
     manifest_path: str
     benchmark_id: str
     generation_shortfalls: dict
+    planning_shortfall: int
+    total_shortfall: int
     item_count: int
     task_counts: dict
     status: str
@@ -128,12 +132,11 @@ def compile_benchmark_graph(*, checkpointer=None):
         if not context.get("brief_ready"):
             raise ValueError("Extract and clarify the brief first")
         child_context = dict(context, feedback=feedback)
-        output = planning.invoke({"context": child_context})
+        output = planning.invoke({"context": child_context}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         updates = _child_updates(output)
-        updates.update(last_agent_result=output["result"]["summary"])
-        return result(
-            "success" if output["result"]["status"] in {"complete", "escalate"} else "failed", output["result"]["summary"], **updates
-        )
+        updates.update(last_agent_result=output["result"])
+        return {**output["result"], "updates": updates,
+                "status": "success" if output["result"]["status"] in {"complete", "needs_input"} else output["result"]["status"]}
 
     def prepare_data(context, *, source_root: str, dataset_id: str, feedback: str = ""):
         """Prepare raw 2D data. Standard data skips this."""
@@ -152,13 +155,10 @@ def compile_benchmark_graph(*, checkpointer=None):
         output = compile_data_processing_agent().invoke({"context": prepared})
         updates = _child_updates(output)
         updates.update(
-            last_agent_result=output["result"]["summary"],
+            last_agent_result=output["result"],
         )
-        return result(
-            "success" if output["result"]["status"] in {"complete", "escalate"} else "failed",
-            output["result"]["summary"],
-            **updates,
-        )
+        return {**output["result"], "updates": updates,
+                "status": "success" if output["result"]["status"] in {"complete", "needs_input"} else output["result"]["status"]}
 
     def generate(context, *, feedback: str = ""):
         """Build/review templates and instantiate questions. Requires a complete plan."""
@@ -221,7 +221,21 @@ def compile_benchmark_graph(*, checkpointer=None):
             item_count=sum(counts.values()),
             task_counts=dict(counts),
             generation_shortfalls=shortfalls,
+            planning_shortfall=blueprint["allocation"]["planning_shortfall"],
+            total_shortfall=max(0, blueprint["benchmark_info"]["sample_count"] - sum(counts.values())),
         )
+
+    def available_stages(context):
+        tools = {"specify", "ask_user"}
+        if context.get("brief_ready"):
+            tools |= {"plan", "prepare_data"}
+        for artifact, tool in (("Plan", "generate"), ("Generation", "audit"), ("Audit", "finish")):
+            try:
+                require(context, artifact)
+            except ValueError:
+                continue
+            tools.add(tool)
+        return tools
 
     supervisor = compile_agent(
         "SupervisorAgent",
@@ -240,6 +254,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         },
         describe,
         finish,
+        available_tools=available_stages,
         args_schemas={
             "plan": FeedbackArguments,
             "prepare_data": PrepareDataArguments,

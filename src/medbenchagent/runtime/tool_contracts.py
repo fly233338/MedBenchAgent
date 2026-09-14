@@ -39,16 +39,8 @@ class ProfileArguments(NoArguments):
     refresh: bool = False
 
 
-class AllocateArguments(NoArguments):
-    counts: dict[str, NonNegative] | None = None
-
-
 class MaterialsArguments(NoArguments):
-    files: Annotated[list[NonEmpty], Field(min_length=1)]
-
-
-class MedicalDesignArguments(FeedbackArguments):
-    task_id: NonEmpty
+    files: list[NonEmpty]
 
 
 class InspectFilesArguments(NoArguments):
@@ -69,15 +61,6 @@ class PageArguments(NoArguments):
 
 class FieldArguments(NoArguments):
     fields: Annotated[list[NonEmpty], Field(min_length=1, max_length=30)]
-
-
-class TaskArguments(NoArguments):
-    task_id: NonEmpty
-
-
-class FamilyArguments(FeedbackArguments):
-    category: NonEmpty
-    fields: Annotated[list[NonEmpty], Field(max_length=30)]
 
 
 class MaterialArguments(NoArguments):

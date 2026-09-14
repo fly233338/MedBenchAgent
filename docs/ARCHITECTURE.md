@@ -10,7 +10,7 @@
 ## 模块边界
 
 - `runtime/`：JSON 行动 Harness、Pydantic 工具契约、依赖版本、运行产物、事件、模型客户端。
-- `planning/`：需求提取、任务族筛选、全局协调、题量分配。
+- `planning/`：需求提取、两层 Concept/Leaf 草案、Protocol 校验、全局审查与容量约束分配。
 - `data/`：数据目录与缓存、profile、公共标注/图像校验、来源检查和二维图像转换。
 - `audit/`：硬审计、语义审查和答案位置平衡。
 - `agents/`、`generation/`、`rag/`、`evaluation/`、`workflow/` 保持角色与业务边界。
@@ -20,13 +20,16 @@
 ## 自主编排与工具契约
 
 入口为 `medbenchagent.workflow.graph:benchmark_graph`。根图初始化运行目录后执行 SupervisorAgent；
-它通过受限 JSON 行动选择需求提取、数据准备、规划、生成或审计。医学任务、答案规则和指标不变。
+它通过受限 JSON 行动选择需求提取、数据准备、规划、生成或审计。Concept 定义与执行 Protocol 分离；答案仍来自 annotation，指标复用现有 registry。
 
 `runtime/harness.py` 提供共享行动循环，行动包含 tool、arguments、reason。
 `runtime/tool_contracts.py` 定义严格 Pydantic 模型；模型看到 JSON Schema，调用前验证必填字段、
 类型、枚举、范围与额外字段。普通工具经 LangChain StructuredTool 接收具名参数；finish 和 ask_user
 采用相同参数校验。参数错误返回定位到字段的 errors；内部 KeyError/TypeError 向外传播。
-领域工具负责数据存在性、字段可用性和阶段前置条件。
+领域工具负责数据存在性、字段可用性和阶段前置条件。共享 Harness 的 available_tools 回调同时控制
+模型可见目录和执行门控。子 Agent 终态区分 complete、needs_input、blocked、failed；结果携带
+unresolved_questions、warnings、artifacts、readiness、affected_node_ids，Supervisor 保留结构化结果。
+工具内部仍使用 success/failed 表达单次操作结果。
 
 专业 Agent 使用共享 ask_user 直接 interrupt，记录角色、问题、方案引用与回答，CLI 统一展示并恢复原
 checkpoint。相同角色/方案/问题复用已记录决定。scope=global 的跨职责问题返回 Supervisor；局部问题
@@ -50,37 +53,57 @@ profile refresh 创建新 Dataset 版本；PDF refresh 创建新缓存目录并�
 | 版本 | 主要直接依赖 |
 | --- | --- |
 | Dataset | DataConfig、DatasetSelection（准备输入另依赖 PreparedDataset） |
-| Plan | Requirement、Dataset、Materials、PlanningConfig、BlueprintDraft |
+| Plan | Requirement、Dataset、Materials、PlanningConfig、PlanningDraft |
 | Templates | Plan、TemplateConfig |
 | Generation | Dataset、Plan、Templates、GenerationConfig |
 | Audit | Generation、Dataset、Plan、AuditConfig |
 
-PlanningDraft、BlueprintDraft 和数据准备阶段也登记直接依赖。统一 require 检查递归失效，替代
+PlanningDraft 和数据准备阶段也登记直接依赖。统一 require 检查递归失效，替代
 planned/generated/audited 与 plan_binding；生成、审计、交付使用这套检查。改动上游时只切换当前引用。
 内容相关配置按职责登记；日志、超时等运行参数不加入内容依赖。
 
 终端使用 SQLite checkpoint，支持 `build --resume <identifier>`。回执绑定验证后的参数与输入依赖版本，
 匹配时复用完成结果；数据容器操作还有同样绑定的内部完成回执。恢复读取运行保存的配置和输入。
 `.runtime/contract.json` 保存运行时契约版本、Git commit 与源码工作区差异；代码或契约变化拒绝恢复，
-明确要求新运行，不迁移旧 checkpoint。生成子图保留逐行 checkpoint、阶段游标及进度。
+明确要求新运行，不迁移旧 checkpoint。当前运行契约为 agent-runtime.v4。生成子图保留逐行 checkpoint、阶段游标及进度。
 
 harness 限制行动次数、执行时间、连续失败和相同行动重复次数。人工等待不计入执行时间，预算耗尽返回
 blocked；未审计批次不能交付。语义筛查模型失败继续使用观察性 fail-open。
 
 ## TaskPlanning
 
-一个 TaskPlanningAgent 管理完整规划：
+一个 TaskPlanningAgent 管理完整规划，Supervisor 正常委派一次，不逐 Leaf 指挥：
 
-1. 查询预定义任务目录、具体定义及类别；分页查询字段路径和指定字段的统计、分布与结构。
-2. 分页查询资料、读取 PDF 元数据、选择资料并检索相关段落。
-3. 按现有 category 输入相关字段子集，保存每个任务 retain/drop、支持字段、question types、metric 和理由的草案。
-4. 全局协调仅接收任务定义与紧凑决策，不重新输入完整 profile；检查重复语义、残余属性答案轴和覆盖。
-5. 代码验证完整任务覆盖及证据契约，再复用原展开、题量分配和医学设计逻辑，最后发布 Plan。
+1. 选择、校验并查询 Dataset；分页读取字段统计或精确值。选择医学资料，允许空资料集。
+2. 围绕 Blueprint 的 Core Concepts 逐个理解和展开 Leaf。Concept 理解、Leaf 展开、Protocol 设计
+   均可随时调用 RAG，模型自主选择 query 和检索轮次。annotation 是字段、标签与答案空间的唯一依据。
+3. 保存每个 Leaf 的 Protocol，标记 Concept complete 或 unsupported 并记录理由。
+4. Core 完成后检查 Coverage Gap；未使用字段只是调查线索。Extension 必须先提交带直接字段证据、
+   临床意义、目标相关性和无法归入既有 Concept 理由的提案。代码核验事实引用，模型审查新能力与重复性。
+   接受后仅加入当前 run，origin=extension；复用相同 Leaf 设计流程。
+5. 完成 discovery 后审查紧凑 Concept/Leaf 视图，检查重复、重叠、归属、遗漏 sibling 和 Protocol 冲突。
+   定向 merge/remove/reparent/revise/add_leaf 后复审。第一次 Review 不消耗返工额度；之后每轮修正
+   消耗 harness.max_reworks 一次，额度存入 PlanningDraft，恢复或重新委派不重置。耗尽仍有问题返回 blocked。
+6. 对最终 Leaves 提交相对 weight 和理由；代码统计每个 Leaf 的 eligible image capacity，按权重进行
+   largest-remainder 分配和容量截断后的重分配。平局按稳定 Leaf ID 排序，零权重明确排除该 Leaf。
+7. Plan Validator 通过后发布 Plan；草案不能进入生成。检查两层结构、Concept 完成、Extension 决议、
+   Protocol、当前 revision 的 Review/Allocation 及总量关系；没有可生成样本时 blocked。
 
-关键词查询只是发现工具，不决定任务删除。任务族允许全部 drop；完整计划仍需至少一个保留任务。
-全局协调不能引入草案未检查的新支持字段或新答案轴，必须先修订对应任务族。
-修订保存新的族草案并重新协调；未变化任务的设计可复用，资料变化时不复用旧医学设计。
-草案版本不能直接进入生成。
+Blueprint 的 concepts 和 tasks 分别保存固定两层的 Medical Concept 与 Executable Leaf。
+Concept 本身不执行；只有一种变体也需要一个 Leaf。Leaf ID 在运行时定义，修订、reparent 和恢复时稳定；
+显式 concept_id 记录归属，执行代码不解析 ID、前缀或命名。删除的 ID 不能重新用于新 Leaf。
+上游依据变化使下游失效，但保留已有 Leaf 身份和草案供定向重验证；Extension 提案也必须重新验证。
+
+Leaf 的 protocol 包含 execution_type（letter_classification / bbox_grounding / free_text）、
+response_format、metric、data_binding、answer_contract、question_intent、medical_constraints 和
+显式 template_slots。data_binding 绑定 supporting_fields、answer_field 和可选 target_field；
+answer_contract 保存 options 与 value_mapping。free_text 和 bbox 不允许选项映射。
+Leaf evidence 独立保存检索回执中的 pdf/page/chunk_id 引用；不存在 generation_logic、question_type_id
+或旧 parent_task_id 字段。完整 Protocol 参数采用严格 Pydantic Schema，不允许额外字段。
+
+allocation 保存 requested_count、allocated_count、planning_shortfall、各 Leaf counts/capacities/weights
+及权重理由。planning_shortfall 只等于重分配完成后仍无法满足的请求总量；某 Leaf 被容量截断而成功转配
+不产生最终缺额。正配额仍受逐阶段每图限制，轻量 capacity 不求解跨 Leaf 图像匹配。
 
 ## 数据准备与公共校验
 
@@ -109,22 +132,28 @@ Evaluation 不拒绝纯色图但限定 PNG/JPEG 编码。
 每条标准标注代表一张图，含 patient、case、study、image，各实体独立 annotation。
 图像 manifest 恰含 image_id、png_path、width、height；路径相对 manifest，历史键 png_path 也允许 JPEG。
 
-- letter：唯一获准 scalar 经 answer_value_mapping 固定正确选项。
-- free_text：唯一直接参考字符串。
-- bbox：唯一合法绝对像素 xyxy；visual_grounding 要求与框配对的目标名称。
+- letter：唯一获准 scalar 经 Protocol 的 value_mapping 固定正确选项。
+- free_text：answer_field 明确绑定的唯一直接参考字符串。
+- bbox：answer_field 明确绑定的唯一合法绝对像素 xyxy；声明 target_field 时要求同一标注实体的唯一目标名称。
 - 答案由代码固定，PDF 仅作为医学设计依据，不补造标签或实体关系。
 - 同一 task/image 最多一题，保留每阶段每图限制和任务题量限制。
 
-生成前按 generation.question_template_count 统一构建、审核模板，只允许 modality 槽位，visual_grounding
-额外要求 target。逐题阶段没有模型生成或 Reviewer 调用。最终硬审计检查图像、答案与重复，抽样语义
-flag 不自动拒绝题目。题量与 shortfall 以硬审计通过样本计算，数据耗尽允许带明确缺额完成。
+容量统计、生成和答案审计共用 Protocol 的确定性 annotation eligibility/答案解析。
+生成前按 generation.question_template_count 构建、审核模板；两个模型调用都只接收窄化 Template
+Specification（意图、语言、执行类型、约束、允许槽位），不接收答案映射、逐图答案或完整 Protocol。
+槽位由 Protocol 明确声明，可选 modality；声明目标绑定时必须使用 target。模板单独保存到 templates.json，
+只在私有 GenerationRequest 内装配，不写回 Blueprint。逐题阶段没有模型生成或 Reviewer 调用。最终硬审计检查图像、答案与重复，抽样语义
+flag 不自动拒绝题目。生成 shortfall 相对已分配量；最终 total_shortfall 等于原始请求量减硬审计通过量，不能再重复累计
+planning_shortfall。数据耗尽允许带明确缺额完成。
 
 ## 产物与交付
 
-版本工作产物在 `.runtime/` 的独立操作目录中，完整 Task Plan 嵌入 Blueprint；系统不覆盖已完成版本。
+版本工作产物在 `.runtime/` 的独立操作目录中，完整 Concept/Leaf Plan 嵌入 Blueprint；系统不覆盖已完成版本。
 最终选择的有效版本复制到运行根目录：blueprint.json、templates.json、raw/audited JSONL、audit_report.json、
 construction_events.jsonl、effective_config.json 和 benchmark_manifest.json。
-不生成逐题 provenance、哈希链、多份事件汇总报告；现有 benchmark-manifest.v2 与图像 manifest 格式不变。
+不生成逐题 provenance、哈希链、多份事件汇总报告；benchmark-manifest.v2 新增 concepts、allocation，以及 tasks 内的 concept_id；不再导出旧父任务或
+question type 字段。图像 manifest 格式不变。evaluation、推理和计分代码本阶段未修改；现有评测器
+不会将新 concept_id 用作层级汇总，Concept 级评测适配属于后续工作。
 旧内部接口、checkpoint 和废弃工具不提供兼容层。
 
 ## 推理与评测边界

@@ -9,6 +9,7 @@ from medbenchagent.generation.context import image_modality
 from medbenchagent.generation.grounding import _visual_target_text
 from medbenchagent.runtime.llm import complete_json
 from medbenchagent.settings import get_settings
+from medbenchagent.planning.protocol import template_specification
 
 
 def validate_templates(task_id: str, task: dict, templates: object) -> list[str]:
@@ -20,9 +21,7 @@ def validate_templates(task_id: str, task: dict, templates: object) -> list[str]
         or len({t.strip() for t in templates}) != len(templates)
     ):
         raise ValueError(f"{task_id}: provide {count} distinct nonempty templates")
-    allowed = {"modality"}
-    if task_id == "visual_grounding":
-        allowed.add("target")
+    allowed = set(task["protocol"]["template_slots"])
     for template in templates:
         fields = set()
         for _, field, format_spec, conversion in Formatter().parse(template):
@@ -30,7 +29,7 @@ def validate_templates(task_id: str, task: dict, templates: object) -> list[str]
                 if field not in allowed or format_spec or conversion:
                     raise ValueError(f"{task_id}: unsupported template slot")
                 fields.add(field)
-        if task_id == "visual_grounding" and "target" not in fields:
+        if "target" in allowed and "target" not in fields:
             raise ValueError(
                 "Visual grounding templates must name the annotated target using {target}"
             )
@@ -49,16 +48,14 @@ def build_templates(
     prompt = (
         f"Create exactly {count} semantically equivalent but varied ready-to-render medical VLM question templates. "
         'Return {"templates":["question"]}. No instructions to a future writer. '
-        "Only optional {modality} is supported; visual_grounding MUST use {target} to identify the finding. "
+        "Use only the specification template_slots; when target is listed, MUST use {target}. "
         "Other tasks must not use {target}. Never insert an answer or annotation label into the question. "
         "Detection asks for a generic lesion/abnormal region without naming its finding. "
         "Free text asks for the reference content without revealing it. Use the requested language. "
         "All templates must apply to every eligible record under this task; do not assume unprovided facts."
     )
     payload = {
-        "task_id": task_id,
-        "task": task,
-        "benchmark_info": benchmark_info,
+        "specification": template_specification(task["protocol"], benchmark_info.get("language", "en")),
         "feedback": feedback,
     }
     for attempt in range(2):
@@ -87,7 +84,8 @@ def build_templates(
 
 
 def render(candidate) -> str:
-    target = _visual_target_text(candidate) if candidate.task_id == "visual_grounding" else ""
-    if candidate.task_id == "visual_grounding" and not target:
+    named = "target" in candidate.task["protocol"]["template_slots"]
+    target = _visual_target_text(candidate) if named else ""
+    if named and not target:
         raise ValueError("Visual grounding requires one annotated target")
     return candidate.question_template.format(modality=image_modality(candidate), target=target)

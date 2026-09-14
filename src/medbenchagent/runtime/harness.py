@@ -34,7 +34,10 @@ Tool = Callable[..., dict[str, Any]]
 
 
 def result(status: str, summary: str, **updates: Any) -> dict[str, Any]:
-    return {"status": status, "summary": summary, "updates": updates}
+    structured = {key: updates.pop(key, default) for key, default in (
+        ("unresolved_questions", []), ("warnings", []), ("artifacts", {}),
+        ("readiness", {}), ("affected_node_ids", []))}
+    return {"status": status, "summary": summary, "updates": updates, **structured}
 
 
 def compile_agent(
@@ -45,6 +48,7 @@ def compile_agent(
     finish: Tool,
     *,
     args_schemas: dict[str, type[BaseModel]] | None = None,
+    available_tools: Callable[[dict[str, Any]], set[str]] | None = None,
     checkpointer: Any = None,
 ):
     """Run registered tools serially, retaining private state and completed operations."""
@@ -86,6 +90,7 @@ def compile_agent(
                     "blocked", "Execution budget exhausted; inspect the last tool result."
                 )
             }
+        enabled = available_tools(context) if available_tools is not None else set(catalog)
         started = time.monotonic()
         with event_context(
             construction_events_path=context["construction_events_path"],
@@ -102,7 +107,7 @@ def compile_agent(
                     "Use finish only when all required outputs exist. Tools execute serially.",
                     json.dumps(
                         {
-                            "tools": catalog,
+                            "tools": {k: v for k, v in catalog.items() if k in enabled},
                             "state": describe(context),
                             "recent_observations": state.get("observations", []),
                             "last_result": {
@@ -158,6 +163,8 @@ def compile_agent(
         if parameter_error is not None:
             outcome = result("failed", "Invalid tool arguments")
             outcome["errors"] = parameter_error
+        elif available_tools is not None and tool_name not in available_tools(context):
+            outcome = result("failed", "Tool is not ready for the current state")
         elif operation.is_file():
             saved = json.loads(operation.read_text(encoding="utf-8"))
             if (
@@ -181,8 +188,9 @@ def compile_agent(
             decisions = dict(context.get("decisions", {}))
             if arguments["scope"] == "global" and name != "SupervisorAgent":
                 outcome = result(
-                    "escalate",
+                    "needs_input",
                     question,
+                    unresolved_questions=[question],
                     global_issue={"role": name, "question": question, "reference": reference},
                 )
             else:
@@ -232,7 +240,7 @@ def compile_agent(
                 try:
                     function = finish if tool_name == "finish" else tools[tool_name]
                     tool = StructuredTool.from_function(
-                        func=lambda **kwargs: function(tool_context, **kwargs),
+                        func=lambda **kwargs: function(tool_context, **schemas[tool_name].model_validate(kwargs).model_dump()),
                         name=tool_name,
                         description=catalog[tool_name]["description"],
                         args_schema=schemas[tool_name],
@@ -298,6 +306,6 @@ def compile_agent(
     )
     graph.add_conditional_edges(
         "execute",
-        lambda s: END if s["result"]["status"] in {"complete", "escalate", "blocked"} else "decide",
+        lambda s: END if s["result"]["status"] in {"complete", "needs_input", "blocked"} else "decide",
     )
     return graph.compile(checkpointer=checkpointer, name=name)

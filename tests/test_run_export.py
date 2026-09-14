@@ -1,3 +1,4 @@
+from test_generation import _task
 import json
 from pathlib import Path
 import pytest
@@ -8,15 +9,9 @@ def inputs(tmp_path):
     blueprint = {
         "benchmark_info": {"language": "en"},
         "dataset": {"dataset_id": "set"},
-        "tasks": {
-            "view": {
-                "category": "basic",
-                "response_format": "letter",
-                "metric": "accuracy",
-                "supporting_fields": ["image.annotation.view"],
-                "sample_count": 1,
-            }
-        },
+        "concepts": {"concept": {"origin": "core"}},
+        "allocation": {"requested_count": 1, "allocated_count": 1, "planning_shortfall": 0},
+        "tasks": {"view": _task("letter", ["image.annotation.view"], sample_count=1)},
     }
     for name, value in {
         "blueprint.json": blueprint,
@@ -65,7 +60,7 @@ def test_final_task_requires_metric(tmp_path):
     values = inputs(tmp_path)
     path = values["blueprint_path"]
     blueprint = json.loads(path.read_text())
-    blueprint["tasks"]["view"].pop("metric")
+    blueprint["tasks"]["view"]["protocol"].pop("metric")
     path.write_text(json.dumps(blueprint))
     with pytest.raises(ValueError, match="metric"):
         finalize_run(**values)

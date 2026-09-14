@@ -5,36 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
-RAG_DESIGN_FIELDS = (
-    "question_templates",
-    "options",
-    "answer_field",
-    "answer_value_mapping",
-    "generation_logic",
-    "medical_task_description",
-    "citations",
-)
-
-
 class BlueprintTask(TypedDict):
-    task_type: str
-    response_format: str
+    concept_id: str
     description: str
-    require: str
-    metric: NotRequired[str]
     category: str
-    supporting_fields: list[str]
-    dataset_support_reason: str
-    question_templates: list[str]
-    generation_logic: str
-    medical_task_description: str
-    citations: list[dict[str, object]]
+    protocol: dict[str, object]
+    evidence: list[dict[str, object]]
     sample_count: NotRequired[int]
-    parent_task_id: NotRequired[str]
-    question_type_id: NotRequired[str]
-    options: NotRequired[list[str]]
-    answer_field: NotRequired[str]
-    answer_value_mapping: NotRequired[list[dict[str, object]]]
+    question_templates: NotRequired[list[str]]
 
 
 class GenerationRequest(TypedDict):

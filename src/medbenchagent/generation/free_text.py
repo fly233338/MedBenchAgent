@@ -3,46 +3,21 @@
 from __future__ import annotations
 
 from typing import Any
-
-from medbenchagent.generation.context import (
-    locate_scalar_evidence,
-    record_values,
-)
-
-
-def _texts(value: object) -> list[str]:
-    if isinstance(value, str) and value:
-        return [value]
-    if isinstance(value, dict):
-        return [
-            text for key, item in value.items() if key != "_source_index" for text in _texts(item)
-        ]
-    if isinstance(value, list):
-        return [text for item in value for text in _texts(item)]
-    return []
+from medbenchagent.planning.protocol import resolve_answer
 
 
 def _reference_text(candidate: Any) -> str | None:
-    texts = _texts(candidate.supporting_record)
-    return texts[0] if len(texts) == 1 else None
+    resolved = resolve_answer(candidate.record, candidate.task["protocol"])
+    return resolved["answer"] if resolved else None
 
 
-def _reference_evidence(candidate: Any) -> dict[str, object] | None:
-    reference = _reference_text(candidate)
-    if reference is None:
-        return None
-    try:
-        return locate_scalar_evidence(
-            record_values(candidate),
-            candidate.task.get("supporting_fields"),
-            reference,
-        )
-    except ValueError:
-        return None
+def _reference_evidence(candidate: Any) -> dict | None:
+    resolved = resolve_answer(candidate.record, candidate.task["protocol"])
+    return resolved["evidence"] if resolved else None
 
 
 def supports(candidate: Any) -> bool:
-    return _reference_evidence(candidate) is not None
+    return resolve_answer(candidate.record, candidate.task["protocol"]) is not None
 
 
 def _validate(candidate: Any, response: object) -> dict[str, Any]:

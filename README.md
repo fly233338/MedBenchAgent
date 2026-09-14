@@ -72,20 +72,33 @@ can be revised independently; the inventory, plans, scripts and one validation r
 
 ## Planning, templates and audit
 
-TaskPlanningAgent queries tasks, fields and references progressively, screens one existing task category at
-a time, then globally reconciles compact decisions before expanding the Blueprint. Family drafts cannot be
-generated directly. Revisions re-screen affected families and repeat global coordination, preserving
-unchanged designs when their references are unchanged. Weighted allocation and medical task rules remain. PDF retrieval supplies medical context, not per-item answers.
+TaskPlanningAgent incrementally builds exactly two levels: Medical Concept → executable Leaf.
+Core Concepts come from `config/blueprint.json`; each leaf has a runtime-defined stable ID and an explicit
+`concept_id`. IDs never determine execution. A leaf Protocol binds annotation fields, its answer contract,
+execution type (`letter_classification`, `bbox_grounding`, or `free_text`), response format, metric and intent.
 
-GenerationAgent builds and reviews a template library once per task. The number of variants is controlled by
-`generation.question_template_count`. Templates are rendered by code; the batch does not make per-item
-generation or Reviewer calls. Supported slots are `{modality}` and, for visual grounding only, `{target}`.
-Visual grounding must name its annotated target; generic detection must not disclose the finding.
+RAG is available while understanding Concepts, expanding Leaves, designing Protocols and discovering
+extensions. It explains medical terminology; only annotations establish fields and answer values. Empty
+reference selection is supported. After Core planning, coverage-gap inspection can lead to Extension
+proposals. Dataset validation and model semantic review must accept each proposal before it joins the run.
 
-Generation preserves the letter, bbox and free-text contracts, sample limits and deterministic selection.
-Hard audit validates images, task contracts, duplicates and answers against source annotations.
-Sampled semantic audit is advisory and leaves hard-audit acceptance unchanged.
-The Supervisor can request bounded rework and reports data exhaustion through per-task shortfalls.
+Global Review identifies targeted corrections. Correction rounds consume the persistent
+`harness.max_reworks` budget; redelegation and checkpoint recovery do not reset it. Unresolved issues at
+budget exhaustion block Plan publication. Current Plan readiness also requires valid Protocols and allocation.
+
+The model supplies relative leaf weights and reasons. Code counts eligible images and applies deterministic
+capacity-aware allocation. Clipped allocations are redistributed first: `planning_shortfall` records only the
+final unfilled total. Zero weights exclude leaves. Per-image competition can still cause generation shortfalls.
+
+GenerationAgent builds and reviews a separate `templates.json` library, controlled by
+`generation.question_template_count`. Both model calls receive a narrow Template Specification without
+answer mappings or per-image answers. Protocol-defined slots allow `{modality}` and, when a target is
+explicitly bound, require `{target}`. Code renders every question and resolves its answer without per-item LLM calls.
+
+Hard audit checks images, duplicates and Protocol-bound annotation answers. Sampled semantic audit is
+advisory. Final `total_shortfall` is the requested total minus hard-audit accepted items, without double-counting
+planning and generation deficits. Evaluation and scoring are unchanged in this phase; Concept-level evaluation
+aggregation is not implemented yet.
 
 ## Outputs and execution limits
 
@@ -100,8 +113,9 @@ The final run directory contains:
 
 Final counts and deficits refer to audited items. Event records include LLM usage and latency;
 no separate aggregate construction report is generated.
-The manifest uses `benchmark-manifest.v2`; old manifest contracts must be regenerated before evaluation.
-Historical outputs are not migrated or deleted automatically.
+The manifest uses `benchmark-manifest.v2` with additive concepts, allocation and explicit leaf concept IDs.
+Historical outputs are not migrated or deleted automatically. The new runtime contract is `agent-runtime.v4`;
+start a new run instead of resuming an older checkpoint.
 
 The `[harness]` settings limit agent actions, elapsed execution time, consecutive failures and repeated rework.
 Human waiting time is excluded from the execution budget. Each agent retains bounded private tool observations.
