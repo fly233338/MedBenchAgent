@@ -21,6 +21,7 @@ def context(tmp_path, monkeypatch):
         "run_directory": str(tmp_path),
         "operation_directory": str(tmp_path / "op"),
         "annotation_path": str(annotation),
+        "selected_dataset_id": "test",
         "benchmark_info": {"sample_count": 4, "language": "en"},
         "construction_events_path": str(tmp_path / "events.jsonl"),
         "limits": {"max_reworks": 1},
@@ -162,9 +163,26 @@ def test_extension_gate_acceptance_rejection_and_reparent_identity(tmp_path, mon
     )
     call(c, planning.propose_extension, **proposal)
     assert planning._tree(c)["concepts"]["extension"]["origin"] == "extension"
+    accepted = json.loads(planning.read_proposal(c, node_id="extension")["summary"])
+    assert accepted["cannot_fit_existing"] == proposal["cannot_fit_existing"]
+    assert accepted["decision"]["accepted"] is True
+    assert "read_proposal" in planning.available_tools(c)
     save(c, concept_id="extension")
     assert set(planning._tree(c)["tasks"]) == {"opaque.identity"}
     assert planning._tree(c)["tasks"]["opaque.identity"]["concept_id"] == "extension"
+    call(
+        c,
+        planning.complete_concept,
+        concept_id="core",
+        status="unsupported",
+        reason="Moved to extension",
+    )
+    call(c, planning.propose_extension, **{**proposal, "category": "new-category"})
+    assert planning._tree(c)["tasks"]["opaque.identity"]["category"] == "new-category"
+    assert (
+        json.loads(planning.read_proposal(c, node_id="extension")["summary"])["category"]
+        == "new-category"
+    )
     with pytest.raises(ValueError, match="concept"):
         save(c, leaf_id="third-level", concept_id="opaque.identity")
 
@@ -208,7 +226,7 @@ def test_plan_validator_rejects_leaf_count_drift(tmp_path, monkeypatch):
     ready(c, monkeypatch)
     tree = planning._tree(c)
     tree["tasks"]["opaque.identity"]["sample_count"] += 1
-    assert "Invalid leaf allocation" in validate_plan(tree)
+    assert any(issue["message"] == "Invalid leaf allocation" for issue in validate_plan(tree))
 
 
 def test_budget_exhausted_review_is_not_retried_with_new_identity(tmp_path, monkeypatch):
@@ -227,3 +245,114 @@ def test_budget_exhausted_review_is_not_retried_with_new_identity(tmp_path, monk
     old = planning._tree(c)
     assert save(c, leaf_id="new.identity")["status"] == "blocked"
     assert planning._tree(c) == old
+
+
+def test_cached_exhausted_review_preserves_blocked_result_and_reference(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    ready(c, monkeypatch)
+    save(c)
+    complete(c)
+    issues = [{"action": "revise", "node_ids": ["opaque.identity"], "reason": "Conflict"}]
+    calls = []
+
+    def review(*args):
+        calls.append(1)
+        return {"issues": issues}
+
+    monkeypatch.setattr(planning, "complete_json", review)
+    first = call(c, planning.review_tree)
+    again = planning.review_tree(copy.deepcopy(c))
+    assert first["status"] == again["status"] == "blocked"
+    assert first["unresolved_questions"] == again["unresolved_questions"] == issues
+    assert first["artifacts"] == again["artifacts"] == {"draft": c["draft_path"]}
+    assert calls == [1]
+    assert "finish" not in planning.available_tools(c)
+
+
+def test_cached_review_then_one_correction_round_and_successful_recheck(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    save(c)
+    complete(c)
+    call(c, planning.coverage_gap)
+    call(c, planning.finish_discovery)
+    responses = iter(
+        [
+            {
+                "issues": [
+                    {"action": "revise", "node_ids": ["opaque.identity"], "reason": "Clarify"}
+                ]
+            },
+            {"issues": []},
+        ]
+    )
+    calls = []
+
+    def review(*args):
+        calls.append(1)
+        return next(responses)
+
+    monkeypatch.setattr(planning, "complete_json", review)
+    first = call(c, planning.review_tree)
+    cached = planning.review_tree(c)
+    assert first["status"] == cached["status"] == "success"
+    assert cached["unresolved_questions"] == first["unresolved_questions"]
+    assert calls == [1]
+    save(c)
+    complete(c)
+    assert planning._tree(c)["reworks_used"] == 1
+    assert call(c, planning.review_tree)["status"] == "success"
+    assert calls == [1, 1]
+    call(c, planning.allocate, weights={"opaque.identity": {"weight": 1.0, "reason": "Coverage"}})
+    assert call(c, planning.finish)["status"] == "complete"
+
+
+def test_invalid_persisted_draft_does_not_crash_tool_gate(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    ready(c, monkeypatch)
+    tree = planning._tree(c)
+    tree["tasks"]["opaque.identity"]["protocol"]["metric"] = "unknown"
+    Path(c["draft_path"]).write_text(json.dumps(tree), encoding="utf-8")
+    assert "finish" not in planning.available_tools(c)
+    assert "opaque.identity" in planning.describe(c)["validation_error"]
+
+
+def test_upstream_changes_refresh_metadata_preserve_identity_and_revalidate(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    ready(c, monkeypatch)
+    save(c)
+    old = planning._tree(c)
+    c["benchmark_info"] = {"sample_count": 1, "language": "zh"}
+    c["selected_dataset_id"] = "new-dataset"
+    publish(c, "Requirement", {"brief": c["benchmark_info"]}, ())
+    publish(c, "Dataset", {"value": 2}, ())
+    refreshed = planning._tree(c)
+    assert refreshed["benchmark_info"] == c["benchmark_info"]
+    assert refreshed["dataset"] == {"dataset_id": "new-dataset"}
+    assert refreshed["tasks"] == old["tasks"]
+    assert refreshed["reworks_used"] == 1
+    assert refreshed["review"] == {} and not refreshed["discovery_complete"]
+    assert "allocation" not in refreshed and "coverage" not in refreshed
+    assert "finish" not in planning.available_tools(c)
+    complete(c)  # revalidates retained Protocol against current data
+    call(c, planning.coverage_gap)
+    call(c, planning.finish_discovery)
+    call(c, planning.review_tree)
+    call(
+        c, planning.allocate, weights={"opaque.identity": {"weight": 1.0, "reason": "Updated goal"}}
+    )
+    output = call(c, planning.finish)
+    plan = json.loads(Path(output["updates"]["working_blueprint_path"]).read_text(encoding="utf-8"))
+    assert plan["benchmark_info"] == c["benchmark_info"]
+    assert plan["dataset"]["dataset_id"] == "new-dataset"
+    assert plan["allocation"]["requested_count"] == plan["allocation"]["allocated_count"] == 1
+    assert plan["reworks_used"] == 1
+
+
+def test_readiness_gate_never_rescans_annotations(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    ready(c, monkeypatch)
+    monkeypatch.setattr(
+        planning, "load_annotation_jsonl", lambda *a: pytest.fail("Readiness must not scan data")
+    )
+    assert "finish" in planning.available_tools(c)
+    assert not validate_plan(planning._tree(c))

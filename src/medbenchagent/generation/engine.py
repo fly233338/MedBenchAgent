@@ -12,11 +12,10 @@ from typing import Any
 import duckdb
 
 from medbenchagent.planning.protocol import Protocol, resolve_answer
+from medbenchagent.generation.contracts import GenerationTask, GenerationRequest
 from medbenchagent.generation.templates import render
 from medbenchagent.contracts import (
     BenchmarkItem,
-    BlueprintTask,
-    GenerationRequest,
     GenerationResult,
 )
 from medbenchagent.runtime.construction import GENERATION_AGENT, record_event
@@ -42,7 +41,7 @@ class _Candidate:
     source_row: int
     record: dict[str, Any]
     supporting_record: dict[str, Any]
-    task: BlueprintTask
+    task: GenerationTask
     question_template: str
     expected_answer: str | None = None
     expected_evidence: dict[str, object] | None = None
@@ -68,7 +67,7 @@ def _task_targets(request: GenerationRequest) -> dict[str, int]:
     return counts
 
 
-def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, BlueprintTask], dict[str, int]]:
+def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, GenerationTask], dict[str, int]]:
     dataset_id = request.get("dataset_id")
     if not isinstance(dataset_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", dataset_id):
         raise ValueError("dataset_id must be a stable lowercase slug.")
@@ -199,7 +198,7 @@ def _shuffle_candidates(candidates: list[_Candidate], seed: int, image_id: str) 
 
 
 def _select_question_template(
-    task: BlueprintTask, seed: int, task_id: str, image_id: str, source_row: int
+    task: GenerationTask, seed: int, task_id: str, image_id: str, source_row: int
 ) -> str:
     templates = task["question_templates"]
     identity = json.dumps([task_id, image_id, source_row]).encode("utf-8")
@@ -214,7 +213,7 @@ def _all_supporting_fields_present(record: dict[str, Any], supporting_fields: li
 
 
 def _mapped_answer(
-    record: dict[str, Any], task: BlueprintTask
+    record: dict[str, Any], task: GenerationTask
 ) -> tuple[str, dict[str, object]] | None:
     resolved = resolve_answer(record, task["protocol"])
     return (resolved["answer"], resolved["evidence"]) if resolved else None
@@ -222,7 +221,7 @@ def _mapped_answer(
 
 def _next_candidate_record(
     request: GenerationRequest,
-    tasks: dict[str, BlueprintTask],
+    tasks: dict[str, GenerationTask],
     targets: dict[str, int],
     completed: dict[str, int],
     cursor: int,
@@ -291,8 +290,8 @@ def _stage_progress_path(output_dir: Path, phase: str) -> Path:
 
 
 def _stage_tasks(
-    tasks: dict[str, BlueprintTask], targets: dict[str, int], response_format: str
-) -> dict[str, BlueprintTask]:
+    tasks: dict[str, GenerationTask], targets: dict[str, int], response_format: str
+) -> dict[str, GenerationTask]:
     return {
         task_id: task
         for task_id, task in tasks.items()
@@ -301,7 +300,7 @@ def _stage_tasks(
 
 
 def _all_completed_counts(
-    output_dir: Path, tasks: dict[str, BlueprintTask], targets: dict[str, int]
+    output_dir: Path, tasks: dict[str, GenerationTask], targets: dict[str, int]
 ) -> dict[str, int]:
     counts = {task_id: 0 for task_id in tasks}
     for phase, response_format, _handler in _STAGES:
@@ -315,7 +314,7 @@ def _all_completed_counts(
 
 def _enter_stage(
     request: GenerationRequest,
-    tasks: dict[str, BlueprintTask],
+    tasks: dict[str, GenerationTask],
     targets: dict[str, int],
     completed: dict[str, int],
     stage_index: int,

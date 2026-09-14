@@ -89,16 +89,27 @@ class Protocol(NoArguments):
         return self
 
 
-def template_specification(protocol: dict, language: str) -> dict:
+class TemplateSpecification(NoArguments):
+    """The complete information boundary for template generation and review."""
+
+    question_intent: NonEmpty
+    medical_constraints: list[NonEmpty]
+    execution_type: Literal["letter_classification", "bbox_grounding", "free_text"]
+    response_format: Literal["letter", "bbox", "free_text"]
+    template_slots: list[Literal["modality", "target"]]
+    language: NonEmpty
+
+
+def template_specification(protocol: dict, language: str) -> TemplateSpecification:
     p = Protocol.model_validate(protocol)
-    return {
-        "question_intent": p.question_intent,
-        "medical_constraints": p.medical_constraints,
-        "execution_type": p.execution_type,
-        "response_format": p.response_format,
-        "template_slots": p.template_slots,
-        "language": language,
-    }
+    return TemplateSpecification(
+        question_intent=p.question_intent,
+        medical_constraints=p.medical_constraints,
+        execution_type=p.execution_type,
+        response_format=p.response_format,
+        template_slots=p.template_slots,
+        language=language,
+    )
 
 
 def resolve_answer(record: dict, protocol: dict) -> dict | None:

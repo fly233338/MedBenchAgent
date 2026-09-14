@@ -74,7 +74,7 @@ can be revised independently; the inventory, plans, scripts and one validation r
 
 TaskPlanningAgent incrementally builds exactly two levels: Medical Concept → executable Leaf.
 Core Concepts come from `config/blueprint.json`; each leaf has a runtime-defined stable ID and an explicit
-`concept_id`. IDs never determine execution. A leaf Protocol binds annotation fields, its answer contract,
+`concept_id`. IDs never determine execution; dots in an ID do not create additional tree levels. A leaf Protocol binds annotation fields, its answer contract,
 execution type (`letter_classification`, `bbox_grounding`, or `free_text`), response format, metric and intent.
 
 RAG is available while understanding Concepts, expanding Leaves, designing Protocols and discovering
@@ -85,15 +85,25 @@ proposals. Dataset validation and model semantic review must accept each proposa
 Global Review identifies targeted corrections. Correction rounds consume the persistent
 `harness.max_reworks` budget; redelegation and checkpoint recovery do not reset it. Unresolved issues at
 budget exhaustion block Plan publication. Current Plan readiness also requires valid Protocols and allocation.
+Reading the same exhausted Review again preserves its blocked status and draft reference without another
+model call. Upstream requirement or dataset changes refresh the draft metadata and require revalidation,
+while preserving leaf identities and spent rework budget. Accepted Extension proposals and their decisions
+can be inspected separately with `read_proposal`.
+
+Persisted Concepts, Leaves and PlanningDrafts reject unknown fields and invalid ownership. Draft validation
+permits unfinished nodes; final Plan validation returns located `path`/`message` issues for structure and
+readiness failures. These checks reuse artifact version gates and do not rescan the dataset on every action.
 
 The model supplies relative leaf weights and reasons. Code counts eligible images and applies deterministic
 capacity-aware allocation. Clipped allocations are redistributed first: `planning_shortfall` records only the
 final unfilled total. Zero weights exclude leaves. Per-image competition can still cause generation shortfalls.
 
 GenerationAgent builds and reviews a separate `templates.json` library, controlled by
-`generation.question_template_count`. Both model calls receive a narrow Template Specification without
+`generation.question_template_count`. The builder and reviewer interfaces accept only a strict TemplateSpecification without
 answer mappings or per-image answers. Protocol-defined slots allow `{modality}` and, when a target is
-explicitly bound, require `{target}`. Code renders every question and resolves its answer without per-item LLM calls.
+explicitly bound, require `{target}`. Planning leaves never contain templates; the private GenerationTask
+adds templates only when assembling GenerationRequest. Code renders every question and resolves its answer
+from the full Protocol without per-item LLM calls.
 
 Hard audit checks images, duplicates and Protocol-bound annotation answers. Sampled semantic audit is
 advisory. Final `total_shortfall` is the requested total minus hard-audit accepted items, without double-counting

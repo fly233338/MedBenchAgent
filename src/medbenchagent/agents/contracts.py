@@ -5,7 +5,7 @@ from typing import Any, TypedDict
 from medbenchagent.runtime.construction import (
     GENERATION_AGENT as GENERATION_AGENT,
 )
-from medbenchagent.contracts import GenerationRequest
+from medbenchagent.generation.contracts import GenerationRequest
 
 
 class GenerationAgentInputState(TypedDict, total=False):

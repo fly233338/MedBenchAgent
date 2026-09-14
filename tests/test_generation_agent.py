@@ -16,9 +16,16 @@ from test_generation import _task
 def test_generation_agent_keeps_request_snapshot_private(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "blueprint.json"
     task = _task("letter", ["image.annotation.view"], sample_count=1)
-    (tmp_path / "templates.json").write_text(json.dumps({"view": task["question_templates"]}), encoding="utf-8")
+    templates = task.pop("question_templates")
+    (tmp_path / "templates.json").write_text(json.dumps({"view": templates}), encoding="utf-8")
     path.write_text(
-        json.dumps({"benchmark_info": {"sample_count": 1}, "allocation": {"allocated_count": 1}, "tasks": {"view": task}}),
+        json.dumps(
+            {
+                "benchmark_info": {"sample_count": 1},
+                "allocation": {"allocated_count": 1},
+                "tasks": {"view": task},
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -72,7 +79,8 @@ def test_generation_agent_keeps_request_snapshot_private(tmp_path: Path, monkeyp
         if "generation_request" in snapshot.values
     ]
     assert requests
-    assert requests[0]["tasks"] == {"view": task}
+    assert requests[0]["tasks"] == {"view": {**task, "question_templates": templates}}
+    assert "question_templates" not in json.loads(path.read_text(encoding="utf-8"))["tasks"]["view"]
     assert not {"task_specs", "question_designs", "approved_task_plans"} & requests[0].keys()
 
 

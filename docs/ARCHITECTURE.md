@@ -93,6 +93,19 @@ Blueprint 的 concepts 和 tasks 分别保存固定两层的 Medical Concept 与
 Concept 本身不执行；只有一种变体也需要一个 Leaf。Leaf ID 在运行时定义，修订、reparent 和恢复时稳定；
 显式 concept_id 记录归属，执行代码不解析 ID、前缀或命名。删除的 ID 不能重新用于新 Leaf。
 上游依据变化使下游失效，但保留已有 Leaf 身份和草案供定向重验证；Extension 提案也必须重新验证。
+Requirement 或 Dataset 变化时，重验证草案从当前 context 更新 benchmark_info 和 dataset_id，清除旧 Review、
+Allocation 和 discovery 完成状态；保留已消耗返工额度，旧版本产物不修改。
+
+`planning/tree.py` 的 Concept、Leaf、PlanningDraft 严格验证持久化结构，拒绝未知字段。
+Leaf 不允许 children 或 question_templates，Concept 不允许 Protocol；归属只由 concept_id 决定，
+多点号 ID 合法。校验还检查身份冲突、已删除 ID 重用以及 Concept/Leaf category 一致性。
+validate_draft 允许节点尚未完成；validate_plan 追加完成、Review、Allocation 等发布条件。
+两者返回统一的 `{path: [...], message: ...}` 问题列表，path 保留完整节点 ID，不以点号拆分。
+格式错误不会作为 KeyError 或未捕获的 Protocol ValidationError 穿透工具门控；门控不扫描 Dataset。
+
+已接受 Extension 的完整提案和决议通过 read_proposal 显式读取，避免同名 Concept 遮蔽提案；
+Extension category 修订会同步其已有 Leaves。Review 的首次结果与同版本缓存读取使用相同状态规则：
+额度耗尽且仍有问题时始终 blocked，并保留问题和草案引用；重复读取不调用模型，也不消耗新的额度。
 
 Leaf 的 protocol 包含 execution_type（letter_classification / bbox_grounding / free_text）、
 response_format、metric、data_binding、answer_contract、question_intent、medical_constraints 和
@@ -142,7 +155,10 @@ Evaluation 不拒绝纯色图但限定 PNG/JPEG 编码。
 生成前按 generation.question_template_count 构建、审核模板；两个模型调用都只接收窄化 Template
 Specification（意图、语言、执行类型、约束、允许槽位），不接收答案映射、逐图答案或完整 Protocol。
 槽位由 Protocol 明确声明，可选 modality；声明目标绑定时必须使用 target。模板单独保存到 templates.json，
-只在私有 GenerationRequest 内装配，不写回 Blueprint。逐题阶段没有模型生成或 Reviewer 调用。最终硬审计检查图像、答案与重复，抽样语义
+只在私有 GenerationRequest 内装配，不写回 Blueprint。
+BlueprintTask 不含模板字段；`generation/contracts.py` 的私有 GenerationTask 继承规划字段并要求
+question_templates，GenerationRequest 也位于该私有模块。模板构建、槽位校验和审查接口直接接收
+严格的 TemplateSpecification，不再接收完整 Task 或 benchmark 对象；生成引擎仍读取完整 Protocol 解析答案。逐题阶段没有模型生成或 Reviewer 调用。最终硬审计检查图像、答案与重复，抽样语义
 flag 不自动拒绝题目。生成 shortfall 相对已分配量；最终 total_shortfall 等于原始请求量减硬审计通过量，不能再重复累计
 planning_shortfall。数据耗尽允许带明确缺额完成。
 

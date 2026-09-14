@@ -34,6 +34,7 @@ from medbenchagent.planning.tree import (
     FieldValuesArguments,
     concepts_complete,
     validate_plan,
+    validate_draft,
     ExtensionDecision,
     GlobalReview,
 )
@@ -278,10 +279,13 @@ def _tree(context):
     previous = {}
     if context.get("draft_path"):
         previous = _read(context["draft_path"])
+        _check_draft(previous)
         try:
             require(context, "PlanningDraft")
         except ValueError:
             # Keep identities and draft work; every decision must be revalidated.
+            previous["benchmark_info"] = dict(context["benchmark_info"])
+            previous["dataset"] = {"dataset_id": context.get("selected_dataset_id")}
             previous["revision"] += 1
             previous["review"] = {}
             previous["correction_open"] = False
@@ -292,6 +296,7 @@ def _tree(context):
                 concept["status"] = "pending"
             for proposal in previous["proposals"].values():
                 proposal["decision"] = None
+            _check_draft(previous)
             return previous
         else:
             return previous
@@ -308,7 +313,13 @@ def _tree(context):
         correction_open=False,
         retired_ids=previous.get("retired_ids", []) + list(previous.get("tasks", {})),
     )
+    _check_draft(tree)
     return tree
+
+
+def _check_draft(tree):
+    if issues := validate_draft(tree):
+        raise ValueError(json.dumps(issues, ensure_ascii=False))
 
 
 def _persist(context, tree, *, changed=False):
@@ -326,6 +337,7 @@ def _persist(context, tree, *, changed=False):
             tree["correction_open"] = True
         tree["revision"] += 1
         tree.pop("allocation", None)
+    _check_draft(tree)
     path = Path(context["operation_directory"]) / "planning_tree.json"
     atomic_write_json(path, tree)
     versions = publish(
@@ -351,6 +363,14 @@ def read_node(context, *, node_id):
         if node_id in tree[section]:
             return result("success", json.dumps(tree[section][node_id], ensure_ascii=False))
     raise ValueError("Unknown node")
+
+
+def read_proposal(context, *, node_id):
+    """Read the full extension proposal and decision, including accepted Concept proposals."""
+    tree = _tree(context)
+    if node_id not in tree["proposals"]:
+        raise ValueError("Unknown extension proposal")
+    return result("success", json.dumps(tree["proposals"][node_id], ensure_ascii=False))
 
 
 def _validate_evidence(context, evidence):
@@ -438,11 +458,13 @@ def coverage_gap(context):
 def propose_extension(context, **proposal):
     """Validate a late extension proposal using annotation facts and explicit semantic criteria."""
     tree = _tree(context)
-    if not concepts_complete(tree, core_only=True) or "coverage" not in tree:
+    if not concepts_complete(tree, core_only=True) or tree.get("coverage") is None:
         raise ValueError("Inspect coverage after core planning first")
     key = proposal["concept_id"]
-    if key in tree["tasks"] or (
-        key in tree["concepts"] and tree["concepts"][key]["origin"] == "core"
+    if (
+        key in tree["retired_ids"]
+        or key in tree["tasks"]
+        or (key in tree["concepts"] and tree["concepts"][key]["origin"] == "core")
     ):
         raise ValueError("Identity already in use")
     _subset(_profile(context), proposal["fields"])
@@ -474,6 +496,9 @@ def propose_extension(context, **proposal):
             "status": "pending",
             "reason": decision["reason"],
         }
+        for leaf in tree["tasks"].values():
+            if leaf["concept_id"] == key:
+                leaf["category"] = proposal["category"]
     elif key in tree["concepts"]:
         if any(leaf["concept_id"] == key for leaf in tree["tasks"].values()):
             raise ValueError("Rejected extension still has leaves; reparent or remove them first")
@@ -485,7 +510,7 @@ def propose_extension(context, **proposal):
 def finish_discovery(context):
     """Record that coverage gaps and all proposed extensions have been resolved."""
     tree = _tree(context)
-    if "coverage" not in tree or not concepts_complete(tree):
+    if tree.get("coverage") is None or not concepts_complete(tree):
         raise ValueError("Inspect coverage and finish all accepted concepts first")
     if any(proposal.get("decision") is None for proposal in tree["proposals"].values()):
         raise ValueError("Revalidate extension proposals against current inputs")
@@ -499,7 +524,7 @@ def review_tree(context):
     if not concepts_complete(tree) or not tree["discovery_complete"]:
         raise ValueError("Finish concepts and extension discovery first")
     if tree.get("review", {}).get("revision") == tree["revision"]:
-        return result("success", json.dumps(tree["review"]))
+        return _review_result(context, tree, context["draft_path"])
     leaves = {}
     for key, leaf in tree["tasks"].items():
         protocol = leaf["protocol"]
@@ -533,11 +558,21 @@ def review_tree(context):
     tree["review"] = {"revision": tree["revision"], "issues": issues}
     tree["correction_open"] = False
     outcome = _persist(context, tree)
-    outcome["summary"] = json.dumps(tree["review"], ensure_ascii=False)
-    if issues and tree["reworks_used"] >= context.get("limits", {}).get("max_reworks", 3):
-        outcome["status"] = "blocked"
-        outcome["unresolved_questions"] = issues
-    return outcome
+    review_result = _review_result(context, tree, outcome["updates"]["draft_path"])
+    review_result["updates"] = outcome["updates"]
+    return review_result
+
+
+def _review_result(context, tree, draft_path):
+    issues = tree["review"]["issues"]
+    exhausted = issues and tree["reworks_used"] >= context.get("limits", {}).get("max_reworks", 3)
+    return result(
+        "blocked" if exhausted else "success",
+        json.dumps(tree["review"], ensure_ascii=False),
+        unresolved_questions=issues,
+        artifacts={"draft": draft_path},
+        readiness={"planning": False},
+    )
 
 
 def allocate(context, *, weights):
@@ -579,7 +614,7 @@ def finish(context):
     tree = _tree(context)
     errors = validate_plan(tree)
     if errors:
-        raise ValueError("; ".join(errors))
+        raise ValueError(json.dumps(errors, ensure_ascii=False))
     path = Path(context["operation_directory"]) / "blueprint.json"
     atomic_write_json(path, tree)
     versions = publish(
@@ -605,8 +640,9 @@ def finish(context):
 def describe(context):
     try:
         tree = _tree(context)
-    except ValueError:
+    except ValueError as exc:
         return {
+            "validation_error": str(exc),
             "requirement": context.get("benchmark_info"),
             "stale_draft": True,
             "versions": context.get("artifact_versions", {}),
@@ -644,13 +680,16 @@ def available_tools(context):
         require(context, "Dataset")
     except ValueError:
         return available
-    available |= {"list_fields", "read_fields", "read_field_values", "read_node"}
+    available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal"}
     try:
         require(context, "Materials")
     except ValueError:
         return available
+    try:
+        tree = _tree(context)
+    except ValueError:
+        return available
     available |= {"search_materials", "save_leaf", "remove_leaf", "complete_concept"}
-    tree = _tree(context)
     if concepts_complete(tree, core_only=True):
         available |= {"coverage_gap", "propose_extension", "finish_discovery"}
     if concepts_complete(tree) and tree["discovery_complete"]:
@@ -674,6 +713,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         select_materials,
         search_materials,
         read_node,
+        read_proposal,
         save_leaf,
         remove_leaf,
         complete_concept,
@@ -707,6 +747,7 @@ def compile_task_planning_agent(*, checkpointer=None):
             "select_materials": MaterialsArguments,
             "search_materials": SearchArguments,
             "read_node": NodeArguments,
+            "read_proposal": NodeArguments,
             "remove_leaf": NodeArguments,
             "save_leaf": LeafArguments,
             "complete_concept": ConceptArguments,

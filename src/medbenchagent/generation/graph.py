@@ -7,7 +7,7 @@ from typing import Any, TypedDict
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
-from medbenchagent.contracts import GenerationRequest
+from medbenchagent.generation.contracts import GenerationRequest
 from medbenchagent.generation.engine import (
     advance_generation,
     finalize_generation,

@@ -9,17 +9,21 @@ from medbenchagent.answer_mapping import canonical_answer_scalar
 from medbenchagent.data.dataset import prepare_annotation_dataset
 from medbenchagent.generation.context import locate_bbox_evidence, locate_scalar_evidence
 from medbenchagent.generation.templates import validate_templates
+from medbenchagent.planning.protocol import TemplateSpecification
 from medbenchagent.settings import get_settings
 
 
 def test_template_slots_exclude_answers_and_object_access():
     count = get_settings().generation.question_template_count
+    spec = TemplateSpecification(question_intent="Identify status", medical_constraints=[],
+                                 execution_type="letter_classification", response_format="letter",
+                                 template_slots=["modality"], language="en")
     for slot in ("answer", "modality.__class__", "target"):
         templates = [f"Question {index}: {{{slot}}}?" for index in range(count)]
         with pytest.raises(ValueError, match="slot"):
-            validate_templates("diagnosis", {"protocol": {"template_slots": ["modality"]}}, templates)
+            validate_templates(spec, templates)
     templates = [f"Question {index}: locate {{target}}." for index in range(count)]
-    assert validate_templates("opaque-identity", {"protocol": {"template_slots": ["modality", "target"]}}, templates) == templates
+    assert validate_templates(spec.model_copy(update={"execution_type": "bbox_grounding", "response_format": "bbox", "template_slots": ["modality", "target"]}), templates) == templates
 
 
 

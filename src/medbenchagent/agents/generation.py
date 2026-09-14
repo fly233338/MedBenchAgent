@@ -14,9 +14,10 @@ from medbenchagent.agents.contracts import (
     GenerationAgentOutputState,
     GenerationAgentState,
 )
-from medbenchagent.contracts import GenerationRequest
+from medbenchagent.generation.contracts import GenerationRequest
 from medbenchagent.runtime.construction import event_context
 from medbenchagent.generation.templates import build_templates
+from medbenchagent.planning.protocol import template_specification
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.generation.graph import compile_generation_subgraph
@@ -84,9 +85,7 @@ def run_generation(context, graph, *, feedback: str = ""):
             else:
                 with event_context(agent="GenerationAgent", task_id=task_id, operation="templates"):
                     templates = build_templates(
-                        task_id,
-                        task,
-                        context["benchmark_info"],
+                        template_specification(task["protocol"], blueprint["benchmark_info"]["language"]),
                         feedback,
                         temperature=context.get("question_temperature"),
                     )

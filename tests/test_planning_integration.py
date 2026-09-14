@@ -14,8 +14,12 @@ from medbenchagent.workflow.graph import compile_benchmark_graph
 from test_generation import _record, _task
 
 
-@pytest.mark.parametrize("ask_global", [False, True])
-def test_complete_build_with_explicit_planning_shortfall(tmp_path, monkeypatch, ask_global):
+@pytest.mark.parametrize(
+    "ask_global,revise_after_plan", [(False, False), (True, False), (False, True)]
+)
+def test_complete_build_with_explicit_planning_shortfall(
+    tmp_path, monkeypatch, ask_global, revise_after_plan
+):
     source = tmp_path / "source"
     source.mkdir()
     rows, manifest = [], []
@@ -69,43 +73,69 @@ def test_complete_build_with_explicit_planning_shortfall(tmp_path, monkeypatch, 
         "description": "Classify status",
         "sample_count": 4,
     }
-    monkeypatch.setattr("medbenchagent.planning.benchmark_info.complete_json", lambda *a: info)
+    updated_info = {**info, "sample_count": 1, "language": "zh"}
+    briefs = iter([info, updated_info])
+    monkeypatch.setattr(
+        "medbenchagent.planning.benchmark_info.complete_json",
+        lambda *a: next(briefs) if revise_after_plan else info,
+    )
     supervisor = iter(
-        (["specify", "plan", "ask_user"] if ask_global else [])
+        (["specify", "plan", "ask_user"] if ask_global or revise_after_plan else [])
         + ["specify", "plan", "generate", "audit", "finish"]
     )
     leaf = _task("letter", ["image.annotation.status"])["protocol"]
-    actions = iter(
-        ([("ask_user", {"question": "Confirm goal", "scope": "global"})] if ask_global else [])
-        + [
-            ("select_dataset", {"dataset_id": "test", "annotation_path": str(annotation)}),
+    planning_actions = (
+        [("ask_user", {"question": "Confirm goal", "scope": "global"})] if ask_global else []
+    ) + [
+        ("select_dataset", {"dataset_id": "test", "annotation_path": str(annotation)}),
+        ("profile_dataset", {}),
+        ("select_materials", {"files": []}),
+        ("read_node", {"node_id": "status"}),
+        ("read_field_values", {"field": "image.annotation.status"}),
+        (
+            "save_leaf",
+            {
+                "leaf_id": "arbitrary.identity",
+                "concept_id": "status",
+                "description": "Status",
+                "protocol": leaf,
+            },
+        ),
+        (
+            "complete_concept",
+            {"concept_id": "status", "status": "complete", "reason": "Direct data"},
+        ),
+        ("coverage_gap", {}),
+        ("finish_discovery", {}),
+        ("review_tree", {}),
+        (
+            "allocate",
+            {"weights": {"arbitrary.identity": {"weight": 1.0, "reason": "Requested ability"}}},
+        ),
+        ("finish", {}),
+    ]
+    if revise_after_plan:
+        planning_actions += [
+            ("select_dataset", {"dataset_id": "updated-test", "annotation_path": str(annotation)}),
             ("profile_dataset", {}),
-            ("select_materials", {"files": []}),
-            ("read_node", {"node_id": "status"}),
-            ("read_field_values", {"field": "image.annotation.status"}),
-            (
-                "save_leaf",
-                {
-                    "leaf_id": "arbitrary.identity",
-                    "concept_id": "status",
-                    "description": "Status",
-                    "protocol": leaf,
-                },
-            ),
             (
                 "complete_concept",
-                {"concept_id": "status", "status": "complete", "reason": "Direct data"},
+                {
+                    "concept_id": "status",
+                    "status": "complete",
+                    "reason": "Revalidated current data",
+                },
             ),
             ("coverage_gap", {}),
             ("finish_discovery", {}),
             ("review_tree", {}),
             (
                 "allocate",
-                {"weights": {"arbitrary.identity": {"weight": 1.0, "reason": "Requested ability"}}},
+                {"weights": {"arbitrary.identity": {"weight": 1.0, "reason": "Updated request"}}},
             ),
             ("finish", {}),
         ]
-    )
+    actions = iter(planning_actions)
     delegated = []
 
     def action_model(instructions, prompt):
@@ -124,8 +154,15 @@ def test_complete_build_with_explicit_planning_shortfall(tmp_path, monkeypatch, 
     )
 
     def template_model(system, prompt, **kwargs):
+        assert json.loads(prompt)["specification"]["language"] == (
+            "zh" if revise_after_plan else "en"
+        )
         if system.startswith("Review"):
             return {"approved": True}
+        if revise_after_plan:
+            return {
+                "templates": ["图像显示哪种状态？", "请选择图中的状态。", "判断图像对应的状态。"]
+            }
         return {
             "templates": ["What status is shown?", "Which status applies?", "Identify the status."]
         }
@@ -145,19 +182,42 @@ def test_complete_build_with_explicit_planning_shortfall(tmp_path, monkeypatch, 
     output = graph.invoke(
         {"user_requirement": "Build four English mammography status questions"}, config=config
     )
-    if ask_global:
+    if ask_global or revise_after_plan:
         assert output["__interrupt__"]
         output = graph.invoke(
-            Command(resume="Use the stated status classification goal"), config=config
+            Command(
+                resume="Use one Chinese question and the updated Dataset"
+                if revise_after_plan
+                else "Use the stated status classification goal"
+            ),
+            config=config,
         )
     assert output["status"] == "complete"
-    assert delegated.count("plan") == (2 if ask_global else 1)
-    assert output["item_count"] == 2
-    assert output["planning_shortfall"] == output["total_shortfall"] == 2
+    assert delegated.count("plan") == (2 if ask_global or revise_after_plan else 1)
+    assert output["item_count"] == (1 if revise_after_plan else 2)
+    assert (
+        output["planning_shortfall"] == output["total_shortfall"] == (0 if revise_after_plan else 2)
+    )
     assert output["generation_shortfalls"] == {"arbitrary.identity": 0}
     blueprint = json.loads(Path(output["working_blueprint_path"]).read_text(encoding="utf-8"))
     assert "question_templates" not in blueprint["tasks"]["arbitrary.identity"]
     assert (Path(output["run_directory"]) / "templates.json").is_file()
     manifest = json.loads(Path(output["manifest_path"]).read_text(encoding="utf-8"))
     assert manifest["tasks"]["arbitrary.identity"]["concept_id"] == "status"
-    assert manifest["allocation"]["planning_shortfall"] == 2
+    assert manifest["allocation"]["planning_shortfall"] == (0 if revise_after_plan else 2)
+    expected_info = updated_info if revise_after_plan else info
+    assert blueprint["benchmark_info"] == manifest["benchmark_info"] == expected_info
+    assert manifest["dataset"]["dataset_id"] == ("updated-test" if revise_after_plan else "test")
+    assert manifest["allocation"]["requested_count"] == expected_info["sample_count"]
+    if revise_after_plan:
+        index = json.loads(
+            (Path(output["run_directory"]) / ".runtime/artifacts.json").read_text(encoding="utf-8")
+        )
+        versions = [entry for entry in index["versions"].values() if entry["kind"] == "Plan"]
+        assert len(versions) == 2
+        original = json.loads(
+            Path(versions[0]["references"]["blueprint"]).read_text(encoding="utf-8")
+        )
+        assert original["benchmark_info"] == info
+        assert original["dataset"]["dataset_id"] == "test"
+        assert set(original["tasks"]) == set(blueprint["tasks"]) == {"arbitrary.identity"}
