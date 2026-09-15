@@ -41,7 +41,7 @@ from medbenchagent.planning.tree import (
 from medbenchagent.planning.protocol import validate_dataset_protocol
 from medbenchagent.planning.sample_counts import allocate_leaf_counts
 from medbenchagent.runtime.llm import complete_json
-from medbenchagent.data.validation import load_annotation_jsonl
+from medbenchagent.data.query import DatasetQuery, iter_records
 
 
 def _read(path):
@@ -92,7 +92,7 @@ def select_dataset(context, *, dataset_id=None, annotation_path=None):
         )
         entry = dataset_by_id(catalog, dataset_id)
     path = snapshot_dataset(
-        resolve_annotation_path(entry), Path(context["operation_directory"]) / "input"
+        resolve_annotation_path(entry), Path(context["operation_directory"]) / "input", dataset_id=dataset_id
     )
     versions = publish(
         context, "DatasetSelection", {"path": str(path), "dataset_id": dataset_id}, ()
@@ -114,18 +114,17 @@ def profile_dataset(context, *, revision="1", refresh=False):
     if not refresh and context.get("dataset_access_manifest"):
         require(context, "Dataset")
         return result("success", "Current Dataset is already prepared")
-    profile, access = prepare_annotation_dataset(
-        context["annotation_path"],
-        Path(context["operation_directory"]) / "cache",
-        revision=revision,
-    )
-    from medbenchagent.data.validation import load_annotation_jsonl, validate_dataset
-    from medbenchagent.data.image_assets import load_image_manifest
-
-    validate_dataset(
-        load_annotation_jsonl(context["annotation_path"]),
-        load_image_manifest(Path(context["annotation_path"]).parent / "image_manifest.jsonl"),
-    )
+    bundle_ready = Path(context["annotation_path"]).parent / "ready.json"
+    if bundle_ready.is_file() and not refresh:
+        access = _read(bundle_ready)["access"]
+        profile = _read(access["profile_path"])
+    else:
+        profile, access = prepare_annotation_dataset(
+            context["annotation_path"], Path(context["operation_directory"]) / "cache",
+            revision=revision, refresh=refresh,
+        )
+    from medbenchagent.data.validation import validate_dataset_files
+    validate_dataset_files(context["annotation_path"], Path(context["annotation_path"]).parent / "image_manifest.jsonl")
     versions = publish(
         context,
         "Dataset",
@@ -159,23 +158,39 @@ def read_fields(context, *, fields):
 
 
 def read_field_values(context, *, field, offset=0, limit=20):
-    """Page exact annotation values and counts; profile examples may be truncated."""
-    from collections import Counter
-    from medbenchagent.generation.context import scalar_evidence_candidates
+    """Page complete exact values from the current Dataset index."""
+    require(context, "Dataset")
+    return result("success", json.dumps(DatasetQuery(context["dataset_access_manifest"]).values(field, offset, limit), ensure_ascii=False))
 
-    _subset(_profile(context), [field])
-    counts = Counter(
-        json.dumps(v["value"], ensure_ascii=False)
-        for row in load_annotation_jsonl(context["annotation_path"])
-        for v in scalar_evidence_candidates(row, field)
-    )
-    rows = [{"value": json.loads(value), "count": count} for value, count in sorted(counts.items())]
-    return result(
-        "success",
-        json.dumps(
-            {"total": len(rows), "values": rows[offset : offset + limit]}, ensure_ascii=False
-        ),
-    )
+
+def inspect_field_by_source(context, *, field):
+    """Inspect exact per-source coverage and vocabulary counts."""
+    require(context, "Dataset")
+    return result("success", json.dumps(DatasetQuery(context["dataset_access_manifest"]).by_source(field)))
+
+
+def sample_records(context, *, offset=0, limit=5, source_id=None):
+    """Read a bounded page of canonical records without raw provenance identifiers."""
+    require(context, "Dataset")
+    return result("success", json.dumps(DatasetQuery(context["dataset_access_manifest"]).sample(offset, limit, source_id)))
+
+
+def inspect_field_pair(context, *, left, right):
+    """Distinguish same-image coverage from same-array-entity co-occurrence."""
+    require(context, "Dataset")
+    return result("success", json.dumps(DatasetQuery(context["dataset_access_manifest"]).pair(left, right)))
+
+
+def inspect_array(context, *, path):
+    """Inspect array cardinality; multiple findings are valid data."""
+    require(context, "Dataset")
+    return result("success", json.dumps(DatasetQuery(context["dataset_access_manifest"]).array(path)))
+
+
+def inspect_protocol_capacity(context, *, protocol):
+    """Explain exact eligibility using the same resolver as Generation."""
+    require(context, "Dataset")
+    return result("success", json.dumps(DatasetQuery(context["dataset_access_manifest"]).capacity(protocol)))
 
 
 def _subset(profile, fields):
@@ -390,7 +405,7 @@ def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence):
         raise ValueError("Unknown concept or unavailable leaf identity")
     _validate_evidence(context, evidence)
     _subset(_profile(context), protocol["data_binding"]["supporting_fields"])
-    validate_dataset_protocol(protocol, load_annotation_jsonl(context["annotation_path"]))
+    validate_dataset_protocol(protocol, iter_records(context["dataset_access_manifest"]))
     previous = tree["tasks"].get(leaf_id)
     if previous and previous["concept_id"] != concept_id:
         tree["concepts"][previous["concept_id"]]["status"] = "pending"
@@ -427,10 +442,9 @@ def complete_concept(context, *, concept_id, status, reason):
     if (status == "complete") != bool(children):
         raise ValueError("Complete concepts require leaves; unsupported concepts must have none")
     if children:
-        records = load_annotation_jsonl(context["annotation_path"])
         for leaf in children:
             _subset(_profile(context), leaf["protocol"]["data_binding"]["supporting_fields"])
-            validate_dataset_protocol(leaf["protocol"], records)
+            validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
             _validate_evidence(context, leaf["evidence"])
     tree["concepts"][concept_id].update(status=status, reason=reason)
     return _persist(context, tree, changed=True)
@@ -586,9 +600,8 @@ def allocate(context, *, weights):
         )
     if set(weights) != set(tree["tasks"]):
         raise ValueError("Provide weights and reasons for exactly all leaves")
-    records = load_annotation_jsonl(context["annotation_path"])
     capacities = {
-        key: validate_dataset_protocol(leaf["protocol"], records)
+        key: validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
         for key, leaf in tree["tasks"].items()
     }
     allocation = allocate_leaf_counts(
@@ -648,6 +661,7 @@ def describe(context):
             "versions": context.get("artifact_versions", {}),
         }
     return {
+        "dataset_summary": _profile(context).get("summary", {}) if context.get("dataset_access_manifest") else {},
         "requirement": context.get("benchmark_info"),
         "concepts": {
             k: {"description": v["description"], "origin": v["origin"], "status": v["status"]}
@@ -680,7 +694,7 @@ def available_tools(context):
         require(context, "Dataset")
     except ValueError:
         return available
-    available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal"}
+    available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal", "inspect_field_by_source", "sample_records", "inspect_field_pair", "inspect_array", "inspect_protocol_capacity"}
     try:
         require(context, "Materials")
     except ValueError:
@@ -702,12 +716,14 @@ def available_tools(context):
 
 
 def compile_task_planning_agent(*, checkpointer=None):
+    from medbenchagent.data.query_contracts import SingleField, Sample, Pair, Array, Capacity
     functions = (
         select_dataset,
         profile_dataset,
         list_fields,
         read_fields,
         read_field_values,
+        inspect_field_by_source, sample_records, inspect_field_pair, inspect_array, inspect_protocol_capacity,
         list_materials,
         read_material,
         select_materials,
@@ -742,6 +758,11 @@ def compile_task_planning_agent(*, checkpointer=None):
             "list_fields": PageArguments,
             "read_fields": FieldArguments,
             "read_field_values": FieldValuesArguments,
+            "inspect_field_by_source": SingleField,
+            "sample_records": Sample,
+            "inspect_field_pair": Pair,
+            "inspect_array": Array,
+            "inspect_protocol_capacity": Capacity,
             "list_materials": PageArguments,
             "read_material": MaterialArguments,
             "select_materials": MaterialsArguments,

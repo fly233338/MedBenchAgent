@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import pytest
 from medbenchagent.agents import data_processing as preparation
+from medbenchagent.agents import data_pipeline as pipeline
 from medbenchagent.runtime.dependencies import publish
 
 
@@ -13,13 +14,18 @@ def _context(tmp_path):
 
 
 def test_invalid_annotation_script_is_repairable(tmp_path):
+    context = _context(tmp_path)
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps({"mapping": {"authoritative_population": "images", "expected_images": 1,
+        "entity_meanings": {}, "evidence": ["README"]}, "fallback_reason": "custom binary source"}), encoding="utf-8")
+    context["preparation_plan_path"] = str(path)
     with pytest.raises(ValueError, match="Invalid Python"):
-        preparation.write_annotation_script(_context(tmp_path), code="if :")
+        pipeline.write_fallback(context, code="if :")
 
 
 def test_execution_alone_cannot_publish_data(tmp_path):
-    with pytest.raises(ValueError, match="PreparedDataset"):
-        preparation.finish(_context(tmp_path))
+    with pytest.raises(ValueError, match="Harmonization"):
+        pipeline.finish(_context(tmp_path))
 
 
 def test_ambiguous_display_requires_recorded_decision(tmp_path):
@@ -49,20 +55,30 @@ def test_ambiguous_display_requires_recorded_decision(tmp_path):
     assert output["status"] == "success"
 
 
-def test_generated_image_script_is_valid_python(tmp_path, monkeypatch):
+def test_container_uses_fixed_image_readonly_mounts_and_no_network(tmp_path, monkeypatch):
+    from types import SimpleNamespace
     context = _context(tmp_path)
-    plan = tmp_path / "plan.json"
-    plan.write_text("{}")
-    context.update(image_plan_path=str(plan), prepared_annotation_path="annotation.jsonl")
-    publish(context, "ImagePlan", {"path": str(plan)}, ())
+    context["source_root"] = str(tmp_path / "source")
+    Path(context["source_root"]).mkdir()
+    output = tmp_path / "output"
+    commands = []
 
-    class StopAfterCompile(Exception):
-        pass
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1:3] == ["image", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout="sha256:fixed\n", stderr="")
+        (output / "result.json").write_text("{}", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    def inspect(context, output, *, script, annotation):
-        compile(Path(script).read_text(), str(script), "exec")
-        raise StopAfterCompile
-
-    monkeypatch.setattr(preparation, "_run", inspect)
-    with pytest.raises(StopAfterCompile):
-        preparation.execute_images(context)
+    monkeypatch.setattr(preparation.subprocess, "run", run)
+    preparation._run(context, output, request={"operation": "table", "path": "a.csv"})
+    command = commands[-1]
+    assert "--network=none" in command and "--read-only" in command
+    assert "--memory=4g" in command and "sha256:fixed" in command
+    assert any("target=/source,readonly" in item for item in command)
+    assert any("target=/project,readonly" in item for item in command)
+    before = len(commands)
+    preparation._run(context, output, request={"operation": "table", "path": "a.csv"})
+    assert len(commands) == before + 1  # image identity checked, container not rerun
+    with pytest.raises(ValueError, match="dependencies changed"):
+        preparation._run(context, output, request={"operation": "table", "path": "b.csv"})

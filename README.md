@@ -22,53 +22,78 @@ and telemetry; the configured language-model API is still used.
 
 The static task template is `config/blueprint.json`. Runs never write back to this file.
 The CLI stores checkpoints in the configured runs directory and prints a resume identifier before execution.
-Resume reads the saved run configuration and input snapshots. Code or runtime-contract changes require a new run.
+Resume reads the saved run configuration and verifies the recorded source identities. Code or runtime-contract changes require a new run.
 Keep the run directory and prepared model assets intact; external input changes are picked up by a new run.
 
-## Standard data interface
+## Data preparation and the standard interface
 
-The catalog identifies datasets by ID and an `annotation.jsonl` path. Each annotation line represents
-one image and has the existing `patient`, `case`, `study` and `image` entities.
-The schema is `src/medbenchagent/schemas/annotation.v2.schema.json`.
-Answers are derived only from task-approved annotations, not from a model looking at images.
+Each published annotation represents one image, with `patient`, `case`, `study`, `image`, and
+`provenance`. The published schema is `src/medbenchagent/schemas/annotation.v3.schema.json`;
+existing v2 datasets are accepted through an explicit import adapter. Unknown provenance is not invented.
+Answers come only from approved annotation fields.
 
-Place `image_manifest.jsonl` beside the annotations. Each line has exactly:
+`image_manifest.jsonl` lives beside `annotation.jsonl` and retains its four-field contract:
 
 ```json
-{"image_id":"image-1","png_path":"images/image-1.png","width":1024,"height":768}
+{"image_id":"image-1","png_path":"sources/example/images/image-1.png","width":1024,"height":768}
 ```
 
-The path is relative to the manifest, and may refer to a supported PNG or JPEG.
-IDs and paths must be unique. Use explicit pixel xyxy bounding boxes.
-Existing standard data bypasses DataProcessingAgent. A supplied annotation path and dataset ID can also be
-selected directly without registering it in the catalog.
+Paths remain relative and beneath the bundle root. PNG/JPEG source bytes and image geometry are preserved.
+IDs are namespaced by source/version/entity; missing patient/case/study IDs stay null. Original IDs and
+source record references are retained in local provenance indexes and are not default answer fields.
 
-Each run copies selected inputs and builds its own DuckDB/profile and PDF caches. Prepared inputs are reused
-within that run; no cache is shared with another run merely because the source path is unchanged.
-Refreshing a profile creates a new Dataset version from the saved input. There is no content fingerprinting
-or detection of out-of-band changes to the run directory. Start a new run to adopt external input changes.
+Include all source directories in the natural-language requirement. The Supervisor uses `prepare_data`
+with a nonempty source list; raw and standard annotation sources can be mixed. Its tool arguments are:
 
-## Optional raw-data preparation
+```json
+{
+  "dataset_id": "breast-composite",
+  "sources": [
+    {"id":"first","version":null,"kind":"raw","root":"D:/Data/First"},
+    {"id":"second","version":"1","kind":"annotation","root":"D:/Data/Second","annotation":"annotation.jsonl"}
+  ]
+}
+```
 
-Include the raw source directory and intended dataset in the natural-language requirement.
-DataProcessingAgent inspects documentation and annotations, writes a Python converter and validates its output.
-It uses the same standard annotation interface; no new input contract is required downstream.
+The agent inspects evidence, saves a typed PreparationPlan, executes standard operations, selects image
+policies, and normalizes each source independently. It then saves a HarmonizationPlan and publishes one
+Dataset bundle. Fields without evidence of equivalence remain source-scoped; missing labels never become
+negative labels automatically. Code fallback requires an explicit reason and the same provenance contract.
 
-Prepare the local execution image on the development server before using this capability:
+Prepare the local execution image before processing raw data:
 
 ```powershell
 docker build -f config/data-processing.Dockerfile -t medbench-data:local .
 ```
 
-The image name and timeout are configured in `[data_processing]`.
-Generated scripts run with no network, a read-only source mount and a writable preparation directory.
-The repository does not execute generated scripts directly on the host.
-Only two-dimensional images are in scope. Ambiguous joins, labels or display transformations require clarification.
-Preparation proceeds through source inventory, structured mapping, annotation validation, image encoding
-selection and joint validation. Annotation and image scripts are separate; the image stage mounts annotation
-read-only. PNG/JPEG bytes are copied unchanged, while other supported 2D formats preserve representable
-pixels in PNG. A display window requires reliable source evidence or a recorded user decision. Each stage
-can be revised independently; the inventory, plans, scripts and one validation result are retained.
+`[data_processing]` configures the image, timeout, container memory, DuckDB memory and threads.
+Generated code and raw conversions run with network disabled, read-only source/code mounts, writable
+output, and disk-backed scratch. The actual container image ID is recorded in operation receipts.
+A single standard PNG/JPEG dataset selected by Planning uses fixed local import code, with the same
+normalization, quality, deduplication and publication engine; it executes no generated Python.
+
+Sources are not copied wholesale. Source file inventories and content digests detect changes before reuse
+and publication; keep external sources stable during processing. Read-only mounts do not freeze the host
+filesystem. Only referenced processed image assets are materialized, once in the bundle; duplicate
+verification outputs are removed after comparison. New source contents require a new input version.
+
+Local bad image records are quarantined with reasons. Systemic join/identity errors, missing decoders,
+non-determinism and unresolved display decisions block the affected operation. Multiple findings and
+missing optional fields are valid data; eligibility explains why a particular Protocol cannot use them.
+Exact duplicate pixels with conflicting annotations/identity are quarantined, never silently merged.
+
+Only 2D images are supported. Multiframe DICOM, true volumes, WSI and pyramids are unsupported; no automatic
+slice selection, cropping, resizing, coordinate clipping or perceptual deduplication is performed.
+DICOM metadata inspection reads selected headers without requesting pixel data.
+
+Bundles include source manifests, source-local plans/provenance, `quality_report.json`, `quarantine.jsonl`,
+`dedup.jsonl`, `harmonization.json`, and one published DuckDB/Profile cache. `ready.json` is written only
+once all selected sources and final validation succeed. See [the data layer reference](docs/DATA_LAYER.md)
+for operator contracts and query examples.
+
+Profile v4 provides a compact summary and field/array indexes. Planning queries complete value vocabularies,
+per-source coverage, samples, same-entity pairs and exact Protocol eligibility on demand. Capacity,
+Generation and answer audit share the same resolver and published population.
 
 ## Planning, templates and audit
 

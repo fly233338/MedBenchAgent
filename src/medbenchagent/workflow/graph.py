@@ -138,25 +138,16 @@ def compile_benchmark_graph(*, checkpointer=None):
         return {**output["result"], "updates": updates,
                 "status": "success" if output["result"]["status"] in {"complete", "needs_input"} else output["result"]["status"]}
 
-    def prepare_data(context, *, source_root: str, dataset_id: str, feedback: str = ""):
-        """Prepare raw 2D data. Standard data skips this."""
-        from medbenchagent.agents.data_processing import (
-            compile_data_processing_agent,
-            preparation_context,
-        )
+    def prepare_data(context, *, sources, dataset_id: str, feedback: str = ""):
+        """Prepare selected raw/standard sources into one validated logical Dataset."""
+        from medbenchagent.agents.data_pipeline import initialize
+        from medbenchagent.agents.data_processing import compile_data_processing_agent
 
-        source = source_root
-        if context.get("original_source_root") != str(Path(source).resolve()) and not Path(source).is_dir():
-            raise ValueError("Provide the existing raw source directory from the user's request")
-        prepared = preparation_context(
-            context, str(Path(source).resolve()), dataset_id
-        )
+        prepared = initialize(context, sources, dataset_id)
         prepared["feedback"] = feedback
         output = compile_data_processing_agent().invoke({"context": prepared})
         updates = _child_updates(output)
-        updates.update(
-            last_agent_result=output["result"],
-        )
+        updates.update(last_agent_result=output["result"])
         return {**output["result"], "updates": updates,
                 "status": "success" if output["result"]["status"] in {"complete", "needs_input"} else output["result"]["status"]}
 
@@ -239,8 +230,10 @@ def compile_benchmark_graph(*, checkpointer=None):
 
     supervisor = compile_agent(
         "SupervisorAgent",
-        "Build the requested Medical VLM benchmark. Extract the brief. If the user supplies raw data, prepare it; "
-        "otherwise planning can select catalog data. Delegate planning, generation and audit as needed. "
+        "Build the requested Medical VLM benchmark. Extract the brief. For raw inputs OR multiple sources, "
+        "call prepare_data once with every selected source (raw and annotation inputs can be mixed). "
+        "Single standard catalog data can be imported by planning. Never silently omit a requested source. "
+        "Delegate planning, generation and audit as needed. "
         "Ask the user about global goals or a global_issue escalated by a specialist. Specialists ask local questions directly. "
         "No routine stage confirmations. Review audit feedback and shortfalls before finishing; rework the "
         "responsible module only when evidence suggests it can help. Never silently lower the requested target. "

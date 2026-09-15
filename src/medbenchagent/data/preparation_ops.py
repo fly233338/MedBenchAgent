@@ -3,103 +3,20 @@
 import json
 from pathlib import Path
 
-from medbenchagent.data.validation import load_annotation_jsonl, source_image_path, validate_dataset
-from medbenchagent.data.image_assets import load_image_manifest, validate_image_asset
-from medbenchagent.data.image_conversion import inspect_image
-
-
-def read_table(root, path, sheet=None):
-    import pandas as pd
-
-    path = source_image_path(root, path)
-    if path.suffix.lower() in {".xlsx", ".xls"}:
-        return pd.read_excel(path, sheet_name=sheet if sheet is not None else 0)
-    if path.suffix.lower() in {".json", ".jsonl"}:
-        return pd.read_json(path, lines=path.suffix.lower() == ".jsonl")
-    return pd.read_csv(path, sep="\t" if path.suffix.lower() == ".tsv" else ",")
+from medbenchagent.data.validation import source_image_path
 
 
 def inspect_table(root, path, sheet=None):
-    import pandas as pd
-
-    resolved = source_image_path(root, path)
-    sheets = (
-        pd.ExcelFile(resolved).sheet_names if resolved.suffix.lower() in {".xlsx", ".xls"} else []
-    )
-    table = read_table(root, path, sheet)
-    return {
-        "path": path,
-        "sheet": sheet,
-        "sheets": sheets,
-        "rows": len(table),
-        "columns": {
-            str(key): {
-                "type": str(table[key].dtype),
-                "nulls": int(table[key].isna().sum()),
-                "unique": int(table[key].nunique()),
-            }
-            for key in table.columns
-        },
-    }
+    from medbenchagent.data.operators import inspect_table as inspect
+    return inspect(root, path, sheet)
 
 
 def inspect_join(root, left, right, left_key, right_key, left_sheet=None, right_sheet=None):
-    a, b = (
-        read_table(root, left, left_sheet)[left_key],
-        read_table(root, right, right_sheet)[right_key],
-    )
-    return {
-        "left": left,
-        "right": right,
-        "left_key": left_key,
-        "right_key": right_key,
-        "left_sheet": left_sheet,
-        "right_sheet": right_sheet,
-        "left_duplicates": int(a.dropna().duplicated().sum()),
-        "right_duplicates": int(b.dropna().duplicated().sum()),
-        "left_missing": int((~a.isin(b.dropna())).sum()),
-        "right_missing": int((~b.isin(a.dropna())).sum()),
-        "matched_left": int(a.isin(b.dropna()).sum()),
-        "matched_right": int(b.isin(a.dropna()).sum()),
-    }
-
-
-def inspect_images(root, annotation):
-    rows = load_annotation_jsonl(annotation)
-    return {
-        row["image"]["image_id"]: inspect_image(source_image_path(root, row["image"]["image_path"]))
-        for row in rows
-    }
-
-
-def validate_outputs(root, annotation, output):
-    rows = load_annotation_jsonl(annotation)
-    images = load_image_manifest(output / "image_manifest.jsonl")
-    validate_dataset(rows, images)
-    expected_files = {entry.png_path for entry in images.values()}
-    actual_files = {
-        path.resolve()
-        for path in output.rglob("*")
-        if path.is_file() and path.name not in {"image_manifest.jsonl", "result.json"}
-    }
-    if actual_files != expected_files:
-        raise ValueError("Image stage produced missing or unreferenced output files")
-    for row in rows:
-        source = source_image_path(root, row["image"]["image_path"])
-        entry = images[row["image"]["image_id"]]
-        info = inspect_image(source)
-        if (entry.width, entry.height) != (info["width"], info["height"]):
-            raise ValueError("Image geometry changed")
-        errors = validate_image_asset(
-            {"png_path": entry.relative_png_path, "width": entry.width, "height": entry.height},
-            output,
-            supported_formats=frozenset({"PNG", "JPEG"}),
-        )
-        if errors:
-            raise ValueError(f"{entry.image_id}: {errors}")
-        if info["copy"] and source.read_bytes() != entry.png_path.read_bytes():
-            raise ValueError("PNG/JPEG source bytes must be preserved")
-    return {"images": len(images), "geometry": "valid", "population": "exact"}
+    from medbenchagent.data.operators import connect, read_relation, join_stats
+    with connect(scratch=Path("/work/scratch")) as db:
+        read_relation(db, root, left, "a", sheet=left_sheet)
+        read_relation(db, root, right, "b", sheet=right_sheet)
+        return join_stats(db, "a", "b", [left_key], [right_key])
 
 
 def main():
@@ -110,16 +27,31 @@ def main():
     root = Path("/source")
     if operation == "table":
         result = inspect_table(root, **request)
+    elif operation == "values":
+        from medbenchagent.data.operators import inspect_values
+        result = inspect_values(root, **request)
     elif operation == "join":
         result = inspect_join(root, **request)
-    elif operation == "inspect_images":
-        result = inspect_images(root, Path("/annotation/annotation.jsonl"))
-    elif operation == "validate_images":
-        result = validate_outputs(root, Path("/annotation/annotation.jsonl"), Path("/work"))
+    elif operation == "execute_plan":
+        from medbenchagent.data.contracts import Source, PreparationPlan
+        from medbenchagent.data.operators import execute_plan
+        result = execute_plan(root, Source.model_validate(request["source"]),
+                              PreparationPlan.model_validate(request["plan"]), Path("/work"))
+    elif operation == "normalize":
+        from medbenchagent.data.contracts import Source
+        from medbenchagent.data.bundle import normalize_source
+        result = normalize_source(root, Path("/annotation/annotation.jsonl"),
+                                  Source.model_validate(request.pop("source")), Path("/work"), **request)
+    elif operation == "metadata":
+        from medbenchagent.data.readers import inspect_metadata
+        result = inspect_metadata(source_image_path(root, request["path"]))
+    elif operation == "inspect_population":
+        from medbenchagent.data.image_inventory import inspect_population
+        result = inspect_population(root, Path("/annotation/annotation.jsonl"), Path("/work"), **request)
     else:
         raise ValueError("Unknown fixed preparation operation")
     Path("/work/result.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
     )
 
 

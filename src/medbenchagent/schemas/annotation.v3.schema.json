@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://medbenchagent.local/schemas/annotation.v3.schema.json",
+  "title": "Entity-scoped image annotation JSONL record v3",
+  "type": "object",
+  "required": [
+    "patient",
+    "case",
+    "study",
+    "image",
+    "provenance"
+  ],
+  "properties": {
+    "patient": {
+      "type": "object",
+      "required": [
+        "patient_id",
+        "annotation"
+      ],
+      "properties": {
+        "patient_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "annotation": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "case": {
+      "type": "object",
+      "required": [
+        "case_id",
+        "annotation"
+      ],
+      "properties": {
+        "case_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "annotation": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "study": {
+      "type": "object",
+      "required": [
+        "study_id",
+        "annotation"
+      ],
+      "properties": {
+        "study_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "annotation": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "image": {
+      "type": "object",
+      "required": [
+        "image_id",
+        "image_path",
+        "modality",
+        "anatomy",
+        "annotation"
+      ],
+      "properties": {
+        "image_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "image_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "modality": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "anatomy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "annotation": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Version"
+        },
+        "original_ids": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Original Ids",
+          "type": "object"
+        },
+        "original_image_path": {
+          "minLength": 1,
+          "title": "Original Image Path",
+          "type": "string"
+        },
+        "record_ref": {
+          "minLength": 1,
+          "title": "Record Ref",
+          "type": "string"
+        },
+        "plan_ref": {
+          "minLength": 1,
+          "title": "Plan Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_version",
+        "original_ids",
+        "original_image_path",
+        "record_ref",
+        "plan_ref"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

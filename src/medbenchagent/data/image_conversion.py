@@ -103,70 +103,18 @@ def detect_format(path: Path) -> str | None:
 
 
 def _pixels(path):
-    import numpy as np
-    from PIL import Image
-
-    detected = detect_format(path)
-    window = None
-    inverse = False
-    if detected and detected.startswith("raster:"):
-        with Image.open(path) as image:
-            if getattr(image, "n_frames", 1) != 1 or (
-                image.format == "TIFF" and image.tag_v2.get(330)
-            ):
-                raise UnsupportedMedicalImage("Multiframe or pyramidal raster is unsupported")
-            image.load()
-            return image.copy(), detected, window, inverse
-    if detected == "dicom":
-        from pydicom import dcmread
-        from pydicom.pixels import apply_modality_lut
-
-        dataset = dcmread(path)
-        if int(getattr(dataset, "NumberOfFrames", 1)) != 1:
-            raise UnsupportedMedicalImage("Multiframe DICOM is unsupported")
-        pixels = apply_modality_lut(dataset.pixel_array, dataset)
-        if str(getattr(dataset, "PhotometricInterpretation", "")) not in {
-            "MONOCHROME1",
-            "MONOCHROME2",
-        }:
-            raise UnsupportedMedicalImage("Color DICOM requires a documented color conversion")
-        inverse = str(dataset.PhotometricInterpretation) == "MONOCHROME1"
-        center, width = (
-            getattr(dataset, "WindowCenter", None),
-            getattr(dataset, "WindowWidth", None),
-        )
-        # A single linear window is source-supported; never choose among multiple windows.
-        if (
-            isinstance(center, (int, float))
-            and isinstance(width, (int, float))
-            and float(width) > 1
-        ):
-            if str(getattr(dataset, "VOILUTFunction", "LINEAR")) == "LINEAR":
-                window = [
-                    float(center) - 0.5 - (float(width) - 1) / 2,
-                    float(center) - 0.5 + (float(width) - 1) / 2,
-                ]
-    elif detected == "nifti":
-        import nibabel as nib
-
-        pixels = np.squeeze(np.asanyarray(nib.load(path).dataobj))
-    elif detected == "itk":
-        import SimpleITK as sitk
-
-        pixels = np.squeeze(sitk.GetArrayFromImage(sitk.ReadImage(str(path))))
-    else:
-        raise UnsupportedMedicalImage(f"Unsupported image: {path.name}")
-    if pixels.ndim != 2:
-        raise UnsupportedMedicalImage(f"Only 2D images are supported, got {pixels.shape}")
-    return pixels, detected, window, inverse
+    from medbenchagent.data.readers import reader_for
+    return reader_for(path).read_pixels(path)
 
 
 def inspect_image(path):
     """Return format/geometry and any source-supported display window, without transforming pixels."""
+    return _pixel_info(*_pixels(Path(path)))
+
+
+def _pixel_info(pixels, detected, window, inverse):
     import numpy as np
     from PIL import Image
-
-    pixels, detected, window, inverse = _pixels(Path(path))
     if isinstance(pixels, Image.Image):
         size, mode = pixels.size, pixels.mode
         safe = mode in {"1", "L", "LA", "RGB", "RGBA", "P", "I;16"}
@@ -185,14 +133,14 @@ def inspect_image(path):
     }
 
 
-def convert_image(path, policy=None):
+def convert_image(path, policy=None, *, decoded=None):
     """Preserve representable pixels or apply an explicitly selected linear display window."""
     import numpy as np
     from PIL import Image
 
     policy = policy or {"encoding": "preserve"}
-    pixels, detected, window, inverse = _pixels(Path(path))
-    info = inspect_image(path)
+    pixels, detected, window, inverse = decoded if decoded is not None else _pixels(Path(path))
+    info = _pixel_info(pixels, detected, window, inverse)
     if policy["encoding"] == "preserve":
         if not info["preserve_supported"]:
             raise ConversionError(

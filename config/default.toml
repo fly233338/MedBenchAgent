@@ -42,3 +42,6 @@ max_reworks = 3
 [data_processing]
 image = "medbench-data:local"
 timeout_seconds = 600
+memory_limit = "1GB"
+threads = 2
+container_memory = "4g"

@@ -22,58 +22,53 @@ class ImageEntry:
     height: int
 
 
-def load_image_manifest(path: Path) -> dict[str, ImageEntry]:
+def iter_image_manifest(path: Path):
+    """Validate the manifest incrementally with a disk-backed uniqueness index."""
+    import sqlite3
+    import tempfile
     root = path.parent.resolve()
-    images: dict[str, ImageEntry] = {}
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ImageManifestError(f"Image manifest could not be read: {path}") from exc
-    if not lines:
-        raise ImageManifestError("Image manifest must not be empty.")
-    expected = {"image_id", "png_path", "width", "height"}
-    for line_number, line in enumerate(lines, start=1):
+    if not path.is_file():
+        raise ImageManifestError(f"Image manifest could not be read: {path}")
+    with tempfile.TemporaryDirectory(prefix="medbench-manifest-") as temporary:
+        db = sqlite3.connect(str(Path(temporary) / "keys.sqlite"))
         try:
-            raw = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ImageManifestError(
-                f"Image manifest line {line_number} is not valid JSON."
-            ) from exc
-        if not isinstance(raw, dict) or set(raw) != expected:
-            raise ImageManifestError(
-                f"Image manifest line {line_number} must contain exactly {sorted(expected)}."
-            )
-        image_id, relative = raw["image_id"], raw["png_path"]
-        width, height = raw["width"], raw["height"]
-        if not isinstance(image_id, str) or not image_id or image_id in images:
-            raise ImageManifestError(f"Image manifest line {line_number} has an invalid image_id.")
-        if not isinstance(relative, str) or not relative:
-            raise ImageManifestError(f"{image_id}: png_path must be a non-empty string.")
-        relative_path = Path(relative)
-        if relative_path.is_absolute():
-            raise ImageManifestError(f"{image_id}: png_path must be relative.")
-        resolved = (root / relative_path).resolve()
-        if not resolved.is_relative_to(root):
-            raise ImageManifestError(f"{image_id}: png_path escapes the manifest directory.")
-        if (
-            not isinstance(width, int)
-            or isinstance(width, bool)
-            or width <= 0
-            or not isinstance(height, int)
-            or isinstance(height, bool)
-            or height <= 0
-        ):
-            raise ImageManifestError(f"{image_id}: invalid dimensions.")
-        images[image_id] = ImageEntry(
-            image_id=image_id,
-            png_path=resolved,
-            relative_png_path=relative_path.as_posix(),
-            width=width,
-            height=height,
-        )
-    if len({entry.png_path for entry in images.values()}) != len(images):
-        raise ImageManifestError("Image manifest paths must be unique")
-    return images
+            db.execute("CREATE TABLE seen (id TEXT PRIMARY KEY, path TEXT UNIQUE)")
+            count = 0
+            with path.open(encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, 1):
+                    try:
+                        raw = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise ImageManifestError(f"Image manifest line {line_number} is not valid JSON") from exc
+                    if not isinstance(raw, dict) or set(raw) != {"image_id", "png_path", "width", "height"}:
+                        raise ImageManifestError("Image manifest must contain exactly image_id, png_path, width, height")
+                    image_id, relative = raw["image_id"], raw["png_path"]
+                    width, height = raw["width"], raw["height"]
+                    if not isinstance(image_id, str) or not image_id.strip():
+                        raise ImageManifestError("Invalid image_id")
+                    if not isinstance(relative, str) or not relative:
+                        raise ImageManifestError("png_path must be a non-empty string")
+                    relative_path = Path(relative)
+                    resolved = (root / relative_path).resolve()
+                    if relative_path.is_absolute() or not resolved.is_relative_to(root):
+                        raise ImageManifestError("png_path escapes the manifest directory")
+                    if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
+                        raise ImageManifestError("Invalid image dimensions")
+                    try:
+                        db.execute("INSERT INTO seen VALUES (?,?)", [image_id, str(resolved)])
+                    except sqlite3.IntegrityError as exc:
+                        raise ImageManifestError("Image manifest IDs and paths must be unique") from exc
+                    count += 1
+                    yield ImageEntry(image_id, resolved, relative_path.as_posix(), width, height)
+            if not count:
+                raise ImageManifestError("Image manifest must not be empty")
+        finally:
+            db.close()
+
+
+def load_image_manifest(path: Path) -> dict[str, ImageEntry]:
+    """Materialize the manifest for consumers requiring random image access."""
+    return {entry.image_id: entry for entry in iter_image_manifest(path)}
 
 
 def validate_image_asset(
@@ -105,9 +100,9 @@ def validate_image_asset(
             ):
                 return ["image_dimensions"]
             if check_uniform:
-                thumbnail = image.convert("L").resize((256, 256))
-                minimum, maximum = thumbnail.getextrema()
-                if minimum == maximum:
+                extrema = image.getextrema()
+                channels = extrema if isinstance(extrema[0], tuple) else (extrema,)
+                if all(minimum == maximum for minimum, maximum in channels):
                     return ["image_pixels"]
     except (OSError, ValueError):
         return ["image_decode"]

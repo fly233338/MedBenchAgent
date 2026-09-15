@@ -28,7 +28,7 @@ def test_complete_build_with_explicit_planning_shortfall(
         row["image"]["image_path"] = f"{index}.png"
         rows.append(row)
         image = Image.new("L", (4, 4))
-        image.putpixel((0, 0), 255)
+        image.putpixel((0, 0), 255 - index * 50)
         image.save(source / f"{index}.png")
         manifest.append(
             {"image_id": f"img-{index}", "png_path": f"{index}.png", "width": 4, "height": 4}

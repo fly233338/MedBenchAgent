@@ -15,7 +15,7 @@
 - `audit/`：硬审计、语义审查和答案位置平衡。
 - `agents/`、`generation/`、`rag/`、`evaluation/`、`workflow/` 保持角色与业务边界。
 
-原根目录模块路径已删除，不提供转发层。公共标注 Schema 仍在 `schemas/annotation.v2.schema.json`。
+原根目录模块路径已删除，不提供转发层。发布标注 Schema 为 `schemas/annotation.v3.schema.json`；v2 通过显式导入适配接入。
 
 ## 自主编排与工具契约
 
@@ -41,11 +41,11 @@ Blueprint、脚本与 PDF 内容通过查询工具渐进读取。公开图输出
 
 ## 运行快照、依赖与恢复
 
-新运行使用独立目录，保存有效配置、任务模板、数据目录和可选医学资料库的本地快照。
-选中标准数据时复制 annotation、manifest 及其精确引用图像；原始数据准备首次接入时复制来源目录。
-同一运行后续处理使用保存的输入。DuckDB/profile 与 PDF 分块/索引位于运行内部，不跨运行按路径复用。
-profile refresh 创建新 Dataset 版本；PDF refresh 创建新缓存目录并保留旧缓存。没有输入内容指纹或散列检测。
-需要采用外部新输入时启动新运行；系统不检测用户绕过系统修改运行目录的行为。
+新运行保存配置、模板、数据目录和可选医学资料快照。数据来源使用只读引用，不再全量复制原始目录。
+`source_manifests` 保存文件清单和实际使用文件的内容摘要；处理、恢复和发布校验来源变化。只读挂载不保证
+宿主机不可变，外部来源必须在运行期间保持稳定。仅物化 annotation 引用的图像到 bundle 内的来源子目录；
+Composite manifest 不再次复制图像。单份标准 PNG/JPEG 导入使用固定本地代码，原始转换与生成脚本在 Docker 中执行。
+DuckDB/Profile 位于 bundle；PDF 缓存仍位于运行内部。Profile refresh 产生新 Dataset 版本。
 
 `.runtime/artifacts.json` 记录每个版本的 ID、类型、产物引用与直接依赖，以及当前版本引用。
 当前版本同时由 LangGraph context/checkpoint 保存，旧版本仍可保留，但不能通过当前交付检查。
@@ -65,7 +65,7 @@ planned/generated/audited 与 plan_binding；生成、审计、交付使用这�
 终端使用 SQLite checkpoint，支持 `build --resume <identifier>`。回执绑定验证后的参数与输入依赖版本，
 匹配时复用完成结果；数据容器操作还有同样绑定的内部完成回执。恢复读取运行保存的配置和输入。
 `.runtime/contract.json` 保存运行时契约版本、Git commit 与源码工作区差异；代码或契约变化拒绝恢复，
-明确要求新运行，不迁移旧 checkpoint。当前运行契约为 agent-runtime.v4。生成子图保留逐行 checkpoint、阶段游标及进度。
+明确要求新运行，不迁移旧 checkpoint。当前运行契约为 agent-runtime.v5。生成子图保留逐行 checkpoint、阶段游标及进度。
 
 harness 限制行动次数、执行时间、连续失败和相同行动重复次数。人工等待不计入执行时间，预算耗尽返回
 blocked；未审计批次不能交付。语义筛查模型失败继续使用观察性 fail-open。
@@ -120,29 +120,53 @@ allocation 保存 requested_count、allocated_count、planning_shortfall、各 L
 
 ## 数据准备与公共校验
 
-DataProcessingAgent 的阶段为 Source/Inventory → Mapping → AnnotationScript/Annotation →
-ImageInventory/ImagePlan → PreparedDataset → Dataset。每个阶段检查直接依赖，完成后登记结构化结果；
-来源或映射变化使后续版本自动失效。固定工具检查文件、表格、sheet、列类型/空值/唯一值与连接匹配计数；
-Agent 决定实体语义、字段映射、冲突与未匹配项处理，无法据来源确定时直接询问。
+DataProcessingAgent 接收非空 sources 列表，按来源顺序完成 Source/Inventory → PreparationPlan →
+Annotation → ImageInventory/ImagePlan → NormalizedSource，之后执行 Harmonization → Dataset Bundle。
+Source、Inventory、Mapping、Annotation 与图像阶段采用 `source/<id>/<kind>` 版本作用域；Composite
+依赖所有选中 NormalizedSource 的明确版本，不共享单一来源 current 指针。未完成来源不能被静默省略。
 
-数据集特定标注脚本在 Docker 中执行，源与项目代码只读，输出可写，网络关闭且限制资源和时间。
-脚本两次运行比较字节，验证标准结构、唯一 image_id/image_path、来源引用、bbox 和计划图像数。
-图像阶段只处理 annotation 引用文件，annotation 目录另以只读方式挂载；固定生成的 per-dataset 图像脚本
-使用显式图像方案，两次执行后验证精确集合、编码、原始尺寸与可重复性。
-最终保留来源盘点、结构化准备/图像方案、脚本和一份 validation.json；内部运行目录保留重放所需工作产物。
+`data/contracts.py` 定义来源、PreparationPlan、HarmonizationPlan、provenance 与质量问题的严格模型。
+PreparationPlan 内同时保存语义依据与顺序算子步骤；不另建 DAG 调度器或表达式语言。Agent 判断实体语义、
+字段等价和处理策略；代码执行字段/值存在性、基数、格式、人口及来源校验。无法证实的语义保持独立或询问。
 
-`data/validation.py` 提供公开标注、bbox 和图像集合校验；`data/image_assets.py` 提供 manifest 和
-validate_image_asset。DataProcessing、Audit、Evaluation 不互相调用私有函数，也不从 skill 目录导入实现。
-独立 skill 保留自包含资源，并与项目标准接口、图像策略同步。
+`data/operators.py` 使用 DuckDB 执行读取、选择/过滤、rename、cast、值映射、缺失归一化、join、findings
+分组、ID namespace、bbox 与 mask-to-bbox 操作。CSV 默认保留字符串 ID；join 显式声明基数、空键与未匹配
+策略。标签和框保留同一实体的来源链路。Excel 采用受限适配。无法表达的处理允许带原因的代码 fallback，
+必须输出相同的记录包装及 provenance 索引，并通过同一数量/来源检查。
 
-PNG/JPEG 按内容识别并复制原始字节；其他支持的二维输入默认保留可表示的像素值、颜色和位深输出 PNG。
-需要显示窗时使用单一可靠来源窗或绑定方案的用户决定，不自动百分位拉伸、选窗、丢弃颜色或位深。
-不自动选体数据切片或全切片区域，拒绝多帧与金字塔。DataProcessing 与 Audit 保留纯色图检查；
-Evaluation 不拒绝纯色图但限定 PNG/JPEG 编码。
+Docker 固定依赖版本，源与代码只读、网络关闭、限制内存/CPU/进程数；DuckDB scratch 位于可写磁盘。
+回执绑定实际 image ID、参数与版本依赖。标注和图像两次执行比较稳定输出，成功后清理重复验证目录。
+原始源不写入、不复制整个 Dataset；文件清单与已用内容摘要检测外部改变，不提供文件系统快照。
+
+`data/readers.py` 提供 Raster/DICOM/NIfTI/ITK 的 probe、metadata、像素及转换接口。DICOM metadata
+采用指定 tags 的 header-only 读取。PNG/JPEG 保留字节；其余二维图像保留可表示的像素值、位深与颜色。
+需要显示窗时使用唯一可靠来源窗或版本绑定的用户决定；不自动拉伸、裁框、重采样或改变空间方向。
+多帧、真实三维、金字塔和 WSI 保持 unsupported；缺少 decoder 是运行能力错误，不当作坏图批量隔离。
+
+`data/bundle.py` 执行整图记录隔离、来源支持的字段对齐、精确像素去重及原子发布。多 finding 和可选字段缺失
+不属于坏记录。局部坏图/坏标注隔离并报告；系统性错误阻断。同实体不同值默认报告，只有声明为不变量的字段
+冲突才阻断。精确重复且标注/身份冲突的组整体隔离，无冲突稳定选代表项；全部来源保留在 dedup/provenance
+产物中。不推断跨来源患者身份，不实现感知相似度。输入、隔离、重复移除和输出数量必须对账。
+
+Harmonization 只合并有证据支持的字段，不引入全局医学本体。多来源的未对齐字段保存到
+`<entity>.annotation.sources.<source_id>`；单来源空 HarmonizationPlan 为 identity。缺失不自动补为阴性。
+发布 annotation 的 image_path 指向 bundle 内处理后资产，原始路径与 ID 保留在 provenance 索引。
+
+`data/index.py` 流式构建 annotation-cache.v8；记录、字段值和具体数组索引存入 DuckDB。
+Profile 为 task-capability-profile.v4，包含 summary、field index、per-source coverage 和结构索引。
+`data/query.py` 提供分页完整值域、按来源覆盖、样本、同图/同实体字段共现、数组长度以及 Protocol eligibility。
+覆盖统计明确分母，缺失 ID 不计为一个实体。Planner 初始读取紧凑 summary，通过工具按需取细节。
+
+发布目录包含 annotation.jsonl、四字段 image_manifest.jsonl、一个主 cache、来源清单、计划、provenance、
+quality_report.json、quarantine.jsonl、entity_quality.jsonl 和 dedup.jsonl；来源子目录保留标准化工作产物。
+ready.json 在所有输入复查及最终 cache 完成后写入；当前 Dataset 指针随后切换。已发布产物不原地修改。
+
+公共 `data/validation.py` 与 `data/image_assets.py` 维持标注、框和图像契约；Evaluation 不调用准备 Agent。
+独立技能保持自包含，不作为运行时代码依赖。详细接口见 `docs/DATA_LAYER.md`。
 
 ## 答案与生成契约
 
-每条标准标注代表一张图，含 patient、case、study、image，各实体独立 annotation。
+每条发布标注代表一张图，含 patient、case、study、image 和 provenance；各实体独立 annotation。
 图像 manifest 恰含 image_id、png_path、width、height；路径相对 manifest，历史键 png_path 也允许 JPEG。
 
 - letter：唯一获准 scalar 经 Protocol 的 value_mapping 固定正确选项。

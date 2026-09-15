@@ -230,6 +230,9 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     return AppSettings(
         harness={key: _integer(value, f"harness.{key}", minimum=1) for key, value in values["harness"].items()},
         data_processing={"image": _string(values["data_processing"]["image"], "data_processing.image"),
+                         "memory_limit": _string(values["data_processing"]["memory_limit"], "data_processing.memory_limit"),
+                         "threads": _integer(values["data_processing"]["threads"], "data_processing.threads", minimum=1),
+                         "container_memory": _string(values["data_processing"]["container_memory"], "data_processing.container_memory"),
                          "timeout_seconds": _integer(values["data_processing"]["timeout_seconds"], "data_processing.timeout_seconds", minimum=1)},
         paths=PathSettings(
             **{key: _resolve_path(value, f"paths.{key}") for key, value in paths.items()}

@@ -34,7 +34,9 @@ def test_new_run_snapshots_same_path_again_and_keeps_old_input(tmp_path):
 
     source = tmp_path / "source"
     source.mkdir()
-    Image.new("RGB", (2, 2)).save(source / "im.png")
+    image = Image.new("RGB", (2, 2))
+    image.putpixel((0, 0), (255, 0, 0))
+    image.save(source / "im.png")
     row = {
         entity: {f"{entity}_id": None, "annotation": {}} for entity in ("patient", "case", "study")
     }
@@ -58,7 +60,8 @@ def test_new_run_snapshots_same_path_again_and_keeps_old_input(tmp_path):
     b, _ = prepare_annotation_dataset(second, tmp_path / "run2/cache")
     assert a["fields"]["image.modality"]["top_values"] == ["CT"]
     assert b["fields"]["image.modality"]["top_values"] == ["MRI"]
-    assert snapshot_dataset(annotation, first.parent).read_bytes() == first.read_bytes()
+    with pytest.raises(ValueError, match="Source changed"):
+        snapshot_dataset(annotation, first.parent)
 
 
 def test_resume_rejects_obsolete_contract(tmp_path):

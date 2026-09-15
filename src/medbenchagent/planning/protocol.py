@@ -112,7 +112,7 @@ def template_specification(protocol: dict, language: str) -> TemplateSpecificati
     )
 
 
-def resolve_answer(record: dict, protocol: dict) -> dict | None:
+def _resolve_answer(record: dict, protocol: dict) -> dict | None:
     """Resolve one unique annotation witness; shared by counting, generation and audit."""
     binding = protocol["data_binding"]
     if not all(
@@ -172,17 +172,42 @@ def resolve_answer(record: dict, protocol: dict) -> dict | None:
     return {"answer": box, "evidence": evidence, "target": target}
 
 
-def validate_dataset_protocol(protocol: dict, records: list[dict]) -> int:
+def resolve_eligibility(record: dict, protocol: dict) -> dict:
+    """One eligibility boundary for planning, generation, audit and explanations."""
+    answer = _resolve_answer(record, protocol)
+    if answer is not None:
+        return {"eligible": True, "reason": "eligible", "resolved": answer}
+    binding = protocol["data_binding"]
+    if not all(has_meaningful_value(project_supporting_record(record, [p]))
+               for p in binding["supporting_fields"]):
+        reason = "missing_field"
+    else:
+        values = scalar_evidence_candidates(record, binding["answer_field"])
+        if protocol["response_format"] == "letter":
+            mapped = {canonical_answer_scalar(m["raw_value"])
+                      for m in protocol["answer_contract"]["value_mapping"]}
+            count = sum(canonical_answer_scalar(v["value"]) in mapped for v in values)
+            reason = "unmapped_value" if count == 0 else "multiple_candidates"
+        elif protocol["response_format"] == "bbox":
+            reason = "no_unique_valid_pair"
+        else:
+            reason = "multiple_candidates" if len(values) > 1 else "invalid_reference"
+    return {"eligible": False, "reason": reason, "resolved": None}
+
+
+def resolve_answer(record: dict, protocol: dict) -> dict | None:
+    return resolve_eligibility(record, protocol)["resolved"]
+
+
+def validate_dataset_protocol(protocol: dict, records) -> int:
     p = Protocol.model_validate(protocol).model_dump()
-    if p["response_format"] == "letter":
-        observed = {
-            canonical_answer_scalar(v["value"])
-            for row in records
-            for v in scalar_evidence_candidates(row, p["data_binding"]["answer_field"])
-        }
-        if any(
-            canonical_answer_scalar(m["raw_value"]) not in observed
-            for m in p["answer_contract"]["value_mapping"]
-        ):
-            raise ValueError("Answer mapping introduces values absent from annotation")
-    return len({row["image"]["image_id"] for row in records if resolve_answer(row, p) is not None})
+    remaining = {canonical_answer_scalar(m["raw_value"])
+                 for m in p["answer_contract"]["value_mapping"]}
+    count = 0
+    for row in records:
+        for value in scalar_evidence_candidates(row, p["data_binding"]["answer_field"]):
+            remaining.discard(canonical_answer_scalar(value["value"]))
+        count += resolve_answer(row, p) is not None
+    if remaining:
+        raise ValueError("Answer mapping introduces values absent from annotation")
+    return count

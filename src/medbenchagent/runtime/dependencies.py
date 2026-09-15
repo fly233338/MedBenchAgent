@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-CONTRACT_VERSION = "agent-runtime.v4"
+CONTRACT_VERSION = "agent-runtime.v5"
+
+SOURCE_KINDS = frozenset({"Source", "Inventory", "Mapping", "AnnotationScript", "Annotation",
+                          "ImageInventory", "ImagePlan", "NormalizedSource"})
+
+
+def artifact_key(context, kind):
+    scope = context.get("source_scope")
+    return f"source/{scope}/{kind}" if scope and kind in SOURCE_KINDS else kind
+
+
 DEPENDENCIES = {
     "Dataset": ("DataConfig",),
     "Plan": ("Requirement", "Dataset", "Materials", "PlanningConfig"),
@@ -44,12 +53,14 @@ def require(context, *kinds):
             check(dependency)
         return record
 
-    return {kind: check(kind) for kind in kinds}
+    return {kind: check(artifact_key(context, kind)) for kind in kinds}
 
 
 def publish(context, kind, references, dependencies=None):
     """Append a version; replay of the same operation and inputs returns that version."""
     kinds = DEPENDENCIES.get(kind, ()) if dependencies is None else dependencies
+    kinds = tuple(artifact_key(context, k) for k in kinds)
+    kind = artifact_key(context, kind)
     require(context, *kinds)
     current = dict(context.get("artifact_versions", {}))
     deps = {key: current[key] for key in kinds}
@@ -97,6 +108,9 @@ def verify_resume(context):
     saved = json.loads(path.read_text(encoding="utf-8"))
     if saved != {"contract": CONTRACT_VERSION, "code": code_identity()}:
         raise ValueError("Code or runtime contract changed; start a new run")
+    from medbenchagent.data.sources import verify_source
+    for source in Path(context["run_directory"]).rglob("source_manifests/*/source.json"):
+        verify_source(source.parent)
 
 
 def initialize_dependencies(context, settings):
@@ -104,7 +118,7 @@ def initialize_dependencies(context, settings):
     configs = {
         "DataConfig": {
             "profile": snapshot["dataset_profile"],
-            "preparation_image": snapshot["data_processing"]["image"],
+            "preparation": snapshot["data_processing"],
         },
         "PlanningConfig": {
             "rag": snapshot["rag"],
@@ -129,23 +143,45 @@ def initialize_dependencies(context, settings):
     )
 
 
-def snapshot_dataset(annotation, destination):
-    """Copy exactly the selected standard dataset into this input version."""
-    from medbenchagent.data.image_assets import load_image_manifest
+def snapshot_dataset(annotation, destination, *, dataset_id="imported"):
+    """Import standard PNG/JPEG inputs through the same quality and publication engine.
 
-    annotation, destination = Path(annotation), Path(destination)
-    marker = destination / "ready.json"
-    if marker.is_file():
-        return destination / "annotation.jsonl"
-    images = load_image_manifest(annotation.parent / "image_manifest.jsonl")
-    destination.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(annotation, destination / "annotation.jsonl")
-    for entry in images.values():
-        target = destination / entry.relative_png_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(entry.png_path, target)
-    shutil.copyfile(
-        annotation.parent / "image_manifest.jsonl", destination / "image_manifest.jsonl"
+    This fixed local copy path executes no generated code. Raw conversion stays in Docker.
+    """
+    from medbenchagent.data.bundle import normalize_source, publish_bundle
+    from medbenchagent.data.contracts import Source, HarmonizationPlan
+    from medbenchagent.data.sources import (
+        inventory_source, track_files, verify_source, compare_outputs, remove_work_directory,
     )
-    atomic_write_json(marker, {"source": str(annotation), "images": len(images)})
+    from medbenchagent.data.image_assets import iter_image_manifest
+
+    annotation, destination = Path(annotation).resolve(), Path(destination).resolve()
+    source = Source(id=dataset_id, kind="annotation", root=str(annotation.parent), annotation=annotation.name)
+    source_manifest = destination / "source_manifests" / dataset_id
+    if (destination / "ready.json").exists():
+        verify_source(source_manifest)
+        return destination / "annotation.jsonl"
+    if destination.is_relative_to(annotation.parent):
+        raise ValueError("Dataset output must not be beneath the source root")
+    inventory_source(source, source_manifest)
+    from medbenchagent.data.image_conversion import detect_format
+    for entry in iter_image_manifest(annotation.parent / "image_manifest.jsonl"):
+        if not entry.png_path.is_file():
+            continue  # Missing files are reported by normalization as local quarantine.
+        detected = detect_format(entry.png_path)
+        if detected is not None and detected not in {"raster:png", "raster:jpeg"}:
+            raise ValueError("Standard imports require PNG/JPEG; use prepare_data for raw conversion")
+    track_files(source_manifest, [annotation.name, "image_manifest.jsonl"])
+    track_files(source_manifest, (e.relative_png_path for e in iter_image_manifest(annotation.parent / "image_manifest.jsonl")
+                                  if e.png_path.is_file()))
+    folder = destination / "sources" / dataset_id
+    normalize_source(source.root, annotation, source, folder)
+    repeat = destination / "repeat"
+    normalize_source(source.root, annotation, source, repeat)
+    compare_outputs(folder, repeat)
+    remove_work_directory(repeat, destination)
+    verify_source(source_manifest)
+    publish_bundle(destination, {dataset_id: folder}, HarmonizationPlan(),
+                   verify_inputs=lambda: verify_source(source_manifest))
+    verify_source(source_manifest)
     return destination / "annotation.jsonl"

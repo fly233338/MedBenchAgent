@@ -73,7 +73,7 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
     profile, manifest = prepare_annotation_dataset(annotation_path, tmp_path / "cache")
 
     assert profile["total_images"] == 2
-    assert profile["schema_version"] == "task-capability-profile.v3"
+    assert profile["schema_version"] == "task-capability-profile.v4"
     assert (
         profile["fields"]["image.annotation.findings[*].finding_type"]["non_empty_images"] == 2
     )
@@ -132,7 +132,7 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
         {"path": "patient.annotation", "kind": "object", "children": []},
         {"path": "study.annotation", "kind": "object", "children": []},
     ]
-    assert manifest["cache_format_version"] == "annotation-cache.v7"
+    assert manifest["cache_format_version"] == "annotation-cache.v8"
     connection = duckdb.connect(manifest["duckdb_path"])
     try:
         assert connection.execute("SELECT COUNT(*) FROM images").fetchone()[0] == 2
@@ -153,7 +153,7 @@ def test_annotation_jsonl_creates_one_image_row_and_deterministic_profile(
         connection.close()
 
     monkeypatch.setattr(
-        "medbenchagent.data.dataset.load_annotation_jsonl", lambda _path: pytest.fail("cache not used")
+        "medbenchagent.data.index.iter_annotation_jsonl", lambda _path: pytest.fail("cache not used")
     )
     assert prepare_annotation_dataset(annotation_path, tmp_path / "cache") == (profile, manifest)
 
@@ -342,7 +342,7 @@ def test_annotation_jsonl_rejects_v1_and_invalid_json_and_schema_is_versioned(
         prepare_annotation_dataset(annotation_path, tmp_path / "cache")
 
     schema = json.loads(annotation_schema_path().read_text(encoding="utf-8"))
-    assert schema["title"].endswith("v2")
+    assert schema["title"].endswith("v3")
 
 
 def test_annotation_jsonl_allows_inconsistent_repeated_entity_annotations(

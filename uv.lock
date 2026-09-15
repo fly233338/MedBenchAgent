@@ -1852,7 +1852,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "chromadb", specifier = ">=0.5.0" },
-    { name = "duckdb", specifier = ">=1.1.0" },
+    { name = "duckdb", specifier = "==1.5.4" },
     { name = "langchain-core", specifier = ">=0.3.0" },
     { name = "langgraph", specifier = ">=0.6.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0.0" },

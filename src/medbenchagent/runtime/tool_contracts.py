@@ -3,6 +3,7 @@
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from medbenchagent.data.contracts import SourcesArguments
 
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -24,9 +25,10 @@ class FeedbackArguments(NoArguments):
     feedback: str = ""
 
 
-class PrepareDataArguments(FeedbackArguments):
-    source_root: NonEmpty
-    dataset_id: DatasetId
+
+
+class PrepareDataArguments(SourcesArguments):
+    pass
 
 
 class SelectDatasetArguments(NoArguments):
@@ -84,26 +86,6 @@ class JoinArguments(NoArguments):
     right_key: NonEmpty
     left_sheet: str | None = None
     right_sheet: str | None = None
-
-
-class MappingArguments(NoArguments):
-    sources: Annotated[list[NonEmpty], Field(min_length=1)]
-    authoritative_population: NonEmpty
-    expected_images: Annotated[int, Field(gt=0)]
-    row_granularity: dict[str, NonEmpty]
-    entity_fields: dict[Literal["patient", "case", "study", "image"], dict[str, str]]
-    joins: list[NonEmpty]
-    identifiers_and_order: NonEmpty
-    bbox_conventions: NonEmpty
-    modality_anatomy: NonEmpty
-    conflicts_and_unmatched: NonEmpty
-    excluded_fields: dict[str, str]
-    unresolved: list[str]
-    decision_references: list[str] = []
-
-
-class ScriptArguments(NoArguments):
-    code: Annotated[str, Field(min_length=1)]
 
 
 class ImagePolicy(NoArguments):

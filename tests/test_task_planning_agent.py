@@ -46,6 +46,8 @@ def context(tmp_path, monkeypatch):
             "fields": {"image.annotation.status": {"non_empty_images": 2}},
         },
     )
+    from medbenchagent.data.dataset import prepare_annotation_dataset
+    _, c["dataset_access_manifest"] = prepare_annotation_dataset(annotation, tmp_path / "cache")
     return c
 
 
@@ -352,7 +354,7 @@ def test_readiness_gate_never_rescans_annotations(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
     ready(c, monkeypatch)
     monkeypatch.setattr(
-        planning, "load_annotation_jsonl", lambda *a: pytest.fail("Readiness must not scan data")
+        planning, "iter_records", lambda *a: pytest.fail("Readiness must not scan data")
     )
     assert "finish" in planning.available_tools(c)
     assert not validate_plan(planning._tree(c))
