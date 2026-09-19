@@ -12,7 +12,7 @@ from medbenchagent.agents.allocation import compile_allocation_agent
 from medbenchagent.planning.dataset_selection import select_datasets as run_selection
 from medbenchagent.planning.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
 from medbenchagent.runtime.harness import compile_agent, result
-from medbenchagent.runtime.tool_contracts import FeedbackArguments, PrepareDataArguments, DatasetId
+from medbenchagent.runtime.tool_contracts import FeedbackArguments, PrepareDataArguments, DatasetId, DelegationArguments, RunIntent
 from medbenchagent.runtime.run_artifacts import initialize_run, atomic_write_json
 from medbenchagent.runtime.run_export import export_benchmark
 from medbenchagent.settings import get_settings, run_settings
@@ -23,6 +23,10 @@ class DatasetArguments(FeedbackArguments):
     dataset_id: DatasetId
 
 
+class PlanningArguments(DelegationArguments):
+    dataset_id: DatasetId
+
+
 class BenchmarkInputState(TypedDict, total=False):
     messages: list[Any]
     user_requirement: str
@@ -30,6 +34,8 @@ class BenchmarkInputState(TypedDict, total=False):
     max_tasks_per_image: int
     question_temperature: float
     prepare_dataset_id: str
+    entry_intent: str
+    requested_dataset_ids: list[str]
 
 
 class BenchmarkState(BenchmarkInputState, total=False):
@@ -128,13 +134,83 @@ def child_result(context, dataset_id, role, output):
 
 
 def describe(context):
-    return {key: context.get(key) for key in (
+    details = {key: context.get(key) for key in (
         "user_requirement", "benchmark_info", "brief_ready", "prepare_dataset_id", "selected_dataset_ids",
         "dataset_task_plans", "dataset_generations", "dataset_audits", "allocation_path", "prepared_entries",
-        "artifact_versions", "global_issue", "last_agent_result")}
+        "artifact_versions", "global_issue", "last_agent_result", "entry_intent", "run_intent", "requested_dataset_ids")}
+    ids = set(context.get("selected_dataset_ids", [])) | set(context.get("run_intent", {}).get("prepare_dataset_ids", []))
+    details["dataset_readiness"] = {d: {kind: _current(context, f"dataset/{d}/{kind}")
+                                      for kind in ("Dataset", "Plan", "Generation", "Audit")} for d in sorted(ids)}
+    details["outstanding_work"] = {"prepare_dataset_ids": preparation_pending(context),
+                                   "available_actions": sorted(available_stages(context))}
+    return details
 
 
-def compile_benchmark_graph(*, checkpointer=None, preparation_only=False):
+def set_intent(context, *, intent, prepare_dataset_ids):
+    """Record user intent and explicitly requested preparation targets; clarify unknown IDs first."""
+    value = RunIntent(intent=intent, prepare_dataset_ids=prepare_dataset_ids).model_dump()
+    if context.get("entry_intent") == "prepare_dataset" and intent != "prepare_dataset":
+        raise ValueError("The prepare command only prepares datasets")
+    if context.get("entry_intent") == "build_benchmark" and intent == "prepare_dataset":
+        raise ValueError("The build command must build a benchmark")
+    if context.get("prepare_dataset_id") and prepare_dataset_ids != [context["prepare_dataset_id"]]:
+        raise ValueError("Use the dataset ID supplied to prepare")
+    updates = {"run_intent": value}
+    if intent == "prepare_then_build" and context.get("requested_dataset_ids") is not None:
+        requested = list(dict.fromkeys(context["requested_dataset_ids"] + prepare_dataset_ids))
+        updates["requested_dataset_ids"] = requested
+        if requested != context["requested_dataset_ids"]:
+            updates.update(publish(context, "PreparedCandidates",
+                                   {"entries": context.get("prepared_entries", {}), "requested_dataset_ids": requested}, ()))
+    return result("success", "Run intent recorded", **updates)
+
+
+def _current(context, *kinds):
+    try:
+        require(context, *kinds)
+        return True
+    except ValueError:
+        return False
+
+
+def preparation_pending(context):
+    return [d for d in context.get("run_intent", {}).get("prepare_dataset_ids", [])
+            if d not in context.get("prepared_entries", {}) or not _current(context, f"dataset/{d}/Dataset")]
+
+
+def available_stages(context):
+    tools = {"set_intent", "ask_user"}
+    intent = context.get("run_intent")
+    if not intent:
+        return tools
+    pending = preparation_pending(context)
+    if pending:
+        tools.add("prepare_data")
+    if intent["intent"] == "prepare_dataset":
+        return tools | ({"finish"} if not pending else set())
+    tools.add("specify")
+    if pending or not context.get("brief_ready"):
+        return tools
+    tools.add("select_datasets")
+    if not _current(context, "DatasetSelection"):
+        return tools
+    tools.add("plan")
+    if not _current(context, *(f"dataset/{d}/Plan" for d in context["selected_dataset_ids"])):
+        return tools
+    tools.add("allocate")
+    if not _current(context, "Allocation"):
+        return tools
+    tools.add("generate")
+    assigned = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))
+    active = [d for d, counts in assigned["counts"].items() if sum(counts.values())]
+    if any(_current(context, f"dataset/{d}/Generation") for d in active):
+        tools.add("audit")
+    if all(_current(context, f"dataset/{d}/Audit") for d in active):
+        tools.add("finish")
+    return tools
+
+
+def compile_benchmark_graph(*, checkpointer=None):
     planning = compile_task_planning_agent()
     generation = compile_generation_agent()
     allocation = compile_allocation_agent()
@@ -146,10 +222,11 @@ def compile_benchmark_graph(*, checkpointer=None, preparation_only=False):
             outcome["status"] = "success"
         return outcome
 
-    def plan(context, *, dataset_id, feedback=""):
+    def plan(context, *, dataset_id, delegation):
         """Plan tasks for exactly one selected prepared dataset; no quotas are assigned here."""
         child = child_context(context, dataset_id, "planning")
-        child["feedback"] = feedback
+        child["delegation"] = delegation
+        publish(child, "PlanningDelegation", delegation, ())
         output = planning.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "planning", output)
         if output["result"]["status"] == "complete":
@@ -160,22 +237,35 @@ def compile_benchmark_graph(*, checkpointer=None, preparation_only=False):
         """Prepare/register ONE dataset; source files must belong to that same logical dataset."""
         from medbenchagent.agents.data_pipeline import initialize
         from medbenchagent.agents.data_processing import compile_data_processing_agent
-        if preparation_only and dataset_id != context["prepare_dataset_id"]:
-            raise ValueError("Use the dataset_id supplied to prepare")
-        child = {k: context[k] for k in COMMON if k in context}
-        child["operation_directory"] = context["operation_directory"]
-        child = initialize(child, sources, dataset_id)
+        if dataset_id not in preparation_pending(context):
+            raise ValueError("Dataset is not an outstanding preparation target; update run intent first")
+        saved = context.get("child_states", {}).get(dataset_id, {}).get("preparation")
+        if saved:
+            from medbenchagent.data.contracts import Source
+            child = json.loads(Path(saved).read_text(encoding="utf-8"))
+            if child["sources"] != [Source.model_validate(s).model_dump() for s in sources]:
+                raise ValueError("Preparation sources changed; start a new experiment")
+            child.update({k: context[k] for k in COMMON if k in context})
+            child["operation_directory"] = context["operation_directory"]
+        else:
+            child = {k: context[k] for k in COMMON if k in context}
+            child["operation_directory"] = context["operation_directory"]
+            child = initialize(child, sources, dataset_id)
         child["feedback"] = feedback
         output = compile_data_processing_agent().invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "preparation", output)
         if output["result"]["status"] == "complete":
-            outcome["updates"]["prepared_entries"] = {**context.get("prepared_entries", {}), dataset_id: output["context"]["dataset_entry"]}
+            entries = {**context.get("prepared_entries", {}), dataset_id: output["context"]["dataset_entry"]}
+            outcome["updates"]["prepared_entries"] = entries
+            published = dict(context, artifact_versions=outcome["updates"]["artifact_versions"])
+            outcome["updates"].update(publish(published, "PreparedCandidates", {"entries": entries}, ()))
         return outcome
 
-    def allocate(context, *, feedback=""):
+    def allocate(context, *, delegation):
         """Delegate global Concept-first allocation after every selected dataset plan is complete."""
         child = {k: context[k] for k in (*COMMON, "selected_dataset_ids", "dataset_task_plans", "operation_directory") if k in context}
-        child["feedback"] = feedback
+        child["delegation"] = delegation
+        publish(child, "AllocationDelegation", delegation, ())
         from medbenchagent.agents.allocation import _plans
         if not any(leaf["eligible_count"] for p in _plans(child).values() for leaf in p["tasks"].values()):
             return result("blocked", "All selected datasets completed planning without eligible tasks")
@@ -216,69 +306,31 @@ def compile_benchmark_graph(*, checkpointer=None, preparation_only=False):
                       artifact_versions=outcome["updates"]["artifact_versions"], audit_summary=outcome["updates"]["audit_summary"])
 
     def finish(context):
-        if preparation_only:
-            if context["prepare_dataset_id"] not in context.get("prepared_entries", {}):
+        if context["run_intent"]["intent"] == "prepare_dataset":
+            if preparation_pending(context):
                 raise ValueError("Prepare and register the dataset first")
             return result("complete", "Dataset prepared and registered")
         return result("complete", "Benchmark completed; deficits are reported", **export_benchmark(context))
 
-    def available_stages(context):
-        if preparation_only:
-            return {"prepare_data", "ask_user", "finish"}
-        tools = {"specify", "ask_user", "prepare_data"}
-        if not context.get("brief_ready"):
-            return tools
-        tools.add("select_datasets")
-        try:
-            require(context, "DatasetSelection")
-        except ValueError:
-            return tools
-        tools.add("plan")
-        try:
-            require(context, *(f"dataset/{d}/Plan" for d in context["selected_dataset_ids"]))
-        except ValueError:
-            return tools
-        tools.add("allocate")
-        try:
-            require(context, "Allocation")
-        except ValueError:
-            return tools
-        tools.add("generate")
-        assigned = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))
-        active = [d for d, counts in assigned["counts"].items() if sum(counts.values())]
-        for dataset in active:
-            try:
-                require(context, f"dataset/{dataset}/Generation")
-                tools.add("audit")
-            except ValueError:
-                pass
-        try:
-            require(context, *(f"dataset/{d}/Audit" for d in active))
-        except ValueError:
-            return tools
-        return tools | {"finish"}
-
-    instructions = (
-        "Prepare and register the one requested medical dataset. Interpret the user's source descriptions into "
-        "prepare_data arguments; ask_user about ambiguous paths or source semantics. Never combine independent datasets. "
-        "Finish only after registration succeeds. " if preparation_only else
-        "Build the requested Medical VLM benchmark. Extract the brief, then select_datasets using prepared Cards. "
-        "If the user supplies new raw data, prepare_data separately for each logical dataset first. Never combine "
-        "independent datasets into one annotation. Plan each selected dataset explicitly by dataset_id. Once ALL plans "
-        "are complete, allocate globally; then generate and audit each dataset with positive allocation. "
-        "Zero allocation or a completed unsupported plan is valid; a failed/blocked plan is not. "
-        "Finish to merge audited samples. Never silently lower the target or omit requested datasets. "
+    supervisor = compile_agent("SupervisorAgent",
+        "Coordinate the user's medical dataset preparation or benchmark construction. "
+        "Set run intent from the request when absent; update it when the user adds preparation targets. "
+        "Respect the entry intent. Prepare each outstanding logical dataset independently, never merge datasets. "
+        "Preparation-only work finishes after all requested registrations; no benchmark brief is needed. "
+        "For construction, extract benchmark-level scope, prepare requested new data, then select prepared datasets "
+        "with high recall. Plan each selected dataset, allocate after every plan is current, generate and audit "
+        "positive allocations, then export. Follow artifact readiness, not a fixed script. "
+        "Delegate explicit objectives, constraints, preferences and revision notes to Planning and Allocation. "
+        "Delegations must respect the original user requirement; never invent a task focus. "
+        "Unsupported plans and zero allocation are valid, failures are not. Never omit explicitly requested datasets. "
         "Clarify global_issue through ask_user, then re-extract the complete brief. No routine confirmations. "
-        "Finite data exhaustion may finish with explicit deficits; no automatic refill loop. "
-    )
-    supervisor = compile_agent("SupervisorAgent", instructions,
-        {"prepare_data": prepare_data} if preparation_only else
-        {"specify": specify, "select_datasets": select_datasets, "prepare_data": prepare_data,
-         "plan": plan, "allocate": allocate, "generate": generate, "audit": audit},
+        "Finite exhaustion may finish with reported deficits; no automatic refill loop.",
+        {"set_intent": set_intent, "specify": specify, "select_datasets": select_datasets,
+         "prepare_data": prepare_data, "plan": plan, "allocate": allocate, "generate": generate, "audit": audit},
         describe, finish, available_tools=available_stages,
-        args_schemas={"prepare_data": PrepareDataArguments} if preparation_only else
-        {"prepare_data": PrepareDataArguments, "plan": DatasetArguments, "allocate": FeedbackArguments,
-         "generate": DatasetArguments, "audit": DatasetArguments})
+        args_schemas={"set_intent": RunIntent, "prepare_data": PrepareDataArguments,
+                      "plan": PlanningArguments, "allocate": DelegationArguments,
+                      "generate": DatasetArguments, "audit": DatasetArguments})
 
     def initialize(state):
         overrides = {k: state[k] for k in ("seed", "max_tasks_per_image", "question_temperature") if k in state}
@@ -291,8 +343,16 @@ def compile_benchmark_graph(*, checkpointer=None, preparation_only=False):
         context = dict(run, **(defaults | overrides), user_requirement=requirement,
                        operation_directory=str(Path(run["run_directory"]) / ".runtime"), limits=settings.harness,
                        registration_catalog_path=str(settings.paths.dataset_catalog),
-                       prepare_dataset_id=state.get("prepare_dataset_id"))
+                       prepare_dataset_id=state.get("prepare_dataset_id"),
+                       entry_intent=state.get("entry_intent"),
+                       requested_dataset_ids=state.get("requested_dataset_ids"))
+        if state.get("prepare_dataset_id"):
+            context["entry_intent"] = "prepare_dataset"
+            context["run_intent"] = RunIntent(intent="prepare_dataset", prepare_dataset_ids=[state["prepare_dataset_id"]]).model_dump()
+        elif context["entry_intent"] == "build_benchmark":
+            context["run_intent"] = RunIntent(intent="build_benchmark").model_dump()
         initialize_dependencies(context, settings)
+        publish(context, "PreparedCandidates", {"entries": {}}, ())
         return dict(run, context=context)
 
     def run_supervisor(state):

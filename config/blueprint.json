@@ -1,8 +1,9 @@
 {
   "benchmark_info": {
-    "disease": "str",
-    "modality": "str",
-    "description": "str",
+    "clinical_scope": "str",
+    "diseases": [],
+    "modalities": [],
+    "evaluation_focus": null,
     "language": "en",
     "sample_count": 0
   },

@@ -9,6 +9,10 @@
 
 流程：独立 Dataset 准备 → Profile/Card 注册 → Requirement → Dataset Selection →
 逐 Dataset TaskPlanning → 全局 Allocation → 逐 Dataset Generation/Audit → 合并 benchmark.jsonl。
+这些是产物依赖，不是固定的 Supervisor 调度脚本。统一 Supervisor 持久化 run_intent：
+prepare_dataset、build_benchmark 或 prepare_then_build，以及明确的准备目标 ID。
+prepare/build 命令约束入口目的，Experiment 通用入口由模型解析意图、代码校验。
+dataset_readiness 和 outstanding_work 从当前有效 artifacts 推导；仅准备在全部目标登记后结束。
 同一数据集的图像、表格等来源可以关联整理；不同数据集的 annotation 不再合并。
 
 - `data/`：准备执行后端、算子、图像与标注验证、Profile/query、Card 和 Catalog。
@@ -57,6 +61,9 @@ Card 生成仅接收 Profile 和该准备元数据，绝不接收 benchmark user
 Catalog 条目保存 dataset_id、name、description、available 和 annotation_path、image_manifest_path、
 profile_path、dataset_card_path。普通构建不自动准备整个候选目录；缺少标准准备数据使用 prepare，已准备
 但缺少/仍使用 v1 Card 的数据使用 refresh-card。显式指定优先、单候选直选、多候选高召回选择。
+CLI 可重复 --dataset 直接给出 ID，绕过模型名称解析及推荐。Selection 只负责高召回 shortlist，
+不提前证明任务可执行。新准备数据发布 PreparedCandidates 版本，使旧 Selection 及其下游失效；
+新选择操作读取当前 Catalog 并冻结新快照，同一操作恢复保留原快照。
 
 每次 Selection 在操作目录创建 dataset_candidates.json：记录实际需求与版本、名称解析所见目录、解析
 结果、完整候选顺序、每个候选的 Card 摘要与内容摘要、以及不可用/未准备/未请求原因。模型看到的候选
@@ -81,6 +88,10 @@ Local 使用当前解释器、独立工作目录和 UTF-8，超时结束对应�
 
 ## 局部规划与全局分配
 
+Benchmark Info 使用 clinical_scope、diseases[]、modalities[]、evaluation_focus、language、sample_count。
+scope、语言和正整数题量必填；其余只保留用户明确表达的内容。Selection 使用范围和限制，
+Planning 使用范围与评测重点，Allocation 使用总体要求与局部委派偏好。
+
 每次 TaskPlanning 只接收一个已选择 Dataset 的 Card/Profile/query，以及需求和 Blueprint。
 Core Concept 来自静态模板，Leaf 动态定义 opaque ID，并显式保存 concept_id。不同 Dataset 的同名
 Leaf 不代表同一任务。Extension 继续经过字段证据、临床意义、目标相关性及无法归入 Core 的审查，
@@ -88,10 +99,17 @@ Leaf 不代表同一任务。Extension 继续经过字段证据、临床意义�
 
 Planner 在理解 Concept、展开 Leaf、设计 Protocol 和发现 Extension 时可查询 RAG；PDF 不补造标签。
 所有 Core 有 complete/unsupported 决议后检查 coverage gap，完成 discovery，再审查局部完整树。
+Card 只提供检索线索；Profile、真实字段值和结构提供规划证据，Protocol 校验确认执行条件。
+最终审查接收完整 Protocol/raw_value→option、Leaf 证据和材料段落、相关字段统计及有界真实值页、
+精确 eligible_count。semantic_basis 逐字段保存 interpretation、source、reference 和 quote；
+来源可以是已检索材料、已读取的数据集说明或已回答的用户决议，代码校验引用及逐字引文。
+不透明编码和含义不明确的缩写必须获得本数据集的语义依据，否则询问用户；不靠医学常识补造。
+模型负责语义判断，结构校验不保证编码含义正确。unsupported 是合法结论，不为了概念覆盖制造 Leaf。
 修正次数存入 PlanningDraft；缓存 Review、重新委派和恢复不重置额度。上游失效保留局部身份与已耗额度，
 重新验证事实和审查。数据集选择、导入和题量分配不再属于 Planner。
 
 Plan 发布要求结构、归属、Extension 决议、当前 Review、Protocol 和 eligible_count 有效。
+保存 Leaf、完成 Concept 和发布 Plan 时拒绝零容量任务，必须显式修订或删除。
 eligible_count 由代码使用与 Generation 相同的答案解析器计算。允许没有可执行任务的完成 Plan；
 全部选中 Dataset 都没有可用任务时整体 blocked。失败不能被当作 unsupported 静默跳过。
 
@@ -102,6 +120,18 @@ Core 能力共享，Extension 以 Dataset 作用域独立计量；预算不随 L
 逐 Leaf 容量不是每图限额下的联合可行解；本阶段不进行图像匹配或自动补量循环。
 
 ## 状态、依赖与恢复
+
+Supervisor 以结构化 delegation（objective、constraints、preferences、revision_notes）委派 Planning
+和 Allocation；原始用户要求继续可见，委派不修改专业 Agent 的永久 system prompt。
+PlanningDelegation 为 Dataset 局部 artifact，AllocationDelegation 为全局 artifact；变更通过依赖
+使对应规划/分配及下游失效，不重置规划修订额度。DataProcessing 工具目录复用已有 Source、
+Inventory、Mapping、AnnotationScript、Annotation、ImageInventory、ImagePlan、NormalizedSource、
+Harmonization 依赖，展示与执行使用同一门控。
+
+Experiment 为 thread_id 的稳定命名索引，位于 runs_root 同级 experiments.json，记录模式、数据集摘要、
+run_directory、状态、Git commit 和时间。CLI 根据 checkpoint/interrupt/执行结果更新 registry；
+registry 不参与 Agent 决策，不取代 checkpoint。完成实验只展示产物，不自动重跑或追加需求。
+默认命令提供文本选择菜单，保留 --resume UUID 高级恢复接口；不实现多 Run 或批量实验管理。
 
 Supervisor 共享状态只保留选中 ID、各 Dataset 产物引用和进度摘要。专业 Agent 的完整 context 保存到
 局部状态文件，重新委派时恢复；不整体回灌父状态。第一版串行调度，所有 Plan 完成后才可 Allocation。
@@ -115,10 +145,11 @@ LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete�
 | --- | --- |
 | dataset/<id>/Dataset | DataConfig；准备发布还依赖局部 Harmonization |
 | dataset/<id>/DatasetProfile / DatasetCard | 对应 Dataset / Profile |
-| DatasetCandidates | Requirement、冻结的候选输入文件 |
+| DatasetCandidates | Requirement、PreparedCandidates、冻结的候选输入文件 |
 | DatasetSelection | Requirement、DatasetCandidates、选中 Card |
-| dataset/<id>/Plan | Requirement、Dataset、Card、Materials、PlanningConfig、PlanningDraft |
-| Allocation | Requirement、Selection、AllocationConfig、全部选中 Plan |
+| dataset/<id>/PlanningDraft | Requirement、Dataset、Card、Materials、PlanningConfig、PlanningDelegation |
+| dataset/<id>/Plan | Requirement、Dataset、Card、Materials、PlanningConfig、PlanningDraft、PlanningDelegation |
+| Allocation | Requirement、Selection、AllocationConfig、AllocationDelegation、全部选中 Plan |
 | dataset/<id>/Templates | Plan、TemplateConfig |
 | dataset/<id>/Generation | Dataset、Plan、Templates、GenerationConfig、Allocation |
 | dataset/<id>/Audit | Generation、Dataset、Plan、AuditConfig |
@@ -127,7 +158,7 @@ LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete�
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v7；
+SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v8；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 ## 生成、审计与导出

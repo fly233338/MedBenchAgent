@@ -31,7 +31,7 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
         tool, arguments = next(actions)
         return {"tool": tool, "arguments": arguments, "reason": "Prepare one dataset"}
     monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", model)
-    graph = compile_benchmark_graph(checkpointer=MemorySaver(), preparation_only=True)
+    graph = compile_benchmark_graph(checkpointer=MemorySaver())
     output = graph.invoke({"user_requirement": "Prepare these standard annotations", "prepare_dataset_id": "new"},
                           {"configurable": {"thread_id": "prepare"}, "recursion_limit": 100})
     assert output["status"] == "complete"
@@ -43,3 +43,22 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
     assert len(card_prompts) == 1
     assert card.preparation_metadata.dataset_description is None
     assert (Path(access["annotation_path"]).parent / "dataset_metadata.json").is_file()
+
+
+def test_preparation_tools_follow_existing_artifact_dependencies(tmp_path):
+    from medbenchagent.agents.data_pipeline import available_tools
+    from medbenchagent.runtime.dependencies import publish
+    c = {"run_directory": str(tmp_path), "sources": [{"id": "one"}], "dataset_scope": "dataset"}
+    assert "select_source" in available_tools(c)
+    assert "inspect_images" not in available_tools(c)
+    c["source_scope"] = "one"
+    publish(c, "Source", {}, ())
+    assert "inspect_files" in available_tools(c)
+    publish(c, "Annotation", {}, ("Source",))
+    assert "inspect_images" in available_tools(c)
+    assert "normalize_images" not in available_tools(c)
+    publish(c, "ImageInventory", {}, ("Annotation",))
+    publish(c, "ImagePlan", {}, ("ImageInventory",))
+    assert "normalize_images" in available_tools(c)
+    publish(c, "Annotation", {"revision": 2}, ("Source",))
+    assert "normalize_images" not in available_tools(c)

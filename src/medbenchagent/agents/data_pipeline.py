@@ -549,6 +549,49 @@ def describe(context):
     }
 
 
+def available_tools(context):
+    """Expose only tools whose existing source/dataset dependencies are current."""
+    available = {"ask_user", "save_dataset_metadata"}
+
+    def current(*kinds):
+        try:
+            require(context, *kinds)
+            return True
+        except ValueError:
+            return False
+
+    active = context.get("source_scope")
+    normalized = context.get("normalized_sources", {})
+    if not active or active in normalized:
+        available.add("select_source")
+    if active and active not in normalized and current("Source"):
+        available |= {"inspect_files", "read_text", "inspect_table", "inspect_join", "inspect_metadata", "inspect_source_values"}
+        if current("Inventory"):
+            available.add("save_preparation_plan")
+        if current("Mapping"):
+            plan = json.loads(Path(context["preparation_plan_path"]).read_text(encoding="utf-8"))
+            if plan.get("fallback_reason"):
+                available.add("write_fallback")
+                if current("AnnotationScript"):
+                    available.add("execute_preparation")
+            else:
+                available.add("execute_preparation")
+        if current("Annotation"):
+            available.add("inspect_images")
+        if current("ImageInventory"):
+            available |= {"read_image_inventory", "save_image_plan"}
+        if current("ImagePlan"):
+            available.add("normalize_images")
+    if any(current(f"source/{identifier}/NormalizedSource") for identifier in normalized):
+        available.add("inspect_normalized")
+    ids = [source["id"] for source in context["sources"]]
+    if ids and all(identifier in normalized and current(f"source/{identifier}/NormalizedSource") for identifier in ids):
+        available.add("save_harmonization")
+        if current("Harmonization"):
+            available.add("finish")
+    return available
+
+
 def compile_pipeline(*, checkpointer=None):
     from medbenchagent.agents.data_processing import (
         inspect_files,
@@ -595,6 +638,7 @@ def compile_pipeline(*, checkpointer=None):
         tools,
         describe,
         finish,
+        available_tools=available_tools,
         args_schemas={
             "select_source": SourceChoice,
             "inspect_files": InspectFilesArguments,

@@ -14,12 +14,21 @@ class Evidence(NoArguments):
     chunk_id: NonEmpty
 
 
+class SemanticBasis(NoArguments):
+    field: NonEmpty
+    interpretation: NonEmpty
+    source: Literal["material", "document", "user"]
+    reference: NonEmpty
+    quote: NonEmpty
+
+
 class LeafArguments(NoArguments):
     leaf_id: NonEmpty
     concept_id: NonEmpty
     description: NonEmpty
     protocol: Protocol
     evidence: list[Evidence] = Field(default_factory=list)
+    semantic_basis: list[SemanticBasis] = Field(default_factory=list)
 
 
 class ConceptArguments(NoArguments):
@@ -95,6 +104,7 @@ class Leaf(NoArguments):
     category: NonEmpty
     protocol: Protocol
     evidence: list[Evidence]
+    semantic_basis: list[SemanticBasis] = Field(default_factory=list)
     eligible_count: NonNegative | None = None
 
 
@@ -258,6 +268,6 @@ def validate_plan(tree: object) -> list[PlanIssue]:
     if draft.review.revision != draft.revision or draft.review.issues or draft.correction_open:
         issues.append({"path": ["review"], "message": "Current tree has not passed global review"})
     for key, leaf in draft.tasks.items():
-        if leaf.eligible_count is None:
-            issues.append({"path": ["tasks", key, "eligible_count"], "message": "Exact capacity is required"})
+        if leaf.eligible_count is None or leaf.eligible_count <= 0:
+            issues.append({"path": ["tasks", key, "eligible_count"], "message": "Exact positive capacity is required"})
     return issues

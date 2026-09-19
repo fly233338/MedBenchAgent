@@ -25,6 +25,24 @@ def test_explicit_unknown_does_not_fall_back(tmp_path, monkeypatch):
         select_datasets(c)
 
 
+def test_explicit_ids_bypass_model_and_new_preparation_invalidates_selection(tmp_path, monkeypatch):
+    from medbenchagent.runtime.dependencies import require
+    c = context(tmp_path, monkeypatch)
+    prepared_dataset(tmp_path, "a", monkeypatch)
+    c["requested_dataset_ids"] = ["a"]
+    publish(c, "PreparedCandidates", {"entries": {}}, ())
+    monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: pytest.fail("Explicit IDs must bypass LLM"))
+    outcome = select_datasets(c)
+    c.update(outcome["updates"])
+    assert c["selected_dataset_ids"] == ["a"]
+    require(c, "DatasetSelection")
+    publish(c, "PreparedCandidates", {"entries": {"new": {}}}, ())
+    with pytest.raises(ValueError, match="stale"):
+        require(c, "DatasetSelection")
+    with pytest.raises(ValueError, match="new selection operation"):
+        select_datasets(c)
+
+
 def test_single_and_multiple_selection(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
     prepared_dataset(tmp_path, "a", monkeypatch)

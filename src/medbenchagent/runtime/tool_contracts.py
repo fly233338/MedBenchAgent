@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from medbenchagent.data.contracts import SourcesArguments
 
 
@@ -23,6 +23,32 @@ class AskUserArguments(NoArguments):
 
 class FeedbackArguments(NoArguments):
     feedback: str = ""
+
+
+class Delegation(NoArguments):
+    objective: NonEmpty
+    constraints: list[NonEmpty] = Field(default_factory=list)
+    preferences: list[NonEmpty] = Field(default_factory=list)
+    revision_notes: str = ""
+
+
+class DelegationArguments(NoArguments):
+    delegation: Delegation
+
+
+class RunIntent(NoArguments):
+    intent: Literal["prepare_dataset", "build_benchmark", "prepare_then_build"]
+    prepare_dataset_ids: list[DatasetId] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_targets(self):
+        if len(self.prepare_dataset_ids) != len(set(self.prepare_dataset_ids)):
+            raise ValueError("Preparation targets must be unique")
+        if self.intent != "build_benchmark" and not self.prepare_dataset_ids:
+            raise ValueError("Preparation intent requires dataset IDs; clarify missing IDs")
+        if self.intent == "build_benchmark" and self.prepare_dataset_ids:
+            raise ValueError("Use prepare_then_build when new data needs preparation")
+        return self
 
 
 

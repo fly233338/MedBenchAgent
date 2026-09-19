@@ -26,7 +26,7 @@ def context(tmp_path, monkeypatch):
         "construction_events_path": str(tmp_path / "events.jsonl"),
         "limits": {"max_reworks": 1},
     }
-    for kind in ("Requirement", "DataConfig", "Dataset", "DatasetCard", "Materials", "PlanningConfig"):
+    for kind in ("Requirement", "DataConfig", "Dataset", "DatasetCard", "Materials", "PlanningConfig", "PlanningDelegation"):
         publish(c, kind, {"value": 1}, ())
     monkeypatch.setattr(
         planning,
@@ -366,3 +366,48 @@ def test_unsupported_dataset_publishes_empty_plan(tmp_path, monkeypatch):
     call(c, planning.review_tree)
     assert call(c, planning.finish)["status"] == "complete"
     assert planning._tree(c)["tasks"] == {}
+
+
+def test_review_receives_mapping_and_verified_semantic_basis(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    protocol = _task("letter", ["image.annotation.status"])["protocol"]
+    reference = 'local-decision'
+    c["decisions"] = {reference: "benign means Benign; malignant means Malignant"}
+    basis = [{"field": "image.annotation.status", "source": "user", "reference": reference,
+              "quote": c["decisions"][reference], "interpretation": "Preserve annotated pathology status"}]
+    call(c, planning.save_leaf, leaf_id="leaf", concept_id="core", description="Status",
+         protocol=protocol, evidence=[], semantic_basis=basis)
+    complete(c)
+    call(c, planning.coverage_gap)
+    call(c, planning.finish_discovery)
+    captured = {}
+
+    def review(system, prompt):
+        captured.update(json.loads(prompt))
+        assert "Opaque codes" in system
+        return {"issues": []}
+
+    monkeypatch.setattr(planning, "complete_json", review)
+    call(c, planning.review_tree)
+    leaf = captured["leaves"]["leaf"]
+    assert leaf["protocol"]["answer_contract"]["value_mapping"] == protocol["answer_contract"]["value_mapping"]
+    assert leaf["semantic_basis"] == basis
+    assert leaf["eligible_count"] == 2
+    assert leaf["field_values"]["image.annotation.status"]["complete"]
+    basis[0]["quote"] = "fabricated source text"
+    with pytest.raises(ValueError, match="exact quotation"):
+        planning.save_leaf(c, leaf_id="leaf", concept_id="core", description="Status",
+                           protocol=protocol, evidence=[], semantic_basis=basis)
+
+
+def test_zero_capacity_and_changed_delegation_block_publication(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    ready(c, monkeypatch)
+    call(c, planning.finish)
+    publish(c, "PlanningDelegation", {"objective": "Revise priorities"}, ())
+    with pytest.raises(ValueError, match="stale"):
+        require(c, "Plan")
+    assert planning._tree(c)["review"] == {}
+    monkeypatch.setattr(planning, "validate_dataset_protocol", lambda *args: 0)
+    with pytest.raises(ValueError, match="positive eligible_count"):
+        save(c)

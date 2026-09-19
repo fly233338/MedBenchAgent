@@ -24,19 +24,24 @@ class Selection(Contract):
 
 def _candidate_snapshot(context, path):
     requirement_version = require(context, "Requirement")["Requirement"]["id"]
+    prepared_version = context.get("artifact_versions", {}).get("PreparedCandidates")
     if path.is_file():
         snapshot = json.loads(path.read_text(encoding="utf-8"))
         if (snapshot["requirement_version"] != requirement_version or
-                snapshot["requirement"] != context["user_requirement"]):
+                snapshot["requirement"] != context["user_requirement"] or
+                snapshot["prepared_version"] != prepared_version or
+                snapshot["explicit_dataset_ids"] != context.get("requested_dataset_ids")):
             raise ValueError("Selection inputs changed; start a new selection operation")
     else:
-        catalog = load_dataset_catalog(context.get("catalog_path"))
+        catalog = load_dataset_catalog(context.get("registration_catalog_path") or context.get("catalog_path"))
         entries = {e["dataset_id"]: e for e in catalog}
         entries.update(context.get("prepared_entries", {}))
         catalog = list(entries.values())
         snapshot = {
             "schema_version": "dataset-candidates.v1",
             "requirement": context["user_requirement"], "requirement_version": requirement_version,
+            "benchmark_info": context.get("benchmark_info", {}),
+            "prepared_version": prepared_version, "explicit_dataset_ids": context.get("requested_dataset_ids"),
             "catalog_entries": catalog,
             "name_resolution_input": {
                 "requirement": context["user_requirement"],
@@ -45,12 +50,14 @@ def _candidate_snapshot(context, path):
         }
         atomic_write_json(path, snapshot)
     if "requested_dataset_ids" not in snapshot:
-        requested = ExplicitDatasets.model_validate(complete_json(
-            'Extract only datasets explicitly named by the user. Return {"dataset_ids":null} if none. '
-            'Otherwise return their IDs in dataset_ids. Resolve supplied names to IDs; preserve unknown names '
-            'as unknown IDs so validation can report them. Do not recommend datasets.',
-            json.dumps(snapshot["name_resolution_input"], ensure_ascii=False),
-        )).dataset_ids
+        requested = context.get("requested_dataset_ids")
+        if requested is None:
+            requested = ExplicitDatasets.model_validate(complete_json(
+                'Extract only datasets explicitly named by the user. Return {"dataset_ids":null} if none. '
+                'Otherwise return their IDs in dataset_ids. Resolve supplied names to IDs; preserve unknown names '
+                'as unknown IDs so validation can report them. Do not recommend datasets.',
+                json.dumps(snapshot["name_resolution_input"], ensure_ascii=False),
+            )).dataset_ids
         if requested is not None and (not requested or len(requested) != len(set(requested))):
             raise ValueError("Explicit dataset selection must be nonempty and unique")
         snapshot["requested_dataset_ids"] = requested
@@ -94,7 +101,8 @@ def _candidate_snapshot(context, path):
     order = list(frozen)
     snapshot.update(candidates=frozen, candidate_order=order, excluded_candidates=excluded,
                     selection_method="explicit" if requested is not None else "only_candidate" if len(order) == 1 else "model" if order else "no_candidates",
-                    selection_input={"requirement": snapshot["requirement"], "cards": [frozen[k]["summary"] for k in order]})
+                    selection_input={"requirement": snapshot["requirement"], "benchmark_info": snapshot["benchmark_info"],
+                                     "cards": [frozen[k]["summary"] for k in order]})
     atomic_write_json(path, snapshot)
     return snapshot
 
@@ -104,7 +112,8 @@ def select_datasets(context):
     folder = Path(context["operation_directory"])
     snapshot_path = folder / "dataset_candidates.json"
     snapshot = _candidate_snapshot(context, snapshot_path)
-    publish(context, "DatasetCandidates", {"path": str(snapshot_path)}, ("Requirement",))
+    candidate_deps = ("Requirement", "PreparedCandidates") if "PreparedCandidates" in context.get("artifact_versions", {}) else ("Requirement",)
+    publish(context, "DatasetCandidates", {"path": str(snapshot_path)}, candidate_deps)
     path = folder / "dataset_selection.json"
     if path.is_file():
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -120,6 +129,7 @@ def select_datasets(context):
         else:
             response = complete_json(
                 "Select relevant medical datasets with high recall; selection only authorizes deeper task planning, "
+                "Use the benchmark clinical scope, explicit disease/modality restrictions and evaluation focus. "
                 "not guaranteed sample contribution. Never invent IDs. Return selected_dataset_ids and selection_reason "
                 "keyed by exactly the selected IDs. Return an empty selection if none match.",
                 json.dumps(snapshot["selection_input"], ensure_ascii=False),

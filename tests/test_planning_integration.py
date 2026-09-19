@@ -25,8 +25,8 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
     identifiers = ["a", "b"][:dataset_count]
     for identifier in identifiers:
         prepared_dataset(tmp_path, identifier, monkeypatch)
-    info = {"disease": "Breast disease", "modality": "US", "language": "en",
-            "description": "Classify status", "sample_count": dataset_count * 2 + 2}
+    info = {"clinical_scope": "Breast disease", "diseases": [], "modalities": ["US"], "language": "en",
+            "evaluation_focus": "Classify status", "sample_count": dataset_count * 2 + 2}
     changed = {**info, "sample_count": 1, "language": "zh"}
     briefs = iter([info, changed])
     monkeypatch.setattr("medbenchagent.planning.benchmark_info.complete_json", lambda *a: next(briefs) if revise else info)
@@ -43,8 +43,10 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
     allocated = [False]
     def model(instructions, prompt):
         if instructions.startswith("Build a two-level"):
+            assert json.loads(prompt)["state"]["delegation"]["objective"] == "Follow the requested benchmark scope"
             name, arguments = next(planning_actions)
         elif instructions.startswith("Distribute"):
+            assert json.loads(prompt)["state"]["delegation"]["objective"] == "Follow the requested benchmark scope"
             if not allocated[0]:
                 groups = json.loads(prompt)["state"]["groups"]
                 name, arguments = "submit", {"concepts": {k: {"weight": 1.0, "reason": "Requested ability"} for k in groups}}
@@ -53,6 +55,8 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
                 name, arguments = "finish", {}
         else:
             name, arguments = next(supervisor)
+        if name in {"plan", "allocate"}:
+            arguments = {**arguments, "delegation": {"objective": "Follow the requested benchmark scope"}}
         return {"tool": name, "arguments": arguments, "reason": "Required action"}
     monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", model)
     monkeypatch.setattr("medbenchagent.agents.task_planning.complete_json", lambda *a: {"issues": []})
@@ -66,7 +70,7 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
         "items": [{"item_id": i["item_id"], "decision": "pass", "violations": []} for i in json.loads(prompt)["items"]]})
     graph = compile_benchmark_graph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "integration"}, "recursion_limit": 300}
-    output = graph.invoke({"user_requirement": "Use datasets " + ", ".join(identifiers)}, config)
+    output = graph.invoke({"user_requirement": "Use datasets " + ", ".join(identifiers), "entry_intent": "build_benchmark"}, config)
     if ask_global or revise:
         assert output["__interrupt__"]
         output = graph.invoke(Command(resume="Use one Chinese question" if revise else "Confirmed goal"), config)

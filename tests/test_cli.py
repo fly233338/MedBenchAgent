@@ -168,3 +168,45 @@ def test_parser_keeps_build_parameter_free_and_balance_arguments() -> None:
     assert balance.input_path == "raw.jsonl"
     assert balance.output_path == "balanced.jsonl"
     assert balance.seed == 0
+
+
+def test_named_experiment_opens_completed_checkpoint_without_execution(tmp_path, monkeypatch):
+    from medbenchagent.runtime.experiments import create_experiment, get_experiment
+    settings = _settings(tmp_path)
+    entry = create_experiment(settings.paths.runs_root, "pilot")
+    snapshot = SimpleNamespace(values={"status": "complete", "run_id": "run", "run_directory": "runs/run",
+                                      "context": {"run_intent": {"intent": "build_benchmark"},
+                                                  "selected_dataset_ids": ["a"]}}, next=(), tasks=())
+
+    class FinishedGraph:
+        def get_state(self, config):
+            assert config["configurable"]["thread_id"] == entry["thread_id"]
+            return snapshot
+
+        def stream(self, *args, **kwargs):
+            raise AssertionError("Completed experiments must not execute")
+
+    messages = []
+    assert cli.run_interactive_build(settings=settings, graph=FinishedGraph(), experiment=entry,
+                                     input_fn=lambda _: (_ for _ in ()).throw(AssertionError("No new input")),
+                                     output=messages.append) == 0
+    saved = get_experiment(settings.paths.runs_root, "pilot")
+    assert saved["status"] == "complete" and saved["datasets"] == ["a"]
+    assert not any("Resume identifier" in message for message in messages)
+
+
+def test_experiment_registry_and_snapshot_status(tmp_path):
+    import pytest
+    from medbenchagent.runtime.experiments import create_experiment, list_experiments, snapshot_updates
+    root = tmp_path / "runs"
+    entry = create_experiment(root, "prepare-one", dataset_id="one")
+    assert list_experiments(root)[0]["thread_id"] == entry["thread_id"]
+    with pytest.raises(ValueError, match="already exists"):
+        create_experiment(root, "prepare-one")
+    snapshot = SimpleNamespace(values={}, next=("supervisor",), tasks=(SimpleNamespace(interrupts=("question",)),))
+    assert snapshot_updates(snapshot, interrupted=True)["status"] == "waiting_input"
+    snapshot.tasks = ()
+    assert snapshot_updates(snapshot)["status"] == "resumable"
+    assert snapshot_updates(snapshot, interrupted=True)["status"] == "interrupted"
+    args = cli._parser().parse_args(["experiment", "new", "pilot", "--dataset", "a", "--dataset", "b"])
+    assert args.dataset_ids == ["a", "b"]

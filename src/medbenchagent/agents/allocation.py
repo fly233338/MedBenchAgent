@@ -99,7 +99,7 @@ def submit(context, **intent):
     atomic_write_json(path, allocation)
     return result("success", "Allocation computed", allocation_path=str(path),
                   **publish(context, "Allocation", {"path": str(path)},
-                            ("Requirement", "DatasetSelection", "AllocationConfig",
+                            ("Requirement", "DatasetSelection", "AllocationConfig", "AllocationDelegation",
                              *(f"dataset/{d}/Plan" for d in context["selected_dataset_ids"]))))
 
 
@@ -118,6 +118,7 @@ def describe(context):
                 for key, leaf in leaves.items()
             }
     return {"requirement": context["user_requirement"], "target": context["benchmark_info"]["sample_count"],
+            "benchmark_info": context["benchmark_info"], "delegation": context.get("delegation"),
             "groups": groups}
 
 
@@ -125,6 +126,7 @@ def compile_allocation_agent():
     return compile_agent("AllocationAgent",
                          "Distribute the requested benchmark budget Concept first, then Dataset, then Leaf. "
                          "Submit justified Concept weights based on user importance, never number of leaves. "
+                         "Follow the structured delegation within the original user requirement; never invent preferences. "
                          "Use null datasets/leaves for equal lower-level coverage unless the requirement justifies "
                          "different weights. Zero explicitly excludes a member. Code computes all counts. Finish after submit.",
                          {"submit": submit},

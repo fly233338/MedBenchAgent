@@ -15,6 +15,7 @@ from medbenchagent.runtime.tool_contracts import (
     MaterialArguments,
     MaterialsArguments,
     SearchArguments,
+    ReadTextArguments,
 )
 from medbenchagent.planning.tree import (
     LeafArguments,
@@ -179,6 +180,7 @@ def select_materials(context, *, files):
         selected_material_files=files,
         materials_root=str(root),
         retrieved_evidence=[],
+        retrieved_passages={},
         **versions,
     )
 
@@ -199,11 +201,60 @@ def search_materials(context, *, query, limit=5):
     except RagUnavailable as exc:
         return result("failed", str(exc))
     evidence = list(context.get("retrieved_evidence", []))
+    passages = dict(context.get("retrieved_passages", {}))
     for chunk in chunks:
         ref = {key: chunk[key] for key in ("pdf", "page", "chunk_id")}
         if ref not in evidence:
             evidence.append(ref)
-    return result("success", json.dumps(chunks, ensure_ascii=False), retrieved_evidence=evidence)
+        passages[chunk["chunk_id"]] = chunk
+    return result("success", json.dumps(chunks, ensure_ascii=False), retrieved_evidence=evidence,
+                  retrieved_passages=passages)
+
+
+def read_dataset_document(context, *, path, offset=0):
+    """Read UTF-8 source documentation as source_id/relative/path (see source manifests).
+
+    Use path='dataset_metadata.json' for frozen source quotations. Empty path is not allowed.
+    Returned reference and text can ground semantic_basis; quotations must match exactly.
+    """
+    from medbenchagent.data.validation import source_image_path
+    require(context, "Dataset")
+    bundle = Path(context["annotation_path"]).parent
+    if path == "dataset_metadata.json":
+        document = bundle / path
+    else:
+        source_id, separator, relative = path.partition("/")
+        if not separator or source_id not in {p.name for p in (bundle / "source_manifests").glob("*") if p.is_dir()}:
+            raise ValueError("Use a registered source ID and relative documentation path")
+        source = _read(bundle / "source_manifests" / source_id / "source.json")
+        document = source_image_path(source["root"], relative)
+    with document.open(encoding="utf-8") as handle:
+        handle.read(offset)
+        text = handle.read(12000)
+    reference = f"{path}:{offset}"
+    documents = {**context.get("source_documents", {}), reference: text}
+    return result("success", json.dumps({"reference": reference, "text": text}, ensure_ascii=False),
+                  source_documents=documents)
+
+
+def _validate_semantic_basis(context, protocol, basis):
+    from medbenchagent.planning.tree import SemanticBasis
+    checked = []
+    for item in basis:
+        item = SemanticBasis.model_validate(item).model_dump()
+        if item["field"] not in protocol["data_binding"]["supporting_fields"]:
+            raise ValueError("Semantic basis must reference a bound annotation field")
+        reference = item["reference"]
+        if item["source"] == "material":
+            text = context.get("retrieved_passages", {}).get(reference, {}).get("text", "")
+        elif item["source"] == "document":
+            text = context.get("source_documents", {}).get(reference, "")
+        else:
+            text = context.get("decisions", {}).get(reference, "")
+        if item["quote"] not in text:
+            raise ValueError("Semantic basis requires an exact quotation from a retrieved source or user decision")
+        checked.append(item)
+    return checked
 
 
 def _tree(context):
@@ -273,7 +324,7 @@ def _persist(context, tree, *, changed=False):
         context,
         "PlanningDraft",
         {"path": str(path)},
-        ("Dataset", "DatasetCard", "Requirement", "Materials", "PlanningConfig"),
+        ("Dataset", "DatasetCard", "Requirement", "Materials", "PlanningConfig", "PlanningDelegation"),
     )
     return result(
         "success",
@@ -308,7 +359,7 @@ def _validate_evidence(context, evidence):
         raise ValueError("Medical evidence must reference a retrieved paragraph")
 
 
-def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence):
+def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence, semantic_basis=None):
     """Create or revise a stable leaf identity, including reparenting; execution is entirely Protocol-defined."""
     tree = _tree(context)
     if (
@@ -320,6 +371,9 @@ def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence):
     _validate_evidence(context, evidence)
     _subset(_profile(context), protocol["data_binding"]["supporting_fields"])
     capacity = validate_dataset_protocol(protocol, iter_records(context["dataset_access_manifest"]))
+    if capacity <= 0:
+        raise ValueError("Leaf requires positive eligible_count; revise the Protocol or mark the Concept unsupported")
+    basis = _validate_semantic_basis(context, protocol, semantic_basis or [])
     previous = tree["tasks"].get(leaf_id)
     if previous and previous["concept_id"] != concept_id:
         tree["concepts"][previous["concept_id"]]["status"] = "pending"
@@ -329,6 +383,7 @@ def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence):
         "description": description,
         "protocol": protocol,
         "evidence": evidence,
+        "semantic_basis": basis,
         "category": tree["concepts"][concept_id]["category"],
     }
     tree["concepts"][concept_id]["status"] = "pending"
@@ -359,8 +414,12 @@ def complete_concept(context, *, concept_id, status, reason):
     if children:
         for leaf in children:
             _subset(_profile(context), leaf["protocol"]["data_binding"]["supporting_fields"])
-            validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
+            capacity = validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
+            if capacity <= 0:
+                raise ValueError("Remove or revise zero-capacity leaves before completing the Concept")
+            leaf["eligible_count"] = capacity
             _validate_evidence(context, leaf["evidence"])
+            _validate_semantic_basis(context, leaf["protocol"], leaf.get("semantic_basis", []))
     tree["concepts"][concept_id].update(status=status, reason=reason)
     return _persist(context, tree, changed=True)
 
@@ -448,7 +507,7 @@ def finish_discovery(context):
 
 
 def review_tree(context):
-    """Review compact concept/leaf summaries; correction rounds consume persistent Harness rework budget."""
+    """Review full mappings and source evidence; corrections consume persistent rework budget."""
     tree = _tree(context)
     if not concepts_complete(tree) or not tree["discovery_complete"]:
         raise ValueError("Finish concepts and extension discovery first")
@@ -457,24 +516,26 @@ def review_tree(context):
     leaves = {}
     for key, leaf in tree["tasks"].items():
         protocol = leaf["protocol"]
-        leaves[key] = {
-            "concept_id": leaf["concept_id"],
-            "description": leaf["description"],
-            "execution_type": protocol["execution_type"],
-            "metric": protocol["metric"],
-            "data_binding": protocol["data_binding"],
-            "question_intent": protocol["question_intent"],
-            "medical_constraints": protocol["medical_constraints"],
-            "options": protocol["answer_contract"]["options"],
-            "mapped_value_count": len(protocol["answer_contract"]["value_mapping"]),
-        }
+        fields = protocol["data_binding"]["supporting_fields"]
+        _validate_semantic_basis(context, protocol, leaf.get("semantic_basis", []))
+        leaves[key] = {**leaf, "annotation_evidence": _subset(_profile(context), fields),
+                       "field_values": {field: DatasetQuery(context["dataset_access_manifest"]).values(field, limit=50)
+                                        for field in fields},
+                       "material_passages": [context.get("retrieved_passages", {}).get(e["chunk_id"], {})
+                                             for e in leaf["evidence"]]}
     review = complete_json(
         "Review concept hierarchy, duplicated semantics, overlapping leaves, missing siblings and conflicting Protocols. "
+        "Check EVERY raw_value-to-option mapping against annotation facts and quoted semantic_basis. "
+        "Opaque codes, abbreviations and ambiguous labels require dataset-specific documented meaning or a user decision; "
+        "medical convention is not evidence of a dataset's encoding. Missing or contradictory grounding requires revise "
+        "with a specific request to obtain evidence or ask_user; never approve a guess. "
+        "Card is a search hint, not proof. Unsupported concepts are valid: never add leaves merely to fill the Blueprint. "
         'Return {"issues":[{"action":"merge|remove|reparent|revise|add_leaf","node_ids":["id"],"reason":"specific correction"}]}. '
         "An empty list means approved. Propose targeted changes, never rewrite the entire tree.",
         json.dumps(
             {
                 "requirement": context["benchmark_info"],
+                "delegation": context.get("delegation"),
                 "concepts": tree["concepts"],
                 "leaves": leaves,
             },
@@ -509,6 +570,7 @@ def finish(context):
     tree = _tree(context)
     for leaf in tree["tasks"].values():
         leaf["eligible_count"] = validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
+        _validate_semantic_basis(context, leaf["protocol"], leaf.get("semantic_basis", []))
     errors = validate_plan(tree)
     if errors:
         raise ValueError(json.dumps(errors, ensure_ascii=False))
@@ -518,7 +580,7 @@ def finish(context):
         context,
         "Plan",
         {"blueprint": str(path)},
-        ("Requirement", "Dataset", "DatasetCard", "Materials", "PlanningConfig", "PlanningDraft"),
+        ("Requirement", "Dataset", "DatasetCard", "Materials", "PlanningConfig", "PlanningDraft", "PlanningDelegation"),
     )
     return result(
         "complete",
@@ -558,6 +620,11 @@ def describe(context):
         "discovery_complete": tree["discovery_complete"],
         "dataset_card": context.get("dataset_card_summary"),
         "feedback": context.get("feedback"),
+        "delegation": context.get("delegation"),
+        "user_requirement": context.get("user_requirement"),
+        "semantic_sources": {"documents": context.get("source_documents", {}),
+                             "user_decisions": context.get("decisions", {})},
+        "source_ids": [p.name for p in (Path(context["annotation_path"]).parent / "source_manifests").glob("*") if p.is_dir()],
         "clarification": context.get("clarification"),
         "dataset": context.get("selected_dataset_id"),
     }
@@ -574,7 +641,7 @@ def available_tools(context):
         require(context, "Dataset")
     except ValueError:
         return available
-    available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal", "inspect_field_by_source", "sample_records", "inspect_field_pair", "inspect_array", "inspect_protocol_capacity"}
+    available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal", "inspect_field_by_source", "sample_records", "inspect_field_pair", "inspect_array", "inspect_protocol_capacity", "read_dataset_document"}
     try:
         require(context, "Materials")
     except ValueError:
@@ -602,6 +669,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         inspect_field_by_source, sample_records, inspect_field_pair, inspect_array, inspect_protocol_capacity,
         list_materials,
         read_material,
+        read_dataset_document,
         select_materials,
         search_materials,
         read_node,
@@ -623,11 +691,17 @@ def compile_task_planning_agent(*, checkpointer=None):
         "RAG can be called at any concept, leaf, protocol or extension step, with revised queries as needed; annotations alone establish labels. "
         "Finish discovery, review globally, make targeted corrections within the rework budget, then publish the dataset-local plan and its exact capacities. "
         "Do not select datasets or allocate sample counts. Use ask_user for unresolved source semantics. "
+        "Dataset Card is only a triage/search hint; inspect Profile, exact annotation values and structures for evidence. "
+        "Unsupported concepts are valid. Follow the structured delegation within the original user's requirements. "
+        "For opaque codes or ambiguous abbreviations obtain dataset-specific documentation using read_dataset_document, "
+        "search_materials or ask_user; never infer code meanings from medical knowledge. Store field interpretation and "
+        "exact source quotation in semantic_basis (user reference is the decision key in semantic_sources.user_decisions). "
         "When revising after feedback, preserve unchanged leaf identities and protocols. Finish only when validation permits.",
         {f.__name__: f for f in functions},
         describe,
         finish,
         args_schemas={
+            "read_dataset_document": ReadTextArguments,
             "list_fields": PageArguments,
             "read_fields": FieldArguments,
             "read_field_values": FieldValuesArguments,

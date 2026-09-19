@@ -300,24 +300,29 @@ def run_interactive_build(
     graph: Any = None,
     resume: str | None = None,
     dataset_id: str | None = None,
+    dataset_ids: list[str] | None = None,
+    experiment: dict | None = None,
 ) -> int:
     """Run the benchmark graph as a local, terminal-driven conversation."""
     _enforce_offline_mode()
     config: dict[str, Any] | None = None
     checkpoint_connection = None
     announced_run_directory: str | None = None
+    interrupted = False
+    failed = False
+    from medbenchagent.runtime.experiments import update_experiment, snapshot_updates
     try:
         requirement = (
             ""
-            if resume
-            else _read_nonempty("Describe the Medical VLM benchmark to build: ", input_fn, output)
+            if resume or experiment
+            else _read_nonempty("Describe the dataset preparation or Medical VLM benchmark: ", input_fn, output)
         )
         if settings is None:
             from medbenchagent.settings import get_settings
 
             settings = get_settings()
         _print_settings(settings, output)
-        errors = [] if resume or dataset_id else _preflight_errors(settings)
+        errors = [] if resume or dataset_id or experiment else _preflight_errors(settings)
         if errors:
             output("")
             output("Local preflight failed:")
@@ -336,19 +341,37 @@ def run_interactive_build(
             checkpoint_connection = sqlite3.connect(
                 str(settings.paths.runs_root / "checkpoints.sqlite"), check_same_thread=False
             )
-            graph = compile_benchmark_graph(checkpointer=SqliteSaver(checkpoint_connection), preparation_only=dataset_id is not None)
+            graph = compile_benchmark_graph(checkpointer=SqliteSaver(checkpoint_connection))
         config = {
-            "configurable": {"thread_id": resume or str(uuid.uuid4())},
+            "configurable": {"thread_id": experiment["thread_id"] if experiment else resume or str(uuid.uuid4())},
             "recursion_limit": 1_000,
         }
-        output(f"Resume identifier: {config['configurable']['thread_id']}")
-        next_input: object = {"user_requirement": requirement, "prepare_dataset_id": dataset_id}
+        output(f"Experiment: {experiment['name']}" if experiment else f"Resume identifier: {config['configurable']['thread_id']}")
+        if experiment:
+            previous = graph.get_state(config)
+            dataset_id = experiment["dataset_id"]
+            dataset_ids = experiment["requested_dataset_ids"]
+            if previous.values:
+                resume = experiment["thread_id"]
+            elif experiment.get("run_id"):
+                raise ValueError("Experiment checkpoint is missing; use the preserved run artifacts for recovery")
+            else:
+                requirement = _read_nonempty("Describe the dataset preparation or Medical VLM benchmark: ", input_fn, output)
+        next_input: object = {"user_requirement": requirement, "prepare_dataset_id": dataset_id,
+                              "requested_dataset_ids": dataset_ids,
+                              "entry_intent": "prepare_dataset" if dataset_id else None if experiment else "build_benchmark"}
         if resume:
             previous = graph.get_state(config)
             if not previous.values:
                 raise ValueError("Unknown resume identifier")
-            if previous.values.get("context", {}).get("prepare_dataset_id") != dataset_id:
+            if not experiment and previous.values.get("context", {}).get("prepare_dataset_id") != dataset_id:
                 raise ValueError("Resume with the original build/prepare command and dataset ID")
+            if dataset_ids is not None and dataset_ids != previous.values.get("context", {}).get("requested_dataset_ids"):
+                raise ValueError("Resume preserves the original dataset selection; do not change --dataset")
+            if previous.values.get("status") == "complete" and not previous.next:
+                _print_result(previous.values, output)
+                _render_artifact_paths(previous.values, output)
+                return 0
             from medbenchagent.runtime.dependencies import verify_resume
             verify_resume(previous.values["context"])
             pending = [i for task in previous.tasks for i in task.interrupts]
@@ -359,6 +382,8 @@ def run_interactive_build(
                 next_input = None
 
         while True:
+            if experiment:
+                update_experiment(settings.paths.runs_root, experiment["name"], status="running")
             interrupt: dict[str, Any] | None = None
             for event in graph.stream(
                 next_input,
@@ -376,6 +401,8 @@ def run_interactive_build(
                     interrupt = interrupt or _interrupt_payload(payload)
 
             snapshot = graph.get_state(config)
+            if experiment:
+                update_experiment(settings.paths.runs_root, experiment["name"], **snapshot_updates(snapshot))
             current_run_directory = snapshot.values.get("run_directory")
             if (
                 isinstance(current_run_directory, str)
@@ -394,23 +421,74 @@ def run_interactive_build(
             _print_result(snapshot.values, output)
             return 0 if snapshot.values.get("status", "complete") == "complete" else 1
     except (EOFError, KeyboardInterrupt):
+        interrupted = True
         output("")
         command = f"prepare --dataset-id {dataset_id}" if dataset_id else "build"
-        output(f"Run interrupted. Resume with: medbenchagent {command} --resume <resume identifier>.")
+        recovery = f"experiment {experiment['name']}" if experiment else f"{command} --resume <resume identifier>"
+        output(f"Run interrupted. Resume with: medbenchagent {recovery}.")
         if run_directory := _run_directory(graph, config):
             output(f"Preserved run artifacts: {run_directory}")
         return 130
     except Exception as exc:
+        failed = True
         output("")
         output(f"Benchmark construction failed: {type(exc).__name__}: {exc}")
         command = f"prepare --dataset-id {dataset_id}" if dataset_id else "build"
-        output(f"Files and checkpoints are preserved. Use {command} --resume <resume identifier>.")
+        recovery = f"experiment {experiment['name']}" if experiment else f"{command} --resume <resume identifier>"
+        output(f"Files and checkpoints are preserved. Use {recovery}.")
         if run_directory := _run_directory(graph, config):
             output(f"Preserved run artifacts: {run_directory}")
         return 1
     finally:
+        if experiment and settings is not None:
+            try:
+                updates = snapshot_updates(graph.get_state(config), interrupted=interrupted or failed) if graph is not None and config else {"status": "interrupted" if interrupted or failed else "created"}
+                update_experiment(settings.paths.runs_root, experiment["name"], **updates)
+            except (OSError, ValueError, RuntimeError) as exc:
+                output(f"Could not update experiment registry: {exc}")
         if checkpoint_connection is not None:
             checkpoint_connection.close()
+
+
+def run_experiments(*, action=None, name=None, dataset_id=None, dataset_ids=None,
+                    input_fn=input, output=print, settings=None):
+    """A small terminal selector over named persistent threads."""
+    from medbenchagent.settings import get_settings
+    from medbenchagent.runtime.experiments import create_experiment, get_experiment, list_experiments
+    settings = settings or get_settings()
+    root = settings.paths.runs_root
+    if action != "new" and (name or dataset_id or dataset_ids):
+        raise ValueError("Creation options require 'experiment new <name>'")
+    try:
+        if action is None:
+            entries = list_experiments(root)
+            output("Experiments")
+            for index, entry in enumerate(entries, 1):
+                datasets = ", ".join(entry["datasets"]) or entry.get("dataset_id") or "—"
+                output(f"{index}. {entry['name']} | {entry['status']} | {entry['mode']} | {datasets} | {entry['updated_at']}")
+            output("[N] New experiment  [P] Prepare dataset  [Q] Quit")
+            choice = _read_nonempty("Select number or name: ", input_fn, output)
+            if choice.upper() == "Q":
+                return 0
+            if choice.upper() in {"N", "P"}:
+                name = _read_nonempty("Experiment name: ", input_fn, output)
+                if choice.upper() == "P":
+                    dataset_id = _read_nonempty("Dataset ID: ", input_fn, output)
+                action = "new"
+            elif choice.isdigit() and 1 <= int(choice) <= len(entries):
+                action = entries[int(choice) - 1]["name"]
+            else:
+                action = choice
+        if action == "new":
+            if not name:
+                raise ValueError("Use experiment new <name>")
+            entry = create_experiment(root, name, dataset_id=dataset_id, dataset_ids=dataset_ids)
+        else:
+            entry = get_experiment(root, action)
+        return run_interactive_build(settings=settings, experiment=entry, input_fn=input_fn, output=output)
+    except (EOFError, KeyboardInterrupt):
+        output("Experiment selection cancelled.")
+        return 130
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -421,6 +499,12 @@ def _parser() -> argparse.ArgumentParser:
         help="Run the benchmark graph as an offline interactive terminal workflow.",
     )
     build.add_argument("--resume", help="Resume a persisted task by its printed identifier.")
+    build.add_argument("--dataset", action="append", dest="dataset_ids", help="Select this dataset ID directly; repeat for multiple datasets.")
+    experiment = subcommands.add_parser("experiment", help="Create, select or resume a named experiment.")
+    experiment.add_argument("action", nargs="?", help="Existing experiment name, or new.")
+    experiment.add_argument("name", nargs="?", help="Name for a new experiment.")
+    experiment.add_argument("--prepare-dataset")
+    experiment.add_argument("--dataset", action="append", dest="dataset_ids")
     prepare = subcommands.add_parser("prepare", help="Prepare and register one dataset from a natural-language source description.")
     prepare.add_argument("--dataset-id", required=True)
     prepare.add_argument("--resume")
@@ -439,6 +523,13 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _parser()
     args = parser.parse_args()
+    if args.command in {None, "experiment"}:
+        try:
+            raise SystemExit(run_experiments(
+                action=getattr(args, "action", None), name=getattr(args, "name", None),
+                dataset_id=getattr(args, "prepare_dataset", None), dataset_ids=getattr(args, "dataset_ids", None)))
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.command == "refresh-card":
         from medbenchagent.data.dataset_catalog import refresh_card
         _print_json(refresh_card(args.dataset_id), print)
@@ -452,7 +543,7 @@ def main() -> None:
         validate_dataset_id(args.dataset_id)
         raise SystemExit(run_interactive_build(resume=args.resume, dataset_id=args.dataset_id))
     if args.command == "build":
-        exit_code = run_interactive_build(resume=args.resume)
+        exit_code = run_interactive_build(resume=args.resume, dataset_ids=args.dataset_ids)
         if exit_code:
             raise SystemExit(exit_code)
         return

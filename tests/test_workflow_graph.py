@@ -8,6 +8,22 @@ def test_supervisor_replaces_fixed_role_chain():
     assert set(graph.nodes) == {"__start__", "initialize", "supervisor", "__end__"}
 
 
+def test_intent_gates_preparation_and_benchmark_stages(tmp_path):
+    from medbenchagent.workflow.graph import set_intent, available_stages
+    from medbenchagent.runtime.dependencies import publish
+    context = {"run_directory": str(tmp_path)}
+    assert available_stages(context) == {"set_intent", "ask_user"}
+    context.update(set_intent(context, intent="prepare_dataset", prepare_dataset_ids=["new"])["updates"])
+    assert "prepare_data" in available_stages(context)
+    assert "specify" not in available_stages(context)
+    publish(context, "dataset/new/Dataset", {}, ())
+    context["prepared_entries"] = {"new": {}}
+    assert "finish" in available_stages(context)
+    context.update(set_intent(context, intent="prepare_then_build", prepare_dataset_ids=["new"])["updates"])
+    assert "specify" in available_stages(context)
+    assert "finish" not in available_stages(context)
+
+
 def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monkeypatch):
     actions = iter(
         [

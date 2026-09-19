@@ -12,6 +12,9 @@ Use Python 3.11 or newer and install the project dependencies:
 
 ```powershell
 uv sync
+uv run medbenchagent
+uv run medbenchagent experiment new rare-disease-pilot
+uv run medbenchagent experiment rare-disease-pilot
 uv run medbenchagent build
 uv run medbenchagent build --resume <printed-resume-identifier>
 ```
@@ -22,9 +25,22 @@ defaults. Keep secrets outside version control. The CLI disables optional extern
 and telemetry; the configured language-model API is still used.
 
 The static task template is `config/blueprint.json`. Runs never write back to this file.
-The CLI stores checkpoints in the configured runs directory and prints a resume identifier before execution.
+The default command and `experiment` show a text menu for creating and opening named experiments.
+An Experiment is a stable name for one persistent LangGraph thread, not a collection of runs.
+Names, status, datasets, Git commit and run-directory references live in `experiments.json` beside the
+configured `paths.runs_root`. SQLite checkpoints remain inside that runs directory and are the recovery authority.
+Open an experiment by name to resume an interruption or answer a pending question; opening a completed
+experiment only displays its results. The menu never resumes an experiment without your selection.
+The original `build/prepare --resume <identifier>` commands remain available for low-level recovery.
 Resume reads the saved run configuration and verifies the recorded source identities. Code or runtime-contract changes require a new run.
 Keep the run directory and prepared model assets intact; external input changes are picked up by a new run.
+
+The brief describes benchmark-level `clinical_scope`, optional `diseases`, `modalities` and
+`evaluation_focus`, plus the required output `language` and positive `sample_count`. Broad and multi-disease,
+multi-modality scopes are valid. Unstated task priorities are not invented.
+The Supervisor interprets preparation-only, build and preparation-then-build requests; professional agents
+receive explicit structured objectives, constraints, preferences and revision notes under stable instructions.
+Artifact dependencies determine which actions can execute. A changed delegation invalidates its downstream outputs.
 
 ## Data preparation and the standard interface
 
@@ -47,11 +63,14 @@ Prepare each independent dataset once, then reuse its registered Card in benchma
 
 ```powershell
 uv sync --extra data-processing
+uv run medbenchagent experiment new breast-us-prepare --prepare-dataset breast-us
 uv run medbenchagent prepare --dataset-id breast-us
 uv run medbenchagent prepare --dataset-id breast-us --resume <printed-resume-identifier>
 uv run medbenchagent register --dataset-id breast-us --bundle D:/Data/Prepared/breast-us/version
 uv run medbenchagent refresh-card --dataset-id breast-us
 uv run medbenchagent build
+uv run medbenchagent build --dataset breast-us --dataset busbra
+uv run medbenchagent experiment new selected-pilot --dataset breast-us --dataset busbra
 ```
 
 `prepare` asks for a natural-language description of source directories, annotation files and preparation
@@ -71,6 +90,16 @@ Selection saves all candidate summaries/digests and their order (including unsel
 name-resolution inputs and exclusion reasons in `dataset_candidates.json` and `dataset_selection.json`.
 Resume reuses the frozen decision context; external Card updates do not rewrite historical decisions.
 Explicit dataset selections are honored; otherwise Card summaries guide high-recall selection.
+Repeat `--dataset` to provide exact IDs and bypass both model name resolution and recommendation.
+Unknown, unavailable or unprepared explicit datasets are reported instead of silently replaced.
+Selection is a shortlist for deeper planning, not proof that a dataset supports a particular task.
+
+Planning grounds tasks in real annotation fields and values; Cards only guide inspection. The final review
+receives full answer mappings, exact capacities and quoted semantic evidence. Opaque codes or ambiguous
+abbreviations require dataset documentation, retrieved references or user clarification; medical convention
+does not establish a dataset's encoding. Semantic evidence is saved with each Leaf. Zero-capacity leaves
+cannot be published; unsupported concepts and completed empty dataset plans are valid.
+Generation still derives answers deterministically from annotations, and template models never see per-image answers.
 
 Choose the execution backend in `config/default.toml` or your local override:
 
