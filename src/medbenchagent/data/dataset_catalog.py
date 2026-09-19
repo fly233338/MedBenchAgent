@@ -3,8 +3,9 @@
 import json
 from pathlib import Path
 import re
+from uuid import uuid4
 from medbenchagent import settings
-from medbenchagent.data.dataset_card import DatasetCard, validate_semantics
+from medbenchagent.data.dataset_card import build_card, read_card, validate_semantics
 from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
@@ -64,8 +65,9 @@ def dataset_by_id(datasets, dataset_id):
     raise DatasetCatalogError(f"Unknown dataset id: {dataset_id}")
 
 
-def load_prepared(entry):
-    paths = {key: resolve_path(entry[key]) for key in PATH_FIELDS}
+def load_prepared_assets(entry):
+    """Validate the data/cache independently of the Card, including during v1 migration."""
+    paths = {key: resolve_path(entry[key]) for key in PATH_FIELDS if key != "dataset_card_path"}
     for key, path in paths.items():
         if not path.is_file():
             raise DatasetCatalogError(f"{entry['dataset_id']} lacks {key}; run prepare first: {path}")
@@ -73,23 +75,32 @@ def load_prepared(entry):
     if not ready_path.is_file():
         raise DatasetCatalogError("Dataset bundle is not published; run prepare first")
     access = json.loads(ready_path.read_text(encoding="utf-8"))["access"]
-    card = DatasetCard.model_validate_json(paths["dataset_card_path"].read_text(encoding="utf-8"))
     profile = json.loads(paths["profile_path"].read_text(encoding="utf-8"))
-    if (card.dataset_id != entry["dataset_id"] or
-        Path(access["annotation_path"]).resolve() != paths["annotation_path"] or
+    if (Path(access["annotation_path"]).resolve() != paths["annotation_path"] or
         Path(access["profile_path"]).resolve() != paths["profile_path"] or
         not Path(access["duckdb_path"]).is_file() or
-        card.annotation_digest != access["annotation_digest"] or
-        card.annotation_digest != digest_file(paths["annotation_path"]) or
-        card.profile_digest != digest_file(paths["profile_path"]) or
-        card.image_manifest_digest != digest_file(paths["image_manifest_path"]) or
-        card.total_images != profile["total_images"] or card.fields != profile["fields"] or
-        card.structures != profile["structures"] or card.summary != profile["summary"]):
+        access["annotation_digest"] != digest_file(paths["annotation_path"])):
+        raise DatasetCatalogError("Prepared dataset changed; prepare a new version")
+    return paths, profile, access
+
+
+def validate_card_facts(card, dataset_id, paths, profile, access):
+    if (card["dataset_id"] != dataset_id or card["annotation_digest"] != access["annotation_digest"] or
+        card["profile_digest"] != digest_file(paths["profile_path"]) or
+        card["image_manifest_digest"] != digest_file(paths["image_manifest_path"]) or
+        card["total_images"] != profile["total_images"] or card["fields"] != profile["fields"] or
+        card["structures"] != profile["structures"] or card["summary"] != profile["summary"]):
         raise DatasetCatalogError("Prepared dataset/Card facts changed; prepare a new version")
-    blueprint = settings.get_settings().paths.blueprint_template
-    if card.blueprint_digest != digest_file(blueprint):
-        raise DatasetCatalogError("Card Blueprint changed; prepare a new dataset version")
-    validate_semantics(card.semantics, profile, json.loads(blueprint.read_text(encoding="utf-8"))["concepts"])
+
+
+def load_prepared(entry):
+    paths, profile, access = load_prepared_assets(entry)
+    card_path = resolve_path(entry["dataset_card_path"])
+    if not card_path.is_file():
+        raise DatasetCatalogError(f"{entry['dataset_id']} lacks dataset_card_path; run refresh-card --dataset-id {entry['dataset_id']}")
+    card = read_card(card_path)
+    validate_card_facts(card.model_dump(), entry["dataset_id"], paths, profile, access)
+    validate_semantics(card.semantics, profile)
     return card, access
 
 
@@ -97,14 +108,43 @@ def register_dataset(dataset_id, bundle, *, catalog_path=None):
     validate_dataset_id(dataset_id)
     bundle = Path(bundle).resolve()
     ready = json.loads((bundle / "ready.json").read_text(encoding="utf-8"))
-    card = DatasetCard.model_validate_json((bundle / "dataset_card.json").read_text(encoding="utf-8"))
+    card_path = bundle / "dataset_card.json"
+    card = read_card(card_path)
     entry = {"dataset_id": dataset_id, "name": card.name, "description": card.semantics.description,
              "available": True, "annotation_path": str(bundle / "annotation.jsonl"),
              "image_manifest_path": str(bundle / "image_manifest.jsonl"),
-             "profile_path": ready["access"]["profile_path"], "dataset_card_path": str(bundle / "dataset_card.json")}
+             "profile_path": ready["access"]["profile_path"], "dataset_card_path": str(card_path)}
     load_prepared(entry)
     target = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
     entries = load_dataset_catalog(target) if target.is_file() else []
     entries = [e for e in entries if e["dataset_id"] != dataset_id] + [entry]
     atomic_write_json(target, {"datasets": sorted(entries, key=lambda e: e["dataset_id"])})
     return entry
+
+
+def refresh_card(dataset_id, *, catalog_path=None):
+    """Publish a new Card revision; never rebuild or overwrite prepared data or the old Card."""
+    target = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
+    entries = load_dataset_catalog(target)
+    entry = next((e for e in entries if e["dataset_id"] == dataset_id), None)
+    if entry is None:
+        raise DatasetCatalogError(f"Unknown dataset id: {dataset_id}")
+    paths, profile, access = load_prepared_assets(entry)
+    old_path = resolve_path(entry["dataset_card_path"])
+    if old_path.is_file():
+        # Only use the prior Card's deterministic facts to detect corrupt data. Its
+        # descriptions and capability hints must never enter the migration prompt.
+        previous = json.loads(old_path.read_text(encoding="utf-8"))
+        facts = ("dataset_id", "annotation_digest", "profile_digest", "image_manifest_digest",
+                 "total_images", "fields", "structures", "summary")
+        if not all(key in previous for key in facts):
+            raise DatasetCatalogError("Previous Card lacks verifiable dataset facts")
+        validate_card_facts(previous, dataset_id, paths, profile, access)
+    bundle = paths["annotation_path"].parent
+    destination = bundle / "cards" / f"{uuid4()}.json"
+    card = build_card(dataset_id, bundle, destination=destination)
+    updated = {**entry, "name": card.name, "description": card.semantics.description,
+               "dataset_card_path": str(destination)}
+    load_prepared(updated)
+    atomic_write_json(target, {"datasets": [updated if e["dataset_id"] == dataset_id else e for e in entries]})
+    return updated

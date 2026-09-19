@@ -138,11 +138,24 @@ generated fallback Python in a subprocess with timeout and process-tree cleanup;
 Install local dependencies explicitly using `uv sync --extra data-processing`. Both backends use environment
 paths MEDBENCH_SOURCE_ROOT, MEDBENCH_WORK_DIR, MEDBENCH_ANNOTATION_PATH and MEDBENCH_DATA_SCRATCH.
 
-A bundle version lives under prepared_datasets_root/<dataset_id>/<version>. Card v1 copies deterministic
-Profile facts and adds model-produced semantics with validated path references. It binds annotation, Profile,
-image manifest and Blueprint content. Register validates these facts before replacing a catalog entry.
-Catalog holds dataset_id/name/description/available and annotation_path/image_manifest_path/profile_path/
-dataset_card_path. Missing Card/Profile assets require prepare, never implicit whole-catalog preparation.
+A bundle version lives under prepared_datasets_root/<dataset_id>/<version>. Card v2 copies deterministic
+Profile facts and adds dataset-intrinsic descriptions, domain and field roles with validated path references.
+It binds annotation, Profile and image manifest content, never Blueprint. Preparation metadata is separate:
+verified verbatim source quotations drive extraction of dataset_name/dataset_description/source_description,
+saved with their references in dataset_metadata.json. Card generation sees only that metadata and Profile;
+benchmark requirements never enter either metadata extraction or Card generation.
+
+`refresh-card --dataset-id <id>` creates a new cards/<uuid>.json revision and then updates the catalog pointer.
+Data, cache/Profile and old Cards are unchanged. v1 migration discards all previous semantic descriptions and
+capability hints; absent reliable source metadata, it uses Profile only. Register requires v2 and validates
+facts before changing the catalog. Entries hold dataset_id/name/description/available and
+annotation_path/image_manifest_path/profile_path/dataset_card_path.
+
+Each Selection operation freezes its name-resolution input, requirement, candidate order, every model-visible
+Card summary/digest, and excluded-candidate reasons. candidate_cards/ retains full immutable Card copies;
+dataset_candidates.json is published as DatasetCandidates and is a direct dependency of DatasetSelection.
+dataset_selection.json includes the frozen decision inputs as well as selection method and output. Retries
+reuse these inputs; external changes to rejected Cards do not invalidate an already running selection.
 
 Selection and subsequent task planning reuse this cache. Core Concepts are shared across datasets; Leaf and
 Extension identities are local. Planning publishes eligible_count without quotas. Global Allocation computes

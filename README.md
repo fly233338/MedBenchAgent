@@ -50,6 +50,7 @@ uv sync --extra data-processing
 uv run medbenchagent prepare --dataset-id breast-us
 uv run medbenchagent prepare --dataset-id breast-us --resume <printed-resume-identifier>
 uv run medbenchagent register --dataset-id breast-us --bundle D:/Data/Prepared/breast-us/version
+uv run medbenchagent refresh-card --dataset-id breast-us
 uv run medbenchagent build
 ```
 
@@ -62,6 +63,13 @@ an already complete bundle with its Card. Failures do not replace the previous r
 Prepared versions live beneath `paths.prepared_datasets_root` (default `datasets/Prepared`). Catalog entries
 contain dataset_id, name, description, available and paths to annotation, image manifest, Profile and Card.
 Existing normalized datasets need `prepare` before selection; build does not prepare the whole catalog.
+Already prepared bundles with a missing or v1 Card can use `refresh-card` without reprocessing data.
+Cards describe only the dataset, independent of Blueprint. Source descriptions come from verified document
+quotations; the benchmark goal is never passed to Card generation. A refresh creates a new Card revision,
+updates the registry only after validation, and preserves old Cards, images, annotations and Profile/cache.
+Selection saves all candidate summaries/digests and their order (including unselected datasets), exact
+name-resolution inputs and exclusion reasons in `dataset_candidates.json` and `dataset_selection.json`.
+Resume reuses the frozen decision context; external Card updates do not rewrite historical decisions.
 Explicit dataset selections are honored; otherwise Card summaries guide high-recall selection.
 
 Choose the execution backend in `config/default.toml` or your local override:

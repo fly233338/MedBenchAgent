@@ -427,6 +427,8 @@ def _parser() -> argparse.ArgumentParser:
     register = subcommands.add_parser("register", help="Register an already prepared bundle and Card.")
     register.add_argument("--dataset-id", required=True)
     register.add_argument("--bundle", required=True)
+    refresh = subcommands.add_parser("refresh-card", help="Refresh dataset metadata without re-preparing data.")
+    refresh.add_argument("--dataset-id", required=True)
     balance = subcommands.add_parser("balance-answers", help="Write a balanced JSONL copy.")
     balance.add_argument("--input", required=True, dest="input_path")
     balance.add_argument("--output", required=True, dest="output_path")
@@ -437,6 +439,10 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _parser()
     args = parser.parse_args()
+    if args.command == "refresh-card":
+        from medbenchagent.data.dataset_catalog import refresh_card
+        _print_json(refresh_card(args.dataset_id), print)
+        return
     if args.command == "register":
         from medbenchagent.data.dataset_catalog import register_dataset
         _print_json(register_dataset(args.dataset_id, args.bundle), print)

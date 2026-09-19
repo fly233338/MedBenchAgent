@@ -14,6 +14,14 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
                   data_processing={**cfg.data_processing, "backend": "local"})
     monkeypatch.setattr(settings, "_SETTINGS", cfg)
     prepared_dataset(tmp_path, "input", monkeypatch)
+    card_prompts = []
+    def card_model(system, prompt):
+        import json
+        card_prompts.append(json.loads(prompt))
+        assert "Prepare these standard annotations" not in prompt
+        assert "concepts" not in json.loads(prompt)
+        return {"description": "Dataset facts from Profile"}
+    monkeypatch.setattr("medbenchagent.data.dataset_card.complete_json", card_model)
     actions = iter([
         ("prepare_data", {"dataset_id": "new", "sources": [{"id": "source", "kind": "annotation", "root": str(tmp_path / "input/source")}]}),
         ("select_source", {"source_id": "source"}), ("inspect_images", {}),
@@ -32,3 +40,6 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
     assert card.total_images == 2
     assert Path(access["annotation_path"]).is_relative_to(tmp_path / "prepared/new")
     assert (Path(access["annotation_path"]).parent / "execution_runtime.json").is_file()
+    assert len(card_prompts) == 1
+    assert card.preparation_metadata.dataset_description is None
+    assert (Path(access["annotation_path"]).parent / "dataset_metadata.json").is_file()

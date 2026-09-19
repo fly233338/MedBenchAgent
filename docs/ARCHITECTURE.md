@@ -41,14 +41,29 @@ PNG/JPEG 保留原字节；其他二维图像使用可表示原像素的 PNG 编
 Profile 使用 task-capability-profile.v4，DuckDB cache 使用 annotation-cache.v8；完整值域、字段共现、
 数组结构与 Protocol eligibility 通过 DatasetQuery 按需读取，统计明确分母。
 
-Dataset Card v1 复用 Profile 的计数、字段、结构和分布；模型补充描述、领域、字段角色和 Core Concept
-支持线索。语义引用必须存在于 Profile，Card 不能替代 Protocol 校验。Card 绑定 annotation、Profile、
-manifest 和 Blueprint 内容，注册时核验事实与版本。数据改变需要新版本。
+Dataset Card v2 复用 Profile 的计数、字段、结构和分布；语义部分只描述数据集自身的领域、描述和字段角色。
+Card 不包含 Blueprint digest 或 Concept capability hints；Blueprint 变化只影响规划，不影响已准备数据。
+Card 绑定 annotation、Profile 和 image manifest 的内容，字段角色必须引用 Profile 中真实字段。
+
+准备 Agent 可通过 save_dataset_metadata 提交来源文档的逐字引用（source_id、path、quote）。代码验证引用
+来自已检查的 Source 并匹配原文；独立模型调用仅根据这些引文提取 dataset_name、dataset_description、
+source_description，连同来源引用保存到 dataset_metadata.json。没有可靠来源说明时这些字段为空。
+Card 生成仅接收 Profile 和该准备元数据，绝不接收 benchmark user_requirement。
+
+`refresh-card --dataset-id <id>` 使用现有数据和 Profile，在 bundle/cards/<uuid>.json 发布新 Card 修订，
+随后原子切换 Catalog 引用。旧 Card 和底层数据保持不变；刷新失败不切换注册项。v1 迁移只检查旧 Card
+的确定性数据绑定，不复用其名称、描述、字段角色或能力提示；没有来源元数据时基于 Profile 重新总结。
 
 Catalog 条目保存 dataset_id、name、description、available 和 annotation_path、image_manifest_path、
-profile_path、dataset_card_path。普通构建只复用已准备数据，不自动准备整个候选目录；旧标准数据通过
-prepare 补齐 Card。Selection 独立保存选中 ID 及理由：显式指定优先、单候选直选、多候选高召回选择。
-未知/不可用的显式来源报错；未准备候选记录原因；没有相关候选由 Supervisor 澄清。
+profile_path、dataset_card_path。普通构建不自动准备整个候选目录；缺少标准准备数据使用 prepare，已准备
+但缺少/仍使用 v1 Card 的数据使用 refresh-card。显式指定优先、单候选直选、多候选高召回选择。
+
+每次 Selection 在操作目录创建 dataset_candidates.json：记录实际需求与版本、名称解析所见目录、解析
+结果、完整候选顺序、每个候选的 Card 摘要与内容摘要、以及不可用/未准备/未请求原因。模型看到的候选
+Card 原文复制到该目录的 candidate_cards/；dataset_selection.json 同时保存冻结输入、选择方式和结果。
+DatasetCandidates 是独立 artifact，Selection 依赖 Requirement、该快照和选中数据的 Card 版本。
+同一操作恢复复用快照及已完成决策，不读取未选中候选的实时 Card；新 Selection 操作创建新快照。
+选中数据继续核验 annotation、Profile、manifest 与冻结 Card 的一致性，外部 Card 刷新不改变运行中版本。
 
 ## 执行后端
 
@@ -100,7 +115,8 @@ LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete�
 | --- | --- |
 | dataset/<id>/Dataset | DataConfig；准备发布还依赖局部 Harmonization |
 | dataset/<id>/DatasetProfile / DatasetCard | 对应 Dataset / Profile |
-| DatasetSelection | Requirement、选中 Card |
+| DatasetCandidates | Requirement、冻结的候选输入文件 |
+| DatasetSelection | Requirement、DatasetCandidates、选中 Card |
 | dataset/<id>/Plan | Requirement、Dataset、Card、Materials、PlanningConfig、PlanningDraft |
 | Allocation | Requirement、Selection、AllocationConfig、全部选中 Plan |
 | dataset/<id>/Templates | Plan、TemplateConfig |
@@ -111,7 +127,7 @@ LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete�
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v6；
+SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v7；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 ## 生成、审计与导出

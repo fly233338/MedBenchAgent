@@ -8,7 +8,7 @@ from pathlib import Path
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-CONTRACT_VERSION = "agent-runtime.v6"
+CONTRACT_VERSION = "agent-runtime.v7"
 
 SOURCE_KINDS = frozenset({"Source", "Inventory", "Mapping", "AnnotationScript", "Annotation",
                           "ImageInventory", "ImagePlan", "NormalizedSource"})
