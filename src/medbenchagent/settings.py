@@ -33,6 +33,7 @@ class PathSettings:
     blueprint_template: Path
     materials_root: Path
     runs_root: Path
+    prepared_datasets_root: Path
 
 
 @dataclass(frozen=True)

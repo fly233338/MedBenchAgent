@@ -1,171 +1,117 @@
-"""Final run artifacts derived from the confirmed Blueprint and event log."""
+"""Merge audited samples only; source annotations and images remain dataset-local."""
 
-from __future__ import annotations
-
+from collections import Counter
 import json
+import os
 from pathlib import Path
-from typing import Any
+from tempfile import TemporaryDirectory
 
-from medbenchagent.runtime.construction import record_event
-from medbenchagent.metrics import is_metric_supported
 from medbenchagent.runtime.run_artifacts import atomic_write_json
-
-_REQUIRED_AUDIT_ARTIFACTS = frozenset(
-    {"audited", "report"}
-)
+from medbenchagent.data.image_assets import load_image_manifest
+from medbenchagent.data.dataset_catalog import PATH_FIELDS, resolve_path
 
 
+def _image_path(path, root):
+    path, root = Path(path).resolve(), Path(root).resolve()
+    if path.drive.casefold() != root.drive.casefold():
+        return path.as_posix()
+    return os.path.relpath(path, root).replace(os.sep, "/")
 
 
-
-
-
-
-def _required_run_file(path: str | Path, name: str, run_directory: Path) -> Path:
-    resolved = Path(path).resolve()
-    try:
-        resolved.relative_to(run_directory)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be stored inside the run directory.") from exc
-    if not resolved.is_file():
-        raise ValueError(f"{name} must be an existing regular file.")
-    try:
-        with resolved.open("rb") as source:
-            source.read(1)
-    except OSError as exc:
-        raise ValueError(f"{name} must be readable.") from exc
-    return resolved
-
-
-def _required_readable_file(path: str | Path, name: str) -> Path:
-    resolved = Path(path).resolve()
-    if not resolved.is_file():
-        raise ValueError(f"{name} must be an existing regular file.")
-    try:
-        with resolved.open("rb") as source:
-            source.read(1)
-    except OSError as exc:
-        raise ValueError(f"{name} must be readable.") from exc
-    return resolved
-
-
-def _image_manifest_format(path: Path) -> str:
-    """Return a stable format label while keeping the legacy manifest shape."""
-    suffixes: set[str] = set()
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            relative = row.get("png_path") if isinstance(row, dict) else None
-            if isinstance(relative, str):
-                suffixes.add(Path(relative).suffix.lower())
-    except (OSError, json.JSONDecodeError):
-        return "unknown_raster_image"
-    if not suffixes or suffixes == {".png"}:
-        return "png"
-    if suffixes <= {".jpg", ".jpeg"}:
-        return "original_jpeg"
-    return "mixed_raster_images"
-
-
-def finalize_run(
-    *,
-    run_directory: str | Path,
-    run_id: str,
-    blueprint_path: str | Path,
-    raw_output_path: str | Path,
-    construction_events_path: str | Path,
-    dataset_catalog_entry: dict[str, str],
-    dataset_profile: dict[str, Any],
-    dataset_access_manifest: dict[str, Any],
-    image_manifest_path: str | Path,
-    audit_artifacts: dict[str, str],
-) -> tuple[str, str]:
-    run_dir = Path(run_directory).resolve()
-    blueprint_file = _required_run_file(blueprint_path, "blueprint", run_dir)
-    blueprint = json.loads(blueprint_file.read_text(encoding="utf-8"))
-    identifier = "benchmark-" + run_id
-    dataset_id = blueprint["dataset"]["dataset_id"]
-    if dataset_catalog_entry.get("id") != dataset_id:
-        raise ValueError("Dataset catalog entry does not match the confirmed Blueprint dataset ID.")
-    image_manifest = _required_readable_file(image_manifest_path, "image_manifest.jsonl")
-    for task_id, task in blueprint["tasks"].items():
-        if not is_metric_supported(task["protocol"].get("response_format"), task["protocol"].get("metric")):
-            raise ValueError(
-                f"{task_id}: final Blueprint task must contain a metric compatible with "
-                f"response format {task['protocol'].get('response_format')}."
-            )
-    if not isinstance(audit_artifacts, dict):
-        raise ValueError("audit_artifacts must be a dictionary.")
-    missing_audit_artifacts = _REQUIRED_AUDIT_ARTIFACTS - set(audit_artifacts)
-    if missing_audit_artifacts:
-        raise ValueError(
-            "audit_artifacts is missing required files: "
-            + ", ".join(sorted(missing_audit_artifacts))
-        )
-    paths = {
-        "blueprint": blueprint_file,
-        "raw": _required_run_file(raw_output_path, "raw", run_dir),
-        "construction_events": _required_run_file(
-            construction_events_path, "construction_events", run_dir
-        ),
-        "effective_config": _required_run_file(
-            run_dir / "effective_config.json", "effective_config", run_dir
-        ),
-    }
-    if (run_dir / "templates.json").is_file():
-        paths["templates"] = run_dir / "templates.json"
-    for name, path in audit_artifacts.items():
-        if not isinstance(name, str) or not name:
-            raise ValueError("audit_artifacts keys must be non-empty strings.")
-        if name in paths:
-            raise ValueError(f"audit artifact name is reserved: {name}")
-        paths[name] = _required_run_file(path, f"audit artifact {name}", run_dir)
-    record_event(
-        paths["construction_events"],
-        "run_completed",
-        run_id=run_id,
-        dataset_id=dataset_id,
-        operation="finalize",
-        component="orchestrator",
-        status="complete",
-    )
-    manifest_path = run_dir / "benchmark_manifest.json"
-    atomic_write_json(
-        manifest_path,
-        {
-            "schema_version": "benchmark-manifest.v2",
-            "benchmark_id": identifier,
-            "run_id": run_id,
-            "benchmark_info": blueprint["benchmark_info"],
-            "dataset": {
-                "dataset_id": dataset_id,
-                "dataset_name": dataset_catalog_entry["name"],
-                "description": dataset_catalog_entry["description"],
-                "profile_schema_version": dataset_profile["schema_version"],
-                "cache_schema_version": dataset_access_manifest["cache_format_version"],
-                "total_images": dataset_profile["total_images"],
-                "image_format": _image_manifest_format(image_manifest),
-            },
-            "concepts": blueprint["concepts"],
-            "allocation": blueprint["allocation"],
-            "tasks": {
-                task_id: {
-                    "category": task["category"],
-                    "response_format": task["protocol"]["response_format"],
-                    "supporting_fields": task["protocol"]["data_binding"]["supporting_fields"],
-                    "sample_count": task["sample_count"],
-                    "metrics": [task["protocol"]["metric"]],
-                    "concept_id": task["concept_id"],
-                }
-                for task_id, task in blueprint["tasks"].items()
-            },
-            "artifacts": {
-                name: {"path": str(path.relative_to(run_dir))}
-                for name, path in paths.items()
-            }
-            | {"manifest": {"path": manifest_path.name}},
-        },
-    )
-    return identifier, str(manifest_path)
+def export_benchmark(context):
+    from medbenchagent.runtime.dependencies import require, publish
+    require(context, "DatasetSelection", "Allocation")
+    root = Path(context["run_directory"])
+    allocation = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))
+    plans = {d: json.loads(Path(context["dataset_task_plans"][d]).read_text(encoding="utf-8"))
+             for d in context["selected_dataset_ids"]}
+    tasks, datasets, concepts, dependencies = {}, {}, {}, ["DatasetSelection", "Allocation"]
+    audit_totals = {"accepted": 0, "rejected": 0}
+    flags = 0
+    for dataset, plan in plans.items():
+        asset = context["dataset_assets"][dataset]
+        datasets[dataset] = {**asset["entry"], **{k: str(resolve_path(asset["entry"][k])) for k in PATH_FIELDS},
+                             "task_plan": context["dataset_task_plans"][dataset]}
+        for concept_id, concept in plan["concepts"].items():
+            key = concept_id if concept["origin"] == "core" else dataset + "::" + concept_id
+            concepts.setdefault(key, {"description": concept["description"], "category": concept["category"], "origin": concept["origin"]})
+        for leaf_id, leaf in plan["tasks"].items():
+            key = dataset + "::" + leaf_id
+            tasks[key] = {"dataset_id": dataset, "local_leaf_id": leaf_id,
+                          "concept_id": leaf["concept_id"] if plan["concepts"][leaf["concept_id"]]["origin"] == "core" else dataset + "::" + leaf["concept_id"],
+                          "category": leaf["category"], "response_format": leaf["protocol"]["response_format"],
+                          "metrics": [leaf["protocol"]["metric"]], "sample_count": allocation["counts"][dataset][leaf_id]}
+        if sum(allocation["counts"][dataset].values()):
+            require(context, f"dataset/{dataset}/Audit")
+            dependencies.append(f"dataset/{dataset}/Audit")
+            report = json.loads(Path(context["dataset_audits"][dataset]["report"]).read_text(encoding="utf-8"))
+            for key in audit_totals:
+                audit_totals[key] += report["hard_audit"][key]
+            flags += report.get("semantic_audit", {}).get("flagged", 0)
+        else:
+            datasets[dataset]["generation_status"] = "skipped_zero_allocation"
+    counts = {}
+    with TemporaryDirectory(prefix=".export-", dir=root) as staging:
+        for kind, filename in (("raw", "benchmark.raw.jsonl"), ("audited", "benchmark.jsonl")):
+            target = Path(staging) / filename
+            temporary = target.with_suffix(".jsonl.tmp")
+            seen, totals = set(), Counter()
+            try:
+                with temporary.open("w", encoding="utf-8", newline="\n") as out:
+                    for dataset in sorted(plans):
+                        if not sum(allocation["counts"][dataset].values()):
+                            continue
+                        source = context["dataset_generations"][dataset]["raw_output_path"] if kind == "raw" else context["dataset_audits"][dataset]["audited"]
+                        entry = context["dataset_assets"][dataset]["entry"]
+                        images = load_image_manifest(resolve_path(entry["image_manifest_path"]))
+                        local_count = 0
+                        with Path(source).open(encoding="utf-8") as handle:
+                            for line in handle:
+                                if not line.strip():
+                                    continue
+                                item = json.loads(line)
+                                leaf_id = item["task_id"]
+                                key = dataset + "::" + leaf_id
+                                if item["dataset"] != dataset or key not in tasks or item["image_id"] not in images:
+                                    raise ValueError("Export sample has invalid dataset/task/image references")
+                                identity = json.dumps([dataset, leaf_id, item["image_id"]], ensure_ascii=False, separators=(",", ":"))
+                                if identity in seen:
+                                    raise ValueError("Duplicate sample identity during export")
+                                seen.add(identity)
+                                item.update(id=identity, task_id=key,
+                                            image_path=_image_path(images[item["image_id"]].png_path, root))
+                                totals[key] += 1
+                                local_count += 1
+                                if totals[key] > tasks[key]["sample_count"]:
+                                    raise ValueError("Export exceeds allocated Leaf count")
+                                out.write(json.dumps(item, ensure_ascii=False) + "\n")
+                        if kind == "audited":
+                            report = json.loads(Path(context["dataset_audits"][dataset]["report"]).read_text(encoding="utf-8"))
+                            if local_count != report["hard_audit"]["accepted"]:
+                                raise ValueError("Audited sample count differs from report")
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            counts[kind] = totals
+        for filename in ("benchmark.raw.jsonl", "benchmark.jsonl"):
+            (Path(staging) / filename).replace(root / filename)
+    total = sum(counts["audited"].values())
+    shortfalls = {key: task["sample_count"] - counts["raw"][key] for key, task in tasks.items()}
+    report = {"hard_audit": audit_totals, "semantic_audit": {"flagged": flags},
+              "planning_shortfall": allocation["planning_shortfall"], "generation_shortfalls": shortfalls,
+              "total_shortfall": allocation["requested_count"] - total,
+              "datasets": {d: context["dataset_audits"][d] for d in plans if sum(allocation["counts"][d].values())}}
+    atomic_write_json(root / "audit_report.json", report)
+    manifest = {"schema_version": "benchmark-manifest.v3", "benchmark_id": "benchmark-" + context["run_id"],
+                "run_id": context["run_id"], "benchmark_info": context["benchmark_info"],
+                "datasets": datasets, "concepts": concepts, "tasks": tasks, "allocation": allocation,
+                "artifacts": {"audited": {"path": "benchmark.jsonl"}, "raw": {"path": "benchmark.raw.jsonl"},
+                              "report": {"path": "audit_report.json"}}}
+    atomic_write_json(root / "benchmark_manifest.json", manifest)
+    versions = publish(context, "Export", {"path": str(root / "benchmark_manifest.json"),
+                                          "audited": str(root / "benchmark.jsonl")}, tuple(dependencies))
+    return {"manifest_path": str(root / "benchmark_manifest.json"), "benchmark_id": manifest["benchmark_id"],
+            "raw_output_path": str(root / "benchmark.raw.jsonl"),
+            "audit_artifacts": {"audited": str(root / "benchmark.jsonl"), "report": str(root / "audit_report.json")},
+            "item_count": total, "task_counts": dict(counts["audited"]), "generation_shortfalls": shortfalls,
+            "planning_shortfall": allocation["planning_shortfall"], "total_shortfall": report["total_shortfall"], **versions}

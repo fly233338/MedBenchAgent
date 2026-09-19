@@ -4,21 +4,12 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from medbenchagent.data.dataset import prepare_annotation_dataset
-from medbenchagent.data.dataset_catalog import (
-    dataset_by_id,
-    load_dataset_catalog,
-    recommend_dataset,
-    resolve_annotation_path,
-)
-from medbenchagent.runtime.dependencies import publish, require, snapshot_dataset
+from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.rag.pdf import LocalPdfRag, RagUnavailable, discover_medical_materials
 from medbenchagent.settings import get_settings
 from medbenchagent.runtime.tool_contracts import (
-    SelectDatasetArguments,
-    ProfileArguments,
     PageArguments,
     FieldArguments,
     MaterialArguments,
@@ -30,7 +21,6 @@ from medbenchagent.planning.tree import (
     ConceptArguments,
     NodeArguments,
     ExtensionArguments,
-    WeightsArguments,
     FieldValuesArguments,
     concepts_complete,
     validate_plan,
@@ -39,7 +29,6 @@ from medbenchagent.planning.tree import (
     GlobalReview,
 )
 from medbenchagent.planning.protocol import validate_dataset_protocol
-from medbenchagent.planning.sample_counts import allocate_leaf_counts
 from medbenchagent.runtime.llm import complete_json
 from medbenchagent.data.query import DatasetQuery, iter_records
 
@@ -62,83 +51,6 @@ def _profile(context):
     return _read(context["dataset_access_manifest"]["profile_path"])
 
 
-def select_dataset(context, *, dataset_id=None, annotation_path=None):
-    """Select standard inputs; omit both arguments to recommend catalog data."""
-    require(context, "Requirement")
-    if (
-        dataset_id is not None
-        and dataset_id == context.get("selected_dataset_id")
-        and (
-            annotation_path is None
-            or annotation_path == context.get("dataset_entry", {}).get("annotation_path")
-        )
-    ):
-        require(context, "DatasetSelection")
-        return result("success", "This dataset is already selected in the run")
-    if annotation_path:
-        if dataset_id is None:
-            raise ValueError("Direct input requires dataset_id")
-        entry = {
-            "id": dataset_id,
-            "name": dataset_id,
-            "annotation_path": annotation_path,
-            "description": "Standard local dataset",
-            "available": True,
-        }
-    else:
-        catalog = load_dataset_catalog()
-        dataset_id = (
-            dataset_id or recommend_dataset(context["benchmark_info"], catalog)["dataset_id"]
-        )
-        entry = dataset_by_id(catalog, dataset_id)
-    path = snapshot_dataset(
-        resolve_annotation_path(entry), Path(context["operation_directory"]) / "input", dataset_id=dataset_id
-    )
-    versions = publish(
-        context, "DatasetSelection", {"path": str(path), "dataset_id": dataset_id}, ()
-    )
-    return result(
-        "success",
-        "Dataset input snapshot selected; build its profile next",
-        selected_dataset_id=dataset_id,
-        annotation_path=str(path),
-        dataset_entry=entry,
-        dataset_access_manifest=None,
-        **versions,
-    )
-
-
-def profile_dataset(context, *, revision="1", refresh=False):
-    """Build this run's dataset cache; refresh creates a new immutable Dataset version."""
-    require(context, "DatasetSelection")
-    if not refresh and context.get("dataset_access_manifest"):
-        require(context, "Dataset")
-        return result("success", "Current Dataset is already prepared")
-    bundle_ready = Path(context["annotation_path"]).parent / "ready.json"
-    if bundle_ready.is_file() and not refresh:
-        access = _read(bundle_ready)["access"]
-        profile = _read(access["profile_path"])
-    else:
-        profile, access = prepare_annotation_dataset(
-            context["annotation_path"], Path(context["operation_directory"]) / "cache",
-            revision=revision, refresh=refresh,
-        )
-    from medbenchagent.data.validation import validate_dataset_files
-    validate_dataset_files(context["annotation_path"], Path(context["annotation_path"]).parent / "image_manifest.jsonl")
-    versions = publish(
-        context,
-        "Dataset",
-        {"annotation": context["annotation_path"], "access": access},
-        ("DataConfig", "DatasetSelection"),
-    )
-    return result(
-        "success",
-        f"Dataset ready: {profile['total_images']} images, {len(profile['fields'])} fields",
-        dataset_access_manifest=access,
-        **versions,
-    )
-
-
 def list_fields(context, *, offset=0, limit=20, query=""):
     """Page field paths and availability; text search helps discovery but never drops tasks."""
     fields = _profile(context)["fields"]
@@ -154,7 +66,11 @@ def list_fields(context, *, offset=0, limit=20, query=""):
 
 def read_fields(context, *, fields):
     """Read selected field distributions and their object/array structure."""
-    return result("success", json.dumps(_subset(_profile(context), fields), ensure_ascii=False))
+    from medbenchagent.data.dataset_catalog import resolve_path
+    card = _read(resolve_path(context["dataset_entry"]["dataset_card_path"]))
+    details = _subset(_profile(context), fields)
+    details["field_roles"] = {key: card["semantics"]["field_roles"].get(key) for key in fields}
+    return result("success", json.dumps(details, ensure_ascii=False))
 
 
 def read_field_values(context, *, field, offset=0, limit=20):
@@ -305,7 +221,6 @@ def _tree(context):
             previous["review"] = {}
             previous["correction_open"] = False
             previous["discovery_complete"] = False
-            previous.pop("allocation", None)
             previous.pop("coverage", None)
             for concept in previous["concepts"].values():
                 concept["status"] = "pending"
@@ -351,7 +266,6 @@ def _persist(context, tree, *, changed=False):
             tree["reworks_used"] += 1
             tree["correction_open"] = True
         tree["revision"] += 1
-        tree.pop("allocation", None)
     _check_draft(tree)
     path = Path(context["operation_directory"]) / "planning_tree.json"
     atomic_write_json(path, tree)
@@ -359,7 +273,7 @@ def _persist(context, tree, *, changed=False):
         context,
         "PlanningDraft",
         {"path": str(path)},
-        ("Dataset", "Requirement", "Materials", "PlanningConfig"),
+        ("Dataset", "DatasetCard", "Requirement", "Materials", "PlanningConfig"),
     )
     return result(
         "success",
@@ -405,12 +319,13 @@ def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence):
         raise ValueError("Unknown concept or unavailable leaf identity")
     _validate_evidence(context, evidence)
     _subset(_profile(context), protocol["data_binding"]["supporting_fields"])
-    validate_dataset_protocol(protocol, iter_records(context["dataset_access_manifest"]))
+    capacity = validate_dataset_protocol(protocol, iter_records(context["dataset_access_manifest"]))
     previous = tree["tasks"].get(leaf_id)
     if previous and previous["concept_id"] != concept_id:
         tree["concepts"][previous["concept_id"]]["status"] = "pending"
     tree["tasks"][leaf_id] = {
         "concept_id": concept_id,
+        "eligible_count": capacity,
         "description": description,
         "protocol": protocol,
         "evidence": evidence,
@@ -589,42 +504,11 @@ def _review_result(context, tree, draft_path):
     )
 
 
-def allocate(context, *, weights):
-    """Allocate final relative weights against exact eligible image capacities, then report only final total shortage."""
-    tree = _tree(context)
-    if tree.get("review", {}).get("revision") != tree["revision"] or tree["review"]["issues"]:
-        raise ValueError("Current global review must pass before allocation")
-    if not tree["tasks"]:
-        return result(
-            "blocked", "No executable leaves have eligible data", readiness={"planning": False}
-        )
-    if set(weights) != set(tree["tasks"]):
-        raise ValueError("Provide weights and reasons for exactly all leaves")
-    capacities = {
-        key: validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
-        for key, leaf in tree["tasks"].items()
-    }
-    allocation = allocate_leaf_counts(
-        {k: v["weight"] for k, v in weights.items()},
-        capacities,
-        context["benchmark_info"]["sample_count"],
-    )
-    allocation.update(
-        revision=tree["revision"], weight_reasons={k: v["reason"] for k, v in weights.items()}
-    )
-    tree["allocation"] = allocation
-    for key, count in allocation["counts"].items():
-        tree["tasks"][key]["sample_count"] = count
-    outcome = _persist(context, tree)
-    outcome["summary"] = json.dumps(allocation)
-    if not allocation["allocated_count"]:
-        outcome["status"] = "blocked"
-    return outcome
-
-
 def finish(context):
-    """Publish only a validated, reviewed current Plan; explicit final planning shortage is allowed."""
+    """Publish the reviewed dataset-local Plan with exact capacities, including unsupported datasets."""
     tree = _tree(context)
+    for leaf in tree["tasks"].values():
+        leaf["eligible_count"] = validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
     errors = validate_plan(tree)
     if errors:
         raise ValueError(json.dumps(errors, ensure_ascii=False))
@@ -634,7 +518,7 @@ def finish(context):
         context,
         "Plan",
         {"blueprint": str(path)},
-        ("Requirement", "Dataset", "Materials", "PlanningConfig", "PlanningDraft"),
+        ("Requirement", "Dataset", "DatasetCard", "Materials", "PlanningConfig", "PlanningDraft"),
     )
     return result(
         "complete",
@@ -643,9 +527,7 @@ def finish(context):
         readiness={"planning": True},
         artifacts={"plan": str(path)},
         affected_node_ids=list(tree["tasks"]),
-        warnings=[f"Planning shortfall: {tree['allocation']['planning_shortfall']}"]
-        if tree["allocation"]["planning_shortfall"]
-        else [],
+
         **versions,
     )
 
@@ -674,7 +556,7 @@ def describe(context):
         "review": tree["review"],
         "reworks_used": tree["reworks_used"],
         "discovery_complete": tree["discovery_complete"],
-        "allocation": tree.get("allocation"),
+        "dataset_card": context.get("dataset_card_summary"),
         "feedback": context.get("feedback"),
         "clarification": context.get("clarification"),
         "dataset": context.get("selected_dataset_id"),
@@ -683,8 +565,6 @@ def describe(context):
 
 def available_tools(context):
     available = {
-        "select_dataset",
-        "profile_dataset",
         "list_materials",
         "read_material",
         "select_materials",
@@ -708,8 +588,6 @@ def available_tools(context):
         available |= {"coverage_gap", "propose_extension", "finish_discovery"}
     if concepts_complete(tree) and tree["discovery_complete"]:
         available.add("review_tree")
-    if tree.get("review", {}).get("revision") == tree["revision"] and not tree["review"]["issues"]:
-        available.add("allocate")
     if not validate_plan(tree):
         available.add("finish")
     return available
@@ -718,8 +596,6 @@ def available_tools(context):
 def compile_task_planning_agent(*, checkpointer=None):
     from medbenchagent.data.query_contracts import SingleField, Sample, Pair, Array, Capacity
     functions = (
-        select_dataset,
-        profile_dataset,
         list_fields,
         read_fields,
         read_field_values,
@@ -737,24 +613,21 @@ def compile_task_planning_agent(*, checkpointer=None):
         propose_extension,
         finish_discovery,
         review_tree,
-        allocate,
     )
     return compile_agent(
         "TaskPlanningAgent",
-        "Build a two-level Medical Concept -> executable Leaf plan. First select/profile data and select references (an empty selection is allowed). "
+        "Build a two-level Medical Concept -> executable Leaf plan. The dataset is already assigned and prepared. Select references (an empty selection is allowed). "
         "Understand each core concept using field inspection and optional RAG BEFORE and during leaf expansion. "
         "Create opaque stable leaf IDs at runtime; never infer execution from IDs. All behavior belongs to Protocol. "
         "Finish every core concept, inspect coverage gaps, propose only genuinely new capabilities, and finish accepted extensions. "
         "RAG can be called at any concept, leaf, protocol or extension step, with revised queries as needed; annotations alone establish labels. "
-        "Finish discovery, review globally, make targeted corrections within the rework budget, then assign relative weights with reasons and allocate. "
-        "A zero weight deliberately excludes a leaf from allocation. Use ask_user for unresolved source semantics. "
+        "Finish discovery, review globally, make targeted corrections within the rework budget, then publish the dataset-local plan and its exact capacities. "
+        "Do not select datasets or allocate sample counts. Use ask_user for unresolved source semantics. "
         "When revising after feedback, preserve unchanged leaf identities and protocols. Finish only when validation permits.",
         {f.__name__: f for f in functions},
         describe,
         finish,
         args_schemas={
-            "select_dataset": SelectDatasetArguments,
-            "profile_dataset": ProfileArguments,
             "list_fields": PageArguments,
             "read_fields": FieldArguments,
             "read_field_values": FieldValuesArguments,
@@ -773,7 +646,6 @@ def compile_task_planning_agent(*, checkpointer=None):
             "save_leaf": LeafArguments,
             "complete_concept": ConceptArguments,
             "propose_extension": ExtensionArguments,
-            "allocate": WeightsArguments,
         },
         available_tools=available_tools,
         checkpointer=checkpointer,

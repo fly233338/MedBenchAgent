@@ -16,6 +16,7 @@ def test_upstream_change_invalidates_transitive_delivery_without_deleting_old_ve
         "TemplateConfig",
         "GenerationConfig",
         "AuditConfig",
+        "Allocation",
     ):
         publish(context, kind, {"value": 1}, ())
     for kind in ("Dataset", "Plan", "Templates", "Generation", "Audit"):
@@ -67,6 +68,32 @@ def test_new_run_snapshots_same_path_again_and_keeps_old_input(tmp_path):
 def test_resume_rejects_obsolete_contract(tmp_path):
     with pytest.raises(ValueError, match="start a new run"):
         verify_resume({"run_directory": str(tmp_path)})
+
+
+def test_same_path_content_change_produces_new_identity(tmp_path):
+    context = {"run_directory": str(tmp_path)}
+    source = tmp_path / "config.json"
+    source.write_text('{"value":1}', encoding="utf-8")
+    publish(context, "Requirement", {"path": str(source)}, ())
+    first = context["artifact_versions"]["Requirement"]
+    source.write_text('{"value":2}', encoding="utf-8")
+    publish(context, "Requirement", {"path": str(source)}, ())
+    assert context["artifact_versions"]["Requirement"] != first
+
+
+def test_dataset_and_nested_source_scopes_are_independent(tmp_path):
+    context = {"run_directory": str(tmp_path)}
+    for dataset in ("a", "b"):
+        context.update(dataset_scope=dataset, source_scope="same")
+        publish(context, "NormalizedSource", {"value": dataset}, ())
+        publish(context, "Plan", {"value": dataset}, ("source/same/NormalizedSource",))
+    first_b = context["artifact_versions"]["dataset/b/Plan"]
+    context["dataset_scope"] = "a"
+    publish(context, "NormalizedSource", {"value": "changed"}, ())
+    with pytest.raises(ValueError, match="stale"):
+        require(context, "Plan")
+    context["dataset_scope"] = "b"
+    assert require(context, "Plan")["Plan"]["id"] == first_b
 
 
 def test_nested_specialist_interrupt_resumes_its_checkpoint(tmp_path, monkeypatch):

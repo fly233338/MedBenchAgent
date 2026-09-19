@@ -242,6 +242,8 @@ def _print_result(values: dict[str, Any], output: OutputFunction) -> None:
     if not run_directory and isinstance(values.get("manifest_path"), str):
         run_directory = str(Path(values["manifest_path"]).parent)
     output(f"Run directory: {run_directory}")
+    if values.get("prepared_entries"):
+        output(f"Prepared datasets: {values['prepared_entries']}")
     output(f"Total items: {values.get('item_count', 0)}")
     output(f"Task counts: {values.get('task_counts', {})}")
     output(f"Shortfalls: {values.get('generation_shortfalls', {})}")
@@ -297,6 +299,7 @@ def run_interactive_build(
     settings: Any = None,
     graph: Any = None,
     resume: str | None = None,
+    dataset_id: str | None = None,
 ) -> int:
     """Run the benchmark graph as a local, terminal-driven conversation."""
     _enforce_offline_mode()
@@ -314,7 +317,7 @@ def run_interactive_build(
 
             settings = get_settings()
         _print_settings(settings, output)
-        errors = [] if resume else _preflight_errors(settings)
+        errors = [] if resume or dataset_id else _preflight_errors(settings)
         if errors:
             output("")
             output("Local preflight failed:")
@@ -333,17 +336,19 @@ def run_interactive_build(
             checkpoint_connection = sqlite3.connect(
                 str(settings.paths.runs_root / "checkpoints.sqlite"), check_same_thread=False
             )
-            graph = compile_benchmark_graph(checkpointer=SqliteSaver(checkpoint_connection))
+            graph = compile_benchmark_graph(checkpointer=SqliteSaver(checkpoint_connection), preparation_only=dataset_id is not None)
         config = {
             "configurable": {"thread_id": resume or str(uuid.uuid4())},
             "recursion_limit": 1_000,
         }
         output(f"Resume identifier: {config['configurable']['thread_id']}")
-        next_input: object = {"user_requirement": requirement}
+        next_input: object = {"user_requirement": requirement, "prepare_dataset_id": dataset_id}
         if resume:
             previous = graph.get_state(config)
             if not previous.values:
                 raise ValueError("Unknown resume identifier")
+            if previous.values.get("context", {}).get("prepare_dataset_id") != dataset_id:
+                raise ValueError("Resume with the original build/prepare command and dataset ID")
             from medbenchagent.runtime.dependencies import verify_resume
             verify_resume(previous.values["context"])
             pending = [i for task in previous.tasks for i in task.interrupts]
@@ -390,14 +395,16 @@ def run_interactive_build(
             return 0 if snapshot.values.get("status", "complete") == "complete" else 1
     except (EOFError, KeyboardInterrupt):
         output("")
-        output("Run interrupted. Resume with: medbenchagent build --resume <resume identifier>.")
+        command = f"prepare --dataset-id {dataset_id}" if dataset_id else "build"
+        output(f"Run interrupted. Resume with: medbenchagent {command} --resume <resume identifier>.")
         if run_directory := _run_directory(graph, config):
             output(f"Preserved run artifacts: {run_directory}")
         return 130
     except Exception as exc:
         output("")
         output(f"Benchmark construction failed: {type(exc).__name__}: {exc}")
-        output("Files and checkpoints are preserved. Use build --resume <resume identifier>.")
+        command = f"prepare --dataset-id {dataset_id}" if dataset_id else "build"
+        output(f"Files and checkpoints are preserved. Use {command} --resume <resume identifier>.")
         if run_directory := _run_directory(graph, config):
             output(f"Preserved run artifacts: {run_directory}")
         return 1
@@ -414,6 +421,12 @@ def _parser() -> argparse.ArgumentParser:
         help="Run the benchmark graph as an offline interactive terminal workflow.",
     )
     build.add_argument("--resume", help="Resume a persisted task by its printed identifier.")
+    prepare = subcommands.add_parser("prepare", help="Prepare and register one dataset from a natural-language source description.")
+    prepare.add_argument("--dataset-id", required=True)
+    prepare.add_argument("--resume")
+    register = subcommands.add_parser("register", help="Register an already prepared bundle and Card.")
+    register.add_argument("--dataset-id", required=True)
+    register.add_argument("--bundle", required=True)
     balance = subcommands.add_parser("balance-answers", help="Write a balanced JSONL copy.")
     balance.add_argument("--input", required=True, dest="input_path")
     balance.add_argument("--output", required=True, dest="output_path")
@@ -424,6 +437,14 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _parser()
     args = parser.parse_args()
+    if args.command == "register":
+        from medbenchagent.data.dataset_catalog import register_dataset
+        _print_json(register_dataset(args.dataset_id, args.bundle), print)
+        return
+    if args.command == "prepare":
+        from medbenchagent.data.dataset_catalog import validate_dataset_id
+        validate_dataset_id(args.dataset_id)
+        raise SystemExit(run_interactive_build(resume=args.resume, dataset_id=args.dataset_id))
     if args.command == "build":
         exit_code = run_interactive_build(resume=args.resume)
         if exit_code:

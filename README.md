@@ -1,7 +1,8 @@
 # MedBenchAgent v2
 
 MedBenchAgent uses LangGraph to construct annotation-driven Medical VLM benchmarks.
-A Supervisor selects task planning, optional raw-data preparation, template generation and audit tools.
+A Supervisor selects prepared datasets, delegates dataset-local task planning, allocates globally,
+and generates/audits each dataset before merging the accepted samples.
 It asks for clarification when needed instead of requiring confirmation at every stage.
 Model inference and scoring remain a separate subsystem.
 
@@ -42,35 +43,52 @@ Paths remain relative and beneath the bundle root. PNG/JPEG source bytes and ima
 IDs are namespaced by source/version/entity; missing patient/case/study IDs stay null. Original IDs and
 source record references are retained in local provenance indexes and are not default answer fields.
 
-Include all source directories in the natural-language requirement. The Supervisor uses `prepare_data`
-with a nonempty source list; raw and standard annotation sources can be mixed. Its tool arguments are:
+Prepare each independent dataset once, then reuse its registered Card in benchmark runs:
 
-```json
-{
-  "dataset_id": "breast-composite",
-  "sources": [
-    {"id":"first","version":null,"kind":"raw","root":"D:/Data/First"},
-    {"id":"second","version":"1","kind":"annotation","root":"D:/Data/Second","annotation":"annotation.jsonl"}
-  ]
-}
+```powershell
+uv sync --extra data-processing
+uv run medbenchagent prepare --dataset-id breast-us
+uv run medbenchagent prepare --dataset-id breast-us --resume <printed-resume-identifier>
+uv run medbenchagent register --dataset-id breast-us --bundle D:/Data/Prepared/breast-us/version
+uv run medbenchagent build
 ```
 
-The agent inspects evidence, saves a typed PreparationPlan, executes standard operations, selects image
-policies, and normalizes each source independently. It then saves a HarmonizationPlan and publishes one
-Dataset bundle. Fields without evidence of equivalence remain source-scoped; missing labels never become
-negative labels automatically. Code fallback requires an explicit reason and the same provenance contract.
+`prepare` asks for a natural-language description of source directories, annotation files and preparation
+requirements. Image and label files belonging to ONE dataset may be associated; independent datasets
+must use separate IDs and preparation runs. The agent inspects evidence, saves typed operations,
+normalizes images, validates the bundle, creates its Card, then updates the registry. `register` accepts
+an already complete bundle with its Card. Failures do not replace the previous registered version.
 
-Prepare the local execution image before processing raw data:
+Prepared versions live beneath `paths.prepared_datasets_root` (default `datasets/Prepared`). Catalog entries
+contain dataset_id, name, description, available and paths to annotation, image manifest, Profile and Card.
+Existing normalized datasets need `prepare` before selection; build does not prepare the whole catalog.
+Explicit dataset selections are honored; otherwise Card summaries guide high-recall selection.
+
+Choose the execution backend in `config/default.toml` or your local override:
+
+```toml
+[data_processing]
+backend = "auto" # auto | docker | local
+```
+
+`auto` probes the Docker CLI, daemon, configured image and container startup before preparation. If
+unavailable, it records why and runs local Python subprocesses. `docker` requires a working container;
+`local` never probes Docker. To prepare the Docker image manually:
 
 ```powershell
 docker build -f config/data-processing.Dockerfile -t medbench-data:local .
 ```
 
-`[data_processing]` configures the image, timeout, container memory, DuckDB memory and threads.
-Generated code and raw conversions run with network disabled, read-only source/code mounts, writable
-output, and disk-backed scratch. The actual container image ID is recorded in operation receipts.
-A single standard PNG/JPEG dataset selected by Planning uses fixed local import code, with the same
-normalization, quality, deduplication and publication engine; it executes no generated Python.
+The backend is fixed for that preparation version and recorded in `execution_runtime.json`. Processing
+errors never trigger a backend switch. Docker retains read-only mounts, disabled networking and resource
+limits. Local execution supports both fixed operators and Agent-generated Python with current-user
+permissions; it does not provide Docker filesystem/network isolation. Both use timeouts, independent
+work/scratch directories and the same provenance, output and repeatability checks. DuckDB memory and
+thread settings apply to both; container_memory applies only to Docker. Missing local libraries report
+an actionable error rather than installing packages automatically.
+
+Generated scripts read MEDBENCH_SOURCE_ROOT and write under MEDBENCH_WORK_DIR; optional annotations use
+MEDBENCH_ANNOTATION_PATH, and scratch uses MEDBENCH_DATA_SCRATCH. Do not hardcode container paths.
 
 Sources are not copied wholesale. Source file inventories and content digests detect changes before reuse
 and publication; keep external sources stable during processing. Read-only mounts do not freeze the host
@@ -97,7 +115,7 @@ Generation and answer audit share the same resolver and published population.
 
 ## Planning, templates and audit
 
-TaskPlanningAgent incrementally builds exactly two levels: Medical Concept → executable Leaf.
+For each selected prepared dataset, TaskPlanningAgent incrementally builds exactly two levels: Medical Concept → executable Leaf.
 Core Concepts come from `config/blueprint.json`; each leaf has a runtime-defined stable ID and an explicit
 `concept_id`. IDs never determine execution; dots in an ID do not create additional tree levels. A leaf Protocol binds annotation fields, its answer contract,
 execution type (`letter_classification`, `bbox_grounding`, or `free_text`), response format, metric and intent.
@@ -109,7 +127,7 @@ proposals. Dataset validation and model semantic review must accept each proposa
 
 Global Review identifies targeted corrections. Correction rounds consume the persistent
 `harness.max_reworks` budget; redelegation and checkpoint recovery do not reset it. Unresolved issues at
-budget exhaustion block Plan publication. Current Plan readiness also requires valid Protocols and allocation.
+budget exhaustion block Plan publication. Current Plan readiness also requires valid Protocols and exact per-Leaf eligible_count; no sample quotas are stored in Plan.
 Reading the same exhausted Review again preserves its blocked status and draft reference without another
 model call. Upstream requirement or dataset changes refresh the draft metadata and require revalidation,
 while preserving leaf identities and spent rework budget. Accepted Extension proposals and their decisions
@@ -119,9 +137,13 @@ Persisted Concepts, Leaves and PlanningDrafts reject unknown fields and invalid 
 permits unfinished nodes; final Plan validation returns located `path`/`message` issues for structure and
 readiness failures. These checks reuse artifact version gates and do not rescan the dataset on every action.
 
-The model supplies relative leaf weights and reasons. Code counts eligible images and applies deterministic
-capacity-aware allocation. Clipped allocations are redistributed first: `planning_shortfall` records only the
-final unfilled total. Zero weights exclude leaves. Per-image competition can still cause generation shortfalls.
+After all local plans complete, AllocationAgent supplies justified Concept importance and optional
+Dataset/Leaf weights. Code allocates Concept → Dataset → Leaf with deterministic capacity clipping and
+redistribution. Lower levels default to equal coverage; more Leaves do not give a dataset more budget.
+Zero weights exclude members. Core Concepts are shared; Extensions and Leaf IDs remain dataset-local.
+A completed unsupported plan may receive zero allocation; an execution failure cannot be silently omitted.
+Independent Leaf capacities do not guarantee joint feasibility under per-image limits, so actual generation
+shortfalls remain explicit. No automatic refill loop is introduced.
 
 GenerationAgent builds and reviews a separate `templates.json` library, controlled by
 `generation.question_template_count`. The builder and reviewer interfaces accept only a strict TemplateSpecification without
@@ -132,7 +154,11 @@ from the full Protocol without per-item LLM calls.
 
 Hard audit checks images, duplicates and Protocol-bound annotation answers. Sampled semantic audit is
 advisory. Final `total_shortfall` is the requested total minus hard-audit accepted items, without double-counting
-planning and generation deficits. Evaluation and scoring are unchanged in this phase; Concept-level evaluation
+planning and generation deficits. Final accepted samples are merged into `benchmark.jsonl`; `benchmark.raw.jsonl`, `audit_report.json` and
+`benchmark_manifest.json` accompany it. Task IDs are `dataset_id::local_leaf_id`, with explicit source
+mappings in manifest v3; local image IDs are preserved and image paths are rebased. Annotations and image
+manifests remain dataset-local. Repeated export does not append duplicate samples.
+Evaluation and scoring are unchanged; existing evaluation loaders do not accept this v3 manifest. Concept-level evaluation
 aggregation is not implemented yet.
 
 ## Outputs and execution limits

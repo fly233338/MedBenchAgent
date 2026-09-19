@@ -55,3 +55,39 @@ def test_auto_records_probe_failure(monkeypatch, failure):
         raise failure
     monkeypatch.setattr(execution, "docker_identity", fail)
     assert execution.select_backend({"backend": "auto"})["selection_reason"]
+
+
+def test_local_does_not_probe_and_runtime_drift_blocks_resume(monkeypatch):
+    monkeypatch.setattr(execution, "docker_identity", lambda *a, **k: pytest.fail("Local must not probe Docker"))
+    saved = execution.select_backend({"backend": "local"})
+    saved["version"] = "different"
+    with pytest.raises(ValueError, match="runtime changed"):
+        execution.select_backend({"backend": "auto"}, saved)
+
+
+def test_real_docker_matches_local_normalization(tmp_path, monkeypatch):
+    """Optional environment integration: same engine, annotation and Profile on both backends."""
+    import shutil
+    from types import SimpleNamespace
+    from medbenchagent.data.dataset import build_dataset_profile
+    from test_data_layer import source_fixture
+    if shutil.which("docker") is None:
+        pytest.skip("Docker CLI is not installed")
+    configured = get_settings().data_processing
+    try:
+        execution.docker_identity(configured)
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        pytest.skip(f"Configured Docker runtime unavailable: {exc}")
+    source = source_fixture(tmp_path / "source")
+    outputs = []
+    for backend in ("local", "docker"):
+        monkeypatch.setattr(execution, "get_settings", lambda mode=backend: SimpleNamespace(
+            data_processing={**configured, "backend": mode}))
+        folder = tmp_path / backend
+        execution.run({"source_root": source.root, "bundle_root": str(folder)}, folder / "normalized",
+                      request={"operation": "normalize", "source": source.model_dump(), "wrapped": False,
+                               "policies": {}, "plan_ref": "same-plan"},
+                      annotation=str(tmp_path / "source/annotation.jsonl"))
+        outputs.append([json.loads(line) for line in (folder / "normalized/annotation.jsonl").read_text(encoding="utf-8").splitlines()])
+    assert outputs[0] == outputs[1]
+    assert build_dataset_profile(outputs[0]) == build_dataset_profile(outputs[1])

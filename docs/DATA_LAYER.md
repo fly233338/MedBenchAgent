@@ -5,7 +5,8 @@ in LangGraph; the data modules do not implement another workflow scheduler.
 
 ## Preparation
 
-`prepare_data(sources, dataset_id, feedback)` selects all sources at once. A Source has `id`, nullable
+`prepare_data(sources, dataset_id, feedback)` selects all sources of ONE logical dataset at once. Independent
+datasets must be prepared separately. The CLI exposes prepare --dataset-id and register --dataset-id --bundle. A Source has `id`, nullable
 `version`, `kind` (`raw` or `annotation`), `root`, and optional `annotation` (default `annotation.jsonl`).
 Source IDs are unique within a selection. Each source has scoped artifact dependencies, so processing one
 source cannot invalidate another by overwriting a global Mapping pointer.
@@ -92,9 +93,9 @@ Only accepted representative records enter the published annotation and cache. R
 input = accepted + quarantined + duplicates_removed. Explicit upstream filtering is separately recorded
 in operator reports. `ready.json` is written after final indexing and input verification.
 
-Sources are externally read-only, not frozen snapshots. File listings detect population/stat changes and
+Sources are treated as read-only inputs, not frozen snapshots; Docker enforces read-only mounts, local code does not. File listings detect population/stat changes and
 the disk-backed used-file index checks content digests. Source changes reject reuse. Completed plans and
-outputs are immutable; new plans create new artifacts. Container receipts include actual image ID.
+outputs are immutable; new plans create new artifacts. Receipts pin the backend: Docker records image ID; local Python records interpreter and related library versions.
 Raw operations execute twice with independent outputs; standard fixed PNG/JPEG imports also compare two
 normalizations. Repeat directories are removed only after comparison.
 
@@ -128,3 +129,22 @@ Offline tests exercise typed operations, provenance, multi-source publication, q
 array witnesses, complete vocabulary, capacity, source changes and replay. Docker command construction
 is tested with a subprocess double. No real dataset run, model call, container execution or large-scale
 throughput validation is implied by these tests.
+
+## Backend, Cards and registry
+
+`data_processing.backend` is auto/docker/local. Auto selects once at preparation initialization, after bounded
+Docker CLI/daemon/image/startup probes. Business errors never switch backend. Local runs fixed operations and
+generated fallback Python in a subprocess with timeout and process-tree cleanup; it has current-user permissions.
+Install local dependencies explicitly using `uv sync --extra data-processing`. Both backends use environment
+paths MEDBENCH_SOURCE_ROOT, MEDBENCH_WORK_DIR, MEDBENCH_ANNOTATION_PATH and MEDBENCH_DATA_SCRATCH.
+
+A bundle version lives under prepared_datasets_root/<dataset_id>/<version>. Card v1 copies deterministic
+Profile facts and adds model-produced semantics with validated path references. It binds annotation, Profile,
+image manifest and Blueprint content. Register validates these facts before replacing a catalog entry.
+Catalog holds dataset_id/name/description/available and annotation_path/image_manifest_path/profile_path/
+dataset_card_path. Missing Card/Profile assets require prepare, never implicit whole-catalog preparation.
+
+Selection and subsequent task planning reuse this cache. Core Concepts are shared across datasets; Leaf and
+Extension identities are local. Planning publishes eligible_count without quotas. Global Allocation computes
+Concept/Dataset/Leaf counts independently of the plans. Only final benchmark samples are merged; source
+annotations, image manifests and local audits remain independent.

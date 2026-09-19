@@ -26,7 +26,7 @@ def context(tmp_path, monkeypatch):
         "construction_events_path": str(tmp_path / "events.jsonl"),
         "limits": {"max_reworks": 1},
     }
-    for kind in ("Requirement", "DataConfig", "Dataset", "Materials", "PlanningConfig"):
+    for kind in ("Requirement", "DataConfig", "Dataset", "DatasetCard", "Materials", "PlanningConfig"):
         publish(c, kind, {"value": 1}, ())
     monkeypatch.setattr(
         planning,
@@ -88,14 +88,14 @@ def ready(c, monkeypatch):
     call(c, planning.finish_discovery)
     monkeypatch.setattr(planning, "complete_json", lambda *a: {"issues": []})
     call(c, planning.review_tree)
-    call(c, planning.allocate, weights={"opaque.identity": {"weight": 1.0, "reason": "Coverage"}})
 
 
 def test_plan_allows_final_capacity_shortfall_and_invalidates_on_revision(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
     ready(c, monkeypatch)
     tree = planning._tree(c)
-    assert tree["allocation"]["planning_shortfall"] == 2
+    assert tree["tasks"]["opaque.identity"]["eligible_count"] == 2
+    assert "allocation" not in tree
     assert not validate_plan(tree)
     assert call(c, planning.finish)["status"] == "complete"
     require(c, "Plan")
@@ -227,8 +227,8 @@ def test_plan_validator_rejects_leaf_count_drift(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
     ready(c, monkeypatch)
     tree = planning._tree(c)
-    tree["tasks"]["opaque.identity"]["sample_count"] += 1
-    assert any(issue["message"] == "Invalid leaf allocation" for issue in validate_plan(tree))
+    tree["tasks"]["opaque.identity"]["eligible_count"] = -1
+    assert any(issue["path"] == ["tasks", "opaque.identity", "eligible_count"] for issue in validate_plan(tree))
 
 
 def test_budget_exhausted_review_is_not_retried_with_new_identity(tmp_path, monkeypatch):
@@ -304,7 +304,6 @@ def test_cached_review_then_one_correction_round_and_successful_recheck(tmp_path
     assert planning._tree(c)["reworks_used"] == 1
     assert call(c, planning.review_tree)["status"] == "success"
     assert calls == [1, 1]
-    call(c, planning.allocate, weights={"opaque.identity": {"weight": 1.0, "reason": "Coverage"}})
     assert call(c, planning.finish)["status"] == "complete"
 
 
@@ -339,14 +338,12 @@ def test_upstream_changes_refresh_metadata_preserve_identity_and_revalidate(tmp_
     call(c, planning.coverage_gap)
     call(c, planning.finish_discovery)
     call(c, planning.review_tree)
-    call(
-        c, planning.allocate, weights={"opaque.identity": {"weight": 1.0, "reason": "Updated goal"}}
-    )
     output = call(c, planning.finish)
     plan = json.loads(Path(output["updates"]["working_blueprint_path"]).read_text(encoding="utf-8"))
     assert plan["benchmark_info"] == c["benchmark_info"]
     assert plan["dataset"]["dataset_id"] == "new-dataset"
-    assert plan["allocation"]["requested_count"] == plan["allocation"]["allocated_count"] == 1
+    assert plan["tasks"]["opaque.identity"]["eligible_count"] == 2
+    assert "allocation" not in plan
     assert plan["reworks_used"] == 1
 
 
@@ -358,3 +355,14 @@ def test_readiness_gate_never_rescans_annotations(tmp_path, monkeypatch):
     )
     assert "finish" in planning.available_tools(c)
     assert not validate_plan(planning._tree(c))
+
+
+def test_unsupported_dataset_publishes_empty_plan(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    call(c, planning.complete_concept, concept_id="core", status="unsupported", reason="No relevant annotation")
+    call(c, planning.coverage_gap)
+    call(c, planning.finish_discovery)
+    monkeypatch.setattr(planning, "complete_json", lambda *a: {"issues": []})
+    call(c, planning.review_tree)
+    assert call(c, planning.finish)["status"] == "complete"
+    assert planning._tree(c)["tasks"] == {}

@@ -31,16 +31,6 @@ class PrepareDataArguments(SourcesArguments):
     pass
 
 
-class SelectDatasetArguments(NoArguments):
-    dataset_id: DatasetId | None = None
-    annotation_path: NonEmpty | None = None
-
-
-class ProfileArguments(NoArguments):
-    revision: NonEmpty = "1"
-    refresh: bool = False
-
-
 class MaterialsArguments(NoArguments):
     files: list[NonEmpty]
 

@@ -311,7 +311,11 @@ def test_unmapped_scalar_does_not_become_missing(tmp_path):
         execute_plan(tmp_path, Source(id="a", root=str(tmp_path)), p, tmp_path / "out")
 
 
-def test_all_sources_required_and_atomic_ready_marker(tmp_path):
+def test_all_sources_required_and_atomic_ready_marker(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from medbenchagent import settings
+    cfg = settings.get_settings()
+    monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, paths=replace(cfg.paths, prepared_datasets_root=tmp_path / "prepared"), data_processing={**cfg.data_processing, "backend": "local"}))
     from medbenchagent.agents.data_pipeline import initialize, save_harmonization
 
     context = initialize(
@@ -341,6 +345,11 @@ def test_raw_and_standard_sources_through_agent_tools(tmp_path, monkeypatch):
     from medbenchagent.agents import data_pipeline as agent
     from medbenchagent.agents import data_processing
     from medbenchagent.data.image_inventory import inspect_population
+    from dataclasses import replace
+    from medbenchagent import settings
+    cfg = settings.get_settings()
+    monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, paths=replace(cfg.paths, prepared_datasets_root=tmp_path / "prepared", dataset_catalog=tmp_path / "catalog.json"), data_processing={**cfg.data_processing, "backend": "local"}))
+    monkeypatch.setattr("medbenchagent.data.dataset_card.complete_json", lambda *a: {"description": "Test dataset"})
 
     raw = source_fixture(tmp_path / "raw", pixel=60)
     (Path(raw.root) / "labels.csv").write_text(

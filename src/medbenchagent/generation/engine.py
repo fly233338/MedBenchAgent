@@ -115,9 +115,9 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, GenerationTas
     return tasks, targets
 
 
-def _item_identity(candidate: _Candidate) -> str:
+def _item_identity(candidate: _Candidate, dataset_id: str) -> str:
     return json.dumps(
-        [candidate.task_id, candidate.record["image"]["image_id"]], separators=(",", ":")
+        [dataset_id, candidate.task_id, candidate.record["image"]["image_id"]], separators=(",", ":")
     )
 
 
@@ -126,7 +126,7 @@ def _build_item(
 ) -> BenchmarkItem:
     options, answer = handler.encode_answer(candidate, generated)
     return {
-        "id": _item_identity(candidate),
+        "id": _item_identity(candidate, dataset_id),
         "task_id": candidate.task_id,
         "dataset": dataset_id,
         "image_id": candidate.record["image"]["image_id"],
@@ -421,7 +421,7 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
     for candidate in candidates:
         if len(accepted) + existing_count >= max_tasks:
             break
-        item_id = _item_identity(candidate)
+        item_id = _item_identity(candidate, request["dataset_id"])
         if item_id in existing_ids:
             continue
         record_event(

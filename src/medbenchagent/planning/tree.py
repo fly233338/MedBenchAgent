@@ -57,10 +57,6 @@ class Weight(NoArguments):
     reason: NonEmpty
 
 
-class WeightsArguments(NoArguments):
-    weights: dict[str, Weight]
-
-
 class ExtensionDecision(NoArguments):
     accepted: bool
     reason: NonEmpty
@@ -99,7 +95,7 @@ class Leaf(NoArguments):
     category: NonEmpty
     protocol: Protocol
     evidence: list[Evidence]
-    sample_count: NonNegative | None = None
+    eligible_count: NonNegative | None = None
 
 
 class ExtensionProposal(ExtensionArguments):
@@ -115,17 +111,6 @@ class ReviewSnapshot(NoArguments):
         if self.revision is not None and "issues" not in self.model_fields_set:
             raise ValueError("A reviewed revision must explicitly contain its issues")
         return self
-
-
-class Allocation(NoArguments):
-    revision: NonNegative
-    requested_count: Annotated[int, Field(gt=0)]
-    allocated_count: NonNegative
-    planning_shortfall: NonNegative
-    counts: dict[NonEmpty, NonNegative]
-    capacities: dict[NonEmpty, NonNegative]
-    weights: dict[NonEmpty, Annotated[float, Field(ge=0, allow_inf_nan=False)]]
-    weight_reasons: dict[NonEmpty, NonEmpty]
 
 
 class Coverage(NoArguments):
@@ -150,7 +135,6 @@ class PlanningDraft(NoArguments):
     correction_open: bool
     retired_ids: list[NonEmpty]
     coverage: Coverage | None = None
-    allocation: Allocation | None = None
 
 
 class PlanIssue(TypedDict):
@@ -273,41 +257,7 @@ def validate_plan(tree: object) -> list[PlanIssue]:
         )
     if draft.review.revision != draft.revision or draft.review.issues or draft.correction_open:
         issues.append({"path": ["review"], "message": "Current tree has not passed global review"})
-    allocation = draft.allocation
-    if allocation is None or allocation.revision != draft.revision:
-        issues.append({"path": ["allocation"], "message": "Current allocation is missing"})
-    else:
-        for field in ("counts", "capacities", "weights", "weight_reasons"):
-            if set(getattr(allocation, field)) != set(draft.tasks):
-                issues.append(
-                    {
-                        "path": ["allocation", field],
-                        "message": "Allocation must cover exactly every leaf",
-                    }
-                )
-        for key, count in allocation.counts.items():
-            leaf = draft.tasks.get(key)
-            capacity = allocation.capacities.get(key)
-            if leaf is None or capacity is None or count > capacity or leaf.sample_count != count:
-                issues.append(
-                    {"path": ["allocation", "counts", key], "message": "Invalid leaf allocation"}
-                )
-        requested = draft.benchmark_info.get("sample_count")
-        if (
-            type(requested) is not int
-            or requested <= 0
-            or allocation.requested_count != requested
-            or sum(allocation.counts.values()) != allocation.allocated_count
-            or allocation.allocated_count + allocation.planning_shortfall != requested
-        ):
-            issues.append(
-                {
-                    "path": ["allocation"],
-                    "message": "Allocation totals disagree with benchmark request",
-                }
-            )
-        if allocation.allocated_count <= 0:
-            issues.append(
-                {"path": ["allocation", "allocated_count"], "message": "No eligible samples"}
-            )
+    for key, leaf in draft.tasks.items():
+        if leaf.eligible_count is None:
+            issues.append({"path": ["tasks", key, "eligible_count"], "message": "Exact capacity is required"})
     return issues

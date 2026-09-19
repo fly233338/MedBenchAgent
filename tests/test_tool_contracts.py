@@ -3,7 +3,12 @@ import json
 import pytest
 
 from medbenchagent.runtime.harness import compile_agent, result
-from medbenchagent.runtime.tool_contracts import ProfileArguments
+from medbenchagent.runtime.tool_contracts import NoArguments
+
+
+class ProfileArguments(NoArguments):
+    revision: str = "1"
+    refresh: bool = False
 
 
 @pytest.mark.parametrize(

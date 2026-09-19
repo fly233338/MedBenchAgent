@@ -8,22 +8,55 @@ from pathlib import Path
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-CONTRACT_VERSION = "agent-runtime.v5"
+CONTRACT_VERSION = "agent-runtime.v6"
 
 SOURCE_KINDS = frozenset({"Source", "Inventory", "Mapping", "AnnotationScript", "Annotation",
                           "ImageInventory", "ImagePlan", "NormalizedSource"})
 
 
+DATASET_KINDS = SOURCE_KINDS | frozenset({"Dataset", "DatasetProfile", "DatasetCard", "PlanningDraft", "Plan", "Materials", "Templates", "Generation", "Audit", "Harmonization", "SourceSelection"})
+
+
 def artifact_key(context, kind):
+    if kind.startswith("dataset/"):
+        return kind
     scope = context.get("source_scope")
-    return f"source/{scope}/{kind}" if scope and kind in SOURCE_KINDS else kind
+    key = f"source/{scope}/{kind}" if scope and kind in SOURCE_KINDS else kind
+    dataset = context.get("dataset_scope")
+    return f"dataset/{dataset}/{key}" if dataset and (kind in DATASET_KINDS or kind.startswith("source/")) else key
+
+
+def reference_digests(references):
+    from medbenchagent.data.sources import digest_file
+    digests = {}
+    # Prepared access manifests already bind the full annotation contents. Reuse that
+    # digest instead of scanning a large annotation again for every publication.
+    def known(value):
+        if isinstance(value, dict):
+            if "annotation_path" in value and "annotation_digest" in value:
+                digests[str(Path(value["annotation_path"]).resolve())] = value["annotation_digest"]
+            for child in value.values():
+                known(child)
+    known(references)
+    def visit(value, key=""):
+        if isinstance(value, dict):
+            for name, child in value.items():
+                visit(child, name)
+        elif isinstance(value, str) and (key.endswith("_path") or key in {"path", "blueprint", "raw", "audited", "report", "annotation"}):
+            path = Path(value)
+            if path.is_file() and path.suffix in {".json", ".jsonl", ".py", ".toml"}:
+                canonical = str(path.resolve())
+                if canonical not in digests:
+                    digests[canonical] = digest_file(path)
+    visit(references)
+    return digests
 
 
 DEPENDENCIES = {
     "Dataset": ("DataConfig",),
     "Plan": ("Requirement", "Dataset", "Materials", "PlanningConfig"),
     "Templates": ("Plan", "TemplateConfig"),
-    "Generation": ("Dataset", "Plan", "Templates", "GenerationConfig"),
+    "Generation": ("Dataset", "Plan", "Templates", "GenerationConfig", "Allocation"),
     "Audit": ("Generation", "Dataset", "Plan", "AuditConfig"),
 }
 
@@ -65,7 +98,8 @@ def publish(context, kind, references, dependencies=None):
     current = dict(context.get("artifact_versions", {}))
     deps = {key: current[key] for key in kinds}
     index = read_index(context)
-    identity = {"kind": kind, "references": references, "dependencies": deps}
+    identity = {"kind": kind, "references": references, "dependencies": deps,
+                "content_digests": reference_digests(references)}
     existing = next(
         (
             key
@@ -111,6 +145,12 @@ def verify_resume(context):
     from medbenchagent.data.sources import verify_source
     for source in Path(context["run_directory"]).rglob("source_manifests/*/source.json"):
         verify_source(source.parent)
+    from medbenchagent.data.dataset_catalog import load_prepared
+    from medbenchagent.settings import run_settings
+    if context.get("dataset_assets"):
+        with run_settings(context["effective_config_path"]):
+            for asset in context["dataset_assets"].values():
+                load_prepared(asset["entry"])
 
 
 def initialize_dependencies(context, settings):
@@ -125,6 +165,7 @@ def initialize_dependencies(context, settings):
             "model": snapshot["llm"]["model"],
             "temperature": snapshot["llm"]["default_temperature"],
         },
+        "AllocationConfig": {"policy": "concept-dataset-leaf.v1", "model": settings.llm.model},
         "TemplateConfig": {
             "count": settings.generation.question_template_count,
             "temperature": context["question_temperature"],

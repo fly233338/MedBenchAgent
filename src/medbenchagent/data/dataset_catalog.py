@@ -1,157 +1,110 @@
-"""Validated dataset catalog loading and LLM-assisted recommendation."""
-
-from __future__ import annotations
+"""Registry of independently prepared, immutable dataset versions."""
 
 import json
-import re
 from pathlib import Path
-from typing import Any, TypedDict
-
+import re
 from medbenchagent import settings
-from medbenchagent.runtime.construction import event_operation
-from medbenchagent.runtime.llm import complete_json
+from medbenchagent.data.dataset_card import DatasetCard, validate_semantics
+from medbenchagent.data.sources import digest_file
+from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 DATASET_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+PATH_FIELDS = ("annotation_path", "image_manifest_path", "profile_path", "dataset_card_path")
 
 
 class DatasetCatalogError(ValueError):
-    """Raised when the dataset catalog or a recommendation violates its contract."""
+    """Invalid registry entry or unavailable prepared asset."""
 
 
-class DatasetEntry(TypedDict):
-    id: str
-    name: str
-    description: str
-    annotation_path: str
-    available: bool
+def validate_dataset_id(value):
+    if not isinstance(value, str) or not DATASET_ID_PATTERN.fullmatch(value):
+        raise DatasetCatalogError("unsafe id; use a lowercase stable slug")
+    return value
 
 
-def load_dataset_catalog(catalog_path: str | Path | None = None) -> list[DatasetEntry]:
-    """Load and deterministically validate the dataset catalog."""
-    path = (
-        Path(catalog_path)
-        if catalog_path is not None
-        else settings.get_settings().paths.dataset_catalog
-    )
+def load_dataset_catalog(catalog_path=None):
+    path = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
     try:
         catalog = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise DatasetCatalogError(f"Dataset catalog could not be read: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise DatasetCatalogError(f"Dataset catalog is not valid JSON: {path}") from exc
-    if not isinstance(catalog, dict) or set(catalog) != {"datasets"}:
-        raise DatasetCatalogError("Dataset catalog must contain exactly one datasets array.")
-    raw_datasets = catalog["datasets"]
-    if not isinstance(raw_datasets, list) or not raw_datasets:
-        raise DatasetCatalogError("Dataset catalog must contain at least one dataset.")
-
-    datasets: list[DatasetEntry] = []
-    seen_ids: set[str] = set()
-    required = {"id", "name", "description", "annotation_path", "available"}
-    for index, raw in enumerate(raw_datasets):
-        if not isinstance(raw, dict) or set(raw) != required:
-            raise DatasetCatalogError(
-                f"Dataset catalog entry {index} must contain exactly: {', '.join(sorted(required))}."
-            )
-        for field in ("id", "name", "description", "annotation_path"):
-            if not isinstance(raw[field], str) or not raw[field].strip():
-                raise DatasetCatalogError(f"Dataset catalog entry {index} has an invalid {field}.")
-        dataset_id = raw["id"].strip()
-        if not DATASET_ID_PATTERN.fullmatch(dataset_id):
-            raise DatasetCatalogError(
-                f"Dataset catalog entry {index} has an unsafe id; use a lowercase stable slug."
-            )
-        if dataset_id in seen_ids:
-            raise DatasetCatalogError(f"Dataset catalog contains duplicate id: {dataset_id}.")
-        if not isinstance(raw["available"], bool):
-            raise DatasetCatalogError(f"Dataset catalog entry {dataset_id} has an invalid available flag.")
-        seen_ids.add(dataset_id)
-        datasets.append(
-            {
-                "id": dataset_id,
-                "name": raw["name"].strip(),
-                "description": raw["description"].strip(),
-                "annotation_path": raw["annotation_path"].strip(),
-                "available": raw["available"],
-            }
-        )
-    if not any(dataset["available"] for dataset in datasets):
-        raise DatasetCatalogError("Dataset catalog must contain at least one available dataset.")
-    return datasets
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DatasetCatalogError(f"Cannot read dataset catalog: {path}") from exc
+    if not isinstance(catalog, dict) or set(catalog) != {"datasets"} or not isinstance(catalog["datasets"], list):
+        raise DatasetCatalogError("Catalog requires one datasets array")
+    seen = set()
+    required = {"dataset_id", "name", "description", "available", *PATH_FIELDS}
+    for entry in catalog["datasets"]:
+        if not isinstance(entry, dict) or set(entry) != required:
+            raise DatasetCatalogError(f"Catalog entry must contain exactly {sorted(required)}")
+        identifier = validate_dataset_id(entry["dataset_id"])
+        if identifier in seen:
+            raise DatasetCatalogError(f"duplicate id: {identifier}")
+        seen.add(identifier)
+        if type(entry["available"]) is not bool:
+            raise DatasetCatalogError("invalid available flag")
+        if any(not isinstance(entry[key], str) or not entry[key].strip() for key in required - {"available"}):
+            raise DatasetCatalogError("Catalog text and paths must be nonempty")
+    return catalog["datasets"]
 
 
-def public_dataset_entries(datasets: list[DatasetEntry]) -> list[dict[str, object]]:
-    """Return catalog metadata safe for model prompts and user review."""
-    return [
-        {
-            "id": dataset["id"],
-            "name": dataset["name"],
-            "description": dataset["description"],
-            "available": dataset["available"],
-        }
-        for dataset in datasets
-    ]
-
-
-def dataset_by_id(datasets: list[DatasetEntry], dataset_id: str) -> DatasetEntry:
-    """Return one available dataset entry by exact id."""
-    for dataset in datasets:
-        if dataset["id"] == dataset_id:
-            if not dataset["available"]:
-                raise DatasetCatalogError(f"Dataset is not available: {dataset_id}.")
-            return dataset
-    raise DatasetCatalogError(f"Unknown dataset id: {dataset_id}.")
-
-
-def resolve_annotation_path(dataset: DatasetEntry) -> Path:
-    """Resolve project-relative annotation paths without exposing them to the model."""
-    path = Path(dataset["annotation_path"]).expanduser()
+def resolve_path(value):
+    path = Path(value).expanduser()
     return path.resolve() if path.is_absolute() else (settings.PROJECT_ROOT / path).resolve()
 
 
-def _validate_recommendation(
-    response: object, datasets: list[DatasetEntry]
-) -> tuple[dict[str, str] | None, str | None]:
-    if not isinstance(response, dict) or set(response) != {"dataset_id", "reason"}:
-        return None, "recommendation must contain exactly dataset_id and reason"
-    dataset_id = response.get("dataset_id")
-    reason = response.get("reason")
-    if not isinstance(dataset_id, str) or not dataset_id.strip():
-        return None, "dataset_id must be a non-empty string"
-    try:
-        dataset_by_id(datasets, dataset_id.strip())
-    except DatasetCatalogError as exc:
-        return None, str(exc)
-    if not isinstance(reason, str) or not reason.strip():
-        return None, "reason must be a non-empty string"
-    return {"dataset_id": dataset_id.strip(), "reason": reason.strip()}, None
+def resolve_annotation_path(entry):
+    return resolve_path(entry["annotation_path"])
 
 
-def recommend_dataset(
-    benchmark_info: dict[str, Any], datasets: list[DatasetEntry]
-) -> dict[str, str]:
-    """Recommend one available dataset and repair one invalid model response."""
-    catalog = public_dataset_entries(datasets)
-    prompt = (
-        "Select the single available dataset that best matches the confirmed medical VLM benchmark. "
-        "Return JSON only with exactly dataset_id and reason. Never select a dataset whose available "
-        "field is false. Use only the supplied dataset ids.\n\n"
-        f"BenchmarkInfo: {json.dumps(benchmark_info, ensure_ascii=False)}\n\n"
-        f"Dataset catalog: {json.dumps(catalog, ensure_ascii=False)}"
-    )
-    response = complete_json(
-        "Recommend one dataset for a medical VLM benchmark. Return JSON only.", prompt
-    )
-    recommendation, error = _validate_recommendation(response, datasets)
-    if recommendation is not None:
-        return recommendation
-    with event_operation("repair"):
-        repaired = complete_json(
-            "Repair a medical dataset recommendation. Return JSON only.",
-            f"{prompt}\n\nPrevious response: {json.dumps(response, ensure_ascii=False)}\n"
-            f"Contract error: {error}",
-        )
-    recommendation, error = _validate_recommendation(repaired, datasets)
-    if recommendation is None:
-        raise DatasetCatalogError(f"Dataset recommendation is invalid: {error}.")
-    return recommendation
+def dataset_by_id(datasets, dataset_id):
+    for entry in datasets:
+        if entry["dataset_id"] == dataset_id:
+            if not entry["available"]:
+                raise DatasetCatalogError(f"Dataset is not available: {dataset_id}")
+            return entry
+    raise DatasetCatalogError(f"Unknown dataset id: {dataset_id}")
+
+
+def load_prepared(entry):
+    paths = {key: resolve_path(entry[key]) for key in PATH_FIELDS}
+    for key, path in paths.items():
+        if not path.is_file():
+            raise DatasetCatalogError(f"{entry['dataset_id']} lacks {key}; run prepare first: {path}")
+    ready_path = paths["annotation_path"].parent / "ready.json"
+    if not ready_path.is_file():
+        raise DatasetCatalogError("Dataset bundle is not published; run prepare first")
+    access = json.loads(ready_path.read_text(encoding="utf-8"))["access"]
+    card = DatasetCard.model_validate_json(paths["dataset_card_path"].read_text(encoding="utf-8"))
+    profile = json.loads(paths["profile_path"].read_text(encoding="utf-8"))
+    if (card.dataset_id != entry["dataset_id"] or
+        Path(access["annotation_path"]).resolve() != paths["annotation_path"] or
+        Path(access["profile_path"]).resolve() != paths["profile_path"] or
+        not Path(access["duckdb_path"]).is_file() or
+        card.annotation_digest != access["annotation_digest"] or
+        card.annotation_digest != digest_file(paths["annotation_path"]) or
+        card.profile_digest != digest_file(paths["profile_path"]) or
+        card.image_manifest_digest != digest_file(paths["image_manifest_path"]) or
+        card.total_images != profile["total_images"] or card.fields != profile["fields"] or
+        card.structures != profile["structures"] or card.summary != profile["summary"]):
+        raise DatasetCatalogError("Prepared dataset/Card facts changed; prepare a new version")
+    blueprint = settings.get_settings().paths.blueprint_template
+    if card.blueprint_digest != digest_file(blueprint):
+        raise DatasetCatalogError("Card Blueprint changed; prepare a new dataset version")
+    validate_semantics(card.semantics, profile, json.loads(blueprint.read_text(encoding="utf-8"))["concepts"])
+    return card, access
+
+
+def register_dataset(dataset_id, bundle, *, catalog_path=None):
+    validate_dataset_id(dataset_id)
+    bundle = Path(bundle).resolve()
+    ready = json.loads((bundle / "ready.json").read_text(encoding="utf-8"))
+    card = DatasetCard.model_validate_json((bundle / "dataset_card.json").read_text(encoding="utf-8"))
+    entry = {"dataset_id": dataset_id, "name": card.name, "description": card.semantics.description,
+             "available": True, "annotation_path": str(bundle / "annotation.jsonl"),
+             "image_manifest_path": str(bundle / "image_manifest.jsonl"),
+             "profile_path": ready["access"]["profile_path"], "dataset_card_path": str(bundle / "dataset_card.json")}
+    load_prepared(entry)
+    target = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
+    entries = load_dataset_catalog(target) if target.is_file() else []
+    entries = [e for e in entries if e["dataset_id"] != dataset_id] + [entry]
+    atomic_write_json(target, {"datasets": sorted(entries, key=lambda e: e["dataset_id"])})
+    return entry

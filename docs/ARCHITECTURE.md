@@ -1,205 +1,139 @@
 # MedBenchAgent 架构
 
-本文记录当前实现与模块边界。执行约定见 AGENTS.md；接口、职责或产物改变时同步更新本文。
+本文记录当前实现与模块边界，执行约定见 AGENTS.md。
 
-## 项目定位
+## 项目定位与流程
 
-项目基于 LangGraph，从自然语言需求、标准图像级标注和医学 PDF 构建 Medical VLM benchmark。
-构建仍以 annotation 为事实来源，不调用视觉模型推断标签。图像处理与独立 evaluation 子系统各自保持边界。
+项目使用 LangGraph 构建 annotation-driven Medical VLM benchmark。构建不调用视觉模型推断标签，
+图像处理、benchmark 构建和 evaluation 保持独立职责。
 
-## 模块边界
+流程：独立 Dataset 准备 → Profile/Card 注册 → Requirement → Dataset Selection →
+逐 Dataset TaskPlanning → 全局 Allocation → 逐 Dataset Generation/Audit → 合并 benchmark.jsonl。
+同一数据集的图像、表格等来源可以关联整理；不同数据集的 annotation 不再合并。
 
-- `runtime/`：JSON 行动 Harness、Pydantic 工具契约、依赖版本、运行产物、事件、模型客户端。
-- `planning/`：需求提取、两层 Concept/Leaf 草案、Protocol 校验、全局审查与容量约束分配。
-- `data/`：数据目录与缓存、profile、公共标注/图像校验、来源检查和二维图像转换。
-- `audit/`：硬审计、语义审查和答案位置平衡。
-- `agents/`、`generation/`、`rag/`、`evaluation/`、`workflow/` 保持角色与业务边界。
+- `data/`：准备执行后端、算子、图像与标注验证、Profile/query、Card 和 Catalog。
+- `planning/`：需求、数据集选择、Concept/Leaf 契约、Protocol 与确定性分配。
+- `agents/`：数据准备、局部规划、全局 Allocation、生成和审计。
+- `runtime/`：共享行动循环、工具契约、依赖、事件、运行目录与最终导出。
+- `generation/`、`audit/`、`rag/`、`evaluation/` 保持领域边界。
 
-原根目录模块路径已删除，不提供转发层。发布标注 Schema 为 `schemas/annotation.v3.schema.json`；v2 通过显式导入适配接入。
+## 准备、Card 与 Catalog
 
-## 自主编排与工具契约
+`prepare --dataset-id <id>` 通过自然语言来源描述进入 Supervisor，后者只准备这一逻辑数据集；
+支持 `--resume`。`register --dataset-id <id> --bundle <path>` 验证并登记已有完整 bundle。
+构建时也可以显式准备新数据集。准备版本位于 `paths.prepared_datasets_root/<dataset_id>/<version>`，
+默认根目录 datasets/Prepared。准备失败不替换已登记版本。
 
-入口为 `medbenchagent.workflow.graph:benchmark_graph`。根图初始化运行目录后执行 SupervisorAgent；
-它通过受限 JSON 行动选择需求提取、数据准备、规划、生成或审计。Concept 定义与执行 Protocol 分离；答案仍来自 annotation，指标复用现有 registry。
+每个 Source 有独立 Inventory、PreparationPlan、Annotation、ImageInventory/ImagePlan 和 NormalizedSource。
+PreparationPlan 保存语义依据及顺序算子；不引入第二套 DAG 或表达式语言。CSV 保留字符串 ID，join 显式
+定义基数、空键与未匹配策略；group_findings 保留同实体标签与 bbox 配对。标准算子无法表达时，Agent
+可以记录原因并生成 Python，输出相同的 annotation 包装和 provenance 索引。
 
-`runtime/harness.py` 提供共享行动循环，行动包含 tool、arguments、reason。
-`runtime/tool_contracts.py` 定义严格 Pydantic 模型；模型看到 JSON Schema，调用前验证必填字段、
-类型、枚举、范围与额外字段。普通工具经 LangChain StructuredTool 接收具名参数；finish 和 ask_user
-采用相同参数校验。参数错误返回定位到字段的 errors；内部 KeyError/TypeError 向外传播。
-领域工具负责数据存在性、字段可用性和阶段前置条件。共享 Harness 的 available_tools 回调同时控制
-模型可见目录和执行门控。子 Agent 终态区分 complete、needs_input、blocked、failed；结果携带
-unresolved_questions、warnings、artifacts、readiness、affected_node_ids，Supervisor 保留结构化结果。
-工具内部仍使用 success/failed 表达单次操作结果。
+Harmonization 只用于一个 Dataset 内有依据的来源字段整理，不建立全局医学本体。未对齐字段保留
+`<entity>.annotation.sources.<source_id>`；单来源空计划为 identity，缺失不补为阴性。bundle 执行
+整图隔离、精确像素去重、来源与数量对账。同像素且标注/身份冲突的组整体隔离；不推断跨数据集身份。
 
-专业 Agent 使用共享 ask_user 直接 interrupt，记录角色、问题、方案引用与回答，CLI 统一展示并恢复原
-checkpoint。相同角色/方案/问题复用已记录决定。scope=global 的跨职责问题返回 Supervisor；局部问题
-不需要 Supervisor 转述，不作为失败计数。Supervisor 澄清需求后产生新的需求版本，必须重新提取完整 brief。
+PNG/JPEG 保留原字节；其他二维图像使用可表示原像素的 PNG 编码或有依据的显示窗。不裁框、不重采样、
+不改变空间方向。多帧、真三维、金字塔及 WSI 不支持；缺 decoder 是运行能力错误，不批量当作坏图。
+仅物化 annotation 引用图像。来源目录不全量复制，已用文件摘要用于发现外部修改。
 
-各 Agent 的私有观察最多保留六条，每条摘要最多 800 字符并附回执引用；最近工具结果最多向模型展示
-6000 字符。完整产物与回执在运行目录中。需求摘要、当前版本、进度和待处理问题进入 describe，完整 profile、
-Blueprint、脚本与 PDF 内容通过查询工具渐进读取。公开图输出只含结果、状态和路径。
+发布包含 annotation.jsonl、四字段 image_manifest.jsonl、cache/Profile、来源与质量产物及 ready.json。
+Profile 使用 task-capability-profile.v4，DuckDB cache 使用 annotation-cache.v8；完整值域、字段共现、
+数组结构与 Protocol eligibility 通过 DatasetQuery 按需读取，统计明确分母。
 
-## 运行快照、依赖与恢复
+Dataset Card v1 复用 Profile 的计数、字段、结构和分布；模型补充描述、领域、字段角色和 Core Concept
+支持线索。语义引用必须存在于 Profile，Card 不能替代 Protocol 校验。Card 绑定 annotation、Profile、
+manifest 和 Blueprint 内容，注册时核验事实与版本。数据改变需要新版本。
 
-新运行保存配置、模板、数据目录和可选医学资料快照。数据来源使用只读引用，不再全量复制原始目录。
-`source_manifests` 保存文件清单和实际使用文件的内容摘要；处理、恢复和发布校验来源变化。只读挂载不保证
-宿主机不可变，外部来源必须在运行期间保持稳定。仅物化 annotation 引用的图像到 bundle 内的来源子目录；
-Composite manifest 不再次复制图像。单份标准 PNG/JPEG 导入使用固定本地代码，原始转换与生成脚本按 data_processing.backend 在 Docker 或本地 Python 子进程中执行。
-DuckDB/Profile 位于 bundle；PDF 缓存仍位于运行内部。Profile refresh 产生新 Dataset 版本。
+Catalog 条目保存 dataset_id、name、description、available 和 annotation_path、image_manifest_path、
+profile_path、dataset_card_path。普通构建只复用已准备数据，不自动准备整个候选目录；旧标准数据通过
+prepare 补齐 Card。Selection 独立保存选中 ID 及理由：显式指定优先、单候选直选、多候选高召回选择。
+未知/不可用的显式来源报错；未准备候选记录原因；没有相关候选由 Supervisor 澄清。
 
-`.runtime/artifacts.json` 记录每个版本的 ID、类型、产物引用与直接依赖，以及当前版本引用。
-当前版本同时由 LangGraph context/checkpoint 保存，旧版本仍可保留，但不能通过当前交付检查。
+## 执行后端
 
-| 版本 | 主要直接依赖 |
+`data_processing.backend` 为 auto（默认）、docker 或 local。auto 在准备开始前检查 Docker CLI、daemon、
+配置镜像及最小启动能力；不可用时记录原因并使用本地 Python。强制 docker 时预检失败直接报错。
+不自动拉取镜像或安装依赖。实际后端保存到 execution_runtime.json 和操作回执，后续操作及恢复不切换；
+业务失败、超时或中途 Docker 故障不触发降级。
+
+两个后端共用 MEDBENCH_SOURCE_ROOT、MEDBENCH_WORK_DIR、MEDBENCH_ANNOTATION_PATH、
+MEDBENCH_DATA_SCRATCH 路径契约。固定操作和生成脚本都运行在子进程，保留超时、产物验证、来源检查
+及两次输出一致性比较。Docker 使用只读源/代码挂载、禁网、内存/CPU/进程限制，记录实际镜像 ID。
+Local 使用当前解释器、独立工作目录和 UTF-8，超时结束对应进程树；记录解释器和相关库版本。
+本地生成代码具有当前用户权限，不提供挂载/网络隔离和容器内存限制。DuckDB 内存/线程配置两端通用。
+本地依赖安装命令为 `uv sync --extra data-processing`，缺依赖时报告具体错误。
+
+## 局部规划与全局分配
+
+每次 TaskPlanning 只接收一个已选择 Dataset 的 Card/Profile/query，以及需求和 Blueprint。
+Core Concept 来自静态模板，Leaf 动态定义 opaque ID，并显式保存 concept_id。不同 Dataset 的同名
+Leaf 不代表同一任务。Extension 继续经过字段证据、临床意义、目标相关性及无法归入 Core 的审查，
+只属于当前 Dataset，不增加跨 Dataset 语义对齐阶段。
+
+Planner 在理解 Concept、展开 Leaf、设计 Protocol 和发现 Extension 时可查询 RAG；PDF 不补造标签。
+所有 Core 有 complete/unsupported 决议后检查 coverage gap，完成 discovery，再审查局部完整树。
+修正次数存入 PlanningDraft；缓存 Review、重新委派和恢复不重置额度。上游失效保留局部身份与已耗额度，
+重新验证事实和审查。数据集选择、导入和题量分配不再属于 Planner。
+
+Plan 发布要求结构、归属、Extension 决议、当前 Review、Protocol 和 eligible_count 有效。
+eligible_count 由代码使用与 Generation 相同的答案解析器计算。允许没有可执行任务的完成 Plan；
+全部选中 Dataset 都没有可用任务时整体 blocked。失败不能被当作 unsupported 静默跳过。
+
+AllocationAgent 读取所有当前 Plan，模型给出有理由的 Concept 权重，可显式给出下层权重；缺省下层
+使用等权。代码按 Concept → Dataset → Leaf 分层执行 largest-remainder、容量截断和重分配。
+Core 能力共享，Extension 以 Dataset 作用域独立计量；预算不随 Leaf 数量自动增加。
+零权重明确排除，父层容量仅累计正权重子项；取整平局使用稳定 ID 排序。Allocation 独立发布，不回写 Plan。
+逐 Leaf 容量不是每图限额下的联合可行解；本阶段不进行图像匹配或自动补量循环。
+
+## 状态、依赖与恢复
+
+Supervisor 共享状态只保留选中 ID、各 Dataset 产物引用和进度摘要。专业 Agent 的完整 context 保存到
+局部状态文件，重新委派时恢复；不整体回灌父状态。第一版串行调度，所有 Plan 完成后才可 Allocation。
+零配额 Dataset 明确跳过；正配额 Dataset 的当前 Generation/Audit 是导出前置条件。
+
+共享 Harness 使用严格 Pydantic JSON 参数和一致的工具可见/执行门控。专业 Agent 局部 ask_user 使用
+LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete、needs_input、blocked、failed。
+私有观察有界，完整资料通过工具读取；人工等待不计入运行时间。超出预算 blocked。
+
+| Artifact | 主要依赖 |
 | --- | --- |
-| Dataset | DataConfig、DatasetSelection（准备输入另依赖 PreparedDataset） |
-| Plan | Requirement、Dataset、Materials、PlanningConfig、PlanningDraft |
-| Templates | Plan、TemplateConfig |
-| Generation | Dataset、Plan、Templates、GenerationConfig |
-| Audit | Generation、Dataset、Plan、AuditConfig |
+| dataset/<id>/Dataset | DataConfig；准备发布还依赖局部 Harmonization |
+| dataset/<id>/DatasetProfile / DatasetCard | 对应 Dataset / Profile |
+| DatasetSelection | Requirement、选中 Card |
+| dataset/<id>/Plan | Requirement、Dataset、Card、Materials、PlanningConfig、PlanningDraft |
+| Allocation | Requirement、Selection、AllocationConfig、全部选中 Plan |
+| dataset/<id>/Templates | Plan、TemplateConfig |
+| dataset/<id>/Generation | Dataset、Plan、Templates、GenerationConfig、Allocation |
+| dataset/<id>/Audit | Generation、Dataset、Plan、AuditConfig |
+| Export | Selection、Allocation、正配额 Dataset 的 Audit |
 
-PlanningDraft 和数据准备阶段也登记直接依赖。统一 require 检查递归失效，替代
-planned/generated/audited 与 plan_binding；生成、审计、交付使用这套检查。改动上游时只切换当前引用。
-内容相关配置按职责登记；日志、超时等运行参数不加入内容依赖。
+Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
+依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
+操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
+SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v6；
+代码或契约变化要求新运行，不迁移旧 checkpoint。
 
-终端使用 SQLite checkpoint，支持 `build --resume <identifier>`。回执绑定验证后的参数与输入依赖版本，
-匹配时复用完成结果；数据容器操作还有同样绑定的内部完成回执。恢复读取运行保存的配置和输入。
-`.runtime/contract.json` 保存运行时契约版本、Git commit 与源码工作区差异；代码或契约变化拒绝恢复，
-明确要求新运行，不迁移旧 checkpoint。当前运行契约为 agent-runtime.v5。生成子图保留逐行 checkpoint、阶段游标及进度。
+## 生成、审计与导出
 
-harness 限制行动次数、执行时间、连续失败和相同行动重复次数。人工等待不计入执行时间，预算耗尽返回
-blocked；未审计批次不能交付。语义筛查模型失败继续使用观察性 fail-open。
+Protocol 显式定义 execution_type、response_format、metric、data_binding、answer_contract、
+question_intent、medical_constraints 和 template_slots。letter 使用唯一 scalar 的映射答案；free_text
+使用唯一直接参考字符串；bbox 使用唯一绝对像素 xyxy，并要求 target 与框属于同一标注实体。
 
-## TaskPlanning
+生成请求在私有适配层装配局部 Plan、配额和模板。模板模型只接收 TemplateSpecification，不接收逐图答案
+或完整映射；逐题执行不调用模型。模板独立保存，Plan 不包含模板或 sample_count。
+同一 Dataset/Leaf/image 最多一题，每种响应阶段保持现有每图限额。样本 ID 包含数据集身份。
 
-一个 TaskPlanningAgent 管理完整规划，Supervisor 正常委派一次，不逐 Leaf 指挥：
+各 Dataset 独立硬审计和抽样语义审查；语义 flags 不自动拒绝。最终流式合并通过硬审计的样本为
+benchmark.jsonl，并导出 benchmark.raw.jsonl、audit_report.json、benchmark_manifest.json。
+局部生成、审计、模板和 Plan 继续保留。最终 task_id 为 dataset_id::local_leaf_id，manifest 显式保存
+局部映射；image_id 保留局部值，image_path 改为相对最终文件的正确路径，不再复制图像。
+不合并 annotation 或 image manifest，不执行跨数据集像素去重。
 
-1. 选择、校验并查询 Dataset；分页读取字段统计或精确值。选择医学资料，允许空资料集。
-2. 围绕 Blueprint 的 Core Concepts 逐个理解和展开 Leaf。Concept 理解、Leaf 展开、Protocol 设计
-   均可随时调用 RAG，模型自主选择 query 和检索轮次。annotation 是字段、标签与答案空间的唯一依据。
-3. 保存每个 Leaf 的 Protocol，标记 Concept complete 或 unsupported 并记录理由。
-4. Core 完成后检查 Coverage Gap；未使用字段只是调查线索。Extension 必须先提交带直接字段证据、
-   临床意义、目标相关性和无法归入既有 Concept 理由的提案。代码核验事实引用，模型审查新能力与重复性。
-   接受后仅加入当前 run，origin=extension；复用相同 Leaf 设计流程。
-5. 完成 discovery 后审查紧凑 Concept/Leaf 视图，检查重复、重叠、归属、遗漏 sibling 和 Protocol 冲突。
-   定向 merge/remove/reparent/revise/add_leaf 后复审。第一次 Review 不消耗返工额度；之后每轮修正
-   消耗 harness.max_reworks 一次，额度存入 PlanningDraft，恢复或重新委派不重置。耗尽仍有问题返回 blocked。
-6. 对最终 Leaves 提交相对 weight 和理由；代码统计每个 Leaf 的 eligible image capacity，按权重进行
-   largest-remainder 分配和容量截断后的重分配。平局按稳定 Leaf ID 排序，零权重明确排除该 Leaf。
-7. Plan Validator 通过后发布 Plan；草案不能进入生成。检查两层结构、Concept 完成、Extension 决议、
-   Protocol、当前 revision 的 Review/Allocation 及总量关系；没有可生成样本时 blocked。
-
-Blueprint 的 concepts 和 tasks 分别保存固定两层的 Medical Concept 与 Executable Leaf。
-Concept 本身不执行；只有一种变体也需要一个 Leaf。Leaf ID 在运行时定义，修订、reparent 和恢复时稳定；
-显式 concept_id 记录归属，执行代码不解析 ID、前缀或命名。删除的 ID 不能重新用于新 Leaf。
-上游依据变化使下游失效，但保留已有 Leaf 身份和草案供定向重验证；Extension 提案也必须重新验证。
-Requirement 或 Dataset 变化时，重验证草案从当前 context 更新 benchmark_info 和 dataset_id，清除旧 Review、
-Allocation 和 discovery 完成状态；保留已消耗返工额度，旧版本产物不修改。
-
-`planning/tree.py` 的 Concept、Leaf、PlanningDraft 严格验证持久化结构，拒绝未知字段。
-Leaf 不允许 children 或 question_templates，Concept 不允许 Protocol；归属只由 concept_id 决定，
-多点号 ID 合法。校验还检查身份冲突、已删除 ID 重用以及 Concept/Leaf category 一致性。
-validate_draft 允许节点尚未完成；validate_plan 追加完成、Review、Allocation 等发布条件。
-两者返回统一的 `{path: [...], message: ...}` 问题列表，path 保留完整节点 ID，不以点号拆分。
-格式错误不会作为 KeyError 或未捕获的 Protocol ValidationError 穿透工具门控；门控不扫描 Dataset。
-
-已接受 Extension 的完整提案和决议通过 read_proposal 显式读取，避免同名 Concept 遮蔽提案；
-Extension category 修订会同步其已有 Leaves。Review 的首次结果与同版本缓存读取使用相同状态规则：
-额度耗尽且仍有问题时始终 blocked，并保留问题和草案引用；重复读取不调用模型，也不消耗新的额度。
-
-Leaf 的 protocol 包含 execution_type（letter_classification / bbox_grounding / free_text）、
-response_format、metric、data_binding、answer_contract、question_intent、medical_constraints 和
-显式 template_slots。data_binding 绑定 supporting_fields、answer_field 和可选 target_field；
-answer_contract 保存 options 与 value_mapping。free_text 和 bbox 不允许选项映射。
-Leaf evidence 独立保存检索回执中的 pdf/page/chunk_id 引用；不存在 generation_logic、question_type_id
-或旧 parent_task_id 字段。完整 Protocol 参数采用严格 Pydantic Schema，不允许额外字段。
-
-allocation 保存 requested_count、allocated_count、planning_shortfall、各 Leaf counts/capacities/weights
-及权重理由。planning_shortfall 只等于重分配完成后仍无法满足的请求总量；某 Leaf 被容量截断而成功转配
-不产生最终缺额。正配额仍受逐阶段每图限制，轻量 capacity 不求解跨 Leaf 图像匹配。
-
-## 数据准备与公共校验
-
-DataProcessingAgent 接收非空 sources 列表，按来源顺序完成 Source/Inventory → PreparationPlan →
-Annotation → ImageInventory/ImagePlan → NormalizedSource，之后执行 Harmonization → Dataset Bundle。
-Source、Inventory、Mapping、Annotation 与图像阶段采用 `source/<id>/<kind>` 版本作用域；Composite
-依赖所有选中 NormalizedSource 的明确版本，不共享单一来源 current 指针。未完成来源不能被静默省略。
-
-`data/contracts.py` 定义来源、PreparationPlan、HarmonizationPlan、provenance 与质量问题的严格模型。
-PreparationPlan 内同时保存语义依据与顺序算子步骤；不另建 DAG 调度器或表达式语言。Agent 判断实体语义、
-字段等价和处理策略；代码执行字段/值存在性、基数、格式、人口及来源校验。无法证实的语义保持独立或询问。
-
-`data/operators.py` 使用 DuckDB 执行读取、选择/过滤、rename、cast、值映射、缺失归一化、join、findings
-分组、ID namespace、bbox 与 mask-to-bbox 操作。CSV 默认保留字符串 ID；join 显式声明基数、空键与未匹配
-策略。标签和框保留同一实体的来源链路。Excel 采用受限适配。无法表达的处理允许带原因的代码 fallback，
-必须输出相同的记录包装及 provenance 索引，并通过同一数量/来源检查。
-
-data_processing.backend 支持 auto（默认）、docker 和 local。auto 在准备操作前预检 Docker daemon、镜像和启动能力，
-不可用时选择本地 Python；选择写入 execution_runtime.json，后续操作及恢复固定该后端。业务失败不切换后端。
-Docker 固定依赖版本，源与代码只读、网络关闭、限制内存/CPU/进程数；本地子进程具有当前用户权限，
-不提供挂载/网络隔离或容器内存上限。两个后端共用 MEDBENCH_SOURCE_ROOT、MEDBENCH_WORK_DIR、
-MEDBENCH_ANNOTATION_PATH 和 MEDBENCH_DATA_SCRATCH 路径契约，均有超时及产物验证。
-本地依赖通过 uv sync --extra data-processing 安装，不在运行中自动安装。DuckDB scratch 位于可写磁盘。
-回执绑定实际 image ID、参数与版本依赖。标注和图像两次执行比较稳定输出，成功后清理重复验证目录。
-原始源不写入、不复制整个 Dataset；文件清单与已用内容摘要检测外部改变，不提供文件系统快照。
-
-`data/readers.py` 提供 Raster/DICOM/NIfTI/ITK 的 probe、metadata、像素及转换接口。DICOM metadata
-采用指定 tags 的 header-only 读取。PNG/JPEG 保留字节；其余二维图像保留可表示的像素值、位深与颜色。
-需要显示窗时使用唯一可靠来源窗或版本绑定的用户决定；不自动拉伸、裁框、重采样或改变空间方向。
-多帧、真实三维、金字塔和 WSI 保持 unsupported；缺少 decoder 是运行能力错误，不当作坏图批量隔离。
-
-`data/bundle.py` 执行整图记录隔离、来源支持的字段对齐、精确像素去重及原子发布。多 finding 和可选字段缺失
-不属于坏记录。局部坏图/坏标注隔离并报告；系统性错误阻断。同实体不同值默认报告，只有声明为不变量的字段
-冲突才阻断。精确重复且标注/身份冲突的组整体隔离，无冲突稳定选代表项；全部来源保留在 dedup/provenance
-产物中。不推断跨来源患者身份，不实现感知相似度。输入、隔离、重复移除和输出数量必须对账。
-
-Harmonization 只合并有证据支持的字段，不引入全局医学本体。多来源的未对齐字段保存到
-`<entity>.annotation.sources.<source_id>`；单来源空 HarmonizationPlan 为 identity。缺失不自动补为阴性。
-发布 annotation 的 image_path 指向 bundle 内处理后资产，原始路径与 ID 保留在 provenance 索引。
-
-`data/index.py` 流式构建 annotation-cache.v8；记录、字段值和具体数组索引存入 DuckDB。
-Profile 为 task-capability-profile.v4，包含 summary、field index、per-source coverage 和结构索引。
-`data/query.py` 提供分页完整值域、按来源覆盖、样本、同图/同实体字段共现、数组长度以及 Protocol eligibility。
-覆盖统计明确分母，缺失 ID 不计为一个实体。Planner 初始读取紧凑 summary，通过工具按需取细节。
-
-发布目录包含 annotation.jsonl、四字段 image_manifest.jsonl、一个主 cache、来源清单、计划、provenance、
-quality_report.json、quarantine.jsonl、entity_quality.jsonl 和 dedup.jsonl；来源子目录保留标准化工作产物。
-ready.json 在所有输入复查及最终 cache 完成后写入；当前 Dataset 指针随后切换。已发布产物不原地修改。
-
-公共 `data/validation.py` 与 `data/image_assets.py` 维持标注、框和图像契约；Evaluation 不调用准备 Agent。
-独立技能保持自包含，不作为运行时代码依赖。详细接口见 `docs/DATA_LAYER.md`。
-
-## 答案与生成契约
-
-每条发布标注代表一张图，含 patient、case、study、image 和 provenance；各实体独立 annotation。
-图像 manifest 恰含 image_id、png_path、width、height；路径相对 manifest，历史键 png_path 也允许 JPEG。
-
-- letter：唯一获准 scalar 经 Protocol 的 value_mapping 固定正确选项。
-- free_text：answer_field 明确绑定的唯一直接参考字符串。
-- bbox：answer_field 明确绑定的唯一合法绝对像素 xyxy；声明 target_field 时要求同一标注实体的唯一目标名称。
-- 答案由代码固定，PDF 仅作为医学设计依据，不补造标签或实体关系。
-- 同一 task/image 最多一题，保留每阶段每图限制和任务题量限制。
-
-容量统计、生成和答案审计共用 Protocol 的确定性 annotation eligibility/答案解析。
-生成前按 generation.question_template_count 构建、审核模板；两个模型调用都只接收窄化 Template
-Specification（意图、语言、执行类型、约束、允许槽位），不接收答案映射、逐图答案或完整 Protocol。
-槽位由 Protocol 明确声明，可选 modality；声明目标绑定时必须使用 target。模板单独保存到 templates.json，
-只在私有 GenerationRequest 内装配，不写回 Blueprint。
-BlueprintTask 不含模板字段；`generation/contracts.py` 的私有 GenerationTask 继承规划字段并要求
-question_templates，GenerationRequest 也位于该私有模块。模板构建、槽位校验和审查接口直接接收
-严格的 TemplateSpecification，不再接收完整 Task 或 benchmark 对象；生成引擎仍读取完整 Protocol 解析答案。逐题阶段没有模型生成或 Reviewer 调用。最终硬审计检查图像、答案与重复，抽样语义
-flag 不自动拒绝题目。生成 shortfall 相对已分配量；最终 total_shortfall 等于原始请求量减硬审计通过量，不能再重复累计
-planning_shortfall。数据耗尽允许带明确缺额完成。
-
-## 产物与交付
-
-版本工作产物在 `.runtime/` 的独立操作目录中，完整 Concept/Leaf Plan 嵌入 Blueprint；系统不覆盖已完成版本。
-最终选择的有效版本复制到运行根目录：blueprint.json、templates.json、raw/audited JSONL、audit_report.json、
-construction_events.jsonl、effective_config.json 和 benchmark_manifest.json。
-不生成逐题 provenance、哈希链、多份事件汇总报告；benchmark-manifest.v2 新增 concepts、allocation，以及 tasks 内的 concept_id；不再导出旧父任务或
-question type 字段。图像 manifest 格式不变。evaluation、推理和计分代码本阶段未修改；现有评测器
-不会将新 concept_id 用作层级汇总，Concept 级评测适配属于后续工作。
-旧内部接口、checkpoint 和废弃工具不提供兼容层。
+benchmark-manifest.v3 包含 datasets、concepts、tasks、allocation 和产物引用。导出检查样本唯一性、
+数据集/任务/图像引用和数量，重复导出不追加。planning_shortfall 为请求量减分配量；generation_shortfalls
+为分配量减 raw 生成量；total_shortfall 只计算请求量减最终审计通过量，不能重复相加。
+本次没有修改 evaluation，旧加载器不接受 v3 构建 manifest；多数据集评测接入留待后续。
 
 ## 推理与评测边界
 

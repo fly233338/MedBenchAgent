@@ -3,6 +3,7 @@ dataset_catalog = "datasets/dataset_catalog.json"
 blueprint_template = "config/blueprint.json"
 materials_root = "materials"
 runs_root = "benchmarks/runs"
+prepared_datasets_root = "datasets/Prepared"
 
 [llm]
 model = "deepseek-v4-flash"

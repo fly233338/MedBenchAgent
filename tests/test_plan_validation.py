@@ -12,6 +12,7 @@ from test_generation import _task
 def plan():
     leaf = _task("letter", ["image.annotation.status"], sample_count=2)
     leaf.pop("question_templates")
+    leaf["eligible_count"] = leaf.pop("sample_count")
     return {
         "benchmark_info": {"sample_count": 2, "language": "en"},
         "dataset": {"dataset_id": "test"},
@@ -33,16 +34,7 @@ def plan():
         "correction_open": False,
         "retired_ids": [],
         "coverage": {"used_fields": ["image.annotation.status"], "unused_fields": []},
-        "allocation": {
-            "revision": 3,
-            "requested_count": 2,
-            "allocated_count": 2,
-            "planning_shortfall": 0,
-            "counts": {"concept.child.leaf": 2},
-            "capacities": {"concept.child.leaf": 2},
-            "weights": {"concept.child.leaf": 1.0},
-            "weight_reasons": {"concept.child.leaf": "Requested"},
-        },
+
     }
 
 
@@ -95,22 +87,16 @@ def test_incomplete_draft_is_structurally_valid_but_not_ready(plan):
     plan["concepts"]["concept"]["status"] = "pending"
     plan["discovery_complete"] = False
     plan["review"] = {}
-    plan.pop("allocation")
+    plan["tasks"]["concept.child.leaf"].pop("eligible_count")
     assert not validate_draft(plan)
     paths = [issue["path"] for issue in validate_plan(plan)]
     assert ["concepts", "concept", "status"] in paths
-    assert ["review"] in paths and ["allocation"] in paths
+    assert ["review"] in paths and ["tasks", "concept.child.leaf", "eligible_count"] in paths
 
 
 def test_incomplete_review_and_allocation_are_reported(plan):
     plan["review"].pop("issues")
     assert any(issue["path"] == ["review"] for issue in validate_plan(plan))
     plan["review"]["issues"] = []
-    plan["allocation"]["capacities"] = {}
-    issues = validate_plan(plan)
-    assert any(issue["path"] == ["allocation", "capacities"] for issue in issues)
-    plan["allocation"]["counts"]["concept.child.leaf"] = "two"
-    assert any(
-        issue["path"] == ["allocation", "counts", "concept.child.leaf"]
-        for issue in validate_plan(plan)
-    )
+    plan["tasks"]["concept.child.leaf"]["eligible_count"] = "two"
+    assert any(issue["path"] == ["tasks", "concept.child.leaf", "eligible_count"] for issue in validate_plan(plan))

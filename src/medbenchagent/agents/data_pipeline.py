@@ -2,6 +2,7 @@
 
 import json
 import shutil
+from uuid import uuid4
 from pathlib import Path
 
 from medbenchagent.data.contracts import (
@@ -65,7 +66,25 @@ class SourceFieldArguments(SourceChoice):
 
 def initialize(context, sources, dataset_id):
     sources = [Source.model_validate(s) for s in sources]
-    bundle = Path(context["operation_directory"]) / "bundle"
+    from medbenchagent.data.dataset_catalog import validate_dataset_id
+    from medbenchagent.settings import get_settings
+    from medbenchagent.data.execution import select_backend
+    validate_dataset_id(dataset_id)
+    if not sources or len({s.id for s in sources}) != len(sources):
+        raise ValueError("Provide nonempty sources with unique IDs within this dataset")
+    marker = Path(context["operation_directory"]) / "preparation.json"
+    if marker.is_file():
+        saved = json.loads(marker.read_text(encoding="utf-8"))
+        if saved["sources"] != [s.model_dump() for s in sources] or saved["dataset_id"] != dataset_id:
+            raise ValueError("Preparation inputs changed; use a new operation")
+        bundle = Path(saved["bundle"])
+        runtime = select_backend(get_settings().data_processing, saved["runtime"])
+    else:
+        bundle = get_settings().paths.prepared_datasets_root / dataset_id / str(uuid4())
+        runtime = select_backend(get_settings().data_processing)
+        atomic_write_json(marker, {"sources": [s.model_dump() for s in sources], "dataset_id": dataset_id,
+                                   "bundle": str(bundle), "runtime": runtime})
+    atomic_write_json(bundle / "execution_runtime.json", runtime)
     for source in sources:
         if bundle.resolve().is_relative_to(Path(source.root).resolve()):
             raise ValueError("Run output must not be beneath a source directory")
@@ -73,6 +92,8 @@ def initialize(context, sources, dataset_id):
         context,
         sources=[s.model_dump() for s in sources],
         dataset_id=dataset_id,
+        dataset_scope=dataset_id,
+        execution_runtime=runtime,
         bundle_root=str(bundle),
         normalized_sources={},
         source_scope=None,
@@ -457,33 +478,18 @@ def finish(context):
             invariants=invariants,
             verify_inputs=verify_inputs,
         )
-    publish(
-        context,
-        "DatasetSelection",
-        {"path": access["annotation_path"], "dataset_id": context["dataset_id"]},
-        ("Harmonization",),
-    )
-    versions = publish(
-        context,
-        "Dataset",
-        {"annotation": access["annotation_path"], "access": access},
-        ("DatasetSelection", "DataConfig"),
-    )
-    return result(
-        "complete",
-        "All sources published as one quality-controlled Dataset",
-        selected_dataset_id=context["dataset_id"],
-        annotation_path=access["annotation_path"],
-        dataset_access_manifest=access,
-        dataset_entry={
-            "id": context["dataset_id"],
-            "name": context["dataset_id"],
-            "annotation_path": access["annotation_path"],
-            "available": True,
-            "description": "Prepared composite dataset",
-        },
-        **versions,
-    )
+    from medbenchagent.data.dataset_card import build_card
+    from medbenchagent.data.dataset_catalog import register_dataset
+    build_card(context["dataset_id"], context["bundle_root"],
+               description=context.get("user_requirement", ""))
+    entry = register_dataset(context["dataset_id"], context["bundle_root"],
+                             catalog_path=context.get("registration_catalog_path"))
+    versions = publish(context, "Dataset", {"annotation": access["annotation_path"], "access": access},
+                       ("Harmonization", "DataConfig"))
+    return result("complete", "Dataset prepared, card validated and registered",
+                  dataset_entry=entry, annotation_path=access["annotation_path"],
+                  dataset_access_manifest=access, bundle_root=context["bundle_root"], **versions)
+
 
 
 def describe(context):
