@@ -7,3 +7,6 @@ reranker_model = "/path/to/Qwen3-Reranker-0.6B"
 
 [generation]
 question_template_count = 3
+
+# [data_processing]
+# backend = "auto"  # auto, docker, or local

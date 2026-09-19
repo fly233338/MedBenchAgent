@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from medbenchagent.agents import data_processing as preparation
 from medbenchagent.agents import data_pipeline as pipeline
+from medbenchagent.data import execution
 from medbenchagent.runtime.dependencies import publish
 
 
@@ -70,7 +71,7 @@ def test_container_uses_fixed_image_readonly_mounts_and_no_network(tmp_path, mon
         (output / "result.json").write_text("{}", encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(preparation.subprocess, "run", run)
+    monkeypatch.setattr(execution.subprocess, "run", run)
     preparation._run(context, output, request={"operation": "table", "path": "a.csv"})
     command = commands[-1]
     assert "--network=none" in command and "--read-only" in command
@@ -79,6 +80,6 @@ def test_container_uses_fixed_image_readonly_mounts_and_no_network(tmp_path, mon
     assert any("target=/project,readonly" in item for item in command)
     before = len(commands)
     preparation._run(context, output, request={"operation": "table", "path": "a.csv"})
-    assert len(commands) == before + 1  # image identity checked, container not rerun
+    assert len(commands) == before + 2  # daemon and image identity checked; operation not rerun
     with pytest.raises(ValueError, match="dependencies changed"):
         preparation._run(context, output, request={"operation": "table", "path": "b.csv"})

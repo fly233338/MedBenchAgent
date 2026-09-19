@@ -3,121 +3,19 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
-from uuid import uuid4
 
 from medbenchagent.data.validation import source_image_path
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-from medbenchagent.settings import get_settings
+from medbenchagent.data.execution import run as _run
 
 
 def _read(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
-
-def _run(context, output, *, script=None, request=None, annotation=None):
-    """Execute generated or fixed code with readonly source, code and annotation mounts."""
-    output = Path(output).resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    if context.get("source_manifest"):
-        from medbenchagent.data.sources import verify_source
-        verify_source(context["source_manifest"])
-    settings = get_settings().data_processing
-    inspected = subprocess.run(["docker", "image", "inspect", "--format={{.Id}}", settings["image"]],
-                               capture_output=True, text=True, check=False, timeout=30)
-    if inspected.returncode:
-        raise ValueError("Preparation container is unavailable; build the configured image first")
-    image_id = inspected.stdout.strip()
-    kind = "script" if script else request["operation"]
-    receipt = output.parent / f"{output.name}-{kind}.complete.json"
-    identity = {
-        "image_id": image_id,
-        "script": str(script) if script else None,
-        "request": request,
-        "annotation": annotation,
-        "dependencies": context.get("artifact_versions", {}),
-    }
-    if receipt.is_file():
-        if _read(receipt) != identity:
-            raise ValueError(
-                "Prepared operation dependencies changed; use a new operation directory"
-            )
-        expected = output / ("result.json" if request else "annotation.jsonl")
-        if expected.is_file():
-            return _read(output / "result.json") if request else None
-        # Repeat-verification outputs may have been cleaned after completion.
-        receipt.unlink()
-    name = "medbench-data-" + uuid4().hex
-    command = [
-        "docker",
-        "run",
-        "--name",
-        name,
-        "--rm",
-        "--pull=never",
-        "--network=none",
-        "--read-only",
-        f"--memory={settings['container_memory']}",
-        f"--cpus={settings['threads']}",
-        "--pids-limit=128",
-        "--cap-drop=ALL",
-        "--security-opt=no-new-privileges",
-        "--tmpfs",
-        "/tmp:rw,size=256m",
-        "--env",
-        "PYTHONPATH=/project",
-        "--env",
-        f"MEDBENCH_DATA_MEMORY={settings['memory_limit']}",
-        "--env",
-        f"MEDBENCH_DATA_THREADS={settings['threads']}",
-        "--env",
-        "MEDBENCH_DATA_SCRATCH=/work/scratch",
-        "--mount",
-        f"type=bind,source={Path(context['source_root']).resolve()},target=/source,readonly",
-        "--mount",
-        f"type=bind,source={Path(__file__).resolve().parents[2]},target=/project,readonly",
-        "--mount",
-        f"type=bind,source={output},target=/work",
-        "--workdir",
-        "/work",
-    ]
-    if annotation:
-        command += [
-            "--mount",
-            f"type=bind,source={Path(annotation).resolve()},target=/annotation/annotation.jsonl,readonly",
-        ]
-    if script:
-        command += [
-            "--mount",
-            f"type=bind,source={Path(script).resolve()},target=/script.py,readonly",
-        ]
-        arguments = ["python", "/script.py"]
-    else:
-        request_path = output.parent / (output.name + "-request.json")
-        atomic_write_json(request_path, request)
-        command += ["--mount", f"type=bind,source={request_path},target=/request.json,readonly"]
-        arguments = ["python", "-m", "medbenchagent.data.preparation_ops", "/request.json"]
-    try:
-        completed = subprocess.run(
-            command + [image_id] + arguments,
-            capture_output=True,
-            text=True,
-            timeout=settings["timeout_seconds"],
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False, timeout=30)
-        raise ValueError("Preparation exceeded its execution budget") from None
-    if completed.returncode:
-        raise ValueError((completed.stdout + "\n" + completed.stderr)[-5000:])
-    if context.get("source_manifest"):
-        verify_source(context["source_manifest"])
-    atomic_write_json(receipt, identity)
-    return _read(output / "result.json") if request else None
 
 
 def _inventory(context, key, value):

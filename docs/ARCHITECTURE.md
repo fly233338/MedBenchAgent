@@ -44,7 +44,7 @@ Blueprint、脚本与 PDF 内容通过查询工具渐进读取。公开图输出
 新运行保存配置、模板、数据目录和可选医学资料快照。数据来源使用只读引用，不再全量复制原始目录。
 `source_manifests` 保存文件清单和实际使用文件的内容摘要；处理、恢复和发布校验来源变化。只读挂载不保证
 宿主机不可变，外部来源必须在运行期间保持稳定。仅物化 annotation 引用的图像到 bundle 内的来源子目录；
-Composite manifest 不再次复制图像。单份标准 PNG/JPEG 导入使用固定本地代码，原始转换与生成脚本在 Docker 中执行。
+Composite manifest 不再次复制图像。单份标准 PNG/JPEG 导入使用固定本地代码，原始转换与生成脚本按 data_processing.backend 在 Docker 或本地 Python 子进程中执行。
 DuckDB/Profile 位于 bundle；PDF 缓存仍位于运行内部。Profile refresh 产生新 Dataset 版本。
 
 `.runtime/artifacts.json` 记录每个版本的 ID、类型、产物引用与直接依赖，以及当前版本引用。
@@ -134,7 +134,12 @@ PreparationPlan 内同时保存语义依据与顺序算子步骤；不另建 DAG
 策略。标签和框保留同一实体的来源链路。Excel 采用受限适配。无法表达的处理允许带原因的代码 fallback，
 必须输出相同的记录包装及 provenance 索引，并通过同一数量/来源检查。
 
-Docker 固定依赖版本，源与代码只读、网络关闭、限制内存/CPU/进程数；DuckDB scratch 位于可写磁盘。
+data_processing.backend 支持 auto（默认）、docker 和 local。auto 在准备操作前预检 Docker daemon、镜像和启动能力，
+不可用时选择本地 Python；选择写入 execution_runtime.json，后续操作及恢复固定该后端。业务失败不切换后端。
+Docker 固定依赖版本，源与代码只读、网络关闭、限制内存/CPU/进程数；本地子进程具有当前用户权限，
+不提供挂载/网络隔离或容器内存上限。两个后端共用 MEDBENCH_SOURCE_ROOT、MEDBENCH_WORK_DIR、
+MEDBENCH_ANNOTATION_PATH 和 MEDBENCH_DATA_SCRATCH 路径契约，均有超时及产物验证。
+本地依赖通过 uv sync --extra data-processing 安装，不在运行中自动安装。DuckDB scratch 位于可写磁盘。
 回执绑定实际 image ID、参数与版本依赖。标注和图像两次执行比较稳定输出，成功后清理重复验证目录。
 原始源不写入、不复制整个 Dataset；文件清单与已用内容摘要检测外部改变，不提供文件系统快照。
 

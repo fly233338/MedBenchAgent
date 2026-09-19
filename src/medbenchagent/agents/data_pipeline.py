@@ -195,8 +195,10 @@ def execute_preparation(context):
 def write_fallback(context, *, code):
     """Save fallback Python only for a plan with a recorded unsupported-operator reason.
 
-    Reads /source, writes /work/annotation.jsonl with {record,record_ref} rows and
-    /work/provenance.jsonl with {id,locators,step}; locators identify actual source rows.
+    Read source root from os.environ["MEDBENCH_SOURCE_ROOT"]. Write annotation.jsonl
+    with {record,record_ref} rows and provenance.jsonl with {id,locators,step} under
+    os.environ["MEDBENCH_WORK_DIR"]. Use pathlib; never hardcode container paths.
+    Locators identify actual source rows.
     """
     require(context, "Mapping")
     plan = PreparationPlan.model_validate_json(

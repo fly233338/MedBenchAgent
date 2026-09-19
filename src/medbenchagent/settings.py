@@ -227,9 +227,12 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     chunk_overlap = _integer(rag["chunk_overlap"], "rag.chunk_overlap", minimum=0)
     if chunk_overlap >= chunk_size:
         raise ValueError("rag.chunk_overlap must be smaller than rag.chunk_size.")
+    backend = values["data_processing"]["backend"]
+    if backend not in {"auto", "docker", "local"}:
+        raise ValueError("data_processing.backend must be auto, docker, or local")
     return AppSettings(
         harness={key: _integer(value, f"harness.{key}", minimum=1) for key, value in values["harness"].items()},
-        data_processing={"image": _string(values["data_processing"]["image"], "data_processing.image"),
+        data_processing={"backend": backend, "image": _string(values["data_processing"]["image"], "data_processing.image"),
                          "memory_limit": _string(values["data_processing"]["memory_limit"], "data_processing.memory_limit"),
                          "threads": _integer(values["data_processing"]["threads"], "data_processing.threads", minimum=1),
                          "container_memory": _string(values["data_processing"]["container_memory"], "data_processing.container_memory"),
