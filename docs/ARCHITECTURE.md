@@ -60,6 +60,7 @@ Card 绑定 annotation、Profile 和 image manifest 的内容，字段角色必�
 来自已检查的 Source 并匹配原文；独立模型调用仅根据这些引文提取 dataset_name、dataset_description、
 source_description，连同来源引用保存到 dataset_metadata.json。没有可靠来源说明时这些字段为空。
 Card 生成仅接收 Profile 和该准备元数据，绝不接收 benchmark user_requirement。
+准备 finish 前必须保存元数据；检查后无可靠描述则显式 save_dataset_metadata([])，不再静默补空文件。
 
 `refresh-card --dataset-id <id>` 使用现有数据和 Profile，在 bundle/cards/<uuid>.json 发布新 Card 修订，
 随后原子切换 Catalog 引用。旧 Card 和底层数据保持不变；刷新失败不切换注册项。v1 迁移只检查旧 Card
@@ -99,6 +100,10 @@ Local 使用当前解释器、独立工作目录和 UTF-8，超时结束对应�
 本地生成代码具有当前用户权限，不提供挂载/网络隔离和容器内存限制。DuckDB 内存/线程配置两端通用。
 本地依赖安装命令为 `uv sync --extra data-processing`，缺依赖时报告具体错误。
 
+build、prepare、Experiment 以及直接图调用共用按意图的本地预检：校验 Catalog 格式与 LLM 配置，
+仅构建需要有效 Blueprint；准备后端在实际准备前检查。恢复使用保存配置。PDF、embedding、reranker
+缺失只降低 RAG 能力，不阻止无检索规划；能力与原因在 CLI 和 Agent 观察中可见。
+
 ## 局部规划与全局分配
 
 Benchmark Info 使用 clinical_scope、diseases[]、modalities[]、evaluation_focus、language、sample_count。
@@ -114,6 +119,9 @@ Leaf 不代表同一任务。Extension 继续经过字段证据、临床意义�
 只属于当前 Dataset，不增加跨 Dataset 语义对齐阶段。
 
 Planner 在理解 Concept、展开 Leaf、设计 Protocol 和发现 Extension 时可查询 RAG；PDF 不补造标签。
+Planner 初始化时检查 RAG 能力；不可用且没有 Materials 时自动发布空 Materials，不再要求空选择动作。
+可用时保留显式材料选择，只有已选择材料且 RAG 可用时开放 search_materials，缺省条数取 rag.result_limit。
+已有 Materials 不被初始化覆盖，变更材料仍按既有依赖使规划失效。
 所有 Core 有 complete/unsupported 决议后检查 coverage gap，完成 discovery，再审查局部完整树。
 Card 只提供检索线索；Profile、真实字段值和结构提供规划证据，Protocol 校验确认执行条件。
 最终审查接收完整 Protocol/raw_value→option、Leaf 证据和材料段落、相关字段统计及有界真实值页、
@@ -195,7 +203,9 @@ question_intent、medical_constraints 和 template_slots。letter 使用唯一 s
 或完整映射；逐题执行不调用模型。模板独立保存，Plan 不包含模板或 sample_count。
 同一 Dataset/Leaf/image 最多一题，每种响应阶段保持现有每图限额。样本 ID 包含数据集身份。
 
-各 Dataset 独立硬审计和抽样语义审查；语义 flags 不自动拒绝。最终流式合并通过硬审计的样本为
+各 Dataset 独立硬审计和抽样语义审查；语义 flags 不自动拒绝。
+语义审计每任务抽样数由 audit.semantic_samples_per_task 控制（默认 10），保存到配置快照与 AuditConfig。
+最终流式合并通过硬审计的样本为
 benchmark.jsonl，并导出 benchmark.raw.jsonl、audit_report.json、benchmark_manifest.json。
 硬审计在写出通过样本前，按 Leaf 和 seed 确定性平衡选择题正确选项位置；保持正确答案文本和原始
 生成文件不变，bbox/free_text 原样透传。这是内部构建行为，不提供独立 balance-answers CLI。

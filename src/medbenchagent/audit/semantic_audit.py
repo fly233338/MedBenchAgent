@@ -12,7 +12,6 @@ from medbenchagent.runtime.construction import AUDIT_AGENT, event_context, recor
 from medbenchagent.runtime.llm import ModelUnavailable, complete_json
 from medbenchagent.settings import get_settings
 
-SAMPLES_PER_TASK = 10
 VIOLATIONS = {
     "task_drift",
     "answer_leakage",
@@ -61,7 +60,7 @@ def _sample(items: list[dict[str, Any]], seed: int) -> dict[str, list[dict[str, 
     for task_id, task_items in grouped.items():
         task_items.sort(key=lambda item: item["id"])
         random.Random(seed + int.from_bytes(task_id.encode("utf-8"), "big")).shuffle(task_items)
-        grouped[task_id] = task_items[:SAMPLES_PER_TASK]
+        grouped[task_id] = task_items[:get_settings().audit.semantic_samples_per_task]
     return dict(sorted(grouped.items()))
 
 

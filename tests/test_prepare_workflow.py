@@ -1,13 +1,16 @@
 from dataclasses import replace
 from pathlib import Path
+import pytest
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 from medbenchagent import settings
 from medbenchagent.workflow.graph import compile_benchmark_graph
 from medbenchagent.data.dataset_catalog import load_dataset_catalog, dataset_by_id, load_prepared
 from test_dataset_cards import prepared_dataset
 
 
-def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path, monkeypatch):
+@pytest.mark.parametrize("rebuild,interrupt_prepare", [(False, False), (True, False), (False, True)])
+def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path, monkeypatch, rebuild, interrupt_prepare):
     cfg = settings.get_settings()
     cfg = replace(cfg, paths=replace(cfg.paths, dataset_catalog=tmp_path / "catalog.json",
                                     prepared_datasets_root=tmp_path / "prepared", runs_root=tmp_path / "runs"),
@@ -16,6 +19,7 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
                                     "sources": [{"id": "source", "kind": "annotation", "root": str(tmp_path / "input/source")} ]},))
     monkeypatch.setattr(settings, "_SETTINGS", cfg)
     prepared_dataset(tmp_path, "input", monkeypatch)
+    previous = prepared_dataset(tmp_path, "new", monkeypatch) if rebuild else None
     card_prompts = []
     def card_model(system, prompt):
         import json
@@ -25,9 +29,11 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
         return {"description": "Dataset facts from Profile"}
     monkeypatch.setattr("medbenchagent.data.dataset_card.complete_json", card_model)
     actions = iter([
-        ("prepare_data", {"dataset_id": "new"}),
+        ("prepare_data", {"dataset_id": "new", "mode": "rebuild" if rebuild else "reuse_or_prepare"}),
         ("select_source", {"source_id": "source"}), ("inspect_images", {}),
         ("save_image_plan", {"overrides": {}}), ("normalize_images", {}),
+        *([("ask_user", {"question": "Clarify source semantics"})] if interrupt_prepare else []),
+        ("save_dataset_metadata", {"source_references": []}),
         ("save_harmonization", {"plan": {}}), ("finish", {}), ("finish", {})])
     def model(*args):
         tool, arguments = next(actions)
@@ -36,6 +42,12 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
     graph = compile_benchmark_graph(checkpointer=MemorySaver())
     output = graph.invoke({"user_requirement": "Prepare these standard annotations", "prepare_dataset_id": "new"},
                           {"configurable": {"thread_id": "prepare"}, "recursion_limit": 100})
+    if interrupt_prepare:
+        assert output["__interrupt__"]
+        monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, dataset_sources=()))
+        output = graph.invoke(Command(resume="Keep original source semantics"),
+                              {"configurable": {"thread_id": "prepare"}, "recursion_limit": 100})
+        assert len(list((tmp_path / "prepared/new").iterdir())) == 1
     assert output["status"] == "complete"
     entry = dataset_by_id(load_dataset_catalog(), "new")
     card, access = load_prepared(entry)
@@ -45,6 +57,25 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
     assert len(card_prompts) == 1
     assert card.preparation_metadata.dataset_description is None
     assert (Path(access["annotation_path"]).parent / "dataset_metadata.json").is_file()
+    if previous:
+        assert entry["annotation_path"] != previous["annotation_path"]
+        assert Path(previous["annotation_path"]).is_file()
+
+
+def test_supervisor_reuses_without_starting_data_processing(tmp_path, monkeypatch):
+    cfg = settings.get_settings()
+    monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, paths=replace(cfg.paths,
+                        dataset_catalog=tmp_path / "catalog.json", runs_root=tmp_path / "runs")))
+    entry = prepared_dataset(tmp_path, "a", monkeypatch)
+    monkeypatch.setattr("medbenchagent.agents.data_pipeline.initialize", lambda *a: pytest.fail("Must reuse, not prepare"))
+    actions = iter([("inspect_dataset_status", {"dataset_id": "a"}), ("prepare_data", {"dataset_id": "a"}), ("finish", {})])
+    def model(*args):
+        tool, arguments = next(actions)
+        return {"tool": tool, "arguments": arguments, "reason": "Reuse"}
+    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", model)
+    output = compile_benchmark_graph().invoke({"user_requirement": "Prepare if needed", "prepare_dataset_id": "a"})
+    assert output["status"] == "complete"
+    assert output["prepared_entries"]["a"]["annotation_path"] == entry["annotation_path"]
 
 
 def test_preparation_tools_follow_existing_artifact_dependencies(tmp_path):

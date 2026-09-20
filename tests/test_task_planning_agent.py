@@ -122,6 +122,7 @@ def test_review_budget_persists_after_redelegation_and_cannot_publish(tmp_path, 
 
 def test_rag_available_before_any_leaf_and_exact_field_values(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
+    c.update(rag_capability={"available": True, "reasons": []}, selected_material_files=["book.pdf"])
     assert planning._tree(c)["tasks"] == {}
     assert "search_materials" in planning.available_tools(c)
     chunks = [{"pdf": "book.pdf", "page": 1, "chunk_id": "c1", "text": "Terminology"}]
@@ -135,6 +136,43 @@ def test_rag_available_before_any_leaf_and_exact_field_values(tmp_path, monkeypa
     assert c["retrieved_evidence"] == [{"pdf": "book.pdf", "page": 1, "chunk_id": "c1"}]
     values = json.loads(planning.read_field_values(c, field="image.annotation.status")["summary"])
     assert {row["value"] for row in values["values"]} == {"benign", "malignant"}
+
+
+def test_optional_materials_initialize_without_rag_and_keep_existing_selection(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    c["artifact_versions"].pop("Materials")
+    monkeypatch.setattr("medbenchagent.runtime.preflight.rag_capability", lambda _: {"available": False, "reasons": ["No models"]})
+    initialized = planning.initialize_planning(c)
+    require(initialized, "Materials")
+    assert initialized["selected_material_files"] == []
+    assert "save_leaf" in planning.available_tools(initialized)
+    assert "search_materials" not in planning.available_tools(initialized)
+    assert "list_materials" not in planning.available_tools(initialized)
+    first = initialized["artifact_versions"]["Materials"]
+    initialized["selected_material_files"] = ["existing.pdf"]
+    planning.initialize_planning(initialized)
+    assert initialized["selected_material_files"] == ["existing.pdf"]
+    assert initialized["artifact_versions"]["Materials"] == first
+
+
+def test_available_rag_requires_material_selection(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    c["artifact_versions"].pop("Materials")
+    monkeypatch.setattr("medbenchagent.runtime.preflight.rag_capability", lambda _: {"available": True, "reasons": []})
+    planning.initialize_planning(c)
+    assert "Materials" not in c["artifact_versions"]
+    assert "select_materials" in planning.available_tools(c)
+    assert "save_leaf" not in planning.available_tools(c)
+
+
+def test_search_default_passes_configured_limit(tmp_path, monkeypatch):
+    from medbenchagent.runtime.tool_contracts import SearchArguments
+    c = context(tmp_path, monkeypatch)
+    limits = []
+    monkeypatch.setattr(planning, "_rag", lambda _: type("Rag", (), {"retrieve": lambda self, query, limit: limits.append(limit) or []})())
+    planning.search_materials(c, **SearchArguments(query="Medical evidence").model_dump())
+    planning.search_materials(c, query="Medical evidence", limit=2)
+    assert limits == [None, 2]  # None lets LocalPdfRag use settings.rag.result_limit.
 
 
 def test_extension_gate_acceptance_rejection_and_reparent_identity(tmp_path, monkeypatch):

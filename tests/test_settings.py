@@ -91,3 +91,19 @@ def test_invalid_source_configuration(tmp_path, text, match):
     local.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match=match):
         load_settings(local)
+
+
+def test_benchmark_and_audit_settings_are_saved_and_validated(tmp_path):
+    from medbenchagent.settings import run_settings
+    local = tmp_path / "defaults.toml"
+    local.write_text("[benchmark]\ndefault_sample_count=35\n[audit]\nsemantic_samples_per_task=4\n", encoding="utf-8")
+    cfg = load_settings(local)
+    run = initialize_run(tmp_path / "runs", settings=cfg)
+    local.write_text("[benchmark]\ndefault_sample_count=1\n", encoding="utf-8")
+    with run_settings(run["effective_config_path"]) as saved:
+        assert saved.benchmark.default_sample_count == 35
+        assert saved.audit.semantic_samples_per_task == 4
+    for section, key in (("benchmark", "default_sample_count"), ("audit", "semantic_samples_per_task")):
+        local.write_text(f"[{section}]\n{key}=0\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="positive"):
+            load_settings(local)

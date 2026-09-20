@@ -44,3 +44,20 @@ def test_metadata_is_extracted_from_verified_quotes_not_benchmark_goal(tmp_path,
 def test_unreferenced_preparation_description_is_rejected():
     with pytest.raises(ValueError, match="source references"):
         PreparationMetadata(dataset_description="Unsupported clinical purpose")
+
+
+def test_finish_requires_explicit_metadata_decision(tmp_path, monkeypatch):
+    from medbenchagent.agents.data_pipeline import finish, available_tools
+    c = {"run_directory": str(tmp_path / "run"), "bundle_root": str(tmp_path / "bundle"),
+         "sources": [{"id": "s"}], "normalized_sources": {"s": "normalized"}}
+    publish(c, "source/s/NormalizedSource", {}, ())
+    publish(c, "Harmonization", {}, ())
+    assert "finish" not in available_tools(c)
+    with pytest.raises(ValueError, match="Record dataset metadata first"):
+        finish(c)
+    assert not (tmp_path / "bundle/ready.json").exists()
+    monkeypatch.setattr("medbenchagent.runtime.llm.complete_json", lambda *args: pytest.fail("Empty metadata needs no model"))
+    c.update(save_dataset_metadata(c, source_references=[])["updates"])
+    assert "finish" in available_tools(c)
+    metadata = PreparationMetadata.model_validate_json(Path(c["dataset_metadata_path"]).read_text(encoding="utf-8"))
+    assert metadata.source_references == [] and metadata.dataset_name is None

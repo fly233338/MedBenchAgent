@@ -156,6 +156,11 @@ def read_material(context, *, file):
 
 def select_materials(context, *, files):
     """Select medical references and retain an immutable copy for this run."""
+    if files:
+        from medbenchagent.runtime.preflight import rag_capability
+        capability = rag_capability(get_settings())
+        if not capability["available"]:
+            raise ValueError("RAG unavailable: " + "; ".join(capability["reasons"]))
     available = (
         {m["file"] for m in discover_medical_materials(get_settings().paths.materials_root)}
         if files
@@ -194,7 +199,7 @@ def _rag(context):
     )
 
 
-def search_materials(context, *, query, limit=5):
+def search_materials(context, *, query, limit=None):
     """Retrieve relevant paragraphs from selected references."""
     try:
         chunks = _rag(context).retrieve(query, limit)
@@ -209,6 +214,18 @@ def search_materials(context, *, query, limit=5):
         passages[chunk["chunk_id"]] = chunk
     return result("success", json.dumps(chunks, ensure_ascii=False), retrieved_evidence=evidence,
                   retrieved_passages=passages)
+
+
+def initialize_planning(context):
+    """Initialize empty optional materials only when retrieval cannot be used."""
+    from medbenchagent.runtime.preflight import rag_capability
+    context["rag_capability"] = rag_capability(get_settings())
+    if not context["rag_capability"]["available"]:
+        try:
+            require(context, "Materials")
+        except ValueError:
+            context.update(select_materials(context, files=[])["updates"])
+    return context
 
 
 def read_dataset_document(context, *, path, offset=0):
@@ -605,6 +622,7 @@ def describe(context):
             "versions": context.get("artifact_versions", {}),
         }
     return {
+        "rag_capability": context.get("rag_capability"),
         "dataset_summary": _profile(context).get("summary", {}) if context.get("dataset_access_manifest") else {},
         "requirement": context.get("benchmark_info"),
         "concepts": {
@@ -631,12 +649,11 @@ def describe(context):
 
 
 def available_tools(context):
-    available = {
-        "list_materials",
-        "read_material",
-        "select_materials",
-        "ask_user",
-    }
+    from medbenchagent.runtime.preflight import rag_capability
+    rag = context.get("rag_capability") or rag_capability(get_settings())
+    available = {"ask_user", "select_materials"}
+    if rag["available"]:
+        available |= {"list_materials", "read_material"}
     try:
         require(context, "Dataset")
     except ValueError:
@@ -650,7 +667,9 @@ def available_tools(context):
         tree = _tree(context)
     except ValueError:
         return available
-    available |= {"search_materials", "save_leaf", "remove_leaf", "complete_concept"}
+    available |= {"save_leaf", "remove_leaf", "complete_concept"}
+    if rag["available"] and context.get("selected_material_files"):
+        available.add("search_materials")
     if concepts_complete(tree, core_only=True):
         available |= {"coverage_gap", "propose_extension", "finish_discovery"}
     if concepts_complete(tree) and tree["discovery_complete"]:
@@ -723,5 +742,6 @@ def compile_task_planning_agent(*, checkpointer=None):
             "propose_extension": ExtensionArguments,
         },
         available_tools=available_tools,
+        initialize_context=initialize_planning,
         checkpointer=checkpointer,
     )

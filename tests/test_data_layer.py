@@ -449,6 +449,7 @@ def test_raw_and_standard_sources_through_agent_tools(tmp_path, monkeypatch):
             ]
         },
     )
+    call(agent.save_dataset_metadata, source_references=[])
     assert call(agent.finish)["status"] == "complete"
     assert call(agent.finish)["status"] == "complete"  # publication replay is idempotent
     assert DatasetQuery(context["dataset_access_manifest"]).values("image.annotation.label")[

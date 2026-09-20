@@ -49,6 +49,7 @@ def compile_agent(
     *,
     args_schemas: dict[str, type[BaseModel]] | None = None,
     available_tools: Callable[[dict[str, Any]], set[str]] | None = None,
+    initialize_context: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     checkpointer: Any = None,
 ):
     """Run registered tools serially, retaining private state and completed operations."""
@@ -69,6 +70,7 @@ def compile_agent(
 
     def initialize(state: AgentState) -> dict:
         return {
+            **({"context": initialize_context(copy.deepcopy(state["context"]))} if initialize_context else {}),
             "step": 0,
             "elapsed": 0.0,
             "failures": 0,

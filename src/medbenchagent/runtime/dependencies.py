@@ -147,10 +147,12 @@ def verify_resume(context):
         verify_source(source.parent)
     from medbenchagent.data.dataset_catalog import load_prepared
     from medbenchagent.settings import run_settings
-    if context.get("dataset_assets"):
+    entries = dict(context.get("prepared_entries", {}))
+    entries.update({key: asset["entry"] for key, asset in context.get("dataset_assets", {}).items()})
+    if entries:
         with run_settings(context["effective_config_path"]):
-            for asset in context["dataset_assets"].values():
-                load_prepared(asset["entry"])
+            for entry in entries.values():
+                load_prepared(entry)
 
 
 def initialize_dependencies(context, settings):
@@ -172,7 +174,7 @@ def initialize_dependencies(context, settings):
             "model": settings.llm.model,
         },
         "GenerationConfig": {key: context[key] for key in ("seed", "max_tasks_per_image")},
-        "AuditConfig": {"seed": context["seed"], "model": settings.llm.model},
+        "AuditConfig": {"seed": context["seed"], "model": settings.llm.model, **snapshot["audit"]},
     }
     for kind, value in configs.items():
         path = Path(context["run_directory"]) / ".runtime" / "config" / f"{kind}.json"

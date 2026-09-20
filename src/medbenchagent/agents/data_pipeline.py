@@ -489,6 +489,10 @@ def finish(context):
     from medbenchagent.data.bundle import publish_bundle
 
     require(context, "Harmonization")
+    metadata_path = Path(context["bundle_root"]) / "dataset_metadata.json"
+    if not metadata_path.is_file():
+        raise ValueError("Record dataset metadata first; use source_references=[] when no reliable description exists")
+    PreparationMetadata.model_validate_json(metadata_path.read_text(encoding="utf-8"))
     for source in context["sources"]:
         verify_source(Path(context["bundle_root"]) / "source_manifests" / source["id"])
     plan = HarmonizationPlan.model_validate_json(
@@ -523,9 +527,6 @@ def finish(context):
         )
     from medbenchagent.data.dataset_card import build_card
     from medbenchagent.data.dataset_catalog import register_dataset
-    metadata_path = Path(context["bundle_root"]) / "dataset_metadata.json"
-    if not metadata_path.is_file():
-        atomic_write_json(metadata_path, PreparationMetadata().model_dump())
     build_card(context["dataset_id"], context["bundle_root"])
     entry = register_dataset(context["dataset_id"], context["bundle_root"],
                              catalog_path=context.get("registration_catalog_path"))
@@ -545,6 +546,7 @@ def describe(context):
         "normalized_sources": context.get("normalized_sources", {}),
         "plan": context.get("preparation_plan_path"),
         "harmonization": context.get("harmonization_path"),
+        "dataset_metadata": context.get("dataset_metadata_path"),
         "clarification": context.get("clarification"),
     }
 
@@ -587,7 +589,7 @@ def available_tools(context):
     ids = [source["id"] for source in context["sources"]]
     if ids and all(identifier in normalized and current(f"source/{identifier}/NormalizedSource") for identifier in ids):
         available.add("save_harmonization")
-        if current("Harmonization"):
+        if current("Harmonization") and (Path(context["bundle_root"]) / "dataset_metadata.json").is_file():
             available.add("finish")
     return available
 
@@ -631,7 +633,8 @@ def compile_pipeline(*, checkpointer=None):
         "image policies, normalize_images. Invalid local records are quarantined; ambiguous semantics require ask_user. "
         "Never infer labels or identity from medical knowledge. Preserve finding/bbox pairing and missing vs negative. "
         "Use save_dataset_metadata with verbatim quotations from inspected source documentation when available. "
-        "This metadata describes the dataset itself, never the benchmark goal. With no reliable documentation, omit it. "
+        "This metadata describes the dataset itself, never the benchmark goal. Check for source documentation; "
+        "with no reliable documentation call save_dataset_metadata(source_references=[]). Metadata must be decided before finish. "
         "After every source is normalized inspect_normalized to compare fields and exact values. Save harmonization "
         "with evidence for each merge; an empty plan preserves source-specific semantics (identity for one source). "
         "Finish only after all selected sources and harmonization are ready. Multi-frame/3D/WSI are unsupported.",

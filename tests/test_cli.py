@@ -12,7 +12,7 @@ def _settings(tmp_path: Path) -> SimpleNamespace:
     embedding.mkdir(exist_ok=True)
     reranker.mkdir(exist_ok=True)
     blueprint = tmp_path / "blueprint.json"
-    blueprint.write_text("{}\n", encoding="utf-8")
+    blueprint.write_text('{"concepts":{"core":{}}}\n', encoding="utf-8")
     materials = tmp_path / "materials"
     materials.mkdir(exist_ok=True)
     catalog = tmp_path / "dataset_catalog.json"
@@ -60,9 +60,10 @@ def test_preflight_aggregates_missing_local_resources(tmp_path: Path) -> None:
     errors = "\n".join(cli._preflight_errors(settings))
 
     assert "Blueprint template does not exist" in errors
-    assert "Embedding model is not configured" in errors
-    assert "Reranker model directory does not exist" in errors
-    assert "No categorized PDF medical materials were found" in errors
+    assert "Catalog entry must contain exactly" in errors
+    assert "Embedding model" not in errors
+    assert "Reranker model" not in errors
+    assert "PDF" not in errors
     assert "No dataset is ready for a complete run" not in errors
     assert "annotation.jsonl" not in errors
     assert "image_manifest.jsonl" not in errors
@@ -73,38 +74,44 @@ def test_preflight_accepts_complete_local_resources(tmp_path: Path) -> None:
     category = settings.paths.materials_root / "Guideline"
     category.mkdir()
     (category / "guide.pdf").write_bytes(b"%PDF-local")
-    dataset = tmp_path / "dataset"
-    dataset.mkdir()
-    annotation = dataset / "annotation.jsonl"
-    annotation.write_text("{}\n", encoding="utf-8")
-    (dataset / "image_manifest.jsonl").write_text("{}\n", encoding="utf-8")
-    settings.paths.dataset_catalog.write_text(
-        json.dumps(
-            {
-                "datasets": [
-                    {
-                        "id": "demo",
-                        "name": "Demo",
-                        "description": "Demo dataset",
-                        "annotation_path": str(annotation),
-                        "available": True,
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
     assert cli._preflight_errors(settings) == []
+
+
+def test_preflight_treats_rag_as_optional_and_blueprint_as_build_only(tmp_path):
+    settings = _settings(tmp_path)
+    settings.rag.embedding_model = None
+    settings.rag.reranker_model = None
+    assert cli._preflight_errors(settings) == []
+    settings.paths.blueprint_template.unlink()
+    assert cli._preflight_errors(settings, build=False) == []
+    assert cli._preflight_errors(settings, build=True)
+
+
+def test_new_experiment_checks_configuration_before_model(tmp_path):
+    from medbenchagent.runtime.experiments import create_experiment
+    settings = _settings(tmp_path)
+    settings.paths.dataset_catalog.write_text("{}", encoding="utf-8")
+    entry = create_experiment(settings.paths.runs_root, "bad-config")
+    class EmptyGraph:
+        def get_state(self, config):
+            return SimpleNamespace(values={}, next=(), tasks=())
+        def stream(self, *args, **kwargs):
+            raise AssertionError("Invalid config must stop before model invocation")
+    output = []
+    status = cli.run_interactive_build(settings=settings, graph=EmptyGraph(), experiment=entry,
+                                      input_fn=lambda _: pytest.fail("No input needed for invalid config"), output=output.append)
+    assert status == 2 and "Local preflight failed" in "\n".join(output)
 
 
 def test_build_reports_preflight_before_graph_creation(tmp_path: Path) -> None:
     output: list[str] = []
 
+    settings = _settings(tmp_path)
+    settings.paths.blueprint_template.unlink()
     result = cli.run_interactive_build(
         input_fn=lambda _prompt: "requirement",
         output=output.append,
-        settings=_settings(tmp_path),
+        settings=settings,
     )
 
     assert result == 2
@@ -138,7 +145,7 @@ def test_build_failure_reports_preserved_run_directory(tmp_path: Path, monkeypat
             raise AssertionError("Failure diagnostics must use the recorded run directory")
 
     output: list[str] = []
-    monkeypatch.setattr(cli, "_preflight_errors", lambda _settings: [])
+    monkeypatch.setattr(cli, "_preflight_errors", lambda _settings, **kwargs: [])
 
     result = cli.run_interactive_build(
         input_fn=lambda _prompt: "requirement",

@@ -23,6 +23,11 @@ Configure the model API, local embedding/reranker models, medical materials and 
 `config/default.toml`. An explicit `MEDBENCH_CONFIG` file and supported environment variables override
 defaults. Keep secrets outside version control. The CLI disables optional external tracing, downloads
 and telemetry; the configured language-model API is still used.
+Build, prepare and new experiments share local preflight checks. The Blueprint is required for construction,
+not preparation alone. PDF materials and embedding/reranker models are optional: when unavailable, retrieval
+tools are disabled and planning starts with empty Materials. When available, the Planner selects references;
+retrieval defaults to `rag.result_limit`. Semantic audit samples `audit.semantic_samples_per_task` items per
+task (default 10), using the run seed. These settings are saved with the run for recovery.
 
 The static task template is `config/blueprint.json`. Runs never write back to this file.
 Run initialization freezes the Blueprint template and PDF materials. It does not copy the Dataset Catalog
@@ -98,14 +103,17 @@ contain dataset_id, name, description, available and paths to annotation, image 
 Existing normalized datasets need `prepare` before selection; build does not prepare the whole catalog.
 Already prepared bundles with a missing or v1 Card can use `refresh-card` without reprocessing data.
 Cards describe only the dataset, independent of Blueprint. Source descriptions come from verified document
-quotations; the benchmark goal is never passed to Card generation. A refresh creates a new Card revision,
-updates the registry only after validation, and preserves old Cards, images, annotations and Profile/cache.
+quotations; the benchmark goal is never passed to Card generation. The preparation agent must explicitly
+save metadata or record an empty reference list after checking for reliable documentation before publication.
+Missing metadata is not silently filled during finish. A refresh creates a new Card revision, updates the
+registry only after validation, and preserves old Cards, images, annotations and Profile/cache.
 Selection saves all candidate summaries/digests and their order (including unselected datasets), exact
 name-resolution inputs and exclusion reasons in `dataset_candidates.json` and `dataset_selection.json`.
 Resume reuses the frozen decision context; external Card updates do not rewrite historical decisions.
 Explicit dataset selections are honored; otherwise Card summaries guide high-recall selection.
 Repeat `--dataset` to provide exact IDs and bypass both model name resolution and recommendation.
-Unknown, unavailable or unprepared explicit datasets are reported instead of silently replaced.
+Explicit datasets found only in configured sources are prepared automatically. Unknown, disabled or broken
+explicit datasets produce a diagnostic instead of being silently replaced.
 Selection is a shortlist for deeper planning, not proof that a dataset supports a particular task.
 
 Planning grounds tasks in real annotation fields and values; Cards only guide inspection. The final review

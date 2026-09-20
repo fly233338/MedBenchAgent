@@ -87,7 +87,7 @@ class MaterialArguments(NoArguments):
 
 class SearchArguments(NoArguments):
     query: NonEmpty
-    limit: Annotated[int, Field(ge=1, le=10)] = 5
+    limit: Annotated[int, Field(ge=1, le=10)] | None = None
 
 
 class TableArguments(NoArguments):

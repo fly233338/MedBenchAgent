@@ -47,8 +47,7 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
                         ("save_dataset_metadata", {"source_references": []}),
                         ("save_harmonization", {"plan": {}}), ("finish", {})])
     leaf = _task("letter", ["image.annotation.status"])["protocol"]
-    basic = [("select_materials", {"files": []}),
-             ("save_leaf", {"leaf_id": "same.leaf", "concept_id": "status", "description": "Status", "protocol": leaf}),
+    basic = [("save_leaf", {"leaf_id": "same.leaf", "concept_id": "status", "description": "Status", "protocol": leaf}),
              ("complete_concept", {"concept_id": "status", "status": "complete", "reason": "Direct annotation"}),
              ("coverage_gap", {}), ("finish_discovery", {}), ("review_tree", {}), ("finish", {})]
     planning_actions = iter(([("ask_user", {"question": "Confirm goal", "scope": "global"})] if ask_global else []) + basic * (dataset_count * (2 if revise else 1)))

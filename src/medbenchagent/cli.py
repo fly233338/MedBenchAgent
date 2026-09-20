@@ -60,29 +60,24 @@ def _read_nonempty(prompt: str, input_fn: InputFunction, output: OutputFunction)
         output("Input cannot be empty. Please try again.")
 
 
-def _preflight_errors(settings: Any) -> list[str]:
-    """Return all local-resource problems that would prevent a complete run."""
-    from medbenchagent.rag.pdf import RagUnavailable, discover_medical_materials
+def _preflight_errors(settings: Any, *, build=True) -> list[str]:
+    """Use the same intent-aware checks as the graph; RAG is optional."""
+    from medbenchagent.runtime.preflight import preflight_errors
+    return preflight_errors(settings, build=build)
 
-    errors: list[str] = []
-    if not settings.paths.blueprint_template.is_file():
-        errors.append(f"Blueprint template does not exist: {settings.paths.blueprint_template}")
 
-    for label, path in (
-        ("Embedding model", settings.rag.embedding_model),
-        ("Reranker model", settings.rag.reranker_model),
-    ):
-        if path is None:
-            errors.append(f"{label} is not configured.")
-        elif not path.is_dir():
-            errors.append(f"{label} directory does not exist: {path}")
-
-    try:
-        discover_medical_materials(settings.paths.materials_root)
-    except RagUnavailable as exc:
-        errors.append(str(exc))
-
-    return errors
+def _report_preflight(settings, output, *, build):
+    errors = _preflight_errors(settings, build=build)
+    if errors:
+        output("Local preflight failed:")
+        for error in errors:
+            output(f"- {error}")
+        return False
+    from medbenchagent.runtime.preflight import rag_capability
+    rag = rag_capability(settings)
+    if not rag["available"]:
+        output("Optional RAG unavailable: " + "; ".join(rag["reasons"]))
+    return True
 
 
 def _print_json(value: object, output: OutputFunction) -> None:
@@ -297,12 +292,7 @@ def run_interactive_build(
 
             settings = get_settings()
         _print_settings(settings, output)
-        errors = [] if resume or dataset_id or experiment else _preflight_errors(settings)
-        if errors:
-            output("")
-            output("Local preflight failed:")
-            for error in errors:
-                output(f"- {error}")
+        if not resume and not experiment and not _report_preflight(settings, output, build=not dataset_id):
             return 2
 
         import sqlite3
@@ -332,6 +322,8 @@ def run_interactive_build(
             elif experiment.get("run_id"):
                 raise ValueError("Experiment checkpoint is missing; use the preserved run artifacts for recovery")
             else:
+                if not _report_preflight(settings, output, build=False):
+                    return 2
                 requirement = _read_nonempty("Describe the dataset preparation or Medical VLM benchmark: ", input_fn, output)
         next_input: object = {"user_requirement": requirement, "prepare_dataset_id": dataset_id,
                               "requested_dataset_ids": dataset_ids,
@@ -352,6 +344,12 @@ def run_interactive_build(
                 return 0
             from medbenchagent.runtime.dependencies import verify_resume
             verify_resume(previous.values["context"])
+            from medbenchagent.settings import run_settings
+            saved_context = previous.values["context"]
+            with run_settings(saved_context["effective_config_path"]) as saved_settings:
+                if not _report_preflight(saved_settings, output,
+                                         build=saved_context.get("run_intent", {}).get("intent") in {"build_benchmark", "prepare_then_build"}):
+                    return 2
             pending = [i for task in previous.tasks for i in task.interrupts]
             if pending:
                 _render_interrupt(pending[0].value, output)

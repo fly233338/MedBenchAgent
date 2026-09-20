@@ -139,3 +139,15 @@ def test_shared_image_validation_preserves_consumer_policies(tmp_path):
         entry, tmp_path, check_uniform=False, supported_formats=frozenset({"PNG", "JPEG"})
     ) == ["image_format"]
     assert validate_image_asset(dict(entry, width=3), tmp_path) == ["image_dimensions"]
+
+
+def test_semantic_sample_count_uses_configuration_and_stable_seed(monkeypatch):
+    from dataclasses import replace
+    from medbenchagent import settings
+    from medbenchagent.audit.semantic_audit import _sample
+    cfg = settings.get_settings()
+    monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, audit=replace(cfg.audit, semantic_samples_per_task=2)))
+    items = [{"id": str(i), "task_id": task} for task in ("a", "b") for i in range(8)]
+    sampled = _sample(items, 3)
+    assert all(len(rows) == 2 for rows in sampled.values())
+    assert sampled == _sample(list(reversed(items)), 3)

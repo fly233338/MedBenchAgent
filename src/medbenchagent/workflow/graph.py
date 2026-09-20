@@ -18,6 +18,7 @@ from medbenchagent.runtime.run_artifacts import initialize_run, atomic_write_jso
 from medbenchagent.runtime.run_export import export_benchmark
 from medbenchagent.settings import get_settings, run_settings
 from medbenchagent.runtime.dependencies import publish, require, initialize_dependencies, verify_resume
+from medbenchagent.runtime.preflight import preflight_errors, rag_capability
 
 
 class DatasetArguments(FeedbackArguments):
@@ -159,6 +160,7 @@ def describe(context):
     details["outstanding_work"] = {"prepare_dataset_ids": preparation_pending(context),
                                    **pending_datasets(context),
                                    "available_actions": sorted(available_stages(context))}
+    details["rag_capability"] = context.get("rag_capability")
     return details
 
 
@@ -171,6 +173,9 @@ def set_intent(context, *, intent, prepare_dataset_ids):
         raise ValueError("The build command must build a benchmark")
     if context.get("prepare_dataset_id") and prepare_dataset_ids != [context["prepare_dataset_id"]]:
         raise ValueError("Use the dataset ID supplied to prepare")
+    if intent != "prepare_dataset":
+        if errors := preflight_errors(get_settings(), build=True):
+            return result("blocked", "Build preflight failed: " + "; ".join(errors))
     updates = {"run_intent": value}
     if intent == "prepare_then_build" and context.get("requested_dataset_ids") is not None:
         requested = list(dict.fromkeys(context["requested_dataset_ids"] + prepare_dataset_ids))
@@ -258,7 +263,10 @@ def compile_benchmark_graph(*, checkpointer=None):
         targets = outcome["updates"].get("preparation_required", [])
         if targets:
             context.update(outcome["updates"])
-            outcome["updates"].update(set_intent(context, intent="prepare_then_build", prepare_dataset_ids=targets)["updates"])
+            intent_result = set_intent(context, intent="prepare_then_build", prepare_dataset_ids=targets)
+            if intent_result["status"] == "blocked":
+                return {**intent_result, "updates": outcome["updates"]}
+            outcome["updates"].update(intent_result["updates"])
         return outcome
 
     def plan(context, *, dataset_id, delegation):
@@ -399,11 +407,14 @@ def compile_benchmark_graph(*, checkpointer=None):
         if not isinstance(requirement, str) or not requirement.strip():
             raise ValueError("A natural-language requirement is required")
         settings = get_settings()
+        if errors := preflight_errors(settings, build=state.get("entry_intent") == "build_benchmark"):
+            raise ValueError("Local preflight failed: " + "; ".join(errors))
         defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "question_temperature")}
         run = initialize_run(graph_overrides=overrides)
         context = dict(run, **(defaults | overrides), user_requirement=requirement,
                        operation_directory=str(Path(run["run_directory"]) / ".runtime"), limits=settings.harness,
                        registration_catalog_path=str(settings.paths.dataset_catalog),
+                       rag_capability=rag_capability(settings),
                        prepare_dataset_id=state.get("prepare_dataset_id"),
                        entry_intent=state.get("entry_intent"),
                        requested_dataset_ids=state.get("requested_dataset_ids"))
@@ -419,6 +430,8 @@ def compile_benchmark_graph(*, checkpointer=None):
     def run_supervisor(state):
         verify_resume(state["context"])
         with run_settings(state["context"]["effective_config_path"]):
+            if errors := preflight_errors(get_settings(), build=state["context"].get("run_intent", {}).get("intent") in {"build_benchmark", "prepare_then_build"}):
+                raise ValueError("Local preflight failed: " + "; ".join(errors))
             output = supervisor.invoke({"context": state["context"]})
         public = {k: v for k, v in output["context"].items() if k in BenchmarkState.__annotations__ and k not in {"context", "result"}}
         return dict(public, context=output["context"], result=output["result"],
