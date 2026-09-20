@@ -8,13 +8,13 @@ from pathlib import Path
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-CONTRACT_VERSION = "agent-runtime.v9"
+CONTRACT_VERSION = "agent-runtime.v10"
 
 SOURCE_KINDS = frozenset({"Source", "Inventory", "Mapping", "AnnotationScript", "Annotation",
                           "ImageInventory", "ImagePlan", "NormalizedSource"})
 
 
-DATASET_KINDS = SOURCE_KINDS | frozenset({"Dataset", "DatasetProfile", "DatasetCard", "PlanningDraft", "Plan", "PlanningDelegation", "Materials", "Templates", "Generation", "Audit", "Harmonization", "SourceSelection"})
+DATASET_KINDS = SOURCE_KINDS | frozenset({"Dataset", "DatasetProfile", "DatasetCard", "PlanningDraft", "Plan", "PlanningDelegation", "Materials", "Templates", "Generation", "GenerationCheck", "Harmonization", "SourceSelection"})
 
 
 def artifact_key(context, kind):
@@ -57,7 +57,6 @@ DEPENDENCIES = {
     "Plan": ("Requirement", "Dataset", "Materials", "PlanningConfig"),
     "Templates": ("Plan", "TemplateConfig"),
     "Generation": ("Dataset", "Plan", "Templates", "GenerationConfig", "Allocation"),
-    "Audit": ("Generation", "Dataset", "Plan", "AuditConfig"),
 }
 
 
@@ -174,7 +173,7 @@ def initialize_dependencies(context, settings):
             "model": settings.llm.model,
         },
         "GenerationConfig": {key: context[key] for key in ("seed", "max_tasks_per_image")},
-        "AuditConfig": {"seed": context["seed"], "model": settings.llm.model, **snapshot["audit"]},
+        "FinalizationConfig": {"seed": context["seed"], "policy": "final-task.v1"},
     }
     for kind, value in configs.items():
         path = Path(context["run_directory"]) / ".runtime" / "config" / f"{kind}.json"

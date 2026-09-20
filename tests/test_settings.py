@@ -93,17 +93,23 @@ def test_invalid_source_configuration(tmp_path, text, match):
         load_settings(local)
 
 
-def test_benchmark_and_audit_settings_are_saved_and_validated(tmp_path):
+def test_benchmark_settings_are_saved_and_validated(tmp_path):
     from medbenchagent.settings import run_settings
     local = tmp_path / "defaults.toml"
-    local.write_text("[benchmark]\ndefault_sample_count=35\n[audit]\nsemantic_samples_per_task=4\n", encoding="utf-8")
+    local.write_text("[benchmark]\ndefault_sample_count=35\n", encoding="utf-8")
     cfg = load_settings(local)
     run = initialize_run(tmp_path / "runs", settings=cfg)
     local.write_text("[benchmark]\ndefault_sample_count=1\n", encoding="utf-8")
     with run_settings(run["effective_config_path"]) as saved:
         assert saved.benchmark.default_sample_count == 35
-        assert saved.audit.semantic_samples_per_task == 4
-    for section, key in (("benchmark", "default_sample_count"), ("audit", "semantic_samples_per_task")):
+    for section, key in (("benchmark", "default_sample_count"),):
         local.write_text(f"[{section}]\n{key}=0\n", encoding="utf-8")
         with pytest.raises(ValueError, match="positive"):
             load_settings(local)
+
+
+def test_removed_semantic_audit_config_is_rejected(tmp_path):
+    local = tmp_path / "obsolete.toml"
+    local.write_text("[audit]\nsemantic_samples_per_task=10\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Unknown configuration key: audit"):
+        load_settings(local)

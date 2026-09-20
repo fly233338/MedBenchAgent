@@ -436,3 +436,9 @@ def test_stage_progress_is_resumed_and_cleaned_only_after_raw_merge(tmp_path: Pa
     result = generation.finalize_generation(request)
     assert _read_items(result.raw_output_path)[0]["id"] == "existing"
     assert not progress.exists()
+
+
+def _grounding(protocol):
+    return [{"field": protocol["data_binding"]["answer_field"], "raw_value": m["raw_value"], "option": m["option"],
+             "mode": "direct", "interpretation": "Preserve the explicit annotation label", "evidence_references": []}
+            for m in protocol["answer_contract"]["value_mapping"]]

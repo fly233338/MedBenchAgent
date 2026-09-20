@@ -1,49 +1,134 @@
-"""Deterministic post-generation benchmark audit; never judges medical truth."""
-
-from __future__ import annotations
+"""Deterministic Generation validation and item quarantine for FinalizationAgent."""
 
 import json
 import math
-import re
-import unicodedata
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from medbenchagent.planning.protocol import resolve_answer
 
-from medbenchagent.data.image_assets import validate_image_asset
-
-from medbenchagent.audit.answer_balance import balance_items
-from medbenchagent.runtime.construction import AUDIT_AGENT, record_event
+from medbenchagent.data.image_assets import load_image_manifest, validate_image_asset
 from medbenchagent.data.validation import load_annotation_jsonl
-from medbenchagent.generation.context import (
-    has_meaningful_value,
-    project_supporting_record,
-)
+from medbenchagent.generation.templates import render, validate_templates
+from medbenchagent.planning.protocol import Protocol, resolve_answer, template_specification
+from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 
-def _rows(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+def read_json(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def _write(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.write_text(
-        "".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in rows),
-        encoding="utf-8",
-    )
+def read_rows(path):
+    with Path(path).open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                yield json.loads(line)
 
 
-def _normal(text: str) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text).casefold()).strip()
+def write_rows(path, rows):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    temporary.replace(path)
 
 
+def load_inputs(plan_path, templates_path, annotation_path, manifest_path):
+    plan = read_json(plan_path)
+    template_sets = read_json(templates_path)
+    for leaf_id, task in plan["tasks"].items():
+        Protocol.model_validate(task["protocol"])
+        specification = template_specification(task["protocol"], plan["benchmark_info"]["language"])
+        review = template_sets["reviews"][leaf_id]
+        if review["specification"] != specification.model_dump() or review["review"]["verdict"] != "approved":
+            raise ValueError("Templates are not approved for the current Plan")
+        validate_templates(specification, template_sets["templates"][leaf_id])
+    records = {}
+    for record in load_annotation_jsonl(Path(annotation_path)):
+        image_id = record["image"]["image_id"]
+        if image_id in records:
+            raise ValueError("Duplicate annotation image ID")
+        records[image_id] = record
+    return plan, template_sets["templates"], records, load_image_manifest(Path(manifest_path))
 
 
-def _image_dimensions(entry: dict[str, Any]) -> tuple[int, int] | None:
-    width, height = entry.get("width"), entry.get("height")
-    if isinstance(width, int) and width > 0 and isinstance(height, int) and height > 0:
-        return width, height
-    return None
+def item_errors(item, dataset_id, tasks, templates, annotations, images, image_root, image_errors, *, balanced=False):
+    if not isinstance(item, dict):
+        return ["item_object"]
+    errors = []
+    if not isinstance(item.get("id"), str) or not item["id"].strip():
+        errors.append("item_id")
+    task_id, image_id = item.get("task_id"), item.get("image_id")
+    task = tasks.get(task_id) if isinstance(task_id, str) else None
+    entry = images.get(image_id) if isinstance(image_id, str) else None
+    annotation = annotations.get(image_id) if isinstance(image_id, str) else None
+    if item.get("dataset") != dataset_id or task is None:
+        errors.append("item_task")
+    if entry is None:
+        errors.append("image_manifest")
+    else:
+        if image_id not in image_errors:
+            image_errors[image_id] = validate_image_asset({"png_path": entry.relative_png_path,
+                "width": entry.width, "height": entry.height}, image_root)
+        errors.extend(image_errors[image_id])
+    if annotation is None:
+        errors.append("annotation_source")
+    if task is not None:
+        errors.extend(_contract(item, task, (entry.width, entry.height) if entry else None))
+        if annotation is not None:
+            try:
+                if not _answer_matches(item, task, annotation, balanced=balanced):
+                    errors.append("answer_evidence")
+                rendered = {render(SimpleNamespace(record=annotation, task=task, question_template=t)).strip()
+                            for t in templates[task_id]}
+                if item.get("question") not in rendered:
+                    errors.append("template_rendering")
+            except (ValueError, TypeError, KeyError):
+                errors.append("answer_evidence")
+    return sorted(set(errors))
+
+
+def inspect_generation(*, dataset_id, raw_path, plan_path, templates_path, annotation_path, manifest_path, output_directory):
+    plan, templates, annotations, images = load_inputs(plan_path, templates_path, annotation_path, manifest_path)
+    if plan["dataset"]["dataset_id"] != dataset_id:
+        raise ValueError("Plan dataset identity differs from Generation")
+    accepted, rejected, image_errors = [], [], {}
+    counts = {key: {"generated": 0, "accepted": 0, "rejected": 0} for key in plan["tasks"]}
+    unassigned = {"generated": 0, "accepted": 0, "rejected": 0}
+    reasons = Counter()
+    with Path(raw_path).open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            source = {"dataset_id": dataset_id, "path": str(raw_path), "line": line_number, "raw_text": line.rstrip("\r\n")}
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                item, errors = None, ["invalid_json"]
+            else:
+                errors = item_errors(item, dataset_id, plan["tasks"], templates, annotations, images,
+                                     Path(manifest_path).parent, image_errors)
+            leaf_id = item.get("task_id") if isinstance(item, dict) else None
+            bucket = counts[leaf_id] if isinstance(leaf_id, str) and leaf_id in counts else unassigned
+            bucket["generated"] += 1
+            if errors:
+                bucket["rejected"] += 1
+                reasons.update(errors)
+                rejected.append({"source": source, "task_id": leaf_id if isinstance(leaf_id, str) else None, "reasons": errors})
+            else:
+                bucket["accepted"] += 1
+                accepted.append({"source": source, "item": item})
+    root = Path(output_directory)
+    root.mkdir(parents=True, exist_ok=True)
+    write_rows(root / "accepted.jsonl", accepted)
+    write_rows(root / "rejected.jsonl", rejected)
+    report = {"generated": len(accepted) + len(rejected), "accepted": len(accepted), "rejected": len(rejected),
+              "tasks": counts, "unassigned": unassigned, "reason_counts": dict(reasons)}
+    atomic_write_json(root / "report.json", report)
+    return {"accepted_path": str(root / "accepted.jsonl"), "rejected_path": str(root / "rejected.jsonl"),
+            "report_path": str(root / "report.json")}
 
 
 def _contract(
@@ -75,7 +160,7 @@ def _contract(
         if (
             not isinstance(box, list)
             or len(box) != 4
-            or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in box)
+            or not all(type(v) in (int, float) and math.isfinite(v) for v in box)
             or dimensions is not None
             and not (
                 0 <= box[0] < box[2] <= dimensions[0]
@@ -85,174 +170,17 @@ def _contract(
             errors.append("bbox")
     else:
         errors.append("response_format")
+    if fmt != "letter" and item.get("options") is not None:
+        errors.append("unexpected_options")
     return errors
 
-
-
-
-
-
-
-
-def audit_run(
-    *,
-    raw_path: str | Path,
-    blueprint_path: str | Path,
-    events_path: str | Path,
-    manifest_path: str | Path,
-    annotation_path: str | Path,
-    output_directory: str | Path,
-    run_id: str,
-    seed: int = 0,
-) -> dict[str, str | int]:
-    blueprint_bytes = Path(blueprint_path).read_bytes()
-    blueprint = json.loads(blueprint_bytes)
-    tasks = blueprint["tasks"]
-    annotation_source = Path(annotation_path)
-    annotation_rows = {
-        record["image"]["image_id"]: record for record in load_annotation_jsonl(annotation_source)
-    }
-    manifest = {
-        row["image_id"]: row
-        for row in _rows(Path(manifest_path))
-        if isinstance(row.get("image_id"), str)
-    }
-    image_errors: dict[str, list[str]] = {}
-    candidates = []
-    records = []
-    for item in _rows(Path(raw_path)):
-        item_id, task_id, image_id = item.get("id"), item.get("task_id"), item.get("image_id")
-        errors: list[str] = []
-        task = tasks.get(task_id) if isinstance(task_id, str) else None
-        if item.get("dataset") != blueprint["dataset"]["dataset_id"] or not isinstance(task, dict):
-            errors.append("item_task")
-        entry = manifest.get(image_id)
-        if entry is None:
-            errors.append("image_manifest")
-        else:
-            image_errors.setdefault(image_id, validate_image_asset(entry, Path(manifest_path).parent))
-            errors += image_errors[image_id]
-        if isinstance(task, dict) and entry is not None:
-            errors += _contract(item, task, _image_dimensions(entry))
-        annotation_record = annotation_rows.get(image_id)
-        if annotation_record is None:
-            errors.append("annotation_source")
-        elif isinstance(task, dict):
-            fields = task["protocol"]["data_binding"]["supporting_fields"]
-            try:
-                if not fields or not all(has_meaningful_value(project_supporting_record(annotation_record, [field])) for field in fields):
-                    errors.append("annotation_evidence")
-                elif not _answer_matches(item, task, annotation_record):
-                    errors.append("answer_evidence")
-            except (ValueError, TypeError, KeyError):
-                errors.append("answer_evidence")
-        candidates.append((item, errors))
-    seen_ids: set[object] = set()
-    seen_items: set[str] = set()
-    seen_questions: set[str] = set()
-    duplicate_item_id_count = 0
-    exact_item_duplicate_count = 0
-    repeated_question_count = 0
-    audited = []
-    rejected = []
-    for item, errors in candidates:
-        item_id = item.get("id")
-        canonical_item = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        question = item.get("question")
-        normalized_question = _normal(question) if isinstance(question, str) else ""
-        duplicate_id = item_id in seen_ids
-        exact_duplicate = canonical_item in seen_items
-        repeated_question = normalized_question in seen_questions
-        duplicate_item_id_count += duplicate_id
-        exact_item_duplicate_count += exact_duplicate
-        repeated_question_count += repeated_question
-        if not errors and (duplicate_id or exact_duplicate):
-            errors.append("duplicate")
-        if errors:
-            rejected.append(item)
-            status = "reject"
-        else:
-            audited.append(item)
-            status = "accept"
-        seen_ids.add(item_id)
-        seen_items.add(canonical_item)
-        seen_questions.add(normalized_question)
-        records.append({"item_id": item.get("id"), "task_id": item.get("task_id"), "status": status, "reasons": errors})
-        record_event(
-            events_path,
-            f"audit_{status}",
-            run_id=run_id,
-            dataset_id=item.get("dataset"),
-            task_id=item.get("task_id"),
-            item_id=item.get("id"),
-            agent=AUDIT_AGENT,
-            operation="deterministic",
-            status=status,
-        )
-    output = Path(output_directory)
-    prefix = f"benchmark.{blueprint['dataset']['dataset_id']}"
-    balanced = balance_items(audited, seed)
-    audited_path = output / f"{prefix}.audited.jsonl"
-    report_path = output / "audit_report.json"
-    _write(audited_path, balanced)
-    report = {
-        "schema_version": "audit-report.v2",
-        "records": records,
-        "input": len(candidates),
-        "hard_audit": {
-            "accepted": len(audited),
-            "rejected": len(rejected),
-            "reason_counts": dict(
-                Counter(reason for record in records for reason in record["reasons"])
-            ),
-            "duplicate_statistics": {
-                "duplicate_item_id_count": duplicate_item_id_count,
-                "exact_item_duplicate_count": exact_item_duplicate_count,
-                "repeated_question_count": repeated_question_count,
-                "question_repetition_rate": (
-                    repeated_question_count / len(candidates) if candidates else 0
-                ),
-            },
-        },
-        "semantic_audit": {
-            "eligible": len(audited),
-            "sampled": 0,
-            "completed": 0,
-            "passed": 0,
-            "flagged": 0,
-            "not_run": 0,
-            "not_sampled": len(audited),
-            "violation_counts": {},
-        },
-    }
-    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    record_event(
-        events_path,
-        "audit_summary",
-        run_id=run_id,
-        dataset_id=blueprint["dataset"]["dataset_id"],
-        agent=AUDIT_AGENT,
-        operation="deterministic",
-        status="complete",
-        input=len(candidates),
-        audited=len(audited),
-        rejected=len(rejected),
-        duplicate_statistics=report["hard_audit"]["duplicate_statistics"],
-    )
-    return {
-        "audited_path": str(audited_path),
-        "report_path": str(report_path),
-        "item_count": len(audited),
-    }
-
-
-def _answer_matches(item: dict, task: dict, record: dict) -> bool:
+def _answer_matches(item: dict, task: dict, record: dict, *, balanced=False) -> bool:
     resolved = resolve_answer(record, task["protocol"])
     if resolved is None:
         return False
     if task["protocol"]["response_format"] == "letter":
         options, answer = item.get("options"), item.get("answer")
-        return (options == task["protocol"]["answer_contract"]["options"]
+        return (isinstance(options, list) and (set(options) == set(task["protocol"]["answer_contract"]["options"]) if balanced else options == task["protocol"]["answer_contract"]["options"])
                 and isinstance(answer, str) and len(answer) == 1
                 and 0 <= ord(answer) - 65 < len(options)
                 and options[ord(answer) - 65] == resolved["answer"])

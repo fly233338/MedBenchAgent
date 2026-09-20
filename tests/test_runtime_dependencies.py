@@ -15,17 +15,19 @@ def test_upstream_change_invalidates_transitive_delivery_without_deleting_old_ve
         "PlanningConfig",
         "TemplateConfig",
         "GenerationConfig",
-        "AuditConfig",
+        "FinalizationConfig",
         "Allocation",
     ):
         publish(context, kind, {"value": 1}, ())
-    for kind in ("Dataset", "Plan", "Templates", "Generation", "Audit"):
+    for kind in ("Dataset", "Plan", "Templates", "Generation"):
         publish(context, kind, {"path": f"{kind}.json"})
-    require(context, "Audit")
-    old = context["artifact_versions"]["Audit"]
+    for kind in ("GenerationCheck",):
+        publish(context, kind, {"path": f"{kind}.json"}, ("Generation",))
+    require(context, "GenerationCheck")
+    old = context["artifact_versions"]["GenerationCheck"]
     publish(context, "Dataset", {"path": "new.json"})
     with pytest.raises(ValueError, match="stale"):
-        require(context, "Audit")
+        require(context, "GenerationCheck")
     index = json.loads((tmp_path / ".runtime/artifacts.json").read_text())
     assert old in index["versions"]
 

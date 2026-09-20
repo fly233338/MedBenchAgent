@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 from string import Formatter
+from typing import Literal
+
+from medbenchagent.runtime.tool_contracts import NoArguments, NonEmpty
 
 from medbenchagent.generation.context import image_modality
 from medbenchagent.generation.grounding import _visual_target_text
@@ -37,65 +40,37 @@ def validate_templates(specification: TemplateSpecification, templates: object) 
     return [t.strip() for t in templates]
 
 
-def build_templates(
-    specification: TemplateSpecification,
-    feedback: str = "",
-    *,
-    temperature: float | None = None,
-) -> list[str]:
-    specification = TemplateSpecification.model_validate(specification)
-    count = get_settings().generation.question_template_count
-    prompt = (
-        f"Create exactly {count} semantically equivalent but varied ready-to-render medical VLM question templates. "
-        'Return {"templates":["question"]}. No instructions to a future writer. '
-        "Use only the specification template_slots; when target is listed, MUST use {target}. "
-        "Other tasks must not use {target}. Never insert an answer or annotation label into the question. "
-        "Detection asks for a generic lesion/abnormal region without naming its finding. "
-        "Free text asks for the reference content without revealing it. Use the requested language. "
-        "All templates must apply to every eligible record under this task; do not assume unprovided facts."
-    )
-    payload = {
-        "specification": specification.model_dump(),
-        "feedback": feedback,
-    }
-    for attempt in range(2):
-        response = complete_json(
-            prompt,
-            json.dumps(payload, ensure_ascii=False),
-            temperature=get_settings().generation.question_temperature
-            if temperature is None
-            else temperature,
-        )
-        try:
-            templates = validate_templates(specification, response.get("templates"))
-            review_templates(specification, templates, payload["feedback"])
-            return templates
-        except ValueError as exc:
-            if attempt:
-                raise
-            payload.update(previous=response, feedback=str(exc))
-    raise ValueError("Template construction failed")
+class TemplateReview(NoArguments):
+    verdict: Literal["approved", "revise_templates", "revise_plan"]
+    reason: NonEmpty
 
 
-def review_templates(
-    specification: TemplateSpecification, templates: list[str], feedback: str = ""
-) -> None:
-    """Review templates using only their narrow specification and editorial feedback."""
+def create_templates(specification: TemplateSpecification, feedback="", *, temperature=None):
+    """Generate a template set; the separate template stage owns review and retries."""
     specification = TemplateSpecification.model_validate(specification)
-    review = complete_json(
-        "Review all supplied templates for task consistency, answer leakage, ambiguity, applicable slots, "
-        'and meaningful expression diversity. Return {"approved":true|false,"reason":"specific reason"}.',
-        json.dumps(
-            {
-                "specification": specification.model_dump(),
-                "templates": templates,
-                "feedback": feedback,
-            },
-            ensure_ascii=False,
-        ),
+    response = complete_json(
+        f"Create exactly {get_settings().generation.question_template_count} varied, semantically equivalent medical VLM question templates. "
+        'Return {"templates":["question"]}. Use only specification template_slots; target requires {target}. '
+        "Never reveal answers or annotation labels. Detection asks for a generic lesion; free text asks for the reference "
+        "without revealing it. Use the requested language. Every template must apply to every eligible record. "
+        "Do not assume facts absent from the specification.",
+        json.dumps({"specification": specification.model_dump(), "feedback": feedback}, ensure_ascii=False),
+        temperature=get_settings().generation.question_temperature if temperature is None else temperature,
     )
-    if review.get("approved") is not True:
-        raise ValueError(str(review.get("reason", "Template review failed")))
+    return validate_templates(specification, response.get("templates"))
+
+
+def review_templates(specification: TemplateSpecification, templates: list[str], feedback="") -> dict:
+    """Review a whole set once and distinguish wording corrections from invalid task specifications."""
+    specification = TemplateSpecification.model_validate(specification)
+    return TemplateReview.model_validate(complete_json(
+        "Review all supplied templates for task consistency, answer leakage, ambiguity, slots, meaningful expression "
+        "diversity and applicability to every eligible record described by the specification. "
+        "Use revise_templates for wording/slot defects; use revise_plan when the task specification or constraints "
+        "must change before valid questions can be written. Do not invent labels or research preferences. "
+        'Return {"verdict":"approved|revise_templates|revise_plan","reason":"specific reason"}.',
+        json.dumps({"specification": specification.model_dump(), "templates": templates, "feedback": feedback}, ensure_ascii=False),
+    )).model_dump()
 
 
 def render(candidate) -> str:

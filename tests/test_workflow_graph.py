@@ -179,21 +179,26 @@ def test_pending_ids_and_execution_guards_follow_invalidations(tmp_path):
         require_pending(c, "plan", "a")
     for d in ("b", "zero"):
         publish(c, f"dataset/{d}/Plan", {}, ("Requirement",))
+    for d in ("a", "b", "zero"):
+        publish(c, f"dataset/{d}/Templates", {}, (f"dataset/{d}/Plan",))
     (tmp_path / "allocation.json").write_text(json.dumps({"counts": {"a": {"leaf": 1}, "b": {"leaf": 1}, "zero": {"leaf": 0}}}), encoding="utf-8")
-    publish(c, "Allocation", {"path": c["allocation_path"]}, ("dataset/a/Plan", "dataset/b/Plan", "dataset/zero/Plan"))
+    publish(c, "Allocation", {"path": c["allocation_path"]}, ("dataset/a/Templates", "dataset/b/Templates", "dataset/zero/Templates"))
     publish(c, "dataset/a/Generation", {}, ("Allocation",))
     assert pending_datasets(c)["pending_generation_dataset_ids"] == ["b"]
-    assert pending_datasets(c)["pending_audit_dataset_ids"] == ["a"]
-    assert {"generate", "audit"} <= available_stages(c)
-    for stage, dataset in (("generation", "a"), ("generation", "zero"), ("audit", "b")):
+    assert "finalize" not in available_stages(c)
+    assert "generate" in available_stages(c)
+    for stage, dataset in (("generation", "a"), ("generation", "zero")):
         with pytest.raises(ValueError, match="not pending"):
             require_pending(c, stage, dataset)
-    publish(c, "dataset/a/Audit", {}, ("dataset/a/Generation",))
     publish(c, "dataset/b/Generation", {}, ("Allocation",))
-    publish(c, "dataset/b/Audit", {}, ("dataset/b/Generation",))
+    assert "finalize" in available_stages(c)
+    publish(c, "Delivery", {}, ("dataset/a/Generation", "dataset/b/Generation"))
     assert "finish" in available_stages(c)
     assert not {"plan", "allocate", "generate", "audit", "specify", "select_datasets"} & available_stages(c)
     publish(c, "dataset/a/Plan", {"revision": 2}, ("Requirement",))
-    assert "allocate" in available_stages(c) and "finish" not in available_stages(c)
-    publish(c, "Allocation", {"path": c["allocation_path"]}, ("dataset/a/Plan", "dataset/b/Plan", "dataset/zero/Plan"))
+    assert "prepare_templates" in available_stages(c) and "finish" not in available_stages(c)
+    assert "allocate" not in available_stages(c)
+    publish(c, "dataset/a/Templates", {}, ("dataset/a/Plan",))
+    assert "allocate" in available_stages(c)
+    publish(c, "Allocation", {"path": c["allocation_path"]}, ("dataset/a/Templates", "dataset/b/Templates", "dataset/zero/Templates"))
     assert pending_datasets(c)["pending_generation_dataset_ids"] == ["a", "b"]

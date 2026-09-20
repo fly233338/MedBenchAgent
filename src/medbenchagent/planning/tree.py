@@ -6,6 +6,7 @@ from pydantic import Field, ValidationError, model_validator
 
 from medbenchagent.planning.protocol import Protocol
 from medbenchagent.runtime.tool_contracts import NoArguments, NonEmpty
+from medbenchagent.answer_mapping import canonical_answer_scalar
 
 
 class Evidence(NoArguments):
@@ -20,6 +21,42 @@ class SemanticBasis(NoArguments):
     source: Literal["material", "document", "user"]
     reference: NonEmpty
     quote: NonEmpty
+    dataset_specific: bool = False
+
+
+class MappingGrounding(NoArguments):
+    field: NonEmpty
+    raw_value: str | int | float | bool
+    option: NonEmpty
+    mode: Literal["direct", "interpreted"]
+    interpretation: NonEmpty
+    evidence_references: list[NonEmpty] = Field(default_factory=list)
+
+
+def validate_mapping_grounding(protocol, grounding, basis):
+    """Require exact coverage; source meaning is still judged by the Planning review."""
+    records = [MappingGrounding.model_validate(item).model_dump() for item in grounding]
+    mappings = protocol["answer_contract"].get("value_mapping", [])
+    expected = {(canonical_answer_scalar(m["raw_value"]), m["option"]) for m in mappings}
+    actual = {(canonical_answer_scalar(m["raw_value"]), m["option"]) for m in records}
+    if actual != expected or len(records) != len(expected):
+        raise ValueError("Mapping grounding must cover every raw_value-to-option mapping exactly once")
+    field = protocol["data_binding"]["answer_field"]
+    for item in records:
+        if item["field"] != field:
+            raise ValueError("Mapping grounding must reference the answer field")
+        if item["mode"] == "direct":
+            value = item["raw_value"]
+            if (not isinstance(value, str) or " ".join(value.split()).casefold() != " ".join(item["option"].split()).casefold()
+                    or item["evidence_references"]):
+                raise ValueError("Direct mapping requires the same annotation string; encoding and semantic changes need evidence")
+        else:
+            references = item["evidence_references"]
+            eligible = {b["reference"] for b in basis if b["field"] == field
+                        and (b["source"] in {"document", "user"} or b.get("dataset_specific"))}
+            if not references or not set(references) <= eligible:
+                raise ValueError("Interpreted mapping requires dataset-specific semantic evidence")
+    return records
 
 
 class LeafArguments(NoArguments):
@@ -29,6 +66,7 @@ class LeafArguments(NoArguments):
     protocol: Protocol
     evidence: list[Evidence] = Field(default_factory=list)
     semantic_basis: list[SemanticBasis] = Field(default_factory=list)
+    mapping_grounding: list[MappingGrounding] = Field(default_factory=list)
 
 
 class ConceptArguments(NoArguments):
@@ -105,6 +143,7 @@ class Leaf(NoArguments):
     protocol: Protocol
     evidence: list[Evidence]
     semantic_basis: list[SemanticBasis] = Field(default_factory=list)
+    mapping_grounding: list[MappingGrounding] = Field(default_factory=list)
     eligible_count: NonNegative | None = None
 
 
@@ -145,6 +184,7 @@ class PlanningDraft(NoArguments):
     correction_open: bool
     retired_ids: list[NonEmpty]
     coverage: Coverage | None = None
+    template_feedback_id: str | None = None
 
 
 class PlanIssue(TypedDict):
@@ -175,6 +215,11 @@ def _reference_issues(draft: PlanningDraft) -> list[PlanIssue]:
             {"path": ["retired_ids"], "message": f"Retired leaf identity cannot be reused: {key}"}
         )
     for key, leaf in draft.tasks.items():
+        try:
+            validate_mapping_grounding(leaf.protocol.model_dump(), [m.model_dump() for m in leaf.mapping_grounding],
+                                      [b.model_dump() for b in leaf.semantic_basis])
+        except ValueError as exc:
+            issues.append({"path": ["tasks", key, "mapping_grounding"], "message": str(exc)})
         concept = draft.concepts.get(leaf.concept_id)
         if concept is None:
             issues.append(

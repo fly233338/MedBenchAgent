@@ -18,6 +18,7 @@ _NODE_LABELS = {
     "DataProcessingAgent": "prepare raw data",
     "AllocationAgent": "allocate benchmark samples",
     "GenerationAgent": "generate benchmark",
+    "FinalizationAgent": "validate and deliver benchmark",
     "generation_initialize": "initialize generation",
     "generation_finalize": "finalize generation",
 }
@@ -28,13 +29,12 @@ _ARTIFACT_PATH_KEYS = {
     "construction_events_path",
     "raw_output_path",
     "manifest_path",
+    "delivery_path",
 }
 
 _AUDIT_ARTIFACT_KEYS = {
     "audited",
-    "flagged",
-    "rejected",
-    "records",
+    "quarantine",
     "report",
     "semantic_records",
 }
@@ -227,7 +227,8 @@ def _print_result(values: dict[str, Any], output: OutputFunction) -> None:
     output(f"Total items: {values.get('item_count', 0)}")
     output(f"Task counts: {values.get('task_counts', {})}")
     output(f"Shortfalls: {values.get('generation_shortfalls', {})}")
-    output(f"Raw JSONL: {values.get('raw_output_path')}")
+    output(f"Raw sources: {values.get('raw_source_paths', {})}")
+    output(f"Delivery: {values.get('delivery_path')}")
     artifacts = values.get("audit_artifacts", {})
     if isinstance(artifacts, dict):
         output(f"Audited JSONL: {artifacts.get('audited')}")
@@ -235,12 +236,12 @@ def _print_result(values: dict[str, Any], output: OutputFunction) -> None:
         report_path = artifacts.get("report")
         if isinstance(report_path, str) and Path(report_path).is_file():
             report = json.loads(Path(report_path).read_text(encoding="utf-8"))
-            output(
-                "Audit summary: "
-                f"accepted={report.get('hard_audit', {}).get('accepted', 0)}, "
-                f"rejected={report.get('hard_audit', {}).get('rejected', 0)}, "
-                f"semantic_flags={report.get('semantic_audit', {}).get('flagged', 0)}"
-            )
+            counts = report["counts"]
+            output("Delivery counts: " + ", ".join(f"{key}={counts[key]}" for key in
+                   ("requested", "allocated", "generated", "accepted", "final")))
+            output("Losses: " + ", ".join(f"{key}={counts[key]}" for key in
+                   ("planning_shortfall", "generation_shortfall", "audit_rejected", "assembly_removed", "total_shortfall")))
+
     output(f"Manifest: {values.get('manifest_path')}")
 
 

@@ -274,6 +274,38 @@ def _validate_semantic_basis(context, protocol, basis):
     return checked
 
 
+def _validate_leaf_grounding(context, leaf):
+    from medbenchagent.planning.tree import validate_mapping_grounding
+    basis = _validate_semantic_basis(context, leaf["protocol"], leaf.get("semantic_basis", []))
+    validate_mapping_grounding(leaf["protocol"], leaf.get("mapping_grounding", []), basis)
+
+
+def apply_template_feedback(context, feedback):
+    """Reopen a plan once per feedback version, charging the existing planning budget."""
+    marker = Path(context["operation_directory"]) / "template_feedback.json"
+    if marker.is_file():
+        saved = _read(marker)
+        if saved["feedback"] != feedback:
+            raise ValueError("Template feedback changed during replay")
+        return saved["outcome"]
+    tree = _tree(context)
+    if tree.get("template_feedback_id") != feedback["plan_version"]:
+        if tree["reworks_used"] >= context.get("limits", {}).get("max_reworks", 3):
+            return result("blocked", "Planning rework budget exhausted after template review")
+        tree["reworks_used"] += 1
+        tree["correction_open"] = True
+        tree["review"] = {}
+        tree["revision"] += 1
+        tree["template_feedback_id"] = feedback["plan_version"]
+        for issue in feedback["issues"]:
+            leaf = tree["tasks"][issue["leaf_id"]]
+            tree["concepts"][leaf["concept_id"]]["status"] = "pending"
+    outcome = _persist(context, tree)
+    outcome["updates"]["template_feedback"] = feedback
+    atomic_write_json(marker, {"feedback": feedback, "outcome": outcome})
+    return outcome
+
+
 def _tree(context):
     previous = {}
     if context.get("draft_path"):
@@ -376,7 +408,7 @@ def _validate_evidence(context, evidence):
         raise ValueError("Medical evidence must reference a retrieved paragraph")
 
 
-def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence, semantic_basis=None):
+def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence, semantic_basis=None, mapping_grounding=None):
     """Create or revise a stable leaf identity, including reparenting; execution is entirely Protocol-defined."""
     tree = _tree(context)
     if (
@@ -391,6 +423,8 @@ def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence, 
     if capacity <= 0:
         raise ValueError("Leaf requires positive eligible_count; revise the Protocol or mark the Concept unsupported")
     basis = _validate_semantic_basis(context, protocol, semantic_basis or [])
+    from medbenchagent.planning.tree import validate_mapping_grounding
+    grounding = validate_mapping_grounding(protocol, mapping_grounding or [], basis)
     previous = tree["tasks"].get(leaf_id)
     if previous and previous["concept_id"] != concept_id:
         tree["concepts"][previous["concept_id"]]["status"] = "pending"
@@ -401,6 +435,7 @@ def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence, 
         "protocol": protocol,
         "evidence": evidence,
         "semantic_basis": basis,
+        "mapping_grounding": grounding,
         "category": tree["concepts"][concept_id]["category"],
     }
     tree["concepts"][concept_id]["status"] = "pending"
@@ -436,7 +471,7 @@ def complete_concept(context, *, concept_id, status, reason):
                 raise ValueError("Remove or revise zero-capacity leaves before completing the Concept")
             leaf["eligible_count"] = capacity
             _validate_evidence(context, leaf["evidence"])
-            _validate_semantic_basis(context, leaf["protocol"], leaf.get("semantic_basis", []))
+            _validate_leaf_grounding(context, leaf)
     tree["concepts"][concept_id].update(status=status, reason=reason)
     return _persist(context, tree, changed=True)
 
@@ -534,7 +569,7 @@ def review_tree(context):
     for key, leaf in tree["tasks"].items():
         protocol = leaf["protocol"]
         fields = protocol["data_binding"]["supporting_fields"]
-        _validate_semantic_basis(context, protocol, leaf.get("semantic_basis", []))
+        _validate_leaf_grounding(context, leaf)
         leaves[key] = {**leaf, "annotation_evidence": _subset(_profile(context), fields),
                        "field_values": {field: DatasetQuery(context["dataset_access_manifest"]).values(field, limit=50)
                                         for field in fields},
@@ -542,7 +577,9 @@ def review_tree(context):
                                              for e in leaf["evidence"]]}
     review = complete_json(
         "Review concept hierarchy, duplicated semantics, overlapping leaves, missing siblings and conflicting Protocols. "
-        "Check EVERY raw_value-to-option mapping against annotation facts and quoted semantic_basis. "
+        "Check EVERY raw_value-to-option mapping and mapping_grounding against annotation facts and quoted semantic_basis. "
+        "Direct mappings must be genuinely self-describing, not opaque codes or abbreviations disguised as identity mappings. "
+        "Check that material marked dataset_specific actually documents THIS dataset encoding; a flag alone is not evidence. "
         "Opaque codes, abbreviations and ambiguous labels require dataset-specific documented meaning or a user decision; "
         "medical convention is not evidence of a dataset's encoding. Missing or contradictory grounding requires revise "
         "with a specific request to obtain evidence or ask_user; never approve a guess. "
@@ -587,7 +624,7 @@ def finish(context):
     tree = _tree(context)
     for leaf in tree["tasks"].values():
         leaf["eligible_count"] = validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
-        _validate_semantic_basis(context, leaf["protocol"], leaf.get("semantic_basis", []))
+        _validate_leaf_grounding(context, leaf)
     errors = validate_plan(tree)
     if errors:
         raise ValueError(json.dumps(errors, ensure_ascii=False))
@@ -640,6 +677,7 @@ def describe(context):
         "feedback": context.get("feedback"),
         "delegation": context.get("delegation"),
         "user_requirement": context.get("user_requirement"),
+        "template_feedback": context.get("template_feedback"),
         "semantic_sources": {"documents": context.get("source_documents", {}),
                              "user_decisions": context.get("decisions", {})},
         "source_ids": [p.name for p in (Path(context["annotation_path"]).parent / "source_manifests").glob("*") if p.is_dir()],
@@ -716,6 +754,10 @@ def compile_task_planning_agent(*, checkpointer=None):
         "For opaque codes or ambiguous abbreviations obtain dataset-specific documentation using read_dataset_document, "
         "search_materials or ask_user; never infer code meanings from medical knowledge. Store field interpretation and "
         "exact source quotation in semantic_basis (user reference is the decision key in semantic_sources.user_decisions). "
+        "Supply mapping_grounding for EVERY option mapping: field, raw_value, option, mode, interpretation and evidence_references. "
+        "Direct means the same self-describing annotation string (whitespace/case may differ); numeric codes, abbreviations, "
+        "merging or changing meaning require interpreted mode and dataset-specific evidence references. "
+        "Address template_feedback before republishing a revised plan. "
         "When revising after feedback, preserve unchanged leaf identities and protocols. Finish only when validation permits.",
         {f.__name__: f for f in functions},
         describe,

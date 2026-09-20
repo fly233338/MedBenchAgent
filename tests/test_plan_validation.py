@@ -5,13 +5,14 @@ import copy
 import pytest
 
 from medbenchagent.planning.tree import validate_draft, validate_plan
-from test_generation import _task
+from test_generation import _task, _grounding
 
 
 @pytest.fixture
 def plan():
     leaf = _task("letter", ["image.annotation.status"], sample_count=2)
     leaf.pop("question_templates")
+    leaf["mapping_grounding"] = _grounding(leaf["protocol"])
     leaf["eligible_count"] = leaf.pop("sample_count")
     return {
         "benchmark_info": {"sample_count": 2, "language": "en"},

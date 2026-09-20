@@ -86,7 +86,7 @@ def allocate(plans, intent, total):
 
 def _plans(context):
     require(context, "DatasetSelection")
-    require(context, *(f"dataset/{d}/Plan" for d in context["selected_dataset_ids"]))
+    require(context, *(f"dataset/{d}/{kind}" for d in context["selected_dataset_ids"] for kind in ("Plan", "Templates")))
     return {d: json.loads(Path(context["dataset_task_plans"][d]).read_text(encoding="utf-8")) for d in context["selected_dataset_ids"]}
 
 
@@ -100,7 +100,7 @@ def submit(context, **intent):
     return result("success", "Allocation computed", allocation_path=str(path),
                   **publish(context, "Allocation", {"path": str(path)},
                             ("Requirement", "DatasetSelection", "AllocationConfig", "AllocationDelegation",
-                             *(f"dataset/{d}/Plan" for d in context["selected_dataset_ids"]))))
+                             *(f"dataset/{d}/{kind}" for d in context["selected_dataset_ids"] for kind in ("Plan", "Templates")))))
 
 
 def finish(context):

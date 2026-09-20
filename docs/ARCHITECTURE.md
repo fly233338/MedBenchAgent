@@ -8,7 +8,8 @@
 图像处理、benchmark 构建和 evaluation 保持独立职责。
 
 流程：独立 Dataset 准备 → Profile/Card 注册 → Requirement → Dataset Selection →
-逐 Dataset TaskPlanning → 全局 Allocation → 逐 Dataset Generation/Audit → 合并 benchmark.jsonl。
+逐 Dataset TaskPlanning ↔ 模板生成与审核 → 全部 Ready → 全局 Allocation → 全部 Generation →
+全局 FinalizationAgent → delivery/benchmark.jsonl。模板阶段在 Plan 后、Allocation 前，任务缺陷返回 Planning。
 这些是产物依赖，不是固定的 Supervisor 调度脚本。统一 Supervisor 持久化 run_intent：
 prepare_dataset、build_benchmark 或 prepare_then_build，以及明确的准备目标 ID。
 prepare/build 命令约束入口目的，Experiment 通用入口由模型解析意图、代码校验。
@@ -17,7 +18,7 @@ dataset_readiness 和 outstanding_work 从当前有效 artifacts 推导；仅准
 
 - `data/`：准备执行后端、算子、图像与标注验证、Profile/query、Card 和 Catalog。
 - `planning/`：需求、数据集选择、Concept/Leaf 契约、Protocol 与确定性分配。
-- `agents/`：数据准备、局部规划、全局 Allocation、生成和审计。
+- `agents/`：数据准备、局部规划、模板阶段、全局 Allocation、确定性生成和全局 FinalizationAgent。
 - `runtime/`：共享行动循环、工具契约、依赖、事件、运行目录与最终导出。
 - `generation/`、`audit/`、`rag/`、`evaluation/` 保持领域边界。
 
@@ -127,6 +128,11 @@ Card 只提供检索线索；Profile、真实字段值和结构提供规划证�
 最终审查接收完整 Protocol/raw_value→option、Leaf 证据和材料段落、相关字段统计及有界真实值页、
 精确 eligible_count。semantic_basis 逐字段保存 interpretation、source、reference 和 quote；
 来源可以是已检索材料、已读取的数据集说明或已回答的用户决议，代码校验引用及逐字引文。
+Leaf 的 mapping_grounding 必须逐项覆盖 answer_contract.value_mapping，保存 field、raw_value、option、
+mode、interpretation 和 evidence_references。direct 仅允许相同的自描述 annotation 字符串（空白/大小写
+显示规范化），实际值存在性由 Protocol 校验确认；编码解释、缩写展开、合并和语义改变使用 interpreted。
+interpreted 必须关联同字段的文档/用户依据，或明确 dataset_specific 的材料。代码检查覆盖和引用，
+Review 检查原值是否真正自描述、材料是否实际解释本数据集编码，不把模型声明当成语义证明。
 不透明编码和含义不明确的缩写必须获得本数据集的语义依据，否则询问用户；不靠医学常识补造。
 模型负责语义判断，结构校验不保证编码含义正确。unsupported 是合法结论，不为了概念覆盖制造 Leaf。
 修正次数存入 PlanningDraft；缓存 Review、重新委派和恢复不重置额度。上游失效保留局部身份与已耗额度，
@@ -137,7 +143,14 @@ Plan 发布要求结构、归属、Extension 决议、当前 Review、Protocol �
 eligible_count 由代码使用与 Generation 相同的答案解析器计算。允许没有可执行任务的完成 Plan；
 全部选中 Dataset 都没有可用任务时整体 blocked。失败不能被当作 unsupported 静默跳过。
 
-AllocationAgent 读取所有当前 Plan，模型给出有理由的 Concept 权重，可显式给出下层权重；缺省下层
+独立 prepare_templates 阶段为 Plan 的所有可执行 Leaf 生成整套模板并审核，不依赖配额。
+审核结果为 approved、revise_templates 或 revise_plan；前者在模板阶段修措辞/slot，后者将 Leaf 与原因
+反馈到 TaskPlanning。template_feedback_id 绑定反馈 Plan 版本，已有 Planning 修订预算只扣一次。
+模板生成/审核尝试持久化到 Dataset 局部 ledger，初次尝试加 harness.max_reworks 次返修，恢复和重新
+委派不重置。specification 和 TemplateConfig 未变的批准结果复用；新 specification 必须重新审核。
+合法空 Plan 发布空模板集，不调用模板模型。所有当前 Plan 与模板集批准后才允许 Allocation。
+
+AllocationAgent 读取所有当前 Plan 和已批准 Templates，模型给出有理由的 Concept 权重，可显式给出下层权重；缺省下层
 使用等权。代码按 Concept → Dataset → Leaf 分层执行 largest-remainder、容量截断和重分配。
 Core 能力共享，Extension 以 Dataset 作用域独立计量；预算不随 Leaf 数量自动增加。
 零权重明确排除，父层容量仅累计正权重子项；取整平局使用稳定 ID 排序。Allocation 独立发布，不回写 Plan。
@@ -145,7 +158,8 @@ Core 能力共享，Extension 以 Dataset 作用域独立计量；预算不随 L
 
 ## 状态、依赖与恢复
 
-Supervisor 从有效产物计算 pending_plan/generation/audit_dataset_ids，工具展示与执行入口共用门控。
+Supervisor 从有效产物和模板返修请求计算 pending_plan/templates/generation_dataset_ids，展示与执行
+入口共用门控。全部正配额 Generation 完成前，finalize 不可见也不可执行。
 有效已完成阶段不可通过重复委派重做；上游失效使下游重新进入 pending。委派不覆盖原始要求和 Info，
 也不是新增研究偏好的来源；结构校验不声称能判定所有语义偏移。
 
@@ -163,11 +177,11 @@ registry 不参与 Agent 决策，不取代 checkpoint。完成实验只展示�
 CLI 按 tasks/updates/custom + subgraphs=True 的三元组事件处理流，只从 updates 顶层读取
 LangGraph Interrupt，未知格式和缺少有效 question 明确报错。失败报告使用执行期间记录的运行目录，
 Experiment 收尾的 checkpoint/registry 诊断失败明确显示，不覆盖原始运行错误及退出状态。
-构建事件可省略 agent；模型/provider 名称不能填充缺失的 Agent 角色。AuditAgent 是审计日志角色标签。
+构建事件可省略 agent；模型/provider 名称不能填充缺失的 Agent 角色。FinalizationAgent 是全局工具使用 Agent；模板阶段事件归属 TaskPlanningAgent。
 
 Supervisor 共享状态只保留选中 ID、各 Dataset 产物引用和进度摘要。专业 Agent 的完整 context 保存到
-局部状态文件，重新委派时恢复；不整体回灌父状态。第一版串行调度，所有 Plan 完成后才可 Allocation。
-零配额 Dataset 明确跳过；正配额 Dataset 的当前 Generation/Audit 是导出前置条件。
+局部状态文件，重新委派时恢复；不整体回灌父状态。第一版串行调度，所有 Plan/模板 Ready 后才可 Allocation。
+零配额 Dataset 明确跳过；全局 FinalizationAgent 有独立私有状态，父状态只保留状态引用与交付摘要。
 
 共享 Harness 使用严格 Pydantic JSON 参数和一致的工具可见/执行门控。专业 Agent 局部 ask_user 使用
 LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete、needs_input、blocked、failed。
@@ -181,16 +195,18 @@ LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete�
 | DatasetSelection | Requirement、DatasetCandidates、选中 Card |
 | dataset/<id>/PlanningDraft | Requirement、Dataset、Card、Materials、PlanningConfig、PlanningDelegation |
 | dataset/<id>/Plan | Requirement、Dataset、Card、Materials、PlanningConfig、PlanningDraft、PlanningDelegation |
-| Allocation | Requirement、Selection、AllocationConfig、AllocationDelegation、全部选中 Plan |
+| Allocation | Requirement、Selection、AllocationConfig、AllocationDelegation、全部选中 Plan/ Templates |
 | dataset/<id>/Templates | Plan、TemplateConfig |
 | dataset/<id>/Generation | Dataset、Plan、Templates、GenerationConfig、Allocation |
-| dataset/<id>/Audit | Generation、Dataset、Plan、AuditConfig |
-| Export | Selection、Allocation、正配额 Dataset 的 Audit |
+| dataset/<id>/GenerationCheck | Generation、Dataset、Plan、Templates、Allocation、FinalizationConfig |
+| CandidateAssembly | 全部输入版本与正配额 Dataset 的 GenerationCheck |
+| BalancedCandidates / FinalValidation | CandidateAssembly / BalancedCandidates |
+| Delivery | 全部输入版本；完成标记引用不可变 FinalValidation 版本 |
 
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v9；
+SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v10；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 ## 生成、审计与导出
@@ -203,20 +219,34 @@ question_intent、medical_constraints 和 template_slots。letter 使用唯一 s
 或完整映射；逐题执行不调用模型。模板独立保存，Plan 不包含模板或 sample_count。
 同一 Dataset/Leaf/image 最多一题，每种响应阶段保持现有每图限额。样本 ID 包含数据集身份。
 
-各 Dataset 独立硬审计和抽样语义审查；语义 flags 不自动拒绝。
-语义审计每任务抽样数由 audit.semantic_samples_per_task 控制（默认 10），保存到配置快照与 AuditConfig。
-最终流式合并通过硬审计的样本为
-benchmark.jsonl，并导出 benchmark.raw.jsonl、audit_report.json、benchmark_manifest.json。
-硬审计在写出通过样本前，按 Leaf 和 seed 确定性平衡选择题正确选项位置；保持正确答案文本和原始
-生成文件不变，bbox/free_text 原样透传。这是内部构建行为，不提供独立 balance-answers CLI。
-局部生成、审计、模板和 Plan 继续保留。最终 task_id 为 dataset_id::local_leaf_id，manifest 显式保存
-局部映射；image_id 保留局部值，image_path 改为相对最终文件的正确路径，不再复制图像。
-不合并 annotation 或 image manifest，不执行跨数据集像素去重。
+FinalizationAgent 在全部正配额 Generation 完成后启动；正常耗尽允许缺题，执行失败不等于完成。
+工具支持查看输入、逐 Dataset 检查、分页调查异常、组装、均衡、最终验证及发布。模型决定检查顺序和
+解释问题，不能绕过硬检查或调整答案/配额。不再运行 post-generation semantic audit，旧 audit 抽样配置移除。
 
-benchmark-manifest.v3 包含 datasets、concepts、tasks、allocation 和产物引用。导出检查样本唯一性、
-数据集/任务/图像引用和数量，重复导出不追加。planning_shortfall 为请求量减分配量；generation_shortfalls
-为分配量减 raw 生成量；total_shortfall 只计算请求量减最终审计通过量，不能重复相加。
-本次没有修改 evaluation，旧加载器不接受 v3 构建 manifest；多数据集评测接入留待后续。
+GenerationCheck 按原始文件逐行检查 item、Plan、模板渲染、annotation 答案和图像引用；非法 JSON 或
+item 单独隔离并记录原文件、行号、原始内容与原因，运行级必要文件损坏不能当作普通样本剔除。
+raw 文件不修改，也不再合并成 benchmark.raw.jsonl；全局输出 raw_source_paths 逐 Dataset 指向原始文件。
+
+组装按 Dataset、local Leaf、image 建立最终 identity，task_id 使用 dataset::leaf。等价重复稳定保留
+一份，内容冲突的同 identity 全部隔离；不同图像相同题干不直接判重复。超 Leaf 配额的合法样本按稳定
+顺序截取，其余隔离并报告。最终过滤后按最终 task 平衡 letter 正确选项位置，数量差最多 1；额外报告
+按选项数量分组的总体分布。均衡保持答案文本和选项集合不变，bbox/free_text 原样透传。
+最终检查再次验证这些不变量、唯一性、namespace、实际图像路径、配额和统计；失败不得发布。
+
+报告 audit-report.v3 在全局、Dataset 和 Leaf 层次给出 allocated/generated/accepted/final，requested
+仅在全局。单列无法归属、生成超额、规划缺口、逐 Leaf 生成不足、审计剔除和组装移除；每条记录只计
+一次损失，多原因计数只是说明。生成超额不能抵消其他 Leaf 的不足，total_shortfall = requested - final。
+题量不足仍正常交付并说明，不新增 partial、阈值、确认或自动补题循环；最终零题 blocked。
+
+benchmark-manifest.v4 保存最终任务实际 sample_count、allocated_count、分层统计、原始产物引用和
+交付文件清单。image_id 保持局部值，image_path 相对 delivery 计算，跨盘使用绝对路径；不复制图像，
+不合并 annotation/image manifest，不执行跨数据集像素去重。交付包不承诺脱离 prepared 资产独立搬运。
+
+已校验候选包的 benchmark.jsonl、benchmark_manifest.json、audit_report.json、quarantine.jsonl 在暂存
+目录完成写入。FinalValidation 绑定现有 artifact 内容与输入版本；写出层只写 complete.json，再以同
+文件系统目录重命名发布到 delivery/。只有带完成标记且通过绑定校验的包才是交付，Supervisor finish
+只读取已发布结果。发布后、checkpoint 写回前的中断通过完成标记恢复，不重复均衡或追加；已发布目录
+不原地覆盖，输入版本变化要求新运行。evaluation 没有改动，其旧加载器仍不接受多数据集构建 manifest。
 
 ## 推理与评测边界
 

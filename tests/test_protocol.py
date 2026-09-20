@@ -10,7 +10,7 @@ from medbenchagent.planning.protocol import (
     validate_dataset_protocol,
     template_specification,
 )
-from medbenchagent.generation.templates import build_templates, render
+from medbenchagent.generation.templates import create_templates, review_templates, render
 from medbenchagent.generation.grounding import supports
 from medbenchagent.settings import get_settings
 from test_generation import _task, _record
@@ -69,11 +69,13 @@ def test_template_builder_and_reviewer_never_receive_answer_contract(tmp_path, m
     def model(system, prompt, **kwargs):
         prompts.append(json.loads(prompt))
         if system.startswith("Review"):
-            return {"approved": True}
+            return {"verdict": "approved", "reason": "Valid specification"}
         return {"templates": [f"Question {i}: which category applies?" for i in range(count)]}
 
     monkeypatch.setattr("medbenchagent.generation.templates.complete_json", model)
-    build_templates(template_specification(task["protocol"], "en"))
+    spec = template_specification(task["protocol"], "en")
+    templates = create_templates(spec)
+    review_templates(spec, templates)
     assert len(prompts) == 2
     for payload in prompts:
         text = json.dumps(payload)
@@ -107,10 +109,10 @@ def test_template_interfaces_reject_full_task_before_model_call(monkeypatch):
         lambda *a, **kw: pytest.fail("Full task crossed the template boundary"),
     )
     with pytest.raises(ValueError):
-        build_templates(task)
+        create_templates(task)
     with pytest.raises(ValueError):
         review_templates(task, ["Which status?"])
     spec = template_specification(task["protocol"], "en").model_dump()
     spec["answer_contract"] = task["protocol"]["answer_contract"]
     with pytest.raises(ValueError):
-        build_templates(spec)
+        create_templates(spec)

@@ -79,11 +79,6 @@ class BenchmarkSettings:
 
 
 @dataclass(frozen=True)
-class AuditSettings:
-    semantic_samples_per_task: int
-
-
-@dataclass(frozen=True)
 class AppSettings:
     paths: PathSettings
     harness: dict[str, int]
@@ -94,7 +89,6 @@ class AppSettings:
     dataset_profile: DatasetProfileSettings
     dataset_sources: tuple[dict[str, Any], ...]
     benchmark: BenchmarkSettings
-    audit: AuditSettings
     default_config_path: Path
     local_config_path: Path | None
     environment_overrides: tuple[str, ...]
@@ -112,7 +106,6 @@ class AppSettings:
             "settings": {
                 "dataset_sources": list(self.dataset_sources),
                 "benchmark": {"default_sample_count": self.benchmark.default_sample_count},
-                "audit": {"semantic_samples_per_task": self.audit.semantic_samples_per_task},
                 "harness": self.harness,
                 "data_processing": self.data_processing,
                 "paths": {key: str(getattr(self.paths, key)) for key in self.paths.__dataclass_fields__},
@@ -271,8 +264,6 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     if backend not in {"auto", "docker", "local"}:
         raise ValueError("data_processing.backend must be auto, docker, or local")
     return AppSettings(
-        audit=AuditSettings(semantic_samples_per_task=_integer(values["audit"]["semantic_samples_per_task"],
-                                                               "audit.semantic_samples_per_task", minimum=1)),
         benchmark=BenchmarkSettings(default_sample_count=_integer(values["benchmark"]["default_sample_count"],
                                                                   "benchmark.default_sample_count", minimum=1)),
         dataset_sources=_dataset_sources(values["dataset_sources"]),

@@ -15,9 +15,6 @@ from medbenchagent.agents.contracts import (
     GenerationAgentState,
 )
 from medbenchagent.generation.contracts import GenerationRequest
-from medbenchagent.runtime.construction import event_context
-from medbenchagent.generation.templates import build_templates
-from medbenchagent.planning.protocol import template_specification
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.generation.graph import compile_generation_subgraph
@@ -67,36 +64,17 @@ def compile_generation_agent(*, checkpointer: Any = None):
     return graph.compile(checkpointer=checkpointer, name=GENERATION_AGENT)
 
 
-def run_generation(context, graph, *, feedback: str = ""):
-    """Build/review templates and instantiate questions. Requires a complete plan."""
-    require(context, "Plan")
+def run_generation(context, graph):
+    """Instantiate questions deterministically from the approved plan, templates and allocation."""
+    require(context, "Plan", "Templates", "Allocation")
     batch = Path(context["operation_directory"]) / "batch"
     batch.mkdir(parents=True, exist_ok=True)
     blueprint_file = batch / "blueprint.json"
     if not blueprint_file.is_file():
         blueprint = json.loads(Path(context["working_blueprint_path"]).read_text(encoding="utf-8"))
-        template_results = {}
-        for index, (task_id, task) in enumerate(blueprint["tasks"].items()):
-            if task.get("sample_count", 0) == 0:
-                continue
-            saved = batch / ".templates" / f"{index}.json"
-            if saved.is_file():
-                templates = json.loads(saved.read_text(encoding="utf-8"))
-            else:
-                with event_context(agent="GenerationAgent", task_id=task_id, operation="templates"):
-                    templates = build_templates(
-                        template_specification(task["protocol"], blueprint["benchmark_info"]["language"]),
-                        feedback,
-                        temperature=context.get("question_temperature"),
-                    )
-                atomic_write_json(saved, templates)
-            template_results[task_id] = templates
-        atomic_write_json(
-            batch / "templates.json",
-            template_results,
-        )
+        approved = json.loads(Path(context["templates_path"]).read_text(encoding="utf-8"))
+        atomic_write_json(batch / "templates.json", approved["templates"])
         atomic_write_json(blueprint_file, blueprint)
-    publish(context, "Templates", {"path": str(batch / "templates.json")})
     profile = json.loads(
         Path(context["dataset_access_manifest"]["profile_path"]).read_text(encoding="utf-8")
     )

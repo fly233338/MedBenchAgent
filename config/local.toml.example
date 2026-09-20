@@ -15,9 +15,6 @@
 [benchmark]
 default_sample_count = 1000 # Used only when the user did not supply a count; language is asked.
 
-[audit]
-semantic_samples_per_task = 10
-
 [rag]
 embedding_model = "/path/to/Qwen3-Embedding-0.6B"
 reranker_model = "/path/to/Qwen3-Reranker-0.6B"

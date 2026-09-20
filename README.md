@@ -1,8 +1,8 @@
 # MedBenchAgent v2
 
 MedBenchAgent uses LangGraph to construct annotation-driven Medical VLM benchmarks.
-A Supervisor selects prepared datasets, delegates dataset-local task planning, allocates globally,
-and generates/audits each dataset before merging the accepted samples.
+A Supervisor selects prepared datasets, delegates dataset-local planning and template review, allocates globally,
+and generates every dataset before a global FinalizationAgent checks and publishes the benchmark.
 It asks for clarification when needed instead of requiring confirmation at every stage.
 Model inference and scoring remain a separate subsystem.
 
@@ -26,8 +26,8 @@ and telemetry; the configured language-model API is still used.
 Build, prepare and new experiments share local preflight checks. The Blueprint is required for construction,
 not preparation alone. PDF materials and embedding/reranker models are optional: when unavailable, retrieval
 tools are disabled and planning starts with empty Materials. When available, the Planner selects references;
-retrieval defaults to `rag.result_limit`. Semantic audit samples `audit.semantic_samples_per_task` items per
-task (default 10), using the run seed. These settings are saved with the run for recovery.
+retrieval defaults to `rag.result_limit`. These settings are saved with the run for recovery.
+Post-generation semantic auditing has been removed; remove the obsolete `[audit]` section from local overrides.
 
 The static task template is `config/blueprint.json`. Runs never write back to this file.
 Run initialization freezes the Blueprint template and PDF materials. It does not copy the Dataset Catalog
@@ -54,6 +54,8 @@ diagnostic instead of repeated path questions. Update config and start a new run
 The Supervisor interprets preparation-only, build and preparation-then-build requests; professional agents
 receive explicit structured objectives, constraints, preferences and revision notes under stable instructions.
 Artifact dependencies determine which actions can execute. A changed delegation invalidates its downstream outputs.
+Each Dataset follows Plan → template review, with task defects returned to Planning. Allocation waits until
+all current Plans and template sets are approved. Generation is deterministic and makes no model calls.
 
 ## Data preparation and the standard interface
 
@@ -119,12 +121,32 @@ Selection is a shortlist for deeper planning, not proof that a dataset supports 
 Planning grounds tasks in real annotation fields and values; Cards only guide inspection. The final review
 receives full answer mappings, exact capacities and quoted semantic evidence. Opaque codes or ambiguous
 abbreviations require dataset documentation, retrieved references or user clarification; medical convention
-does not establish a dataset's encoding. Semantic evidence is saved with each Leaf. Zero-capacity leaves
+does not establish a dataset's encoding. Semantic evidence and grounding for every raw-value-to-option mapping are saved with each Leaf. Direct
+mappings preserve self-describing strings; codes and semantic reinterpretations need dataset-specific
+evidence. Validation checks coverage and quotations; the Planning review judges whether they support the mapping. Zero-capacity leaves
 cannot be published; unsupported concepts and completed empty dataset plans are valid.
 Generation still derives answers deterministically from annotations, and template models never see per-image answers.
-Hard audit deterministically balances correct-option positions within each accepted letter task before
-writing audited samples, preserving the correct answer text and the raw output. There is no separate
-`balance-answers` command; balancing remains part of the construction pipeline.
+Template sets are reviewed after Planning and before Allocation. Wording defects are revised in the template
+stage; task defects reopen Planning. Saved approval results are reused for unchanged specifications and
+configuration. Both template attempts and Planning reworks retain their budgets across recovery.
+
+Finalization starts only after every positive-allocation Generation completes. The FinalizationAgent can
+inspect datasets and anomalies, assemble candidates, balance answer positions, validate the package and
+publish. Invalid items are quarantined with source file/line/content/reasons; original generation files remain
+unchanged. Duplicate final identities retain one equivalent item or quarantine all conflicting items. Letter
+positions are balanced per final `dataset::leaf` task without changing correct-answer text or options.
+
+Deliveries live in `delivery/` and contain `benchmark.jsonl`, `benchmark_manifest.json` (v4), `audit_report.json`,
+`quarantine.jsonl` and `complete.json`. A complete marker is written before an atomic same-filesystem directory
+rename; interrupted publication cannot expose a partial delivery. Published packages are never overwritten.
+The global `raw_source_paths` map and manifest reference each unchanged Dataset generation; there is no merged
+`benchmark.raw.jsonl`. Image paths remain references to prepared assets, not copied portable image bundles.
+
+The report gives requested/allocated/generated/accepted/final counts and distinguishes planning capacity,
+generation exhaustion, audit rejection and assembly removal. Shortfalls do not require confirmation and do
+not trigger automatic refill: nonempty valid packages are delivered with `complete` and an explicit shortfall.
+Zero final samples or invalid packages are blocked. Recovery reuses the published package, never appends or
+balances again. Runtime contract changes require a new run; old checkpoints are not migrated.
 
 Choose the execution backend in `config/default.toml` or your local override:
 

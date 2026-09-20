@@ -3,9 +3,6 @@ dataset_sources = []
 [benchmark]
 default_sample_count = 1000
 
-[audit]
-semantic_samples_per_task = 10
-
 [paths]
 dataset_catalog = "datasets/dataset_catalog.json"
 blueprint_template = "config/blueprint.json"

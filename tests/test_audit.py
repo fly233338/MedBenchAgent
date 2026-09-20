@@ -1,11 +1,7 @@
 from test_generation import _task
 from medbenchagent.data.image_assets import validate_image_asset
-import json
-from pathlib import Path
 from PIL import Image
-from medbenchagent.audit.hard import _answer_matches, _contract, audit_run
-from medbenchagent.audit.semantic_audit import semantic_audit_run
-from medbenchagent.runtime.llm import ModelUnavailable
+from medbenchagent.audit.hard import _answer_matches, _contract
 
 
 def record():
@@ -57,39 +53,10 @@ def test_answers_checked_against_unique_annotation():
 
 def test_invalid_options_and_dimensions():
     assert _contract(dict(item(), options=[{}]), task(), None) == ["letter_answer"]
-    assert _contract(dict(item(), answer=[0, 0, 5, 5]), _task("bbox", ["image.annotation.bbox[*]"]), (2, 2)) == [
+    assert _contract(dict(item(), options=None, answer=[0, 0, 5, 5]), _task("bbox", ["image.annotation.bbox[*]"]), (2, 2)) == [
         "bbox"
     ]
 
-
-def test_audit_rejects_wrong_answers_and_duplicate_ids(tmp_path):
-    image = Image.new("L", (2, 2))
-    image.putpixel((0, 0), 255)
-    image.save(tmp_path / "im.png")
-    files = {
-        "blueprint.json": {"dataset": {"dataset_id": "set"}, "tasks": {"view": task()}},
-        "annotation.jsonl": record(),
-        "image_manifest.jsonl": {"image_id": "im", "png_path": "im.png", "width": 2, "height": 2},
-    }
-    for name, value in files.items():
-        (tmp_path / name).write_text(json.dumps(value) + "\n", encoding="utf-8")
-    (tmp_path / "raw.jsonl").write_text(
-        "\n".join(json.dumps(i) for i in (item(), item(), dict(item(), id="wrong", answer="B"))),
-        encoding="utf-8",
-    )
-    outputs = audit_run(
-        raw_path=tmp_path / "raw.jsonl",
-        blueprint_path=tmp_path / "blueprint.json",
-        events_path=tmp_path / "events.jsonl",
-        manifest_path=tmp_path / "image_manifest.jsonl",
-        annotation_path=tmp_path / "annotation.jsonl",
-        output_directory=tmp_path,
-        run_id="run",
-    )
-    report = json.loads(Path(outputs["report_path"]).read_text())
-    assert report["hard_audit"]["accepted"] == 1
-    assert report["hard_audit"]["rejected"] == 2
-    assert set(outputs) == {"audited_path", "report_path", "item_count"}
 
 
 def test_constant_image_rejected(tmp_path):
@@ -98,30 +65,6 @@ def test_constant_image_rejected(tmp_path):
         "image_pixels"
     ]
 
-
-def test_semantic_failure_remains_observational(tmp_path, monkeypatch):
-    (tmp_path / "audited.jsonl").write_text(json.dumps(item()) + "\n")
-    (tmp_path / "blueprint.json").write_text(json.dumps({"tasks": {"view": task()}}))
-    (tmp_path / "report.json").write_text(json.dumps({"hard_audit": {"accepted": 1}}))
-
-    def fail(*args, **kwargs):
-        raise ModelUnavailable("offline")
-
-    monkeypatch.setattr("medbenchagent.audit.semantic_audit.complete_json", fail)
-    semantic_audit_run(
-        audited_path=tmp_path / "audited.jsonl",
-        report_path=tmp_path / "report.json",
-        blueprint_path=tmp_path / "blueprint.json",
-        events_path=tmp_path / "events.jsonl",
-        output_directory=tmp_path,
-        run_id="run",
-        dataset_id="set",
-        seed=0,
-    )
-    report = json.loads((tmp_path / "report.json").read_text())
-    assert report["semantic_audit"]["not_run"] == 1
-    assert report["hard_audit"]["accepted"] == 1
-    assert len(report["semantic_records"]) == 1
 
 
 def test_shared_image_validation_preserves_consumer_policies(tmp_path):
@@ -141,13 +84,3 @@ def test_shared_image_validation_preserves_consumer_policies(tmp_path):
     assert validate_image_asset(dict(entry, width=3), tmp_path) == ["image_dimensions"]
 
 
-def test_semantic_sample_count_uses_configuration_and_stable_seed(monkeypatch):
-    from dataclasses import replace
-    from medbenchagent import settings
-    from medbenchagent.audit.semantic_audit import _sample
-    cfg = settings.get_settings()
-    monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, audit=replace(cfg.audit, semantic_samples_per_task=2)))
-    items = [{"id": str(i), "task_id": task} for task in ("a", "b") for i in range(8)]
-    sampled = _sample(items, 3)
-    assert all(len(rows) == 2 for rows in sampled.values())
-    assert sampled == _sample(list(reversed(items)), 3)

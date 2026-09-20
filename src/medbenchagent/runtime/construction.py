@@ -18,7 +18,7 @@ _CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar
 )
 
 GENERATION_AGENT = "GenerationAgent"
-AUDIT_AGENT = "AuditAgent"
+FINALIZATION_AGENT = "FinalizationAgent"
 
 
 def _timestamp() -> str:

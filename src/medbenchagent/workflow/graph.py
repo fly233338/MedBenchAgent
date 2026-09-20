@@ -6,23 +6,19 @@ from typing import Any, TypedDict
 from langchain_core.messages import convert_to_messages
 from langgraph.graph import StateGraph, START, END
 from medbenchagent.agents.generation import compile_generation_agent, run_generation
-from medbenchagent.agents.audit import run_audit
-from medbenchagent.agents.task_planning import compile_task_planning_agent
+from medbenchagent.agents.finalization import compile_finalization_agent, restore_delivery
+from medbenchagent.agents.templates import prepare_templates as run_templates
+from medbenchagent.agents.task_planning import compile_task_planning_agent, apply_template_feedback
 from medbenchagent.agents.allocation import compile_allocation_agent
 from medbenchagent.planning.dataset_selection import select_datasets as run_selection
 from medbenchagent.planning.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
 from medbenchagent.runtime.harness import compile_agent, result
-from medbenchagent.runtime.tool_contracts import FeedbackArguments, PrepareDataArguments, DatasetId, DelegationArguments, RunIntent, PageArguments, NoArguments
+from medbenchagent.runtime.tool_contracts import PrepareDataArguments, DatasetId, DelegationArguments, RunIntent, PageArguments, NoArguments
 from medbenchagent.data.readiness import list_datasets, inspect_dataset_status, dataset_status, configured_source, reuse_prepared
 from medbenchagent.runtime.run_artifacts import initialize_run, atomic_write_json
-from medbenchagent.runtime.run_export import export_benchmark
 from medbenchagent.settings import get_settings, run_settings
 from medbenchagent.runtime.dependencies import publish, require, initialize_dependencies, verify_resume
 from medbenchagent.runtime.preflight import preflight_errors, rag_capability
-
-
-class DatasetArguments(FeedbackArguments):
-    dataset_id: DatasetId
 
 
 class DatasetStatusArguments(NoArguments):
@@ -54,7 +50,9 @@ class BenchmarkState(BenchmarkInputState, total=False):
     benchmark_info: dict
     selected_dataset_ids: list[str]
     dataset_task_plans: dict
-    raw_output_path: str
+    raw_source_paths: dict
+    delivery_path: str
+    delivery_counts: dict
     audit_artifacts: dict
     manifest_path: str
     benchmark_id: str
@@ -76,7 +74,9 @@ class BenchmarkOutputState(TypedDict, total=False):
     benchmark_info: dict
     selected_dataset_ids: list[str]
     dataset_task_plans: dict
-    raw_output_path: str
+    raw_source_paths: dict
+    delivery_path: str
+    delivery_counts: dict
     audit_artifacts: dict
     manifest_path: str
     benchmark_id: str
@@ -152,11 +152,11 @@ def child_result(context, dataset_id, role, output):
 def describe(context):
     details = {key: context.get(key) for key in (
         "user_requirement", "benchmark_info", "brief_ready", "brief_missing_fields", "sample_count_source", "prepare_dataset_id", "selected_dataset_ids",
-        "dataset_task_plans", "dataset_generations", "dataset_audits", "allocation_path", "prepared_entries",
+        "dataset_task_plans", "dataset_templates", "template_revision_requests", "dataset_generations", "delivery_counts", "allocation_path", "prepared_entries",
         "artifact_versions", "global_issue", "last_agent_result", "entry_intent", "run_intent", "requested_dataset_ids")}
     ids = set(context.get("selected_dataset_ids", [])) | set(context.get("run_intent", {}).get("prepare_dataset_ids", []))
     details["dataset_readiness"] = {d: {kind: _current(context, f"dataset/{d}/{kind}")
-                                      for kind in ("Dataset", "Plan", "Generation", "Audit")} for d in sorted(ids)}
+                                      for kind in ("Dataset", "Plan", "Templates", "Generation")} for d in sorted(ids)}
     details["outstanding_work"] = {"prepare_dataset_ids": preparation_pending(context),
                                    **pending_datasets(context),
                                    "available_actions": sorted(available_stages(context))}
@@ -200,20 +200,20 @@ def preparation_pending(context):
 
 
 def pending_datasets(context):
-    pending = {"pending_plan_dataset_ids": [], "pending_generation_dataset_ids": [], "pending_audit_dataset_ids": []}
+    pending = {"pending_plan_dataset_ids": [], "pending_templates_dataset_ids": [], "pending_generation_dataset_ids": []}
     if not _current(context, "DatasetSelection"):
         return pending
-    pending["pending_plan_dataset_ids"] = [d for d in context["selected_dataset_ids"] if not _current(context, f"dataset/{d}/Plan")]
+    for dataset in context["selected_dataset_ids"]:
+        feedback = context.get("template_revision_requests", {}).get(dataset)
+        if not _current(context, f"dataset/{dataset}/Plan") or (feedback and feedback["plan_version"] == context["artifact_versions"].get(f"dataset/{dataset}/Plan")):
+            pending["pending_plan_dataset_ids"].append(dataset)
+        elif not _current(context, f"dataset/{dataset}/Templates"):
+            pending["pending_templates_dataset_ids"].append(dataset)
     if not _current(context, "Allocation"):
         return pending
     assigned = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))
-    for dataset_id in context["selected_dataset_ids"]:
-        if not sum(assigned["counts"][dataset_id].values()):
-            continue
-        if not _current(context, f"dataset/{dataset_id}/Generation"):
-            pending["pending_generation_dataset_ids"].append(dataset_id)
-        elif not _current(context, f"dataset/{dataset_id}/Audit"):
-            pending["pending_audit_dataset_ids"].append(dataset_id)
+    pending["pending_generation_dataset_ids"] = [d for d in context["selected_dataset_ids"]
+        if sum(assigned["counts"][d].values()) and not _current(context, f"dataset/{d}/Generation")]
     return pending
 
 
@@ -239,23 +239,24 @@ def available_stages(context):
     if not _current(context, "DatasetSelection"):
         return tools | {"select_datasets"}
     pending = pending_datasets(context)
-    if pending["pending_plan_dataset_ids"]:
-        return tools | {"plan"}
+    if pending["pending_plan_dataset_ids"] or pending["pending_templates_dataset_ids"]:
+        if pending["pending_plan_dataset_ids"]:
+            tools.add("plan")
+        if pending["pending_templates_dataset_ids"]:
+            tools.add("prepare_templates")
+        return tools
     if not _current(context, "Allocation"):
         return tools | {"allocate"}
     if pending["pending_generation_dataset_ids"]:
-        tools.add("generate")
-    if pending["pending_audit_dataset_ids"]:
-        tools.add("audit")
-    if not pending["pending_generation_dataset_ids"] and not pending["pending_audit_dataset_ids"]:
-        tools.add("finish")
-    return tools
+        return tools | {"generate"}
+    return tools | ({"finish"} if _current(context, "Delivery") else {"finalize"})
 
 
 def compile_benchmark_graph(*, checkpointer=None):
     planning = compile_task_planning_agent()
     generation = compile_generation_agent()
     allocation = compile_allocation_agent()
+    finalization = compile_finalization_agent()
 
     def select_datasets(context):
         """Select prepared data or route matching configured sources into preparation without asking for paths."""
@@ -275,10 +276,34 @@ def compile_benchmark_graph(*, checkpointer=None):
         child = child_context(context, dataset_id, "planning")
         child["delegation"] = delegation
         publish(child, "PlanningDelegation", delegation, ())
+        feedback = context.get("template_revision_requests", {}).get(dataset_id)
+        if feedback:
+            correction = apply_template_feedback(child, feedback)
+            if correction["status"] == "blocked":
+                return correction
+            child.update(correction["updates"])
         output = planning.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "planning", output)
         if output["result"]["status"] == "complete":
+            requests = dict(context.get("template_revision_requests", {}))
+            requests.pop(dataset_id, None)
+            outcome["updates"]["template_revision_requests"] = requests
             outcome["updates"]["dataset_task_plans"] = {**context.get("dataset_task_plans", {}), dataset_id: output["context"]["working_blueprint_path"]}
+        return outcome
+
+    def prepare_templates(context, *, dataset_id):
+        """Review templates immediately after this Dataset's Plan; return task defects to Planning."""
+        require_pending(context, "templates", dataset_id)
+        child = child_context(context, dataset_id, "templates")
+        child["working_blueprint_path"] = context["dataset_task_plans"][dataset_id]
+        outcome = run_templates(child)
+        requests = dict(context.get("template_revision_requests", {}))
+        if feedback := outcome["updates"].pop("template_revision_request", None):
+            requests[dataset_id] = feedback
+        elif outcome["status"] == "success":
+            requests.pop(dataset_id, None)
+            outcome["updates"]["dataset_templates"] = {**context.get("dataset_templates", {}), dataset_id: outcome["updates"].pop("templates_path")}
+        outcome["updates"]["template_revision_requests"] = requests
         return outcome
 
     def prepare_data(context, *, dataset_id, mode="reuse_or_prepare", feedback=""):
@@ -337,7 +362,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         updates["last_agent_result"] = output["result"]
         return {**output["result"], "status": "success" if output["result"]["status"] in {"complete", "needs_input"} else output["result"]["status"], "updates": updates}
 
-    def generate(context, *, dataset_id, feedback=""):
+    def generate(context, *, dataset_id):
         """Generate one dataset's positive allocation using its own Protocols and annotation."""
         require_pending(context, "generation", dataset_id)
         require(context, "Allocation")
@@ -354,28 +379,38 @@ def compile_benchmark_graph(*, checkpointer=None):
         path = Path(child["operation_directory"]) / "request_blueprint.json"
         atomic_write_json(path, blueprint)
         child["working_blueprint_path"] = str(path)
-        outcome = run_generation(child, generation, feedback=feedback)
+        child["templates_path"] = context["dataset_templates"][dataset_id]
+        outcome = run_generation(child, generation)
         child.update(outcome["updates"])
         generations = {**context.get("dataset_generations", {}), dataset_id: {
             "raw_output_path": child["raw_output_path"], "working_blueprint_path": child["working_blueprint_path"]}}
         return result("success", "Dataset generated", dataset_generations=generations, artifact_versions=child["artifact_versions"])
 
-    def audit(context, *, dataset_id, feedback=""):
-        """Audit one dataset against its original annotations and assigned tasks."""
-        require_pending(context, "audit", dataset_id)
-        child = child_context(context, dataset_id, "audit")
-        child.update(context["dataset_generations"][dataset_id])
-        outcome = run_audit(child)
-        audits = {**context.get("dataset_audits", {}), dataset_id: outcome["updates"]["audit_artifacts"]}
-        return result("success", "Dataset audited", dataset_audits=audits,
-                      artifact_versions=outcome["updates"]["artifact_versions"], audit_summary=outcome["updates"]["audit_summary"])
+    def finalize(context):
+        """Delegate global finalization only after all positive-allocation Generations are complete."""
+        if "finalize" not in available_stages(context):
+            raise ValueError("All Generations must complete before finalization")
+        saved = context.get("finalization_state_path")
+        child = json.loads(Path(saved).read_text(encoding="utf-8")) if saved else {}
+        child.update({k: context[k] for k in (*COMMON, "selected_dataset_ids", "dataset_assets", "dataset_task_plans",
+                     "dataset_templates", "dataset_generations", "allocation_path", "operation_directory") if k in context})
+        output = finalization.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
+        path = Path(context["operation_directory"]) / "finalization-state.json"
+        atomic_write_json(path, output["context"])
+        updates = {"artifact_versions": output["context"]["artifact_versions"], "finalization_state_path": str(path),
+                   "last_agent_result": output["result"]}
+        if output["result"]["status"] == "complete":
+            updates.update({k: v for k, v in output["context"].items() if k in BenchmarkOutputState.__annotations__})
+        return {**output["result"], "status": "success" if output["result"]["status"] == "complete" else output["result"]["status"], "updates": updates}
 
     def finish(context):
         if context["run_intent"]["intent"] == "prepare_dataset":
             if preparation_pending(context):
                 raise ValueError("Prepare and register the dataset first")
             return result("complete", "Dataset prepared and registered")
-        return result("complete", "Benchmark completed; deficits are reported", **export_benchmark(context))
+        require(context, "Delivery")
+        delivery = restore_delivery(context)
+        return result("complete", f"Benchmark delivered; shortfall {delivery['total_shortfall']}", **delivery)
 
     supervisor = compile_agent("SupervisorAgent",
         "Coordinate the user's medical dataset preparation or benchmark construction. "
@@ -385,8 +420,9 @@ def compile_benchmark_graph(*, checkpointer=None):
         "Respect the entry intent. Prepare each outstanding logical dataset independently, never merge datasets. "
         "Preparation-only work finishes after all requested registrations; no benchmark brief is needed. "
         "For construction, extract benchmark-level scope, prepare requested new data, then select prepared datasets "
-        "with high recall. Plan each selected dataset, allocate after every plan is current, generate and audit "
-        "positive allocations, then export. Follow artifact readiness, not a fixed script. "
+        "with high recall. Plan each selected dataset then prepare_templates; return template task defects to Planning. "
+        "Allocate only when every Plan and template set is current. Generate every positive allocation, then delegate "
+        "global finalize. Finish after delivery publication. Follow artifact readiness, not a fixed script. "
         "Delegate explicit objectives, constraints, preferences and revision notes to Planning and Allocation. "
         "Delegations must respect the original user requirement; never invent a task focus. "
         "Unsupported plans and zero allocation are valid, failures are not. Never omit explicitly requested datasets. "
@@ -394,12 +430,12 @@ def compile_benchmark_graph(*, checkpointer=None):
         "Finite exhaustion may finish with reported deficits; no automatic refill loop.",
         {"set_intent": set_intent, "specify": specify, "select_datasets": select_datasets,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
-         "prepare_data": prepare_data, "plan": plan, "allocate": allocate, "generate": generate, "audit": audit},
+         "prepare_data": prepare_data, "plan": plan, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
         describe, finish, available_tools=available_stages,
         args_schemas={"set_intent": RunIntent, "prepare_data": PrepareDataArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
                       "plan": PlanningArguments, "allocate": DelegationArguments,
-                      "generate": DatasetArguments, "audit": DatasetArguments})
+                      "generate": DatasetStatusArguments, "prepare_templates": DatasetStatusArguments})
 
     def initialize(state):
         overrides = {k: state[k] for k in ("seed", "max_tasks_per_image", "question_temperature") if k in state}

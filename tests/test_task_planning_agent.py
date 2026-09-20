@@ -9,7 +9,7 @@ import pytest
 from medbenchagent.agents import task_planning as planning
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.planning.tree import validate_plan
-from test_generation import _task, _record
+from test_generation import _task, _record, _grounding
 
 
 def context(tmp_path, monkeypatch):
@@ -67,8 +67,40 @@ def save(c, leaf_id="opaque.identity", concept_id="core"):
         concept_id=concept_id,
         description="Classify status",
         protocol=_task("letter", ["image.annotation.status"])["protocol"],
+        mapping_grounding=_grounding(_task("letter", ["image.annotation.status"])["protocol"]),
         evidence=[],
     )
+
+
+def test_mapping_requires_complete_and_dataset_specific_grounding(tmp_path, monkeypatch):
+    from medbenchagent.planning.tree import validate_mapping_grounding
+    c = context(tmp_path, monkeypatch)
+    protocol = _task("letter", ["image.annotation.status"])["protocol"]
+    args = {"leaf_id": "leaf", "concept_id": "core", "description": "Status", "protocol": protocol, "evidence": []}
+    with pytest.raises(ValueError, match="cover every"):
+        planning.save_leaf(c, **args)
+    grounding = _grounding(protocol)
+    assert planning.save_leaf(c, **args, mapping_grounding=grounding)["status"] == "success"
+    bad = copy.deepcopy(grounding)
+    bad[0]["field"] = "image.annotation.other"
+    with pytest.raises(ValueError, match="answer field"):
+        validate_mapping_grounding(protocol, bad, [])
+    coded = copy.deepcopy(protocol)
+    coded["answer_contract"]["value_mapping"][0]["raw_value"] = 0
+    coded_grounding = _grounding(coded)
+    with pytest.raises(ValueError, match="Direct mapping"):
+        validate_mapping_grounding(coded, coded_grounding, [])
+    coded_grounding[0].update(mode="interpreted", evidence_references=["codebook"])
+    basis = [{"field": "image.annotation.status", "reference": "codebook", "source": "material", "dataset_specific": False}]
+    with pytest.raises(ValueError, match="dataset-specific"):
+        validate_mapping_grounding(coded, coded_grounding, basis)
+    basis[0]["dataset_specific"] = True
+    assert validate_mapping_grounding(coded, coded_grounding, basis)
+    # A once-reviewed Plan cannot publish if mapping coverage disappears.
+    ready(c, monkeypatch)
+    tree = planning._tree(c)
+    tree["tasks"]["opaque.identity"]["mapping_grounding"] = []
+    assert any(issue["path"][-1] == "mapping_grounding" for issue in validate_plan(tree))
 
 
 def complete(c, concept_id="core"):
@@ -414,7 +446,7 @@ def test_review_receives_mapping_and_verified_semantic_basis(tmp_path, monkeypat
     basis = [{"field": "image.annotation.status", "source": "user", "reference": reference,
               "quote": c["decisions"][reference], "interpretation": "Preserve annotated pathology status"}]
     call(c, planning.save_leaf, leaf_id="leaf", concept_id="core", description="Status",
-         protocol=protocol, evidence=[], semantic_basis=basis)
+         protocol=protocol, evidence=[], semantic_basis=basis, mapping_grounding=_grounding(protocol))
     complete(c)
     call(c, planning.coverage_gap)
     call(c, planning.finish_discovery)
@@ -429,13 +461,13 @@ def test_review_receives_mapping_and_verified_semantic_basis(tmp_path, monkeypat
     call(c, planning.review_tree)
     leaf = captured["leaves"]["leaf"]
     assert leaf["protocol"]["answer_contract"]["value_mapping"] == protocol["answer_contract"]["value_mapping"]
-    assert leaf["semantic_basis"] == basis
+    assert leaf["semantic_basis"] == [{**b, "dataset_specific": False} for b in basis]
     assert leaf["eligible_count"] == 2
     assert leaf["field_values"]["image.annotation.status"]["complete"]
     basis[0]["quote"] = "fabricated source text"
     with pytest.raises(ValueError, match="exact quotation"):
         planning.save_leaf(c, leaf_id="leaf", concept_id="core", description="Status",
-                           protocol=protocol, evidence=[], semantic_basis=basis)
+                           protocol=protocol, evidence=[], semantic_basis=basis, mapping_grounding=_grounding(protocol))
 
 
 def test_zero_capacity_and_changed_delegation_block_publication(tmp_path, monkeypatch):
