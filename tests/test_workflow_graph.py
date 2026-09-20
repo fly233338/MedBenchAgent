@@ -160,3 +160,40 @@ def test_global_needs_input_is_structured(tmp_path, monkeypatch):
                                        "construction_events_path": str(tmp_path / "events")}})
     assert output["result"]["status"] == "needs_input"
     assert output["result"]["unresolved_questions"] == ["Clarify target"]
+
+
+def test_pending_ids_and_execution_guards_follow_invalidations(tmp_path):
+    import json
+    import pytest
+    from medbenchagent.runtime.dependencies import publish
+    from medbenchagent.workflow.graph import pending_datasets, require_pending, available_stages
+    c = {"run_directory": str(tmp_path), "selected_dataset_ids": ["a", "b", "zero"],
+         "allocation_path": str(tmp_path / "allocation.json"), "brief_ready": True,
+         "brief_requirement": "Build", "user_requirement": "Build",
+         "run_intent": {"intent": "build_benchmark", "prepare_dataset_ids": []}}
+    publish(c, "Requirement", {"revision": 1}, ())
+    publish(c, "DatasetSelection", {}, ("Requirement",))
+    publish(c, "dataset/a/Plan", {}, ("Requirement",))
+    assert pending_datasets(c)["pending_plan_dataset_ids"] == ["b", "zero"]
+    with pytest.raises(ValueError, match="not pending"):
+        require_pending(c, "plan", "a")
+    for d in ("b", "zero"):
+        publish(c, f"dataset/{d}/Plan", {}, ("Requirement",))
+    (tmp_path / "allocation.json").write_text(json.dumps({"counts": {"a": {"leaf": 1}, "b": {"leaf": 1}, "zero": {"leaf": 0}}}), encoding="utf-8")
+    publish(c, "Allocation", {"path": c["allocation_path"]}, ("dataset/a/Plan", "dataset/b/Plan", "dataset/zero/Plan"))
+    publish(c, "dataset/a/Generation", {}, ("Allocation",))
+    assert pending_datasets(c)["pending_generation_dataset_ids"] == ["b"]
+    assert pending_datasets(c)["pending_audit_dataset_ids"] == ["a"]
+    assert {"generate", "audit"} <= available_stages(c)
+    for stage, dataset in (("generation", "a"), ("generation", "zero"), ("audit", "b")):
+        with pytest.raises(ValueError, match="not pending"):
+            require_pending(c, stage, dataset)
+    publish(c, "dataset/a/Audit", {}, ("dataset/a/Generation",))
+    publish(c, "dataset/b/Generation", {}, ("Allocation",))
+    publish(c, "dataset/b/Audit", {}, ("dataset/b/Generation",))
+    assert "finish" in available_stages(c)
+    assert not {"plan", "allocate", "generate", "audit", "specify", "select_datasets"} & available_stages(c)
+    publish(c, "dataset/a/Plan", {"revision": 2}, ("Requirement",))
+    assert "allocate" in available_stages(c) and "finish" not in available_stages(c)
+    publish(c, "Allocation", {"path": c["allocation_path"]}, ("dataset/a/Plan", "dataset/b/Plan", "dataset/zero/Plan"))
+    assert pending_datasets(c)["pending_generation_dataset_ids"] == ["a", "b"]

@@ -1,5 +1,8 @@
 dataset_sources = []
 
+[benchmark]
+default_sample_count = 1000
+
 [paths]
 dataset_catalog = "datasets/dataset_catalog.json"
 blueprint_template = "config/blueprint.json"

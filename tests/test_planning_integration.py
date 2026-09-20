@@ -13,8 +13,8 @@ from test_generation import _task
 from test_dataset_cards import prepared_dataset
 
 
-@pytest.mark.parametrize("dataset_count,ask_global,revise", [(1, False, False), (2, False, False), (2, True, False), (2, False, True)])
-def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise):
+@pytest.mark.parametrize("dataset_count,ask_global,revise,raw_first", [(1, False, False, False), (2, False, False, False), (2, True, False, False), (2, False, True, False), (1, False, False, True)])
+def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise, raw_first):
     template = tmp_path / "core.json"
     template.write_text(json.dumps({"concepts": {"status": {"origin": "core", "category": "clinical", "description": "Status", "require": "Explicit annotation"}}}), encoding="utf-8")
     configured = settings.get_settings()
@@ -25,6 +25,12 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
     identifiers = ["a", "b"][:dataset_count]
     for identifier in identifiers:
         prepared_dataset(tmp_path, identifier, monkeypatch)
+    if raw_first:
+        (tmp_path / "catalog.json").unlink()
+        configured = replace(configured, data_processing={**configured.data_processing, "backend": "local"},
+                             dataset_sources=({"dataset_id": "a", "name": "A", "description": "Status annotations",
+                                               "sources": [{"id": "source", "kind": "annotation", "root": str(tmp_path / "a/source")}]},))
+        monkeypatch.setattr(settings, "_SETTINGS", configured)
     info = {"clinical_scope": "Breast disease", "diseases": [], "modalities": ["US"], "language": "en",
             "evaluation_focus": "Classify status", "sample_count": dataset_count * 2 + 2}
     changed = {**info, "sample_count": 1, "language": "zh"}
@@ -33,7 +39,13 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
     monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: {"dataset_ids": identifiers})
     cycle = [("specify", {}), ("select_datasets", {})] + [("plan", {"dataset_id": d}) for d in identifiers]
     prefix = [("specify", {}), ("select_datasets", {}), ("plan", {"dataset_id": "a"}), ("ask_user", {"question": "Confirm goal"})] if ask_global else cycle + [("ask_user", {"question": "Change target?"})] if revise else []
+    if raw_first:
+        cycle = cycle[:2] + [("prepare_data", {"dataset_id": "a"}), ("select_datasets", {})] + cycle[2:]
     supervisor = iter(prefix + cycle + [("allocate", {})] + [(tool, {"dataset_id": d}) for d in (identifiers[:1] if revise else identifiers) for tool in ("generate", "audit")] + [("finish", {})])
+    preparation = iter([("select_source", {"source_id": "source"}), ("inspect_images", {}),
+                        ("save_image_plan", {"overrides": {}}), ("normalize_images", {}),
+                        ("save_dataset_metadata", {"source_references": []}),
+                        ("save_harmonization", {"plan": {}}), ("finish", {})])
     leaf = _task("letter", ["image.annotation.status"])["protocol"]
     basic = [("select_materials", {"files": []}),
              ("save_leaf", {"leaf_id": "same.leaf", "concept_id": "status", "description": "Status", "protocol": leaf}),
@@ -42,7 +54,9 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
     planning_actions = iter(([("ask_user", {"question": "Confirm goal", "scope": "global"})] if ask_global else []) + basic * (dataset_count * (2 if revise else 1)))
     allocated = [False]
     def model(instructions, prompt):
-        if instructions.startswith("Build a two-level"):
+        if instructions.startswith("Prepare every selected"):
+            name, arguments = next(preparation)
+        elif instructions.startswith("Build a two-level"):
             assert json.loads(prompt)["state"]["delegation"]["objective"] == "Follow the requested benchmark scope"
             name, arguments = next(planning_actions)
         elif instructions.startswith("Distribute"):

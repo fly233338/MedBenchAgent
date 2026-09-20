@@ -41,6 +41,11 @@ Keep the run directory and prepared model assets intact; external input changes 
 The brief describes benchmark-level `clinical_scope`, optional `diseases`, `modalities` and
 `evaluation_focus`, plus the required output `language` and positive `sample_count`. Broad and multi-disease,
 multi-modality scopes are valid. Unstated task priorities are not invented.
+If omitted, sample count uses `benchmark.default_sample_count` (1000 by default); an explicitly invalid
+count requires clarification. Missing language is asked, never inferred from the conversation language.
+When no prepared dataset matches, the system selects relevant configured sources, prepares and registers
+them, then selects prepared data again. Missing sources or unavailable paths produce a configuration
+diagnostic instead of repeated path questions. Update config and start a new run to change source paths.
 The Supervisor interprets preparation-only, build and preparation-then-build requests; professional agents
 receive explicit structured objectives, constraints, preferences and revision notes under stable instructions.
 Artifact dependencies determine which actions can execute. A changed delegation invalidates its downstream outputs.

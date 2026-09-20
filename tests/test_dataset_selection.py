@@ -21,8 +21,8 @@ def test_explicit_unknown_does_not_fall_back(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
     prepared_dataset(tmp_path, "a", monkeypatch)
     monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: {"dataset_ids": ["unknown"]})
-    with pytest.raises(ValueError, match="Unknown dataset"):
-        select_datasets(c)
+    outcome = select_datasets(c)
+    assert outcome["status"] == "blocked" and "Unknown dataset" in outcome["summary"]
 
 
 def test_explicit_ids_bypass_model_and_new_preparation_invalidates_selection(tmp_path, monkeypatch):
@@ -56,13 +56,13 @@ def test_single_and_multiple_selection(tmp_path, monkeypatch):
     assert select_datasets(c)["updates"]["selected_dataset_ids"] == ["a", "b"]
 
 
-def test_no_related_candidates_requests_clarification(tmp_path, monkeypatch):
+def test_no_related_candidates_blocks_without_path_question(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
     for d in ("a", "b"):
         prepared_dataset(tmp_path, d, monkeypatch)
     responses = iter([{"dataset_ids": None}, {"selected_dataset_ids": [], "selection_reason": {}}])
     monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: next(responses))
-    assert select_datasets(c)["status"] == "needs_input"
+    assert select_datasets(c)["status"] == "blocked"
 
 
 def test_only_candidate_must_be_relevant(tmp_path, monkeypatch):
@@ -71,7 +71,7 @@ def test_only_candidate_must_be_relevant(tmp_path, monkeypatch):
     responses = iter([{"dataset_ids": None}, {"selected_dataset_ids": [], "selection_reason": {}}])
     monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: next(responses))
     outcome = select_datasets(c)
-    assert outcome["status"] == "needs_input"
+    assert outcome["status"] == "blocked"
     snapshot = json.loads(Path(outcome["updates"]["candidate_snapshot_path"]).read_text(encoding="utf-8"))
     assert snapshot["selection_method"] == "model"
 
@@ -142,3 +142,32 @@ def test_model_failure_reuses_candidate_snapshot_on_retry(tmp_path, monkeypatch)
     monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", retry)
     assert select_datasets(c)["updates"]["selected_dataset_ids"] == ["a"]
     assert snapshot.read_bytes() == before
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_missing_prepared_routes_configured_source_and_replays(tmp_path, monkeypatch, explicit):
+    c = context(tmp_path, monkeypatch)
+    cfg = settings.get_settings()
+    monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, dataset_sources=({"dataset_id": "raw", "name": "Raw",
+                        "description": "Matching population", "sources": [{"id": "source", "root": str(tmp_path), "kind": "raw"}]},)))
+    if explicit:
+        c["requested_dataset_ids"] = ["raw"]
+        monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: pytest.fail("Explicit ID needs no model"))
+    else:
+        responses = iter([{"dataset_ids": None}, {"selected_dataset_ids": ["raw"], "selection_reason": {"raw": "Relevant"}}])
+        monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: next(responses))
+    outcome = select_datasets(c)
+    assert outcome["status"] == "success" and outcome["updates"]["preparation_required"] == ["raw"]
+    monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: pytest.fail("Replay uses frozen source decision"))
+    assert select_datasets(c)["updates"]["preparation_required"] == ["raw"]
+
+
+def test_missing_source_path_blocks_without_asking_user(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    cfg = settings.get_settings()
+    monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, dataset_sources=({"dataset_id": "raw", "name": "Raw",
+                        "description": "Population", "sources": [{"id": "source", "root": str(tmp_path / "missing"), "kind": "raw"}]},)))
+    c["requested_dataset_ids"] = ["raw"]
+    outcome = select_datasets(c)
+    assert outcome["status"] == "blocked" and "missing" in outcome["summary"]
+    assert "global_issue" not in outcome["updates"]

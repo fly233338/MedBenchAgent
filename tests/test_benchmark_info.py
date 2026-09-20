@@ -1,5 +1,7 @@
 import json
+from dataclasses import replace
 from pathlib import Path
+import pytest
 
 import medbenchagent.planning.benchmark_info as benchmark_info
 from medbenchagent.planning.benchmark_info import (
@@ -60,3 +62,36 @@ def test_working_blueprint_replaces_info_without_changing_template(tmp_path: Pat
         "diseases": ["breast cancer"],
         "sample_count": 20,
     }
+
+
+@pytest.mark.parametrize("value,expected,source,missing", [(None, 17, "configuration", []), (8, 8, "user", []),
+                                                          (0, 0, "user", ["sample_count"]),
+                                                          ("", "", "user", ["sample_count"]),
+                                                          ("many", "many", "user", ["sample_count"])])
+def test_specify_defaults_only_absent_count(tmp_path, monkeypatch, value, expected, source, missing):
+    from medbenchagent import settings
+    from medbenchagent.workflow.graph import specify
+    cfg = settings.get_settings()
+    monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, benchmark=replace(cfg.benchmark, default_sample_count=17)))
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: {"clinical_scope": "Disease", "language": "en", "sample_count": value})
+    c = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "op"), "user_requirement": "Build"}
+    updates = specify(c)["updates"]
+    assert updates["benchmark_info"]["sample_count"] == expected
+    assert updates["sample_count_source"] == source
+    assert updates["brief_missing_fields"] == missing
+
+
+def test_missing_language_gates_repeated_specify_until_answer(tmp_path, monkeypatch):
+    from medbenchagent.workflow.graph import specify, available_stages
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: {"clinical_scope": "Disease", "language": None})
+    c = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "op"), "user_requirement": "Build",
+         "run_intent": {"intent": "build_benchmark", "prepare_dataset_ids": []}}
+    c.update(specify(c)["updates"])
+    assert c["brief_missing_fields"] == ["language"]
+    tools = available_stages(c)
+    assert "ask_user" in tools and "list_datasets" in tools
+    assert not tools & {"specify", "select_datasets", "plan", "prepare_data"}
+    with pytest.raises(ValueError, match="already been extracted"):
+        specify(c)
+    c["user_requirement"] += "\nEnglish"
+    assert "specify" in available_stages(c)

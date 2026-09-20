@@ -249,7 +249,7 @@ class Provenance(Contract):
 
 class SourcesArguments(Contract):
     sources: list[Source] = Field(min_length=1)
-    dataset_id: Name
+    dataset_id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")]
     feedback: str = ""
 
     @model_validator(mode="after")

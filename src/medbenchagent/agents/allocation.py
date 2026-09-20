@@ -126,7 +126,8 @@ def compile_allocation_agent():
     return compile_agent("AllocationAgent",
                          "Distribute the requested benchmark budget Concept first, then Dataset, then Leaf. "
                          "Submit justified Concept weights based on user importance, never number of leaves. "
-                         "Follow the structured delegation within the original user requirement; never invent preferences. "
+                         "Original requirements and benchmark_info take precedence over delegation; never invent preferences "
+                         "or treat delegation as permission to introduce new priorities or exclusions. "
                          "Use null datasets/leaves for equal lower-level coverage unless the requirement justifies "
                          "different weights. Zero explicitly excludes a member. Code computes all counts. Finish after submit.",
                          {"submit": submit},

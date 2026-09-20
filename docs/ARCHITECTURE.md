@@ -81,6 +81,10 @@ DatasetCandidates 是独立 artifact，Selection 依赖 Requirement、该快照�
 同一操作恢复复用快照及已完成决策，不读取未选中候选的实时 Card；新 Selection 操作创建新快照。
 选中数据继续核验 annotation、Profile、manifest 与冻结 Card 的一致性，外部 Card 刷新不改变运行中版本。
 
+无匹配 prepared 数据时，从同一快照保存的配置来源中选择；显式目标仅存在于配置来源时直接准备。
+source_selection.json 保存来源选择输入与决策；路径不可用、无相关来源或显式目标损坏时 blocked，
+报告具体配置问题，不询问路径。来源选择只授权准备；注册后重新进行 prepared 数据选择。
+
 ## 执行后端
 
 `data_processing.backend` 为 auto（默认）、docker 或 local。auto 在准备开始前检查 Docker CLI、daemon、
@@ -98,7 +102,10 @@ Local 使用当前解释器、独立工作目录和 UTF-8，超时结束对应�
 ## 局部规划与全局分配
 
 Benchmark Info 使用 clinical_scope、diseases[]、modalities[]、evaluation_focus、language、sample_count。
-scope、语言和正整数题量必填；其余只保留用户明确表达的内容。Selection 使用范围和限制，
+scope、语言和正整数题量必填；缺少语言时询问，缺省题量取 benchmark.default_sample_count（默认 1000）。
+用户显式无效题量保持待澄清，不用默认值覆盖；题量来源单独记录在 Requirement，不增加 Info 字段。
+brief_missing_fields 和 brief_requirement 阻止对未变化需求重复 specify，回答后重新提取完整需求。
+其余只保留用户明确表达的内容。Selection 使用范围和限制，
 Planning 使用范围与评测重点，Allocation 使用总体要求与局部委派偏好。
 
 每次 TaskPlanning 只接收一个已选择 Dataset 的 Card/Profile/query，以及需求和 Blueprint。
@@ -129,6 +136,10 @@ Core 能力共享，Extension 以 Dataset 作用域独立计量；预算不随 L
 逐 Leaf 容量不是每图限额下的联合可行解；本阶段不进行图像匹配或自动补量循环。
 
 ## 状态、依赖与恢复
+
+Supervisor 从有效产物计算 pending_plan/generation/audit_dataset_ids，工具展示与执行入口共用门控。
+有效已完成阶段不可通过重复委派重做；上游失效使下游重新进入 pending。委派不覆盖原始要求和 Info，
+也不是新增研究偏好的来源；结构校验不声称能判定所有语义偏移。
 
 Supervisor 以结构化 delegation（objective、constraints、preferences、revision_notes）委派 Planning
 和 Allocation；原始用户要求继续可见，委派不修改专业 Agent 的永久 system prompt。

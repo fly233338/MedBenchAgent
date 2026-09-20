@@ -15,7 +15,7 @@ REQUIRED_FIELDS = ("clinical_scope", "language", "sample_count")
 OPTIONAL_FIELDS = ("diseases", "modalities", "evaluation_focus")
 
 EXTRACTION_PROMPT = """Extract a medical VLM benchmark request into one JSON object.
-Return exactly these seven keys and no wrapper object:
+Return exactly these six keys and no wrapper object:
 {
   "clinical_scope": "English description of only the benchmark aspects explicitly stated by the user, or null. A broad scope or explicitly requested dataset population is valid; do not demand a single disease.",
   "diseases": ["Explicitly requested disease names in English; empty if unspecified"],
@@ -29,6 +29,8 @@ The user may write Chinese, English, or both. Infer the requested benchmark lang
 not the language of the user's message. Translate disease and modality to standard
 English medical terms. Convert expressions such as "20题", "10k", and "2.5k" to a
 positive integer. Use null only when the user did not provide or imply a value.
+If the user explicitly supplied an invalid sample count, preserve that value (or its original text),
+never replace it with null. Later user corrections override earlier requests.
 Omit any unspecified aspect instead of inferring or inventing it.
 Every detail must be traceable to the user's wording. If the user
 did not mention a task focus, do not add one.
@@ -73,7 +75,9 @@ def merge_info(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, An
             if not isinstance(value, str):
                 raise ValueError(f"{field} must be text")
             value = value.strip()
-        if value not in (None, ""):
+        if field == "sample_count" and value is not None:
+            merged[field] = value
+        elif value not in (None, ""):
             merged[field] = value
         elif field == "evaluation_focus" and field in update:
             merged[field] = None

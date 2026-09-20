@@ -74,6 +74,11 @@ class DatasetProfileSettings:
 
 
 @dataclass(frozen=True)
+class BenchmarkSettings:
+    default_sample_count: int
+
+
+@dataclass(frozen=True)
 class AppSettings:
     paths: PathSettings
     harness: dict[str, int]
@@ -83,6 +88,7 @@ class AppSettings:
     generation: GenerationSettings
     dataset_profile: DatasetProfileSettings
     dataset_sources: tuple[dict[str, Any], ...]
+    benchmark: BenchmarkSettings
     default_config_path: Path
     local_config_path: Path | None
     environment_overrides: tuple[str, ...]
@@ -99,6 +105,7 @@ class AppSettings:
         return {
             "settings": {
                 "dataset_sources": list(self.dataset_sources),
+                "benchmark": {"default_sample_count": self.benchmark.default_sample_count},
                 "harness": self.harness,
                 "data_processing": self.data_processing,
                 "paths": {key: str(getattr(self.paths, key)) for key in self.paths.__dataclass_fields__},
@@ -257,6 +264,8 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     if backend not in {"auto", "docker", "local"}:
         raise ValueError("data_processing.backend must be auto, docker, or local")
     return AppSettings(
+        benchmark=BenchmarkSettings(default_sample_count=_integer(values["benchmark"]["default_sample_count"],
+                                                                  "benchmark.default_sample_count", minimum=1)),
         dataset_sources=_dataset_sources(values["dataset_sources"]),
         harness={key: _integer(value, f"harness.{key}", minimum=1) for key, value in values["harness"].items()},
         data_processing={"backend": backend, "image": _string(values["data_processing"]["image"], "data_processing.image"),

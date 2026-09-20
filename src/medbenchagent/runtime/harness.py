@@ -216,6 +216,7 @@ def compile_agent(
                     if name == "SupervisorAgent" and not already_answered:
                         updates["user_requirement"] = context["user_requirement"] + "\n" + answer
                         updates["brief_ready"] = False
+                        updates["brief_missing_fields"] = []
                         updates["global_issue"] = None
                         from medbenchagent.runtime.dependencies import publish
 

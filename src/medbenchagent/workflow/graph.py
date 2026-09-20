@@ -91,14 +91,24 @@ class BenchmarkOutputState(TypedDict, total=False):
 
 def specify(context):
     """Extract the benchmark brief from the user's complete requirement."""
-    info = extract_benchmark_info(context["user_requirement"], context.get("benchmark_info"))
-    if missing := missing_fields(info):
-        return result("success", "Brief needs clarification: " + ", ".join(missing), benchmark_info=info, brief_ready=False)
+    if context.get("brief_requirement") == context["user_requirement"]:
+        raise ValueError("This requirement has already been extracted; clarify missing fields first")
+    info = extract_benchmark_info(context["user_requirement"])
+    source = "user"
+    if info.get("sample_count") is None:
+        info["sample_count"] = get_settings().benchmark.default_sample_count
+        source = "configuration"
+    missing = missing_fields(info)
+    updates = {"benchmark_info": info, "brief_ready": not missing, "brief_missing_fields": missing,
+               "brief_requirement": context["user_requirement"], "sample_count_source": source}
+    if missing:
+        return result("success", "Brief needs clarification: " + ", ".join(missing), **updates)
     path = Path(context["operation_directory"]) / "blueprint.json"
     write_working_blueprint(info, path)
-    return result("success", "Benchmark brief extracted", benchmark_info=info, brief_ready=True,
+    return result("success", "Benchmark brief extracted", **updates,
                   working_blueprint_path=str(path),
-                  **publish(context, "Requirement", {"path": str(path), "brief": info}, ()))
+                  **publish(context, "Requirement", {"path": str(path), "brief": info,
+                             "user_requirement": context["user_requirement"], "sample_count_source": source}, ()))
 
 
 COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path", "artifact_versions",
@@ -140,13 +150,14 @@ def child_result(context, dataset_id, role, output):
 
 def describe(context):
     details = {key: context.get(key) for key in (
-        "user_requirement", "benchmark_info", "brief_ready", "prepare_dataset_id", "selected_dataset_ids",
+        "user_requirement", "benchmark_info", "brief_ready", "brief_missing_fields", "sample_count_source", "prepare_dataset_id", "selected_dataset_ids",
         "dataset_task_plans", "dataset_generations", "dataset_audits", "allocation_path", "prepared_entries",
         "artifact_versions", "global_issue", "last_agent_result", "entry_intent", "run_intent", "requested_dataset_ids")}
     ids = set(context.get("selected_dataset_ids", [])) | set(context.get("run_intent", {}).get("prepare_dataset_ids", []))
     details["dataset_readiness"] = {d: {kind: _current(context, f"dataset/{d}/{kind}")
                                       for kind in ("Dataset", "Plan", "Generation", "Audit")} for d in sorted(ids)}
     details["outstanding_work"] = {"prepare_dataset_ids": preparation_pending(context),
+                                   **pending_datasets(context),
                                    "available_actions": sorted(available_stages(context))}
     return details
 
@@ -183,34 +194,55 @@ def preparation_pending(context):
             if d not in context.get("prepared_entries", {}) or not _current(context, f"dataset/{d}/Dataset")]
 
 
+def pending_datasets(context):
+    pending = {"pending_plan_dataset_ids": [], "pending_generation_dataset_ids": [], "pending_audit_dataset_ids": []}
+    if not _current(context, "DatasetSelection"):
+        return pending
+    pending["pending_plan_dataset_ids"] = [d for d in context["selected_dataset_ids"] if not _current(context, f"dataset/{d}/Plan")]
+    if not _current(context, "Allocation"):
+        return pending
+    assigned = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))
+    for dataset_id in context["selected_dataset_ids"]:
+        if not sum(assigned["counts"][dataset_id].values()):
+            continue
+        if not _current(context, f"dataset/{dataset_id}/Generation"):
+            pending["pending_generation_dataset_ids"].append(dataset_id)
+        elif not _current(context, f"dataset/{dataset_id}/Audit"):
+            pending["pending_audit_dataset_ids"].append(dataset_id)
+    return pending
+
+
+def require_pending(context, stage, dataset_id):
+    if dataset_id not in pending_datasets(context)[f"pending_{stage}_dataset_ids"]:
+        raise ValueError(f"Dataset {dataset_id} is not pending {stage}")
+
+
 def available_stages(context):
     tools = {"set_intent", "ask_user", "list_datasets", "inspect_dataset_status"}
     intent = context.get("run_intent")
     if not intent:
         return tools
     pending = preparation_pending(context)
-    if pending:
-        tools.add("prepare_data")
     if intent["intent"] == "prepare_dataset":
-        return tools | ({"finish"} if not pending else set())
-    tools.add("specify")
-    if pending or not context.get("brief_ready"):
+        return tools | ({"finish"} if not pending else {"prepare_data"})
+    if context.get("brief_requirement") != context.get("user_requirement") or "brief_requirement" not in context:
+        tools.add("specify")
+    if not context.get("brief_ready"):
         return tools
-    tools.add("select_datasets")
+    if pending:
+        return tools | {"prepare_data"}
     if not _current(context, "DatasetSelection"):
-        return tools
-    tools.add("plan")
-    if not _current(context, *(f"dataset/{d}/Plan" for d in context["selected_dataset_ids"])):
-        return tools
-    tools.add("allocate")
+        return tools | {"select_datasets"}
+    pending = pending_datasets(context)
+    if pending["pending_plan_dataset_ids"]:
+        return tools | {"plan"}
     if not _current(context, "Allocation"):
-        return tools
-    tools.add("generate")
-    assigned = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))
-    active = [d for d, counts in assigned["counts"].items() if sum(counts.values())]
-    if any(_current(context, f"dataset/{d}/Generation") for d in active):
+        return tools | {"allocate"}
+    if pending["pending_generation_dataset_ids"]:
+        tools.add("generate")
+    if pending["pending_audit_dataset_ids"]:
         tools.add("audit")
-    if all(_current(context, f"dataset/{d}/Audit") for d in active):
+    if not pending["pending_generation_dataset_ids"] and not pending["pending_audit_dataset_ids"]:
         tools.add("finish")
     return tools
 
@@ -221,14 +253,17 @@ def compile_benchmark_graph(*, checkpointer=None):
     allocation = compile_allocation_agent()
 
     def select_datasets(context):
-        """Choose prepared datasets; escalate missing candidates for user clarification."""
+        """Select prepared data or route matching configured sources into preparation without asking for paths."""
         outcome = run_selection(context)
-        if outcome["status"] == "needs_input":
-            outcome["status"] = "success"
+        targets = outcome["updates"].get("preparation_required", [])
+        if targets:
+            context.update(outcome["updates"])
+            outcome["updates"].update(set_intent(context, intent="prepare_then_build", prepare_dataset_ids=targets)["updates"])
         return outcome
 
     def plan(context, *, dataset_id, delegation):
         """Plan tasks for exactly one selected prepared dataset; no quotas are assigned here."""
+        require_pending(context, "plan", dataset_id)
         child = child_context(context, dataset_id, "planning")
         child["delegation"] = delegation
         publish(child, "PlanningDelegation", delegation, ())
@@ -244,9 +279,12 @@ def compile_benchmark_graph(*, checkpointer=None):
         from medbenchagent.agents.data_processing import compile_data_processing_agent
         if dataset_id not in preparation_pending(context):
             raise ValueError("Dataset is not an outstanding preparation target; update run intent first")
+        operation = Path(context["operation_directory"])
+        if mode == "reuse_or_prepare" and (operation / "reused_dataset.json").is_file():
+            return reuse_prepared(context, dataset_id)
         status = dataset_status(context, dataset_id)
         saved = context.get("child_states", {}).get(dataset_id, {}).get("preparation")
-        if not saved and mode == "reuse_or_prepare":
+        if not saved and not (operation / "preparation.json").is_file() and mode == "reuse_or_prepare":
             if status["prepared"]:
                 return reuse_prepared(context, dataset_id)
             if status["available"] is not None:
@@ -293,6 +331,7 @@ def compile_benchmark_graph(*, checkpointer=None):
 
     def generate(context, *, dataset_id, feedback=""):
         """Generate one dataset's positive allocation using its own Protocols and annotation."""
+        require_pending(context, "generation", dataset_id)
         require(context, "Allocation")
         child = child_context(context, dataset_id, "generation")
         require(child, "Plan")
@@ -315,6 +354,7 @@ def compile_benchmark_graph(*, checkpointer=None):
 
     def audit(context, *, dataset_id, feedback=""):
         """Audit one dataset against its original annotations and assigned tasks."""
+        require_pending(context, "audit", dataset_id)
         child = child_context(context, dataset_id, "audit")
         child.update(context["dataset_generations"][dataset_id])
         outcome = run_audit(child)
