@@ -9,6 +9,7 @@ from threading import Lock
 from typing import Any
 
 from pypdf import PdfReader
+from pypdf.errors import PyPdfError
 
 from medbenchagent.rag.reranker import score_pairs
 from medbenchagent.settings import get_settings
@@ -87,6 +88,8 @@ def extract_pdf_chunks(
     settings = get_settings().rag
     chunk_size = settings.chunk_size if chunk_size is None else chunk_size
     overlap = settings.chunk_overlap if overlap is None else overlap
+    if chunk_size <= 0 or overlap < 0 or overlap >= chunk_size:
+        raise ValueError("chunk_size must be positive and overlap must be smaller than it.")
     if not root.is_dir():
         raise RagUnavailable(f"Medical-material directory does not exist: {root}")
     if selected_files is None:
@@ -120,20 +123,19 @@ def extract_pdf_chunks(
         source_description.append(relative_path)
         try:
             reader = PdfReader(str(pdf))
-        except Exception as exc:  # PyPDF exceptions are version-specific.
-            raise RagUnavailable(f"Cannot parse PDF: {relative_path}") from exc
-        path_key = relative_path
-        for page_number, page in enumerate(reader.pages, start=1):
-            text = (page.extract_text() or "").strip()
-            for index, chunk_text in enumerate(_page_chunks(text, chunk_size, overlap)):
-                chunks.append(
-                    {
-                        "chunk_id": f"{path_key}-p{page_number}-c{index}",
-                        "text": chunk_text,
-                        "pdf": relative_path,
-                        "page": page_number,
-                    }
-                )
+            for page_number, page in enumerate(reader.pages, start=1):
+                text = (page.extract_text() or "").strip()
+                for index, chunk_text in enumerate(_page_chunks(text, chunk_size, overlap)):
+                    chunks.append(
+                        {
+                            "chunk_id": f"{relative_path}-p{page_number}-c{index}",
+                            "text": chunk_text,
+                            "pdf": relative_path,
+                            "page": page_number,
+                        }
+                    )
+        except (PyPdfError, OSError, ValueError) as exc:
+            raise RagUnavailable(f"Cannot read PDF text: {relative_path}: {exc}") from exc
     if not chunks:
         raise RagUnavailable("PDF materials contain no extractable text.")
     source_identity = json.dumps(source_description)

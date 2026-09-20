@@ -1,48 +1,52 @@
+from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 import medbenchagent.runtime.llm as llm
-from medbenchagent.settings import clear_settings_cache
+from medbenchagent.settings import get_settings
 
 
-def test_complete_json_uses_placeholder_key_for_unauthenticated_vllm(monkeypatch) -> None:
+def test_json_api_configuration_and_client_reuse(monkeypatch) -> None:
+    configured = replace(get_settings().llm, base_url="http://127.0.0.1:9999/v1",
+                         model="test-model", timeout_seconds=17, max_retries=2)
     captured = {}
-    instances = 0
-    wrapped_clients = []
+    requests = []
+    responses = iter(['{"ok":true}', '{"ok":true}', '[]', 'not json'])
+
+    def create(**kwargs):
+        requests.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=next(responses)))])
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
-            nonlocal instances
-            instances += 1
             captured.update(kwargs)
-            self.chat = SimpleNamespace(
-                completions=SimpleNamespace(
-                    create=lambda **_kwargs: SimpleNamespace(
-                        choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
-                    )
-                )
-            )
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
 
-        def close(self) -> None:
+        def close(self):
             pass
 
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
-    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    monkeypatch.setattr(llm, "get_settings", lambda: SimpleNamespace(llm=configured))
+    monkeypatch.setattr(llm, "get_llm_api_key", lambda: None)
     monkeypatch.setattr(llm, "OpenAI", FakeOpenAI)
-    monkeypatch.setattr(
-        llm,
-        "wrap_openai",
-        lambda client, **kwargs: wrapped_clients.append((client, kwargs)) or client,
-    )
-    clear_settings_cache()
+    monkeypatch.setattr(llm, "wrap_openai", lambda client, **kwargs: client)
     llm.clear_client_cache()
-
-    assert llm.complete_json("system", "user") == {}
-    assert llm.complete_json("system", "user") == {}
-    assert captured["api_key"] == "local-vllm"
-    assert captured["timeout"] == 120.0
-    assert captured["max_retries"] == 0
-    assert instances == 1
-    assert len(wrapped_clients) == 1
-    assert wrapped_clients[0][1] == {"chat_name": "DeepSeek"}
-    llm.clear_client_cache()
-    clear_settings_cache()
+    try:
+        assert llm.complete_json("system", "user") == {"ok": True}
+        client = llm._client()
+        assert llm.complete_json("system", "user") == {"ok": True}
+        assert llm._client() is client
+        assert captured["api_key"]
+        assert captured["base_url"] == configured.base_url
+        assert captured["timeout"] == configured.timeout_seconds
+        assert captured["max_retries"] == configured.max_retries
+        assert requests[0]["model"] == configured.model
+        assert requests[0]["response_format"] == {"type": "json_object"}
+        assert requests[0]["messages"] == [{"role": "system", "content": "system"},
+                                           {"role": "user", "content": "user"}]
+        with pytest.raises(llm.ModelUnavailable, match="must be an object"):
+            llm.complete_json("system", "user")
+        with pytest.raises(llm.ModelUnavailable, match="valid JSON"):
+            llm.complete_json("system", "user")
+    finally:
+        llm.clear_client_cache()

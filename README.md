@@ -25,6 +25,9 @@ defaults. Keep secrets outside version control. The CLI disables optional extern
 and telemetry; the configured language-model API is still used.
 
 The static task template is `config/blueprint.json`. Runs never write back to this file.
+Run initialization freezes the Blueprint template and PDF materials. It does not copy the Dataset Catalog
+or publish a working Blueprint path before that file exists. New selections read the live Catalog and
+freeze their actual candidate universe and Cards; resuming the same selection reuses that snapshot.
 The default command and `experiment` show a text menu for creating and opening named experiments.
 An Experiment is a stable name for one persistent LangGraph thread, not a collection of runs.
 Names, status, datasets, Git commit and run-directory references live in `experiments.json` beside the
@@ -100,6 +103,9 @@ abbreviations require dataset documentation, retrieved references or user clarif
 does not establish a dataset's encoding. Semantic evidence is saved with each Leaf. Zero-capacity leaves
 cannot be published; unsupported concepts and completed empty dataset plans are valid.
 Generation still derives answers deterministically from annotations, and template models never see per-image answers.
+Hard audit deterministically balances correct-option positions within each accepted letter task before
+writing audited samples, preserving the correct answer text and the raw output. There is no separate
+`balance-answers` command; balancing remains part of the construction pipeline.
 
 Choose the execution backend in `config/default.toml` or your local override:
 

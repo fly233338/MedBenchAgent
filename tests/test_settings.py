@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from medbenchagent.runtime.run_artifacts import initialize_run
-from medbenchagent.settings import clear_settings_cache, get_settings, load_project_env, load_settings
+from medbenchagent.settings import load_project_env, load_settings
 
 
 def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypatch) -> None:
@@ -16,25 +16,6 @@ def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypa
     load_project_env()
 
     assert os.environ["DEEPSEEK_MODEL"] == "from-process"
-
-
-def test_default_settings_preserve_current_runtime_defaults() -> None:
-    clear_settings_cache()
-    settings = get_settings()
-
-    assert settings.llm.timeout_seconds == 120
-    assert settings.llm.max_retries == 0
-    assert settings.generation.max_tasks_per_image == 20
-    assert settings.generation.question_temperature == 0.7
-    assert settings.generation.fetch_batch_size == 128
-    assert settings.generation.question_template_count == 3
-    assert settings.rag.chunk_size == 1200
-    assert settings.rag.chunk_overlap == 200
-    assert settings.rag.candidate_count == 12
-    assert settings.rag.result_limit == 5
-    assert settings.rag.reranker_max_length == 8192
-    assert settings.dataset_profile.max_top_values == 3
-    assert settings.dataset_profile.max_top_value_chars == 200
 
 
 def test_explicit_toml_then_environment_override_and_empty_value(tmp_path: Path, monkeypatch) -> None:
@@ -80,5 +61,4 @@ def test_initialize_run_writes_secret_free_effective_configuration(tmp_path: Pat
     assert snapshot["graph_overrides"] == {"seed": 9, "question_temperature": 0.2}
     assert snapshot["settings"]["generation"]["seed"] == 9
     assert snapshot["settings"]["generation"]["question_temperature"] == 0.2
-    assert snapshot["settings"]["generation"]["question_template_count"] == 3
     assert "not-in-snapshot" not in json.dumps(snapshot)

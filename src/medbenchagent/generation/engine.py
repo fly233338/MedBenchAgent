@@ -91,7 +91,7 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, GenerationTas
             or not supporting
             or not all(is_supporting_field_path(field) for field in supporting)
         ):
-            raise ValueError(f"{task_id}: supporting_fields must contain v2 entity field paths.")
+            raise ValueError(f"{task_id}: supporting_fields must contain canonical entity field paths.")
         templates = task.get("question_templates")
         if (
             not isinstance(templates, list)

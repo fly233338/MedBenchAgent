@@ -64,6 +64,8 @@ profile_path、dataset_card_path。普通构建不自动准备整个候选目录
 CLI 可重复 --dataset 直接给出 ID，绕过模型名称解析及推荐。Selection 只负责高召回 shortlist，
 不提前证明任务可执行。新准备数据发布 PreparedCandidates 版本，使旧 Selection 及其下游失效；
 新选择操作读取当前 Catalog 并冻结新快照，同一操作恢复保留原快照。
+运行初始化不复制 Catalog；effective_config 保留真实目录路径。初始化只冻结 Blueprint 模板和 PDF
+materials，不返回尚未创建的 working_blueprint_path；Requirement/Planning 写出文件后才发布该路径。
 
 每次 Selection 在操作目录创建 dataset_candidates.json：记录实际需求与版本、名称解析所见目录、解析
 结果、完整候选顺序、每个候选的 Card 摘要与内容摘要、以及不可用/未准备/未请求原因。模型看到的候选
@@ -132,6 +134,10 @@ Experiment 为 thread_id 的稳定命名索引，位于 runs_root 同级 experim
 run_directory、状态、Git commit 和时间。CLI 根据 checkpoint/interrupt/执行结果更新 registry；
 registry 不参与 Agent 决策，不取代 checkpoint。完成实验只展示产物，不自动重跑或追加需求。
 默认命令提供文本选择菜单，保留 --resume UUID 高级恢复接口；不实现多 Run 或批量实验管理。
+CLI 按 tasks/updates/custom + subgraphs=True 的三元组事件处理流，只从 updates 顶层读取
+LangGraph Interrupt，未知格式和缺少有效 question 明确报错。失败报告使用执行期间记录的运行目录，
+Experiment 收尾的 checkpoint/registry 诊断失败明确显示，不覆盖原始运行错误及退出状态。
+构建事件可省略 agent；模型/provider 名称不能填充缺失的 Agent 角色。AuditAgent 是审计日志角色标签。
 
 Supervisor 共享状态只保留选中 ID、各 Dataset 产物引用和进度摘要。专业 Agent 的完整 context 保存到
 局部状态文件，重新委派时恢复；不整体回灌父状态。第一版串行调度，所有 Plan 完成后才可 Allocation。
@@ -173,6 +179,8 @@ question_intent、medical_constraints 和 template_slots。letter 使用唯一 s
 
 各 Dataset 独立硬审计和抽样语义审查；语义 flags 不自动拒绝。最终流式合并通过硬审计的样本为
 benchmark.jsonl，并导出 benchmark.raw.jsonl、audit_report.json、benchmark_manifest.json。
+硬审计在写出通过样本前，按 Leaf 和 seed 确定性平衡选择题正确选项位置；保持正确答案文本和原始
+生成文件不变，bbox/free_text 原样透传。这是内部构建行为，不提供独立 balance-answers CLI。
 局部生成、审计、模板和 Plan 继续保留。最终 task_id 为 dataset_id::local_leaf_id，manifest 显式保存
 局部映射；image_id 保留局部值，image_path 改为相对最终文件的正确路径，不再复制图像。
 不合并 annotation 或 image manifest，不执行跨数据集像素去重。

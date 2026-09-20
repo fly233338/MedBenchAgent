@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 import medbenchagent.rag.pdf as pdf_rag
+from pypdf.errors import PdfReadError
 
 def test_discover_and_extract_selected_categorized_medical_pdfs(
     tmp_path: Path, monkeypatch
@@ -77,3 +78,33 @@ def test_embedding_model_loads_once_per_resolved_path(tmp_path: Path, monkeypatc
 
     assert first is second
     assert loaded == [str(tmp_path.resolve())]
+
+
+@pytest.mark.parametrize("during_extraction", [False, True])
+def test_pdf_read_errors_identify_source_and_preserve_cause(tmp_path, monkeypatch, during_extraction):
+    (tmp_path / "broken.pdf").write_bytes(b"broken")
+    problem = PdfReadError("damaged stream")
+
+    def fail():
+        raise problem
+
+    def reader(path):
+        if not during_extraction:
+            fail()
+        return SimpleNamespace(pages=[SimpleNamespace(extract_text=fail)])
+
+    monkeypatch.setattr(pdf_rag, "PdfReader", reader)
+    with pytest.raises(pdf_rag.RagUnavailable, match="broken.pdf") as error:
+        pdf_rag.extract_pdf_chunks(tmp_path)
+    assert error.value.__cause__ is problem
+
+
+def test_unexpected_pdf_programming_errors_propagate(tmp_path, monkeypatch):
+    (tmp_path / "source.pdf").write_bytes(b"source")
+
+    def reader(path):
+        raise TypeError("unexpected programming error")
+
+    monkeypatch.setattr(pdf_rag, "PdfReader", reader)
+    with pytest.raises(TypeError, match="programming error"):
+        pdf_rag.extract_pdf_chunks(tmp_path)

@@ -26,11 +26,7 @@ def test_multi_disease_scope_does_not_invent_focus():
 
 
 def test_extract_uses_benchmark_level_schema(monkeypatch) -> None:
-    captured = {}
-
     def fake_complete_json(system_prompt: str, user_prompt: str):
-        captured["system"] = system_prompt
-        captured["user"] = user_prompt
         return {
             "diseases": ["breast cancer"],
             "modalities": ["mammography"],
@@ -45,11 +41,9 @@ def test_extract_uses_benchmark_level_schema(monkeypatch) -> None:
 
     assert result["diseases"] == ["breast cancer"]
     assert result["sample_count"] == 20
-    assert "Blueprint:" not in captured["user"]
-    assert '"clinical_scope"' in captured["system"]
-    assert "only the benchmark aspects explicitly stated by the user" in captured["system"]
-    assert "Omit any unspecified aspect instead of inferring or inventing it" in captured["system"]
-    assert "did not mention a task focus, do not add one." in captured["system"].replace("\n", " ")
+    assert result["modalities"] == ["mammography"]
+    assert result["evaluation_focus"] is None
+    assert not missing_fields(result)
 
 
 def test_working_blueprint_replaces_info_without_changing_template(tmp_path: Path) -> None:

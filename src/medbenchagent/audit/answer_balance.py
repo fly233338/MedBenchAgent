@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import random
 from collections import defaultdict
-from pathlib import Path
 from typing import Any
 
 
@@ -70,39 +68,3 @@ def balance_items(items: list[dict[str, Any]], seed: int = 0) -> list[dict[str, 
             item["options"] = reordered
             item["answer"] = chr(ord("A") + position)
     return balanced
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as source:
-        for line_number, line in enumerate(source, start=1):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}: line {line_number} is not valid JSON.") from exc
-            if not isinstance(record, dict):
-                raise ValueError(f"{path}: line {line_number} must be a JSON object.")
-            records.append(record)
-    return records
-
-
-def balance_jsonl(input_path: str | Path, output_path: str | Path, seed: int = 0) -> str:
-    """Balance a JSONL copy atomically without modifying the input file."""
-    source = Path(input_path).resolve()
-    output = Path(output_path).resolve()
-    if source == output:
-        raise ValueError("Input and output paths must differ; raw benchmark files are immutable.")
-    if not source.is_file():
-        raise ValueError(f"Input JSONL does not exist: {source}")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    records = balance_items(_read_jsonl(source), seed)
-    temporary = output.with_suffix(output.suffix + ".tmp")
-    try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as destination:
-            for record in records:
-                destination.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-        temporary.replace(output)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    return str(output)

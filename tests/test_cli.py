@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 from medbenchagent import cli
 
@@ -130,11 +131,11 @@ def test_build_handles_eof_and_keyboard_interrupt(tmp_path: Path) -> None:
 def test_build_failure_reports_preserved_run_directory(tmp_path: Path, monkeypatch) -> None:
     class FailingGraph:
         def stream(self, *_args: object, **_kwargs: object):
+            yield (), "updates", {"initialize": {"run_directory": "runs/failed-run"}}
             raise RuntimeError("model unavailable")
-            yield
 
         def get_state(self, _config: dict) -> SimpleNamespace:
-            return SimpleNamespace(values={"run_directory": "runs/failed-run"}, next=("pending",))
+            raise AssertionError("Failure diagnostics must use the recorded run directory")
 
     output: list[str] = []
     monkeypatch.setattr(cli, "_preflight_errors", lambda _settings: [])
@@ -158,16 +159,13 @@ def test_recursion_limit_scales_with_dataset_size() -> None:
     assert cli._recursion_limit({"dataset_profile": {"total_images": 2_000}}) == 8_100
 
 
-def test_parser_keeps_build_parameter_free_and_balance_arguments() -> None:
+def test_parser_keeps_build_entry_and_removes_balance_command() -> None:
     parser = cli._parser()
 
     assert parser.parse_args(["build"]).command == "build"
-    balance = parser.parse_args(
-        ["balance-answers", "--input", "raw.jsonl", "--output", "balanced.jsonl"]
-    )
-    assert balance.input_path == "raw.jsonl"
-    assert balance.output_path == "balanced.jsonl"
-    assert balance.seed == 0
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(["balance-answers"])
+    assert error.value.code == 2
 
 
 def test_named_experiment_opens_completed_checkpoint_without_execution(tmp_path, monkeypatch):
@@ -196,7 +194,6 @@ def test_named_experiment_opens_completed_checkpoint_without_execution(tmp_path,
 
 
 def test_experiment_registry_and_snapshot_status(tmp_path):
-    import pytest
     from medbenchagent.runtime.experiments import create_experiment, list_experiments, snapshot_updates
     root = tmp_path / "runs"
     entry = create_experiment(root, "prepare-one", dataset_id="one")
@@ -210,3 +207,82 @@ def test_experiment_registry_and_snapshot_status(tmp_path):
     assert snapshot_updates(snapshot, interrupted=True)["status"] == "interrupted"
     args = cli._parser().parse_args(["experiment", "new", "pilot", "--dataset", "a", "--dataset", "b"])
     assert args.dataset_ids == ["a", "b"]
+
+
+def test_stream_contract_handles_actual_langgraph_events_and_interrupts():
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.graph import StateGraph, START, END
+    from langgraph.types import interrupt, Command
+    from typing import TypedDict
+
+    class State(TypedDict, total=False):
+        answer: str
+
+    def ask(state):
+        return {"answer": interrupt({"question": "Which scope?", "kind": "clarification"})}
+
+    builder = StateGraph(State)
+    builder.add_node("ask", ask)
+    builder.add_edge(START, "ask")
+    builder.add_edge("ask", END)
+    graph = builder.compile(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "cli-stream"}}
+    messages, questions = [], []
+    for value in ({}, Command(resume="All datasets")):
+        for event in graph.stream(value, config, stream_mode=["tasks", "updates", "custom"], subgraphs=True):
+            namespace, mode, payload = cli._event_parts(event)
+            if mode == "tasks":
+                cli._render_task(namespace, payload, messages.append)
+            elif mode == "updates":
+                question = cli._interrupt_payload(payload)
+                if question:
+                    questions.append(question["question"])
+                cli._render_update(payload, messages.append)
+    assert questions == ["Which scope?"]
+    assert "[start] ask" in messages and "[done] ask" in messages
+    assert graph.get_state(config).values["answer"] == "All datasets"
+
+
+def test_stream_rejects_unknown_shapes_without_scanning_business_payloads():
+    from langgraph.types import Interrupt
+    for event in ({}, ("updates", {}), ([], "updates", {}), ((7,), "updates", {}),
+                  ((), "unknown", {}), ((), "updates", [])):
+        with pytest.raises(ValueError, match="Expected stream event"):
+            cli._event_parts(event)
+    nested = {"node": {"business": {"__interrupt__": (Interrupt({"question": "Not a real interrupt"}),)}}}
+    assert cli._interrupt_payload(nested) is None
+    with pytest.raises(ValueError, match="nonempty question"):
+        cli._interrupt_payload({"__interrupt__": (Interrupt({}),)})
+    with pytest.raises(ValueError, match="LangGraph Interrupt"):
+        cli._interrupt_payload({"__interrupt__": ({"value": {"question": "guessed"}},)})
+
+
+def test_checkpoint_diagnostic_failure_preserves_original_error_and_status(tmp_path):
+    import sqlite3
+    from medbenchagent.runtime.experiments import create_experiment, get_experiment
+    settings = _settings(tmp_path)
+    entry = create_experiment(settings.paths.runs_root, "failed-pilot")
+
+    class FailingGraph:
+        started = False
+
+        def get_state(self, config):
+            if self.started:
+                raise sqlite3.DatabaseError("checkpoint unreadable")
+            return SimpleNamespace(values={}, next=(), tasks=())
+
+        def stream(self, *args, **kwargs):
+            self.started = True
+            yield (), "updates", {"initialize": {"run_directory": "runs/preserved"}}
+            raise RuntimeError("original model failure")
+
+    messages = []
+    status = cli.run_interactive_build(settings=settings, graph=FailingGraph(), experiment=entry,
+                                       input_fn=lambda _: "Prepare dataset", output=messages.append)
+    rendered = "\n".join(messages)
+    assert status == 1
+    assert "RuntimeError: original model failure" in rendered
+    assert "DatabaseError: checkpoint unreadable" in rendered
+    assert "Preserved run artifacts: runs/preserved" in rendered
+    saved = get_experiment(settings.paths.runs_root, entry["name"])
+    assert saved["status"] == "interrupted" and saved["run_directory"] == "runs/preserved"

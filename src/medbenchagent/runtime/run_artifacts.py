@@ -52,12 +52,11 @@ def initialize_run(
     snapshot = active_settings.snapshot(graph_overrides)
     inputs = run_directory / ".runtime" / "inputs"
     inputs.mkdir(parents=True)
-    for name in ("blueprint_template", "dataset_catalog"):
-        source = getattr(active_settings.paths, name)
-        if source.is_file():
-            target = inputs / source.name
-            shutil.copyfile(source, target)
-            snapshot["settings"]["paths"][name] = str(target)
+    source = active_settings.paths.blueprint_template
+    if source.is_file():
+        target = inputs / source.name
+        shutil.copyfile(source, target)
+        snapshot["settings"]["paths"]["blueprint_template"] = str(target)
     materials = inputs / "materials"
     materials.mkdir()
     for source in active_settings.paths.materials_root.rglob("*"):
@@ -71,7 +70,6 @@ def initialize_run(
     return {
         "run_id": run_id,
         "run_directory": str(run_directory),
-        "working_blueprint_path": str(run_directory / "blueprint.json"),
         "construction_events_path": str(events_path),
         "effective_config_path": str(effective_config_path),
     }

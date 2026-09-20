@@ -17,18 +17,8 @@ _CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar
     "construction_context", default=None
 )
 
-SUPERVISOR_AGENT = "SupervisorAgent"
-TASK_PLANNING_AGENT = "TaskPlanningAgent"
-DATA_PROCESSING_AGENT = "DataProcessingAgent"
 GENERATION_AGENT = "GenerationAgent"
 AUDIT_AGENT = "AuditAgent"
-AGENT_NAMES = (
-    SUPERVISOR_AGENT,
-    TASK_PLANNING_AGENT,
-    DATA_PROCESSING_AGENT,
-    GENERATION_AGENT,
-    AUDIT_AGENT,
-)
 
 
 def _timestamp() -> str:
@@ -91,7 +81,7 @@ def record_llm_call(
         dataset_id=context.get("dataset_id"),
         task_id=context.get("task_id"),
         item_id=context.get("item_id"),
-        agent=context.get("agent", "deepseek"),
+        agent=context.get("agent"),
         operation=context.get("operation", "llm"),
         component=context.get("component"),
         model=context.get("model") or get_settings().llm.model,
@@ -119,7 +109,7 @@ def record_llm_validation_error(*, errors: list[str], model_output: object) -> N
         run_id=context.get("run_id"),
         dataset_id=context.get("dataset_id"),
         task_id=context.get("task_id"),
-        agent=context.get("agent", "deepseek"),
+        agent=context.get("agent"),
         operation=context.get("operation", "llm"),
         component=context.get("component"),
         model=context.get("model") or get_settings().llm.model,

@@ -9,27 +9,23 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from medbenchagent.audit.answer_balance import balance_jsonl
-
 InputFunction = Callable[[str], str]
 OutputFunction = Callable[[str], None]
 
 _NODE_LABELS = {
-    "run_initialize": "initialize run directory",
     "SupervisorAgent": "coordinate benchmark construction",
     "TaskPlanningAgent": "plan dataset and tasks",
     "DataProcessingAgent": "prepare raw data",
+    "AllocationAgent": "allocate benchmark samples",
     "GenerationAgent": "generate benchmark",
-    "generation_summary": "summarize generation",
-    "AuditAgent": "audit benchmark",
-    "run_finalize": "finalize run artifacts",
+    "generation_initialize": "initialize generation",
+    "generation_finalize": "finalize generation",
 }
 
 _ARTIFACT_PATH_KEYS = {
     "working_blueprint_path",
     "effective_config_path",
     "construction_events_path",
-    "task_screening_report_path",
     "raw_output_path",
     "manifest_path",
 }
@@ -94,10 +90,10 @@ def _print_json(value: object, output: OutputFunction) -> None:
 
 
 def _interrupt_question(payload: dict[str, Any]) -> str:
-    question = payload.get("question")
+    question = payload.get("question") if isinstance(payload, dict) else None
     if isinstance(question, str) and question.strip():
         return question.strip()
-    return "Your confirmation is required."
+    raise ValueError("Clarification interrupt requires a nonempty question")
 
 
 def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
@@ -110,35 +106,30 @@ def _render_interrupt(payload: dict[str, Any], output: OutputFunction) -> None:
 
 
 def _interrupt_payload(value: object) -> dict[str, Any] | None:
-    if isinstance(value, dict):
-        interrupts = value.get("__interrupt__")
-        if isinstance(interrupts, (tuple, list)) and interrupts:
-            payload = getattr(interrupts[0], "value", None)
-            if isinstance(payload, dict):
-                return payload
-        for nested in value.values():
-            if payload := _interrupt_payload(nested):
-                return payload
-    elif isinstance(value, (tuple, list)):
-        for nested in value:
-            if payload := _interrupt_payload(nested):
-                return payload
-    return None
+    from langgraph.types import Interrupt
+
+    if not isinstance(value, dict):
+        raise ValueError("Updates payload must be a dictionary")
+    if "__interrupt__" not in value:
+        return None
+    interrupts = value["__interrupt__"]
+    if not isinstance(interrupts, tuple) or not all(isinstance(item, Interrupt) for item in interrupts):
+        raise ValueError("Expected a tuple of LangGraph Interrupt objects")
+    if not interrupts:
+        return None
+    payload = interrupts[0].value
+    _interrupt_question(payload)
+    return payload
 
 
 def _event_parts(event: object) -> tuple[tuple[str, ...], str, object]:
     if isinstance(event, tuple) and len(event) == 3:
         namespace, mode, payload = event
-        if isinstance(namespace, tuple) and isinstance(mode, str):
+        if (isinstance(namespace, tuple) and all(isinstance(part, str) for part in namespace)
+                and isinstance(mode, str) and mode in {"tasks", "updates", "custom"}
+                and isinstance(payload, dict)):
             return namespace, mode, payload
-    return (), "updates", event
-
-
-def _node_name(namespace: tuple[str, ...], payload: object) -> str:
-    names = [part.split(":", 1)[0] for part in namespace]
-    if isinstance(payload, dict):
-        names.extend(key for key in payload if key != "__interrupt__")
-    return " / ".join(names)
+    raise ValueError("Expected stream event (namespace, tasks|updates|custom, dictionary payload)")
 
 
 def _render_artifact_paths(payload: object, output: OutputFunction) -> None:
@@ -161,41 +152,35 @@ def _render_artifact_paths(payload: object, output: OutputFunction) -> None:
         output(f"[artifact] {key}: {path}")
 
 
-def _render_update(namespace: tuple[str, ...], payload: object, output: OutputFunction) -> None:
+def _render_update(payload: object, output: OutputFunction) -> None:
     _render_artifact_paths(payload, output)
     if interrupt := _interrupt_payload(payload):
         output(f"[waiting] {_interrupt_question(interrupt)}")
-        return
-    name = _node_name(namespace, payload)
-    if not name or any(part in name for part in ("generation_step",)):
-        return
-    leaf = name.rsplit(" / ", 1)[-1]
-    output(f"[done] {_NODE_LABELS.get(leaf, name)}")
 
 
 def _render_task(namespace: tuple[str, ...], payload: object, output: OutputFunction) -> None:
-    if not isinstance(payload, dict) or "input" not in payload:
-        return
+    if not isinstance(payload, dict):
+        raise ValueError("Tasks payload must be a dictionary")
     task_name = payload.get("name")
-    if not isinstance(task_name, str):
-        return
+    if not isinstance(task_name, str) or not task_name:
+        raise ValueError("Task event requires a name")
+    if "input" in payload:
+        status = "start"
+    elif "result" in payload:
+        status = "failed" if payload.get("error") else "waiting" if payload.get("interrupts") else "done"
+    else:
+        raise ValueError("Task event requires input or result")
     names = [part.split(":", 1)[0] for part in namespace] + [task_name]
     name = " / ".join(names)
     if any(part in name for part in ("generation_step",)):
         return
-    output(f"[start] {_NODE_LABELS.get(task_name, name)}")
+    output(f"[{status}] {_NODE_LABELS.get(task_name, name)}")
 
 
 def _render_progress(payload: object, output: OutputFunction) -> None:
     if not isinstance(payload, dict):
         return
-    if payload.get("kind") == "rag_progress":
-        output(
-            f"[RAG] {payload.get('task_id')}: "
-            f"{payload.get('completed')}/{payload.get('total')}, "
-            f"remaining={payload.get('remaining')}"
-        )
-    elif payload.get("kind") == "generation_progress":
+    if payload.get("kind") == "generation_progress":
         output(
             f"[generation] stage={payload.get('stage') or 'complete'} "
             f"cursor={payload.get('cursor')} "
@@ -280,18 +265,6 @@ def _announce_run(values: object, output: OutputFunction) -> str | None:
     return run_directory
 
 
-def _run_directory(graph: object, config: dict[str, Any] | None) -> str | None:
-    if graph is None or config is None:
-        return None
-    try:
-        snapshot = graph.get_state(config)
-    except Exception:
-        return None
-    values = getattr(snapshot, "values", None)
-    path = values.get("run_directory") if isinstance(values, dict) else None
-    return path if isinstance(path, str) and path else None
-
-
 def run_interactive_build(
     *,
     input_fn: InputFunction = input,
@@ -308,6 +281,8 @@ def run_interactive_build(
     config: dict[str, Any] | None = None
     checkpoint_connection = None
     announced_run_directory: str | None = None
+    known_run_directory = experiment.get("run_directory") if experiment else None
+    previous = None
     interrupted = False
     failed = False
     from medbenchagent.runtime.experiments import update_experiment, snapshot_updates
@@ -349,6 +324,7 @@ def run_interactive_build(
         output(f"Experiment: {experiment['name']}" if experiment else f"Resume identifier: {config['configurable']['thread_id']}")
         if experiment:
             previous = graph.get_state(config)
+            known_run_directory = previous.values.get("run_directory") or known_run_directory
             dataset_id = experiment["dataset_id"]
             dataset_ids = experiment["requested_dataset_ids"]
             if previous.values:
@@ -361,7 +337,9 @@ def run_interactive_build(
                               "requested_dataset_ids": dataset_ids,
                               "entry_intent": "prepare_dataset" if dataset_id else None if experiment else "build_benchmark"}
         if resume:
-            previous = graph.get_state(config)
+            if previous is None:
+                previous = graph.get_state(config)
+            known_run_directory = previous.values.get("run_directory") or known_run_directory
             if not previous.values:
                 raise ValueError("Unknown resume identifier")
             if not experiment and previous.values.get("context", {}).get("prepare_dataset_id") != dataset_id:
@@ -397,10 +375,16 @@ def run_interactive_build(
                 elif mode == "tasks":
                     _render_task(namespace, payload, output)
                 else:
-                    _render_update(namespace, payload, output)
+                    if not namespace:
+                        initialized = payload.get("initialize")
+                        if isinstance(initialized, dict) and initialized.get("run_directory"):
+                            known_run_directory = initialized["run_directory"]
+                            announced_run_directory = _announce_run(initialized, output)
+                    _render_update(payload, output)
                     interrupt = interrupt or _interrupt_payload(payload)
 
             snapshot = graph.get_state(config)
+            known_run_directory = snapshot.values.get("run_directory") or known_run_directory
             if experiment:
                 update_experiment(settings.paths.runs_root, experiment["name"], **snapshot_updates(snapshot))
             current_run_directory = snapshot.values.get("run_directory")
@@ -426,8 +410,8 @@ def run_interactive_build(
         command = f"prepare --dataset-id {dataset_id}" if dataset_id else "build"
         recovery = f"experiment {experiment['name']}" if experiment else f"{command} --resume <resume identifier>"
         output(f"Run interrupted. Resume with: medbenchagent {recovery}.")
-        if run_directory := _run_directory(graph, config):
-            output(f"Preserved run artifacts: {run_directory}")
+        if known_run_directory:
+            output(f"Preserved run artifacts: {known_run_directory}")
         return 130
     except Exception as exc:
         failed = True
@@ -436,16 +420,24 @@ def run_interactive_build(
         command = f"prepare --dataset-id {dataset_id}" if dataset_id else "build"
         recovery = f"experiment {experiment['name']}" if experiment else f"{command} --resume <resume identifier>"
         output(f"Files and checkpoints are preserved. Use {recovery}.")
-        if run_directory := _run_directory(graph, config):
-            output(f"Preserved run artifacts: {run_directory}")
+        if known_run_directory:
+            output(f"Preserved run artifacts: {known_run_directory}")
         return 1
     finally:
         if experiment and settings is not None:
+            updates = {"status": "interrupted"} if interrupted or failed else {}
+            if graph is not None and config:
+                try:
+                    updates = snapshot_updates(graph.get_state(config), interrupted=interrupted or failed)
+                except Exception as exc:
+                    # Diagnostics at the CLI boundary must preserve the original exit status.
+                    output(f"Could not read checkpoint for experiment status: {type(exc).__name__}: {exc}")
+            if known_run_directory:
+                updates["run_directory"] = known_run_directory
             try:
-                updates = snapshot_updates(graph.get_state(config), interrupted=interrupted or failed) if graph is not None and config else {"status": "interrupted" if interrupted or failed else "created"}
                 update_experiment(settings.paths.runs_root, experiment["name"], **updates)
-            except (OSError, ValueError, RuntimeError) as exc:
-                output(f"Could not update experiment registry: {exc}")
+            except Exception as exc:
+                output(f"Could not update experiment registry: {type(exc).__name__}: {exc}")
         if checkpoint_connection is not None:
             checkpoint_connection.close()
 
@@ -513,10 +505,6 @@ def _parser() -> argparse.ArgumentParser:
     register.add_argument("--bundle", required=True)
     refresh = subcommands.add_parser("refresh-card", help="Refresh dataset metadata without re-preparing data.")
     refresh.add_argument("--dataset-id", required=True)
-    balance = subcommands.add_parser("balance-answers", help="Write a balanced JSONL copy.")
-    balance.add_argument("--input", required=True, dest="input_path")
-    balance.add_argument("--output", required=True, dest="output_path")
-    balance.add_argument("--seed", type=int, default=0)
     return parser
 
 
@@ -546,8 +534,5 @@ def main() -> None:
         exit_code = run_interactive_build(resume=args.resume, dataset_ids=args.dataset_ids)
         if exit_code:
             raise SystemExit(exit_code)
-        return
-    if args.command == "balance-answers":
-        print(balance_jsonl(args.input_path, args.output_path, args.seed))
         return
     parser.print_help()

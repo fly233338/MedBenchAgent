@@ -62,7 +62,7 @@ def _project_value(value: object, segments: list[str]) -> object:
 
 
 def is_supporting_field_path(path: object) -> bool:
-    """Return whether a path belongs to one task-supporting v2 scope."""
+    """Return whether a path belongs to one canonical task-supporting entity scope."""
     return isinstance(path, str) and (
         path in {"image.modality", "image.anatomy"}
         or any(
@@ -80,7 +80,7 @@ def is_supporting_field_path(path: object) -> bool:
 def project_supporting_record(
     record: dict[str, Any], supporting_fields: list[str]
 ) -> dict[str, Any]:
-    """Project approved v2 record paths while retaining array source indices."""
+    """Project approved canonical entity field paths while retaining array source indices."""
     projected: object = {}
     for path in supporting_fields:
         if not is_supporting_field_path(path):
@@ -116,9 +116,9 @@ def image_modality(candidate: Any) -> str:
 
 
 def evidence_value(record: dict[str, object], path: str, indices: list[int]) -> object:
-    """Resolve one scalar v2 record value using source indices for wildcard segments."""
+    """Resolve one scalar canonical record value using source indices for wildcard segments."""
     if not is_supporting_field_path(path):
-        raise ValueError("Evidence path must be one supported v2 entity field path.")
+        raise ValueError("Evidence path must be one supported canonical entity field path.")
     segments = path.split(".")
     if len(indices) != sum(segment.endswith("[*]") for segment in segments):
         raise ValueError("Evidence indices must match the path wildcards.")
@@ -155,7 +155,7 @@ def evidence_value(record: dict[str, object], path: str, indices: list[int]) -> 
 
 def _evidence_candidates(record: dict[str, object], path: str) -> list[dict[str, object]]:
     if not is_supporting_field_path(path):
-        raise ValueError("Evidence path must be one supported v2 entity field path.")
+        raise ValueError("Evidence path must be one supported canonical entity field path.")
     segments = path.split(".")
     index_sets: list[list[int]] = []
 
