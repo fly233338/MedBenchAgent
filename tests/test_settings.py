@@ -62,3 +62,32 @@ def test_initialize_run_writes_secret_free_effective_configuration(tmp_path: Pat
     assert snapshot["settings"]["generation"]["seed"] == 9
     assert snapshot["settings"]["generation"]["question_temperature"] == 0.2
     assert "not-in-snapshot" not in json.dumps(snapshot)
+
+
+def test_source_settings_normalize_paths_and_resume_snapshot(tmp_path, monkeypatch):
+    from medbenchagent.settings import run_settings
+    monkeypatch.setattr("medbenchagent.settings.PROJECT_ROOT", tmp_path)
+    local = tmp_path / "sources.toml"
+    local.write_text("[[dataset_sources]]\ndataset_id='ecd'\nname='ECD'\ndescription='Original dataset'\n"
+                     "[[dataset_sources.sources]]\nid='images'\nroot='raw/ecd'\n", encoding="utf-8")
+    cfg = load_settings(local)
+    assert cfg.dataset_sources[0]["sources"][0]["root"] == str(tmp_path / "raw/ecd")
+    run = initialize_run(tmp_path / "runs", settings=cfg)
+    local.write_text("dataset_sources=[]\n", encoding="utf-8")
+    with run_settings(run["effective_config_path"]) as saved:
+        assert saved.dataset_sources == cfg.dataset_sources
+
+
+@pytest.mark.parametrize("text,match", [
+    ("[[dataset_sources]]\ndataset_id='a'\nname='A'\ndescription='Data'\nsources=[]\n", "at least 1"),
+    ("[[dataset_sources]]\ndataset_id='A/b'\nname='A'\ndescription='Data'\nsources=[]\n", "unsafe id"),
+    ("[[dataset_sources]]\ndataset_id='a'\nname='A'\ndescription='Data'\n"
+     "sources=[{id='x',root='raw'}, {id='x',root='raw2'}]\n", "Source IDs must be unique"),
+    (("[[dataset_sources]]\ndataset_id='a'\nname='A'\ndescription='Data'\nsources=[{id='x',root='raw'}]\n") * 2,
+     "Duplicate dataset_sources"),
+])
+def test_invalid_source_configuration(tmp_path, text, match):
+    local = tmp_path / "sources.toml"
+    local.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        load_settings(local)

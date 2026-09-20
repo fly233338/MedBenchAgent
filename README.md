@@ -76,8 +76,14 @@ uv run medbenchagent build --dataset breast-us --dataset busbra
 uv run medbenchagent experiment new selected-pilot --dataset breast-us --dataset busbra
 ```
 
-`prepare` asks for a natural-language description of source directories, annotation files and preparation
-requirements. Image and label files belonging to ONE dataset may be associated; independent datasets
+Register raw inputs in `[[dataset_sources]]` in your config, with `dataset_id`, `name`, `description` and
+`[[dataset_sources.sources]]` entries (`id`, `root`, `kind`, `annotation`, optional `version`); see
+`config/local.toml.example`. Relative roots resolve from the project root. `prepare` takes natural-language
+preparation requirements; paths are read from config, never supplied by the model. Valid registered data
+is reused by default even if its original raw sources are unavailable. Explicitly request rebuilding to
+prepare a new version. Disabled or broken registered datasets require repair or explicit rebuilding.
+Supervisor can page datasets and inspect readiness without modifying them.
+Image and label files belonging to ONE dataset may be associated; independent datasets
 must use separate IDs and preparation runs. The agent inspects evidence, saves typed operations,
 normalizes images, validates the bundle, creates its Card, then updates the registry. `register` accepts
 an already complete bundle with its Card. Failures do not replace the previous registered version.

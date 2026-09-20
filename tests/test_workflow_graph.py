@@ -12,7 +12,7 @@ def test_intent_gates_preparation_and_benchmark_stages(tmp_path):
     from medbenchagent.workflow.graph import set_intent, available_stages
     from medbenchagent.runtime.dependencies import publish
     context = {"run_directory": str(tmp_path)}
-    assert available_stages(context) == {"set_intent", "ask_user"}
+    assert available_stages(context) == {"set_intent", "ask_user", "list_datasets", "inspect_dataset_status"}
     context.update(set_intent(context, intent="prepare_dataset", prepare_dataset_ids=["new"])["updates"])
     assert "prepare_data" in available_stages(context)
     assert "specify" not in available_stages(context)

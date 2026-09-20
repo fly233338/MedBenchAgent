@@ -25,6 +25,8 @@ def validate_dataset_id(value):
 
 def load_dataset_catalog(catalog_path=None):
     path = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
+    if not path.exists():
+        return []
     try:
         catalog = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:

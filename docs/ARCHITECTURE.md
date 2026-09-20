@@ -23,10 +23,17 @@ dataset_readiness 和 outstanding_work 从当前有效 artifacts 推导；仅准
 
 ## 准备、Card 与 Catalog
 
-`prepare --dataset-id <id>` 通过自然语言来源描述进入 Supervisor，后者只准备这一逻辑数据集；
+`prepare --dataset-id <id>` 通过自然语言准备要求进入 Supervisor，后者只准备这一逻辑数据集；
 支持 `--resume`。`register --dataset-id <id> --bundle <path>` 验证并登记已有完整 bundle。
 构建时也可以显式准备新数据集。准备版本位于 `paths.prepared_datasets_root/<dataset_id>/<version>`，
 默认根目录 datasets/Prepared。准备失败不替换已登记版本。
+
+原始来源在 config 的 dataset_sources 中按 dataset_id、name、description、sources 登记，sources 复用
+Source 契约，root 按项目根目录解析并写入运行配置快照。描述仅用于候选发现，不作为字段语义证据。
+Supervisor 的 list_datasets/inspect_dataset_status 只读观察 Catalog、来源和有效性，不发布数据。
+prepare_data 只接收 dataset_id、mode 和 feedback；代码解析配置来源。默认 reuse_or_prepare 冻结并核验
+已有 Card，绑定有效 prepared 版本；原始路径不可用不阻止复用。显式 rebuild 创建新版本；禁用或损坏
+的注册项不得被普通准备静默覆盖。缺失 Catalog 文件视为空，已有但格式损坏的 Catalog 明确报错。
 
 每个 Source 有独立 Inventory、PreparationPlan、Annotation、ImageInventory/ImagePlan 和 NormalizedSource。
 PreparationPlan 保存语义依据及顺序算子；不引入第二套 DAG 或表达式语言。CSV 保留字符串 ID，join 显式
@@ -60,7 +67,7 @@ Card 生成仅接收 Profile 和该准备元数据，绝不接收 benchmark user
 
 Catalog 条目保存 dataset_id、name、description、available 和 annotation_path、image_manifest_path、
 profile_path、dataset_card_path。普通构建不自动准备整个候选目录；缺少标准准备数据使用 prepare，已准备
-但缺少/仍使用 v1 Card 的数据使用 refresh-card。显式指定优先、单候选直选、多候选高召回选择。
+但缺少/仍使用 v1 Card 的数据使用 refresh-card。显式指定优先；其余候选即使只有一个也经过相关性选择。
 CLI 可重复 --dataset 直接给出 ID，绕过模型名称解析及推荐。Selection 只负责高召回 shortlist，
 不提前证明任务可执行。新准备数据发布 PreparedCandidates 版本，使旧 Selection 及其下游失效；
 新选择操作读取当前 Catalog 并冻结新快照，同一操作恢复保留原快照。
@@ -164,7 +171,7 @@ LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete�
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v8；
+SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v9；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 ## 生成、审计与导出

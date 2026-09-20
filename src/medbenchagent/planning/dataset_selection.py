@@ -100,7 +100,7 @@ def _candidate_snapshot(context, path):
                               "original_card_path": str(original), "entry": frozen_entry, "access": access}
     order = list(frozen)
     snapshot.update(candidates=frozen, candidate_order=order, excluded_candidates=excluded,
-                    selection_method="explicit" if requested is not None else "only_candidate" if len(order) == 1 else "model" if order else "no_candidates",
+                    selection_method="explicit" if requested is not None else "model" if order else "no_candidates",
                     selection_input={"requirement": snapshot["requirement"], "benchmark_info": snapshot["benchmark_info"],
                                      "cards": [frozen[k]["summary"] for k in order]})
     atomic_write_json(path, snapshot)
@@ -123,9 +123,9 @@ def select_datasets(context):
         method = snapshot["selection_method"]
         if method == "no_candidates":
             response = {"selected_dataset_ids": [], "selection_reason": {}}
-        elif method in {"explicit", "only_candidate"}:
+        elif method == "explicit":
             response = {"selected_dataset_ids": candidates,
-                        "selection_reason": {k: "Explicitly requested" if method == "explicit" else "Only prepared candidate" for k in candidates}}
+                        "selection_reason": {k: "Explicitly requested" for k in candidates}}
         else:
             response = complete_json(
                 "Select relevant medical datasets with high recall; selection only authorizes deeper task planning, "

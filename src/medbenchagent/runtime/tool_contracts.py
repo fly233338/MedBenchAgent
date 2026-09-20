@@ -3,7 +3,6 @@
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
-from medbenchagent.data.contracts import SourcesArguments
 
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -53,8 +52,9 @@ class RunIntent(NoArguments):
 
 
 
-class PrepareDataArguments(SourcesArguments):
-    pass
+class PrepareDataArguments(FeedbackArguments):
+    dataset_id: DatasetId
+    mode: Literal["reuse_or_prepare", "rebuild"] = "reuse_or_prepare"
 
 
 class MaterialsArguments(NoArguments):

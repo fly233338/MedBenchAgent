@@ -82,6 +82,7 @@ class AppSettings:
     rag: RagSettings
     generation: GenerationSettings
     dataset_profile: DatasetProfileSettings
+    dataset_sources: tuple[dict[str, Any], ...]
     default_config_path: Path
     local_config_path: Path | None
     environment_overrides: tuple[str, ...]
@@ -97,6 +98,7 @@ class AppSettings:
                 generation[key] = normalized_overrides[key]
         return {
             "settings": {
+                "dataset_sources": list(self.dataset_sources),
                 "harness": self.harness,
                 "data_processing": self.data_processing,
                 "paths": {key: str(getattr(self.paths, key)) for key in self.paths.__dataclass_fields__},
@@ -217,6 +219,29 @@ def _number(value: object, key: str, *, minimum: float, maximum: float) -> float
 
 
 
+def _dataset_sources(values: object) -> tuple[dict[str, Any], ...]:
+    from medbenchagent.data.contracts import SourcesArguments
+    from medbenchagent.data.dataset_catalog import validate_dataset_id
+
+    if not isinstance(values, list):
+        raise ValueError("dataset_sources must be an array of tables")
+    entries, seen = [], set()
+    for item in values:
+        if not isinstance(item, dict) or set(item) != {"dataset_id", "name", "description", "sources"}:
+            raise ValueError("dataset_sources entries require dataset_id, name, description and sources")
+        identifier = validate_dataset_id(item["dataset_id"])
+        if identifier in seen:
+            raise ValueError(f"Duplicate dataset_sources dataset_id: {identifier}")
+        seen.add(identifier)
+        parsed = SourcesArguments.model_validate({"dataset_id": identifier, "sources": item["sources"]})
+        sources = [source.model_dump() for source in parsed.sources]
+        for source in sources:
+            source["root"] = str(_resolve_path(source["root"], f"dataset_sources.{identifier}.{source['id']}.root"))
+        entries.append({"dataset_id": identifier, "name": _string(item["name"], "dataset_sources.name"),
+                        "description": _string(item["description"], "dataset_sources.description"), "sources": sources})
+    return tuple(entries)
+
+
 def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path | None, env_keys: list[str]) -> AppSettings:
     paths = values["paths"]
     llm = values["llm"]
@@ -232,6 +257,7 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     if backend not in {"auto", "docker", "local"}:
         raise ValueError("data_processing.backend must be auto, docker, or local")
     return AppSettings(
+        dataset_sources=_dataset_sources(values["dataset_sources"]),
         harness={key: _integer(value, f"harness.{key}", minimum=1) for key, value in values["harness"].items()},
         data_processing={"backend": backend, "image": _string(values["data_processing"]["image"], "data_processing.image"),
                          "memory_limit": _string(values["data_processing"]["memory_limit"], "data_processing.memory_limit"),

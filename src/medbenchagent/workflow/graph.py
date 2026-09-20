@@ -12,7 +12,8 @@ from medbenchagent.agents.allocation import compile_allocation_agent
 from medbenchagent.planning.dataset_selection import select_datasets as run_selection
 from medbenchagent.planning.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
 from medbenchagent.runtime.harness import compile_agent, result
-from medbenchagent.runtime.tool_contracts import FeedbackArguments, PrepareDataArguments, DatasetId, DelegationArguments, RunIntent
+from medbenchagent.runtime.tool_contracts import FeedbackArguments, PrepareDataArguments, DatasetId, DelegationArguments, RunIntent, PageArguments, NoArguments
+from medbenchagent.data.readiness import list_datasets, inspect_dataset_status, dataset_status, configured_source, reuse_prepared
 from medbenchagent.runtime.run_artifacts import initialize_run, atomic_write_json
 from medbenchagent.runtime.run_export import export_benchmark
 from medbenchagent.settings import get_settings, run_settings
@@ -20,6 +21,10 @@ from medbenchagent.runtime.dependencies import publish, require, initialize_depe
 
 
 class DatasetArguments(FeedbackArguments):
+    dataset_id: DatasetId
+
+
+class DatasetStatusArguments(NoArguments):
     dataset_id: DatasetId
 
 
@@ -179,7 +184,7 @@ def preparation_pending(context):
 
 
 def available_stages(context):
-    tools = {"set_intent", "ask_user"}
+    tools = {"set_intent", "ask_user", "list_datasets", "inspect_dataset_status"}
     intent = context.get("run_intent")
     if not intent:
         return tools
@@ -233,24 +238,36 @@ def compile_benchmark_graph(*, checkpointer=None):
             outcome["updates"]["dataset_task_plans"] = {**context.get("dataset_task_plans", {}), dataset_id: output["context"]["working_blueprint_path"]}
         return outcome
 
-    def prepare_data(context, *, sources, dataset_id, feedback=""):
-        """Prepare/register ONE dataset; source files must belong to that same logical dataset."""
+    def prepare_data(context, *, dataset_id, mode="reuse_or_prepare", feedback=""):
+        """Reuse valid prepared data or prepare configured sources. Use rebuild only for an explicit user request."""
         from medbenchagent.agents.data_pipeline import initialize
         from medbenchagent.agents.data_processing import compile_data_processing_agent
         if dataset_id not in preparation_pending(context):
             raise ValueError("Dataset is not an outstanding preparation target; update run intent first")
+        status = dataset_status(context, dataset_id)
         saved = context.get("child_states", {}).get(dataset_id, {}).get("preparation")
+        if not saved and mode == "reuse_or_prepare":
+            if status["prepared"]:
+                return reuse_prepared(context, dataset_id)
+            if status["available"] is not None:
+                return result("blocked", "Existing dataset needs repair or explicit rebuild: " + "; ".join(status["issues"]))
+        if status["source_errors"]:
+            return result("blocked", "; ".join(status["source_errors"]))
+        sources = configured_source(dataset_id)["sources"]
         if saved:
             from medbenchagent.data.contracts import Source
             child = json.loads(Path(saved).read_text(encoding="utf-8"))
             if child["sources"] != [Source.model_validate(s).model_dump() for s in sources]:
                 raise ValueError("Preparation sources changed; start a new experiment")
+            if child["preparation_mode"] != mode:
+                raise ValueError("Preparation mode changed; resume with the original mode")
             child.update({k: context[k] for k in COMMON if k in context})
             child["operation_directory"] = context["operation_directory"]
         else:
             child = {k: context[k] for k in COMMON if k in context}
             child["operation_directory"] = context["operation_directory"]
             child = initialize(child, sources, dataset_id)
+            child["preparation_mode"] = mode
         child["feedback"] = feedback
         output = compile_data_processing_agent().invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "preparation", output)
@@ -315,6 +332,8 @@ def compile_benchmark_graph(*, checkpointer=None):
     supervisor = compile_agent("SupervisorAgent",
         "Coordinate the user's medical dataset preparation or benchmark construction. "
         "Set run intent from the request when absent; update it when the user adds preparation targets. "
+        "Observe list_datasets and inspect_dataset_status before preparation. Source paths come only from config; "
+        "never ask the user for paths or invent dataset IDs. Default to reuse_or_prepare; rebuild only when explicitly requested. "
         "Respect the entry intent. Prepare each outstanding logical dataset independently, never merge datasets. "
         "Preparation-only work finishes after all requested registrations; no benchmark brief is needed. "
         "For construction, extract benchmark-level scope, prepare requested new data, then select prepared datasets "
@@ -326,9 +345,11 @@ def compile_benchmark_graph(*, checkpointer=None):
         "Clarify global_issue through ask_user, then re-extract the complete brief. No routine confirmations. "
         "Finite exhaustion may finish with reported deficits; no automatic refill loop.",
         {"set_intent": set_intent, "specify": specify, "select_datasets": select_datasets,
+         "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
          "prepare_data": prepare_data, "plan": plan, "allocate": allocate, "generate": generate, "audit": audit},
         describe, finish, available_tools=available_stages,
         args_schemas={"set_intent": RunIntent, "prepare_data": PrepareDataArguments,
+                      "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
                       "plan": PlanningArguments, "allocate": DelegationArguments,
                       "generate": DatasetArguments, "audit": DatasetArguments})
 

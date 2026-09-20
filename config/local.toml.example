@@ -1,6 +1,17 @@
 # Copy this file to a location of your choice and set MEDBENCH_CONFIG to its path.
 # Values here override config/default.toml. Keep credentials in environment variables.
 
+# Optional raw sources. Prepared datasets continue to use paths.dataset_catalog.
+# [[dataset_sources]]
+# dataset_id = "example"
+# name = "Example dataset"
+# description = "Describe the actual dataset population and modality for discovery."
+# [[dataset_sources.sources]]
+# id = "original"
+# root = "D:/Data/example"
+# kind = "raw" # use annotation for existing canonical annotation.jsonl
+# annotation = "annotation.jsonl"
+
 [rag]
 embedding_model = "/path/to/Qwen3-Embedding-0.6B"
 reranker_model = "/path/to/Qwen3-Reranker-0.6B"

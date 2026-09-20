@@ -46,7 +46,8 @@ def test_explicit_ids_bypass_model_and_new_preparation_invalidates_selection(tmp
 def test_single_and_multiple_selection(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
     prepared_dataset(tmp_path, "a", monkeypatch)
-    monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: {"dataset_ids": None})
+    responses = iter([{"dataset_ids": None}, {"selected_dataset_ids": ["a"], "selection_reason": {"a": "Relevant"}}])
+    monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: next(responses))
     assert select_datasets(c)["updates"]["selected_dataset_ids"] == ["a"]
     prepared_dataset(tmp_path, "b", monkeypatch)
     c["operation_directory"] = str(tmp_path / "run/second-selection")
@@ -62,6 +63,17 @@ def test_no_related_candidates_requests_clarification(tmp_path, monkeypatch):
     responses = iter([{"dataset_ids": None}, {"selected_dataset_ids": [], "selection_reason": {}}])
     monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: next(responses))
     assert select_datasets(c)["status"] == "needs_input"
+
+
+def test_only_candidate_must_be_relevant(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    prepared_dataset(tmp_path, "a", monkeypatch)
+    responses = iter([{"dataset_ids": None}, {"selected_dataset_ids": [], "selection_reason": {}}])
+    monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: next(responses))
+    outcome = select_datasets(c)
+    assert outcome["status"] == "needs_input"
+    snapshot = json.loads(Path(outcome["updates"]["candidate_snapshot_path"]).read_text(encoding="utf-8"))
+    assert snapshot["selection_method"] == "model"
 
 
 def test_snapshot_preserves_rejected_candidates_and_replays_without_live_cards(tmp_path, monkeypatch):

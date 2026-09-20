@@ -11,7 +11,9 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
     cfg = settings.get_settings()
     cfg = replace(cfg, paths=replace(cfg.paths, dataset_catalog=tmp_path / "catalog.json",
                                     prepared_datasets_root=tmp_path / "prepared", runs_root=tmp_path / "runs"),
-                  data_processing={**cfg.data_processing, "backend": "local"})
+                  data_processing={**cfg.data_processing, "backend": "local"},
+                  dataset_sources=({"dataset_id": "new", "name": "New", "description": "Status annotations",
+                                    "sources": [{"id": "source", "kind": "annotation", "root": str(tmp_path / "input/source")} ]},))
     monkeypatch.setattr(settings, "_SETTINGS", cfg)
     prepared_dataset(tmp_path, "input", monkeypatch)
     card_prompts = []
@@ -23,7 +25,7 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
         return {"description": "Dataset facts from Profile"}
     monkeypatch.setattr("medbenchagent.data.dataset_card.complete_json", card_model)
     actions = iter([
-        ("prepare_data", {"dataset_id": "new", "sources": [{"id": "source", "kind": "annotation", "root": str(tmp_path / "input/source")}]}),
+        ("prepare_data", {"dataset_id": "new"}),
         ("select_source", {"source_id": "source"}), ("inspect_images", {}),
         ("save_image_plan", {"overrides": {}}), ("normalize_images", {}),
         ("save_harmonization", {"plan": {}}), ("finish", {}), ("finish", {})])
