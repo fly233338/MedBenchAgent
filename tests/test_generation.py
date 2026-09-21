@@ -414,10 +414,8 @@ def test_stage_progress_is_resumed_and_cleaned_only_after_raw_merge(tmp_path: Pa
     request = _request(tmp_path, [_record(0, {"status": "benign"})], {"vqa": task}, 1)
     output_dir = Path(request["output_directory"])
     output_dir.mkdir(parents=True)
-    progress = output_dir / "benchmark_items.vqa.progress.jsonl"
-    progress.write_text(
-        json.dumps(
-            {
+    progress = output_dir / "generation-progress.sqlite"
+    generation._merge_progress(output_dir, 0, [{
                 "id": "existing",
                 "task_id": "vqa",
                 "dataset": "test-dataset",
@@ -426,16 +424,27 @@ def test_stage_progress_is_resumed_and_cleaned_only_after_raw_merge(tmp_path: Pa
                 "question": "Which status?",
                 "options": ["benign", "malignant"],
                 "answer": "A",
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+            }], {"vqa": 0})
     state = generation.initialize_generation(request)
     assert generation.generation_done(state)
     result = generation.finalize_generation(request)
     assert _read_items(result.raw_output_path)[0]["id"] == "existing"
     assert not progress.exists()
+
+
+@pytest.mark.parametrize("limit,expected", [(None, 3), (1, 1)])
+def test_total_image_limit_across_formats_survives_replay(tmp_path, limit, expected):
+    tasks = {fmt: _task(fmt, [field], sample_count=1) for fmt, field in
+             [("letter", "image.annotation.status"), ("bbox", "image.annotation.bbox[*]"), ("free_text", "image.annotation.report")]}
+    request = _request(tmp_path, [_record(0, {"status": "benign", "bbox": [0, 0, 2, 2], "report": "Reference"})], tasks, 3)
+    request.update(max_tasks_per_image=1, max_total_tasks_per_image=limit)
+    before = generation.initialize_generation(request)
+    generation.advance_generation(request, before)
+    # Replay with the pre-write checkpoint after an item transaction committed.
+    generation.advance_generation(request, before)
+    result = generation.generate_raw_benchmark(request)
+    assert result.item_count == expected
+    assert len({row["id"] for row in _read_items(result.raw_output_path)}) == expected
 
 
 def _grounding(protocol):

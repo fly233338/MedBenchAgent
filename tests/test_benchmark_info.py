@@ -95,3 +95,25 @@ def test_missing_language_gates_repeated_specify_until_answer(tmp_path, monkeypa
         specify(c)
     c["user_requirement"] += "\nEnglish"
     assert "specify" in available_stages(c)
+
+
+@pytest.mark.parametrize("limit,expected", [(None, 3), (1, 1)])
+def test_scope_and_explicit_total_limit_are_execution_requirements(tmp_path, monkeypatch, limit, expected):
+    from medbenchagent.workflow.graph import specify
+    from medbenchagent.runtime.dependencies import require
+    answer = {"clinical_scope": "Breast", "language": "en", "sample_count": 6, "modalities": ["US"],
+              "sample_scope": [{"id": "us", "kind": "modality", "description": "US only", "quote": "US"}],
+              "max_total_tasks_per_image": limit}
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: answer)
+    c = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "op"),
+         "user_requirement": "US pathology benchmark", "configured_total_tasks_per_image": 3}
+    updates = specify(c)["updates"]
+    c.update(updates)
+    assert c["max_total_tasks_per_image"] == expected
+    assert "sample_scope" not in c["benchmark_info"]
+    assert require(c, "GenerationConfig")["GenerationConfig"]["references"]["max_total_tasks_per_image"] == expected
+    assert require(c, "Requirement")["Requirement"]["references"]["sample_scope"] == answer["sample_scope"]
+    c["user_requirement"] += " corrected"
+    answer["sample_scope"] = []
+    with pytest.raises(ValueError, match="modalities"):
+        specify(c)

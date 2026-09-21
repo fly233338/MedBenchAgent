@@ -31,6 +31,16 @@ class DatasetQuery:
     def _connect(self):
         return duckdb.connect(self.access["duckdb_path"], read_only=True)
 
+    def records(self, image_ids):
+        """Fetch only a bounded batch of referenced canonical records."""
+        if len(image_ids) > 512 or any(not isinstance(key, str) for key in image_ids):
+            raise ValueError("Record lookup requires at most 512 string image IDs")
+        if not image_ids:
+            return {}
+        with self._connect() as db:
+            rows = db.execute("SELECT image_id,record FROM images WHERE image_id IN (SELECT unnest(?))", [image_ids]).fetchall()
+        return {key: json.loads(payload) for key, payload in rows}
+
     def values(self, field, offset=0, limit=20, source_id=None):
         if offset < 0 or not 1 <= limit <= 1000:
             raise ValueError("Invalid query page")

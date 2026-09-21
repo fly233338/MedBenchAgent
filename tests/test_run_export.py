@@ -9,6 +9,7 @@ from medbenchagent.audit.hard import read_json, read_rows, write_rows
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.planning.protocol import template_specification
+from medbenchagent.data.dataset_catalog import load_prepared
 from test_dataset_cards import prepared_dataset
 from test_generation import _task, _grounding
 
@@ -25,7 +26,8 @@ def export_context(tmp_path, monkeypatch, datasets=("a",)):
     counts = {}
     for dataset in datasets:
         entry = prepared_dataset(tmp_path, dataset, monkeypatch)
-        c["dataset_assets"][dataset] = {"entry": entry}
+        _, access = load_prepared(entry)
+        c["dataset_assets"][dataset] = {"entry": entry, "access": access}
         leaf = _task("letter", ["image.annotation.status"])
         leaf.pop("question_templates")
         leaf.update(eligible_count=2, concept_id="core", mapping_grounding=_grounding(leaf["protocol"]))

@@ -65,6 +65,7 @@ class GenerationSettings:
     question_temperature: float
     fetch_batch_size: int
     question_template_count: int
+    max_total_tasks_per_image: int | None = None
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,7 @@ class AppSettings:
         generation = {
             key: getattr(self.generation, key) for key in self.generation.__dataclass_fields__
         }
-        for key in ("seed", "max_tasks_per_image", "question_temperature"):
+        for key in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature"):
             if key in normalized_overrides:
                 generation[key] = normalized_overrides[key]
         return {
@@ -297,6 +298,8 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
         generation=GenerationSettings(
             seed=_integer(generation["seed"], "generation.seed", minimum=0),
             max_tasks_per_image=_integer(generation["max_tasks_per_image"], "generation.max_tasks_per_image", minimum=1),
+            max_total_tasks_per_image=(_integer(generation["max_total_tasks_per_image"], "generation.max_total_tasks_per_image", minimum=1)
+                                       if generation.get("max_total_tasks_per_image") is not None else None),
             question_temperature=_number(generation["question_temperature"], "generation.question_temperature", minimum=0, maximum=2),
             fetch_batch_size=_integer(generation["fetch_batch_size"], "generation.fetch_batch_size", minimum=1),
             question_template_count=_integer(

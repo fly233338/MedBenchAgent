@@ -24,4 +24,6 @@ def test_resolution_closes_saved_origin_and_only_invalidates_changed_requirement
     assert child["decisions"][key] == "0 means benign"
     assert inject_answers(context, {}, "TaskPlanningAgent", "b")["decisions"] == {}
     assert (context["artifact_versions"]["Requirement"] != before) == (kind == "requirement_change")
+    if kind == "requirement_change":
+        assert "What does 0 mean?" in context["user_requirement"]
     assert resolve_clarification(context, issue_id=key, kind=kind)["updates"] == {}

@@ -95,7 +95,7 @@ def inspect_dataset(context, *, dataset_id):
     entry = context["dataset_assets"][dataset_id]["entry"]
     checked = inspect_generation(dataset_id=dataset_id, raw_path=context["dataset_generations"][dataset_id]["raw_output_path"],
         plan_path=context["dataset_task_plans"][dataset_id], templates_path=context["dataset_templates"][dataset_id],
-        annotation_path=resolve_path(entry["annotation_path"]), manifest_path=resolve_path(entry["image_manifest_path"]),
+        dataset_access=context["dataset_assets"][dataset_id]["access"], manifest_path=resolve_path(entry["image_manifest_path"]),
         output_directory=Path(context["operation_directory"]) / dataset_id)
     summary = read_json(checked["report_path"])
     return result("success", json.dumps(summary, ensure_ascii=False),

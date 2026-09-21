@@ -35,6 +35,7 @@ class BenchmarkInputState(TypedDict, total=False):
     user_requirement: str
     seed: int
     max_tasks_per_image: int
+    max_total_tasks_per_image: int | None
     question_temperature: float
     prepare_dataset_id: str
     entry_intent: str
@@ -113,6 +114,9 @@ def specify(context):
         return result("success", "Brief needs clarification: " + ", ".join(missing), **updates)
     path = Path(context["operation_directory"]) / "blueprint.json"
     write_working_blueprint(info, path)
+    publish(context, "GenerationConfig", {"seed": context.get("seed", get_settings().generation.seed),
+            "max_tasks_per_image": context.get("max_tasks_per_image", get_settings().generation.max_tasks_per_image),
+            "max_total_tasks_per_image": updates["max_total_tasks_per_image"]}, ())
     return result("success", "Benchmark brief extracted", **updates,
                   working_blueprint_path=str(path),
                   **publish(context, "Requirement", {"path": str(path), "brief": info,
@@ -465,14 +469,14 @@ def compile_benchmark_graph(*, checkpointer=None):
                       "generate": DatasetStatusArguments, "prepare_templates": DatasetStatusArguments})
 
     def initialize(state):
-        overrides = {k: state[k] for k in ("seed", "max_tasks_per_image", "question_temperature") if k in state}
+        overrides = {k: state[k] for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature") if k in state}
         requirement = state.get("user_requirement") or next((getattr(m, "content", "") for m in reversed(convert_to_messages(state.get("messages", []))) if getattr(m, "type", "") == "human"), "")
         if not isinstance(requirement, str) or not requirement.strip():
             raise ValueError("A natural-language requirement is required")
         settings = get_settings()
         if errors := preflight_errors(settings, build=state.get("entry_intent") == "build_benchmark"):
             raise ValueError("Local preflight failed: " + "; ".join(errors))
-        defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "question_temperature")}
+        defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature")}
         run = initialize_run(graph_overrides=overrides)
         context = dict(run, **(defaults | overrides), user_requirement=requirement,
                        operation_directory=str(Path(run["run_directory"]) / ".runtime"), limits=settings.harness,
@@ -481,6 +485,7 @@ def compile_benchmark_graph(*, checkpointer=None):
                        prepare_dataset_id=state.get("prepare_dataset_id"),
                        entry_intent=state.get("entry_intent"),
                        requested_dataset_ids=state.get("requested_dataset_ids"))
+        context["configured_total_tasks_per_image"] = context["max_total_tasks_per_image"]
         if state.get("prepare_dataset_id"):
             context["entry_intent"] = "prepare_dataset"
             context["run_intent"] = RunIntent(intent="prepare_dataset", prepare_dataset_ids=[state["prepare_dataset_id"]]).model_dump()

@@ -22,6 +22,7 @@ def _settings(tmp_path: Path) -> SimpleNamespace:
         generation=SimpleNamespace(
             seed=17,
             max_tasks_per_image=2,
+            max_total_tasks_per_image=None,
             question_temperature=0.4,
         ),
         rag=SimpleNamespace(embedding_model=embedding, reranker_model=reranker),

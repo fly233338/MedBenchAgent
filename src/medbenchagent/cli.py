@@ -203,7 +203,8 @@ def _print_settings(settings: Any, output: OutputFunction) -> None:
     output(
         "Generation: "
         f"seed={settings.generation.seed}, "
-        f"max_tasks_per_image={settings.generation.max_tasks_per_image}, "
+        f"max_tasks_per_image={settings.generation.max_tasks_per_image} (per format), "
+        f"max_total_tasks_per_image={settings.generation.max_total_tasks_per_image}, "
         f"question_temperature={settings.generation.question_temperature}"
     )
     output(f"Embedding: {settings.rag.embedding_model}")

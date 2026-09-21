@@ -17,8 +17,8 @@ def _item(index: int, answer_value: str) -> dict:
 def test_balance_is_deterministic_and_preserves_answers_and_input() -> None:
     original = [_item(index, "benign" if index % 2 else "malignant") for index in range(7)]
     before = copy.deepcopy(original)
-    balanced = balance_items(original, seed=11)
-    assert balanced == balance_items(original, seed=11)
+    balanced = list(balance_items(iter(original), {"pathology": 7}, seed=11))
+    assert balanced == list(balance_items(iter(original), {"pathology": 7}, seed=11))
     assert original == before
     counts = Counter(item["answer"] for item in balanced)
     all_counts = [counts[letter] for letter in ("A", "B", "C")]
@@ -31,7 +31,7 @@ def test_balance_is_deterministic_and_preserves_answers_and_input() -> None:
 def test_balance_rejects_invalid_option_sets() -> None:
     items = [_item(1, "benign"), {**_item(2, "malignant"), "options": ["benign", "malignant", "other"]}]
     with pytest.raises(ValueError, match="same option collection"):
-        balance_items(items)
+        list(balance_items(iter(items), {"pathology": 2}))
 
 
 
@@ -47,4 +47,4 @@ def test_balance_passes_through_bbox_and_free_text_items() -> None:
         },
     ]
 
-    assert balance_items(records, seed=5) == records
+    assert list(balance_items(iter(records), {}, seed=5)) == records

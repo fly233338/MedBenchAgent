@@ -17,6 +17,7 @@ class GenerationAgentInputState(TypedDict, total=False):
     dataset_access_manifest: dict[str, Any]
     seed: int
     max_tasks_per_image: int
+    max_total_tasks_per_image: int | None
     question_temperature: float
 
 

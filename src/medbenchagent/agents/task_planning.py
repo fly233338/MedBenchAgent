@@ -649,10 +649,19 @@ def _validate_template_repair(context, tree):
             raise ValueError(f"{issue['leaf_id']}: problem not fixed; template specification is unchanged. {issue['reason']}")
 
 
+def _validate_scope_evidence(context, tree):
+    validate_scope_plan(tree, context.get("sample_scope", []))
+    conditions = [c for r in tree.get("scope_resolutions", []) for c in r["conditions"]]
+    fields = list(dict.fromkeys(c["field"] for c in conditions))
+    _subset(_profile(context), fields)
+    _validate_semantic_basis(context, {"data_binding": {"supporting_fields": fields}}, tree.get("scope_semantic_basis", []))
+    return fields
+
+
 def review_tree(context):
     """Review full mappings and source evidence; corrections consume persistent rework budget."""
     tree = _tree(context)
-    validate_scope_plan(tree, context.get("sample_scope", []))
+    scope_fields = _validate_scope_evidence(context, tree)
     _validate_template_repair(context, tree)
     if not concepts_complete(tree) or not tree["discovery_complete"]:
         raise ValueError("Finish concepts and extension discovery first")
@@ -691,6 +700,7 @@ def review_tree(context):
                 "sample_scope": context.get("sample_scope", []),
                 "scope_resolutions": tree.get("scope_resolutions", []),
                 "scope_semantic_basis": tree.get("scope_semantic_basis", []),
+                "scope_field_values": {field: DatasetQuery(context["dataset_access_manifest"]).values(field, limit=50) for field in scope_fields},
             },
             ensure_ascii=False,
         ),
@@ -721,7 +731,7 @@ def _review_result(context, tree, draft_path):
 def finish(context):
     """Publish the reviewed dataset-local Plan with exact capacities, including unsupported datasets."""
     tree = _tree(context)
-    validate_scope_plan(tree, context.get("sample_scope", []))
+    _validate_scope_evidence(context, tree)
     _validate_template_repair(context, tree)
     for leaf in tree["tasks"].values():
         leaf["eligible_count"] = validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
@@ -739,7 +749,9 @@ def finish(context):
     )
     return result(
         "complete",
-        "Plan published",
+        "Plan published" + ("; unsupported sample scope: " + "; ".join(
+            r["reason"] for r in tree.get("scope_resolutions", []) if r["status"] == "unsupported")
+            if any(r["status"] == "unsupported" for r in tree.get("scope_resolutions", [])) else ""),
         working_blueprint_path=str(path),
         readiness={"planning": True},
         artifacts={"plan": str(path)},

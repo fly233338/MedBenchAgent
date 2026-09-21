@@ -172,7 +172,7 @@ def initialize_dependencies(context, settings):
             "temperature": context["question_temperature"],
             "model": settings.llm.model,
         },
-        "GenerationConfig": {key: context[key] for key in ("seed", "max_tasks_per_image")},
+        "GenerationConfig": {key: context.get(key) for key in ("seed", "max_tasks_per_image", "max_total_tasks_per_image")},
         "FinalizationConfig": {"seed": context["seed"], "policy": "final-task.v1"},
     }
     for kind, value in configs.items():

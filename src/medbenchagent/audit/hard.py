@@ -7,10 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from medbenchagent.data.image_assets import load_image_manifest, validate_image_asset
-from medbenchagent.data.validation import load_annotation_jsonl
+from medbenchagent.data.image_assets import validate_image_asset
 from medbenchagent.generation.templates import render, validate_templates
-from medbenchagent.planning.protocol import Protocol, resolve_answer, template_specification
+from medbenchagent.planning.protocol import Protocol, resolve_answer, resolve_eligibility, template_specification
+from medbenchagent.audit.storage import ReferencedInputs, batches
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 
@@ -35,7 +35,7 @@ def write_rows(path, rows):
     temporary.replace(path)
 
 
-def load_inputs(plan_path, templates_path, annotation_path, manifest_path):
+def load_plan_templates(plan_path, templates_path):
     plan = read_json(plan_path)
     template_sets = read_json(templates_path)
     for leaf_id, task in plan["tasks"].items():
@@ -45,13 +45,7 @@ def load_inputs(plan_path, templates_path, annotation_path, manifest_path):
         if review["specification"] != specification.model_dump() or review["review"]["verdict"] != "approved":
             raise ValueError("Templates are not approved for the current Plan")
         validate_templates(specification, template_sets["templates"][leaf_id])
-    records = {}
-    for record in load_annotation_jsonl(Path(annotation_path)):
-        image_id = record["image"]["image_id"]
-        if image_id in records:
-            raise ValueError("Duplicate annotation image ID")
-        records[image_id] = record
-    return plan, template_sets["templates"], records, load_image_manifest(Path(manifest_path))
+    return plan, template_sets["templates"]
 
 
 def item_errors(item, dataset_id, tasks, templates, annotations, images, image_root, image_errors, *, balanced=False):
@@ -79,6 +73,9 @@ def item_errors(item, dataset_id, tasks, templates, annotations, images, image_r
         errors.extend(_contract(item, task, (entry.width, entry.height) if entry else None))
         if annotation is not None:
             try:
+                eligibility = resolve_eligibility(annotation, task["protocol"])
+                if eligibility["reason"].startswith("scope_"):
+                    errors.append(eligibility["reason"])
                 if not _answer_matches(item, task, annotation, balanced=balanced):
                     errors.append("answer_evidence")
                 rendered = {render(SimpleNamespace(record=annotation, task=task, question_template=t)).strip()
@@ -90,15 +87,17 @@ def item_errors(item, dataset_id, tasks, templates, annotations, images, image_r
     return sorted(set(errors))
 
 
-def inspect_generation(*, dataset_id, raw_path, plan_path, templates_path, annotation_path, manifest_path, output_directory):
-    plan, templates, annotations, images = load_inputs(plan_path, templates_path, annotation_path, manifest_path)
+def inspect_generation(*, dataset_id, raw_path, plan_path, templates_path, dataset_access, manifest_path, output_directory):
+    plan, templates = load_plan_templates(plan_path, templates_path)
     if plan["dataset"]["dataset_id"] != dataset_id:
         raise ValueError("Plan dataset identity differs from Generation")
-    accepted, rejected, image_errors = [], [], {}
+    root = Path(output_directory)
+    root.mkdir(parents=True, exist_ok=True)
+    accepted_count = rejected_count = 0
     counts = {key: {"generated": 0, "accepted": 0, "rejected": 0} for key in plan["tasks"]}
     unassigned = {"generated": 0, "accepted": 0, "rejected": 0}
     reasons = Counter()
-    with Path(raw_path).open(encoding="utf-8") as handle:
+    def raw_rows(handle):
         for line_number, line in enumerate(handle, 1):
             if not line.strip():
                 continue
@@ -108,23 +107,35 @@ def inspect_generation(*, dataset_id, raw_path, plan_path, templates_path, annot
             except json.JSONDecodeError:
                 item, errors = None, ["invalid_json"]
             else:
-                errors = item_errors(item, dataset_id, plan["tasks"], templates, annotations, images,
-                                     Path(manifest_path).parent, image_errors)
-            leaf_id = item.get("task_id") if isinstance(item, dict) else None
-            bucket = counts[leaf_id] if isinstance(leaf_id, str) and leaf_id in counts else unassigned
-            bucket["generated"] += 1
-            if errors:
-                bucket["rejected"] += 1
-                reasons.update(errors)
-                rejected.append({"source": source, "task_id": leaf_id if isinstance(leaf_id, str) else None, "reasons": errors})
-            else:
-                bucket["accepted"] += 1
-                accepted.append({"source": source, "item": item})
-    root = Path(output_directory)
-    root.mkdir(parents=True, exist_ok=True)
-    write_rows(root / "accepted.jsonl", accepted)
-    write_rows(root / "rejected.jsonl", rejected)
-    report = {"generated": len(accepted) + len(rejected), "accepted": len(accepted), "rejected": len(rejected),
+                errors = []
+            yield item, source, errors
+
+    with (ReferencedInputs(dataset_access, manifest_path, root / "inputs") as inputs,
+          Path(raw_path).open(encoding="utf-8") as handle,
+          (root / "accepted.tmp").open("w", encoding="utf-8") as accepted,
+          (root / "rejected.tmp").open("w", encoding="utf-8") as rejected):
+        for batch in batches(raw_rows(handle)):
+            annotations, images = inputs.read([item.get("image_id") for item, _, _ in batch if isinstance(item, dict)])
+            image_errors = {}
+            for item, source, errors in batch:
+                errors = errors or item_errors(item, dataset_id, plan["tasks"], templates, annotations, images,
+                                               Path(manifest_path).parent, image_errors)
+                leaf_id = item.get("task_id") if isinstance(item, dict) else None
+                bucket = counts[leaf_id] if isinstance(leaf_id, str) and leaf_id in counts else unassigned
+                bucket["generated"] += 1
+                if errors:
+                    bucket["rejected"] += 1
+                    rejected_count += 1
+                    reasons.update(errors)
+                    row = {"source": source, "task_id": leaf_id if isinstance(leaf_id, str) else None, "reasons": errors}
+                    rejected.write(json.dumps(row, ensure_ascii=False) + "\n")
+                else:
+                    bucket["accepted"] += 1
+                    accepted_count += 1
+                    accepted.write(json.dumps({"source": source, "item": item}, ensure_ascii=False) + "\n")
+    (root / "accepted.tmp").replace(root / "accepted.jsonl")
+    (root / "rejected.tmp").replace(root / "rejected.jsonl")
+    report = {"generated": accepted_count + rejected_count, "accepted": accepted_count, "rejected": rejected_count,
               "tasks": counts, "unassigned": unassigned, "reason_counts": dict(reasons)}
     atomic_write_json(root / "report.json", report)
     return {"accepted_path": str(root / "accepted.jsonl"), "rejected_path": str(root / "rejected.jsonl"),

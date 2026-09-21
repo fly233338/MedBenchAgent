@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import random
 import re
+import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -105,6 +107,9 @@ def _validate_tasks(request: GenerationRequest) -> tuple[dict[str, GenerationTas
     max_tasks = request.get("max_tasks_per_image")
     if not isinstance(max_tasks, int) or isinstance(max_tasks, bool) or max_tasks <= 0:
         raise ValueError("max_tasks_per_image must be a positive integer.")
+    total_limit = request.get("max_total_tasks_per_image")
+    if total_limit is not None and (type(total_limit) is not int or total_limit <= 0):
+        raise ValueError("max_total_tasks_per_image must be a positive integer or null.")
     temperature = request.get("question_temperature")
     if (
         not isinstance(temperature, (int, float))
@@ -137,10 +142,13 @@ def _build_item(
     }
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+def _raw_counts(path, tasks):
+    counts = {key: 0 for key in tasks}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                counts[json.loads(line)["task_id"]] += 1
+    return counts
 
 
 def _write_jsonl(path: Path, items: list[dict[str, Any]]) -> None:
@@ -158,32 +166,30 @@ def _write_jsonl(path: Path, items: list[dict[str, Any]]) -> None:
             temporary.unlink()
 
 
-def _progress_item(entry: dict[str, Any]) -> dict[str, Any]:
-    return entry
+@contextmanager
+def _progress_db(output_dir):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(output_dir / "generation-progress.sqlite")
+    try:
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS items
+                (id TEXT PRIMARY KEY, phase INTEGER, task TEXT, task_order INTEGER, image TEXT, payload TEXT);
+            CREATE INDEX IF NOT EXISTS image_phase ON items(image, phase);
+            CREATE TABLE IF NOT EXISTS counts (task TEXT PRIMARY KEY, n INTEGER);
+        """)
+        yield db
+    finally:
+        db.close()
 
 
-def _progress_counts(items: list[dict[str, Any]], task_ids: list[str]) -> dict[str, int]:
-    return {
-        task_id: sum(_progress_item(item).get("task_id") == task_id for item in items)
-        for task_id in task_ids
-    }
-
-
-def _merge_progress(
-    path: Path, additions: list[dict[str, Any]], task_order: dict[str, int]
-) -> list[dict[str, Any]]:
-    by_id = {str(_progress_item(item)["id"]): item for item in _read_jsonl(path)}
-    by_id.update({_progress_item(item)["id"]: item for item in additions})
-    items = list(by_id.values())
-    items.sort(
-        key=lambda item: (
-            task_order[str(_progress_item(item)["task_id"])],
-            str(_progress_item(item)["image_id"]),
-            str(_progress_item(item)["id"]),
-        )
-    )
-    _write_jsonl(path, items)
-    return items
+def _merge_progress(output_dir, phase, additions, task_order):
+    """Commit items and counters together; replay cannot count an item twice."""
+    with _progress_db(output_dir) as db, db:
+        for item in additions:
+            inserted = db.execute("INSERT OR IGNORE INTO items VALUES (?,?,?,?,?,?)",
+                [item["id"], phase, item["task_id"], task_order[item["task_id"]], item["image_id"], json.dumps(item)]).rowcount
+            if inserted:
+                db.execute("INSERT INTO counts VALUES (?,1) ON CONFLICT(task) DO UPDATE SET n=n+1", [item["task_id"]])
 
 
 def _row_record(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -286,7 +292,7 @@ def _next_candidate_record(
 
 
 def _stage_progress_path(output_dir: Path, phase: str) -> Path:
-    return output_dir / f"benchmark_items.{phase}.progress.jsonl"
+    return output_dir / "generation-progress.sqlite"
 
 
 def _stage_tasks(
@@ -303,12 +309,8 @@ def _all_completed_counts(
     output_dir: Path, tasks: dict[str, GenerationTask], targets: dict[str, int]
 ) -> dict[str, int]:
     counts = {task_id: 0 for task_id in tasks}
-    for phase, response_format, _handler in _STAGES:
-        stage_tasks = _stage_tasks(tasks, targets, response_format)
-        for task_id, count in _progress_counts(
-            _read_jsonl(_stage_progress_path(output_dir, phase)), list(stage_tasks)
-        ).items():
-            counts[task_id] = count
+    with _progress_db(output_dir) as db:
+        counts.update(dict(db.execute("SELECT task,n FROM counts")))
     return counts
 
 
@@ -353,8 +355,7 @@ def initialize_generation(request: GenerationRequest) -> dict[str, Any]:
     tasks, targets = _validate_tasks(request)
     raw = Path(request["output_directory"]) / f"benchmark.{request['dataset_id']}.raw.jsonl"
     if raw.is_file():
-        items = _read_jsonl(raw)
-        completed = _progress_counts(items, list(tasks))
+        completed = _raw_counts(raw, tasks)
         return {
             "generation_target_counts": targets,
             "generation_completed_counts": completed,
@@ -414,12 +415,18 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
 
     accepted: list[dict[str, Any]] = []
     max_tasks = int(request["max_tasks_per_image"])
-    existing = _read_jsonl(_stage_progress_path(output_dir, phase))
     image_id = candidates[0].record["image"]["image_id"] if candidates else None
-    existing_count = sum(item["image_id"] == image_id for item in existing)
-    existing_ids = {item["id"] for item in existing}
+    with _progress_db(output_dir) as db:
+        existing = db.execute("SELECT id,phase FROM items WHERE image=?", [image_id]).fetchall()
+    existing_count = sum(p == stage_index for _, p in existing)
+    existing_ids = {key for key, _ in existing}
+    total_limit = request.get("max_total_tasks_per_image")
     for candidate in candidates:
         if len(accepted) + existing_count >= max_tasks:
+            rejections["per_format_image_limit"] = rejections.get("per_format_image_limit", 0) + 1
+            break
+        if total_limit is not None and len(accepted) + len(existing) >= total_limit:
+            rejections["total_image_limit"] = rejections.get("total_image_limit", 0) + 1
             break
         item_id = _item_identity(candidate, request["dataset_id"])
         if item_id in existing_ids:
@@ -457,7 +464,7 @@ def advance_generation(request: GenerationRequest, state: dict[str, Any]) -> dic
     progress_path = _stage_progress_path(output_dir, phase)
     if accepted:
         _merge_progress(
-            progress_path, accepted, {task_id: index for index, task_id in enumerate(stage_tasks)}
+            output_dir, stage_index, accepted, {task_id: index for index, task_id in enumerate(stage_tasks)}
         )
         completed = _all_completed_counts(output_dir, tasks, targets)
     if all(completed[task_id] >= targets[task_id] for task_id in stage_tasks):
@@ -479,27 +486,19 @@ def finalize_generation(request: GenerationRequest) -> GenerationResult:
     output_dir = Path(request["output_directory"])
     output = output_dir / f"benchmark.{request['dataset_id']}.raw.jsonl"
     if output.is_file():
-        items = _read_jsonl(output)
-        return GenerationResult(str(output), len(items), _progress_counts(items, list(tasks)))
-    kept: list[dict[str, Any]] = []
+        counts = _raw_counts(output, tasks)
+        (output_dir / "generation-progress.sqlite").unlink(missing_ok=True)
+        return GenerationResult(str(output), sum(counts.values()), counts)
     counts = {task_id: 0 for task_id in tasks}
-    progress_paths: list[Path] = []
-    for phase, response_format, _handler in _STAGES:
-        progress_path = _stage_progress_path(output_dir, phase)
-        progress_paths.append(progress_path)
-        stage_tasks = _stage_tasks(tasks, targets, response_format)
-        for entry in _read_jsonl(progress_path):
-            item = _progress_item(entry)
-            task_id = str(item.get("task_id"))
-            if task_id in stage_tasks and counts[task_id] < targets[task_id]:
-                kept.append(item)
-                counts[task_id] += 1
-    output = output_dir / f"benchmark.{request['dataset_id']}.raw.jsonl"
-    _write_jsonl(output, kept)
-    for progress_path in progress_paths:
-        if progress_path.exists():
-            progress_path.unlink()
-    return GenerationResult(str(output), len(kept), counts)
+    with _progress_db(output_dir) as db:
+        def rows():
+            for task_id, payload in db.execute("SELECT task,payload FROM items ORDER BY phase,task_order,image,id"):
+                if task_id in tasks and counts[task_id] < targets[task_id]:
+                    counts[task_id] += 1
+                    yield json.loads(payload)
+        _write_jsonl(output, rows())
+    (output_dir / "generation-progress.sqlite").unlink()
+    return GenerationResult(str(output), sum(counts.values()), counts)
 
 
 def generate_raw_benchmark(request: GenerationRequest) -> GenerationResult:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-from collections import defaultdict
 from typing import Any
 
 
@@ -34,37 +33,42 @@ def _validate_group(task_id: str, items: list[dict[str, Any]]) -> tuple[str, ...
     return first_options
 
 
-def balance_items(items: list[dict[str, Any]], seed: int = 0) -> list[dict[str, Any]]:
-    """Balance letter-answer positions and pass through other response formats."""
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in items:
-        task_id = item.get("task_id")
-        if not isinstance(task_id, str) or not task_id:
-            raise ValueError("Every item must have a non-empty task_id.")
-        if isinstance(item.get("options"), list):
-            grouped[task_id].append(item)
-
-    balanced = [dict(item) for item in items]
-    copies_by_task: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in balanced:
-        if isinstance(item.get("options"), list):
-            copies_by_task[item["task_id"]].append(item)
-
-    for task_id, task_items in grouped.items():
-        options = _validate_group(task_id, task_items)
-        generator = _rng(seed, task_id)
-        count, option_count = len(task_items), len(options)
-        positions = list(range(option_count)) * (count // option_count)
-        remainder = list(range(option_count))
-        generator.shuffle(remainder)
-        positions.extend(remainder[: count % option_count])
-        generator.shuffle(positions)
-        for item, position in zip(copies_by_task[task_id], positions, strict=True):
-            answer_value = item["options"][ord(item["answer"].upper()) - ord("A")]
-            wrong_options = [option for option in options if option != answer_value]
-            generator.shuffle(wrong_options)
-            reordered = wrong_options[:]
-            reordered.insert(position, answer_value)
-            item["options"] = reordered
-            item["answer"] = chr(ord("A") + position)
-    return balanced
+def balance_items(items, counts, seed=0):
+    """Draw balanced positions without materializing items or a per-item position list."""
+    groups = {}
+    for original in items:
+        if not isinstance(original.get("task_id"), str) or not original["task_id"]:
+            raise ValueError("Every item must have a non-empty task_id")
+        if not isinstance(original.get("options"), list):
+            yield original
+            continue
+        item = dict(original)
+        task_id = item["task_id"]
+        options = _validate_group(task_id, [item])
+        if task_id not in groups:
+            generator = _rng(seed, task_id)
+            remaining = [counts[task_id] // len(options)] * len(options)
+            order = list(range(len(options)))
+            generator.shuffle(order)
+            for position in order[:counts[task_id] % len(options)]:
+                remaining[position] += 1
+            groups[task_id] = options, generator, remaining
+        expected, generator, remaining = groups[task_id]
+        if options != expected:
+            raise ValueError(f"{task_id}: every item must use the same option collection")
+        if not sum(remaining):
+            raise ValueError("Candidate counts changed during balancing")
+        draw = generator.randrange(sum(remaining))
+        for position, count in enumerate(remaining):
+            if draw < count:
+                break
+            draw -= count
+        remaining[position] -= 1
+        answer = options[ord(item["answer"].upper()) - 65]
+        wrong = [value for value in options if value != answer]
+        generator.shuffle(wrong)
+        wrong.insert(position, answer)
+        item.update(options=wrong, answer=chr(65 + position))
+        yield item
+    if set(groups) != set(counts) or any(sum(group[2]) for group in groups.values()):
+        raise ValueError("Candidate counts changed during balancing")

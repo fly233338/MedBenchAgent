@@ -145,7 +145,7 @@ eligible_count 由代码使用与 Generation 相同的答案解析器计算。�
 
 独立 prepare_templates 阶段为 Plan 的所有可执行 Leaf 生成整套模板并审核，不依赖配额。
 审核结果为 approved、revise_templates 或 revise_plan；前者在模板阶段修措辞/slot，后者将 Leaf 与原因
-反馈到 TaskPlanning。template_feedback_id 绑定反馈 Plan 版本，已有 Planning 修订预算只扣一次。
+反馈到 TaskPlanning。template_feedback_id 绑定被拒输入的稳定反馈 ID，已有 Planning 修订预算只扣一次。
 模板生成/审核尝试持久化到 Dataset 局部 ledger，初次尝试加 harness.max_reworks 次返修，恢复和重新
 委派不重置。specification 和 TemplateConfig 未变的批准结果复用；新 specification 必须重新审核。
 返修反馈携带被拒模板、specification、原因及稳定反馈 ID；相同负评不因 Plan 换版本重复扣预算。
@@ -233,6 +233,11 @@ question_intent、medical_constraints 和 template_slots。letter 使用唯一 s
 生成请求在私有适配层装配局部 Plan、配额和模板。模板模型只接收 TemplateSpecification，不接收逐图答案
 或完整映射；逐题执行不调用模型。模板独立保存，Plan 不包含模板或 sample_count。
 同一 Dataset/Leaf/image 最多一题，每种响应阶段保持现有每图限额。样本 ID 包含数据集身份。
+max_tasks_per_image 仍是每响应类型上限；可选 max_total_tasks_per_image 限制同 Dataset/image 的全部
+题型总数，默认不限制总数。自然语言显式总上限优先于配置，保存到 Requirement、GenerationConfig 和
+交付报告；不改变 Allocation 的独立 Leaf 容量模型。生成采用现有阶段顺序及 seed 决定的候选顺序。
+生成进度改为 SQLite 事务账本，同一事务保存唯一题目和任务计数；按图索引检查阶段与总上限，恢复不
+重复计数。原始 JSONL 按稳定顺序流式导出，原子写出成功后清理账本。
 
 FinalizationAgent 在全部正配额 Generation 完成后启动；正常耗尽允许缺题，执行失败不等于完成。
 工具支持查看输入、逐 Dataset 检查、分页调查异常、组装、均衡、最终验证及发布。模型决定检查顺序和
@@ -241,11 +246,17 @@ FinalizationAgent 在全部正配额 Generation 完成后启动；正常耗尽�
 GenerationCheck 按原始文件逐行检查 item、Plan、模板渲染、annotation 答案和图像引用；非法 JSON 或
 item 单独隔离并记录原文件、行号、原始内容与原因，运行级必要文件损坏不能当作普通样本剔除。
 raw 文件不修改，也不再合并成 benchmark.raw.jsonl；全局输出 raw_source_paths 逐 Dataset 指向原始文件。
+检查与最终验证按 Dataset、每批最多 256 条处理，通过 DatasetQuery.records 读取实际引用 annotation；
+image manifest 使用磁盘索引按需读取，图像检查缓存仅存当前批。候选、隔离和重复 identity 在操作目录
+DuckDB 工作表中处理，复用现有内存/线程限制与落盘目录，临时索引可重建，不是发布依据。
 
 组装按 Dataset、local Leaf、image 建立最终 identity，task_id 使用 dataset::leaf。等价重复稳定保留
 一份，内容冲突的同 identity 全部隔离；不同图像相同题干不直接判重复。超 Leaf 配额的合法样本按稳定
 顺序截取，其余隔离并报告。最终过滤后按最终 task 平衡 letter 正确选项位置，数量差最多 1；额外报告
 按选项数量分组的总体分布。均衡保持答案文本和选项集合不变，bbox/free_text 原样透传。
+组装同时稳定剔除超过每图阶段或总上限的候选，并单列原因；最终验证再次检查上限。均衡先统计每任务
+数量，再使用 seed 与剩余位置配额流式生成位置，不保存全量候选或逐题位置数组。v11 内结果可重复，
+不保证与旧版排列逐题相同。
 最终检查再次验证这些不变量、唯一性、namespace、实际图像路径、配额和统计；失败不得发布。
 
 报告 audit-report.v3 在全局、Dataset 和 Leaf 层次给出 allocated/generated/accepted/final，requested

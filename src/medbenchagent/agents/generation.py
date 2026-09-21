@@ -41,6 +41,7 @@ def _generation_request_node(state: GenerationAgentState) -> dict[str, Any]:
         "target_sample_count": int(blueprint["allocation"]["allocated_count"]),
         "seed": int(state.get("seed", defaults.seed)),
         "max_tasks_per_image": int(state.get("max_tasks_per_image", defaults.max_tasks_per_image)),
+        "max_total_tasks_per_image": state.get("max_total_tasks_per_image", defaults.max_total_tasks_per_image),
         "question_temperature": float(
             state.get("question_temperature", defaults.question_temperature)
         ),

@@ -19,5 +19,6 @@ class GenerationRequest(TypedDict):
     target_sample_count: int
     seed: int
     max_tasks_per_image: int
+    max_total_tasks_per_image: int | None
     question_temperature: float
     output_directory: str

@@ -31,6 +31,8 @@ reranker_max_length = 8192
 [generation]
 seed = 0
 max_tasks_per_image = 20
+# Per response format. Optional total across all formats (unset means no total limit):
+# max_total_tasks_per_image = 1
 question_temperature = 0.7
 fetch_batch_size = 128
 question_template_count = 3

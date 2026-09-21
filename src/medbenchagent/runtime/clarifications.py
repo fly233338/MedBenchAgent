@@ -51,7 +51,9 @@ def resolve_clarification(context, *, issue_id, kind):
                "global_issue": None, "clarification": issue}
     if kind == "requirement_change":
         from medbenchagent.runtime.dependencies import publish
-        updates.update(user_requirement=context["user_requirement"] + "\n" + issue["answer"],
+        exchanges = issue.get("exchanges", [{"question": issue["question"], "answer": issue["answer"]}])
+        clarification_text = "\n".join(f"Clarification question: {e['question']}\nUser answer: {e['answer']}" for e in exchanges)
+        updates.update(user_requirement=context["user_requirement"] + "\n" + clarification_text,
                        brief_ready=False, brief_missing_fields=[])
         updates.update(publish(context, "Requirement", {"text": updates["user_requirement"]}, ()))
     from pathlib import Path

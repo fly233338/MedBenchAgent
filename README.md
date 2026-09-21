@@ -126,9 +126,17 @@ mappings preserve self-describing strings; codes and semantic reinterpretations 
 evidence. Validation checks coverage and quotations; the Planning review judges whether they support the mapping. Zero-capacity leaves
 cannot be published; unsupported concepts and completed empty dataset plans are valid.
 Generation still derives answers deterministically from annotations, and template models never see per-image answers.
+Explicit sample restrictions are stored separately from evaluation topics and resolved into dataset-local
+scalar `in`/`not_in` conditions. Missing values fail selection. Planning capacity, generation and final validation
+share these conditions; unsupported restrictions cannot be satisfied by prose alone. The Planner discovers
+local documentation through existing source inventories before asking about ambiguous codes.
+Cross-agent answers retain their issue ID and return to the originating agent as semantic evidence.
+Only explicit requirement changes invalidate the brief and its downstream artifacts.
 Template sets are reviewed after Planning and before Allocation. Wording defects are revised in the template
 stage; task defects reopen Planning. Saved approval results are reused for unchanged specifications and
 configuration. Both template attempts and Planning reworks retain their budgets across recovery.
+Rejected templates and their specification accompany revision feedback. Unchanged specifications are rejected
+before another review or Plan publication; repeating the same feedback does not charge another Planning rework.
 
 Finalization starts only after every positive-allocation Generation completes. The FinalizationAgent can
 inspect datasets and anomalies, assemble candidates, balance answer positions, validate the package and
@@ -229,18 +237,29 @@ A completed unsupported plan may receive zero allocation; an execution failure c
 Independent Leaf capacities do not guarantee joint feasibility under per-image limits, so actual generation
 shortfalls remain explicit. No automatic refill loop is introduced.
 
-GenerationAgent builds and reviews a separate `templates.json` library, controlled by
+`generation.max_tasks_per_image` limits each response format separately. Set the optional
+`generation.max_total_tasks_per_image` to cap all formats combined for each `(dataset_id, image_id)`;
+by default there is no combined limit. For example, “at most one question per image in total” sets the
+combined limit to 1 and overrides the configured default. Generation preserves its deterministic stage
+order; shared images can therefore cause shortfalls despite sufficient independent Leaf capacities.
+The final report records both limits, and final validation checks them again.
+
+Generation uses a transactional SQLite progress ledger. Finalization reads referenced records in batches,
+uses disposable DuckDB indexes for candidates and duplicates, and balances answer positions as a stream.
+The new algorithm is reproducible for the same inputs and seed, but may differ from older answer permutations.
+
+The pre-allocation template stage builds and reviews a separate `templates.json` library, controlled by
 `generation.question_template_count`. The builder and reviewer interfaces accept only a strict TemplateSpecification without
 answer mappings or per-image answers. Protocol-defined slots allow `{modality}` and, when a target is
 explicitly bound, require `{target}`. Planning leaves never contain templates; the private GenerationTask
 adds templates only when assembling GenerationRequest. Code renders every question and resolves its answer
 from the full Protocol without per-item LLM calls.
 
-Hard audit checks images, duplicates and Protocol-bound annotation answers. Sampled semantic audit is
-advisory. Final `total_shortfall` is the requested total minus hard-audit accepted items, without double-counting
-planning and generation deficits. Final accepted samples are merged into `benchmark.jsonl`; `benchmark.raw.jsonl`, `audit_report.json` and
-`benchmark_manifest.json` accompany it. Task IDs are `dataset_id::local_leaf_id`, with explicit source
-mappings in manifest v3; local image IDs are preserved and image paths are rebased. Annotations and image
+Hard audit checks images, sample scope, duplicates and Protocol-bound annotation answers. Final
+`total_shortfall` is the requested total minus final delivered items, without double-counting planning,
+generation and assembly deficits. Final items are written to `benchmark.jsonl`, accompanied by `audit_report.json`,
+`quarantine.jsonl` and `benchmark_manifest.json`. Task IDs are `dataset_id::local_leaf_id`, with explicit source
+mappings in manifest v4; local image IDs are preserved and image paths are rebased. Annotations and image
 manifests remain dataset-local. Repeated export does not append duplicate samples.
 Evaluation and scoring are unchanged; existing evaluation loaders do not accept this v3 manifest. Concept-level evaluation
 aggregation is not implemented yet.

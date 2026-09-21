@@ -232,10 +232,13 @@ def compile_agent(
                 if not isinstance(answer, str) or not answer.strip():
                     outcome = result("failed", "A natural-language answer is required")
                 else:
+                    exchanges = list(issue.get("exchanges", []))
+                    if followup or not exchanges:
+                        exchanges.append({"question": question if followup else issue["question"], "answer": answer})
                     if followup:
                         answer = issue["answer"] + "\n" + answer
                         issue = {**issue, "question": question}
-                    issue = {**issue, "answer": answer,
+                    issue = {**issue, "answer": answer, "exchanges": exchanges,
                              "status": "answered" if name == "SupervisorAgent" else "resolved"}
                     if name != "SupervisorAgent":
                         decisions[decision_key] = answer
