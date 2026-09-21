@@ -17,6 +17,7 @@ from medbenchagent.runtime.construction import event_context, record_event
 from medbenchagent.runtime.llm import ModelUnavailable, complete_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.tool_contracts import AskUserArguments, NoArguments
+from medbenchagent.runtime.clarifications import new_issue
 
 
 class AgentState(TypedDict, total=False):
@@ -111,6 +112,7 @@ def compile_agent(
                         {
                             "tools": {k: v for k, v in catalog.items() if k in enabled},
                             "state": describe(context),
+                            "pending_clarification": context.get("global_issue"),
                             "recent_observations": state.get("observations", []),
                             "last_result": {
                                 k: (v[:6000] if isinstance(v, str) else v)
@@ -167,6 +169,8 @@ def compile_agent(
             outcome["errors"] = parameter_error
         elif available_tools is not None and tool_name not in available_tools(context):
             outcome = result("failed", "Tool is not ready for the current state")
+        elif context.get("global_issue") and tool_name not in {"ask_user", "resolve_clarification"}:
+            outcome = result("failed", "Resolve the pending clarification before continuing")
         elif operation.is_file():
             saved = json.loads(operation.read_text(encoding="utf-8"))
             if (
@@ -186,47 +190,62 @@ def compile_agent(
                 or context.get("preparation_plan_path")
                 or json.dumps(dependencies, sort_keys=True)
             )
-            decision_key = json.dumps([name, reference, question], ensure_ascii=False)
+            issue = context.get("global_issue") if name == "SupervisorAgent" else None
+            if issue and arguments["issue_id"] != issue["issue_id"]:
+                outcome = result("failed", "ask_user must reference the pending issue_id")
+                issue = None
+                invalid_issue = True
+            else:
+                invalid_issue = bool(arguments["issue_id"] and not issue)
+            issue = issue or new_issue(name, context, reference, question)
+            decision_key = issue["issue_id"]
+            issue = context.get("issues", {}).get(decision_key, issue)
             decisions = dict(context.get("decisions", {}))
-            if arguments["scope"] == "global" and name != "SupervisorAgent":
+            if invalid_issue:
+                outcome = result("failed", "ask_user must reference the pending issue_id, or omit it for a new question")
+            elif issue["status"] == "resolved":
+                outcome = result("success", "Question already resolved", global_issue=None,
+                                 decisions={**decisions, decision_key: issue["answer"]}, clarification=issue)
+            elif arguments["scope"] == "global" and name != "SupervisorAgent":
                 outcome = result(
                     "needs_input",
                     question,
                     unresolved_questions=[question],
-                    global_issue={"role": name, "question": question, "reference": reference},
+                    global_issue=issue,
+                    issues={**context.get("issues", {}), decision_key: issue},
                 )
             else:
-                answer = decisions.get(decision_key)
-                already_answered = answer is not None
+                answer = issue.get("answer") or decisions.get(decision_key)
+                followup = issue["status"] == "answered" and question != issue["question"]
+                if followup:
+                    answer = None
                 if answer is None:
                     answer = interrupt(
                         {
                             "kind": "clarification",
                             "role": name,
-                            "question": question,
-                            "reference": reference,
+                            "question": question if followup else issue["question"],
+                            "reference": issue["reference"],
+                            "issue_id": decision_key,
                         }
                     )
                 if not isinstance(answer, str) or not answer.strip():
                     outcome = result("failed", "A natural-language answer is required")
                 else:
-                    decisions[decision_key] = answer
+                    if followup:
+                        answer = issue["answer"] + "\n" + answer
+                        issue = {**issue, "question": question}
+                    issue = {**issue, "answer": answer,
+                             "status": "answered" if name == "SupervisorAgent" else "resolved"}
+                    if name != "SupervisorAgent":
+                        decisions[decision_key] = answer
+                        issue["kind"] = "semantic"
                     updates = {
                         "decisions": decisions,
-                        "clarification": {"reference": reference, "answer": answer},
+                        "clarification": issue,
+                        "issues": {**context.get("issues", {}), decision_key: issue},
+                        "global_issue": issue if name == "SupervisorAgent" else None,
                     }
-                    if name == "SupervisorAgent" and not already_answered:
-                        updates["user_requirement"] = context["user_requirement"] + "\n" + answer
-                        updates["brief_ready"] = False
-                        updates["brief_missing_fields"] = []
-                        updates["global_issue"] = None
-                        from medbenchagent.runtime.dependencies import publish
-
-                        updates.update(
-                            publish(
-                                context, "Requirement", {"text": updates["user_requirement"]}, ()
-                            )
-                        )
                     outcome = result(
                         "success",
                         "User clarification received",

@@ -206,8 +206,17 @@ LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete�
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v10；
+SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v11；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
+
+Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner 必须逐项 resolve_sample_scope，
+使用真实标量字段的 in/not_in 条件或明确 unsupported；病例范围与评测主题分开解释。代码将 Dataset
+条件注入全部 Leaf Protocol，发布时检查覆盖与一致性，容量、生成和审计共享同一 eligibility。
+缺失字段不通过筛选，数组条件暂不支持。编码解释复用 semantic_basis，范围含义纳入完整树审核。
+
+跨 Agent 澄清使用稳定 issue_id 关联角色、Dataset、引用和原问题。Supervisor 收到回答后调用
+resolve_clarification 区分 semantic 与 requirement_change；仅后者修改 Requirement。已解决回答仅投递
+给发起 Agent，并更新其私有状态引用、清除父子待解决状态。未解决问题阻止继续执行依赖工作。
 
 ## 生成、审计与导出
 

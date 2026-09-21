@@ -31,7 +31,8 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
                              dataset_sources=({"dataset_id": "a", "name": "A", "description": "Status annotations",
                                                "sources": [{"id": "source", "kind": "annotation", "root": str(tmp_path / "a/source")}]},))
         monkeypatch.setattr(settings, "_SETTINGS", configured)
-    info = {"clinical_scope": "Breast disease", "diseases": [], "modalities": ["US"], "language": "en",
+    info = {"clinical_scope": "Breast disease", "diseases": [], "modalities": ["Mammography"], "language": "en",
+            "sample_scope": [{"id": "modality", "kind": "modality", "description": "Only Mammography", "quote": "Mammography"}],
             "evaluation_focus": "Classify status", "sample_count": dataset_count * 2 + 2}
     changed = {**info, "sample_count": 1, "language": "zh"}
     briefs = iter([info, changed])
@@ -39,6 +40,8 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
     monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: {"dataset_ids": identifiers})
     cycle = [("specify", {}), ("select_datasets", {})] + [(tool, {"dataset_id": d}) for d in identifiers for tool in ("plan", "prepare_templates")]
     prefix = [("specify", {}), ("select_datasets", {}), ("plan", {"dataset_id": "a"}), ("ask_user", {"question": "Confirm goal"})] if ask_global else cycle + [("ask_user", {"question": "Change target?"})] if revise else []
+    if ask_global:
+        cycle = cycle[2:]
     if raw_first:
         cycle = cycle[:2] + [("prepare_data", {"dataset_id": "a"}), ("select_datasets", {})] + cycle[2:]
     if template_repair:
@@ -55,6 +58,9 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
              ("complete_concept", {"concept_id": "status", "status": "complete", "reason": "Direct annotation"}),
              ("coverage_gap", {}), ("finish_discovery", {}), ("review_tree", {}), ("finish", {})]
     repaired = [("save_leaf", {**basic[0][1], "protocol": {**leaf, "question_intent": "Classify the explicitly annotated status"}})] + basic[1:]
+    basic = [("resolve_sample_scope", {"resolutions": [{"requirement_id": "modality", "status": "implemented",
+             "reason": "Exact modality", "conditions": [{"requirement_id": "modality", "field": "image.modality",
+             "operator": "in", "values": ["Mammography"]}]}]})] + basic
     planning_actions = iter(([("ask_user", {"question": "Confirm goal", "scope": "global"})] if ask_global else []) + basic * (dataset_count * (2 if revise else 1)) + (repaired if template_repair else []))
     allocated = [False]
     def model(instructions, prompt):
@@ -74,7 +80,13 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
             else:
                 name, arguments = "finish", {}
         else:
+            pending = json.loads(prompt)["state"].get("global_issue")
+            if pending and pending["status"] == "answered":
+                return {"tool": "resolve_clarification", "arguments": {"issue_id": pending["issue_id"],
+                        "kind": "requirement_change" if revise else "semantic"}, "reason": "Classify received answer"}
             name, arguments = next(supervisor)
+            if name == "ask_user" and pending:
+                arguments = {**arguments, "issue_id": pending["issue_id"]}
         if name in {"plan", "allocate"}:
             arguments = {**arguments, "delegation": {"objective": "Follow the requested benchmark scope"}}
         return {"tool": name, "arguments": arguments, "reason": "Required action"}
@@ -91,7 +103,7 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
     monkeypatch.setattr("medbenchagent.generation.templates.complete_json", templates)
     graph = compile_benchmark_graph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "integration"}, "recursion_limit": 300}
-    output = graph.invoke({"user_requirement": "Use datasets " + ", ".join(identifiers), "entry_intent": "build_benchmark"}, config)
+    output = graph.invoke({"user_requirement": "Mammography: use datasets " + ", ".join(identifiers), "entry_intent": "build_benchmark"}, config)
     if ask_global or revise:
         assert output["__interrupt__"]
         output = graph.invoke(Command(resume="Use one Chinese question" if revise else "Confirmed goal"), config)
@@ -114,6 +126,11 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
             assert plan["reworks_used"] == 1
     before = Path(output["audit_artifacts"]["audited"]).read_bytes()
     private = graph.get_state(config).values["context"]
+    if ask_global:
+        assert private["global_issue"] is None
+        child = json.loads(Path(private["child_states"]["a"]["planning"]).read_text(encoding="utf-8"))
+        assert child["global_issue"] is None
+        assert list(child["decisions"].values()) == ["Confirmed goal"]
     restore_delivery(private)
     assert Path(output["audit_artifacts"]["audited"]).read_bytes() == before
     # A resumed run uses its saved Blueprint, not an edited external template.

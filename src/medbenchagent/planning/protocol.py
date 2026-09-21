@@ -34,6 +34,22 @@ class AnswerContract(NoArguments):
     value_mapping: list[AnswerMapping] = Field(default_factory=list)
 
 
+class SampleCondition(NoArguments):
+    requirement_id: NonEmpty
+    field: NonEmpty
+    operator: Literal["in", "not_in"]
+    values: list[str | int | float | bool] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def scalar_condition(self):
+        if not is_supporting_field_path(self.field) or any(c in self.field for c in "[]"):
+            raise ValueError("Sample selection requires a supported scalar field, not an array")
+        keys = [canonical_answer_scalar(v) for v in self.values]
+        if None in keys or len(set(keys)) != len(keys):
+            raise ValueError("Selection values must be unique nonempty finite scalars")
+        return self
+
+
 class Protocol(NoArguments):
     execution_type: Literal["letter_classification", "bbox_grounding", "free_text"]
     response_format: Literal["letter", "bbox", "free_text"]
@@ -43,6 +59,7 @@ class Protocol(NoArguments):
     question_intent: NonEmpty
     medical_constraints: list[NonEmpty] = Field(default_factory=list)
     template_slots: list[Literal["modality", "target"]] = Field(default_factory=list)
+    sample_conditions: list[SampleCondition] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_contract(self):
@@ -174,6 +191,14 @@ def _resolve_answer(record: dict, protocol: dict) -> dict | None:
 
 def resolve_eligibility(record: dict, protocol: dict) -> dict:
     """One eligibility boundary for planning, generation, audit and explanations."""
+    for condition in protocol.get("sample_conditions", []):
+        values = scalar_evidence_candidates(record, condition["field"])
+        if len(values) != 1 or canonical_answer_scalar(values[0]["value"]) is None:
+            return {"eligible": False, "reason": "scope_missing_field", "resolved": None}
+        matched = canonical_answer_scalar(values[0]["value"]) in {
+            canonical_answer_scalar(v) for v in condition["values"]}
+        if matched != (condition["operator"] == "in"):
+            return {"eligible": False, "reason": "scope_mismatch", "resolved": None}
     answer = _resolve_answer(record, protocol)
     if answer is not None:
         return {"eligible": True, "reason": "eligible", "resolved": answer}

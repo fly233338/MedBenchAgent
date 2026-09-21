@@ -72,6 +72,24 @@ def save(c, leaf_id="opaque.identity", concept_id="core"):
     )
 
 
+def test_scope_coverage_is_required_and_injected(tmp_path, monkeypatch):
+    from medbenchagent.planning.scope import validate_scope_plan
+    c = context(tmp_path, monkeypatch)
+    c["sample_scope"] = [{"id": "population", "kind": "population", "description": "Only benign cases", "quote": "benign"}]
+    with pytest.raises(ValueError, match="Resolve every"):
+        save(c)
+    condition = {"requirement_id": "population", "field": "image.annotation.status", "operator": "in", "values": ["benign"]}
+    call(c, planning.resolve_sample_scope, resolutions=[{"requirement_id": "population", "status": "implemented",
+         "reason": "Explicit status", "conditions": [condition]}])
+    save(c)
+    tree = planning._tree(c)
+    assert tree["tasks"]["opaque.identity"]["eligible_count"] == 1
+    validate_scope_plan(tree, c["sample_scope"])
+    tree["tasks"]["opaque.identity"]["protocol"]["sample_conditions"] = []
+    with pytest.raises(ValueError, match="differs"):
+        validate_scope_plan(tree, c["sample_scope"])
+
+
 def test_mapping_requires_complete_and_dataset_specific_grounding(tmp_path, monkeypatch):
     from medbenchagent.planning.tree import validate_mapping_grounding
     c = context(tmp_path, monkeypatch)

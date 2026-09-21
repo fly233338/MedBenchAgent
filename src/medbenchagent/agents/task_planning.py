@@ -32,6 +32,46 @@ from medbenchagent.planning.tree import (
 from medbenchagent.planning.protocol import validate_dataset_protocol
 from medbenchagent.runtime.llm import complete_json
 from medbenchagent.data.query import DatasetQuery, iter_records
+from medbenchagent.planning.scope import ScopeResolution, conditions_for, validate_scope_plan
+from medbenchagent.planning.tree import SemanticBasis
+from medbenchagent.runtime.tool_contracts import NoArguments
+from pydantic import Field
+
+
+class ScopeArguments(NoArguments):
+    resolutions: list[ScopeResolution]
+    semantic_basis: list[SemanticBasis] = Field(default_factory=list)
+
+
+def _scope_conditions(context, tree):
+    conditions = conditions_for(tree, context.get("sample_scope", []))
+    if conditions is None:
+        raise ValueError("Sample scope is unsupported; remove leaves and finish an unsupported Plan")
+    return conditions
+
+
+def resolve_sample_scope(context, *, resolutions, semantic_basis=None):
+    """Resolve every user population restriction with scalar conditions or an explicit unsupported reason."""
+    tree = _tree(context)
+    tree["scope_resolutions"] = [ScopeResolution.model_validate(r).model_dump() for r in resolutions]
+    conditions = conditions_for(tree, context.get("sample_scope", []))
+    fields = list(dict.fromkeys(c["field"] for c in conditions or []))
+    _subset(_profile(context), fields)
+    basis = _validate_semantic_basis(context, {"data_binding": {"supporting_fields": fields}}, semantic_basis or [])
+    for condition in conditions or []:
+        # Non-text codes always need dataset-specific evidence. Text meanings are
+        # checked with the complete user scope and source quotations at review.
+        if any(not isinstance(v, str) for v in condition["values"]) and not any(
+            b["field"] == condition["field"] and (b["source"] in {"document", "user"} or b["dataset_specific"])
+            for b in basis
+        ):
+            raise ValueError("Coded scope values require dataset-specific semantic evidence")
+    tree["scope_semantic_basis"] = basis
+    for leaf in tree["tasks"].values():
+        leaf["protocol"]["sample_conditions"] = conditions
+        leaf["eligible_count"] = None
+        tree["concepts"][leaf["concept_id"]]["status"] = "pending"
+    return _persist(context, tree, changed=True)
 
 
 def _read(path):
@@ -107,6 +147,7 @@ def inspect_array(context, *, path):
 def inspect_protocol_capacity(context, *, protocol):
     """Explain exact eligibility using the same resolver as Generation."""
     require(context, "Dataset")
+    protocol = {**protocol, "sample_conditions": _scope_conditions(context, _tree(context))}
     return result("success", json.dumps(DatasetQuery(context["dataset_access_manifest"]).capacity(protocol)))
 
 
@@ -316,6 +357,8 @@ def _tree(context):
         except ValueError:
             # Keep identities and draft work; every decision must be revalidated.
             previous["benchmark_info"] = dict(context["benchmark_info"])
+            previous["scope_resolutions"] = []
+            previous["scope_semantic_basis"] = []
             previous["dataset"] = {"dataset_id": context.get("selected_dataset_id")}
             previous["revision"] += 1
             previous["review"] = {}
@@ -411,6 +454,7 @@ def _validate_evidence(context, evidence):
 def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence, semantic_basis=None, mapping_grounding=None):
     """Create or revise a stable leaf identity, including reparenting; execution is entirely Protocol-defined."""
     tree = _tree(context)
+    protocol = {**protocol, "sample_conditions": _scope_conditions(context, tree)}
     if (
         concept_id not in tree["concepts"]
         or leaf_id in tree["concepts"]
@@ -561,6 +605,7 @@ def finish_discovery(context):
 def review_tree(context):
     """Review full mappings and source evidence; corrections consume persistent rework budget."""
     tree = _tree(context)
+    validate_scope_plan(tree, context.get("sample_scope", []))
     if not concepts_complete(tree) or not tree["discovery_complete"]:
         raise ValueError("Finish concepts and extension discovery first")
     if tree.get("review", {}).get("revision") == tree["revision"]:
@@ -578,6 +623,9 @@ def review_tree(context):
     review = complete_json(
         "Review concept hierarchy, duplicated semantics, overlapping leaves, missing siblings and conflicting Protocols. "
         "Check EVERY raw_value-to-option mapping and mapping_grounding against annotation facts and quoted semantic_basis. "
+        "Check EVERY sample scope resolution against the original user restriction, actual fields and scope_semantic_basis. "
+        "Scope text codes and abbreviations need dataset-specific evidence just like answer mappings. "
+        "Do not treat a disease evaluation topic as a positive-case inclusion criterion. "
         "Direct mappings must be genuinely self-describing, not opaque codes or abbreviations disguised as identity mappings. "
         "Check that material marked dataset_specific actually documents THIS dataset encoding; a flag alone is not evidence. "
         "Opaque codes, abbreviations and ambiguous labels require dataset-specific documented meaning or a user decision; "
@@ -592,6 +640,9 @@ def review_tree(context):
                 "delegation": context.get("delegation"),
                 "concepts": tree["concepts"],
                 "leaves": leaves,
+                "sample_scope": context.get("sample_scope", []),
+                "scope_resolutions": tree.get("scope_resolutions", []),
+                "scope_semantic_basis": tree.get("scope_semantic_basis", []),
             },
             ensure_ascii=False,
         ),
@@ -622,6 +673,7 @@ def _review_result(context, tree, draft_path):
 def finish(context):
     """Publish the reviewed dataset-local Plan with exact capacities, including unsupported datasets."""
     tree = _tree(context)
+    validate_scope_plan(tree, context.get("sample_scope", []))
     for leaf in tree["tasks"].values():
         leaf["eligible_count"] = validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
         _validate_leaf_grounding(context, leaf)
@@ -662,6 +714,8 @@ def describe(context):
         "rag_capability": context.get("rag_capability"),
         "dataset_summary": _profile(context).get("summary", {}) if context.get("dataset_access_manifest") else {},
         "requirement": context.get("benchmark_info"),
+        "sample_scope": context.get("sample_scope", []),
+        "scope_resolutions": tree.get("scope_resolutions", []),
         "concepts": {
             k: {"description": v["description"], "origin": v["origin"], "status": v["status"]}
             for k, v in tree["concepts"].items()
@@ -705,7 +759,7 @@ def available_tools(context):
         tree = _tree(context)
     except ValueError:
         return available
-    available |= {"save_leaf", "remove_leaf", "complete_concept"}
+    available |= {"save_leaf", "remove_leaf", "complete_concept", "resolve_sample_scope"}
     if rag["available"] and context.get("selected_material_files"):
         available.add("search_materials")
     if concepts_complete(tree, core_only=True):
@@ -720,6 +774,7 @@ def available_tools(context):
 def compile_task_planning_agent(*, checkpointer=None):
     from medbenchagent.data.query_contracts import SingleField, Sample, Pair, Array, Capacity
     functions = (
+        resolve_sample_scope,
         list_fields,
         read_fields,
         read_field_values,
@@ -744,6 +799,9 @@ def compile_task_planning_agent(*, checkpointer=None):
         "Build a two-level Medical Concept -> executable Leaf plan. The dataset is already assigned and prepared. Select references (an empty selection is allowed). "
         "Understand each core concept using field inspection and optional RAG BEFORE and during leaf expansion. "
         "Create opaque stable leaf IDs at runtime; never infer execution from IDs. All behavior belongs to Protocol. "
+        "Resolve every sample_scope using resolve_sample_scope before creating leaves. Use actual scalar fields and exact "
+        "values with in/not_in; missing fields fail selection. Unsupported arrays or ungrounded meanings must be reported, "
+        "never replaced by prose constraints. Supply dataset-specific semantic_basis for interpreted scope codes. "
         "Finish every core concept, inspect coverage gaps, propose only genuinely new capabilities, and finish accepted extensions. "
         "RAG can be called at any concept, leaf, protocol or extension step, with revised queries as needed; annotations alone establish labels. "
         "Finish discovery, review globally, make targeted corrections within the rework budget, then publish the dataset-local plan and its exact capacities. "
@@ -763,6 +821,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         describe,
         finish,
         args_schemas={
+            "resolve_sample_scope": ScopeArguments,
             "read_dataset_document": ReadTextArguments,
             "list_fields": PageArguments,
             "read_fields": FieldArguments,

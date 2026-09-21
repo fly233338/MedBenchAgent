@@ -28,6 +28,24 @@ def test_classification_counts_exactly_eligible_images():
     assert [resolve_answer(r, protocol) is not None for r in rows] == [True, True, False, False]
 
 
+def test_sample_scope_filters_capacity_and_answers():
+    from medbenchagent.planning.protocol import resolve_eligibility
+    protocol = _task("letter", ["image.annotation.status"])["protocol"]
+    protocol["sample_conditions"] = [{"requirement_id": "us", "field": "image.modality",
+                                      "operator": "in", "values": ["US"]}]
+    rows = [_record(i, {"status": status}) for i, status in enumerate(["benign", "malignant", "benign"])]
+    rows[0]["image"]["modality"] = "US"
+    rows[1]["image"]["modality"] = "Mammography"
+    rows[2]["image"].pop("modality", None)
+    assert validate_dataset_protocol(protocol, rows) == 1
+    assert [resolve_eligibility(r, protocol)["reason"] for r in rows] == ["eligible", "scope_mismatch", "scope_missing_field"]
+    protocol["sample_conditions"][0]["operator"] = "not_in"
+    assert [resolve_answer(r, protocol) is not None for r in rows] == [False, True, False]
+    protocol["sample_conditions"][0]["field"] = "image.annotation.findings[*].status"
+    with pytest.raises(ValueError, match="scalar field"):
+        Protocol.model_validate(protocol)
+
+
 def test_protocol_rejects_cross_entity_target_binding():
     task = _task(
         "bbox",

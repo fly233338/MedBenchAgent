@@ -19,6 +19,7 @@ from medbenchagent.runtime.run_artifacts import initialize_run, atomic_write_jso
 from medbenchagent.settings import get_settings, run_settings
 from medbenchagent.runtime.dependencies import publish, require, initialize_dependencies, verify_resume
 from medbenchagent.runtime.preflight import preflight_errors, rag_capability
+from medbenchagent.runtime.clarifications import inject_answers, resolve_clarification, ResolveClarificationArguments
 
 
 class DatasetStatusArguments(NoArguments):
@@ -95,12 +96,18 @@ def specify(context):
     if context.get("brief_requirement") == context["user_requirement"]:
         raise ValueError("This requirement has already been extracted; clarify missing fields first")
     info = extract_benchmark_info(context["user_requirement"])
+    sample_scope = info.pop("sample_scope", [])
+    total_limit = info.pop("max_total_tasks_per_image", None)
+    if info.get("modalities") and not any(r["kind"] == "modality" for r in sample_scope):
+        raise ValueError("Explicit modalities must be represented in sample_scope; re-extract the requirement")
     source = "user"
     if info.get("sample_count") is None:
         info["sample_count"] = get_settings().benchmark.default_sample_count
         source = "configuration"
     missing = missing_fields(info)
-    updates = {"benchmark_info": info, "brief_ready": not missing, "brief_missing_fields": missing,
+    updates = {"benchmark_info": info, "sample_scope": sample_scope,
+               "max_total_tasks_per_image": total_limit if total_limit is not None else context.get("configured_total_tasks_per_image"),
+               "brief_ready": not missing, "brief_missing_fields": missing,
                "brief_requirement": context["user_requirement"], "sample_count_source": source}
     if missing:
         return result("success", "Brief needs clarification: " + ", ".join(missing), **updates)
@@ -109,12 +116,13 @@ def specify(context):
     return result("success", "Benchmark brief extracted", **updates,
                   working_blueprint_path=str(path),
                   **publish(context, "Requirement", {"path": str(path), "brief": info,
-                             "user_requirement": context["user_requirement"], "sample_count_source": source}, ()))
+                             "user_requirement": context["user_requirement"], "sample_count_source": source,
+                             "sample_scope": sample_scope, "max_total_tasks_per_image": updates["max_total_tasks_per_image"]}, ()))
 
 
 COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path", "artifact_versions",
           "limits", "user_requirement", "benchmark_info", "seed", "max_tasks_per_image", "question_temperature",
-          "registration_catalog_path")
+          "registration_catalog_path", "sample_scope", "max_total_tasks_per_image")
 
 
 def child_context(context, dataset_id, role):
@@ -129,7 +137,8 @@ def child_context(context, dataset_id, role):
                  annotation_path=asset["access"]["annotation_path"], dataset_entry=asset["entry"],
                  dataset_access_manifest=asset["access"], dataset_card_summary=asset["card_summary"],
                  operation_directory=str(Path(context["operation_directory"]) / role / dataset_id))
-    return child
+    return inject_answers(context, child, {"planning": "TaskPlanningAgent", "generation": "GenerationAgent",
+                                          "templates": "TaskPlanningAgent"}[role], dataset_id)
 
 
 def child_result(context, dataset_id, role, output):
@@ -140,8 +149,10 @@ def child_result(context, dataset_id, role, output):
     states.setdefault(dataset_id, {})[role] = str(path)
     updates = {"child_states": states, "artifact_versions": child.get("artifact_versions", context["artifact_versions"]),
                "last_agent_result": output["result"]}
-    if child.get("global_issue"):
-        updates["global_issue"] = child["global_issue"]
+    updates["issues"] = {**context.get("issues", {}), **child.get("issues", {})}
+    pending = child.get("global_issue")
+    if pending and updates["issues"].get(pending["issue_id"], {}).get("status") != "resolved":
+        updates["global_issue"] = pending
     outcome = dict(output["result"])
     outcome["updates"] = updates
     if outcome["status"] in {"complete", "needs_input"}:
@@ -223,6 +234,8 @@ def require_pending(context, stage, dataset_id):
 
 
 def available_stages(context):
+    if context.get("global_issue"):
+        return {"resolve_clarification", "ask_user"} if context["global_issue"]["status"] == "answered" else {"ask_user"}
     tools = {"set_intent", "ask_user", "list_datasets", "inspect_dataset_status"}
     intent = context.get("run_intent")
     if not intent:
@@ -340,6 +353,7 @@ def compile_benchmark_graph(*, checkpointer=None):
             child = initialize(child, sources, dataset_id)
             child["preparation_mode"] = mode
         child["feedback"] = feedback
+        inject_answers(context, child, "DataProcessingAgent", dataset_id)
         output = compile_data_processing_agent().invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "preparation", output)
         if output["result"]["status"] == "complete":
@@ -351,15 +365,22 @@ def compile_benchmark_graph(*, checkpointer=None):
 
     def allocate(context, *, delegation):
         """Delegate global Concept-first allocation after every selected dataset plan is complete."""
-        child = {k: context[k] for k in (*COMMON, "selected_dataset_ids", "dataset_task_plans", "operation_directory") if k in context}
+        saved = context.get("allocation_state_path")
+        child = json.loads(Path(saved).read_text(encoding="utf-8")) if saved else {}
+        child.update({k: context[k] for k in (*COMMON, "selected_dataset_ids", "dataset_task_plans", "operation_directory") if k in context})
+        inject_answers(context, child, "AllocationAgent")
         child["delegation"] = delegation
         publish(child, "AllocationDelegation", delegation, ())
         from medbenchagent.agents.allocation import _plans
         if not any(leaf["eligible_count"] for p in _plans(child).values() for leaf in p["tasks"].values()):
             return result("blocked", "All selected datasets completed planning without eligible tasks")
         output = allocation.invoke({"context": child})
+        state_path = Path(context["operation_directory"]) / "allocation-state.json"
+        atomic_write_json(state_path, output["context"])
         updates = {k: output["context"][k] for k in ("artifact_versions", "allocation_path", "global_issue") if k in output["context"]}
         updates["last_agent_result"] = output["result"]
+        updates["allocation_state_path"] = str(state_path)
+        updates["issues"] = {**context.get("issues", {}), **output["context"].get("issues", {})}
         return {**output["result"], "status": "success" if output["result"]["status"] in {"complete", "needs_input"} else output["result"]["status"], "updates": updates}
 
     def generate(context, *, dataset_id):
@@ -394,14 +415,17 @@ def compile_benchmark_graph(*, checkpointer=None):
         child = json.loads(Path(saved).read_text(encoding="utf-8")) if saved else {}
         child.update({k: context[k] for k in (*COMMON, "selected_dataset_ids", "dataset_assets", "dataset_task_plans",
                      "dataset_templates", "dataset_generations", "allocation_path", "operation_directory") if k in context})
+        inject_answers(context, child, "FinalizationAgent")
         output = finalization.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         path = Path(context["operation_directory"]) / "finalization-state.json"
         atomic_write_json(path, output["context"])
         updates = {"artifact_versions": output["context"]["artifact_versions"], "finalization_state_path": str(path),
                    "last_agent_result": output["result"]}
+        updates["issues"] = {**context.get("issues", {}), **output["context"].get("issues", {})}
+        updates["global_issue"] = output["context"].get("global_issue")
         if output["result"]["status"] == "complete":
             updates.update({k: v for k, v in output["context"].items() if k in BenchmarkOutputState.__annotations__})
-        return {**output["result"], "status": "success" if output["result"]["status"] == "complete" else output["result"]["status"], "updates": updates}
+        return {**output["result"], "status": "success" if output["result"]["status"] in {"complete", "needs_input"} else output["result"]["status"], "updates": updates}
 
     def finish(context):
         if context["run_intent"]["intent"] == "prepare_dataset":
@@ -426,13 +450,16 @@ def compile_benchmark_graph(*, checkpointer=None):
         "Delegate explicit objectives, constraints, preferences and revision notes to Planning and Allocation. "
         "Delegations must respect the original user requirement; never invent a task focus. "
         "Unsupported plans and zero allocation are valid, failures are not. Never omit explicitly requested datasets. "
-        "Clarify global_issue through ask_user, then re-extract the complete brief. No routine confirmations. "
+        "Clarify global_issue through ask_user with its exact issue_id. After receiving an answer call resolve_clarification: "
+        "semantic answers explain source meaning without changing the brief; requirement_change is only for an explicit "
+        "change or completion of benchmark requirements. If ambiguous, ask a follow-up with the same issue_id before classifying. "
+        "Re-extract the brief only after requirement_change. Never ask routine confirmations. "
         "Finite exhaustion may finish with reported deficits; no automatic refill loop.",
-        {"set_intent": set_intent, "specify": specify, "select_datasets": select_datasets,
+        {"set_intent": set_intent, "resolve_clarification": resolve_clarification, "specify": specify, "select_datasets": select_datasets,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
          "prepare_data": prepare_data, "plan": plan, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
         describe, finish, available_tools=available_stages,
-        args_schemas={"set_intent": RunIntent, "prepare_data": PrepareDataArguments,
+        args_schemas={"resolve_clarification": ResolveClarificationArguments, "set_intent": RunIntent, "prepare_data": PrepareDataArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
                       "plan": PlanningArguments, "allocate": DelegationArguments,
                       "generate": DatasetStatusArguments, "prepare_templates": DatasetStatusArguments})

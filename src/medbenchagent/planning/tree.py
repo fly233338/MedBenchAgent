@@ -5,6 +5,7 @@ from typing import Annotated, Literal, TypedDict
 from pydantic import Field, ValidationError, model_validator
 
 from medbenchagent.planning.protocol import Protocol
+from medbenchagent.planning.scope import ScopeResolution
 from medbenchagent.runtime.tool_contracts import NoArguments, NonEmpty
 from medbenchagent.answer_mapping import canonical_answer_scalar
 
@@ -185,6 +186,8 @@ class PlanningDraft(NoArguments):
     retired_ids: list[NonEmpty]
     coverage: Coverage | None = None
     template_feedback_id: str | None = None
+    scope_resolutions: list[ScopeResolution] = Field(default_factory=list)
+    scope_semantic_basis: list[SemanticBasis] = Field(default_factory=list)
 
 
 class PlanIssue(TypedDict):

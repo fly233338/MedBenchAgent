@@ -18,6 +18,7 @@ class AskUserArguments(NoArguments):
     question: NonEmpty
     reference: str = ""
     scope: Literal["local", "global"] = "local"
+    issue_id: str = ""
 
 
 class FeedbackArguments(NoArguments):
