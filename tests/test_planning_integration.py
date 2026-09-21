@@ -9,6 +9,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from medbenchagent import settings
 from medbenchagent.workflow.graph import compile_benchmark_graph
 from medbenchagent.agents.finalization import restore_delivery
+from test_benchmark_info import grounded
 from test_generation import _task, _grounding
 from test_dataset_cards import prepared_dataset
 
@@ -32,11 +33,11 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
                                                "sources": [{"id": "source", "kind": "annotation", "root": str(tmp_path / "a/source")}]},))
         monkeypatch.setattr(settings, "_SETTINGS", configured)
     info = {"clinical_scope": "Breast disease", "diseases": [], "modalities": ["Mammography"], "language": "en",
-            "sample_scope": [{"id": "modality", "kind": "modality", "description": "Only Mammography", "quote": "Mammography"}],
+            "sample_scope": [{"id": "modality", "kind": "modality", "description": "Only Mammography", "quote": "Mammography", "modalities": ["Mammography"]}],
             "evaluation_focus": "Classify status", "sample_count": dataset_count * 2 + 2}
     changed = {**info, "sample_count": 1, "language": "zh"}
     briefs = iter([info, changed])
-    monkeypatch.setattr("medbenchagent.planning.benchmark_info.complete_json", lambda *a: next(briefs) if revise else info)
+    monkeypatch.setattr("medbenchagent.planning.benchmark_info.complete_json", lambda *a: grounded(next(briefs) if revise else info, "Mammography"))
     monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: {"dataset_ids": identifiers})
     cycle = [("specify", {}), ("select_datasets", {})] + [(tool, {"dataset_id": d}) for d in identifiers for tool in ("plan", "prepare_templates")]
     prefix = [("specify", {}), ("select_datasets", {}), ("plan", {"dataset_id": "a"}), ("ask_user", {"question": "Confirm goal"})] if ask_global else cycle + [("ask_user", {"question": "Change target?"})] if revise else []

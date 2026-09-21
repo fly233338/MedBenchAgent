@@ -23,7 +23,8 @@ Return these keys and no wrapper object:
   "evaluation_focus": "Only explicitly requested task priorities and exclusions, or null",
   "language": "en, zh, or null",
   "sample_count": "positive integer or null",
-  "sample_scope": [{"id":"scope-1", "kind":"modality or population", "description":"Explicit sample inclusion/exclusion requirement", "quote":"Exact original user wording"}],
+  "sample_scope": [{"id":"scope-1", "kind":"modality or population", "description":"Explicit sample inclusion/exclusion requirement", "quote":"Exact original user wording", "modalities": ["Standard modality names covered by this scope; empty for population"]}],
+  "evidence": [{"field":"clinical_scope", "value":"The extracted value (one item for list fields)", "quote":"Exact original user wording"}],
   "max_total_tasks_per_image": "Explicit positive integer total across all task types, or null"
 }
 
@@ -40,6 +41,11 @@ sample_scope must cover EVERY explicit modality and population restriction. Dist
 testing disease knowledge from selecting only cases with that disease. The former is
 evaluation_focus, not a positive-case filter. Do not invent restrictions. Use an empty
 list when none were requested. Quote the user's original language, without translation.
+Every explicit nonempty field and list item, including invalid explicit values and
+max_total_tasks_per_image, requires evidence with its field, extracted value and exact user quote.
+Unspecified values require no evidence. Do not quote assistant clarification questions as user evidence.
+Always return sample_scope, even when empty. Group alternatives such as CT or MRI in ONE
+modality scope listing both modalities; resolve them with one in condition, not intersecting filters.
 Return valid JSON only."""
 
 
@@ -66,6 +72,8 @@ def missing_fields(info: dict[str, Any]) -> list[str]:
     for field in ("clinical_scope", "language"):
         if field not in missing and (not isinstance(info[field], str) or not info[field].strip()):
             missing.append(field)
+    if "language" not in missing and info["language"] not in {"en", "zh"}:
+        missing.append("language")
     return missing
 
 
@@ -103,19 +111,37 @@ def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = N
         f"Current values: {json.dumps(existing or {})}\n\nUser requirement:\n{requirement}",
     )
     info = merge_info(existing or {}, result)
+    if "sample_scope" not in result:
+        raise ValueError("Extraction must include sample_scope, including explicit modalities")
     if "sample_scope" in result:
         from medbenchagent.planning.scope import ScopeRequirement
         scopes = [ScopeRequirement.model_validate(r).model_dump() for r in result["sample_scope"]]
         if len({r["id"] for r in scopes}) != len(scopes) or any(r["quote"] not in requirement for r in scopes):
             raise ValueError("Sample scope requires unique IDs and exact user quotations")
-        if info["modalities"] and not any(r["kind"] == "modality" for r in scopes):
-            raise ValueError("Explicit modalities require executable sample scope requirements")
+        covered = {m for r in scopes for m in r["modalities"]}
+        if covered != set(info["modalities"]):
+            raise ValueError("Sample scope must cover exactly all explicit modalities")
         info["sample_scope"] = scopes
     if "max_total_tasks_per_image" in result:
         limit = result["max_total_tasks_per_image"]
         if limit is not None and (type(limit) is not int or limit <= 0):
             raise ValueError("Total tasks per image must be a positive integer")
         info["max_total_tasks_per_image"] = limit
+    evidence = result.get("evidence")
+    if not isinstance(evidence, list):
+        raise ValueError("Extraction requires evidence for explicit values")
+    expected = [(field, value) for field in (*REQUIRED_FIELDS, *OPTIONAL_FIELDS, "max_total_tasks_per_image")
+                for value in (info.get(field) if field in {"diseases", "modalities"} else [info.get(field)])
+                if value is not None and value != ""]
+    for item in evidence:
+        if (not isinstance(item, dict) or set(item) != {"field", "value", "quote"}
+                or not isinstance(item["quote"], str) or not item["quote"].strip()
+                or item["quote"] not in requirement
+                or (item["field"], item["value"]) not in expected):
+            raise ValueError("Extraction evidence must reference an explicit value and exact user quote")
+    if any(not any(e["field"] == field and e["value"] == value for e in evidence) for field, value in expected):
+        raise ValueError("Extraction evidence must cover every explicit value")
+    info["evidence"] = evidence
     return info
 
 

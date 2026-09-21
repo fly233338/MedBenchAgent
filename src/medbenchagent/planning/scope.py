@@ -13,6 +13,15 @@ class ScopeRequirement(NoArguments):
     description: NonEmpty
     quote: NonEmpty
     kind: Literal["modality", "population"]
+    modalities: list[NonEmpty] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def modality_coverage(self):
+        if self.kind == "modality" and not self.modalities:
+            raise ValueError("Modality scope must identify the modalities it covers")
+        if self.kind == "population" and self.modalities:
+            raise ValueError("Population scope cannot declare modalities")
+        return self
 
 
 class ScopeResolution(NoArguments):

@@ -1,4 +1,4 @@
-"""Small OpenAI-compatible client for the deployed DeepSeek model."""
+"""Small OpenAI-compatible client for the configured model."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def _client() -> OpenAI:
 def complete_json(
     system_prompt: str, user_prompt: str, *, temperature: float | None = None
 ) -> dict[str, Any]:
-    """Return a JSON object from the configured DeepSeek-compatible endpoint."""
+    """Return a JSON object from the configured OpenAI-compatible endpoint."""
     started = time.perf_counter()
     settings = get_settings().llm
     model = settings.model
@@ -68,18 +68,18 @@ def complete_json(
         )
     except APIError as exc:
         record_llm_call(status="failure", started=started, error_type=type(exc).__name__)
-        raise ModelUnavailable(f"DeepSeek request failed: {type(exc).__name__}.") from exc
+        raise ModelUnavailable(f"LLM request failed: {type(exc).__name__}.") from exc
     content = response.choices[0].message.content
     if not content:
         record_llm_call(status="failure", started=started, error_type="empty_response", response=response)
-        raise ModelUnavailable("DeepSeek returned an empty response.")
+        raise ModelUnavailable("LLM returned an empty response.")
     try:
         result = json.loads(content)
     except json.JSONDecodeError as exc:
         record_llm_call(status="failure", started=started, error_type="invalid_json", response=response)
-        raise ModelUnavailable("DeepSeek did not return valid JSON.") from exc
+        raise ModelUnavailable("LLM did not return valid JSON.") from exc
     if not isinstance(result, dict):
         record_llm_call(status="failure", started=started, error_type="invalid_json_object", response=response)
-        raise ModelUnavailable("DeepSeek JSON response must be an object.")
+        raise ModelUnavailable("LLM JSON response must be an object.")
     record_llm_call(status="success", started=started, response=response)
     return result

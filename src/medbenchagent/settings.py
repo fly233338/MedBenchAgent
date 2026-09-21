@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 import tomllib
 import json
 from contextlib import contextmanager
@@ -24,6 +25,10 @@ _ENVIRONMENT_OVERRIDES = {
     "BGE_EMBEDDING_MODEL": ("rag", "embedding_model"),
     "BGE_RERANKER_MODEL": ("rag", "reranker_model"),
     "RAG_MIN_RERANK_SCORE": ("rag", "min_rerank_score"),
+    "MEDBENCH_LLM_MODEL": ("llm", "model"),
+    "MEDBENCH_LLM_BASE_URL": ("llm", "base_url"),
+    "MEDBENCH_LLM_TIMEOUT_SECONDS": ("llm", "timeout_seconds"),
+    "MEDBENCH_LLM_MAX_RETRIES": ("llm", "max_retries"),
 }
 
 
@@ -163,7 +168,7 @@ def load_project_env() -> None:
 
 def get_llm_api_key() -> str | None:
     """Read the optional API key in the sole configuration module."""
-    return os.getenv("DEEPSEEK_API_KEY") or None
+    return os.getenv("MEDBENCH_LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or None
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any], *, prefix: str = "") -> None:
@@ -329,12 +334,31 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     if local_path:
         _merge(values, _read_toml(local_path))
     env_keys: list[str] = []
-    for environment_name, (section, key) in _ENVIRONMENT_OVERRIDES.items():
-        value = os.getenv(environment_name)
+    overrides = {target: (name, os.environ[name]) for name, target in _ENVIRONMENT_OVERRIDES.items()
+                 if os.getenv(name)}
+    for (section, key), (environment_name, value) in overrides.items():
         if value:
+            try:
+                if (section, key) in {("llm", "timeout_seconds"), ("rag", "min_rerank_score")}:
+                    value = float(value)
+                    # The settings validator below remains authoritative for ranges.
+                    if not math.isfinite(value):
+                        raise ValueError("must be finite")
+                elif (section, key) == ("llm", "max_retries"):
+                    value = _integer(int(value), environment_name)
+            except ValueError as exc:
+                raise ValueError(f"Invalid environment variable {environment_name}: {exc}") from exc
             values[section][key] = value
-            env_keys.append(f"{section}.{key}")
-    return _settings_from(values, DEFAULT_CONFIG_PATH, local_path, env_keys)
+            if f"{section}.{key}" not in env_keys:
+                env_keys.append(f"{section}.{key}")
+    try:
+        return _settings_from(values, DEFAULT_CONFIG_PATH, local_path, env_keys)
+    except ValueError as exc:
+        names = [name for name, (section, key) in _ENVIRONMENT_OVERRIDES.items()
+                 if os.getenv(name) and f"{section}.{key}" in str(exc)]
+        if names:
+            raise ValueError(f"Invalid environment variable {names[-1]}: {exc}") from exc
+        raise
 
 
 def get_settings() -> AppSettings:

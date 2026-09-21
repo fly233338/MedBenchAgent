@@ -11,6 +11,47 @@ from medbenchagent.planning.benchmark_info import (
 )
 
 
+def grounded(values, quote="Build"):
+    values = dict(values)
+    values.setdefault("sample_scope", [])
+    values["evidence"] = [
+        {"field": field, "value": value, "quote": quote}
+        for field in (*benchmark_info.REQUIRED_FIELDS, *benchmark_info.OPTIONAL_FIELDS, "max_total_tasks_per_image")
+        for value in (values.get(field, []) if field in {"diseases", "modalities"} else [values.get(field)])
+        if value is not None and value != ""
+    ]
+    return values
+
+
+@pytest.mark.parametrize("language", [None, "English", "French", "", "fr"])
+def test_unsupported_language_needs_clarification(language):
+    assert missing_fields({"clinical_scope": "Any", "sample_count": 1, "language": language}) == ["language"]
+
+
+def test_modality_union_and_evidence_contract(monkeypatch):
+    answer = grounded({"clinical_scope": "Imaging", "modalities": ["CT", "MRI"],
+                       "language": "en", "sample_count": 4,
+                       "sample_scope": [{"id": "m", "kind": "modality", "description": "CT or MRI",
+                                         "quote": "CT or MRI", "modalities": ["CT", "MRI"]}]},
+                      "CT or MRI")
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: answer)
+    assert len(benchmark_info.extract_benchmark_info("CT or MRI")["sample_scope"]) == 1
+    answer["sample_scope"][0]["modalities"] = ["CT"]
+    with pytest.raises(ValueError, match="all explicit modalities"):
+        benchmark_info.extract_benchmark_info("CT or MRI")
+    answer.pop("sample_scope")
+    with pytest.raises(ValueError, match="sample_scope"):
+        benchmark_info.extract_benchmark_info("CT or MRI")
+
+
+@pytest.mark.parametrize("evidence", [[], [{"field": "clinical_scope", "value": "Imaging", "quote": "invented"}]])
+def test_missing_or_fabricated_extraction_evidence(monkeypatch, evidence):
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: {
+        "clinical_scope": "Imaging", "sample_scope": [], "evidence": evidence})
+    with pytest.raises(ValueError, match="evidence"):
+        benchmark_info.extract_benchmark_info("Build")
+
+
 def test_merge_normalizes_count_and_reports_missing_fields() -> None:
     info = merge_info({"clinical_scope": "breast disease"}, {"sample_count": "2.5k", "language": "en"})
     assert info["sample_count"] == 2_500
@@ -29,14 +70,15 @@ def test_multi_disease_scope_does_not_invent_focus():
 
 def test_extract_uses_benchmark_level_schema(monkeypatch) -> None:
     def fake_complete_json(system_prompt: str, user_prompt: str):
-        return {
+        return grounded({
             "diseases": ["breast cancer"],
             "modalities": ["mammography"],
             "clinical_scope": "diagnosis benchmark",
             "evaluation_focus": None,
             "language": "en",
             "sample_count": 20,
-        }
+            "sample_scope": [{"id": "m", "kind": "modality", "description": "Mammography", "quote": "钼靶摄影", "modalities": ["mammography"]}],
+        }, "创建一个英文乳腺癌钼靶摄影 benchmark，目标20题")
 
     monkeypatch.setattr(benchmark_info, "complete_json", fake_complete_json)
     result = benchmark_info.extract_benchmark_info("创建一个英文乳腺癌钼靶摄影 benchmark，目标20题")
@@ -73,7 +115,7 @@ def test_specify_defaults_only_absent_count(tmp_path, monkeypatch, value, expect
     from medbenchagent.workflow.graph import specify
     cfg = settings.get_settings()
     monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, benchmark=replace(cfg.benchmark, default_sample_count=17)))
-    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: {"clinical_scope": "Disease", "language": "en", "sample_count": value})
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: grounded({"clinical_scope": "Disease", "language": "en", "sample_count": value}))
     c = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "op"), "user_requirement": "Build"}
     updates = specify(c)["updates"]
     assert updates["benchmark_info"]["sample_count"] == expected
@@ -83,7 +125,7 @@ def test_specify_defaults_only_absent_count(tmp_path, monkeypatch, value, expect
 
 def test_missing_language_gates_repeated_specify_until_answer(tmp_path, monkeypatch):
     from medbenchagent.workflow.graph import specify, available_stages
-    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: {"clinical_scope": "Disease", "language": None})
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: grounded({"clinical_scope": "Disease", "language": None}))
     c = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "op"), "user_requirement": "Build",
          "run_intent": {"intent": "build_benchmark", "prepare_dataset_ids": []}}
     c.update(specify(c)["updates"])
@@ -102,9 +144,9 @@ def test_scope_and_explicit_total_limit_are_execution_requirements(tmp_path, mon
     from medbenchagent.workflow.graph import specify
     from medbenchagent.runtime.dependencies import require
     answer = {"clinical_scope": "Breast", "language": "en", "sample_count": 6, "modalities": ["US"],
-              "sample_scope": [{"id": "us", "kind": "modality", "description": "US only", "quote": "US"}],
+              "sample_scope": [{"id": "us", "kind": "modality", "description": "US only", "quote": "US", "modalities": ["US"]}],
               "max_total_tasks_per_image": limit}
-    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: answer)
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: grounded(answer, "US pathology benchmark"))
     c = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "op"),
          "user_requirement": "US pathology benchmark", "configured_total_tasks_per_image": 3}
     updates = specify(c)["updates"]

@@ -97,6 +97,7 @@ def specify(context):
     if context.get("brief_requirement") == context["user_requirement"]:
         raise ValueError("This requirement has already been extracted; clarify missing fields first")
     info = extract_benchmark_info(context["user_requirement"])
+    evidence = info.pop("evidence")
     sample_scope = info.pop("sample_scope", [])
     total_limit = info.pop("max_total_tasks_per_image", None)
     if info.get("modalities") and not any(r["kind"] == "modality" for r in sample_scope):
@@ -106,7 +107,7 @@ def specify(context):
         info["sample_count"] = get_settings().benchmark.default_sample_count
         source = "configuration"
     missing = missing_fields(info)
-    updates = {"benchmark_info": info, "sample_scope": sample_scope,
+    updates = {"benchmark_info": info, "sample_scope": sample_scope, "requirement_evidence": evidence,
                "max_total_tasks_per_image": total_limit if total_limit is not None else context.get("configured_total_tasks_per_image"),
                "brief_ready": not missing, "brief_missing_fields": missing,
                "brief_requirement": context["user_requirement"], "sample_count_source": source}
@@ -121,6 +122,7 @@ def specify(context):
                   working_blueprint_path=str(path),
                   **publish(context, "Requirement", {"path": str(path), "brief": info,
                              "user_requirement": context["user_requirement"], "sample_count_source": source,
+                             "evidence": evidence,
                              "sample_scope": sample_scope, "max_total_tasks_per_image": updates["max_total_tasks_per_image"]}, ()))
 
 

@@ -108,9 +108,11 @@ build、prepare、Experiment 以及直接图调用共用按意图的本地预检
 ## 局部规划与全局分配
 
 Benchmark Info 使用 clinical_scope、diseases[]、modalities[]、evaluation_focus、language、sample_count。
-scope、语言和正整数题量必填；缺少语言时询问，缺省题量取 benchmark.default_sample_count（默认 1000）。
+scope、语言（仅 en/zh）和正整数题量必填；缺少语言时询问，缺省题量取 benchmark.default_sample_count（默认 1000）。
 用户显式无效题量保持待澄清，不用默认值覆盖；题量来源单独记录在 Requirement，不增加 Info 字段。
 brief_missing_fields 和 brief_requirement 阻止对未变化需求重复 specify，回答后重新提取完整需求。
+Requirement 单独保存逐字段/列表项的原文 evidence，代码检查引用与值覆盖；默认题量标为配置来源，证据不进入 BenchmarkInfo。
+模态范围显式列出所覆盖 modalities，必须与需求完整对应；CT 或 MRI 等并集保留在同一范围内。
 其余只保留用户明确表达的内容。Selection 使用范围和限制，
 Planning 使用范围与评测重点，Allocation 使用总体要求与局部委派偏好。
 
@@ -208,7 +210,7 @@ LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete�
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v11；
+SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v12；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner 必须逐项 resolve_sample_scope，

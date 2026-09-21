@@ -550,3 +550,8 @@ space; common parsing and scoring remain model-independent.
 
 MedBenchAgent is licensed under the [Apache License 2.0](LICENSE). See
 [NOTICE](NOTICE) for copyright information.
+
+LLM 环境变量使用 `MEDBENCH_LLM_API_KEY`、`MEDBENCH_LLM_MODEL`、`MEDBENCH_LLM_BASE_URL`、
+`MEDBENCH_LLM_TIMEOUT_SECONDS`、`MEDBENCH_LLM_MAX_RETRIES`。已有 `DEEPSEEK_*` 名称仍可用，
+同一设置优先采用新名称的非空值；空值忽略。数值变量先转换类型，再校验范围。密钥不写入配置快照。
+需求语言仅支持 `en/zh`，缺失或不支持时询问；未指定题量继续采用配置默认值。
