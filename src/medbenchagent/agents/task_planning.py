@@ -31,6 +31,7 @@ from medbenchagent.planning.tree import (
 )
 from medbenchagent.planning.protocol import validate_dataset_protocol
 from medbenchagent.runtime.llm import complete_json
+from medbenchagent.runtime.inspection import inspected, inspection
 from medbenchagent.data.query import DatasetQuery, iter_records
 from medbenchagent.planning.scope import ScopeResolution, conditions_for, validate_scope_plan
 from medbenchagent.planning.tree import SemanticBasis
@@ -137,9 +138,8 @@ def list_fields(context, *, offset=0, limit=20, query=""):
         for key, value in fields.items()
         if query.casefold() in key.casefold()
     ]
-    return result(
-        "success", json.dumps({"total": len(rows), "fields": rows[offset : offset + limit]})
-    )
+    return inspected(context, "list_fields", {"offset": offset, "limit": limit, "query": query},
+                     {"total": len(rows), "fields": rows[offset : offset + limit]}, ("Dataset",))
 
 
 def read_fields(context, *, fields):
@@ -148,13 +148,14 @@ def read_fields(context, *, fields):
     card = _read(resolve_path(context["dataset_entry"]["dataset_card_path"]))
     details = _subset(_profile(context), fields)
     details["field_roles"] = {key: card["semantics"]["field_roles"].get(key) for key in fields}
-    return result("success", json.dumps(details, ensure_ascii=False))
+    return inspected(context, "read_fields", {"fields": fields}, details, ("Dataset", "DatasetCard"))
 
 
 def read_field_values(context, *, field, offset=0, limit=20):
     """Page complete exact values from the current Dataset index."""
     require(context, "Dataset")
-    return result("success", json.dumps(DatasetQuery(context["dataset_access_manifest"]).values(field, offset, limit), ensure_ascii=False))
+    value = DatasetQuery(context["dataset_access_manifest"]).values(field, offset, limit)
+    return inspected(context, "read_field_values", {"field": field, "offset": offset, "limit": limit}, value, ("Dataset",))
 
 
 def inspect_field_by_source(context, *, field):
@@ -330,8 +331,8 @@ def read_dataset_document(context, *, path, offset=0):
         text = handle.read(12000)
     reference = f"{path}:{offset}"
     documents = {**context.get("source_documents", {}), reference: text}
-    return result("success", json.dumps({"reference": reference, "text": text}, ensure_ascii=False),
-                  source_documents=documents)
+    return inspected(context, "read_dataset_document", {"path": path, "offset": offset},
+                     {"reference": reference, "text": text}, ("Dataset",), source_documents=documents)
 
 
 def _validate_semantic_basis(context, protocol, basis):
@@ -538,7 +539,7 @@ def remove_leaf(context, *, node_id):
     return _persist(context, tree, changed=True)
 
 
-def complete_concept(context, *, concept_id, status, reason):
+def complete_concept(context, *, concept_id, status, reason, inspection_references=None):
     """Close a concept after designing its leaves or establish that annotation cannot support it."""
     tree = _tree(context)
     if concept_id not in tree["concepts"]:
@@ -555,8 +556,25 @@ def complete_concept(context, *, concept_id, status, reason):
             leaf["eligible_count"] = capacity
             _validate_evidence(context, leaf["evidence"])
             _validate_leaf_grounding(context, leaf)
-    tree["concepts"][concept_id].update(status=status, reason=reason)
+    references = inspection_references or []
+    if status == "unsupported":
+        _unsupported_evidence(context, references)
+    tree["concepts"][concept_id].update(status=status, reason=reason, inspection_references=references)
     return _persist(context, tree, changed=True)
+
+
+def _unsupported_evidence(context, references):
+    if not references:
+        raise ValueError("Unsupported concepts require inspection references")
+    receipts = [inspection(context, ref) for ref in references]
+    if any(r["operation"] not in {"list_fields", "read_fields", "read_field_values", "read_dataset_document"} for r in receipts):
+        raise ValueError("Unsupported concepts require field or document inspection")
+    return receipts
+
+
+def _concept_evidence(context, tree):
+    return {key: _unsupported_evidence(context, concept.get("inspection_references", []))
+            for key, concept in tree["concepts"].items() if concept["status"] == "unsupported"}
 
 
 def coverage_gap(context):
@@ -661,6 +679,7 @@ def _validate_scope_evidence(context, tree):
 def review_tree(context):
     """Review full mappings and source evidence; corrections consume persistent rework budget."""
     tree = _tree(context)
+    concept_evidence = _concept_evidence(context, tree)
     scope_fields = _validate_scope_evidence(context, tree)
     _validate_template_repair(context, tree)
     if not concepts_complete(tree) or not tree["discovery_complete"]:
@@ -688,6 +707,7 @@ def review_tree(context):
         "Opaque codes, abbreviations and ambiguous labels require dataset-specific documented meaning or a user decision; "
         "medical convention is not evidence of a dataset's encoding. Missing or contradictory grounding requires revise "
         "with a specific request to obtain evidence or ask_user; never approve a guess. "
+        "Check unsupported reasons against concept_inspections; a reference proves inspection, not semantic correctness. "
         "Card is a search hint, not proof. Unsupported concepts are valid: never add leaves merely to fill the Blueprint. "
         'Return {"issues":[{"action":"merge|remove|reparent|revise|add_leaf","node_ids":["id"],"reason":"specific correction"}]}. '
         "An empty list means approved. Propose targeted changes, never rewrite the entire tree.",
@@ -696,6 +716,7 @@ def review_tree(context):
                 "requirement": context["benchmark_info"],
                 "delegation": context.get("delegation"),
                 "concepts": tree["concepts"],
+                "concept_inspections": concept_evidence,
                 "leaves": leaves,
                 "sample_scope": context.get("sample_scope", []),
                 "scope_resolutions": tree.get("scope_resolutions", []),
@@ -731,6 +752,7 @@ def _review_result(context, tree, draft_path):
 def finish(context):
     """Publish the reviewed dataset-local Plan with exact capacities, including unsupported datasets."""
     tree = _tree(context)
+    _concept_evidence(context, tree)
     _validate_scope_evidence(context, tree)
     _validate_template_repair(context, tree)
     for leaf in tree["tasks"].values():
@@ -860,6 +882,7 @@ def compile_task_planning_agent(*, checkpointer=None):
     return compile_agent(
         "TaskPlanningAgent",
         "Build a two-level Medical Concept -> executable Leaf plan. The dataset is already assigned and prepared. Select references (an empty selection is allowed). "
+        "Unsupported decisions require inspection_references returned by field/document tools; reuse current evidence when relevant. "
         "Understand each core concept using field inspection and optional RAG BEFORE and during leaf expansion. "
         "Create opaque stable leaf IDs at runtime; never infer execution from IDs. All behavior belongs to Protocol. "
         "Resolve every sample_scope using resolve_sample_scope before creating leaves. Use actual scalar fields and exact "

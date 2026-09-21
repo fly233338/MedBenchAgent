@@ -52,6 +52,46 @@ def test_missing_or_fabricated_extraction_evidence(monkeypatch, evidence):
         benchmark_info.extract_benchmark_info("Build")
 
 
+def test_assistant_question_cannot_ground_user_requirement(monkeypatch):
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: grounded({"language": "en"}, "English"))
+    with pytest.raises(ValueError, match="exact user quote"):
+        benchmark_info.extract_benchmark_info("Build\nClarification question: English?\nUser answer: unsure",
+                                              user_inputs=["Build", "unsure"])
+
+
+def test_required_field_clarification_resumes_without_model_routing(tmp_path, monkeypatch):
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.types import Command
+    from medbenchagent.runtime.harness import compile_agent, result
+    from medbenchagent.workflow.graph import specify, required_field_action, available_stages
+    answers = iter([grounded({"clinical_scope": "Imaging", "language": None}),
+                    grounded({"clinical_scope": "Imaging", "language": None}),
+                    grounded({"clinical_scope": "Imaging", "language": "zh", "sample_count": 2}, "中文两题")])
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: next(answers))
+    choices = iter(["specify", "finish"])
+    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *a: {
+        "tool": next(choices), "arguments": {}, "reason": "Test"})
+    graph = compile_agent("SupervisorAgent", "Test", {"specify": specify}, lambda c: {},
+                          lambda c: result("complete", "Done"), automatic_action=required_field_action,
+                          available_tools=lambda c: {"finish"} if c.get("brief_ready") else available_stages(c),
+                          checkpointer=MemorySaver())
+    c = {"run_id": "test", "run_directory": str(tmp_path), "operation_directory": str(tmp_path / "ops"),
+         "construction_events_path": str(tmp_path / "events"), "user_requirement": "Build",
+         "run_intent": {"intent": "build_benchmark", "prepare_dataset_ids": []}}
+    config = {"configurable": {"thread_id": "required"}}
+    first = graph.invoke({"context": c}, config)
+    assert first["__interrupt__"]
+    second = graph.invoke(Command(resume="不知道"), config)
+    assert second["__interrupt__"]
+    assert first["__interrupt__"][0].value["issue_id"] != second["__interrupt__"][0].value["issue_id"]
+    final = graph.invoke(Command(resume="中文两题"), config)
+    assert final["result"]["status"] == "complete"
+    assert final["context"]["benchmark_info"]["sample_count"] == 2
+    assert final["context"]["benchmark_info"]["language"] == "zh"
+    assert final["context"]["user_inputs"] == ["Build", "不知道", "中文两题"]
+    assert all(issue["status"] == "resolved" for issue in final["context"]["issues"].values())
+
+
 def test_merge_normalizes_count_and_reports_missing_fields() -> None:
     info = merge_info({"clinical_scope": "breast disease"}, {"sample_count": "2.5k", "language": "en"})
     assert info["sample_count"] == 2_500
@@ -131,11 +171,12 @@ def test_missing_language_gates_repeated_specify_until_answer(tmp_path, monkeypa
     c.update(specify(c)["updates"])
     assert c["brief_missing_fields"] == ["language"]
     tools = available_stages(c)
-    assert "ask_user" in tools and "list_datasets" in tools
+    assert "ask_user" in tools
     assert not tools & {"specify", "select_datasets", "plan", "prepare_data"}
     with pytest.raises(ValueError, match="already been extracted"):
         specify(c)
     c["user_requirement"] += "\nEnglish"
+    c["global_issue"] = None
     assert "specify" in available_stages(c)
 
 

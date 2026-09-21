@@ -204,7 +204,7 @@ def test_rag_available_before_any_leaf_and_exact_field_values(tmp_path, monkeypa
     assert json.loads(output["summary"]) == chunks
     assert c["retrieved_evidence"] == [{"pdf": "book.pdf", "page": 1, "chunk_id": "c1"}]
     values = json.loads(planning.read_field_values(c, field="image.annotation.status")["summary"])
-    assert {row["value"] for row in values["values"]} == {"benign", "malignant"}
+    assert {row["value"] for row in values["inspection"]["values"]} == {"benign", "malignant"}
 
 
 def test_optional_materials_initialize_without_rag_and_keep_existing_selection(tmp_path, monkeypatch):
@@ -285,6 +285,7 @@ def test_extension_gate_acceptance_rejection_and_reparent_identity(tmp_path, mon
         concept_id="core",
         status="unsupported",
         reason="Moved to extension",
+        inspection_references=list(call(c, planning.read_field_values, field="image.annotation.status")["updates"]["inspections"]),
     )
     call(c, planning.propose_extension, **{**proposal, "category": "new-category"})
     assert planning._tree(c)["tasks"]["opaque.identity"]["category"] == "new-category"
@@ -466,13 +467,32 @@ def test_readiness_gate_never_rescans_annotations(tmp_path, monkeypatch):
 
 def test_unsupported_dataset_publishes_empty_plan(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
-    call(c, planning.complete_concept, concept_id="core", status="unsupported", reason="No relevant annotation")
+    call(c, planning.read_field_values, field="image.annotation.status")
+    call(c, planning.complete_concept, concept_id="core", status="unsupported", reason="No relevant annotation",
+         inspection_references=list(c["inspections"]))
     call(c, planning.coverage_gap)
     call(c, planning.finish_discovery)
     monkeypatch.setattr(planning, "complete_json", lambda *a: {"issues": []})
     call(c, planning.review_tree)
     assert call(c, planning.finish)["status"] == "complete"
     assert planning._tree(c)["tasks"] == {}
+
+
+def test_unsupported_rejects_missing_forged_stale_and_foreign_inspections(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    arguments = dict(concept_id="core", status="unsupported", reason="No suitable labels")
+    for references in ([], ["invented"]):
+        with pytest.raises(ValueError, match="[Ii]nspection"):
+            planning.complete_concept(c, **arguments, inspection_references=references)
+    call(c, planning.read_field_values, field="image.annotation.status")
+    references = list(c["inspections"])
+    foreign = copy.deepcopy(c)
+    foreign["selected_dataset_id"] = "other"
+    with pytest.raises(ValueError, match="another dataset"):
+        planning.complete_concept(foreign, **arguments, inspection_references=references)
+    publish(c, "Dataset", {"revision": 2}, ())
+    with pytest.raises(ValueError, match="stale"):
+        planning.complete_concept(c, **arguments, inspection_references=references)
 
 
 def test_review_receives_mapping_and_verified_semantic_basis(tmp_path, monkeypatch):

@@ -54,6 +54,8 @@ def resolve_clarification(context, *, issue_id, kind):
         exchanges = issue.get("exchanges", [{"question": issue["question"], "answer": issue["answer"]}])
         clarification_text = "\n".join(f"Clarification question: {e['question']}\nUser answer: {e['answer']}" for e in exchanges)
         updates.update(user_requirement=context["user_requirement"] + "\n" + clarification_text,
+                       user_inputs=[*context.get("user_inputs", [context["user_requirement"]]),
+                                    *(e["answer"] for e in exchanges)],
                        brief_ready=False, brief_missing_fields=[])
         updates.update(publish(context, "Requirement", {"text": updates["user_requirement"]}, ()))
     from pathlib import Path

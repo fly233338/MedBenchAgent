@@ -51,6 +51,7 @@ def compile_agent(
     args_schemas: dict[str, type[BaseModel]] | None = None,
     available_tools: Callable[[dict[str, Any]], set[str]] | None = None,
     initialize_context: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    automatic_action: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     checkpointer: Any = None,
 ):
     """Run registered tools serially, retaining private state and completed operations."""
@@ -94,6 +95,9 @@ def compile_agent(
                 )
             }
         enabled = available_tools(context) if available_tools is not None else set(catalog)
+        automatic = automatic_action(context) if automatic_action else None
+        if automatic and automatic["tool"] in enabled:
+            return {"action": automatic}
         started = time.monotonic()
         with event_context(
             construction_events_path=context["construction_events_path"],
@@ -249,6 +253,13 @@ def compile_agent(
                         "issues": {**context.get("issues", {}), decision_key: issue},
                         "global_issue": issue if name == "SupervisorAgent" else None,
                     }
+                    if name == "SupervisorAgent" and issue.get("purpose") == "benchmark_fields":
+                        from medbenchagent.runtime.clarifications import resolve_clarification
+                        completion = resolve_clarification(
+                            {**context, **updates, "operation_directory": str(operation.with_suffix(""))},
+                            issue_id=decision_key, kind="requirement_change",
+                        )
+                        updates.update(completion["updates"])
                     outcome = result(
                         "success",
                         "User clarification received",

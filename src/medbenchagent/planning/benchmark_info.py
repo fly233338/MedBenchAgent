@@ -104,11 +104,14 @@ def merge_info(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, An
     return merged
 
 
-def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = None,
+                           *, user_inputs: list[str] | None = None) -> dict[str, Any]:
     """Extract only the explicitly requested benchmark-level intent."""
+    user_inputs = user_inputs if user_inputs is not None else [requirement]
     result = complete_json(
         EXTRACTION_PROMPT,
-        f"Current values: {json.dumps(existing or {})}\n\nUser requirement:\n{requirement}",
+        f"Current values: {json.dumps(existing or {})}\n\nUser requirement:\n{requirement}"
+        f"\n\nQuote evidence only from these user inputs: {json.dumps(user_inputs, ensure_ascii=False)}",
     )
     info = merge_info(existing or {}, result)
     if "sample_scope" not in result:
@@ -116,7 +119,7 @@ def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = N
     if "sample_scope" in result:
         from medbenchagent.planning.scope import ScopeRequirement
         scopes = [ScopeRequirement.model_validate(r).model_dump() for r in result["sample_scope"]]
-        if len({r["id"] for r in scopes}) != len(scopes) or any(r["quote"] not in requirement for r in scopes):
+        if len({r["id"] for r in scopes}) != len(scopes) or any(not any(r["quote"] in text for text in user_inputs) for r in scopes):
             raise ValueError("Sample scope requires unique IDs and exact user quotations")
         covered = {m for r in scopes for m in r["modalities"]}
         if covered != set(info["modalities"]):
@@ -136,7 +139,7 @@ def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = N
     for item in evidence:
         if (not isinstance(item, dict) or set(item) != {"field", "value", "quote"}
                 or not isinstance(item["quote"], str) or not item["quote"].strip()
-                or item["quote"] not in requirement
+                or not any(item["quote"] in text for text in user_inputs)
                 or (item["field"], item["value"]) not in expected):
             raise ValueError("Extraction evidence must reference an explicit value and exact user quote")
     if any(not any(e["field"] == field and e["value"] == value for e in evidence) for field, value in expected):

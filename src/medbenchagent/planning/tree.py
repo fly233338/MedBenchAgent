@@ -74,6 +74,7 @@ class ConceptArguments(NoArguments):
     concept_id: NonEmpty
     status: Literal["complete", "unsupported"]
     reason: NonEmpty
+    inspection_references: list[NonEmpty] = Field(default_factory=list)
 
 
 class NodeArguments(NoArguments):
@@ -134,6 +135,7 @@ class Concept(NoArguments):
     origin: Literal["core", "extension"]
     status: Literal["pending", "complete", "unsupported"]
     reason: str
+    inspection_references: list[NonEmpty] = Field(default_factory=list)
     require: str | None = None
 
 
@@ -268,6 +270,9 @@ def validate_plan(tree: object) -> list[PlanIssue]:
     if not draft.concepts:
         issues.append({"path": ["concepts"], "message": "Plan requires medical concepts"})
     for key, concept in draft.concepts.items():
+        if concept.status == "unsupported" and not concept.inspection_references:
+            issues.append({"path": ["concepts", key, "inspection_references"],
+                           "message": "Unsupported concepts require inspection references"})
         children = [leaf for leaf in draft.tasks.values() if leaf.concept_id == key]
         if concept.status == "pending":
             issues.append(

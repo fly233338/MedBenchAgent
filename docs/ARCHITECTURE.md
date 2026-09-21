@@ -110,7 +110,9 @@ build、prepare、Experiment 以及直接图调用共用按意图的本地预检
 Benchmark Info 使用 clinical_scope、diseases[]、modalities[]、evaluation_focus、language、sample_count。
 scope、语言（仅 en/zh）和正整数题量必填；缺少语言时询问，缺省题量取 benchmark.default_sample_count（默认 1000）。
 用户显式无效题量保持待澄清，不用默认值覆盖；题量来源单独记录在 Requirement，不增加 Info 字段。
-brief_missing_fields 和 brief_requirement 阻止对未变化需求重复 specify，回答后重新提取完整需求。
+brief_missing_fields 和 brief_requirement 阻止对未变化需求重复 specify。缺字段产生专用 issue，
+Supervisor 自动 interrupt 询问；回答按需求补全处理并自动重新提取，不调用模型选择这两个动作。
+只用原始用户输入/回答验证引文，不接受系统追问作为用户证据；其他语义澄清仍由 Supervisor 分类。
 Requirement 单独保存逐字段/列表项的原文 evidence，代码检查引用与值覆盖；默认题量标为配置来源，证据不进入 BenchmarkInfo。
 模态范围显式列出所覆盖 modalities，必须与需求完整对应；CT 或 MRI 等并集保留在同一范围内。
 其余只保留用户明确表达的内容。Selection 使用范围和限制，
@@ -136,7 +138,9 @@ mode、interpretation 和 evidence_references。direct 仅允许相同的自描�
 interpreted 必须关联同字段的文档/用户依据，或明确 dataset_specific 的材料。代码检查覆盖和引用，
 Review 检查原值是否真正自描述、材料是否实际解释本数据集编码，不把模型声明当成语义证明。
 不透明编码和含义不明确的缩写必须获得本数据集的语义依据，否则询问用户；不靠医学常识补造。
-模型负责语义判断，结构校验不保证编码含义正确。unsupported 是合法结论，不为了概念覆盖制造 Leaf。
+模型负责语义判断，结构校验不保证编码含义正确。unsupported 必须引用实际字段/Profile/文档 inspection，
+回执绑定 Dataset 版本，拒绝未知、跨数据集及过期引用；Review 与发布再次验证，并审查理由与资料的语义关联。
+unsupported 仍是合法结论，不为了概念覆盖制造 Leaf。
 修正次数存入 PlanningDraft；缓存 Review、重新委派和恢复不重置额度。上游失效保留局部身份与已耗额度，
 重新验证事实和审查。数据集选择、导入和题量分配不再属于 Planner。
 

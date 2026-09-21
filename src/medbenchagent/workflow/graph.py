@@ -19,7 +19,7 @@ from medbenchagent.runtime.run_artifacts import initialize_run, atomic_write_jso
 from medbenchagent.settings import get_settings, run_settings
 from medbenchagent.runtime.dependencies import publish, require, initialize_dependencies, verify_resume
 from medbenchagent.runtime.preflight import preflight_errors, rag_capability
-from medbenchagent.runtime.clarifications import inject_answers, resolve_clarification, ResolveClarificationArguments
+from medbenchagent.runtime.clarifications import inject_answers, new_issue, resolve_clarification, ResolveClarificationArguments
 
 
 class DatasetStatusArguments(NoArguments):
@@ -96,7 +96,8 @@ def specify(context):
     """Extract the benchmark brief from the user's complete requirement."""
     if context.get("brief_requirement") == context["user_requirement"]:
         raise ValueError("This requirement has already been extracted; clarify missing fields first")
-    info = extract_benchmark_info(context["user_requirement"])
+    user_inputs = context.get("user_inputs", [context["user_requirement"]])
+    info = extract_benchmark_info(context["user_requirement"], user_inputs=user_inputs)
     evidence = info.pop("evidence")
     sample_scope = info.pop("sample_scope", [])
     total_limit = info.pop("max_total_tasks_per_image", None)
@@ -108,10 +109,18 @@ def specify(context):
         source = "configuration"
     missing = missing_fields(info)
     updates = {"benchmark_info": info, "sample_scope": sample_scope, "requirement_evidence": evidence,
+               "user_inputs": user_inputs,
                "max_total_tasks_per_image": total_limit if total_limit is not None else context.get("configured_total_tasks_per_image"),
                "brief_ready": not missing, "brief_missing_fields": missing,
                "brief_requirement": context["user_requirement"], "sample_count_source": source}
     if missing:
+        questions = {"clinical_scope": "请说明要评测的医学范围或数据集范围。",
+                     "language": "请指定 benchmark 输出语言：英文（en）或中文（zh）。",
+                     "sample_count": "请指定正整数题量。"}
+        question = "\n".join(questions[field] for field in missing)
+        issue = new_issue("SupervisorAgent", context, context["user_requirement"], question)
+        issue.update(purpose="benchmark_fields", missing_fields=missing)
+        updates.update(global_issue=issue, issues={**context.get("issues", {}), issue["issue_id"]: issue})
         return result("success", "Brief needs clarification: " + ", ".join(missing), **updates)
     path = Path(context["operation_directory"]) / "blueprint.json"
     write_working_blueprint(info, path)
@@ -129,6 +138,19 @@ def specify(context):
 COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path", "artifact_versions",
           "limits", "user_requirement", "benchmark_info", "seed", "max_tasks_per_image", "question_temperature",
           "registration_catalog_path", "sample_scope", "max_total_tasks_per_image")
+
+
+def required_field_action(context):
+    """Route only code-created missing-field clarifications without a model decision."""
+    issue = context.get("global_issue")
+    if issue and issue.get("purpose") == "benchmark_fields":
+        return {"tool": "ask_user", "arguments": {"question": issue["question"], "issue_id": issue["issue_id"]},
+                "reason": "Complete required benchmark fields"}
+    clarification = context.get("clarification") or {}
+    if (clarification.get("purpose") == "benchmark_fields"
+            and context.get("brief_requirement") != context["user_requirement"]):
+        return {"tool": "specify", "arguments": {}, "reason": "Re-extract completed benchmark requirement"}
+    return None
 
 
 def child_context(context, dataset_id, role):
@@ -464,7 +486,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         {"set_intent": set_intent, "resolve_clarification": resolve_clarification, "specify": specify, "select_datasets": select_datasets,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
          "prepare_data": prepare_data, "plan": plan, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
-        describe, finish, available_tools=available_stages,
+        describe, finish, available_tools=available_stages, automatic_action=required_field_action,
         args_schemas={"resolve_clarification": ResolveClarificationArguments, "set_intent": RunIntent, "prepare_data": PrepareDataArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
                       "plan": PlanningArguments, "allocate": DelegationArguments,
