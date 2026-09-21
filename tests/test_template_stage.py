@@ -62,6 +62,7 @@ def test_template_task_defect_reopens_planning_with_persistent_budget(tmp_path, 
     outcome = call(c, prepare_templates)
     feedback = outcome["updates"]["template_revision_request"]
     assert feedback["issues"][0]["leaf_id"] == "opaque.identity"
+    assert feedback["issues"][0]["templates"] == ["Status?", "Which status?", "Identify status."]
     assert "templates_path" not in outcome["updates"]
     c["operation_directory"] = str(tmp_path / "feedback")
     first = planning.apply_template_feedback(c, feedback)
@@ -75,10 +76,22 @@ def test_template_task_defect_reopens_planning_with_persistent_budget(tmp_path, 
         require(c, "Plan")
     save(c)
     complete(c)
+    with pytest.raises(ValueError, match="problem not fixed"):
+        call(c, planning.review_tree)
+    with pytest.raises(ValueError, match="problem not fixed"):
+        call(c, planning.finish)
+    assert planning._tree(c)["reworks_used"] == 1
+    leaf = planning._tree(c)["tasks"]["opaque.identity"]
+    call(c, planning.save_leaf, leaf_id="opaque.identity", concept_id="core", description=leaf["description"],
+         protocol={**leaf["protocol"], "question_intent": "Classify the explicit status"}, evidence=[],
+         mapping_grounding=leaf["mapping_grounding"])
+    complete(c)
     call(c, planning.review_tree)
     call(c, planning.finish)
     c["operation_directory"] = str(tmp_path / "second-feedback")
-    assert planning.apply_template_feedback(c, {**feedback, "plan_version": "next"})["status"] == "blocked"
+    assert planning.apply_template_feedback(c, {**feedback, "plan_version": "next"})["status"] == "success"
+    c["operation_directory"] = str(tmp_path / "new-feedback")
+    assert planning.apply_template_feedback(c, {**feedback, "feedback_id": "new-input"})["status"] == "blocked"
 
 
 def test_template_attempt_budget_survives_redelegation(tmp_path, monkeypatch):

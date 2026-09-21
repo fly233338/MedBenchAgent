@@ -29,7 +29,10 @@ def prepare_templates(context):
             while True:
                 last = next((a for a in reversed(attempts) if a["input"] == key), None)
                 if last and last.get("review", {}).get("verdict") == "revise_plan":
-                    issues.append({"leaf_id": leaf_id, "reason": last["review"]["reason"]})
+                    issues.append({"leaf_id": leaf_id, "reason": last["review"]["reason"],
+                                   "specification": last["input"]["specification"], "input": last["input"],
+                                   "templates": last["templates"],
+                                   "feedback_id": f"{context['dataset_scope']}:{leaf_id}:{attempts.index(last)}"})
                     break
                 # A saved generated set can resume its review without regenerating it.
                 if last and last.get("templates") and "review" not in last:
@@ -60,7 +63,8 @@ def prepare_templates(context):
             reviews[leaf_id] = {**key, "review": cached["review"]}
     if issues:
         return result("success", "Template review requires Planning revision", template_revision_request={
-            "plan_version": versions["Plan"]["id"], "issues": issues})
+            "plan_version": versions["Plan"]["id"], "issues": issues,
+            "feedback_id": json.dumps(sorted(i["feedback_id"] for i in issues))})
     path = Path(context["operation_directory"]) / "templates.json"
     atomic_write_json(path, {"templates": templates, "reviews": reviews})
     return result("success", "All task templates approved", templates_path=str(path), template_revision_request=None,

@@ -148,6 +148,8 @@ eligible_count 由代码使用与 Generation 相同的答案解析器计算。�
 反馈到 TaskPlanning。template_feedback_id 绑定反馈 Plan 版本，已有 Planning 修订预算只扣一次。
 模板生成/审核尝试持久化到 Dataset 局部 ledger，初次尝试加 harness.max_reworks 次返修，恢复和重新
 委派不重置。specification 和 TemplateConfig 未变的批准结果复用；新 specification 必须重新审核。
+返修反馈携带被拒模板、specification、原因及稳定反馈 ID；相同负评不因 Plan 换版本重复扣预算。
+完整树审查和 Plan 发布前检查相关 specification 已修改或 Leaf 已删除，无效修改明确返回问题未修复。
 合法空 Plan 发布空模板集，不调用模板模型。所有当前 Plan 与模板集批准后才允许 Allocation。
 
 AllocationAgent 读取所有当前 Plan 和已批准 Templates，模型给出有理由的 Concept 权重，可显式给出下层权重；缺省下层
@@ -217,6 +219,10 @@ Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner �
 跨 Agent 澄清使用稳定 issue_id 关联角色、Dataset、引用和原问题。Supervisor 收到回答后调用
 resolve_clarification 区分 semantic 与 requirement_change；仅后者修改 Requirement。已解决回答仅投递
 给发起 Agent，并更新其私有状态引用、清除父子待解决状态。未解决问题阻止继续执行依赖工作。
+
+Planner 使用 list_dataset_documents 分页读取既有 source_manifests/*/files.jsonl，返回 source ID、
+相对路径、格式和读取能力；随后 read_dataset_document 读取 UTF-8 文本。冻结 dataset_metadata.json
+单独提供入口。无索引或不支持的格式明确报告，不重扫来源目录，也不将解码失败当作空依据。
 
 ## 生成、审计与导出
 

@@ -90,6 +90,25 @@ def test_scope_coverage_is_required_and_injected(tmp_path, monkeypatch):
         validate_scope_plan(tree, c["sample_scope"])
 
 
+def test_document_discovery_pages_existing_inventory(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    manifest = tmp_path / "source_manifests" / "source"
+    manifest.mkdir(parents=True)
+    source = tmp_path / "raw"
+    source.mkdir()
+    (source / "codes.md").write_text("0 means benign", encoding="utf-8")
+    (manifest / "source.json").write_text(json.dumps({"root": str(source)}), encoding="utf-8")
+    (manifest / "files.jsonl").write_text('\n'.join(json.dumps({"path": p}) for p in ["codes.md", "manual.pdf", "image.png"]), encoding="utf-8")
+    first = json.loads(planning.list_dataset_documents(c, limit=1)["summary"])
+    assert first["total"] == 2 and first["next_offset"] == 1
+    assert first["documents"][0]["source_id"] == "source"
+    assert "0 means benign" in planning.read_dataset_document(c, path=first["documents"][0]["path"])["summary"]
+    second = json.loads(planning.list_dataset_documents(c, offset=1)["summary"])
+    assert second["documents"][0]["readable"] is False
+    with pytest.raises(ValueError, match="Unsupported documentation format"):
+        planning.read_dataset_document(c, path="source/manual.pdf")
+
+
 def test_mapping_requires_complete_and_dataset_specific_grounding(tmp_path, monkeypatch):
     from medbenchagent.planning.tree import validate_mapping_grounding
     c = context(tmp_path, monkeypatch)

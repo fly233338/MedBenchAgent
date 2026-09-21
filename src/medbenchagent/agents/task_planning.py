@@ -37,6 +37,43 @@ from medbenchagent.planning.tree import SemanticBasis
 from medbenchagent.runtime.tool_contracts import NoArguments
 from pydantic import Field
 
+TEXT_DOCUMENT_FORMATS = {"", ".txt", ".md", ".rst", ".json", ".yaml", ".yml", ".csv", ".tsv", ".html", ".xml"}
+DOCUMENT_FORMATS = TEXT_DOCUMENT_FORMATS | {".pdf", ".doc", ".docx", ".xls", ".xlsx"}
+
+
+def list_dataset_documents(context, *, offset=0, limit=20, query=""):
+    """Discover source documents from existing inventories, with bounded pages; no source rescan."""
+    require(context, "Dataset")
+    if offset < 0 or not 1 <= limit <= 100:
+        raise ValueError("Document pages require offset >= 0 and limit between 1 and 100")
+    bundle = Path(context["annotation_path"]).parent
+    page, total, unavailable = [], 0, []
+
+    def include(source_id, path):
+        nonlocal total
+        suffix = Path(path).suffix.lower()
+        reference = f"{source_id}/{path}" if source_id else path
+        if suffix not in DOCUMENT_FORMATS or query.casefold() not in reference.casefold():
+            return
+        if offset <= total < offset + limit:
+            page.append({"source_id": source_id, "relative_path": path, "path": reference,
+                         "format": suffix.lstrip(".") or "text", "readable": suffix in TEXT_DOCUMENT_FORMATS})
+        total += 1
+
+    if (bundle / "dataset_metadata.json").is_file():
+        include(None, "dataset_metadata.json")
+    for manifest in sorted((bundle / "source_manifests").glob("*/source.json")):
+        listing = manifest.parent / "files.jsonl"
+        if not listing.is_file():
+            unavailable.append(manifest.parent.name)
+            continue
+        with listing.open(encoding="utf-8") as handle:
+            for line in handle:
+                include(manifest.parent.name, json.loads(line)["path"])
+    return result("success", json.dumps({"documents": page, "total": total,
+                  "next_offset": offset + len(page) if offset + len(page) < total else None,
+                  "unavailable_inventories": unavailable}, ensure_ascii=False))
+
 
 class ScopeArguments(NoArguments):
     resolutions: list[ScopeResolution]
@@ -277,6 +314,8 @@ def read_dataset_document(context, *, path, offset=0):
     """
     from medbenchagent.data.validation import source_image_path
     require(context, "Dataset")
+    if Path(path).suffix.lower() not in TEXT_DOCUMENT_FORMATS:
+        raise ValueError("Unsupported documentation format; read a UTF-8 text source or ask for its meaning")
     bundle = Path(context["annotation_path"]).parent
     if path == "dataset_metadata.json":
         document = bundle / path
@@ -330,14 +369,14 @@ def apply_template_feedback(context, feedback):
             raise ValueError("Template feedback changed during replay")
         return saved["outcome"]
     tree = _tree(context)
-    if tree.get("template_feedback_id") != feedback["plan_version"]:
+    if tree.get("template_feedback_id") != feedback["feedback_id"]:
         if tree["reworks_used"] >= context.get("limits", {}).get("max_reworks", 3):
             return result("blocked", "Planning rework budget exhausted after template review")
         tree["reworks_used"] += 1
         tree["correction_open"] = True
         tree["review"] = {}
         tree["revision"] += 1
-        tree["template_feedback_id"] = feedback["plan_version"]
+        tree["template_feedback_id"] = feedback["feedback_id"]
         for issue in feedback["issues"]:
             leaf = tree["tasks"][issue["leaf_id"]]
             tree["concepts"][leaf["concept_id"]]["status"] = "pending"
@@ -602,10 +641,19 @@ def finish_discovery(context):
     return _persist(context, tree, changed=True)
 
 
+def _validate_template_repair(context, tree):
+    from medbenchagent.planning.protocol import template_specification
+    for issue in context.get("template_feedback", {}).get("issues", []):
+        leaf = tree["tasks"].get(issue["leaf_id"])
+        if leaf and template_specification(leaf["protocol"], tree["benchmark_info"]["language"]).model_dump() == issue["specification"]:
+            raise ValueError(f"{issue['leaf_id']}: problem not fixed; template specification is unchanged. {issue['reason']}")
+
+
 def review_tree(context):
     """Review full mappings and source evidence; corrections consume persistent rework budget."""
     tree = _tree(context)
     validate_scope_plan(tree, context.get("sample_scope", []))
+    _validate_template_repair(context, tree)
     if not concepts_complete(tree) or not tree["discovery_complete"]:
         raise ValueError("Finish concepts and extension discovery first")
     if tree.get("review", {}).get("revision") == tree["revision"]:
@@ -674,6 +722,7 @@ def finish(context):
     """Publish the reviewed dataset-local Plan with exact capacities, including unsupported datasets."""
     tree = _tree(context)
     validate_scope_plan(tree, context.get("sample_scope", []))
+    _validate_template_repair(context, tree)
     for leaf in tree["tasks"].values():
         leaf["eligible_count"] = validate_dataset_protocol(leaf["protocol"], iter_records(context["dataset_access_manifest"]))
         _validate_leaf_grounding(context, leaf)
@@ -735,6 +784,7 @@ def describe(context):
         "semantic_sources": {"documents": context.get("source_documents", {}),
                              "user_decisions": context.get("decisions", {})},
         "source_ids": [p.name for p in (Path(context["annotation_path"]).parent / "source_manifests").glob("*") if p.is_dir()],
+        "document_discovery": {"tool": "list_dataset_documents", "metadata_path": "dataset_metadata.json"},
         "clarification": context.get("clarification"),
         "dataset": context.get("selected_dataset_id"),
     }
@@ -750,7 +800,7 @@ def available_tools(context):
         require(context, "Dataset")
     except ValueError:
         return available
-    available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal", "inspect_field_by_source", "sample_records", "inspect_field_pair", "inspect_array", "inspect_protocol_capacity", "read_dataset_document"}
+    available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal", "inspect_field_by_source", "sample_records", "inspect_field_pair", "inspect_array", "inspect_protocol_capacity", "read_dataset_document", "list_dataset_documents"}
     try:
         require(context, "Materials")
     except ValueError:
@@ -782,6 +832,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         list_materials,
         read_material,
         read_dataset_document,
+        list_dataset_documents,
         select_materials,
         search_materials,
         read_node,
@@ -809,7 +860,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         "Dataset Card is only a triage/search hint; inspect Profile, exact annotation values and structures for evidence. "
         "Unsupported concepts are valid. Original requirements and benchmark_info take precedence over delegation; "
         "delegation organizes work but cannot introduce new priorities, exclusions or research constraints. "
-        "For opaque codes or ambiguous abbreviations obtain dataset-specific documentation using read_dataset_document, "
+        "For opaque codes or ambiguous abbreviations first discover local documents using list_dataset_documents, then read_dataset_document, "
         "search_materials or ask_user; never infer code meanings from medical knowledge. Store field interpretation and "
         "exact source quotation in semantic_basis (user reference is the decision key in semantic_sources.user_decisions). "
         "Supply mapping_grounding for EVERY option mapping: field, raw_value, option, mode, interpretation and evidence_references. "
@@ -823,6 +874,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         args_schemas={
             "resolve_sample_scope": ScopeArguments,
             "read_dataset_document": ReadTextArguments,
+            "list_dataset_documents": PageArguments,
             "list_fields": PageArguments,
             "read_fields": FieldArguments,
             "read_field_values": FieldValuesArguments,
