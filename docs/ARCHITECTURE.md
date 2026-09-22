@@ -40,10 +40,18 @@ prepare_data 只接收 dataset_id、mode 和 feedback；代码解析配置来源
 PreparationPlan 保存语义依据及顺序算子；不引入第二套 DAG 或表达式语言。CSV 保留字符串 ID，join 显式
 定义基数、空键与未匹配策略；group_findings 保留同实体标签与 bbox 配对。标准算子无法表达时，Agent
 可以记录原因并生成 Python，输出相同的 annotation 包装和 provenance 索引。
+保存 Mapping 前须调用 inspect_image_population：复用 read/select/rename/filter/join 算子，
+明确最终关系和图像身份字段，检查非空身份并计算 unique_images（不以行数代替图像数）。
+Mapping 的 population_reference 指向该检查，expected_images 必须相等；inspection_references
+关联真实检查，semantic_evidence 以 source/reference/quote 引用已读取来源文档或已解决用户决议。
+计数检查证明数量，不能代替总体选择的语义判断；无法检查的身份/总体需要补充依据，不接受自报数字。
 
 Harmonization 只用于一个 Dataset 内有依据的来源字段整理，不建立全局医学本体。未对齐字段保留
-`<entity>.annotation.sources.<source_id>`；单来源空计划为 identity，缺失不补为阴性。bundle 执行
-整图隔离、精确像素去重、来源与数量对账。同像素且标注/身份冲突的组整体隔离；不推断跨数据集身份。
+`<entity>.annotation.sources.<source_id>`；单来源空计划为 identity，缺失不补为阴性。
+显式字段决策须引用 inspect_normalized 对该字段的检查；merge（包括重编码和单位换算）还须提供
+来源文档/用户回答的精确引文。检查回执绑定 dataset/source 和输入版本，保存与发布均验证；
+read_text 可指定 source_id 在规范化后读取同一数据集内的来源文档。用户语义决议绑定回答时的来源版本。
+bundle 执行整图隔离、精确像素去重、来源与数量对账。同像素且标注/身份冲突的组整体隔离；不推断跨数据集身份。
 
 PNG/JPEG 保留原字节；其他二维图像使用可表示原像素的 PNG 编码或有依据的显示窗。不裁框、不重采样、
 不改变空间方向。多帧、真三维、金字塔及 WSI 不支持；缺 decoder 是运行能力错误，不批量当作坏图。
@@ -140,6 +148,7 @@ Review 检查原值是否真正自描述、材料是否实际解释本数据集�
 不透明编码和含义不明确的缩写必须获得本数据集的语义依据，否则询问用户；不靠医学常识补造。
 模型负责语义判断，结构校验不保证编码含义正确。unsupported 必须引用实际字段/Profile/文档 inspection，
 回执绑定 Dataset 版本，拒绝未知、跨数据集及过期引用；Review 与发布再次验证，并审查理由与资料的语义关联。
+Planning 与准备 Agent 的观察保留检查引用索引，恢复后仍可复用；索引不复制完整检查数据到提示词。
 unsupported 仍是合法结论，不为了概念覆盖制造 Leaf。
 修正次数存入 PlanningDraft；缓存 Review、重新委派和恢复不重置额度。上游失效保留局部身份与已耗额度，
 重新验证事实和审查。数据集选择、导入和题量分配不再属于 Planner。
@@ -185,6 +194,8 @@ registry 不参与 Agent 决策，不取代 checkpoint。完成实验只展示�
 CLI 按 tasks/updates/custom + subgraphs=True 的三元组事件处理流，只从 updates 顶层读取
 LangGraph Interrupt，未知格式和缺少有效 question 明确报错。失败报告使用执行期间记录的运行目录，
 Experiment 收尾的 checkpoint/registry 诊断失败明确显示，不覆盖原始运行错误及退出状态。
+构建事件在已知时携带 dataset_id/source_id，模型调用继承工具执行上下文。
+CLI 恢复提示明确代码未变才能续跑，修改代码后必须新建运行。
 构建事件可省略 agent；模型/provider 名称不能填充缺失的 Agent 角色。FinalizationAgent 是全局工具使用 Agent；模板阶段事件归属 TaskPlanningAgent。
 
 Supervisor 共享状态只保留选中 ID、各 Dataset 产物引用和进度摘要。专业 Agent 的完整 context 保存到

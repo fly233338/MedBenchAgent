@@ -9,6 +9,7 @@ from medbenchagent.data.validation import source_image_path
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.runtime.inspection import inspected
 
 from medbenchagent.data.execution import run as _run
 
@@ -18,15 +19,15 @@ def _read(path):
 
 
 
-def _inventory(context, key, value):
+def _inventory(context, key, value, *, operation=None, arguments=None):
     entries = _read(context["inventory_path"]) if context.get("inventory_path") else {}
     entries[key] = value
     path = Path(context["operation_directory"]) / "source_inventory.json"
     atomic_write_json(path, entries)
     versions = publish(context, "Inventory", {"path": str(path)}, ("Source",))
-    return result(
-        "success",
-        json.dumps({"reference": key, "inspection": value}, ensure_ascii=False)[:6000],
+    return inspected(
+        context, operation or key.split(":", 1)[0], arguments or {"key": key}, value,
+        ("Source",), source_id=context.get("source_scope"),
         inventory_path=str(path),
         **versions,
     )
@@ -52,8 +53,16 @@ def inspect_files(context, *, directory="", offset=0):
     )
 
 
-def read_text(context, *, path, offset=0):
+def read_text(context, *, path, offset=0, source_id=None):
     """Read a bounded portion of source documentation or a saved preparation script/plan."""
+    if source_id is not None:
+        source = next((s for s in context["sources"] if s["id"] == source_id), None)
+        if source is None:
+            raise ValueError("Select a configured source document")
+        require(context, f"source/{source_id}/Source")
+        scoped = {**context, "source_scope": source_id, "source_root": source["root"],
+                  "source_manifest": str(Path(context["bundle_root"]) / "source_manifests" / source_id)}
+        return read_text(scoped, path=path, offset=offset)
     candidates = {
         str(context.get(key)): context.get(key)
         for key in (
@@ -77,7 +86,10 @@ def read_text(context, *, path, offset=0):
     with source.open(encoding="utf-8") as handle:
         handle.seek(offset)
         text = handle.read(6000)
-    return result("success", text)
+    if path in candidates:
+        return result("success", text)
+    return inspected(context, "read_text", {"path": path, "offset": offset}, {"text": text},
+                     ("Source",), source_id=context.get("source_scope"))
 
 
 def inspect_table(context, *, path, sheet=None):

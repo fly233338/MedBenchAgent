@@ -356,6 +356,8 @@ def test_raw_and_standard_sources_through_agent_tools(tmp_path, monkeypatch):
         "id,path,label\n01,image.png,benign\n", encoding="utf-8"
     )
     standard = source_fixture(tmp_path / "standard", "b", pixel=190)
+    for source in (raw, standard):
+        (Path(source.root) / "README.md").write_text("Each distinct id in labels.csv is an image; label is pathology status.", encoding="utf-8")
     context = {
         "run_directory": str(tmp_path / "run"),
         "operation_directory": str(tmp_path / "run/op"),
@@ -374,6 +376,9 @@ def test_raw_and_standard_sources_through_agent_tools(tmp_path, monkeypatch):
         calls.append(operation)
         if operation == "table":
             return inspect_table(c["source_root"], request["path"])
+        if operation == "image_population":
+            from medbenchagent.data.operators import inspect_image_population
+            return inspect_image_population(c["source_root"], Source.model_validate(request["source"]), request["population"], output)
         if operation == "execute_plan":
             return execute_plan(
                 c["source_root"],
@@ -425,7 +430,15 @@ def test_raw_and_standard_sources_through_agent_tools(tmp_path, monkeypatch):
             },
         ]
     )
-    call(agent.save_preparation_plan, plan=preparation.model_dump())
+    population = {"steps": [{"op": "read", "path": "labels.csv", "output": "raw"}], "input": "raw", "image_id": "id"}
+    population_result = call(agent.inspect_image_population, population=population)
+    population_ref = json.loads(population_result["summary"])["inspection_reference"]
+    doc = call(data_processing.read_text, path="README.md")
+    doc_ref = json.loads(doc["summary"])["inspection_reference"]
+    data = preparation.model_dump()
+    data["mapping"].update(population_reference=population_ref, inspection_references=[population_ref],
+                           semantic_evidence=[{"source": "document", "reference": doc_ref, "quote": "Each distinct id in labels.csv is an image"}])
+    call(agent.save_preparation_plan, plan=data)
     call(agent.execute_preparation)
     call(agent.inspect_images)
     call(data_processing.save_image_plan, overrides={})
@@ -434,6 +447,15 @@ def test_raw_and_standard_sources_through_agent_tools(tmp_path, monkeypatch):
     call(agent.inspect_images)
     call(data_processing.save_image_plan, overrides={})
     call(agent.normalize_images)
+    evidence = {}
+    for source_id in ("a", "b"):
+        doc = call(data_processing.read_text, source_id=source_id, path="README.md")
+        field = call(agent.inspect_normalized, source_id=source_id, field="image.annotation.label")
+        evidence[source_id] = {
+            "inspection_references": [json.loads(field["summary"])["inspection_reference"]],
+            "semantic_evidence": [{"source": "document", "reference": json.loads(doc["summary"])["inspection_reference"],
+                                    "quote": "label is pathology status"}],
+        }
     call(
         agent.save_harmonization,
         plan={
@@ -444,6 +466,7 @@ def test_raw_and_standard_sources_through_agent_tools(tmp_path, monkeypatch):
                     "action": "merge",
                     "target": "image.annotation.label",
                     "evidence": "same codebook",
+                    **evidence[source],
                 }
                 for source in ("a", "b")
             ]

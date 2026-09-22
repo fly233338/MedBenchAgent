@@ -30,6 +30,11 @@ def test_local_fixed_operation_script_and_receipt(tmp_path, monkeypatch):
     result = execution.run(context, output, request={"operation": "table", "path": "a.csv"})
     assert result
     assert execution.run(context, output, request={"operation": "table", "path": "a.csv"}) == result
+    population = execution.run(context, tmp_path / "population", request={
+        "operation": "image_population", "source": {"id": "one", "root": str(source)},
+        "population": {"steps": [{"op": "read", "path": "a.csv", "output": "raw"}],
+                       "input": "raw", "image_id": "id"}})
+    assert population["unique_images"] == 2
     script = tmp_path / "script.py"
     script.write_text('import os\nfrom pathlib import Path\nPath(os.environ["MEDBENCH_WORK_DIR"], "annotation.jsonl").write_text("{}\\n")', encoding="utf-8")
     execution.run(context, tmp_path / "script out", script=str(script))

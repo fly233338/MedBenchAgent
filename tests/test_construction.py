@@ -13,6 +13,8 @@ def test_llm_events_include_contextual_model_and_component(tmp_path: Path, monke
     with event_context(
         construction_events_path=events_path,
         run_id="run",
+        dataset_id="dataset-a",
+        source_id="source-one",
         agent="GenerationAgent",
         operation="generate",
         component="letter",
@@ -28,6 +30,8 @@ def test_llm_events_include_contextual_model_and_component(tmp_path: Path, monke
     assert event["agent"] == "GenerationAgent"
     assert event["operation"] == "generate"
     assert event["component"] == "letter"
+    assert event["dataset_id"] == "dataset-a"
+    assert event["source_id"] == "source-one"
     assert event["model"] == "deepseek-v4-flash"
 
 

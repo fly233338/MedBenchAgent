@@ -33,6 +33,11 @@ def main():
         result = inspect_values(root, **request)
     elif operation == "join":
         result = inspect_join(root, **request)
+    elif operation == "image_population":
+        from medbenchagent.data.contracts import Source
+        from medbenchagent.data.operators import inspect_image_population
+        result = inspect_image_population(root, Source.model_validate(request["source"]),
+                                          request["population"], Path(os.environ["MEDBENCH_WORK_DIR"]))
     elif operation == "execute_plan":
         from medbenchagent.data.contracts import Source, PreparationPlan
         from medbenchagent.data.operators import execute_plan

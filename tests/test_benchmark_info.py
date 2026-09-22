@@ -59,6 +59,12 @@ def test_assistant_question_cannot_ground_user_requirement(monkeypatch):
                                               user_inputs=["Build", "unsure"])
 
 
+def test_null_sample_scope_is_a_repairable_contract_error(monkeypatch):
+    monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: {"sample_scope": None})
+    with pytest.raises(ValueError, match="sample_scope as a list"):
+        benchmark_info.extract_benchmark_info("Build")
+
+
 def test_required_field_clarification_resumes_without_model_routing(tmp_path, monkeypatch):
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.types import Command

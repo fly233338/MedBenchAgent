@@ -31,7 +31,7 @@ from medbenchagent.planning.tree import (
 )
 from medbenchagent.planning.protocol import validate_dataset_protocol
 from medbenchagent.runtime.llm import complete_json
-from medbenchagent.runtime.inspection import inspected, inspection
+from medbenchagent.runtime.inspection import inspected, inspection, inspection_index
 from medbenchagent.data.query import DatasetQuery, iter_records
 from medbenchagent.planning.scope import ScopeResolution, conditions_for, validate_scope_plan
 from medbenchagent.planning.tree import SemanticBasis
@@ -817,6 +817,7 @@ def describe(context):
         "template_feedback": context.get("template_feedback"),
         "semantic_sources": {"documents": context.get("source_documents", {}),
                              "user_decisions": context.get("decisions", {})},
+        "inspection_references": inspection_index(context),
         "source_ids": [p.name for p in (Path(context["annotation_path"]).parent / "source_manifests").glob("*") if p.is_dir()],
         "document_discovery": {"tool": "list_dataset_documents", "metadata_path": "dataset_metadata.json"},
         "clarification": context.get("clarification"),

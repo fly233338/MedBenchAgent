@@ -9,6 +9,7 @@ from medbenchagent.data.contracts import (
     Contract,
     HarmonizationPlan,
     PreparationPlan,
+    Population,
     Source,
     Text,
 )
@@ -23,6 +24,8 @@ from medbenchagent.data.validation import source_image_path
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.runtime.inspection import inspected, inspection_index
+from medbenchagent.data.preparation_evidence import mapping_evidence, alignment_evidence
 from medbenchagent.runtime.tool_contracts import (
     InspectFilesArguments,
     ReadTextArguments,
@@ -40,8 +43,16 @@ class SourceChoice(Contract):
     source_id: Text
 
 
+class SourceTextArguments(ReadTextArguments):
+    source_id: Text | None = None
+
+
 class PlanArguments(Contract):
     plan: PreparationPlan
+
+
+class PopulationArguments(Contract):
+    population: Population
 
 
 class HarmonizationArguments(Contract):
@@ -196,6 +207,7 @@ def save_preparation_plan(context, *, plan):
     """Save evidence and typed executable steps as one immutable preparation plan."""
     require(context, "Inventory")
     plan = PreparationPlan.model_validate(plan)
+    mapping_evidence(context, plan.mapping)
     files = [step.path for step in plan.steps if step.op == "read"]
     track_files(context["source_manifest"], files)
     path = Path(context["operation_directory"]) / "preparation.json"
@@ -211,6 +223,7 @@ def execute_preparation(context):
     require(context, "Mapping")
     verify_source(context["source_manifest"])
     plan = json.loads(Path(context["preparation_plan_path"]).read_text(encoding="utf-8"))
+    mapping_evidence(context, PreparationPlan.model_validate(plan).mapping)
     folder = Path(context["operation_directory"])
     first, repeat = folder / "annotation", folder / "repeat"
     if plan.get("fallback_reason"):
@@ -302,6 +315,18 @@ def inspect_metadata(context, *, path):
         k: ("present" if k.endswith("UID") or k == "PatientID" else v) for k, v in value.items()
     }
     return _inventory(context, f"metadata:{path}", public)
+
+
+def inspect_image_population(context, *, population):
+    """Measure distinct image IDs after declared read/filter/join steps; no annotation is emitted."""
+    from medbenchagent.agents.data_processing import _run, _inventory
+    population = Population.model_validate(population)
+    track_files(context["source_manifest"], [s.path for s in population.steps if s.op == "read"])
+    value = _run(context, Path(context["operation_directory"]) / "population",
+                 request={"operation": "image_population", "population": population.model_dump(),
+                          "source": context["active_source"]})
+    return _inventory(context, "population:" + json.dumps(population.model_dump(), sort_keys=True), value,
+                      operation="image_population", arguments=population.model_dump())
 
 
 def inspect_source_values(context, **arguments):
@@ -461,7 +486,8 @@ def inspect_normalized(context, *, source_id, field=None, offset=0):
             "total_fields": len(keys),
             "fields": {k: profile["fields"][k] for k in keys[offset : offset + 20]},
         }
-    return result("success", json.dumps(value, ensure_ascii=False))
+    return inspected(context, "inspect_normalized", {"field": field, "offset": offset}, value,
+                     (f"source/{source_id}/NormalizedSource",), source_id=source_id)
 
 
 def save_harmonization(context, *, plan):
@@ -474,6 +500,8 @@ def save_harmonization(context, *, plan):
         raise ValueError("Harmonization references an unselected source")
     dependencies = tuple(f"source/{identifier}/NormalizedSource" for identifier in sorted(ids))
     require(context, *dependencies)
+    for field in plan.fields:
+        alignment_evidence(context, field)
     path = Path(context["operation_directory"]) / "harmonization.json"
     atomic_write_json(path, plan.model_dump())
     return result(
@@ -498,6 +526,8 @@ def finish(context):
     plan = HarmonizationPlan.model_validate_json(
         Path(context["harmonization_path"]).read_text(encoding="utf-8")
     )
+    for field in plan.fields:
+        alignment_evidence(context, field)
     invariants = {}
     for source, path in context.get("source_plans", {}).items():
         if path != "standard-import":
@@ -547,6 +577,8 @@ def describe(context):
         "plan": context.get("preparation_plan_path"),
         "harmonization": context.get("harmonization_path"),
         "dataset_metadata": context.get("dataset_metadata_path"),
+        "inspection_references": inspection_index(context),
+        "user_decisions": context.get("decisions", {}),
         "clarification": context.get("clarification"),
     }
 
@@ -564,10 +596,12 @@ def available_tools(context):
 
     active = context.get("source_scope")
     normalized = context.get("normalized_sources", {})
+    if any(current(f"source/{s['id']}/Source") for s in context["sources"]):
+        available.add("read_text")
     if not active or active in normalized:
         available.add("select_source")
     if active and active not in normalized and current("Source"):
-        available |= {"inspect_files", "read_text", "inspect_table", "inspect_join", "inspect_metadata", "inspect_source_values"}
+        available |= {"inspect_files", "read_text", "inspect_table", "inspect_join", "inspect_metadata", "inspect_source_values", "inspect_image_population"}
         if current("Inventory"):
             available.add("save_preparation_plan")
         if current("Mapping"):
@@ -613,6 +647,7 @@ def compile_pipeline(*, checkpointer=None):
             inspect_join,
             inspect_metadata,
             inspect_source_values,
+            inspect_image_population,
             save_preparation_plan,
             execute_preparation,
             write_fallback,
@@ -629,6 +664,10 @@ def compile_pipeline(*, checkpointer=None):
         "DataProcessingAgent",
         "Prepare every selected source sequentially. Select a source, inspect evidence, then for raw inputs "
         "save a typed preparation plan and execute it. Use standard operators; code fallback requires a reason. "
+        "Before saving Mapping, inspect_image_population with existing read/filter/join steps and an image_id field. "
+        "Use its inspection_reference as population_reference and its unique_images as expected_images. "
+        "Supply actual inspection_references and semantic_evidence (source=document or user, reference, exact quote) "
+        "to explain the authoritative population. Read source documentation with read_text or ask_user. "
         "Annotation inputs skip only mapping, never quality/image checks. Inspect images, save source-supported "
         "image policies, normalize_images. Invalid local records are quarantined; ambiguous semantics require ask_user. "
         "Never infer labels or identity from medical knowledge. Preserve finding/bbox pairing and missing vs negative. "
@@ -637,6 +676,8 @@ def compile_pipeline(*, checkpointer=None):
         "with no reliable documentation call save_dataset_metadata(source_references=[]). Metadata must be decided before finish. "
         "After every source is normalized inspect_normalized to compare fields and exact values. Save harmonization "
         "with evidence for each merge; an empty plan preserves source-specific semantics (identity for one source). "
+        "Every explicit alignment needs inspection_references for its normalized field; merge also requires "
+        "semantic_evidence from source documentation or a resolved user decision. "
         "Finish only after all selected sources and harmonization are ready. Multi-frame/3D/WSI are unsupported.",
         tools,
         describe,
@@ -645,11 +686,12 @@ def compile_pipeline(*, checkpointer=None):
         args_schemas={
             "select_source": SourceChoice,
             "inspect_files": InspectFilesArguments,
-            "read_text": ReadTextArguments,
+            "read_text": SourceTextArguments,
             "inspect_table": TableArguments,
             "inspect_join": JoinArguments,
             "inspect_metadata": MetadataArguments,
             "inspect_source_values": SourceValuesArguments,
+            "inspect_image_population": PopulationArguments,
             "save_preparation_plan": PlanArguments,
             "write_fallback": FallbackArguments,
             "save_image_plan": ImagePlanArguments,

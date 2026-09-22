@@ -114,8 +114,8 @@ def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = N
         f"\n\nQuote evidence only from these user inputs: {json.dumps(user_inputs, ensure_ascii=False)}",
     )
     info = merge_info(existing or {}, result)
-    if "sample_scope" not in result:
-        raise ValueError("Extraction must include sample_scope, including explicit modalities")
+    if not isinstance(result.get("sample_scope"), list):
+        raise ValueError("Extraction must include sample_scope as a list, including explicit modalities")
     if "sample_scope" in result:
         from medbenchagent.planning.scope import ScopeRequirement
         scopes = [ScopeRequirement.model_validate(r).model_dump() for r in result["sample_scope"]]

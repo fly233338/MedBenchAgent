@@ -13,8 +13,10 @@ class ResolveClarificationArguments(NoArguments):
 
 def new_issue(role, context, reference, question):
     dataset = context.get("dataset_scope")
-    identity = json.dumps([role, dataset, reference, question], ensure_ascii=False)
+    source = context.get("source_scope")
+    identity = json.dumps([role, dataset, source, reference, question], ensure_ascii=False)
     return {"issue_id": identity, "role": role, "dataset_id": dataset,
+            "source_id": source, "input_versions": dict(context.get("artifact_versions", {})),
             "reference": reference, "question": question, "status": "pending"}
 
 

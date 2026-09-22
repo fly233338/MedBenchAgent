@@ -103,6 +103,8 @@ def compile_agent(
             construction_events_path=context["construction_events_path"],
             run_id=context["run_id"],
             agent=name,
+            dataset_id=context.get("dataset_scope"),
+            source_id=context.get("source_scope"),
             operation="decide",
         ):
             try:
@@ -271,6 +273,8 @@ def compile_agent(
                 construction_events_path=context["construction_events_path"],
                 run_id=context["run_id"],
                 agent=name,
+                dataset_id=context.get("dataset_scope"),
+                source_id=context.get("source_scope"),
                 operation=tool_name,
             ):
                 try:
@@ -300,6 +304,8 @@ def compile_agent(
                 "tool_result",
                 run_id=context["run_id"],
                 agent=name,
+                dataset_id=context.get("dataset_scope"),
+                source_id=context.get("source_scope"),
                 operation=tool_name,
                 status=outcome["status"],
                 reason=action["reason"],

@@ -148,11 +148,41 @@ Step = Annotated[
 ]
 
 
+class Population(Contract):
+    """An inspectable relation of image identities, using existing relational operators."""
+    steps: list[Annotated[Read | Select | Rename | Filter | Join, Field(discriminator="op")]] = Field(min_length=1)
+    input: Name
+    image_id: Text
+
+    @model_validator(mode="after")
+    def relations(self):
+        names = set()
+        for step in self.steps:
+            for key in ("input", "right"):
+                if hasattr(step, key) and getattr(step, key) not in names:
+                    raise ValueError("Population references an unknown input relation")
+            if step.output in names:
+                raise ValueError("Population relation outputs must be unique")
+            names.add(step.output)
+        if self.input not in names:
+            raise ValueError("Population input must be a declared relation")
+        return self
+
+
+class PreparationEvidence(Contract):
+    source: Literal["document", "user"]
+    reference: Text
+    quote: Text
+
+
 class Mapping(Contract):
     authoritative_population: Text
     expected_images: int = Field(gt=0)
     entity_meanings: dict[str, str]
     evidence: list[Text] = Field(min_length=1)
+    population_reference: Text | None = None
+    inspection_references: list[Text] = Field(default_factory=list)
+    semantic_evidence: list[PreparationEvidence] = Field(default_factory=list)
     invariant_fields: list[str] = Field(default_factory=list)
 
 
@@ -192,6 +222,8 @@ class FieldAlignment(Contract):
     scale: float | None = None
     offset: float = 0.0
     evidence: Text
+    inspection_references: list[Text] = Field(default_factory=list)
+    semantic_evidence: list[PreparationEvidence] = Field(default_factory=list)
 
 
 class HarmonizationPlan(Contract):

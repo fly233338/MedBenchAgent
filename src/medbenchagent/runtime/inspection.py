@@ -26,3 +26,12 @@ def inspection(context, reference, *, source_id=None):
     if any(current[key]["id"] != version for key, version in receipt["dependencies"].items()):
         raise ValueError("Inspection reference is stale; inspect the current inputs")
     return receipt
+
+
+def inspection_index(context):
+    """Expose reusable receipt identities without copying all inspected data into prompts."""
+    return {reference: {key: receipt[key] for key in ("operation", "source_id", "arguments")}
+            for reference, receipt in context.get("inspections", {}).items()
+            if receipt["dataset_id"] == context.get("dataset_scope", context.get("selected_dataset_id"))
+            and all(context.get("artifact_versions", {}).get(key) == version
+                    for key, version in receipt["dependencies"].items())}

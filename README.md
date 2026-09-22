@@ -23,6 +23,11 @@ Configure the model API, local embedding/reranker models, medical materials and 
 `config/default.toml`. An explicit `MEDBENCH_CONFIG` file and supported environment variables override
 defaults. Keep secrets outside version control. The CLI disables optional external tracing, downloads
 and telemetry; the configured language-model API is still used.
+LLM overrides are `MEDBENCH_LLM_API_KEY`, `MEDBENCH_LLM_MODEL`, `MEDBENCH_LLM_BASE_URL`,
+`MEDBENCH_LLM_TIMEOUT_SECONDS` and `MEDBENCH_LLM_MAX_RETRIES`. Existing `DEEPSEEK_*` aliases remain
+supported; nonempty neutral names take precedence. Empty overrides are ignored; numeric overrides are
+parsed and range-checked. API keys are excluded from configuration snapshots.
+
 Build, prepare and new experiments share local preflight checks. The Blueprint is required for construction,
 not preparation alone. PDF materials and embedding/reranker models are optional: when unavailable, retrieval
 tools are disabled and planning starts with empty Materials. When available, the Planner selects references;
@@ -40,14 +45,18 @@ configured `paths.runs_root`. SQLite checkpoints remain inside that runs directo
 Open an experiment by name to resume an interruption or answer a pending question; opening a completed
 experiment only displays its results. The menu never resumes an experiment without your selection.
 The original `build/prepare --resume <identifier>` commands remain available for low-level recovery.
-Resume reads the saved run configuration and verifies the recorded source identities. Code or runtime-contract changes require a new run.
+Resume reads the saved run configuration and verifies the recorded source identities. The runtime contract is
+`agent-runtime.v12`; old checkpoints are not migrated. Code or runtime-contract changes require a new run.
 Keep the run directory and prepared model assets intact; external input changes are picked up by a new run.
 
 The brief describes benchmark-level `clinical_scope`, optional `diseases`, `modalities` and
 `evaluation_focus`, plus the required output `language` and positive `sample_count`. Broad and multi-disease,
 multi-modality scopes are valid. Unstated task priorities are not invented.
 If omitted, sample count uses `benchmark.default_sample_count` (1000 by default); an explicitly invalid
-count requires clarification. Missing language is asked, never inferred from the conversation language.
+count requires clarification. Output language must be `en` or `zh`; missing or unsupported values require
+clarification. Required-field questions and re-extraction after an answer are routed automatically.
+Requirement evidence quotes actual user inputs, not assistant questions, and stays outside BenchmarkInfo.
+Modality scopes explicitly identify every covered modality; alternatives such as CT or MRI stay in one scope.
 When no prepared dataset matches, the system selects relevant configured sources, prepares and registers
 them, then selects prepared data again. Missing sources or unavailable paths produce a configuration
 diagnostic instead of repeated path questions. Update config and start a new run to change source paths.
@@ -100,6 +109,14 @@ must use separate IDs and preparation runs. The agent inspects evidence, saves t
 normalizes images, validates the bundle, creates its Card, then updates the registry. `register` accepts
 an already complete bundle with its Card. Failures do not replace the previous registered version.
 
+Before saving a raw Mapping, `inspect_image_population` measures distinct image IDs using declared
+source reads, filters and joins. `population_reference` binds that inspection and `expected_images` must
+match its unique-image count. Mapping also requires inspection references and source-document quotations
+or resolved user decisions supporting the population choice. Explicit Harmonization decisions require
+normalized-field inspections; merges, recoding and unit conversion also require semantic evidence.
+References are checked against their dataset/source and input versions. Quotation and count checks establish
+provenance, not semantic correctness. Local/Docker backend selection is unchanged.
+
 Prepared versions live beneath `paths.prepared_datasets_root` (default `datasets/Prepared`). Catalog entries
 contain dataset_id, name, description, available and paths to annotation, image manifest, Profile and Card.
 Existing normalized datasets need `prepare` before selection; build does not prepare the whole catalog.
@@ -124,7 +141,8 @@ abbreviations require dataset documentation, retrieved references or user clarif
 does not establish a dataset's encoding. Semantic evidence and grounding for every raw-value-to-option mapping are saved with each Leaf. Direct
 mappings preserve self-describing strings; codes and semantic reinterpretations need dataset-specific
 evidence. Validation checks coverage and quotations; the Planning review judges whether they support the mapping. Zero-capacity leaves
-cannot be published; unsupported concepts and completed empty dataset plans are valid.
+cannot be published. Unsupported decisions require current field/Profile/document inspection references;
+review checks their reasons against the cited inspections. Completed empty dataset plans remain valid.
 Generation still derives answers deterministically from annotations, and template models never see per-image answers.
 Explicit sample restrictions are stored separately from evaluation topics and resolved into dataset-local
 scalar `in`/`not_in` conditions. Missing values fail selection. Planning capacity, generation and final validation
@@ -550,8 +568,3 @@ space; common parsing and scoring remain model-independent.
 
 MedBenchAgent is licensed under the [Apache License 2.0](LICENSE). See
 [NOTICE](NOTICE) for copyright information.
-
-LLM 环境变量使用 `MEDBENCH_LLM_API_KEY`、`MEDBENCH_LLM_MODEL`、`MEDBENCH_LLM_BASE_URL`、
-`MEDBENCH_LLM_TIMEOUT_SECONDS`、`MEDBENCH_LLM_MAX_RETRIES`。已有 `DEEPSEEK_*` 名称仍可用，
-同一设置优先采用新名称的非空值；空值忽略。数值变量先转换类型，再校验范围。密钥不写入配置快照。
-需求语言仅支持 `en/zh`，缺失或不支持时询问；未指定题量继续采用配置默认值。

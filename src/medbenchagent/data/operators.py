@@ -190,7 +190,20 @@ def join_stats(db, left, right, left_keys, right_keys):
     return stats
 
 
-def execute_plan(root, source: Source, plan: PreparationPlan, output):
+def inspect_image_population(root, source, population, output):
+    """Count actual distinct nonempty image identities after declared filters and joins."""
+    from medbenchagent.data.contracts import Population
+    population = Population.model_validate(population)
+    plan = PreparationPlan.model_validate({
+        "mapping": {"authoritative_population": "Population inspection", "expected_images": 1,
+                    "entity_meanings": {}, "evidence": ["Deterministic inspection"]},
+        "steps": [*(step.model_dump() for step in population.steps),
+                  {"op": "emit", "input": population.input, "fields": {"image.image_id": population.image_id}}],
+    })
+    return execute_plan(root, source, plan, output, population_only=True)
+
+
+def execute_plan(root, source: Source, plan: PreparationPlan, output, *, population_only=False):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     reports = []
@@ -208,6 +221,15 @@ def execute_plan(root, source: Source, plan: PreparationPlan, output):
             table = quoted(step.input)
             if step.op == "emit":
                 require_columns(db, step.input, step.fields.values())
+                if population_only:
+                    field = quoted(step.fields["image.image_id"])
+                    rows, unique, missing = db.execute(
+                        f"SELECT count(*), count(DISTINCT {field}), "
+                        f"count(*) FILTER (WHERE {field} IS NULL OR trim(CAST({field} AS VARCHAR))='') FROM {table}"
+                    ).fetchone()
+                    if missing or not unique:
+                        raise ValueError("Population requires nonempty image identities and at least one image")
+                    return {"rows": rows, "unique_images": unique, "image_id": step.fields["image.image_id"]}
                 names = columns(db, step.input)
                 json_columns = {
                     r[0] for r in db.execute(f"DESCRIBE {table}").fetchall() if r[1] == "JSON"

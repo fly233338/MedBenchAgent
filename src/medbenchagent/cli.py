@@ -409,7 +409,8 @@ def run_interactive_build(
         output("")
         command = f"prepare --dataset-id {dataset_id}" if dataset_id else "build"
         recovery = f"experiment {experiment['name']}" if experiment else f"{command} --resume <resume identifier>"
-        output(f"Run interrupted. Resume with: medbenchagent {recovery}.")
+        output(f"Run interrupted. If code remains unchanged, resume with: medbenchagent {recovery}. "
+               "If code changes, start a new run.")
         if known_run_directory:
             output(f"Preserved run artifacts: {known_run_directory}")
         return 130
@@ -419,7 +420,8 @@ def run_interactive_build(
         output(f"Benchmark construction failed: {type(exc).__name__}: {exc}")
         command = f"prepare --dataset-id {dataset_id}" if dataset_id else "build"
         recovery = f"experiment {experiment['name']}" if experiment else f"{command} --resume <resume identifier>"
-        output(f"Files and checkpoints are preserved. Use {recovery}.")
+        output(f"Files and checkpoints are preserved. If code remains unchanged, use {recovery}. "
+               "If you modify code to fix this failure, start a new run.")
         if known_run_directory:
             output(f"Preserved run artifacts: {known_run_directory}")
         return 1
