@@ -116,8 +116,10 @@ Local 使用当前解释器、独立工作目录和 UTF-8，超时结束对应�
 本地依赖安装命令为 `uv sync --extra data-processing`，缺依赖时报告具体错误。
 
 build、prepare、Experiment 以及直接图调用共用按意图的本地预检：校验 Catalog 格式与 LLM 配置，
-仅构建需要有效 Blueprint；准备后端在实际准备前检查。恢复使用保存配置。PDF、embedding、reranker
-缺失只降低 RAG 能力，不阻止无检索规划；能力与原因在 CLI 和 Agent 观察中可见。
+仅构建需要有效 Blueprint；准备后端在实际准备前检查。CLI 根级 --config 选择覆盖 TOML，优先于
+MEDBENCH_CONFIG，字段环境变量仍覆盖 TOML；run 创建时冻结 effective_config，恢复使用保存配置。
+PDF 或 embedding/reranker endpoint 与 model 缺失只降低 RAG 能力，不阻止无检索规划；能力与原因在 CLI
+和 Agent 观察中可见。服务可用性在实际检索时确认，HTTP 故障中断执行并保留 checkpoint。
 
 ## 局部规划与全局分配
 
@@ -140,6 +142,9 @@ Leaf 不代表同一任务。Extension 继续经过字段证据、临床意义�
 Planner 在理解 Concept、展开 Leaf、设计 Protocol 和发现 Extension 时可查询 RAG；PDF 不补造标签。
 Planner 初始化时检查 RAG 能力；不可用且没有 Materials 时自动发布空 Materials，不再要求空选择动作。
 可用时保留显式材料选择，只有已选择材料且 RAG 可用时开放 search_materials，缺省条数取 rag.result_limit。
+PDF 提取、chunking、Chroma 候选检索仍在本项目；embedding 分批调用独立 vLLM /v1/embeddings，
+reranker 调用独立 /v1/rerank 并按返回 index 对应候选。向量缓存身份包括 embedding endpoint/model；
+模型服务换权重但复用相同名称时需新建运行或改变服务模型标识。
 已有 Materials 不被初始化覆盖，变更材料仍按既有依赖使规划失效。
 所有 Core 有 complete/unsupported 决议后检查 coverage gap，完成 discovery，再审查局部完整树。
 Card 只提供检索线索；Profile、真实字段值和结构提供规划证据，Protocol 校验确认执行条件。
@@ -195,8 +200,11 @@ DataProcessing 检查工具支持复合 join key、相同的基数/空键/未匹
 Experiment 为 thread_id 的稳定命名索引，位于 runs_root 同级 experiments.json，记录模式、数据集摘要、
 run_directory、状态、Git commit 和时间。CLI 根据 checkpoint/interrupt/执行结果更新 registry；
 registry 不参与 Agent 决策，不取代 checkpoint。完成实验只展示产物，不自动重跑或追加需求。
-默认命令提供文本选择菜单，保留 --resume UUID 高级恢复接口；不实现多 Run 或批量实验管理。
-CLI 按 tasks/updates/custom + subgraphs=True 的三元组事件处理流，只从 updates 顶层读取
+默认命令提供单实验输入提示：自然语言创建自动命名实验，/new 可指定名称，/resume 选择旧实验，
+/status、/config 显示状态及生效配置，/quit 退出。澄清节点接受自然语言回答和只读命令；终态报告后
+进程退出。保留 experiment 文本选择器和 --resume UUID 高级恢复接口；不实现多 Run 或批量实验管理。
+CLI 按 tasks/updates/custom + subgraphs=True 的三元组事件处理流，显示 agent、工具和进度，
+只从 updates 顶层读取
 LangGraph Interrupt，未知格式和缺少有效 question 明确报错。失败报告使用执行期间记录的运行目录，
 Experiment 收尾的 checkpoint/registry 诊断失败明确显示，不覆盖原始运行错误及退出状态。
 构建事件在已知时携带 dataset_id/source_id，模型调用继承工具执行上下文。

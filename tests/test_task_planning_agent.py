@@ -214,6 +214,20 @@ def test_rag_available_before_any_leaf_and_exact_field_values(tmp_path, monkeypa
     assert {row["value"] for row in values["inspection"]["values"]} == {"benign", "malignant"}
 
 
+def test_remote_rag_outage_propagates_for_checkpoint_resume(tmp_path, monkeypatch):
+    from medbenchagent.rag.remote import RagUnavailable
+
+    c = context(tmp_path, monkeypatch)
+
+    def unavailable(_query, _limit):
+        raise RagUnavailable("Reranker API request failed")
+
+    monkeypatch.setattr(planning, "_rag", lambda _: type("Rag", (), {"retrieve":
+                        lambda self, query, limit: unavailable(query, limit)})())
+    with pytest.raises(RagUnavailable, match="Reranker API"):
+        planning.search_materials(c, query="query", limit=1)
+
+
 def test_optional_materials_initialize_without_rag_and_keep_existing_selection(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
     c["artifact_versions"].pop("dataset/test/Materials")

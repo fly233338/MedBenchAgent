@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
@@ -7,10 +8,6 @@ from medbenchagent import cli
 
 
 def _settings(tmp_path: Path) -> SimpleNamespace:
-    embedding = tmp_path / "embedding"
-    reranker = tmp_path / "reranker"
-    embedding.mkdir(exist_ok=True)
-    reranker.mkdir(exist_ok=True)
     blueprint = tmp_path / "blueprint.json"
     blueprint.write_text('{"concepts":{"core":{}}}\n', encoding="utf-8")
     materials = tmp_path / "materials"
@@ -25,7 +22,13 @@ def _settings(tmp_path: Path) -> SimpleNamespace:
             max_total_tasks_per_image=None,
             question_temperature=0.4,
         ),
-        rag=SimpleNamespace(embedding_model=embedding, reranker_model=reranker),
+        rag=SimpleNamespace(embedding_base_url="http://127.0.0.1:8001/v1",
+                            embedding_model="Qwen3-Embedding",
+                            reranker_base_url="http://127.0.0.1:8002/v1",
+                            reranker_model="Qwen3-Reranker"),
+        default_config_path=tmp_path / "default.toml",
+        local_config_path=None,
+        environment_overrides=(),
         paths=SimpleNamespace(
             blueprint_template=blueprint,
             materials_root=materials,
@@ -38,8 +41,8 @@ def _settings(tmp_path: Path) -> SimpleNamespace:
 def test_preflight_aggregates_missing_local_resources(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     settings.paths.blueprint_template.unlink()
-    settings.rag.embedding_model = None
-    settings.rag.reranker_model = tmp_path / "missing-reranker"
+    settings.rag.embedding_model = ""
+    settings.rag.reranker_base_url = "http://missing-host/v1"
     annotation = tmp_path / "dataset" / "annotation.jsonl"
     settings.paths.dataset_catalog.write_text(
         json.dumps(
@@ -80,8 +83,8 @@ def test_preflight_accepts_complete_local_resources(tmp_path: Path) -> None:
 
 def test_preflight_treats_rag_as_optional_and_blueprint_as_build_only(tmp_path):
     settings = _settings(tmp_path)
-    settings.rag.embedding_model = None
-    settings.rag.reranker_model = None
+    settings.rag.embedding_model = ""
+    settings.rag.reranker_model = ""
     assert cli._preflight_errors(settings) == []
     settings.paths.blueprint_template.unlink()
     assert cli._preflight_errors(settings, build=False) == []
@@ -176,6 +179,86 @@ def test_parser_keeps_build_entry_and_removes_balance_command() -> None:
     assert error.value.code == 2
 
 
+def test_default_session_accepts_requirement_and_auto_names_experiment(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    seen = []
+    monkeypatch.setattr(cli, "run_interactive_build", lambda **kwargs: seen.append(kwargs) or 0)
+    output = []
+
+    assert cli.run_session(settings=settings, input_fn=lambda _: "Create a chest X-ray benchmark",
+                           output=output.append) == 0
+    assert seen[0]["initial_requirement"] == "Create a chest X-ray benchmark"
+    assert seen[0]["experiment"]["name"].startswith("exp-")
+    assert any(line.startswith("Active config: ") for line in output)
+    assert any("Embedding: Qwen3-Embedding @ http://127.0.0.1:8001/v1" in line for line in output)
+
+
+def test_session_commands_status_config_new_resume_and_quit(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    seen = []
+    monkeypatch.setattr(cli, "run_interactive_build", lambda **kwargs: seen.append(kwargs) or 0)
+    values = iter(["/status", "/config", "/new pilot", "Prepare chest data"])
+    output = []
+    assert cli.run_session(settings=settings, input_fn=lambda _: next(values), output=output.append) == 0
+    assert seen[0]["experiment"]["name"] == "pilot"
+    assert seen[0]["initial_requirement"] == "Prepare chest data"
+    assert "No experiments yet." in output
+
+    seen.clear()
+    assert cli.run_session(settings=settings, input_fn=lambda _: "/resume pilot",
+                           output=output.append) == 0
+    assert seen[0]["experiment"]["name"] == "pilot"
+    assert cli.run_session(settings=settings, input_fn=lambda _: "/quit",
+                           output=output.append) == 0
+
+
+def test_clarification_commands_keep_answer_separate_from_slash_commands(tmp_path):
+    settings = _settings(tmp_path)
+    snapshot = SimpleNamespace(values={}, next=(), tasks=())
+    graph = SimpleNamespace(get_state=lambda _: snapshot)
+    values = iter(["/status", "/config", "/new another", "English"])
+    output = []
+    assert cli._read_clarification("Your response: ", lambda _: next(values), output.append,
+                                    settings, graph, {}) == "English"
+    assert "Experiment status: created" in output
+    assert any(line.startswith("Active config: ") for line in output)
+    assert any("use /status, /config or /quit" in line for line in output)
+    with pytest.raises(cli.SessionQuit):
+        cli._read_clarification("Your response: ", lambda _: "/quit", output.append,
+                                settings, graph, {})
+
+
+def test_tool_result_update_is_streamed():
+    output = []
+    cli._render_update({"execute": {"observations": [
+        {"tool": "search_materials", "status": "success", "summary": "2 passages"},
+    ]}}, output.append)
+    assert output == ["[tool] search_materials: success — 2 passages"]
+
+
+def test_main_passes_root_config_to_default_session(tmp_path, monkeypatch):
+    selected = tmp_path / "selected.toml"
+    selected.write_text("[llm]\nmodel='from-cli'\n", encoding="utf-8")
+    from_env = tmp_path / "from-env.toml"
+    from_env.write_text("[llm]\nmodel='from-env'\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MEDBENCH_CONFIG", str(from_env))
+    monkeypatch.setattr(sys, "argv", ["medbenchagent", "--config", "selected.toml"])
+    observed = []
+
+    def session(*, settings):
+        from medbenchagent.settings import get_settings
+        assert get_settings() is settings
+        observed.append((settings.llm.model, settings.local_config_path))
+        return 0
+
+    monkeypatch.setattr(cli, "run_session", session)
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 0
+    assert observed == [("from-cli", selected)]
+
+
 def test_named_experiment_opens_completed_checkpoint_without_execution(tmp_path, monkeypatch):
     from medbenchagent.runtime.experiments import create_experiment, get_experiment
     settings = _settings(tmp_path)
@@ -199,6 +282,29 @@ def test_named_experiment_opens_completed_checkpoint_without_execution(tmp_path,
     saved = get_experiment(settings.paths.runs_root, "pilot")
     assert saved["status"] == "complete" and saved["datasets"] == ["a"]
     assert not any("Resume identifier" in message for message in messages)
+
+
+def test_completed_experiment_with_legacy_rag_snapshot_still_displays_result(tmp_path):
+    from medbenchagent.runtime.experiments import create_experiment
+
+    settings = _settings(tmp_path)
+    entry = create_experiment(settings.paths.runs_root, "finished-legacy")
+    saved_path = tmp_path / "effective_config.json"
+    saved_path.write_text(json.dumps({
+        "config_sources": {"default": {"path": "config/default.toml"}, "local": None},
+        "settings": {"rag": {"embedding_model": "old-local-path"}},
+    }), encoding="utf-8")
+    snapshot = SimpleNamespace(values={
+        "status": "complete", "summary": "Delivered", "run_id": "run",
+        "context": {"effective_config_path": str(saved_path)},
+    }, next=(), tasks=())
+    graph = SimpleNamespace(get_state=lambda _: snapshot)
+    output = []
+    assert cli.run_interactive_build(settings=settings, graph=graph, experiment=entry,
+                                     input_fn=lambda _: pytest.fail("No input expected"),
+                                     output=output.append) == 0
+    assert any("Active config: config/default.toml" in line for line in output)
+    assert any("Delivered" in line for line in output)
 
 
 def test_experiment_registry_and_snapshot_status(tmp_path):

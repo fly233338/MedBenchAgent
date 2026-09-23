@@ -6,11 +6,16 @@ import argparse
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 InputFunction = Callable[[str], str]
 OutputFunction = Callable[[str], None]
+
+
+class SessionQuit(Exception):
+    """The user closed an input prompt while preserving its checkpoint."""
 
 _NODE_LABELS = {
     "SupervisorAgent": "coordinate benchmark construction",
@@ -58,6 +63,26 @@ def _read_nonempty(prompt: str, input_fn: InputFunction, output: OutputFunction)
         if value:
             return value
         output("Input cannot be empty. Please try again.")
+
+
+def _read_clarification(prompt: str, input_fn: InputFunction, output: OutputFunction,
+                        settings: Any, graph: Any, config: dict[str, Any]) -> str:
+    while True:
+        value = _read_nonempty(prompt, input_fn, output)
+        if value == "/quit":
+            raise SessionQuit
+        if value == "/config":
+            snapshot = graph.get_state(config).values.get("context", {}).get("effective_config_path")
+            _print_settings(settings, output, snapshot_path=snapshot)
+        elif value == "/status":
+            from medbenchagent.runtime.experiments import snapshot_updates
+
+            snapshot = graph.get_state(config)
+            output(f"Experiment status: {snapshot_updates(snapshot)['status']}")
+        elif value.startswith("/"):
+            output("While answering a question, use /status, /config or /quit.")
+        else:
+            return value
 
 
 def _preflight_errors(settings: Any, *, build=True) -> list[str]:
@@ -149,6 +174,12 @@ def _render_artifact_paths(payload: object, output: OutputFunction) -> None:
 
 def _render_update(payload: object, output: OutputFunction) -> None:
     _render_artifact_paths(payload, output)
+    if isinstance(payload, dict) and isinstance(payload.get("execute"), dict):
+        observations = payload["execute"].get("observations")
+        if isinstance(observations, list) and observations:
+            latest = observations[-1]
+            if isinstance(latest, dict):
+                output(f"[tool] {latest.get('tool')}: {latest.get('status')} — {latest.get('summary')}")
     if interrupt := _interrupt_payload(payload):
         output(f"[waiting] {_interrupt_question(interrupt)}")
 
@@ -196,7 +227,17 @@ def _recursion_limit(values: object) -> int:
     return max(1_000, total_images * 4 + 100)
 
 
-def _print_settings(settings: Any, output: OutputFunction) -> None:
+def _print_settings(settings: Any, output: OutputFunction, *, snapshot_path: str | None = None) -> None:
+    sources = None
+    override_keys = settings.environment_overrides
+    if snapshot_path:
+        saved = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
+        sources = saved.get("config_sources")
+        override_keys = saved.get("environment_overrides", [])
+    source = ((sources or {}).get("local") or (sources or {}).get("default") or
+              {"path": str(settings.local_config_path or settings.default_config_path)})["path"]
+    output(f"Active config: {source}" + (f" (saved: {snapshot_path})" if snapshot_path else ""))
+    output("Environment overrides: " + (", ".join(override_keys) if override_keys else "none"))
     output("")
     output("=== Effective configuration ===")
     output(f"LLM: {settings.llm.model} @ {settings.llm.base_url}")
@@ -207,8 +248,8 @@ def _print_settings(settings: Any, output: OutputFunction) -> None:
         f"max_total_tasks_per_image={settings.generation.max_total_tasks_per_image}, "
         f"question_temperature={settings.generation.question_temperature}"
     )
-    output(f"Embedding: {settings.rag.embedding_model}")
-    output(f"Reranker: {settings.rag.reranker_model}")
+    output(f"Embedding: {settings.rag.embedding_model} @ {settings.rag.embedding_base_url}")
+    output(f"Reranker: {settings.rag.reranker_model} @ {settings.rag.reranker_base_url}")
     output(f"Dataset catalog: {settings.paths.dataset_catalog}")
     output(f"Medical materials: {settings.paths.materials_root}")
     output(f"Run artifacts root: {settings.paths.runs_root}")
@@ -272,6 +313,8 @@ def run_interactive_build(
     dataset_id: str | None = None,
     dataset_ids: list[str] | None = None,
     experiment: dict | None = None,
+    initial_requirement: str | None = None,
+    show_settings: bool = True,
 ) -> int:
     """Run the benchmark graph as a local, terminal-driven conversation."""
     _enforce_offline_mode()
@@ -282,18 +325,20 @@ def run_interactive_build(
     previous = None
     interrupted = False
     failed = False
+    saved_settings = None
     from medbenchagent.runtime.experiments import update_experiment, snapshot_updates
     try:
         requirement = (
             ""
             if resume or experiment
-            else _read_nonempty("Describe the dataset preparation or Medical VLM benchmark: ", input_fn, output)
+            else initial_requirement or _read_nonempty("Describe the dataset preparation or Medical VLM benchmark: ", input_fn, output)
         )
         if settings is None:
             from medbenchagent.settings import get_settings
 
             settings = get_settings()
-        _print_settings(settings, output)
+        if show_settings and not resume:
+            _print_settings(settings, output)
         if not resume and not experiment and not _report_preflight(settings, output, build=not dataset_id):
             return 2
 
@@ -326,7 +371,8 @@ def run_interactive_build(
             else:
                 if not _report_preflight(settings, output, build=False):
                     return 2
-                requirement = _read_nonempty("Describe the dataset preparation or Medical VLM benchmark: ", input_fn, output)
+                requirement = initial_requirement or _read_nonempty(
+                    "Describe the dataset preparation or Medical VLM benchmark: ", input_fn, output)
         next_input: object = {"user_requirement": requirement, "prepare_dataset_id": dataset_id,
                               "requested_dataset_ids": dataset_ids,
                               "entry_intent": "prepare_dataset" if dataset_id else None if experiment else "build_benchmark"}
@@ -341,6 +387,18 @@ def run_interactive_build(
             if dataset_ids is not None and dataset_ids != previous.values.get("context", {}).get("requested_dataset_ids"):
                 raise ValueError("Resume preserves the original dataset selection; do not change --dataset")
             if previous.values.get("status") == "complete" and not previous.next:
+                saved_path = previous.values.get("context", {}).get("effective_config_path")
+                if saved_path and Path(saved_path).is_file():
+                    saved_document = json.loads(Path(saved_path).read_text(encoding="utf-8"))
+                    if "embedding_base_url" in saved_document.get("settings", {}).get("rag", {}):
+                        from medbenchagent.settings import run_settings
+
+                        with run_settings(saved_path) as completed_settings:
+                            _print_settings(completed_settings, output, snapshot_path=saved_path)
+                    else:
+                        sources = saved_document.get("config_sources", {})
+                        source = sources.get("local") or sources.get("default") or {}
+                        output(f"Active config: {source.get('path', saved_path)} (saved: {saved_path})")
                 _print_result(previous.values, output)
                 _render_artifact_paths(previous.values, output)
                 return 0
@@ -349,13 +407,16 @@ def run_interactive_build(
             from medbenchagent.settings import run_settings
             saved_context = previous.values["context"]
             with run_settings(saved_context["effective_config_path"]) as saved_settings:
+                _print_settings(saved_settings, output,
+                                snapshot_path=saved_context["effective_config_path"])
                 if not _report_preflight(saved_settings, output,
                                          build=saved_context.get("run_intent", {}).get("intent") in {"build_benchmark", "prepare_then_build"}):
                     return 2
             pending = [i for task in previous.tasks for i in task.interrupts]
             if pending:
                 _render_interrupt(pending[0].value, output)
-                next_input = Command(resume=_read_nonempty("Your response: ", input_fn, output))
+                next_input = Command(resume=_read_clarification(
+                    "Your response: ", input_fn, output, saved_settings, graph, config))
             else:
                 next_input = None
 
@@ -396,7 +457,8 @@ def run_interactive_build(
             config["recursion_limit"] = _recursion_limit(snapshot.values)
             if interrupt is not None:
                 _render_interrupt(interrupt, output)
-                answer = _read_nonempty("Your response: ", input_fn, output)
+                answer = _read_clarification("Your response: ", input_fn, output,
+                                             saved_settings or settings, graph, config)
                 next_input = Command(resume=answer)
                 continue
             if snapshot.next:
@@ -404,6 +466,10 @@ def run_interactive_build(
                 continue
             _print_result(snapshot.values, output)
             return 0 if snapshot.values.get("status", "complete") == "complete" else 1
+    except SessionQuit:
+        interrupted = True
+        output("Session closed. Experiment checkpoint preserved.")
+        return 0
     except (EOFError, KeyboardInterrupt):
         interrupted = True
         output("")
@@ -485,8 +551,86 @@ def run_experiments(*, action=None, name=None, dataset_id=None, dataset_ids=None
         return 130
 
 
+def run_session(*, settings: Any, input_fn: InputFunction = input,
+                output: OutputFunction = print) -> int:
+    """Start one experiment from a prompt, then exit when that run ends."""
+    from medbenchagent.runtime.experiments import create_experiment, get_experiment, list_experiments
+
+    _enforce_offline_mode()
+    _print_settings(settings, output)
+    output("Enter a requirement, or use /new [name], /resume [name], /status, /config, /quit.")
+    root = settings.paths.runs_root
+    pending_name: str | None = None
+    while True:
+        try:
+            value = _read_nonempty("medbenchagent> ", input_fn, output)
+        except EOFError:
+            return 0
+        except KeyboardInterrupt:
+            output("")
+            return 130
+        command, _, argument = value.partition(" ")
+        argument = argument.strip()
+        if command == "/quit" and not argument:
+            return 0
+        if command == "/config" and not argument:
+            _print_settings(settings, output)
+            continue
+        if command == "/status" and not argument:
+            entries = list_experiments(root)
+            if not entries:
+                output("No experiments yet.")
+            for entry in entries:
+                output(f"{entry['name']} | {entry['status']} | {entry.get('run_directory') or 'no run'}")
+            continue
+        if command == "/new":
+            pending_name = argument
+            output("Describe the new experiment:")
+            continue
+        if command == "/resume":
+            if not argument:
+                entries = list_experiments(root)
+                for index, entry in enumerate(entries, 1):
+                    output(f"{index}. {entry['name']} | {entry['status']}")
+                if not entries:
+                    output("No experiments to resume.")
+                    continue
+                try:
+                    argument = _read_nonempty("Experiment name or number: ", input_fn, output)
+                except (EOFError, KeyboardInterrupt):
+                    return 0
+                if argument.isdigit() and 1 <= int(argument) <= len(entries):
+                    argument = entries[int(argument) - 1]["name"]
+            try:
+                entry = get_experiment(root, argument)
+            except ValueError as exc:
+                output(str(exc))
+                continue
+            return run_interactive_build(settings=settings, experiment=entry,
+                                         input_fn=input_fn, output=output, show_settings=False)
+        if not value.startswith("/"):
+            if errors := _preflight_errors(settings, build=False):
+                output("Local preflight failed: " + "; ".join(errors))
+                continue
+            name = pending_name or f"exp-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+            pending_name = None
+            try:
+                entry = create_experiment(root, name)
+            except ValueError as exc:
+                output(str(exc))
+                continue
+            output(f"Experiment created: {entry['name']}")
+            return run_interactive_build(
+                settings=settings, experiment=entry, input_fn=input_fn, output=output,
+                initial_requirement=value,
+                show_settings=False,
+            )
+        output("Commands: /new [name], /resume [name], /status, /config, /quit; or enter a requirement.")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="medbenchagent")
+    parser.add_argument("--config", type=Path, help="Experiment TOML override (relative to current directory).")
     subcommands = parser.add_subparsers(dest="command")
     build = subcommands.add_parser(
         "build",
@@ -513,28 +657,40 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _parser()
     args = parser.parse_args()
-    if args.command in {None, "experiment"}:
-        try:
-            raise SystemExit(run_experiments(
-                action=getattr(args, "action", None), name=getattr(args, "name", None),
-                dataset_id=getattr(args, "prepare_dataset", None), dataset_ids=getattr(args, "dataset_ids", None)))
-        except ValueError as exc:
-            parser.error(str(exc))
-    if args.command == "refresh-card":
-        from medbenchagent.data.dataset_catalog import refresh_card
-        _print_json(refresh_card(args.dataset_id), print)
-        return
-    if args.command == "register":
-        from medbenchagent.data.dataset_catalog import register_dataset
-        _print_json(register_dataset(args.dataset_id, args.bundle), print)
-        return
-    if args.command == "prepare":
-        from medbenchagent.data.dataset_catalog import validate_dataset_id
-        validate_dataset_id(args.dataset_id)
-        raise SystemExit(run_interactive_build(resume=args.resume, dataset_id=args.dataset_id))
-    if args.command == "build":
-        exit_code = run_interactive_build(resume=args.resume, dataset_ids=args.dataset_ids)
-        if exit_code:
-            raise SystemExit(exit_code)
-        return
-    parser.print_help()
+    from medbenchagent.settings import active_settings, load_settings
+
+    try:
+        settings = load_settings(args.config)
+    except ValueError as exc:
+        parser.error(str(exc))
+    with active_settings(settings):
+        if args.command is None:
+            raise SystemExit(run_session(settings=settings))
+        if args.command == "experiment":
+            try:
+                raise SystemExit(run_experiments(
+                    action=args.action, name=args.name,
+                    dataset_id=args.prepare_dataset, dataset_ids=args.dataset_ids,
+                    settings=settings))
+            except ValueError as exc:
+                parser.error(str(exc))
+        if args.command == "refresh-card":
+            from medbenchagent.data.dataset_catalog import refresh_card
+            _print_json(refresh_card(args.dataset_id), print)
+            return
+        if args.command == "register":
+            from medbenchagent.data.dataset_catalog import register_dataset
+            _print_json(register_dataset(args.dataset_id, args.bundle), print)
+            return
+        if args.command == "prepare":
+            from medbenchagent.data.dataset_catalog import validate_dataset_id
+            validate_dataset_id(args.dataset_id)
+            raise SystemExit(run_interactive_build(resume=args.resume, dataset_id=args.dataset_id,
+                                                   settings=settings))
+        if args.command == "build":
+            exit_code = run_interactive_build(resume=args.resume, dataset_ids=args.dataset_ids,
+                                              settings=settings)
+            if exit_code:
+                raise SystemExit(exit_code)
+            return
+        parser.print_help()

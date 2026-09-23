@@ -22,8 +22,6 @@ _ENVIRONMENT_OVERRIDES = {
     "DEEPSEEK_MODEL": ("llm", "model"),
     "DEEPSEEK_BASE_URL": ("llm", "base_url"),
     "DEEPSEEK_TIMEOUT_SECONDS": ("llm", "timeout_seconds"),
-    "BGE_EMBEDDING_MODEL": ("rag", "embedding_model"),
-    "BGE_RERANKER_MODEL": ("rag", "reranker_model"),
     "RAG_MIN_RERANK_SCORE": ("rag", "min_rerank_score"),
     "MEDBENCH_LLM_MODEL": ("llm", "model"),
     "MEDBENCH_LLM_BASE_URL": ("llm", "base_url"),
@@ -53,8 +51,10 @@ class LlmSettings:
 
 @dataclass(frozen=True)
 class RagSettings:
-    embedding_model: Path | None
-    reranker_model: Path | None
+    embedding_base_url: str
+    embedding_model: str
+    reranker_base_url: str
+    reranker_model: str
     chunk_size: int
     chunk_overlap: int
     candidate_count: int
@@ -161,6 +161,16 @@ def run_settings(path):
         _RUN_SETTINGS.reset(token)
 
 
+@contextmanager
+def active_settings(settings: AppSettings):
+    """Use one explicit CLI configuration for this invocation."""
+    token = _RUN_SETTINGS.set(settings)
+    try:
+        yield settings
+    finally:
+        _RUN_SETTINGS.reset(token)
+
+
 def load_project_env() -> None:
     """Load the optional project .env without overriding process-level variables."""
     load_dotenv(PROJECT_ROOT / ".env", override=False)
@@ -169,6 +179,11 @@ def load_project_env() -> None:
 def get_llm_api_key() -> str | None:
     """Read the optional API key in the sole configuration module."""
     return os.getenv("MEDBENCH_LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or None
+
+
+def get_rag_api_key(kind: str) -> str | None:
+    """Keep optional vLLM credentials outside configuration snapshots."""
+    return os.getenv(f"MEDBENCH_{kind.upper()}_API_KEY") or None
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any], *, prefix: str = "") -> None:
@@ -211,6 +226,12 @@ def _resolve_path(value: object, key: str, *, allow_empty: bool = False) -> Path
 def _string(value: object, key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{key} must be a non-empty string.")
+    return value.strip()
+
+
+def _optional_string(value: object, key: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string.")
     return value.strip()
 
 
@@ -291,8 +312,10 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
             trace_name=_string(llm["trace_name"], "llm.trace_name"),
         ),
         rag=RagSettings(
-            embedding_model=_resolve_path(rag["embedding_model"], "rag.embedding_model", allow_empty=True),
-            reranker_model=_resolve_path(rag["reranker_model"], "rag.reranker_model", allow_empty=True),
+            embedding_base_url=_optional_string(rag["embedding_base_url"], "rag.embedding_base_url"),
+            embedding_model=_optional_string(rag["embedding_model"], "rag.embedding_model"),
+            reranker_base_url=_optional_string(rag["reranker_base_url"], "rag.reranker_base_url"),
+            reranker_model=_optional_string(rag["reranker_model"], "rag.reranker_model"),
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             candidate_count=_integer(rag["candidate_count"], "rag.candidate_count", minimum=1),
@@ -330,7 +353,10 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     load_project_env()
     values = _read_toml(DEFAULT_CONFIG_PATH)
     raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
-    local_path = _resolve_path(str(raw_path), "MEDBENCH_CONFIG") if raw_path else None
+    local_path = None
+    if raw_path:
+        local_path = (Path(raw_path).expanduser().resolve() if config_path is not None
+                      else _resolve_path(str(raw_path), "MEDBENCH_CONFIG"))
     if local_path:
         _merge(values, _read_toml(local_path))
     env_keys: list[str] = []

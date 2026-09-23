@@ -1,4 +1,4 @@
-# Copy this file to a location of your choice and set MEDBENCH_CONFIG to its path.
+# Copy this file to a location of your choice and pass --config <path> to the CLI.
 # Values here override config/default.toml. Keep credentials in environment variables.
 
 # Optional raw sources. Prepared datasets continue to use paths.dataset_catalog.
@@ -16,8 +16,10 @@
 default_sample_count = 1000 # Used only when the user did not supply a count; language is asked.
 
 [rag]
-embedding_model = "/path/to/Qwen3-Embedding-0.6B"
-reranker_model = "/path/to/Qwen3-Reranker-0.6B"
+embedding_base_url = "http://127.0.0.1:8001/v1"
+embedding_model = "Qwen/Qwen3-Embedding-0.6B"
+reranker_base_url = "http://127.0.0.1:8002/v1"
+reranker_model = "Qwen/Qwen3-Reranker-0.6B"
 
 [generation]
 question_template_count = 3

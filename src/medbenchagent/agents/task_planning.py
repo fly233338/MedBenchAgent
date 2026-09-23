@@ -8,7 +8,7 @@ from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.contexts import TaskPlanningContext
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
-from medbenchagent.rag.pdf import LocalPdfRag, RagUnavailable, discover_medical_materials
+from medbenchagent.rag.pdf import LocalPdfRag, discover_medical_materials
 from medbenchagent.settings import get_settings
 from medbenchagent.runtime.tool_contracts import (
     PageArguments,
@@ -262,10 +262,7 @@ def _rag(context):
 
 def search_materials(context, *, query, limit=None):
     """Retrieve relevant paragraphs from selected references."""
-    try:
-        chunks = _rag(context).retrieve(query, limit)
-    except RagUnavailable as exc:
-        return result("failed", str(exc))
+    chunks = _rag(context).retrieve(query, limit)
     entries = []
     for chunk in chunks:
         ref = save_evidence(context, "search_materials", {"query": query}, chunk, ("Materials",), kind="material")

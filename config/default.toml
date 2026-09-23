@@ -19,7 +19,9 @@ default_temperature = 0.0
 trace_name = "DeepSeek"
 
 [rag]
+embedding_base_url = ""
 embedding_model = ""
+reranker_base_url = ""
 reranker_model = ""
 chunk_size = 1200
 chunk_overlap = 200

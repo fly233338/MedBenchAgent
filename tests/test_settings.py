@@ -76,6 +76,37 @@ def test_explicit_toml_then_environment_override_and_empty_value(tmp_path: Path,
     assert settings.local_config_path == local.resolve()
 
 
+def test_cli_config_path_selects_file_over_environment_and_snapshots_remote_rag(tmp_path, monkeypatch):
+    from medbenchagent.settings import active_settings, get_settings, run_settings
+
+    selected = tmp_path / "selected.toml"
+    selected.write_text("[llm]\nmodel='selected'\n"
+                        "[rag]\nembedding_base_url='http://embed/v1'\n"
+                        "embedding_model='embed-v1'\nreranker_base_url='http://rerank/v1'\n"
+                        "reranker_model='rerank-v1'\n", encoding="utf-8")
+    from_env = tmp_path / "from-env.toml"
+    from_env.write_text("[llm]\nmodel='from-env'\n", encoding="utf-8")
+    monkeypatch.setenv("MEDBENCH_CONFIG", str(from_env))
+    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "field-override")
+    monkeypatch.chdir(tmp_path)
+
+    assert load_settings().local_config_path == from_env
+    settings = load_settings(Path("selected.toml"))
+    assert settings.local_config_path == selected
+    assert settings.llm.model == "field-override"
+    assert settings.rag.embedding_model == "embed-v1"
+    with active_settings(settings):
+        assert get_settings() is settings
+        run = initialize_run(tmp_path / "runs", settings=settings)
+    selected.write_text("[rag]\nembedding_model='changed'\n", encoding="utf-8")
+    with run_settings(run["effective_config_path"]) as saved:
+        assert saved.rag.embedding_model == "embed-v1"
+        assert saved.rag.reranker_base_url == "http://rerank/v1"
+    snapshot = json.loads(Path(run["effective_config_path"]).read_text(encoding="utf-8"))
+    assert snapshot["config_sources"]["local"]["path"] == str(selected)
+    assert snapshot["environment_overrides"] == ["llm.model"]
+
+
 def test_explicit_toml_rejects_unknown_keys(tmp_path: Path) -> None:
     local = tmp_path / "local.toml"
     local.write_text("[generation]\nunknown = 1\n", encoding="utf-8")

@@ -9,11 +9,16 @@ from medbenchagent.rag.pdf import RagUnavailable, discover_medical_materials
 
 def rag_capability(settings):
     reasons = []
-    for label, path in (("Embedding model", settings.rag.embedding_model), ("Reranker model", settings.rag.reranker_model)):
-        if path is None:
-            reasons.append(f"{label} is not configured")
-        elif not path.is_dir():
-            reasons.append(f"{label} directory does not exist: {path}")
+    for label, base_url, model in (
+        ("Embedding", settings.rag.embedding_base_url, settings.rag.embedding_model),
+        ("Reranker", settings.rag.reranker_base_url, settings.rag.reranker_model),
+    ):
+        if not base_url or not model:
+            reasons.append(f"{label} endpoint and model must be configured")
+        else:
+            url = urlparse(base_url)
+            if url.scheme not in {"http", "https"} or not url.netloc:
+                reasons.append(f"{label} base_url must be an HTTP(S) URL")
     try:
         discover_medical_materials(settings.paths.materials_root)
     except (RagUnavailable, OSError) as exc:

@@ -5,20 +5,18 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from threading import Lock
-from typing import Any
+
+import httpx
 
 from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
-from medbenchagent.rag.reranker import score_pairs
+from medbenchagent.rag.remote import (
+    REQUEST_TIMEOUT_SECONDS, RagUnavailable, embed_texts, rerank_documents,
+)
 from medbenchagent.settings import get_settings
 
-CACHE_SCHEMA_VERSION = "2"
-
-
-class RagUnavailable(RuntimeError):
-    """Raised when local medical references or retrieval models are unavailable."""
+CACHE_SCHEMA_VERSION = "3"
 
 
 def discover_medical_materials(materials_root: str | Path) -> list[dict[str, str]]:
@@ -142,30 +140,8 @@ def extract_pdf_chunks(
     return source_identity, chunks
 
 
-_EMBEDDERS: dict[str, Any] = {}
-_EMBEDDER_LOCK = Lock()
-
-
-def _get_embedder(model_path: str) -> Any:
-    key = str(Path(model_path).resolve())
-    with _EMBEDDER_LOCK:
-        if key not in _EMBEDDERS:
-            try:
-                from sentence_transformers import SentenceTransformer
-            except ImportError as exc:
-                raise RagUnavailable("PDF RAG dependencies are not installed.") from exc
-            _EMBEDDERS[key] = SentenceTransformer(key)
-        return _EMBEDDERS[key]
-
-
-def clear_embedding_cache() -> None:
-    """Clear process-local embedding models; intended for isolated tests."""
-    with _EMBEDDER_LOCK:
-        _EMBEDDERS.clear()
-
-
 class LocalPdfRag:
-    """Chroma retrieval with process-cached embedding and reranking models."""
+    """Chroma retrieval using independently served embedding and reranking models."""
 
     def __init__(
         self,
@@ -175,17 +151,15 @@ class LocalPdfRag:
         *, revision: str = "1", refresh: bool = False,
     ) -> None:
         settings = get_settings().rag
-        if not settings.embedding_model or not settings.reranker_model:
-            raise RagUnavailable("Local embedding and reranker model directories must be configured.")
-        embedding_path = settings.embedding_model
-        reranker_path = settings.reranker_model
-        if not embedding_path.is_dir() or not reranker_path.is_dir():
-            raise RagUnavailable("Local embedding and reranker model directories must be configured.")
+        if not all((settings.embedding_base_url, settings.embedding_model,
+                    settings.reranker_base_url, settings.reranker_model)):
+            raise RagUnavailable("Embedding and reranker API endpoints and models must be configured.")
         if not revision.isalnum():
             raise ValueError("RAG revision must be alphanumeric.")
         identity = {"root": str(Path(materials_root).resolve()), "sources": selected_files,
                     "chunk_size": settings.chunk_size, "overlap": settings.chunk_overlap,
-                    "model": str(embedding_path.resolve()), "revision": revision}
+                    "embedding_base_url": settings.embedding_base_url,
+                    "embedding_model": settings.embedding_model, "revision": revision}
         cache = Path(cache_root) / ("pdf-v" + CACHE_SCHEMA_VERSION)
         cache.mkdir(parents=True, exist_ok=True)
         entries = sorted(cache.glob("*/sources.json"))
@@ -201,33 +175,34 @@ class LocalPdfRag:
             self.chunks = json.loads((match / "chunks.json").read_text(encoding="utf-8"))
         self.cache_dir = match
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.embedding_path = str(embedding_path)
-        self.reranker_path = str(reranker_path)
+        self.settings = settings
 
     def retrieve(self, query: str, limit: int | None = None) -> list[dict[str, object]]:
         try:
             import chromadb
         except ImportError as exc:
             raise RagUnavailable("PDF RAG dependencies are not installed.") from exc
-        embedder = _get_embedder(self.embedding_path)
         client = chromadb.PersistentClient(path=str(self.cache_dir))
         collection = client.get_or_create_collection("medical_references")
-        if collection.count() != len(self.chunks):
-            collection.upsert(
-                ids=[str(chunk["chunk_id"]) for chunk in self.chunks],
-                documents=[str(chunk["text"]) for chunk in self.chunks],
-                embeddings=embedder.encode([str(chunk["text"]) for chunk in self.chunks]).tolist(),
-                metadatas=[
-                    {"pdf": str(chunk["pdf"]), "page": int(chunk["page"])}
-                    for chunk in self.chunks
-                ],
+        settings = self.settings
+        with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as api:
+            if collection.count() != len(self.chunks):
+                collection.upsert(
+                    ids=[str(chunk["chunk_id"]) for chunk in self.chunks],
+                    documents=[str(chunk["text"]) for chunk in self.chunks],
+                    embeddings=embed_texts(api, settings.embedding_base_url, settings.embedding_model,
+                                           [str(chunk["text"]) for chunk in self.chunks]),
+                    metadatas=[
+                        {"pdf": str(chunk["pdf"]), "page": int(chunk["page"])}
+                        for chunk in self.chunks
+                    ],
+                )
+            response = collection.query(
+                query_embeddings=embed_texts(api, settings.embedding_base_url,
+                                             settings.embedding_model, [query]),
+                n_results=min(settings.candidate_count, collection.count()),
+                include=["documents", "metadatas", "distances"],
             )
-        settings = get_settings().rag
-        response = collection.query(
-            query_embeddings=[embedder.encode(query).tolist()],
-            n_results=min(settings.candidate_count, collection.count()),
-            include=["documents", "metadatas", "distances"],
-        )
         candidates = [
             {
                 "chunk_id": chunk_id,
@@ -244,11 +219,12 @@ class LocalPdfRag:
                 strict=True,
             )
         ]
-        scores = score_pairs(
-            self.reranker_path,
-            [(query, str(candidate["text"])) for candidate in candidates],
-            max_length=settings.reranker_max_length,
-        )
+        with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as api:
+            scores = rerank_documents(
+                api, settings.reranker_base_url, settings.reranker_model, query,
+                [str(candidate["text"]) for candidate in candidates],
+                max_length=settings.reranker_max_length,
+            )
         threshold = settings.min_rerank_score
         accepted: list[dict[str, object]] = []
         for candidate, score in zip(candidates, scores, strict=True):

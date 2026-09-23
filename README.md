@@ -12,42 +12,63 @@ Use Python 3.11 or newer and install the project dependencies:
 
 ```powershell
 uv sync
-uv run medbenchagent
+uv run medbenchagent --config config/local.toml.example
 uv run medbenchagent experiment new rare-disease-pilot
 uv run medbenchagent experiment rare-disease-pilot
 uv run medbenchagent build
 uv run medbenchagent build --resume <printed-resume-identifier>
 ```
 
-Configure the model API, local embedding/reranker models, medical materials and dataset catalog in
-`config/default.toml`. An explicit `MEDBENCH_CONFIG` file and supported environment variables override
-defaults. Keep secrets outside version control. The CLI disables optional external tracing, downloads
+Configure the model API, remote embedding/reranker endpoints, medical materials and dataset catalog in
+an experiment TOML file. The root-level `--config` selects it; without that flag, `MEDBENCH_CONFIG` selects
+an override, then `config/default.toml` supplies defaults. A CLI path is relative to the current directory;
+nonempty supported field environment variables still override TOML values. The CLI prints the active file,
+override keys and effective values. Keep secrets outside version control. The CLI disables optional external tracing, downloads
 and telemetry; the configured language-model API is still used.
 LLM overrides are `MEDBENCH_LLM_API_KEY`, `MEDBENCH_LLM_MODEL`, `MEDBENCH_LLM_BASE_URL`,
 `MEDBENCH_LLM_TIMEOUT_SECONDS` and `MEDBENCH_LLM_MAX_RETRIES`. Existing `DEEPSEEK_*` aliases remain
 supported; nonempty neutral names take precedence. Empty overrides are ignored; numeric overrides are
 parsed and range-checked. API keys are excluded from configuration snapshots.
+Optional RAG service keys are `MEDBENCH_EMBEDDING_API_KEY` and `MEDBENCH_RERANKER_API_KEY`.
 
 Build, prepare and new experiments share local preflight checks. The Blueprint is required for construction,
-not preparation alone. PDF materials and embedding/reranker models are optional: when unavailable, retrieval
-tools are disabled and planning starts with empty Materials. When available, the Planner selects references;
-retrieval defaults to `rag.result_limit`. These settings are saved with the run for recovery.
+not preparation alone. PDF materials and configured embedding/reranker endpoints are optional: when absent,
+retrieval tools are disabled and planning starts with empty Materials. Configured services are called only
+when retrieval runs; an HTTP failure stops the run with its checkpoint preserved for recovery. The Planner
+selects references, and retrieval defaults to `rag.result_limit`. These settings are saved with the run.
 Post-generation semantic auditing has been removed; remove the obsolete `[audit]` section from local overrides.
 
 The static task template is `config/blueprint.json`. Runs never write back to this file.
 Run initialization freezes the Blueprint template and PDF materials. It does not copy the Dataset Catalog
 or publish a working Blueprint path before that file exists. New selections read the live Catalog and
 freeze their actual candidate universe and Cards; resuming the same selection reuses that snapshot.
-The default command and `experiment` show a text menu for creating and opening named experiments.
+The default command opens a single-experiment prompt. Enter a natural-language requirement to create an
+automatically named experiment and run it, or use `/new [name]`, `/resume [name]`, `/status`, `/config`,
+and `/quit`. `/resume` without a name lists experiments. At a clarification prompt, answer in natural language
+or use `/status`, `/config`, or `/quit`; quitting preserves the checkpoint. The CLI prints agent and tool events
+as they occur, reports the final status, and exits. The `experiment` command retains its text selector.
 An Experiment is a stable name for one persistent LangGraph thread, not a collection of runs.
 Names, status, datasets, Git commit and run-directory references live in `experiments.json` beside the
 configured `paths.runs_root`. SQLite checkpoints remain inside that runs directory and are the recovery authority.
 Open an experiment by name to resume an interruption or answer a pending question; opening a completed
-experiment only displays its results. The menu never resumes an experiment without your selection.
+experiment only displays its results. The active run uses its saved effective configuration even if the
+original TOML has changed. `/resume` searches the registry under the currently selected `paths.runs_root`.
 The original `build/prepare --resume <identifier>` commands remain available for low-level recovery.
 Resume reads the saved run configuration and verifies the recorded source identities. The runtime contract is
 `agent-runtime.v13`; old checkpoints are not migrated. Code or runtime-contract changes require a new run. Existing prepared bundles without v2 integrity bindings must be explicitly prepared again.
-Keep the run directory and prepared model assets intact; external input changes are picked up by a new run.
+Keep the run directory and prepared dataset assets intact; external input changes are picked up by a new run.
+
+The RAG service base URLs include `/v1`. vLLM provides the [OpenAI embeddings endpoint](https://docs.vllm.ai/en/latest/models/pooling_models/embed/)
+and [rerank endpoint](https://docs.vllm.ai/en/latest/models/pooling_models/scoring/). For the original Qwen3
+reranker, start its service with the classification overrides required by vLLM:
+
+```bash
+vllm serve Qwen/Qwen3-Embedding-0.6B --port 8001
+vllm serve Qwen/Qwen3-Reranker-0.6B --port 8002 --hf_overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+```
+
+Use a new model name or fresh run when service weights change behind an existing model name; the Chroma
+index is keyed by the configured embedding endpoint and model.
 
 The brief describes benchmark-level `clinical_scope`, optional `diseases`, `modalities` and
 `evaluation_focus`, plus the required output `language` and positive `sample_count`. Broad and multi-disease,
