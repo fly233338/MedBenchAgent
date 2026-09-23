@@ -42,14 +42,16 @@ PreparationPlan 保存语义依据及顺序算子；不引入第二套 DAG 或�
 可以记录原因并生成 Python，输出相同的 annotation 包装和 provenance 索引。
 保存 Mapping 前须调用 inspect_image_population：复用 read/select/rename/filter/join 算子，
 明确最终关系和图像身份字段，检查非空身份并计算 unique_images（不以行数代替图像数）。
+Population 同时物化来源、字符串 image_id 与原始相对路径的身份明细；operator/fallback 的 intermediate
+在隔离去重前逐项对账，拒绝缺失、额外、重复和 ID—路径错配，不用 lineage 补造图像 ID。
 Mapping 的 population_reference 指向该检查，expected_images 必须相等；inspection_references
 关联真实检查，semantic_evidence 以 source/reference/quote 引用已读取来源文档或已解决用户决议。
 计数检查证明数量，不能代替总体选择的语义判断；无法检查的身份/总体需要补充依据，不接受自报数字。
 
 Harmonization 只用于一个 Dataset 内有依据的来源字段整理，不建立全局医学本体。未对齐字段保留
 `<entity>.annotation.sources.<source_id>`；单来源空计划为 identity，缺失不补为阴性。
-显式字段决策须引用 inspect_normalized 对该字段的检查；merge（包括重编码和单位换算）还须提供
-来源文档/用户回答的精确引文。检查回执绑定 dataset/source 和输入版本，保存与发布均验证；
+显式字段决策须引用 inspect_normalized 对该字段的检查；merge（包括重编码和单位换算）与 exclude 还须提供
+来源文档/用户回答的精确引文。检查回执绑定 dataset/source 和输入版本，保存与发布均验证；原自由文本 evidence 改名 reason；
 read_text 可指定 source_id 在规范化后读取同一数据集内的来源文档。用户语义决议绑定回答时的来源版本。
 bundle 执行整图隔离、精确像素去重、来源与数量对账。同像素且标注/身份冲突的组整体隔离；不推断跨数据集身份。
 
@@ -57,8 +59,12 @@ PNG/JPEG 保留原字节；其他二维图像使用可表示原像素的 PNG 编
 不改变空间方向。多帧、真三维、金字塔及 WSI 不支持；缺 decoder 是运行能力错误，不批量当作坏图。
 仅物化 annotation 引用图像。来源目录不全量复制，已用文件摘要用于发现外部修改。
 
-发布包含 annotation.jsonl、四字段 image_manifest.jsonl、cache/Profile、来源与质量产物及 ready.json。
-Profile 使用 task-capability-profile.v4，DuckDB cache 使用 annotation-cache.v8；完整值域、字段共现、
+发布 dataset-bundle.v2，包含 annotation.jsonl、四字段 image_manifest.jsonl、cache/Profile、来源与质量产物及 ready.json。
+DuckDB 关闭后记录摘要，admission 与缓存复用都核验；损坏/缺少绑定必须重新准备，不静默重建。
+asset_integrity.jsonl 保存最终保留图像的输出文件摘要，独立于原始 file_hash/pixel_hash；索引与冻结文档
+索引绑定在 ready/access。Finalization 按实际引用核验图像字节，资产完整性失败阻止发布而非剔除几题。
+旧 prepared 版本缺少这些依据时必须显式重新准备，不能靠当前文件补算摘要伪装历史验证。
+Profile 使用 task-capability-profile.v4，DuckDB cache 使用 annotation-cache.v9；完整值域、字段共现、
 数组结构与 Protocol eligibility 通过 DatasetQuery 按需读取，统计明确分母。
 
 Dataset Card v2 复用 Profile 的计数、字段、结构和分布；语义部分只描述数据集自身的领域、描述和字段角色。
@@ -167,8 +173,8 @@ eligible_count 由代码使用与 Generation 相同的答案解析器计算。�
 完整树审查和 Plan 发布前检查相关 specification 已修改或 Leaf 已删除，无效修改明确返回问题未修复。
 合法空 Plan 发布空模板集，不调用模板模型。所有当前 Plan 与模板集批准后才允许 Allocation。
 
-AllocationAgent 读取所有当前 Plan 和已批准 Templates，模型给出有理由的 Concept 权重，可显式给出下层权重；缺省下层
-使用等权。代码按 Concept → Dataset → Leaf 分层执行 largest-remainder、容量截断和重分配。
+AllocationAgent 读取所有当前 Plan 和已批准 Templates，无显式 allocation_preferences 时代码直接产生所有层级的等权意图；有偏好时模型映射到实际节点，
+所有非默认/零权重引用当前 Requirement 中的偏好。评测主题不是权重偏好，冻结 Card 摘要帮助解释数据集身份。代码按 Concept → Dataset → Leaf 分层执行 largest-remainder、容量截断和重分配。
 Core 能力共享，Extension 以 Dataset 作用域独立计量；预算不随 Leaf 数量自动增加。
 零权重明确排除，父层容量仅累计正权重子项；取整平局使用稳定 ID 排序。Allocation 独立发布，不回写 Plan。
 逐 Leaf 容量不是每图限额下的联合可行解；本阶段不进行图像匹配或自动补量循环。
@@ -180,12 +186,11 @@ Supervisor 从有效产物和模板返修请求计算 pending_plan/templates/gen
 有效已完成阶段不可通过重复委派重做；上游失效使下游重新进入 pending。委派不覆盖原始要求和 Info，
 也不是新增研究偏好的来源；结构校验不声称能判定所有语义偏移。
 
-Supervisor 以结构化 delegation（objective、constraints、preferences、revision_notes）委派 Planning
-和 Allocation；原始用户要求继续可见，委派不修改专业 Agent 的永久 system prompt。
-PlanningDelegation 为 Dataset 局部 artifact，AllocationDelegation 为全局 artifact；变更通过依赖
-使对应规划/分配及下游失效，不重置规划修订额度。DataProcessing 工具目录复用已有 Source、
-Inventory、Mapping、AnnotationScript、Annotation、ImageInventory、ImagePlan、NormalizedSource、
-Harmonization 依赖，展示与执行使用同一门控。
+Supervisor 的初始 set_intent 校验配置/Catalog ID，意图确定后不再向模型开放；代码仍可转换 build→prepare_then_build。
+Planning/Allocation delegation 的目标、scope/preference 引用由代码从 Requirement 生成；模型仅提供诊断 revision_notes，
+这些文字不单独改变 artifact identity。真正返修由 Requirement 或具体模板反馈版本驱动。
+DataProcessing 检查工具支持复合 join key、相同的基数/空键/未匹配策略及 sheet/delimiter；检查统计与执行共用校验。
+字段配对与 Protocol 共用数组祖先及实例索引规则，允许同一 finding 中嵌套对象字段，拒绝不同数组误配。
 
 Experiment 为 thread_id 的稳定命名索引，位于 runs_root 同级 experiments.json，记录模式、数据集摘要、
 run_directory、状态、Git commit 和时间。CLI 根据 checkpoint/interrupt/执行结果更新 registry；
@@ -205,6 +210,12 @@ Supervisor 共享状态只保留选中 ID、各 Dataset 产物引用和进度摘
 共享 Harness 使用严格 Pydantic JSON 参数和一致的工具可见/执行门控。专业 Agent 局部 ask_user 使用
 LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete、needs_input、blocked、failed。
 私有观察有界，完整资料通过工具读取；人工等待不计入运行时间。超出预算 blocked。
+查询工具的成功重复不占 max_reworks，仍受总步数、时间和连续失败预算约束；修改/审核维持返工限制。
+公共提示将所有工具、文档、标注与 RAG 正文视为数据，而不是可授权执行的指令。
+证据正文保存到 .runtime/evidence/，SQLite 只索引元数据；Context 不保存 inspections/source_documents/retrieved_passages 全文。
+list_evidence 分页筛选类型、来源和有效性；read_evidence 支持文本片段、结构化 pointer 与分页，拒绝跨角色/数据集及过期引用。
+Planning 文档、RAG 和用户语义依据都使用正式 evidence reference；证据分别绑定 Dataset/Source、Materials 或问题相关输入版本。
+私有状态使用 agent-private-state.v1 外层 schema，加载、保存和父子交接验证角色、作用域、关键路径及引用类型。
 
 | Artifact | 主要依赖 |
 | --- | --- |
@@ -225,7 +236,7 @@ LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete�
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v12；
+SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v13；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner 必须逐项 resolve_sample_scope，
@@ -233,13 +244,19 @@ Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner �
 条件注入全部 Leaf Protocol，发布时检查覆盖与一致性，容量、生成和审计共享同一 eligibility。
 缺失字段不通过筛选，数组条件暂不支持。编码解释复用 semantic_basis，范围含义纳入完整树审核。
 
-跨 Agent 澄清使用稳定 issue_id 关联角色、Dataset、引用和原问题。Supervisor 收到回答后调用
-resolve_clarification 区分 semantic 与 requirement_change；仅后者修改 Requirement。已解决回答仅投递
-给发起 Agent，并更新其私有状态引用、清除父子待解决状态。未解决问题阻止继续执行依赖工作。
+跨 Agent 澄清 identity 包含相关输入版本，并显式区分 dataset/source/multi_source 及来源集合。
+同问题在新版本必须重新问；回答正文作为 user evidence，Context 只保存引用与有界预览。
+Supervisor 分类 semantic/requirement_change，只有后者更新 Requirement；决议只回投发起角色与数据集。
+显示策略澄清还指定 image_ids 和 ImageInventory 版本，模型从自然语言回答提取 DisplayDecision，代码验证图像、
+来源、版本及具体 low/high/invert 参数。save_image_plan 直接查询 issue，不解析 ID 内部数组位置。
 
-Planner 使用 list_dataset_documents 分页读取既有 source_manifests/*/files.jsonl，返回 source ID、
-相对路径、格式和读取能力；随后 read_dataset_document 读取 UTF-8 文本。冻结 dataset_metadata.json
-单独提供入口。无索引或不支持的格式明确报告，不重扫来源目录，也不将解码失败当作空依据。
+准备中的 read_text 自动冻结被引用 UTF-8 文档或文本型 PDF；freeze_documentation 显式选择未来规划需要的文件。
+PDF 保存原文件及按页提取文本，不支持 OCR/加密文档。准备后 Planning 的 list_dataset_documents/read_dataset_document
+只使用 documentation/ 下的副本及索引，不再依赖原始 source root；未选择文档不自动复制。
+
+Modality scope 明确 operator=in/not_in 与候选并集，每个 operator 至多一个模态 scope；implemented 必须恰好一个条件。
+modality_bindings 逐项覆盖规范模态及数据集原始值，非同名转换须有当前语义依据。多序列 all 需求不能改写成 OR。
+Unsupported scope 与 Concept 一样要求当前 inspection references，审查和发布时复验。
 
 ## 生成、审计与导出
 

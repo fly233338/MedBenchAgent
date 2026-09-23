@@ -46,7 +46,7 @@ Open an experiment by name to resume an interruption or answer a pending questio
 experiment only displays its results. The menu never resumes an experiment without your selection.
 The original `build/prepare --resume <identifier>` commands remain available for low-level recovery.
 Resume reads the saved run configuration and verifies the recorded source identities. The runtime contract is
-`agent-runtime.v12`; old checkpoints are not migrated. Code or runtime-contract changes require a new run.
+`agent-runtime.v13`; old checkpoints are not migrated. Code or runtime-contract changes require a new run. Existing prepared bundles without v2 integrity bindings must be explicitly prepared again.
 Keep the run directory and prepared model assets intact; external input changes are picked up by a new run.
 
 The brief describes benchmark-level `clinical_scope`, optional `diseases`, `modalities` and
@@ -56,7 +56,10 @@ If omitted, sample count uses `benchmark.default_sample_count` (1000 by default)
 count requires clarification. Output language must be `en` or `zh`; missing or unsupported values require
 clarification. Required-field questions and re-extraction after an answer are routed automatically.
 Requirement evidence quotes actual user inputs, not assistant questions, and stays outside BenchmarkInfo.
-Modality scopes explicitly identify every covered modality; alternatives such as CT or MRI stay in one scope.
+Modality scopes explicitly identify every covered modality, inclusion/exclusion and raw-value bindings;
+alternatives such as CT or MRI stay in one scalar condition. Unsupported scope requires inspected evidence.
+Without explicit allocation preferences, all levels use deterministic equal weights. Non-default or zero weights
+must cite preferences extracted from the user's words; clinical topics alone do not authorize unequal weighting.
 When no prepared dataset matches, the system selects relevant configured sources, prepares and registers
 them, then selects prepared data again. Missing sources or unavailable paths produce a configuration
 diagnostic instead of repeated path questions. Update config and start a new run to change source paths.
@@ -111,10 +114,17 @@ an already complete bundle with its Card. Failures do not replace the previous r
 
 Before saving a raw Mapping, `inspect_image_population` measures distinct image IDs using declared
 source reads, filters and joins. `population_reference` binds that inspection and `expected_images` must
-match its unique-image count. Mapping also requires inspection references and source-document quotations
+match its unique-image count. The inspection also records source image IDs and paths; operator and fallback
+intermediates must match that population exactly before quarantine/deduplication. Emit must provide explicit IDs. Mapping also requires inspection references and source-document quotations
 or resolved user decisions supporting the population choice. Explicit Harmonization decisions require
-normalized-field inspections; merges, recoding and unit conversion also require semantic evidence.
-References are checked against their dataset/source and input versions. Quotation and count checks establish
+normalized-field inspections; merges, recoding, unit conversion and exclusions also require semantic evidence.
+Free-text preparation `evidence` is now named `reason`; actual citations use evidence references.
+References are checked against their dataset/source and input versions. `list_evidence` and `read_evidence`
+recall past inspections, documents, RAG passages and user decisions without retaining their full payloads in prompts.
+Source `read_text` freezes cited text/PDF documents; `freeze_documentation` selects additional documents for future
+planning. Text PDFs support page references; scanned/encrypted documents require supported text input, not OCR.
+Prepared v2 binds cache and asset indexes. Finalization checks the actual referenced output image bytes; changing
+a database, image or frozen document requires a new prepared version. Quotation and count checks establish
 provenance, not semantic correctness. Local/Docker backend selection is unchanged.
 
 Prepared versions live beneath `paths.prepared_datasets_root` (default `datasets/Prepared`). Catalog entries
