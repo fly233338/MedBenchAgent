@@ -18,7 +18,7 @@ def test_invalid_annotation_script_is_repairable(tmp_path):
     context = _context(tmp_path)
     path = tmp_path / "plan.json"
     path.write_text(json.dumps({"mapping": {"authoritative_population": "images", "expected_images": 1,
-        "entity_meanings": {}, "evidence": ["README"]}, "fallback_reason": "custom binary source"}), encoding="utf-8")
+        "entity_meanings": {}, "reason": "README"}, "fallback_reason": "custom binary source"}), encoding="utf-8")
     context["preparation_plan_path"] = str(path)
     with pytest.raises(ValueError, match="Invalid Python"):
         pipeline.write_fallback(context, code="if :")
@@ -29,7 +29,7 @@ def test_execution_alone_cannot_publish_data(tmp_path):
         pipeline.finish(_context(tmp_path))
 
 
-def test_ambiguous_display_requires_recorded_decision(tmp_path):
+def test_ambiguous_display_requires_recorded_decision(tmp_path, monkeypatch):
     context = _context(tmp_path)
     path = tmp_path / "images.json"
     path.write_text(
@@ -49,9 +49,16 @@ def test_ambiguous_display_requires_recorded_decision(tmp_path):
     }
     with pytest.raises(ValueError, match="answered user decision"):
         preparation.save_image_plan(context, overrides={"im": policy})
-    context["decisions"] = {
-        json.dumps(["DataProcessingAgent", "plan:1", "window?"]): "Use 0 to 100"
-    }
+    from medbenchagent.runtime.clarifications import new_issue, record_answer, resolve_semantic_answer
+    context.update(source_scope="s", sources=[{"id": "s"}], agent_role="DataProcessingAgent")
+    publish(context, "Source", {}, ())
+    publish(context, "ImageInventory", {"path": str(path)}, ("Source",))
+    issue = new_issue("DataProcessingAgent", context, "display", "Window for im?", image_ids=["im"])
+    monkeypatch.setattr("medbenchagent.runtime.llm.complete_json", lambda *a: {"policies": {"im": {
+        "encoding": "window", "low": 0.0, "high": 100.0, "invert": False}}})
+    issue = resolve_semantic_answer(context, record_answer(context, issue, "Use window 0 to 100 without inversion"))
+    context["issues"] = {issue["issue_id"]: issue}
+    policy["decision_reference"] = issue["issue_id"]
     output = preparation.save_image_plan(context, overrides={"im": policy})
     assert output["status"] == "success"
 

@@ -53,7 +53,7 @@ def inspect_files(context, *, directory="", offset=0):
     )
 
 
-def read_text(context, *, path, offset=0, source_id=None):
+def read_text(context, *, path, offset=0, source_id=None, page=1):
     """Read a bounded portion of source documentation or a saved preparation script/plan."""
     if source_id is not None:
         source = next((s for s in context["sources"] if s["id"] == source_id), None)
@@ -62,7 +62,7 @@ def read_text(context, *, path, offset=0, source_id=None):
         require(context, f"source/{source_id}/Source")
         scoped = {**context, "source_scope": source_id, "source_root": source["root"],
                   "source_manifest": str(Path(context["bundle_root"]) / "source_manifests" / source_id)}
-        return read_text(scoped, path=path, offset=offset)
+        return read_text(scoped, path=path, offset=offset, page=page)
     candidates = {
         str(context.get(key)): context.get(key)
         for key in (
@@ -83,16 +83,18 @@ def read_text(context, *, path, offset=0, source_id=None):
     if path not in candidates and context.get("source_manifest"):
         from medbenchagent.data.sources import track_files
         track_files(context["source_manifest"], [path])
-    with source.open(encoding="utf-8") as handle:
-        handle.seek(offset)
-        text = handle.read(6000)
     if path in candidates:
-        return result("success", text)
-    return inspected(context, "read_text", {"path": path, "offset": offset}, {"text": text},
-                     ("Source",), source_id=context.get("source_scope"))
+        with source.open(encoding="utf-8") as handle:
+            handle.read(offset)
+            return result("success", handle.read(6000))
+    from medbenchagent.data.documentation import freeze_document, read_document
+    freeze_document(context["bundle_root"], context["source_scope"], context["source_root"], path)
+    value = read_document(context["bundle_root"], context["source_scope"], path, page=page, offset=offset)
+    return inspected(context, "read_text", {"path": path, "page": page, "offset": offset}, value,
+                     ("Source",), source_id=context["source_scope"])
 
 
-def inspect_table(context, *, path, sheet=None):
+def inspect_table(context, *, path, sheet=None, delimiter=","):
     """Measure table/sheet row counts, types, nulls and key uniqueness."""
     if context.get("source_manifest"):
         from medbenchagent.data.sources import track_files
@@ -100,9 +102,9 @@ def inspect_table(context, *, path, sheet=None):
     value = _run(
         context,
         Path(context["operation_directory"]) / "inspection",
-        request={"operation": "table", "path": path, "sheet": sheet},
+        request={"operation": "table", "path": path, "sheet": sheet, "delimiter": delimiter},
     )
-    return _inventory(context, f"table:{path}:{sheet}", value)
+    return _inventory(context, f"table:{path}:{sheet}:{delimiter}", value)
 
 
 def inspect_join(context, **arguments):
@@ -129,7 +131,6 @@ def save_image_plan(context, *, overrides):
         for key, value in overrides.items()
     }
     unmatched = set(policies)
-    decisions = {json.loads(key)[1] for key in context.get("decisions", {})}
     for key, info in details:
         if "error" in info:
             continue
@@ -150,10 +151,22 @@ def save_image_plan(context, *, overrides):
             if low is None or high is None or low >= high:
                 raise ValueError("Window requires low < high")
             supported = info["window"] == [low, high] and info["invert"] == policy["invert"]
-            if not supported and policy["decision_reference"] not in decisions:
-                raise ValueError(
-                    f"{key}: window/bit-depth/color change requires an answered user decision"
-                )
+            if not supported:
+                issue = context.get("issues", {}).get(policy.get("decision_reference"), {})
+                if (issue.get("status") != "resolved" or issue.get("kind") != "semantic"
+                        or issue.get("role") != "DataProcessingAgent"
+                        or issue.get("dataset_id") != context.get("dataset_scope")
+                        or issue.get("source_ids") != [context.get("source_scope")]
+                        or key not in issue.get("image_ids", [])):
+                    raise ValueError(f"{key}: display policy requires an answered user decision for this image/source")
+                # Already parsed decisions are checked without another model call.
+                from medbenchagent.runtime.dependencies import require as current_artifacts
+                current = current_artifacts(context, *issue["input_versions"])
+                if any(current[k]["id"] != v for k, v in issue["input_versions"].items()):
+                    raise ValueError("Display decision is stale; ask again")
+                selected = {k: policy[k] for k in ("encoding", "low", "high", "invert")}
+                if issue.get("display_policies", {}).get(key) != selected:
+                    raise ValueError("Display parameters differ from the resolved user decision")
     if unmatched:
         raise ValueError("Image plan contains unreferenced or invalid images")
     path = Path(context["operation_directory"]) / "image_plan.json"

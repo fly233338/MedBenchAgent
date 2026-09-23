@@ -5,6 +5,7 @@ from pathlib import Path
 from medbenchagent.data.contracts import Contract
 from medbenchagent.planning.tree import Weight
 from medbenchagent.planning.sample_counts import allocate_leaf_counts
+from medbenchagent.runtime.contexts import AllocationContext
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.run_artifacts import atomic_write_json
@@ -92,7 +93,21 @@ def _plans(context):
 
 def submit(context, **intent):
     """Submit Concept weights; null lower levels explicitly mean equal coverage."""
-    allocation = allocate(_plans(context), intent, context["benchmark_info"]["sample_count"])
+    requirement = require(context, "Requirement")["Requirement"]["references"]
+    preferences = {p["id"] for p in requirement.get("allocation_preferences", [])}
+    checked = AllocationIntent.model_validate(intent).model_dump()
+    def check_weights(value):
+        if value is None:
+            return
+        if isinstance(value, dict) and isinstance(value.get("weight"), (int, float)):
+            refs = set(value.get("preference_references", []))
+            if not refs <= preferences or value["weight"] != 1.0 and not refs:
+                raise ValueError("Non-default weights require current explicit allocation preference references")
+        elif isinstance(value, dict):
+            for nested in value.values():
+                check_weights(nested)
+    check_weights(checked)
+    allocation = allocate(_plans(context), checked, context["benchmark_info"]["sample_count"])
     if allocation["allocated_count"] == 0:
         return result("blocked", "No eligible samples with positive weights")
     path = Path(context["operation_directory"]) / "allocation.json"
@@ -108,7 +123,7 @@ def finish(context):
     return result("complete", "Global allocation ready", artifacts={"allocation": context["allocation_path"]})
 
 
-def describe(context):
+def describe(context: AllocationContext):
     groups = allocation_groups(_plans(context))
     for group in groups.values():
         for dataset, leaves in group["datasets"].items():
@@ -119,17 +134,34 @@ def describe(context):
             }
     return {"requirement": context["user_requirement"], "target": context["benchmark_info"]["sample_count"],
             "benchmark_info": context["benchmark_info"], "delegation": context.get("delegation"),
-            "groups": groups}
+            "groups": groups, "allocation_preferences": context.get("allocation_preferences", []),
+            "dataset_cards": context.get("allocation_dataset_cards", {})}
+
+
+def default_allocation_action(context: AllocationContext):
+    """No stated preference means equal coverage without consulting a model."""
+    refs = require(context, "Requirement")["Requirement"]["references"]
+    if refs.get("allocation_preferences"):
+        return None
+    try:
+        require(context, "Allocation")
+        return {"tool": "finish", "arguments": {}, "reason": "Deterministic allocation complete"}
+    except ValueError:
+        return {"tool": "submit", "arguments": {"concepts": {
+            key: {"weight": 1.0, "reason": "Equal coverage; no explicit preference"}
+            for key in allocation_groups(_plans(context))}}, "reason": "Default equal coverage"}
 
 
 def compile_allocation_agent():
     return compile_agent("AllocationAgent",
                          "Distribute the requested benchmark budget Concept first, then Dataset, then Leaf. "
                          "Submit justified Concept weights based on user importance, never number of leaves. "
+                         "Every non-default weight (including zero) needs preference_references from current allocation_preferences. "
+                         "Clinical topics or your own medical importance judgments do not authorize unequal weights. "
                          "Original requirements and benchmark_info take precedence over delegation; never invent preferences "
                          "or treat delegation as permission to introduce new priorities or exclusions. "
                          "Use null datasets/leaves for equal lower-level coverage unless the requirement justifies "
                          "different weights. Zero explicitly excludes a member. Code computes all counts. Finish after submit.",
                          {"submit": submit},
                          describe, finish,
-                         args_schemas={"submit": AllocationIntent})
+                         args_schemas={"submit": AllocationIntent}, automatic_action=default_allocation_action)

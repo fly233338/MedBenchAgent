@@ -201,7 +201,7 @@ def test_scope_and_explicit_total_limit_are_execution_requirements(tmp_path, mon
     assert c["max_total_tasks_per_image"] == expected
     assert "sample_scope" not in c["benchmark_info"]
     assert require(c, "GenerationConfig")["GenerationConfig"]["references"]["max_total_tasks_per_image"] == expected
-    assert require(c, "Requirement")["Requirement"]["references"]["sample_scope"] == answer["sample_scope"]
+    assert require(c, "Requirement")["Requirement"]["references"]["sample_scope"] == [{"operator": "in", "logic": "any", **r} for r in answer["sample_scope"]]
     c["user_requirement"] += " corrected"
     answer["sample_scope"] = []
     with pytest.raises(ValueError, match="modalities"):

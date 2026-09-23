@@ -178,10 +178,11 @@ def _resolve_answer(record: dict, protocol: dict) -> dict | None:
     indices, box, evidence = boxes[0]
     target = None
     if binding.get("target_field"):
+        from medbenchagent.data.entity import same_entity
         names = [
             v["value"]
             for v in scalar_evidence_candidates(record, binding["target_field"])
-            if tuple(v["indices"][: len(indices)]) == indices
+            if same_entity(binding["target_field"], v["indices"], binding["answer_field"], indices, right_coordinate=True)
         ]
         if len(names) != 1 or not isinstance(names[0], str) or not names[0].strip():
             return None

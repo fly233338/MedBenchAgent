@@ -8,9 +8,10 @@ def test_supervisor_replaces_fixed_role_chain():
     assert set(graph.nodes) == {"__start__", "initialize", "supervisor", "__end__"}
 
 
-def test_intent_gates_preparation_and_benchmark_stages(tmp_path):
+def test_intent_gates_preparation_and_benchmark_stages(tmp_path, monkeypatch):
     from medbenchagent.workflow.graph import set_intent, available_stages
     from medbenchagent.runtime.dependencies import publish
+    monkeypatch.setattr("medbenchagent.data.dataset_catalog.load_dataset_catalog", lambda: [{"dataset_id": "new"}])
     context = {"run_directory": str(tmp_path)}
     assert available_stages(context) == {"set_intent", "ask_user", "list_datasets", "inspect_dataset_status"}
     context.update(set_intent(context, intent="prepare_dataset", prepare_dataset_ids=["new"])["updates"])
@@ -49,7 +50,7 @@ def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monke
         checkpointer=MemorySaver(),
     )
     context = {
-        "run_id": "run",
+        "run_id": "run", "run_directory": str(tmp_path),
         "construction_events_path": str(tmp_path / "events.jsonl"),
         "operation_directory": str(tmp_path / "ops"),
     }
@@ -69,7 +70,7 @@ def test_harness_stops_repeated_invalid_actions(tmp_path, monkeypatch):
     output = graph.invoke(
         {
             "context": {
-                "run_id": "run",
+                "run_id": "run", "run_directory": str(tmp_path),
                 "construction_events_path": str(tmp_path / "events"),
                 "operation_directory": str(tmp_path / "ops"),
                 "limits": {"max_failures": 2},
@@ -115,7 +116,7 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
 
     config = {"configurable": {"thread_id": "resume"}}
     context = {
-        "run_id": "run",
+        "run_id": "run", "run_directory": str(tmp_path),
         "user_requirement": "Build a benchmark",
         "construction_events_path": str(tmp_path / "events.jsonl"),
         "operation_directory": str(tmp_path / "ops"),
@@ -129,7 +130,8 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
         resumed = build(connection).invoke(Command(resume="English"), config)
     assert calls == [1]
     assert resumed["result"]["status"] == "complete"
-    assert resumed["context"]["clarification"]["answer"] == "English"
+    from medbenchagent.runtime.clarifications import answer_payload
+    assert answer_payload(resumed["context"], resumed["context"]["clarification"])["text"] == "English"
     assert resumed["elapsed"] == 0
     assert resumed["observations"][0]["summary"] == "Input examined"
 
@@ -156,7 +158,7 @@ def test_global_needs_input_is_structured(tmp_path, monkeypatch):
     monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *args: {
         "tool": "ask_user", "arguments": {"question": "Clarify target", "scope": "global"}, "reason": "Ambiguous"})
     graph = compile_agent("Child", "Child", {}, lambda c: {}, lambda c: result("complete", "Done"))
-    output = graph.invoke({"context": {"run_id": "input", "operation_directory": str(tmp_path / "ops"),
+    output = graph.invoke({"context": {"run_id": "input", "run_directory": str(tmp_path), "operation_directory": str(tmp_path / "ops"),
                                        "construction_events_path": str(tmp_path / "events")}})
     assert output["result"]["status"] == "needs_input"
     assert output["result"]["unresolved_questions"] == ["Clarify target"]

@@ -5,6 +5,7 @@ import json
 import shutil
 from pathlib import Path
 from medbenchagent.runtime.dependencies import publish, require
+from medbenchagent.runtime.contexts import TaskPlanningContext
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.rag.pdf import LocalPdfRag, RagUnavailable, discover_medical_materials
@@ -31,7 +32,7 @@ from medbenchagent.planning.tree import (
 )
 from medbenchagent.planning.protocol import validate_dataset_protocol
 from medbenchagent.runtime.llm import complete_json
-from medbenchagent.runtime.inspection import inspected, inspection, inspection_index
+from medbenchagent.runtime.inspection import inspected, inspection, inspection_index, save_evidence, evidence as read_evidence_record
 from medbenchagent.data.query import DatasetQuery, iter_records
 from medbenchagent.planning.scope import ScopeResolution, conditions_for, validate_scope_plan
 from medbenchagent.planning.tree import SemanticBasis
@@ -43,37 +44,19 @@ DOCUMENT_FORMATS = TEXT_DOCUMENT_FORMATS | {".pdf", ".doc", ".docx", ".xls", ".x
 
 
 def list_dataset_documents(context, *, offset=0, limit=20, query=""):
-    """Discover source documents from existing inventories, with bounded pages; no source rescan."""
+    """Page only documentation frozen inside this Dataset version."""
+    from medbenchagent.data.documentation import document_index
     require(context, "Dataset")
-    if offset < 0 or not 1 <= limit <= 100:
-        raise ValueError("Document pages require offset >= 0 and limit between 1 and 100")
     bundle = Path(context["annotation_path"]).parent
-    page, total, unavailable = [], 0, []
+    docs = [{**{k: d[k] for k in ("source_id", "format", "pages")},
+             "path": d["source_id"] + "/" + d["path"], "readable": True}
+            for d in document_index(bundle)["documents"] if query.casefold() in d["path"].casefold()]
+    return result("success", json.dumps({"documents": docs[offset:offset + limit], "total": len(docs),
+                  "next_offset": offset + limit if offset + limit < len(docs) else None}, ensure_ascii=False))
 
-    def include(source_id, path):
-        nonlocal total
-        suffix = Path(path).suffix.lower()
-        reference = f"{source_id}/{path}" if source_id else path
-        if suffix not in DOCUMENT_FORMATS or query.casefold() not in reference.casefold():
-            return
-        if offset <= total < offset + limit:
-            page.append({"source_id": source_id, "relative_path": path, "path": reference,
-                         "format": suffix.lstrip(".") or "text", "readable": suffix in TEXT_DOCUMENT_FORMATS})
-        total += 1
 
-    if (bundle / "dataset_metadata.json").is_file():
-        include(None, "dataset_metadata.json")
-    for manifest in sorted((bundle / "source_manifests").glob("*/source.json")):
-        listing = manifest.parent / "files.jsonl"
-        if not listing.is_file():
-            unavailable.append(manifest.parent.name)
-            continue
-        with listing.open(encoding="utf-8") as handle:
-            for line in handle:
-                include(manifest.parent.name, json.loads(line)["path"])
-    return result("success", json.dumps({"documents": page, "total": total,
-                  "next_offset": offset + len(page) if offset + len(page) < total else None,
-                  "unavailable_inventories": unavailable}, ensure_ascii=False))
+class DocumentArguments(ReadTextArguments):
+    page: int = Field(default=1, ge=1)
 
 
 class ScopeArguments(NoArguments):
@@ -104,6 +87,7 @@ def resolve_sample_scope(context, *, resolutions, semantic_basis=None):
             for b in basis
         ):
             raise ValueError("Coded scope values require dataset-specific semantic evidence")
+    _validate_scope_decisions(context, tree, basis)
     tree["scope_semantic_basis"] = basis
     for leaf in tree["tasks"].values():
         leaf["protocol"]["sample_conditions"] = conditions
@@ -263,8 +247,6 @@ def select_materials(context, *, files):
         "References selected; reconcile affected planning evidence",
         selected_material_files=files,
         materials_root=str(root),
-        retrieved_evidence=[],
-        retrieved_passages={},
         **versions,
     )
 
@@ -284,18 +266,14 @@ def search_materials(context, *, query, limit=None):
         chunks = _rag(context).retrieve(query, limit)
     except RagUnavailable as exc:
         return result("failed", str(exc))
-    evidence = list(context.get("retrieved_evidence", []))
-    passages = dict(context.get("retrieved_passages", {}))
+    entries = []
     for chunk in chunks:
-        ref = {key: chunk[key] for key in ("pdf", "page", "chunk_id")}
-        if ref not in evidence:
-            evidence.append(ref)
-        passages[chunk["chunk_id"]] = chunk
-    return result("success", json.dumps(chunks, ensure_ascii=False), retrieved_evidence=evidence,
-                  retrieved_passages=passages)
+        ref = save_evidence(context, "search_materials", {"query": query}, chunk, ("Materials",), kind="material")
+        entries.append({**chunk, "reference": ref})
+    return result("success", json.dumps(entries, ensure_ascii=False)[:6000])
 
 
-def initialize_planning(context):
+def initialize_planning(context: TaskPlanningContext):
     """Initialize empty optional materials only when retrieval cannot be used."""
     from medbenchagent.runtime.preflight import rag_capability
     context["rag_capability"] = rag_capability(get_settings())
@@ -307,32 +285,15 @@ def initialize_planning(context):
     return context
 
 
-def read_dataset_document(context, *, path, offset=0):
-    """Read UTF-8 source documentation as source_id/relative/path (see source manifests).
-
-    Use path='dataset_metadata.json' for frozen source quotations. Empty path is not allowed.
-    Returned reference and text can ground semantic_basis; quotations must match exactly.
-    """
-    from medbenchagent.data.validation import source_image_path
+def read_dataset_document(context, *, path, offset=0, page=1):
+    """Read a frozen source_id/path document; returned inspection_reference grounds semantic_basis."""
+    from medbenchagent.data.documentation import read_document
     require(context, "Dataset")
-    if Path(path).suffix.lower() not in TEXT_DOCUMENT_FORMATS:
-        raise ValueError("Unsupported documentation format; read a UTF-8 text source or ask for its meaning")
-    bundle = Path(context["annotation_path"]).parent
-    if path == "dataset_metadata.json":
-        document = bundle / path
-    else:
-        source_id, separator, relative = path.partition("/")
-        if not separator or source_id not in {p.name for p in (bundle / "source_manifests").glob("*") if p.is_dir()}:
-            raise ValueError("Use a registered source ID and relative documentation path")
-        source = _read(bundle / "source_manifests" / source_id / "source.json")
-        document = source_image_path(source["root"], relative)
-    with document.open(encoding="utf-8") as handle:
-        handle.read(offset)
-        text = handle.read(12000)
-    reference = f"{path}:{offset}"
-    documents = {**context.get("source_documents", {}), reference: text}
-    return inspected(context, "read_dataset_document", {"path": path, "offset": offset},
-                     {"reference": reference, "text": text}, ("Dataset",), source_documents=documents)
+    source, separator, relative = path.partition("/")
+    if not separator:
+        raise ValueError("Use a frozen source ID and relative documentation path")
+    value = read_document(Path(context["annotation_path"]).parent, source, relative, page=page, offset=offset)
+    return inspected(context, "read_dataset_document", {"path": path, "offset": offset, "page": page}, value, ("Dataset",))
 
 
 def _validate_semantic_basis(context, protocol, basis):
@@ -343,14 +304,18 @@ def _validate_semantic_basis(context, protocol, basis):
         if item["field"] not in protocol["data_binding"]["supporting_fields"]:
             raise ValueError("Semantic basis must reference a bound annotation field")
         reference = item["reference"]
-        if item["source"] == "material":
-            text = context.get("retrieved_passages", {}).get(reference, {}).get("text", "")
-        elif item["source"] == "document":
-            text = context.get("source_documents", {}).get(reference, "")
-        else:
-            text = context.get("decisions", {}).get(reference, "")
+        receipt = read_evidence_record(context, reference)
+        expected = {"material": "material", "document": "document", "user": "user"}[item["source"]]
+        if receipt["kind"] != expected:
+            raise ValueError("Semantic basis source differs from its evidence kind")
+        if expected == "user":
+            issue = context.get("issues", {}).get(receipt["value"].get("issue_id"), {})
+            if (issue.get("status") != "resolved" or issue.get("kind") != "semantic" or issue.get("answer_reference") != reference
+                    or issue.get("role") != "TaskPlanningAgent" or issue.get("dataset_id") != context.get("dataset_scope")):
+                raise ValueError("User semantic evidence must reference a resolved current decision")
+        text = receipt["value"].get("text", "")
         if item["quote"] not in text:
-            raise ValueError("Semantic basis requires an exact quotation from a retrieved source or user decision")
+            raise ValueError("Semantic basis requires an exact quotation from current evidence")
         checked.append(item)
     return checked
 
@@ -486,9 +451,10 @@ def read_proposal(context, *, node_id):
 
 
 def _validate_evidence(context, evidence):
-    retrieved = context.get("retrieved_evidence", [])
-    if any(e not in retrieved for e in evidence):
-        raise ValueError("Medical evidence must reference a retrieved paragraph")
+    for item in evidence:
+        receipt = read_evidence_record(context, item.get("reference", ""))
+        if receipt["kind"] != "material" or any(receipt["value"].get(k) != item[k] for k in ("pdf", "page", "chunk_id")):
+            raise ValueError("Medical evidence must reference a retrieved paragraph")
 
 
 def save_leaf(context, *, leaf_id, concept_id, description, protocol, evidence, semantic_basis=None, mapping_grounding=None):
@@ -667,7 +633,22 @@ def _validate_template_repair(context, tree):
             raise ValueError(f"{issue['leaf_id']}: problem not fixed; template specification is unchanged. {issue['reason']}")
 
 
+def _validate_scope_decisions(context, tree, basis):
+    for resolution in tree.get("scope_resolutions", []):
+        if resolution["status"] == "unsupported":
+            _unsupported_evidence(context, resolution["inspection_references"])
+        if resolution.get("modality_bindings"):
+            field = resolution["conditions"][0]["field"]
+            for binding in resolution["modality_bindings"]:
+                direct = all(isinstance(v, str) and v.strip().casefold() == binding["modality"].strip().casefold() for v in binding["values"])
+                eligible = {b["reference"] for b in basis if b["field"] == field and (b["source"] in {"document", "user"} or b["dataset_specific"])}
+                refs = set(binding["evidence_references"])
+                if (not direct and not refs) or not refs <= eligible:
+                    raise ValueError("Modality recoding requires current dataset-specific semantic evidence")
+
+
 def _validate_scope_evidence(context, tree):
+    _validate_scope_decisions(context, tree, tree.get("scope_semantic_basis", []))
     validate_scope_plan(tree, context.get("sample_scope", []))
     conditions = [c for r in tree.get("scope_resolutions", []) for c in r["conditions"]]
     fields = list(dict.fromkeys(c["field"] for c in conditions))
@@ -694,7 +675,7 @@ def review_tree(context):
         leaves[key] = {**leaf, "annotation_evidence": _subset(_profile(context), fields),
                        "field_values": {field: DatasetQuery(context["dataset_access_manifest"]).values(field, limit=50)
                                         for field in fields},
-                       "material_passages": [context.get("retrieved_passages", {}).get(e["chunk_id"], {})
+                       "material_passages": [read_evidence_record(context, e["reference"])["value"]
                                              for e in leaf["evidence"]]}
     review = complete_json(
         "Review concept hierarchy, duplicated semantics, overlapping leaves, missing siblings and conflicting Protocols. "
@@ -783,7 +764,7 @@ def finish(context):
     )
 
 
-def describe(context):
+def describe(context: TaskPlanningContext):
     try:
         tree = _tree(context)
     except ValueError as exc:
@@ -815,11 +796,8 @@ def describe(context):
         "delegation": context.get("delegation"),
         "user_requirement": context.get("user_requirement"),
         "template_feedback": context.get("template_feedback"),
-        "semantic_sources": {"documents": context.get("source_documents", {}),
-                             "user_decisions": context.get("decisions", {})},
         "inspection_references": inspection_index(context),
-        "source_ids": [p.name for p in (Path(context["annotation_path"]).parent / "source_manifests").glob("*") if p.is_dir()],
-        "document_discovery": {"tool": "list_dataset_documents", "metadata_path": "dataset_metadata.json"},
+        "document_discovery": {"tool": "list_dataset_documents", "storage": "frozen bundle documentation"},
         "clarification": context.get("clarification"),
         "dataset": context.get("selected_dataset_id"),
     }
@@ -883,6 +861,8 @@ def compile_task_planning_agent(*, checkpointer=None):
     return compile_agent(
         "TaskPlanningAgent",
         "Build a two-level Medical Concept -> executable Leaf plan. The dataset is already assigned and prepared. Select references (an empty selection is allowed). "
+        "Modality scope needs one in/not_in condition and modality_bindings covering each requested modality. "
+        "Coded/renamed values need matching semantic_basis references. Unsupported scope requires inspection_references. "
         "Unsupported decisions require inspection_references returned by field/document tools; reuse current evidence when relevant. "
         "Understand each core concept using field inspection and optional RAG BEFORE and during leaf expansion. "
         "Create opaque stable leaf IDs at runtime; never infer execution from IDs. All behavior belongs to Protocol. "
@@ -898,7 +878,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         "delegation organizes work but cannot introduce new priorities, exclusions or research constraints. "
         "For opaque codes or ambiguous abbreviations first discover local documents using list_dataset_documents, then read_dataset_document, "
         "search_materials or ask_user; never infer code meanings from medical knowledge. Store field interpretation and "
-        "exact source quotation in semantic_basis (user reference is the decision key in semantic_sources.user_decisions). "
+        "exact source quotation in semantic_basis (user reference is the evidence reference of the resolved answer; list_evidence/read_evidence recover prior facts). "
         "Supply mapping_grounding for EVERY option mapping: field, raw_value, option, mode, interpretation and evidence_references. "
         "Direct means the same self-describing annotation string (whitespace/case may differ); numeric codes, abbreviations, "
         "merging or changing meaning require interpreted mode and dataset-specific evidence references. "
@@ -909,7 +889,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         finish,
         args_schemas={
             "resolve_sample_scope": ScopeArguments,
-            "read_dataset_document": ReadTextArguments,
+            "read_dataset_document": DocumentArguments,
             "list_dataset_documents": PageArguments,
             "list_fields": PageArguments,
             "read_fields": FieldArguments,
@@ -931,6 +911,9 @@ def compile_task_planning_agent(*, checkpointer=None):
             "propose_extension": ExtensionArguments,
         },
         available_tools=available_tools,
+        read_tools=frozenset({"list_fields", "read_fields", "read_field_values", "inspect_field_by_source", "sample_records",
+                              "inspect_field_pair", "inspect_array", "inspect_protocol_capacity", "list_materials", "read_material",
+                              "search_materials", "read_dataset_document", "list_dataset_documents", "read_node", "read_proposal"}),
         initialize_context=initialize_planning,
         checkpointer=checkpointer,
     )

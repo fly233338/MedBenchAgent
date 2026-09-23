@@ -23,7 +23,8 @@ Return these keys and no wrapper object:
   "evaluation_focus": "Only explicitly requested task priorities and exclusions, or null",
   "language": "en, zh, or null",
   "sample_count": "positive integer or null",
-  "sample_scope": [{"id":"scope-1", "kind":"modality or population", "description":"Explicit sample inclusion/exclusion requirement", "quote":"Exact original user wording", "modalities": ["Standard modality names covered by this scope; empty for population"]}],
+  "sample_scope": [{"id":"scope-1", "kind":"modality or population", "description":"Explicit sample inclusion/exclusion requirement", "quote":"Exact original user wording", "modalities": ["Standard modality names covered by this scope; empty for population"], "operator":"in or not_in", "logic":"any for alternatives, all only for explicit simultaneous multi-sequence requirements"}],
+  "allocation_preferences": [{"id":"preference-1", "description":"Only an explicit weighting or exclusion preference", "quote":"Exact user wording"}],
   "evidence": [{"field":"clinical_scope", "value":"The extracted value (one item for list fields)", "quote":"Exact original user wording"}],
   "max_total_tasks_per_image": "Explicit positive integer total across all task types, or null"
 }
@@ -46,6 +47,10 @@ max_total_tasks_per_image, requires evidence with its field, extracted value and
 Unspecified values require no evidence. Do not quote assistant clarification questions as user evidence.
 Always return sample_scope, even when empty. Group alternatives such as CT or MRI in ONE
 modality scope listing both modalities; resolve them with one in condition, not intersecting filters.
+Use at most one modality scope per operator: put all inclusion alternatives in one in scope,
+all exclusions in one not_in scope. Do not turn alternatives into AND conditions.
+allocation_preferences must be empty unless the user explicitly prioritizes/excludes a concept,
+dataset or task for allocation. A clinical evaluation topic alone is NOT a weighting preference.
 Return valid JSON only."""
 
 
@@ -121,6 +126,13 @@ def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = N
         scopes = [ScopeRequirement.model_validate(r).model_dump() for r in result["sample_scope"]]
         if len({r["id"] for r in scopes}) != len(scopes) or any(not any(r["quote"] in text for text in user_inputs) for r in scopes):
             raise ValueError("Sample scope requires unique IDs and exact user quotations")
+        for operator in ("in", "not_in"):
+            if sum(r["kind"] == "modality" and r["operator"] == operator for r in scopes) > 1:
+                raise ValueError("Combine modality alternatives into one scope per operator; do not intersect alternatives")
+        included = {m for r in scopes if r["kind"] == "modality" and r["operator"] == "in" for m in r["modalities"]}
+        excluded = {m for r in scopes if r["kind"] == "modality" and r["operator"] == "not_in" for m in r["modalities"]}
+        if included and not included - excluded:
+            raise ValueError("Modality inclusion and exclusion conflict; clarify the requirement")
         covered = {m for r in scopes for m in r["modalities"]}
         if covered != set(info["modalities"]):
             raise ValueError("Sample scope must cover exactly all explicit modalities")
@@ -144,6 +156,14 @@ def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = N
             raise ValueError("Extraction evidence must reference an explicit value and exact user quote")
     if any(not any(e["field"] == field and e["value"] == value for e in evidence) for field, value in expected):
         raise ValueError("Extraction evidence must cover every explicit value")
+    preferences = result.get("allocation_preferences", [])
+    if not isinstance(preferences, list):
+        raise ValueError("allocation_preferences must be a list")
+    from medbenchagent.runtime.tool_contracts import AllocationPreference
+    preferences = [AllocationPreference.model_validate(p).model_dump() for p in preferences]
+    if len({p["id"] for p in preferences}) != len(preferences) or any(not any(p["quote"] in text for text in user_inputs) for p in preferences):
+        raise ValueError("Allocation preferences require unique IDs and exact user quotations")
+    info["allocation_preferences"] = preferences
     info["evidence"] = evidence
     return info
 

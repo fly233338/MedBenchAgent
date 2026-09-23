@@ -22,6 +22,7 @@ from medbenchagent.data.sources import (
 )
 from medbenchagent.data.validation import source_image_path
 from medbenchagent.runtime.dependencies import publish, require
+from medbenchagent.runtime.contexts import DataProcessingContext
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.inspection import inspected, inspection_index
@@ -45,6 +46,7 @@ class SourceChoice(Contract):
 
 class SourceTextArguments(ReadTextArguments):
     source_id: Text | None = None
+    page: int = 1
 
 
 class PlanArguments(Contract):
@@ -101,7 +103,10 @@ def save_dataset_metadata(context, *, source_references):
         path = source_image_path(sources[reference.source_id]["root"], reference.path)
         manifest = bundle / "source_manifests" / reference.source_id
         track_files(manifest, [reference.path])
-        if not reference.quote.strip() or reference.quote not in path.read_text(encoding="utf-8"):
+        from medbenchagent.data.documentation import freeze_document, read_document
+        freeze_document(bundle, reference.source_id, sources[reference.source_id]["root"], reference.path)
+        excerpt = read_document(bundle, reference.source_id, reference.path, page=reference.page, limit=1_000_000)["text"]
+        if not reference.quote.strip() or reference.quote not in excerpt:
             raise ValueError("Metadata quote must occur verbatim in the source document")
     if references:
         description = DatasetDescription.model_validate(complete_json(
@@ -147,6 +152,7 @@ def initialize(context, sources, dataset_id):
         sources=[s.model_dump() for s in sources],
         dataset_id=dataset_id,
         dataset_scope=dataset_id,
+        agent_role="DataProcessingAgent",
         execution_runtime=runtime,
         bundle_root=str(bundle),
         normalized_sources={},
@@ -253,6 +259,10 @@ def execute_preparation(context):
     )
     if count != plan["mapping"]["expected_images"]:
         raise ValueError("Prepared count differs from authoritative population")
+    from medbenchagent.runtime.inspection import inspection
+    from medbenchagent.data.population import verify_population
+    population = inspection(context, plan["mapping"]["population_reference"], source_id=context["source_scope"])["value"]
+    verify_population(context["source_root"], population["population_path"], first / "annotation.jsonl", context["source_scope"])
     remove_work_directory(repeat, folder)
     versions = publish(
         context,
@@ -325,6 +335,9 @@ def inspect_image_population(context, *, population):
     value = _run(context, Path(context["operation_directory"]) / "population",
                  request={"operation": "image_population", "population": population.model_dump(),
                           "source": context["active_source"]})
+    from medbenchagent.data.sources import digest_file
+    identity_path = Path(context["operation_directory"]) / "population/population.jsonl"
+    value = {**value, "population_path": str(identity_path), "population_digest": digest_file(identity_path)}
     return _inventory(context, "population:" + json.dumps(population.model_dump(), sort_keys=True), value,
                       operation="image_population", arguments=population.model_dump())
 
@@ -512,6 +525,24 @@ def save_harmonization(context, *, plan):
     )
 
 
+def freeze_documentation(context, *, source_id, paths):
+    """Select source text/PDF documents to freeze for future planning, without copying raw tables implicitly."""
+    from medbenchagent.data.documentation import freeze_document
+    source = next((s for s in context["sources"] if s["id"] == source_id), None)
+    if source is None:
+        raise ValueError("Unknown source")
+    require(context, f"source/{source_id}/Source")
+    manifest = Path(context["bundle_root"]) / "source_manifests" / source_id
+    track_files(manifest, paths)
+    for path in paths:
+        freeze_document(context["bundle_root"], source_id, source["root"], path)
+    return result("success", "Planning documentation frozen")
+
+
+class FreezeDocumentsArguments(SourceChoice):
+    paths: list[Text]
+
+
 def finish(context):
     """Publish one complete bundle and its query cache; all selected sources are required."""
     from medbenchagent.data.bundle import publish_bundle
@@ -568,7 +599,7 @@ def finish(context):
 
 
 
-def describe(context):
+def describe(context: DataProcessingContext):
     return {
         "requirement": context.get("user_requirement", "")[:2000],
         "sources": context["sources"],
@@ -578,12 +609,12 @@ def describe(context):
         "harmonization": context.get("harmonization_path"),
         "dataset_metadata": context.get("dataset_metadata_path"),
         "inspection_references": inspection_index(context),
-        "user_decisions": context.get("decisions", {}),
+
         "clarification": context.get("clarification"),
     }
 
 
-def available_tools(context):
+def available_tools(context: DataProcessingContext):
     """Expose only tools whose existing source/dataset dependencies are current."""
     available = {"ask_user", "save_dataset_metadata"}
 
@@ -597,7 +628,7 @@ def available_tools(context):
     active = context.get("source_scope")
     normalized = context.get("normalized_sources", {})
     if any(current(f"source/{s['id']}/Source") for s in context["sources"]):
-        available.add("read_text")
+        available |= {"read_text", "freeze_documentation"}
     if not active or active in normalized:
         available.add("select_source")
     if active and active not in normalized and current("Source"):
@@ -658,13 +689,14 @@ def compile_pipeline(*, checkpointer=None):
             inspect_normalized,
             save_harmonization,
             save_dataset_metadata,
+            freeze_documentation,
         )
     }
     return compile_agent(
         "DataProcessingAgent",
         "Prepare every selected source sequentially. Select a source, inspect evidence, then for raw inputs "
         "save a typed preparation plan and execute it. Use standard operators; code fallback requires a reason. "
-        "Before saving Mapping, inspect_image_population with existing read/filter/join steps and an image_id field. "
+        "Before saving Mapping, inspect_image_population with existing read/filter/join steps and explicit image_id and image_path fields. Preserve those identities in the intermediate. "
         "Use its inspection_reference as population_reference and its unique_images as expected_images. "
         "Supply actual inspection_references and semantic_evidence (source=document or user, reference, exact quote) "
         "to explain the authoritative population. Read source documentation with read_text or ask_user. "
@@ -672,6 +704,8 @@ def compile_pipeline(*, checkpointer=None):
         "image policies, normalize_images. Invalid local records are quarantined; ambiguous semantics require ask_user. "
         "Never infer labels or identity from medical knowledge. Preserve finding/bbox pairing and missing vs negative. "
         "Use save_dataset_metadata with verbatim quotations from inspected source documentation when available. "
+        "read_text freezes inspected source documentation (PDF supports page, no OCR). Use freeze_documentation "
+        "to select additional codebooks/manuals needed for future planning. Only frozen documents remain available later. "
         "This metadata describes the dataset itself, never the benchmark goal. Check for source documentation; "
         "with no reliable documentation call save_dataset_metadata(source_references=[]). Metadata must be decided before finish. "
         "After every source is normalized inspect_normalized to compare fields and exact values. Save harmonization "
@@ -683,6 +717,8 @@ def compile_pipeline(*, checkpointer=None):
         describe,
         finish,
         available_tools=available_tools,
+        read_tools=frozenset({"inspect_files", "read_text", "inspect_table", "inspect_join", "inspect_metadata",
+                              "inspect_source_values", "inspect_image_population", "inspect_images", "read_image_inventory", "inspect_normalized"}),
         args_schemas={
             "select_source": SourceChoice,
             "inspect_files": InspectFilesArguments,
@@ -699,6 +735,7 @@ def compile_pipeline(*, checkpointer=None):
             "inspect_normalized": SourceFieldArguments,
             "save_harmonization": HarmonizationArguments,
             "save_dataset_metadata": DatasetMetadataArguments,
+            "freeze_documentation": FreezeDocumentsArguments,
         },
         checkpointer=checkpointer,
     )

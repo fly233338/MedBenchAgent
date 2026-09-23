@@ -8,6 +8,7 @@ from medbenchagent.audit.hard import inspect_generation, read_json, read_rows
 from medbenchagent.data.dataset_catalog import resolve_path
 from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.dependencies import publish, require, read_index, reference_digests
+from medbenchagent.runtime.contexts import FinalizationContext
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.construction import FINALIZATION_AGENT
 from medbenchagent.runtime.run_export import PACKAGE_FILES, publish_package
@@ -194,7 +195,7 @@ def available_tools(context):
     return tools
 
 
-def describe(context):
+def describe(context: FinalizationContext):
     return {"datasets": _active(context), "pending_checks": [d for d in _active(context) if not _current(context, f"dataset/{d}/GenerationCheck")],
             "checks": context.get("dataset_checks", {}), "assembly_directory": context.get("assembly_directory"),
             "delivery_counts": context.get("delivery_counts"), "available_actions": sorted(available_tools(context))}
@@ -208,5 +209,5 @@ def compile_finalization_agent():
         "Choose inspection order and explain observed problems; never override hard checks or invent repairs, labels or quotas. "
         "Shortfall is reported, not a reason to block, ask confirmation, regenerate, or change the target. Zero final items cannot be delivered. "
         "Missing/corrupt required inputs must be fixed in a new run. Do not repeat already completed operations. Finish only after publication.",
-        {f.__name__: f for f in functions}, describe, finish, available_tools=available_tools, initialize_context=initialize,
+        {f.__name__: f for f in functions}, describe, finish, read_tools=frozenset({"inspect_inputs", "read_issues"}), available_tools=available_tools, initialize_context=initialize,
         args_schemas={"inspect_dataset": DatasetArguments, "read_issues": IssueArguments})

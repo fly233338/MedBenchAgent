@@ -8,6 +8,7 @@ import pytest
 
 from medbenchagent.agents import task_planning as planning
 from medbenchagent.runtime.dependencies import publish, require
+from medbenchagent.runtime.inspection import evidence, evidence_page
 from medbenchagent.planning.tree import validate_plan
 from test_generation import _task, _record, _grounding
 
@@ -21,7 +22,7 @@ def context(tmp_path, monkeypatch):
         "run_directory": str(tmp_path),
         "operation_directory": str(tmp_path / "op"),
         "annotation_path": str(annotation),
-        "selected_dataset_id": "test",
+        "selected_dataset_id": "test", "dataset_scope": "test",
         "benchmark_info": {"sample_count": 4, "language": "en"},
         "construction_events_path": str(tmp_path / "events.jsonl"),
         "limits": {"max_reworks": 1},
@@ -99,13 +100,17 @@ def test_document_discovery_pages_existing_inventory(tmp_path, monkeypatch):
     (source / "codes.md").write_text("0 means benign", encoding="utf-8")
     (manifest / "source.json").write_text(json.dumps({"root": str(source)}), encoding="utf-8")
     (manifest / "files.jsonl").write_text('\n'.join(json.dumps({"path": p}) for p in ["codes.md", "manual.pdf", "image.png"]), encoding="utf-8")
+    from medbenchagent.data.documentation import freeze_document
+    freeze_document(tmp_path, "source", source, "codes.md")
+    (source / "second.md").write_text("Another source reference", encoding="utf-8")
+    freeze_document(tmp_path, "source", source, "second.md")
     first = json.loads(planning.list_dataset_documents(c, limit=1)["summary"])
     assert first["total"] == 2 and first["next_offset"] == 1
     assert first["documents"][0]["source_id"] == "source"
     assert "0 means benign" in planning.read_dataset_document(c, path=first["documents"][0]["path"])["summary"]
     second = json.loads(planning.list_dataset_documents(c, offset=1)["summary"])
-    assert second["documents"][0]["readable"] is False
-    with pytest.raises(ValueError, match="Unsupported documentation format"):
+    assert second["documents"][0]["readable"] is True
+    with pytest.raises(ValueError, match="not frozen"):
         planning.read_dataset_document(c, path="source/manual.pdf")
 
 
@@ -201,15 +206,17 @@ def test_rag_available_before_any_leaf_and_exact_field_values(tmp_path, monkeypa
         lambda _: type("Rag", (), {"retrieve": lambda self, query, limit: chunks})(),
     )
     output = call(c, planning.search_materials, query="Explain concept", limit=1)
-    assert json.loads(output["summary"]) == chunks
-    assert c["retrieved_evidence"] == [{"pdf": "book.pdf", "page": 1, "chunk_id": "c1"}]
+    returned = json.loads(output["summary"])
+    assert returned[0]["chunk_id"] == "c1"
+    assert evidence(c, returned[0]["reference"])["value"] == chunks[0]
+    assert "retrieved_evidence" not in c and "retrieved_passages" not in c
     values = json.loads(planning.read_field_values(c, field="image.annotation.status")["summary"])
     assert {row["value"] for row in values["inspection"]["values"]} == {"benign", "malignant"}
 
 
 def test_optional_materials_initialize_without_rag_and_keep_existing_selection(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
-    c["artifact_versions"].pop("Materials")
+    c["artifact_versions"].pop("dataset/test/Materials")
     monkeypatch.setattr("medbenchagent.runtime.preflight.rag_capability", lambda _: {"available": False, "reasons": ["No models"]})
     initialized = planning.initialize_planning(c)
     require(initialized, "Materials")
@@ -217,19 +224,19 @@ def test_optional_materials_initialize_without_rag_and_keep_existing_selection(t
     assert "save_leaf" in planning.available_tools(initialized)
     assert "search_materials" not in planning.available_tools(initialized)
     assert "list_materials" not in planning.available_tools(initialized)
-    first = initialized["artifact_versions"]["Materials"]
+    first = initialized["artifact_versions"]["dataset/test/Materials"]
     initialized["selected_material_files"] = ["existing.pdf"]
     planning.initialize_planning(initialized)
     assert initialized["selected_material_files"] == ["existing.pdf"]
-    assert initialized["artifact_versions"]["Materials"] == first
+    assert initialized["artifact_versions"]["dataset/test/Materials"] == first
 
 
 def test_available_rag_requires_material_selection(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
-    c["artifact_versions"].pop("Materials")
+    c["artifact_versions"].pop("dataset/test/Materials")
     monkeypatch.setattr("medbenchagent.runtime.preflight.rag_capability", lambda _: {"available": True, "reasons": []})
     planning.initialize_planning(c)
-    assert "Materials" not in c["artifact_versions"]
+    assert "dataset/test/Materials" not in c["artifact_versions"]
     assert "select_materials" in planning.available_tools(c)
     assert "save_leaf" not in planning.available_tools(c)
 
@@ -285,7 +292,7 @@ def test_extension_gate_acceptance_rejection_and_reparent_identity(tmp_path, mon
         concept_id="core",
         status="unsupported",
         reason="Moved to extension",
-        inspection_references=list(call(c, planning.read_field_values, field="image.annotation.status")["updates"]["inspections"]),
+        inspection_references=[json.loads(call(c, planning.read_field_values, field="image.annotation.status")["summary"])["inspection_reference"]],
     )
     call(c, planning.propose_extension, **{**proposal, "category": "new-category"})
     assert planning._tree(c)["tasks"]["opaque.identity"]["category"] == "new-category"
@@ -310,14 +317,14 @@ def test_unknown_answer_values_and_fabricated_citations_rejected(tmp_path, monke
             protocol=protocol,
             evidence=[],
         )
-    with pytest.raises(ValueError, match="retrieved"):
+    with pytest.raises(ValueError, match="retrieved|Unknown evidence"):
         planning.save_leaf(
             c,
             leaf_id="leaf",
             concept_id="core",
             description="Intent",
             protocol=_task("letter", ["image.annotation.status"])["protocol"],
-            evidence=[{"pdf": "fake", "page": 1, "chunk_id": "fake"}],
+            evidence=[{"reference": "fake", "pdf": "fake", "page": 1, "chunk_id": "fake"}],
         )
 
 
@@ -469,7 +476,7 @@ def test_unsupported_dataset_publishes_empty_plan(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
     call(c, planning.read_field_values, field="image.annotation.status")
     call(c, planning.complete_concept, concept_id="core", status="unsupported", reason="No relevant annotation",
-         inspection_references=list(c["inspections"]))
+         inspection_references=[r["reference"] for r in evidence_page(c)["entries"]])
     call(c, planning.coverage_gap)
     call(c, planning.finish_discovery)
     monkeypatch.setattr(planning, "complete_json", lambda *a: {"issues": []})
@@ -482,12 +489,13 @@ def test_unsupported_rejects_missing_forged_stale_and_foreign_inspections(tmp_pa
     c = context(tmp_path, monkeypatch)
     arguments = dict(concept_id="core", status="unsupported", reason="No suitable labels")
     for references in ([], ["invented"]):
-        with pytest.raises(ValueError, match="[Ii]nspection"):
+        with pytest.raises(ValueError, match="[Ii]nspection|[Ee]vidence"):
             planning.complete_concept(c, **arguments, inspection_references=references)
     call(c, planning.read_field_values, field="image.annotation.status")
-    references = list(c["inspections"])
+    references = [r["reference"] for r in evidence_page(c)["entries"]]
     foreign = copy.deepcopy(c)
     foreign["selected_dataset_id"] = "other"
+    foreign["dataset_scope"] = "other"
     with pytest.raises(ValueError, match="another dataset"):
         planning.complete_concept(foreign, **arguments, inspection_references=references)
     publish(c, "Dataset", {"revision": 2}, ())
@@ -498,10 +506,13 @@ def test_unsupported_rejects_missing_forged_stale_and_foreign_inspections(tmp_pa
 def test_review_receives_mapping_and_verified_semantic_basis(tmp_path, monkeypatch):
     c = context(tmp_path, monkeypatch)
     protocol = _task("letter", ["image.annotation.status"])["protocol"]
-    reference = 'local-decision'
-    c["decisions"] = {reference: "benign means Benign; malignant means Malignant"}
+    from medbenchagent.runtime.clarifications import new_issue, record_answer, resolve_semantic_answer
+    issue = new_issue("TaskPlanningAgent", c, "labels", "What do the status labels mean?")
+    issue = resolve_semantic_answer(c, record_answer(c, issue, "benign means Benign; malignant means Malignant"))
+    c["issues"] = {issue["issue_id"]: issue}
+    reference = issue["answer_reference"]
     basis = [{"field": "image.annotation.status", "source": "user", "reference": reference,
-              "quote": c["decisions"][reference], "interpretation": "Preserve annotated pathology status"}]
+              "quote": "benign means Benign; malignant means Malignant", "interpretation": "Preserve annotated pathology status"}]
     call(c, planning.save_leaf, leaf_id="leaf", concept_id="core", description="Status",
          protocol=protocol, evidence=[], semantic_basis=basis, mapping_grounding=_grounding(protocol))
     complete(c)

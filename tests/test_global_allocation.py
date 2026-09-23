@@ -45,3 +45,50 @@ def test_missing_weight_is_rejected():
     plans = {"a": plan({"one": 1})}
     with pytest.raises(ValueError, match="exactly"):
         allocate(plans, {"concepts": {}}, 1)
+
+
+def allocation_context(tmp_path):
+    import json
+    from medbenchagent.runtime.dependencies import publish
+    c = {"run_id": "allocation", "run_directory": str(tmp_path), "operation_directory": str(tmp_path / "op"),
+         "construction_events_path": str(tmp_path / "events"), "selected_dataset_ids": ["a", "b"],
+         "benchmark_info": {"sample_count": 6}, "user_requirement": "Build", "dataset_task_plans": {}}
+    publish(c, "Requirement", {"allocation_preferences": []}, ())
+    for kind in ("DatasetSelection", "AllocationConfig", "AllocationDelegation"):
+        publish(c, kind, {}, ())
+    for dataset in ("a", "b"):
+        path = tmp_path / f"{dataset}.json"
+        path.write_text(json.dumps(plan({"one": 10})), encoding="utf-8")
+        c["dataset_task_plans"][dataset] = str(path)
+        publish(c, f"dataset/{dataset}/Plan", {"path": str(path)}, ())
+        publish(c, f"dataset/{dataset}/Templates", {}, (f"dataset/{dataset}/Plan",))
+    return c
+
+
+def test_no_preferences_allocate_without_any_model_call(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    from medbenchagent.agents.allocation import compile_allocation_agent
+    c = allocation_context(tmp_path)
+    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *a: pytest.fail("Default allocation must not call LLM"))
+    output = compile_allocation_agent().invoke({"context": c})
+    assert output["result"]["status"] == "complete"
+    data = json.loads(Path(output["context"]["allocation_path"]).read_text(encoding="utf-8"))
+    assert data["counts"] == {"a": {"one": 3}, "b": {"one": 3}}
+
+
+def test_unequal_weights_require_current_requirement_preferences(tmp_path):
+    from medbenchagent.agents.allocation import submit, _plans
+    from medbenchagent.runtime.dependencies import publish
+    c = allocation_context(tmp_path)
+    proposal = intent(_plans(c))
+    key = next(iter(proposal["concepts"]))
+    proposal["datasets"] = {key: {"a": {"weight": 2.0, "reason": "Prefer A"}, "b": {"weight": 1.0, "reason": "Default"}}}
+    with pytest.raises(ValueError, match="preference references"):
+        submit(c, **proposal)
+    publish(c, "Requirement", {"allocation_preferences": [{"id": "prefer-a", "description": "Prefer A", "quote": "Prefer A"}]}, ())
+    proposal["datasets"][key]["a"]["preference_references"] = ["prefer-a"]
+    assert submit(c, **proposal)["status"] == "success"
+    publish(c, "Requirement", {"allocation_preferences": []}, ())
+    with pytest.raises(ValueError, match="preference references"):
+        submit(c, **proposal)

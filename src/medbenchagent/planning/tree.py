@@ -11,6 +11,7 @@ from medbenchagent.answer_mapping import canonical_answer_scalar
 
 
 class Evidence(NoArguments):
+    reference: NonEmpty
     pdf: NonEmpty
     page: int = Field(ge=1)
     chunk_id: NonEmpty
@@ -104,6 +105,7 @@ class ExtensionArguments(NoArguments):
 class Weight(NoArguments):
     weight: float = Field(ge=0, allow_inf_nan=False)
     reason: NonEmpty
+    preference_references: list[NonEmpty] = Field(default_factory=list)
 
 
 class ExtensionDecision(NoArguments):

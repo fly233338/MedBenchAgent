@@ -60,7 +60,7 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
              ("coverage_gap", {}), ("finish_discovery", {}), ("review_tree", {}), ("finish", {})]
     repaired = [("save_leaf", {**basic[0][1], "protocol": {**leaf, "question_intent": "Classify the explicitly annotated status"}})] + basic[1:]
     basic = [("resolve_sample_scope", {"resolutions": [{"requirement_id": "modality", "status": "implemented",
-             "reason": "Exact modality", "conditions": [{"requirement_id": "modality", "field": "image.modality",
+             "reason": "Exact modality", "modality_bindings": [{"modality": "Mammography", "values": ["Mammography"]}], "conditions": [{"requirement_id": "modality", "field": "image.modality",
              "operator": "in", "values": ["Mammography"]}]}]})] + basic
     planning_actions = iter(([("ask_user", {"question": "Confirm goal", "scope": "global"})] if ask_global else []) + basic * (dataset_count * (2 if revise else 1)) + (repaired if template_repair else []))
     allocated = [False]
@@ -89,7 +89,7 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
             if name == "ask_user" and pending:
                 arguments = {**arguments, "issue_id": pending["issue_id"]}
         if name in {"plan", "allocate"}:
-            arguments = {**arguments, "delegation": {"objective": "Follow the requested benchmark scope"}}
+            arguments = {**arguments, "delegation": {"revision_notes": "Diagnostic note"}}
         return {"tool": name, "arguments": arguments, "reason": "Required action"}
     monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", model)
     monkeypatch.setattr("medbenchagent.agents.task_planning.complete_json", lambda *a: {"issues": []})
@@ -129,9 +129,10 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
     private = graph.get_state(config).values["context"]
     if ask_global:
         assert private["global_issue"] is None
-        child = json.loads(Path(private["child_states"]["a"]["planning"]).read_text(encoding="utf-8"))
+        child = json.loads(Path(private["child_states"]["a"]["planning"]).read_text(encoding="utf-8"))["context"]
         assert child["global_issue"] is None
-        assert list(child["decisions"].values()) == ["Confirmed goal"]
+        from medbenchagent.runtime.inspection import evidence
+        assert [evidence(child, ref)["value"]["text"] for ref in child["decisions"].values()] == ["Confirmed goal"]
     restore_delivery(private)
     assert Path(output["audit_artifacts"]["audited"]).read_bytes() == before
     # A resumed run uses its saved Blueprint, not an edited external template.
