@@ -147,7 +147,7 @@ def test_nested_specialist_interrupt_resumes_its_checkpoint(tmp_path, monkeypatc
         )
 
     context = {
-        "run_id": "test",
+        "run_id": "test", "run_directory": str(tmp_path),
         "operation_directory": str(tmp_path / "ops"),
         "construction_events_path": str(tmp_path / "events.jsonl"),
     }
@@ -159,4 +159,5 @@ def test_nested_specialist_interrupt_resumes_its_checkpoint(tmp_path, monkeypatc
         resumed = build(connection).invoke(Command(resume="xyxy pixels"), config)
     assert resumed["result"]["status"] == "complete"
     assert calls == [1]
-    assert list(resumed["context"]["decisions"].values()) == ["xyxy pixels"]
+    from medbenchagent.runtime.inspection import evidence
+    assert [evidence({**resumed["context"], "agent_role": "Child"}, ref)["value"]["text"] for ref in resumed["context"]["decisions"].values()] == ["xyxy pixels"]

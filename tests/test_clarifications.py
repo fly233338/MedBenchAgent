@@ -1,8 +1,7 @@
-import json
 
 import pytest
 
-from medbenchagent.runtime.clarifications import new_issue, inject_answers, resolve_clarification
+from medbenchagent.runtime.clarifications import new_issue, inject_answers, resolve_clarification, record_answer
 from medbenchagent.runtime.dependencies import publish
 
 
@@ -11,17 +10,19 @@ def test_resolution_closes_saved_origin_and_only_invalidates_changed_requirement
     context = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "resolve"), "user_requirement": "Build"}
     publish(context, "Requirement", {"text": "Build"}, ())
     before = context["artifact_versions"]["Requirement"]
-    issue = new_issue("TaskPlanningAgent", {"dataset_scope": "a"}, "field", "What does 0 mean?")
+    child_context = {**context, "dataset_scope": "a", "agent_role": "TaskPlanningAgent"}
+    issue = new_issue("TaskPlanningAgent", child_context, "field", "What does 0 mean?")
     key = issue["issue_id"]
     saved = tmp_path / "child.json"
-    saved.write_text(json.dumps({"global_issue": issue, "issues": {key: issue}}), encoding="utf-8")
+    from medbenchagent.runtime.contexts import save_context, load_context
+    save_context(saved, {**child_context, "global_issue": issue, "issues": {key: issue}}, "planning", "a")
     context["child_states"] = {"a": {"planning": str(saved)}}
-    context["issues"] = {key: {**issue, "status": "answered", "answer": "0 means benign"}}
+    context["issues"] = {key: record_answer(child_context, issue, "0 means benign")}
     context["global_issue"] = context["issues"][key]
     context.update(resolve_clarification(context, issue_id=key, kind=kind)["updates"])
-    child = json.loads(open(context["child_states"]["a"]["planning"], encoding="utf-8").read())
+    child = load_context(context["child_states"]["a"]["planning"], "planning", "a")
     assert child["global_issue"] is None and context["global_issue"] is None
-    assert child["decisions"][key] == "0 means benign"
+    assert child["decisions"][key] == context["issues"][key]["answer_reference"]
     assert inject_answers(context, {}, "TaskPlanningAgent", "b")["decisions"] == {}
     assert (context["artifact_versions"]["Requirement"] != before) == (kind == "requirement_change")
     if kind == "requirement_change":

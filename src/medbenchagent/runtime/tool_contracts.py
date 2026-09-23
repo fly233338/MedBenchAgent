@@ -19,21 +19,27 @@ class AskUserArguments(NoArguments):
     reference: str = ""
     scope: Literal["local", "global"] = "local"
     issue_id: str = ""
+    subject_scope: Literal["dataset", "source", "multi_source"] | None = None
+    source_ids: list[NonEmpty] = Field(default_factory=list)
+    image_ids: list[NonEmpty] = Field(default_factory=list)
 
 
 class FeedbackArguments(NoArguments):
     feedback: str = ""
 
 
+class AllocationPreference(NoArguments):
+    id: NonEmpty
+    description: NonEmpty
+    quote: NonEmpty
+
+
 class Delegation(NoArguments):
-    objective: NonEmpty
-    constraints: list[NonEmpty] = Field(default_factory=list)
-    preferences: list[NonEmpty] = Field(default_factory=list)
     revision_notes: str = ""
 
 
 class DelegationArguments(NoArguments):
-    delegation: Delegation
+    delegation: Delegation = Field(default_factory=Delegation)
 
 
 class RunIntent(NoArguments):
@@ -94,13 +100,20 @@ class SearchArguments(NoArguments):
 class TableArguments(NoArguments):
     path: NonEmpty
     sheet: str | None = None
+    delimiter: NonEmpty = ","
 
 
 class JoinArguments(NoArguments):
     left: NonEmpty
     right: NonEmpty
-    left_key: NonEmpty
-    right_key: NonEmpty
+    left_keys: list[NonEmpty] = Field(min_length=1)
+    right_keys: list[NonEmpty] = Field(min_length=1)
+    cardinality: Literal["one_to_one", "many_to_one", "one_to_many"]
+    how: Literal["left", "inner"] = "left"
+    null_keys: Literal["error", "unmatched"] = "error"
+    unmatched: Literal["error", "retain", "exclude"] = "error"
+    left_delimiter: NonEmpty = ","
+    right_delimiter: NonEmpty = ","
     left_sheet: str | None = None
     right_sheet: str | None = None
 
@@ -115,3 +128,20 @@ class ImagePolicy(NoArguments):
 
 class ImagePlanArguments(NoArguments):
     overrides: dict[str, ImagePolicy] = Field(default_factory=dict)
+
+
+class DisplayPolicy(NoArguments):
+    encoding: Literal["window"]
+    low: float = Field(allow_inf_nan=False)
+    high: float = Field(allow_inf_nan=False)
+    invert: bool
+
+    @model_validator(mode="after")
+    def interval(self):
+        if self.low >= self.high:
+            raise ValueError("Display window requires low < high")
+        return self
+
+
+class DisplayDecision(NoArguments):
+    policies: dict[str, DisplayPolicy]
