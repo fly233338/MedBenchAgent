@@ -207,6 +207,7 @@ def normalize_source(
                     {
                         "image_id": entry["image_id"],
                         "file_hash": digest_file(path),
+                        "output_hash": digest_file(target),
                         "pixel_hash": pixel_digest(decoded[0]),
                         "source_path": source_relative,
                     },
@@ -370,7 +371,7 @@ def publish_bundle(
         db.execute("DROP TABLE IF EXISTS entity_values")
         db.execute(
             "CREATE TABLE candidates (id VARCHAR PRIMARY KEY, record VARCHAR, manifest VARCHAR, "
-            "pixel_hash VARCHAR, file_hash VARCHAR, signature VARCHAR, source_id VARCHAR)"
+            "pixel_hash VARCHAR, file_hash VARCHAR, signature VARCHAR, source_id VARCHAR, output_hash VARCHAR)"
         )
         db.execute(
             "CREATE TABLE entity_values (source_id VARCHAR, entity_id VARCHAR, path VARCHAR, value VARCHAR)"
@@ -396,6 +397,8 @@ def publish_bundle(
                         json.loads(entry_line),
                         json.loads(asset_line),
                     )
+                    if not asset.get("output_hash") or digest_file(folder / entry["png_path"]) != asset["output_hash"]:
+                        raise ValueError("Normalized image bytes changed before publication")
                     original_record = copy.deepcopy(record)
                     record = align_record(
                         record, plan, composite=len(normalized) > 1, observed=observed
@@ -424,7 +427,7 @@ def publish_bundle(
                         if k not in {"image_id", "image_path"}
                     }
                     db.execute(
-                        "INSERT INTO candidates VALUES (?,?,?,?,?,?,?)",
+                        "INSERT INTO candidates VALUES (?,?,?,?,?,?,?,?)",
                         [
                             image_id,
                             json.dumps(record, sort_keys=True),
@@ -433,6 +436,7 @@ def publish_bundle(
                             asset["file_hash"],
                             json.dumps(signature, sort_keys=True),
                             source_id,
+                            asset["output_hash"],
                         ],
                     )
                     for entity in ("patient", "case", "study"):
@@ -489,6 +493,7 @@ def publish_bundle(
             with (
                 (bundle / "annotation.jsonl").open("w", encoding="utf-8") as records,
                 (bundle / "image_manifest.jsonl").open("w", encoding="utf-8") as manifests,
+                (bundle / "asset_integrity.jsonl").open("w", encoding="utf-8") as integrity,
             ):
                 while rows := cursor.fetchmany(512):
                     for (
@@ -499,6 +504,7 @@ def publish_bundle(
                         file_hash,
                         _,
                         source,
+                        output_hash,
                         representative,
                         n,
                         conflict,
@@ -517,6 +523,7 @@ def publish_bundle(
                         elif image_id == representative:
                             records.write(payload + "\n")
                             manifests.write(manifest + "\n")
+                            json_line(integrity, {"image_id": image_id, "png_path": json.loads(manifest)["png_path"], "file_digest": output_hash})
                             counts["accepted"] += 1
                         else:
                             counts["duplicates_removed"] += 1
@@ -543,11 +550,17 @@ def publish_bundle(
     from medbenchagent.data.dataset import prepare_annotation_dataset
 
     profile, access = prepare_annotation_dataset(bundle / "annotation.jsonl", bundle / "cache")
+    documentation = bundle / "documentation/index.json"
+    if not documentation.exists():
+        atomic_write_json(documentation, {"schema_version": "dataset-documentation.v1", "documents": []})
+    access.update(image_integrity_path=str(bundle / "asset_integrity.jsonl"),
+                  image_integrity_digest=digest_file(bundle / "asset_integrity.jsonl"),
+                  documentation_path=str(documentation), documentation_digest=digest_file(documentation))
     if verify_inputs:
         verify_inputs()
     atomic_write_json(
         bundle / "ready.json",
-        {"schema_version": "dataset-bundle.v1", "access": access, "sources": sorted(normalized)},
+        {"schema_version": "dataset-bundle.v2", "access": access, "sources": sorted(normalized)},
     )
     return profile, access
 

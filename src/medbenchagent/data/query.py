@@ -124,7 +124,8 @@ class DatasetQuery:
                 ).fetchone()[0]:
                     raise ValueError(f"Unknown field: {field}")
             # Entity identity includes the concrete full ancestor-array index tuple.
-            same_parent = left.rsplit(".", 1)[0] == right.rsplit(".", 1)[0]
+            from medbenchagent.data.entity import entity_path
+            same_parent = entity_path(left, coordinate=left.endswith("[*]")) == entity_path(right, coordinate=right.endswith("[*]"))
             sql = (
                 "SELECT count(DISTINCT a.image_id),count(*) FILTER (WHERE a.entity_indices=b.entity_indices) "
                 "FROM (SELECT DISTINCT image_id,entity_indices FROM field_values WHERE path=? AND nonempty) a "

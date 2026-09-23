@@ -1,6 +1,5 @@
 """Validate source-bound inspection and semantic references before preparation writes."""
 
-from medbenchagent.runtime.dependencies import require
 from medbenchagent.runtime.inspection import inspection
 
 
@@ -14,16 +13,16 @@ def semantic_evidence(context, evidence, source_id):
                 raise ValueError("Semantic evidence must reference inspected source documentation")
             text = receipt["value"]["text"]
         else:
-            issue = context.get("issues", {}).get(item.reference, {})
-            dataset = context.get("dataset_scope")
-            if (issue.get("status") != "resolved" or issue.get("kind") != "semantic"
-                    or issue.get("role") != "DataProcessingAgent" or issue.get("dataset_id") != dataset):
-                raise ValueError("Semantic evidence requires a resolved decision for this dataset/source")
-            current = require(context, f"source/{source_id}/Source")
-            record = next(iter(current.values()))
-            if issue.get("input_versions", {}).get(record["kind"]) != record["id"]:
-                raise ValueError("User decision is stale for this source; ask for its current meaning")
-            text = issue.get("answer", "")
+            from medbenchagent.runtime.inspection import evidence as read_evidence
+            receipt = read_evidence(context, item.reference)
+            issue = context.get("issues", {}).get(receipt["value"].get("issue_id"), {})
+            if (receipt["kind"] != "user" or issue.get("status") != "resolved"
+                    or issue.get("kind") != "semantic" or issue.get("role") != "DataProcessingAgent"
+                    or issue.get("dataset_id") != context.get("dataset_scope")
+                    or source_id not in issue.get("source_ids", [])
+                    or issue.get("answer_reference") != item.reference):
+                raise ValueError("Semantic evidence requires a resolved decision covering this source")
+            text = receipt["value"]["text"]
         if not item.quote.strip() or item.quote not in text:
             raise ValueError("Semantic evidence requires an exact quotation")
 
@@ -35,6 +34,9 @@ def mapping_evidence(context, mapping):
     receipt = inspection(context, mapping.population_reference, source_id=source)
     if receipt["operation"] != "image_population":
         raise ValueError("Mapping population_reference must identify an image population inspection")
+    from medbenchagent.data.sources import digest_file
+    if digest_file(receipt["value"]["population_path"]) != receipt["value"]["population_digest"]:
+        raise ValueError("Inspected population identities changed")
     if receipt["value"]["unique_images"] != mapping.expected_images:
         raise ValueError("expected_images differs from the inspected authoritative population")
     if not mapping.inspection_references:
@@ -52,5 +54,5 @@ def alignment_evidence(context, field):
         r["arguments"].get("field") == field.field or field.field in r["value"].get("fields", {})
     ) for r in receipts):
         raise ValueError("Inspect the actual normalized source field before alignment")
-    if field.action == "merge" or field.semantic_evidence:
+    if field.action in {"merge", "exclude"} or field.semantic_evidence:
         semantic_evidence(context, field.semantic_evidence, field.source_id)

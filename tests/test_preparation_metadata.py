@@ -35,7 +35,7 @@ def test_metadata_is_extracted_from_verified_quotes_not_benchmark_goal(tmp_path,
     context["user_requirement"] = "GOAL_DIAGNOSIS_ONLY"
     save_dataset_metadata(context, source_references=refs)
     assert prompts[0] == prompts[1] and path.read_bytes() == first
-    assert json.loads(first)["source_references"] == refs
+    assert json.loads(first)["source_references"] == [{**r, "page": 1} for r in refs]
     with pytest.raises(ValueError, match="verbatim"):
         save_dataset_metadata(context, source_references=[{**refs[0], "quote": "Invented suitability"}])
     assert len(prompts) == 2 and path.read_bytes() == first

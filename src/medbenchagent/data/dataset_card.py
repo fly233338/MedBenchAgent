@@ -14,6 +14,7 @@ class SourceReference(Contract):
     source_id: Text
     path: Text
     quote: Text
+    page: int = Field(default=1, ge=1)
 
 
 class DatasetDescription(Contract):

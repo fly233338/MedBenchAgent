@@ -108,9 +108,9 @@ def empty_record():
     }
 
 
-def inspect_table(root, path, sheet=None):
+def inspect_table(root, path, sheet=None, delimiter=","):
     with connect() as db:
-        read_relation(db, root, path, "input", sheet=sheet)
+        read_relation(db, root, path, "input", sheet=sheet, delimiter=delimiter)
         count = db.execute('SELECT count(*) FROM "input"').fetchone()[0]
         result = {}
         for name, dtype, *_ in db.execute('DESCRIBE "input"').fetchall():
@@ -133,11 +133,11 @@ def inspect_table(root, path, sheet=None):
         }
 
 
-def inspect_values(root, path, field, sheet=None, offset=0, limit=50):
+def inspect_values(root, path, field, sheet=None, offset=0, limit=50, delimiter=","):
     if offset < 0 or not 1 <= limit <= 100:
         raise ValueError("Invalid value page")
     with connect() as db:
-        read_relation(db, root, path, "input", sheet=sheet)
+        read_relation(db, root, path, "input", sheet=sheet, delimiter=delimiter)
         require_columns(db, "input", [field])
         column = quoted(field)
         total = db.execute(
@@ -190,15 +190,27 @@ def join_stats(db, left, right, left_keys, right_keys):
     return stats
 
 
+def join_policy_errors(stats, policy):
+    errors = []
+    if (policy.cardinality in {"one_to_one", "one_to_many"} and stats["left_duplicates"]
+            or policy.cardinality in {"one_to_one", "many_to_one"} and stats["right_duplicates"]):
+        errors.append("Join cardinality violated")
+    if policy.null_keys == "error" and (stats["left_nulls"] or stats["right_nulls"]):
+        errors.append("Null join keys")
+    if policy.unmatched == "error" and (stats["left_missing"] or stats["right_missing"]):
+        errors.append("Unmatched join rows")
+    return errors
+
+
 def inspect_image_population(root, source, population, output):
     """Count actual distinct nonempty image identities after declared filters and joins."""
     from medbenchagent.data.contracts import Population
     population = Population.model_validate(population)
     plan = PreparationPlan.model_validate({
         "mapping": {"authoritative_population": "Population inspection", "expected_images": 1,
-                    "entity_meanings": {}, "evidence": ["Deterministic inspection"]},
+                    "entity_meanings": {}, "reason": "Deterministic inspection"},
         "steps": [*(step.model_dump() for step in population.steps),
-                  {"op": "emit", "input": population.input, "fields": {"image.image_id": population.image_id}}],
+                  {"op": "emit", "input": population.input, "fields": {"image.image_id": population.image_id, "image.image_path": population.image_path}}],
     })
     return execute_plan(root, source, plan, output, population_only=True)
 
@@ -229,7 +241,25 @@ def execute_plan(root, source: Source, plan: PreparationPlan, output, *, populat
                     ).fetchone()
                     if missing or not unique:
                         raise ValueError("Population requires nonempty image identities and at least one image")
-                    return {"rows": rows, "unique_images": unique, "image_id": step.fields["image.image_id"]}
+                    from medbenchagent.data.population import identity
+                    location = quoted(step.fields["image.image_path"])
+                    db.execute("CREATE TABLE population (id VARCHAR PRIMARY KEY, path VARCHAR UNIQUE)")
+                    cursor = db.cursor()
+                    cursor.execute(f"SELECT DISTINCT {field}, {location} FROM {table} ORDER BY {field}, {location}")
+                    try:
+                        with (output / "population.jsonl").open("w", encoding="utf-8") as handle:
+                            while batch := cursor.fetchmany(512):
+                                for identifier, path in batch:
+                                    identifier, path = identity(root, identifier, path)
+                                    if db.execute("SELECT count(*) FROM population WHERE id=? OR path=?", [identifier, path]).fetchone()[0]:
+                                        raise ValueError("Population identities and paths must be one-to-one")
+                                    db.execute("INSERT INTO population VALUES (?,?)", [identifier, path])
+                                    handle.write(json.dumps({"source_id": source.id, "image_id": identifier, "image_path": path}, ensure_ascii=False) + "\n")
+                    finally:
+                        cursor.close()
+                    return {"rows": rows, "unique_images": unique, "image_id": step.fields["image.image_id"],
+                            "image_path": step.fields["image.image_path"], "population_file": "population.jsonl"}
+
                 names = columns(db, step.input)
                 json_columns = {
                     r[0] for r in db.execute(f"DESCRIBE {table}").fetchall() if r[1] == "JSON"
@@ -253,8 +283,8 @@ def execute_plan(root, source: Source, plan: PreparationPlan, output, *, populat
                             for path, value in step.constants.items():
                                 set_path(record, path, value)
                             count += 1
-                            if record["image"]["image_id"] is None:
-                                record["image"]["image_id"] = json.dumps(row["_lineage"])
+                            if not isinstance(record["image"]["image_id"], str) or not record["image"]["image_id"].strip():
+                                raise ValueError("Emit requires an explicit nonempty image.image_id")
                             ref = f"record:{count}"
                             provenance.write(
                                 json.dumps({"id": ref, "locators": row["_lineage"], "step": index})
@@ -334,17 +364,9 @@ def execute_plan(root, source: Source, plan: PreparationPlan, output, *, populat
                 )
             elif step.op == "join":
                 stats = join_stats(db, step.input, step.right, step.left_keys, step.right_keys)
-                if (
-                    step.cardinality in {"one_to_one", "one_to_many"}
-                    and stats["left_duplicates"]
-                    or step.cardinality in {"one_to_one", "many_to_one"}
-                    and stats["right_duplicates"]
-                ):
-                    raise ValueError("Join cardinality violated")
-                if step.null_keys == "error" and (stats["left_nulls"] or stats["right_nulls"]):
-                    raise ValueError("Null join keys")
-                if step.unmatched == "error" and (stats["left_missing"] or stats["right_missing"]):
-                    raise ValueError("Unmatched join rows")
+                violations = join_policy_errors(stats, step)
+                if violations:
+                    raise ValueError("; ".join(violations))
                 left_cols = columns(db, step.input)
                 right_cols = [
                     c

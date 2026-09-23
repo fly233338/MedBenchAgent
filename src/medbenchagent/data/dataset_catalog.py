@@ -76,7 +76,15 @@ def load_prepared_assets(entry):
     ready_path = paths["annotation_path"].parent / "ready.json"
     if not ready_path.is_file():
         raise DatasetCatalogError("Dataset bundle is not published; run prepare first")
-    access = json.loads(ready_path.read_text(encoding="utf-8"))["access"]
+    ready = json.loads(ready_path.read_text(encoding="utf-8"))
+    if ready.get("schema_version") != "dataset-bundle.v2":
+        raise DatasetCatalogError("Prepared version lacks current integrity contracts; prepare a new version")
+    access = ready["access"]
+    from medbenchagent.data.integrity import verify_prepared_indexes
+    try:
+        verify_prepared_indexes(access)
+    except ValueError as exc:
+        raise DatasetCatalogError(str(exc)) from exc
     profile = json.loads(paths["profile_path"].read_text(encoding="utf-8"))
     if (Path(access["annotation_path"]).resolve() != paths["annotation_path"] or
         Path(access["profile_path"]).resolve() != paths["profile_path"] or

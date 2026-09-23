@@ -64,7 +64,7 @@ def ingest(db, records):
                 else:
                     visit(child, path + "[*]", image_id, source, (*indices, index))
         else:
-            entity_indices = indices[:-1] if path.endswith(".bbox[*]") else indices
+            entity_indices = indices[:-1] if path.endswith("[*]") else indices
             facts.append(
                 (
                     image_id,
@@ -257,7 +257,7 @@ def prepare_dataset(annotation_path, cache_root, *, revision="1", refresh=False)
     settings = get_settings().dataset_profile
     folder = (
         Path(cache_root)
-        / "annotation-cache.v8"
+        / "annotation-cache.v9"
         / f"top-{settings.max_top_values}-chars-{settings.max_top_value_chars}"
         / revision
     )
@@ -272,6 +272,8 @@ def prepare_dataset(annotation_path, cache_root, *, revision="1", refresh=False)
         access = json.loads(manifest_path.read_text(encoding="utf-8"))
         if access["annotation_path"] != str(source) or access["annotation_digest"] != digest:
             raise ValueError("Dataset changed; create a new version/cache")
+        from medbenchagent.data.integrity import verify_cache
+        verify_cache(access)
         return json.loads(profile_path.read_text(encoding="utf-8")), access
     temporary = folder / "building.duckdb"
     temporary.unlink(missing_ok=True)
@@ -290,8 +292,9 @@ def prepare_dataset(annotation_path, cache_root, *, revision="1", refresh=False)
         "annotation_path": str(source),
         "annotation_digest": digest,
         "revision": revision,
-        "cache_format_version": "annotation-cache.v8",
+        "cache_format_version": "annotation-cache.v9",
         "duckdb_path": str(database_path),
+        "duckdb_digest": digest_file(database_path),
         "table": "images",
         "profile_path": str(profile_path),
     }

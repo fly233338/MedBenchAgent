@@ -153,6 +153,7 @@ class Population(Contract):
     steps: list[Annotated[Read | Select | Rename | Filter | Join, Field(discriminator="op")]] = Field(min_length=1)
     input: Name
     image_id: Text
+    image_path: Text
 
     @model_validator(mode="after")
     def relations(self):
@@ -179,7 +180,7 @@ class Mapping(Contract):
     authoritative_population: Text
     expected_images: int = Field(gt=0)
     entity_meanings: dict[str, str]
-    evidence: list[Text] = Field(min_length=1)
+    reason: Text
     population_reference: Text | None = None
     inspection_references: list[Text] = Field(default_factory=list)
     semantic_evidence: list[PreparationEvidence] = Field(default_factory=list)
@@ -187,7 +188,7 @@ class Mapping(Contract):
 
 
 class PreparationPlan(Contract):
-    schema_version: Literal["preparation.v1"] = "preparation.v1"
+    schema_version: Literal["preparation.v2"] = "preparation.v2"
     mapping: Mapping
     steps: list[Step] = Field(default_factory=list)
     fallback_reason: str | None = None
@@ -221,13 +222,13 @@ class FieldAlignment(Contract):
     mapping: list[ValueMapping] = Field(default_factory=list)
     scale: float | None = None
     offset: float = 0.0
-    evidence: Text
+    reason: Text
     inspection_references: list[Text] = Field(default_factory=list)
     semantic_evidence: list[PreparationEvidence] = Field(default_factory=list)
 
 
 class HarmonizationPlan(Contract):
-    schema_version: Literal["harmonization.v1"] = "harmonization.v1"
+    schema_version: Literal["harmonization.v2"] = "harmonization.v2"
     fields: list[FieldAlignment] = Field(default_factory=list)
 
     @model_validator(mode="after")

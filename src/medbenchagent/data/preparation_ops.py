@@ -7,17 +7,22 @@ from pathlib import Path
 from medbenchagent.data.validation import source_image_path
 
 
-def inspect_table(root, path, sheet=None):
+def inspect_table(root, path, sheet=None, delimiter=","):
     from medbenchagent.data.operators import inspect_table as inspect
-    return inspect(root, path, sheet)
+    return inspect(root, path, sheet, delimiter)
 
 
-def inspect_join(root, left, right, left_key, right_key, left_sheet=None, right_sheet=None):
-    from medbenchagent.data.operators import connect, read_relation, join_stats
+def inspect_join(root, left, right, left_keys, right_keys, cardinality, left_sheet=None, right_sheet=None,
+                 left_delimiter=",", right_delimiter=",", how="left", null_keys="error", unmatched="error"):
+    from medbenchagent.data.operators import connect, read_relation, join_stats, join_policy_errors
+    from medbenchagent.data.contracts import Join
+    policy = Join(input="a", output="joined", right="b", left_keys=left_keys, right_keys=right_keys,
+                  cardinality=cardinality, how=how, null_keys=null_keys, unmatched=unmatched)
     with connect(scratch=Path(os.environ["MEDBENCH_DATA_SCRATCH"])) as db:
-        read_relation(db, root, left, "a", sheet=left_sheet)
-        read_relation(db, root, right, "b", sheet=right_sheet)
-        return join_stats(db, "a", "b", [left_key], [right_key])
+        read_relation(db, root, left, "a", sheet=left_sheet, delimiter=left_delimiter)
+        read_relation(db, root, right, "b", sheet=right_sheet, delimiter=right_delimiter)
+        stats = join_stats(db, "a", "b", left_keys, right_keys)
+        return {**stats, "violations": join_policy_errors(stats, policy), "policy": policy.model_dump()}
 
 
 def main():

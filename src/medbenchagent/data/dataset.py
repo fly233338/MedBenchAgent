@@ -9,7 +9,7 @@ from medbenchagent.data.validation import AnnotationValidationError as Annotatio
 
 
 PROFILE_SCHEMA_VERSION = "task-capability-profile.v4"
-CACHE_FORMAT_VERSION = "annotation-cache.v8"
+CACHE_FORMAT_VERSION = "annotation-cache.v9"
 
 TOP_VALUE_EXCLUDED_PREFIXES = (
     "image.annotation.dicom_metadata.",

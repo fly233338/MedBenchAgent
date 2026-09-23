@@ -72,7 +72,7 @@ def plan(steps, count=1):
                 "authoritative_population": "table rows",
                 "expected_images": count,
                 "entity_meanings": {"image": "one row per image"},
-                "evidence": ["README"],
+                "reason": "README",
             },
             "steps": steps,
         }
@@ -213,7 +213,7 @@ def test_harmonization_preserves_array_instances_and_rejects_absent_values():
                     "field": "image.annotation.findings[*].name",
                     "target": "image.annotation.findings[*].name",
                     "action": "merge",
-                    "evidence": "documented codebook",
+                    "reason": "documented codebook",
                     "mapping": [{"value": "A", "target": "mass"}, {"value": "B", "target": "cyst"}],
                 }
             ]
@@ -430,7 +430,7 @@ def test_raw_and_standard_sources_through_agent_tools(tmp_path, monkeypatch):
             },
         ]
     )
-    population = {"steps": [{"op": "read", "path": "labels.csv", "output": "raw"}], "input": "raw", "image_id": "id"}
+    population = {"steps": [{"op": "read", "path": "labels.csv", "output": "raw"}], "input": "raw", "image_id": "id", "image_path": "path"}
     population_result = call(agent.inspect_image_population, population=population)
     population_ref = json.loads(population_result["summary"])["inspection_reference"]
     doc = call(data_processing.read_text, path="README.md")
@@ -465,7 +465,7 @@ def test_raw_and_standard_sources_through_agent_tools(tmp_path, monkeypatch):
                     "field": "image.annotation.label",
                     "action": "merge",
                     "target": "image.annotation.label",
-                    "evidence": "same codebook",
+                    "reason": "same codebook",
                     **evidence[source],
                 }
                 for source in ("a", "b")
