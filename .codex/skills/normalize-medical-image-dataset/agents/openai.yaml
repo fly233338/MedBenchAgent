@@ -1,4 +1,0 @@
-interface:
-  display_name: "Normalize Medical Image Dataset"
-  short_description: "Convert medical image datasets to annotation JSONL"
-  default_prompt: "Use $normalize-medical-image-dataset to inspect a medical imaging dataset and produce validated annotation.jsonl records."
