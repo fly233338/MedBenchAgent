@@ -1,5 +1,4 @@
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
@@ -91,22 +90,6 @@ def test_preflight_treats_rag_as_optional_and_blueprint_as_build_only(tmp_path):
     assert cli._preflight_errors(settings, build=True)
 
 
-def test_new_experiment_checks_configuration_before_model(tmp_path):
-    from medbenchagent.runtime.experiments import create_experiment
-    settings = _settings(tmp_path)
-    settings.paths.dataset_catalog.write_text("{}", encoding="utf-8")
-    entry = create_experiment(settings.paths.runs_root, "bad-config")
-    class EmptyGraph:
-        def get_state(self, config):
-            return SimpleNamespace(values={}, next=(), tasks=())
-        def stream(self, *args, **kwargs):
-            raise AssertionError("Invalid config must stop before model invocation")
-    output = []
-    status = cli.run_interactive_build(settings=settings, graph=EmptyGraph(), experiment=entry,
-                                      input_fn=lambda _: pytest.fail("No input needed for invalid config"), output=output.append)
-    assert status == 2 and "Local preflight failed" in "\n".join(output)
-
-
 def test_build_reports_preflight_before_graph_creation(tmp_path: Path) -> None:
     output: list[str] = []
 
@@ -136,7 +119,7 @@ def test_build_handles_eof_and_keyboard_interrupt(tmp_path: Path) -> None:
         )
 
         assert result == 130
-        assert "build --resume" in "\n".join(output)
+        assert "Reopen the experiment to resume" in "\n".join(output)
 
 
 def test_build_failure_reports_preserved_run_directory(tmp_path: Path, monkeypatch) -> None:
@@ -170,46 +153,13 @@ def test_recursion_limit_scales_with_dataset_size() -> None:
     assert cli._recursion_limit({"dataset_profile": {"total_images": 2_000}}) == 8_100
 
 
-def test_parser_keeps_build_entry_and_removes_balance_command() -> None:
+def test_parser_uses_session_entry_and_keeps_maintenance_commands() -> None:
     parser = cli._parser()
-
-    assert parser.parse_args(["build"]).command == "build"
+    assert parser.parse_args([]).command is None
+    assert parser.parse_args(["register", "--dataset-id", "a", "--bundle", "b"]).command == "register"
     with pytest.raises(SystemExit) as error:
-        parser.parse_args(["balance-answers"])
+        parser.parse_args(["build"])
     assert error.value.code == 2
-
-
-def test_default_session_accepts_requirement_and_auto_names_experiment(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    seen = []
-    monkeypatch.setattr(cli, "run_interactive_build", lambda **kwargs: seen.append(kwargs) or 0)
-    output = []
-
-    assert cli.run_session(settings=settings, input_fn=lambda _: "Create a chest X-ray benchmark",
-                           output=output.append) == 0
-    assert seen[0]["initial_requirement"] == "Create a chest X-ray benchmark"
-    assert seen[0]["experiment"]["name"].startswith("exp-")
-    assert any(line.startswith("Active config: ") for line in output)
-    assert any("Embedding: Qwen3-Embedding @ http://127.0.0.1:8001/v1" in line for line in output)
-
-
-def test_session_commands_status_config_new_resume_and_quit(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    seen = []
-    monkeypatch.setattr(cli, "run_interactive_build", lambda **kwargs: seen.append(kwargs) or 0)
-    values = iter(["/status", "/config", "/new pilot", "Prepare chest data"])
-    output = []
-    assert cli.run_session(settings=settings, input_fn=lambda _: next(values), output=output.append) == 0
-    assert seen[0]["experiment"]["name"] == "pilot"
-    assert seen[0]["initial_requirement"] == "Prepare chest data"
-    assert "No experiments yet." in output
-
-    seen.clear()
-    assert cli.run_session(settings=settings, input_fn=lambda _: "/resume pilot",
-                           output=output.append) == 0
-    assert seen[0]["experiment"]["name"] == "pilot"
-    assert cli.run_session(settings=settings, input_fn=lambda _: "/quit",
-                           output=output.append) == 0
 
 
 def test_clarification_commands_keep_answer_separate_from_slash_commands(tmp_path):
@@ -220,7 +170,7 @@ def test_clarification_commands_keep_answer_separate_from_slash_commands(tmp_pat
     output = []
     assert cli._read_clarification("Your response: ", lambda _: next(values), output.append,
                                     settings, graph, {}) == "English"
-    assert "Experiment status: created" in output
+    assert "Run status: running" in output
     assert any(line.startswith("Active config: ") for line in output)
     assert any("use /status, /config or /quit" in line for line in output)
     with pytest.raises(cli.SessionQuit):
@@ -234,93 +184,6 @@ def test_tool_result_update_is_streamed():
         {"tool": "search_materials", "status": "success", "summary": "2 passages"},
     ]}}, output.append)
     assert output == ["[tool] search_materials: success — 2 passages"]
-
-
-def test_main_passes_root_config_to_default_session(tmp_path, monkeypatch):
-    selected = tmp_path / "selected.toml"
-    selected.write_text("[llm]\nmodel='from-cli'\n", encoding="utf-8")
-    from_env = tmp_path / "from-env.toml"
-    from_env.write_text("[llm]\nmodel='from-env'\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("MEDBENCH_CONFIG", str(from_env))
-    monkeypatch.setattr(sys, "argv", ["medbenchagent", "--config", "selected.toml"])
-    observed = []
-
-    def session(*, settings):
-        from medbenchagent.settings import get_settings
-        assert get_settings() is settings
-        observed.append((settings.llm.model, settings.local_config_path))
-        return 0
-
-    monkeypatch.setattr(cli, "run_session", session)
-    with pytest.raises(SystemExit) as error:
-        cli.main()
-    assert error.value.code == 0
-    assert observed == [("from-cli", selected)]
-
-
-def test_named_experiment_opens_completed_checkpoint_without_execution(tmp_path, monkeypatch):
-    from medbenchagent.runtime.experiments import create_experiment, get_experiment
-    settings = _settings(tmp_path)
-    entry = create_experiment(settings.paths.runs_root, "pilot")
-    snapshot = SimpleNamespace(values={"status": "complete", "run_id": "run", "run_directory": "runs/run",
-                                      "context": {"run_intent": {"intent": "build_benchmark"},
-                                                  "selected_dataset_ids": ["a"]}}, next=(), tasks=())
-
-    class FinishedGraph:
-        def get_state(self, config):
-            assert config["configurable"]["thread_id"] == entry["thread_id"]
-            return snapshot
-
-        def stream(self, *args, **kwargs):
-            raise AssertionError("Completed experiments must not execute")
-
-    messages = []
-    assert cli.run_interactive_build(settings=settings, graph=FinishedGraph(), experiment=entry,
-                                     input_fn=lambda _: (_ for _ in ()).throw(AssertionError("No new input")),
-                                     output=messages.append) == 0
-    saved = get_experiment(settings.paths.runs_root, "pilot")
-    assert saved["status"] == "complete" and saved["datasets"] == ["a"]
-    assert not any("Resume identifier" in message for message in messages)
-
-
-def test_completed_experiment_with_legacy_rag_snapshot_still_displays_result(tmp_path):
-    from medbenchagent.runtime.experiments import create_experiment
-
-    settings = _settings(tmp_path)
-    entry = create_experiment(settings.paths.runs_root, "finished-legacy")
-    saved_path = tmp_path / "effective_config.json"
-    saved_path.write_text(json.dumps({
-        "config_sources": {"default": {"path": "config/default.toml"}, "local": None},
-        "settings": {"rag": {"embedding_model": "old-local-path"}},
-    }), encoding="utf-8")
-    snapshot = SimpleNamespace(values={
-        "status": "complete", "summary": "Delivered", "run_id": "run",
-        "context": {"effective_config_path": str(saved_path)},
-    }, next=(), tasks=())
-    graph = SimpleNamespace(get_state=lambda _: snapshot)
-    output = []
-    assert cli.run_interactive_build(settings=settings, graph=graph, experiment=entry,
-                                     input_fn=lambda _: pytest.fail("No input expected"),
-                                     output=output.append) == 0
-    assert any("Active config: config/default.toml" in line for line in output)
-    assert any("Delivered" in line for line in output)
-
-
-def test_experiment_registry_and_snapshot_status(tmp_path):
-    from medbenchagent.runtime.experiments import create_experiment, list_experiments, snapshot_updates
-    root = tmp_path / "runs"
-    entry = create_experiment(root, "prepare-one", dataset_id="one")
-    assert list_experiments(root)[0]["thread_id"] == entry["thread_id"]
-    with pytest.raises(ValueError, match="already exists"):
-        create_experiment(root, "prepare-one")
-    snapshot = SimpleNamespace(values={}, next=("supervisor",), tasks=(SimpleNamespace(interrupts=("question",)),))
-    assert snapshot_updates(snapshot, interrupted=True)["status"] == "waiting_input"
-    snapshot.tasks = ()
-    assert snapshot_updates(snapshot)["status"] == "resumable"
-    assert snapshot_updates(snapshot, interrupted=True)["status"] == "interrupted"
-    args = cli._parser().parse_args(["experiment", "new", "pilot", "--dataset", "a", "--dataset", "b"])
-    assert args.dataset_ids == ["a", "b"]
 
 
 def test_stream_contract_handles_actual_langgraph_events_and_interrupts():
@@ -369,34 +232,3 @@ def test_stream_rejects_unknown_shapes_without_scanning_business_payloads():
         cli._interrupt_payload({"__interrupt__": (Interrupt({}),)})
     with pytest.raises(ValueError, match="LangGraph Interrupt"):
         cli._interrupt_payload({"__interrupt__": ({"value": {"question": "guessed"}},)})
-
-
-def test_checkpoint_diagnostic_failure_preserves_original_error_and_status(tmp_path):
-    import sqlite3
-    from medbenchagent.runtime.experiments import create_experiment, get_experiment
-    settings = _settings(tmp_path)
-    entry = create_experiment(settings.paths.runs_root, "failed-pilot")
-
-    class FailingGraph:
-        started = False
-
-        def get_state(self, config):
-            if self.started:
-                raise sqlite3.DatabaseError("checkpoint unreadable")
-            return SimpleNamespace(values={}, next=(), tasks=())
-
-        def stream(self, *args, **kwargs):
-            self.started = True
-            yield (), "updates", {"initialize": {"run_directory": "runs/preserved"}}
-            raise RuntimeError("original model failure")
-
-    messages = []
-    status = cli.run_interactive_build(settings=settings, graph=FailingGraph(), experiment=entry,
-                                       input_fn=lambda _: "Prepare dataset", output=messages.append)
-    rendered = "\n".join(messages)
-    assert status == 1
-    assert "RuntimeError: original model failure" in rendered
-    assert "DatabaseError: checkpoint unreadable" in rendered
-    assert "Preserved run artifacts: runs/preserved" in rendered
-    saved = get_experiment(settings.paths.runs_root, entry["name"])
-    assert saved["status"] == "interrupted" and saved["run_directory"] == "runs/preserved"

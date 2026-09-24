@@ -1,0 +1,189 @@
+"""Persistent experiment conversations and their independent workflow runs."""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+import tomlkit
+
+from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.settings import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_settings
+
+
+EXPERIMENTS_ROOT = PROJECT_ROOT / "experiments"
+_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def experiment_path(name: str, root: Path = EXPERIMENTS_ROOT) -> Path:
+    if not _NAME.fullmatch(name):
+        raise ValueError("Experiment name must start with a letter and contain only lowercase letters, digits and hyphens")
+    return root / name
+
+
+def _merge_toml(target, source) -> None:
+    for key, value in source.items():
+        if key in target and isinstance(target[key], tomlkit.items.Table) and isinstance(value, tomlkit.items.Table):
+            _merge_toml(target[key], value)
+        else:
+            target[key] = value
+
+
+def create_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT, template: Path | None = None) -> dict:
+    folder = experiment_path(name, root)
+    if folder.exists():
+        raise ValueError(f"Experiment already exists: {name}")
+    document = tomlkit.parse(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    if template:
+        _merge_toml(document, tomlkit.parse(template.read_text(encoding="utf-8")))
+    folder.mkdir(parents=True)
+    config = folder / "config.toml"
+    config.write_text(tomlkit.dumps(document), encoding="utf-8")
+    try:
+        load_settings(config)
+    except Exception:
+        config.unlink()
+        folder.rmdir()
+        raise
+    record = {"schema_version": "mba-session.v1", "name": name, "created_at": _now(),
+              "messages": [], "runs": [], "pending_runs": []}
+    atomic_write_json(folder / "session.json", record)
+    return record
+
+
+def load_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT) -> dict:
+    folder = experiment_path(name, root)
+    path = folder / "session.json"
+    if not path.is_file():
+        raise ValueError(f"Unknown experiment: {name}")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if record.get("schema_version") != "mba-session.v1" or record.get("name") != name:
+        raise ValueError(f"Invalid experiment session: {name}")
+    return record
+
+
+def list_experiments(*, root: Path = EXPERIMENTS_ROOT) -> list[dict]:
+    if not root.is_dir():
+        return []
+    records = []
+    for folder in root.iterdir():
+        if folder.is_dir() and (folder / "session.json").is_file():
+            records.append(load_experiment(folder.name, root=root))
+    return sorted(records, key=lambda record: record["created_at"], reverse=True)
+
+
+def save_experiment(record: dict, *, root: Path = EXPERIMENTS_ROOT) -> None:
+    atomic_write_json(experiment_path(record["name"], root) / "session.json", record)
+
+
+def add_message(record: dict, role: str, text: str, *, run_id: str | None = None,
+                root: Path = EXPERIMENTS_ROOT) -> dict:
+    message = {"id": str(uuid4()), "role": role, "text": text, "at": _now(), "run_id": run_id}
+    record["messages"].append(message)
+    save_experiment(record, root=root)
+    return message
+
+
+def queue_run(record: dict, kind: str, requirement: str, dataset_id: str | None = None,
+              requested_dataset_ids: list[str] | None = None, depends_on: str | None = None,
+              *, root: Path = EXPERIMENTS_ROOT) -> dict:
+    if kind not in {"prepare_dataset", "build_benchmark"}:
+        raise ValueError("Unknown run kind")
+    run = {"id": str(uuid4()), "thread_id": str(uuid4()), "kind": kind,
+           "requirement": requirement, "dataset_id": dataset_id,
+           "requested_dataset_ids": requested_dataset_ids, "depends_on": depends_on, "status": "queued",
+           "run_id": None, "run_directory": None, "effective_config_path": None,
+           "catalog_snapshot_path": None, "summary": "", "created_at": _now()}
+    record["runs"].append(run)
+    record["pending_runs"].append(run["id"])
+    save_experiment(record, root=root)
+    return run
+
+
+def update_run(record: dict, run_id: str, *, root: Path = EXPERIMENTS_ROOT, **changes) -> dict:
+    run = next(run for run in record["runs"] if run["id"] == run_id)
+    run.update(changes)
+    save_experiment(record, root=root)
+    return run
+
+
+def pop_pending(record: dict, *, root: Path = EXPERIMENTS_ROOT) -> dict | None:
+    for identifier in list(record["pending_runs"]):
+        run = next(run for run in record["runs"] if run["id"] == identifier)
+        dependency = next((item for item in record["runs"] if item["id"] == run["depends_on"]), None)
+        if dependency and dependency["status"] != "complete":
+            continue
+        record["pending_runs"].remove(identifier)
+        save_experiment(record, root=root)
+        return run
+    return None
+
+
+def block_dependents(record: dict, run_id: str, *, root: Path = EXPERIMENTS_ROOT) -> None:
+    for run in record["runs"]:
+        if run["depends_on"] == run_id and run["status"] == "queued":
+            run["status"] = "blocked"
+            run["summary"] = "Prerequisite preparation did not complete; submit a new build request after repair"
+            if run["id"] in record["pending_runs"]:
+                record["pending_runs"].remove(run["id"])
+    save_experiment(record, root=root)
+
+
+def config_path(name: str, *, root: Path = EXPERIMENTS_ROOT) -> Path:
+    return experiment_path(name, root) / "config.toml"
+
+
+def config_values(name: str, *, root: Path = EXPERIMENTS_ROOT) -> dict:
+    return tomlkit.parse(config_path(name, root=root).read_text(encoding="utf-8")).unwrap()
+
+
+def update_config_value(name: str, keys: tuple[str, ...], value: object,
+                        *, root: Path = EXPERIMENTS_ROOT) -> None:
+    if not keys or keys[0] == "dataset_sources":
+        raise ValueError("dataset_sources are managed by source discovery")
+    path = config_path(name, root=root)
+    document = tomlkit.parse(path.read_text(encoding="utf-8"))
+    current = document
+    for key in keys[:-1]:
+        current = current[key]
+    if value is None:
+        current.pop(keys[-1], None)
+    else:
+        current[keys[-1]] = value
+    temporary = path.with_suffix(".toml.tmp")
+    try:
+        temporary.write_text(tomlkit.dumps(document), encoding="utf-8")
+        load_settings(temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def upsert_dataset_source(name: str, entry: dict, *, root: Path = EXPERIMENTS_ROOT) -> None:
+    """Write an exact, validated source once; conflicting IDs require a new decision."""
+    from medbenchagent.data.contracts import SourcesArguments
+
+    SourcesArguments.model_validate({"dataset_id": entry["dataset_id"], "sources": entry["sources"]})
+    path = config_path(name, root=root)
+    document = tomlkit.parse(path.read_text(encoding="utf-8"))
+    existing = next((item for item in document["dataset_sources"]
+                     if item["dataset_id"] == entry["dataset_id"]), None)
+    if existing is not None:
+        if existing.unwrap() == entry:
+            return
+        raise ValueError(f"Conflicting dataset_sources entry: {entry['dataset_id']}")
+    document["dataset_sources"].append(entry)
+    temporary = path.with_suffix(".toml.tmp")
+    try:
+        temporary.write_text(tomlkit.dumps(document), encoding="utf-8")
+        load_settings(temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)

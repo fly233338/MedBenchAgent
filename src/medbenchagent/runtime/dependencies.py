@@ -8,7 +8,7 @@ from pathlib import Path
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-CONTRACT_VERSION = "agent-runtime.v13"
+CONTRACT_VERSION = "agent-runtime.v14"
 
 SOURCE_KINDS = frozenset({"Source", "Inventory", "Mapping", "AnnotationScript", "Annotation",
                           "ImageInventory", "ImagePlan", "NormalizedSource"})
@@ -141,6 +141,12 @@ def verify_resume(context):
     saved = json.loads(path.read_text(encoding="utf-8"))
     if saved != {"contract": CONTRACT_VERSION, "code": code_identity()}:
         raise ValueError("Code or runtime contract changed; start a new run")
+    from medbenchagent.runtime.run_artifacts import verify_catalog_snapshot
+    catalog_snapshot = context.get("task_catalog_snapshot_path")
+    catalog_digest = context.get("task_catalog_snapshot_digest")
+    if not catalog_snapshot or not catalog_digest:
+        raise ValueError("Frozen task catalog is unavailable; this run cannot resume")
+    verify_catalog_snapshot(catalog_snapshot, catalog_digest)
     from medbenchagent.data.sources import verify_source
     for source in Path(context["run_directory"]).rglob("source_manifests/*/source.json"):
         verify_source(source.parent)

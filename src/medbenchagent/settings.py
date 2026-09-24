@@ -272,7 +272,7 @@ def _dataset_sources(values: object) -> tuple[dict[str, Any], ...]:
         for source in sources:
             source["root"] = str(_resolve_path(source["root"], f"dataset_sources.{identifier}.{source['id']}.root"))
         entries.append({"dataset_id": identifier, "name": _string(item["name"], "dataset_sources.name"),
-                        "description": _string(item["description"], "dataset_sources.description"), "sources": sources})
+                        "description": _optional_string(item["description"], "dataset_sources.description"), "sources": sources})
     return tuple(entries)
 
 

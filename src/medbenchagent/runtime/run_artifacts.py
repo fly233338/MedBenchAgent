@@ -67,9 +67,44 @@ def initialize_run(
         shutil.copyfile(source, target)
     snapshot["settings"]["paths"]["materials_root"] = str(materials)
     atomic_write_json(effective_config_path, snapshot)
+    from medbenchagent.data.dataset_catalog import load_dataset_catalog, resolve_path
+    from medbenchagent.data.sources import digest_file
+
+    frozen_catalog = []
+    card_digests = {}
+    cards = inputs / "candidate_cards"
+    for entry in load_dataset_catalog(active_settings.paths.dataset_catalog):
+        frozen = dict(entry)
+        original = resolve_path(entry["dataset_card_path"])
+        if original.is_file():
+            cards.mkdir(exist_ok=True)
+            target = cards / f"{entry['dataset_id']}.json"
+            shutil.copyfile(original, target)
+            frozen["dataset_card_path"] = str(target)
+            card_digests[entry["dataset_id"]] = digest_file(target)
+        frozen_catalog.append(frozen)
+    catalog_snapshot_path = inputs / "catalog_snapshot.json"
+    atomic_write_json(catalog_snapshot_path, {"entries": frozen_catalog, "card_digests": card_digests})
     return {
         "run_id": run_id,
         "run_directory": str(run_directory),
         "construction_events_path": str(events_path),
         "effective_config_path": str(effective_config_path),
+        "task_catalog_snapshot_path": str(catalog_snapshot_path),
+        "task_catalog_snapshot_digest": digest_file(catalog_snapshot_path),
     }
+
+
+def verify_catalog_snapshot(path: str | Path, expected_digest: str) -> None:
+    """Reject changes to a run's original candidate universe or copied Cards."""
+    from medbenchagent.data.sources import digest_file
+
+    frozen = Path(path)
+    if not frozen.is_file() or digest_file(frozen) != expected_digest:
+        raise ValueError("Frozen task catalog changed or is unavailable")
+    document = json.loads(frozen.read_text(encoding="utf-8"))
+    entries = {entry["dataset_id"]: entry for entry in document["entries"]}
+    for dataset_id, digest in document["card_digests"].items():
+        card = Path(entries[dataset_id]["dataset_card_path"])
+        if not card.is_file() or digest_file(card) != digest:
+            raise ValueError(f"Frozen candidate Card changed: {dataset_id}")

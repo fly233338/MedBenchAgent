@@ -26,6 +26,8 @@ dependencies = [
     "sacrebleu>=2.4.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
+    "textual>=6.0.0",
+    "tomlkit>=0.13.0",
     "tqdm>=4.66.0",
     "transformers>=4.51.0",
 ]

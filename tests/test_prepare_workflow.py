@@ -78,6 +78,36 @@ def test_supervisor_reuses_without_starting_data_processing(tmp_path, monkeypatc
     assert output["prepared_entries"]["a"]["annotation_path"] == entry["annotation_path"]
 
 
+def test_prepare_discovers_unconfigured_source_from_request(tmp_path, monkeypatch):
+    cfg = settings.get_settings()
+    cfg = replace(cfg, paths=replace(cfg.paths, dataset_catalog=tmp_path / "catalog.json",
+                                     prepared_datasets_root=tmp_path / "prepared",
+                                     runs_root=tmp_path / "runs"),
+                  data_processing={**cfg.data_processing, "backend": "local"}, dataset_sources=())
+    monkeypatch.setattr(settings, "_SETTINGS", cfg)
+    prepared_dataset(tmp_path, "input", monkeypatch)
+    source = tmp_path / "input" / "source"
+    monkeypatch.setattr("medbenchagent.agents.source_discovery.complete_json",
+                        lambda *_a: {"root": str(source), "dataset_name": "New"})
+    monkeypatch.setattr("medbenchagent.data.dataset_card.complete_json",
+                        lambda *_a: {"description": "Dataset facts from Profile"})
+    actions = iter([
+        ("prepare_data", {"dataset_id": "new"}),
+        ("select_source", {"source_id": "original"}), ("inspect_images", {}),
+        ("save_image_plan", {"overrides": {}}), ("normalize_images", {}),
+        ("save_dataset_metadata", {"source_references": []}),
+        ("save_harmonization", {"plan": {}}), ("finish", {}), ("finish", {}),
+    ])
+    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json",
+                        lambda *_a: {"tool": (action := next(actions))[0],
+                                     "arguments": action[1], "reason": "Prepare dataset"})
+    output = compile_benchmark_graph(checkpointer=MemorySaver()).invoke(
+        {"user_requirement": f"Prepare New from {source}", "prepare_dataset_id": "new"},
+        {"configurable": {"thread_id": "discover"}, "recursion_limit": 100})
+    assert output["status"] == "complete"
+    assert (Path(output["run_directory"]) / ".runtime/source_discovery/new/source_decision.json").is_file()
+
+
 def test_preparation_tools_follow_existing_artifact_dependencies(tmp_path):
     from medbenchagent.agents.data_pipeline import available_tools
     from medbenchagent.runtime.dependencies import publish

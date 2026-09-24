@@ -25,6 +25,22 @@ def test_explicit_unknown_does_not_fall_back(tmp_path, monkeypatch):
     assert outcome["status"] == "blocked" and "Unknown dataset" in outcome["summary"]
 
 
+def test_new_catalog_entry_does_not_enter_existing_run_view(tmp_path, monkeypatch):
+    c = context(tmp_path, monkeypatch)
+    prepared_dataset(tmp_path, "a", monkeypatch)
+    frozen = json.loads((tmp_path / "catalog.json").read_text(encoding="utf-8"))["datasets"]
+    snapshot_path = tmp_path / "run" / "frozen_catalog.json"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(json.dumps({"entries": frozen}), encoding="utf-8")
+    c["task_catalog_snapshot_path"] = str(snapshot_path)
+    prepared_dataset(tmp_path, "b", monkeypatch)
+    c["requested_dataset_ids"] = ["a"]
+    outcome = select_datasets(c)
+    assert outcome["status"] == "success"
+    candidates = json.loads(Path(outcome["updates"]["candidate_snapshot_path"]).read_text(encoding="utf-8"))
+    assert [entry["dataset_id"] for entry in candidates["catalog_entries"]] == ["a"]
+
+
 def test_explicit_ids_bypass_model_and_new_preparation_invalidates_selection(tmp_path, monkeypatch):
     from medbenchagent.runtime.dependencies import require
     c = context(tmp_path, monkeypatch)
@@ -145,7 +161,7 @@ def test_model_failure_reuses_candidate_snapshot_on_retry(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("explicit", [True, False])
-def test_missing_prepared_routes_configured_source_and_replays(tmp_path, monkeypatch, explicit):
+def test_missing_prepared_requests_separate_preparation_and_replays(tmp_path, monkeypatch, explicit):
     c = context(tmp_path, monkeypatch)
     cfg = settings.get_settings()
     monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, dataset_sources=({"dataset_id": "raw", "name": "Raw",
@@ -154,12 +170,13 @@ def test_missing_prepared_routes_configured_source_and_replays(tmp_path, monkeyp
         c["requested_dataset_ids"] = ["raw"]
         monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: pytest.fail("Explicit ID needs no model"))
     else:
-        responses = iter([{"dataset_ids": None}, {"selected_dataset_ids": ["raw"], "selection_reason": {"raw": "Relevant"}}])
-        monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: next(responses))
+        monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json",
+                            lambda *a: {"dataset_ids": None})
     outcome = select_datasets(c)
-    assert outcome["status"] == "success" and outcome["updates"]["preparation_required"] == ["raw"]
-    monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", lambda *a: pytest.fail("Replay uses frozen source decision"))
-    assert select_datasets(c)["updates"]["preparation_required"] == ["raw"]
+    assert outcome["status"] == "blocked" and "Request dataset preparation" in outcome["summary"]
+    monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json",
+                        lambda *a: pytest.fail("Replay uses frozen candidates"))
+    assert select_datasets(c)["status"] == "blocked"
 
 
 def test_missing_source_path_blocks_without_asking_user(tmp_path, monkeypatch):
@@ -169,5 +186,5 @@ def test_missing_source_path_blocks_without_asking_user(tmp_path, monkeypatch):
                         "description": "Population", "sources": [{"id": "source", "root": str(tmp_path / "missing"), "kind": "raw"}]},)))
     c["requested_dataset_ids"] = ["raw"]
     outcome = select_datasets(c)
-    assert outcome["status"] == "blocked" and "missing" in outcome["summary"]
+    assert outcome["status"] == "blocked" and "Request dataset preparation" in outcome["summary"]
     assert "global_issue" not in outcome["updates"]

@@ -20,9 +20,10 @@ def test_intent_gates_preparation_and_benchmark_stages(tmp_path, monkeypatch):
     publish(context, "dataset/new/Dataset", {}, ())
     context["prepared_entries"] = {"new": {}}
     assert "finish" in available_stages(context)
-    context.update(set_intent(context, intent="prepare_then_build", prepare_dataset_ids=["new"])["updates"])
-    assert "specify" in available_stages(context)
-    assert "finish" not in available_stages(context)
+    build_context = {"run_directory": str(tmp_path)}
+    build_context.update(set_intent(build_context, intent="build_benchmark", prepare_dataset_ids=[])["updates"])
+    assert "specify" in available_stages(build_context)
+    assert "prepare_data" not in available_stages(build_context)
 
 
 def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monkeypatch):

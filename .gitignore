@@ -24,6 +24,7 @@ htmlcov/
 
 # Runtime planning artifacts (DuckDB, inventories, and local RAG indexes)
 benchmarks/runs/
+experiments/
 benchmarks/rag_cache/
 benchmarks/dataset_cache/
 .langgraph_api/

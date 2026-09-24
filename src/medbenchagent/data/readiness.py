@@ -11,7 +11,14 @@ from medbenchagent.settings import get_settings
 
 
 def catalog_entries(context):
-    return load_dataset_catalog(context.get("registration_catalog_path") or context.get("catalog_path"))
+    if context.get("task_catalog_snapshot_path"):
+        path = Path(context["task_catalog_snapshot_path"])
+        entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
+    else:
+        entries = load_dataset_catalog(context.get("registration_catalog_path") or context.get("catalog_path"))
+    by_id = {entry["dataset_id"]: entry for entry in entries}
+    by_id.update(context.get("prepared_entries", {}))
+    return list(by_id.values())
 
 
 def configured_source(dataset_id):

@@ -12,7 +12,6 @@ from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.harness import result
 from medbenchagent.settings import get_settings
-from medbenchagent.data.readiness import source_errors
 
 
 class ExplicitDatasets(Contract):
@@ -35,7 +34,10 @@ def _candidate_snapshot(context, path):
                 snapshot["explicit_dataset_ids"] != context.get("requested_dataset_ids")):
             raise ValueError("Selection inputs changed; start a new selection operation")
     else:
-        catalog = load_dataset_catalog(context.get("registration_catalog_path") or context.get("catalog_path"))
+        if context.get("task_catalog_snapshot_path"):
+            catalog = json.loads(Path(context["task_catalog_snapshot_path"]).read_text(encoding="utf-8"))["entries"]
+        else:
+            catalog = load_dataset_catalog(context.get("registration_catalog_path") or context.get("catalog_path"))
         entries = {e["dataset_id"]: e for e in catalog}
         entries.update(context.get("prepared_entries", {}))
         catalog = list(entries.values())
@@ -117,48 +119,17 @@ def _candidate_snapshot(context, path):
     return snapshot
 
 
-def _prepare_sources(context, snapshot, folder):
-    """Select only unregistered configured sources and persist the decision before preparation."""
-    requested = snapshot["requested_dataset_ids"]
-    registered = {e["dataset_id"] for e in snapshot["catalog_entries"]}
-    candidates = [e for e in snapshot["configured_sources"] if e["dataset_id"] not in registered
-                  and (requested is None or e["dataset_id"] in snapshot["preparation_required"])]
-    path = folder / "source_selection.json"
-    selection_input = {"requirement": snapshot["requirement"], "benchmark_info": snapshot["benchmark_info"],
-                       "sources": [{k: e[k] for k in ("dataset_id", "name", "description")} for e in candidates]}
-    if path.is_file():
-        response = json.loads(path.read_text(encoding="utf-8"))["decision"]
-    elif requested is not None:
-        response = {"selected_dataset_ids": snapshot["preparation_required"],
-                    "selection_reason": {d: "Explicitly requested" for d in snapshot["preparation_required"]}}
-    elif candidates:
-        response = complete_json(
-            "Select relevant configured raw datasets for preparation from the user's benchmark scope and restrictions. "
-            "Names and descriptions are discovery hints, not proof of annotation semantics or task support. "
-            "Never invent IDs or add task priorities. Return selected_dataset_ids and selection_reason keyed by "
-            "exactly those IDs. If none match, return an empty list and empty reasons.",
-            json.dumps(selection_input, ensure_ascii=False))
-    else:
-        response = {"selected_dataset_ids": [], "selection_reason": {}}
-    ids = response.get("selected_dataset_ids")
-    if response != {"selected_dataset_ids": [], "selection_reason": {}}:
-        selection = Selection.model_validate(response)
-        ids = selection.selected_dataset_ids
-        if len(ids) != len(set(ids)) or set(ids) != set(selection.selection_reason) or not set(ids) <= {e["dataset_id"] for e in candidates}:
-            raise ValueError("Source selection must reference unique configured candidates with reasons")
-    atomic_write_json(path, {"input": selection_input, "decision": response})
-    updates = {"source_selection_path": str(path), "candidate_snapshot_path": str(folder / "dataset_candidates.json"),
-               "artifact_versions": context["artifact_versions"]}
-    if not ids:
-        return result("blocked", "No matching prepared dataset or configured source. Update dataset_sources in config for a new run. "
-                      + json.dumps(snapshot["excluded_candidates"], ensure_ascii=False), **updates)
-    errors = {e["dataset_id"]: source_errors(e) for e in candidates if e["dataset_id"] in ids}
-    errors = {key: value for key, value in errors.items() if value}
-    if errors:
-        return result("blocked", "Configured sources are unavailable: " + json.dumps(errors, ensure_ascii=False), **updates)
-    if requested is not None:
-        updates["requested_dataset_ids"] = requested
-    return result("success", "Matching configured sources need preparation", preparation_required=ids, **updates)
+def _missing_prepared(context, snapshot, folder):
+    """Report missing prepared data without changing this build run into preparation."""
+    known_sources = {entry["dataset_id"] for entry in snapshot["configured_sources"]}
+    missing = snapshot["preparation_required"] or sorted(known_sources - {
+        entry["dataset_id"] for entry in snapshot["catalog_entries"]})
+    return result("blocked", "No matching prepared dataset. Request dataset preparation in this "
+                  "experiment, then start a new build run. "
+                  + json.dumps({"unprepared_sources": missing,
+                                "excluded": snapshot["excluded_candidates"]}, ensure_ascii=False),
+                  candidate_snapshot_path=str(folder / "dataset_candidates.json"),
+                  artifact_versions=context["artifact_versions"])
 
 
 def select_datasets(context):
@@ -173,7 +144,7 @@ def select_datasets(context):
                       + json.dumps(snapshot["requested_errors"], ensure_ascii=False),
                       candidate_snapshot_path=str(snapshot_path), artifact_versions=context["artifact_versions"])
     if snapshot["preparation_required"]:
-        return _prepare_sources(context, snapshot, folder)
+        return _missing_prepared(context, snapshot, folder)
     path = folder / "dataset_selection.json"
     if path.is_file():
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -196,7 +167,7 @@ def select_datasets(context):
             )
     if response == {"selected_dataset_ids": [], "selection_reason": {}}:
         atomic_write_json(path, {**snapshot, **response})
-        return _prepare_sources(context, snapshot, folder)
+        return _missing_prepared(context, snapshot, folder)
     selection = Selection.model_validate(response)
     ids = selection.selected_dataset_ids
     if len(ids) != len(set(ids)) or set(ids) != set(selection.selection_reason) or not set(ids) <= set(snapshot["candidates"]):
