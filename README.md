@@ -24,12 +24,13 @@ uv run medbenchagent resume pilot SESSION_RUN_ID
 The terminal interface creates `experiments/<name>/config.toml` from visible defaults and lets you edit
 non-secret fields with the keyboard. `--config` seeds newly created experiments only; reopening an experiment
 uses its saved TOML. Nonempty supported field environment variables still override TOML values in a new run.
-In the experiment list, use Up/Down and Enter or click a row; Ctrl+F searches and Ctrl+N focuses new experiment input.
-In a conversation, requests submitted while a Run works enter a serial queue. During clarification, the main
-input answers the current Run; the separate Queue task field submits another request. The CLI `run` command
-requires an existing experiment and prints the session Run IDs accepted by `resume`.
-Ctrl+P opens the command palette, and Ctrl+B toggles the Run details sidebar in a conversation.
-The compact layout and command palette follow the interaction style of [OpenCode's TUI](https://opencode.ai/docs/tui/).
+The experiment search stays available on the home screen. Type `/` there to list commands; `/new` opens
+the create dialog, `/open` opens the highlighted experiment, and `/quit` exits. During a conversation,
+type `/` in the message input to list `/details`, `/resume`, `/config`, `/queue`, and `/quit`.
+Use `/queue <request>` to add an independent task while answering a clarification; ordinary input answers
+the current question. Runs execute serially. `/quit` returns to the experiment list, or exits the TUI
+when used from that list. The layout draws on [OpenCode's TUI](https://opencode.ai/docs/tui/).
+The CLI `run` command requires an existing experiment and prints the session Run IDs accepted by `resume`.
 Keep secrets outside version control. The CLI disables optional external tracing, downloads
 and telemetry; the configured language-model API is still used.
 LLM overrides are `MEDBENCH_LLM_API_KEY`, `MEDBENCH_LLM_MODEL`, `MEDBENCH_LLM_BASE_URL`,
@@ -49,7 +50,7 @@ The static task template is `config/blueprint.json`. Runs never write back to th
 Each run freezes its effective configuration, Blueprint, PDF materials, and the catalog and candidate Cards
 visible at its start. The terminal stays in one experiment conversation after a run ends. Type a new task,
 answer a pending clarification in the same input area, or select a run to inspect its status and frozen paths.
-Ctrl+E opens the configuration editor; Ctrl+R resumes an unfinished run. A single request for preparation
+`/config` opens the configuration editor; `/resume` resumes an unfinished run. A single request for preparation
 and construction creates two independent runs in sequence. A build request does not automatically prepare
 missing raw data: request preparation first, then start a new build run.
 Conversation history and run references live in `experiments/<name>/session.json`. SQLite checkpoints remain

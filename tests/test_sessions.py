@@ -107,9 +107,10 @@ def test_tui_create_config_conversation(tmp_path):
         app = MBAApp(experiments_root=Path(tmp_path))
         async with app.run_test() as pilot:
             assert isinstance(app.screen, ExperimentMenu)
-            menu = app.screen
-            menu.query_one("#new-name").value = "pilot"
-            menu.create()
+            await pilot.press("/", "n", "e", "w", "enter")
+            await pilot.pause()
+            app.screen.query_one("#new-name").value = "pilot"
+            await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, ConfigScreen)
             tree = app.screen.query_one("#config-tree")
@@ -140,7 +141,7 @@ def test_experiment_row_opens_with_enter(tmp_path):
         app = MBAApp(experiments_root=tmp_path)
         async with app.run_test() as pilot:
             assert isinstance(app.screen, ExperimentMenu)
-            await pilot.press("down", "enter")
+            await pilot.press("down", "down", "enter")
             await pilot.pause()
             assert isinstance(app.screen, ConversationScreen)
             assert app.screen.experiment_name == "first"
@@ -155,11 +156,11 @@ def test_experiment_search_and_keyboard_navigation(tmp_path):
     async def check():
         app = MBAApp(experiments_root=tmp_path)
         async with app.run_test() as pilot:
-            await pilot.press("ctrl+f", "f", "i", "r")
+            await pilot.press("f", "i", "r")
             await pilot.pause()
             table = app.screen.query_one("#experiments")
             assert table.row_count == 1
-            await pilot.press("enter")
+            await pilot.press("down", "enter")
             await pilot.pause()
             assert isinstance(app.screen, ConversationScreen)
             assert app.screen.experiment_name == "first"

@@ -7,24 +7,63 @@ import json
 from pathlib import Path
 
 from rich.text import Text
-from textual import on, work
-from textual.app import App, ComposeResult, SystemCommand
-from textual.binding import Binding
+from textual import events, on, work
+from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Input, Label, RichLog, Static, Tree
+from textual.widgets import Button, DataTable, Input, Label, OptionList, RichLog, Static, Tree
+from textual.widgets.option_list import Option
 
 from medbenchagent.runtime import sessions
 from medbenchagent.runtime.conversation_service import ConversationService
 from medbenchagent.runtime.graph_runner import RunEvent
 
 
+_BRAND_LINES = (
+    "███╗   ███╗██████╗  █████╗",
+    "████╗ ████║██╔══██╗██╔══██╗",
+    "██╔████╔██║██████╔╝███████║",
+    "██║╚██╔╝██║██╔══██╗██╔══██║",
+    "██║ ╚═╝ ██║██████╔╝██║  ██║",
+    "╚═╝     ╚═╝╚═════╝ ╚═╝  ╚═╝",
+)
+
+
+def _brand() -> Text:
+    title = Text()
+    for index, line in enumerate(_BRAND_LINES):
+        title.append(line, style=f"bold {('#4386f7', '#5598ff', '#6babff', '#82bdff', '#73aafa', '#4e8ef1')[index]}")
+        if index < len(_BRAND_LINES) - 1:
+            title.append("\n")
+    return title
+
+
+def _update_slash_list(options: OptionList, value: str,
+                       commands: tuple[tuple[str, str], ...]) -> None:
+    if not value.startswith("/"):
+        options.display = False
+        return
+    query = value[1:].casefold()
+    matches = [(name, description) for name, description in commands if name.startswith(query)]
+    options.set_options(Option(f"/{name}    {description}", id=name) for name, description in matches)
+    options.display = bool(matches)
+    if matches:
+        options.highlighted = 0
+
+
+def _navigate_slash_list(event: events.Key, field: Input, options: OptionList) -> None:
+    if not options.display or not field.has_focus or event.key not in {"down", "up"}:
+        return
+    if options.option_count:
+        current = options.highlighted or 0
+        options.highlighted = (current + (1 if event.key == "down" else -1)) % options.option_count
+    event.prevent_default()
+    event.stop()
+
+
 class ExperimentMenu(Screen):
-    BINDINGS = [Binding("ctrl+f", "focus_search", "Search"),
-                Binding("ctrl+n", "focus_new", "New"),
-                Binding("ctrl+o", "open_selected", "Open"),
-                Binding("escape", "focus_list", "Experiments"),
-                Binding("ctrl+q", "app.quit", "Quit")]
+    COMMANDS = (("new", "Create an experiment"), ("open", "Open the selected experiment"),
+                ("quit", "Exit MedBenchAgent"))
 
     def __init__(self) -> None:
         super().__init__()
@@ -32,27 +71,26 @@ class ExperimentMenu(Screen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="menu-shell"):
-            yield Static("MedBenchAgent", id="menu-brand")
-            yield Static("Experiments  /  choose a workspace or create a new one", id="menu-subtitle")
+            yield Static(_brand(), id="menu-brand")
+            yield Static("Choose a workspace or create a new one  /  experiments", id="menu-subtitle")
             with Vertical(id="menu-panel"):
                 yield Static("RECENT EXPERIMENTS", id="menu-title")
                 with Horizontal(id="menu-search-bar"):
-                    yield Input(placeholder="Search experiments  ·  Ctrl+F", id="search")
+                    yield Input(placeholder="Search experiments or type / for commands", id="search")
                     yield Button("Open", id="open", variant="primary")
+                yield OptionList(id="menu-commands")
                 yield DataTable(id="experiments", cursor_type="row", zebra_stripes=True)
-                yield Static("↑↓ select  ·  Enter open  ·  Ctrl+N new", id="menu-message")
-                with Horizontal(id="menu-create-bar"):
-                    yield Input(placeholder="New experiment name", id="new-name")
-                    yield Button("Create", id="create")
-            yield Static("Names use lowercase letters, digits and hyphens.", id="menu-hint")
-        yield Footer()
+                yield Static("", id="menu-message")
+            yield Static("Type / for commands  ·  Enter opens a selected experiment", id="menu-hint")
 
     def on_mount(self) -> None:
         self.query_one("#experiments", DataTable).add_columns("EXPERIMENT", "RUNS", "STATUS")
+        self.query_one("#menu-commands", OptionList).display = False
         self.refresh_experiments()
-        self.query_one("#experiments", DataTable).focus()
+        self.query_one("#search", Input).focus()
 
     def on_screen_resume(self) -> None:
+        self.app.title = "MBA"
         self.refresh_experiments()
 
     def refresh_experiments(self) -> None:
@@ -63,6 +101,8 @@ class ExperimentMenu(Screen):
         table = self.query_one("#experiments", DataTable)
         table.clear()
         query = self.query_one("#search", Input).value.strip().casefold()
+        if query.startswith("/"):
+            query = ""
         matches = [record for record in self._entries if query in record["name"].casefold()]
         for record in matches:
             status = record["runs"][-1]["status"] if record["runs"] else "new"
@@ -71,63 +111,97 @@ class ExperimentMenu(Screen):
             table.add_row(record["name"], str(len(record["runs"])),
                           Text(status.upper(), style=status_color), key=record["name"])
         if not matches:
-            message = "No matching experiments. Create one below." if query else "No experiments yet. Create one below."
+            message = "No matching experiments. Type /new to create." if query else "No experiments yet. Type /new to create."
             self.query_one("#menu-message", Static).update(message)
         else:
-            self.query_one("#menu-message", Static).update(
-                "↑↓ select  ·  Enter open  ·  Ctrl+N new")
+            self.query_one("#menu-message", Static).update("")
 
     @on(Input.Changed, "#search")
     def filter_experiments(self) -> None:
+        _update_slash_list(self.query_one("#menu-commands", OptionList),
+                           self.query_one("#search", Input).value, self.COMMANDS)
         self._render_entries()
 
     @on(Input.Submitted, "#search")
-    @on(Button.Pressed, "#open")
-    def open_selected(self) -> None:
-        self.action_open_selected()
+    def submit_search(self, event: Input.Submitted) -> None:
+        if event.value.startswith("/"):
+            self._dispatch_command(event.value)
+        else:
+            self.action_open_selected()
+
+    @on(OptionList.OptionSelected, "#menu-commands")
+    def select_command(self, event: OptionList.OptionSelected) -> None:
+        self._dispatch_command("/" + str(event.option_id))
+
+    def _dispatch_command(self, value: str) -> None:
+        name = value[1:].strip().casefold()
+        options = self.query_one("#menu-commands", OptionList)
+        if name not in {item[0] for item in self.COMMANDS}:
+            selected = options.highlighted_option
+            name = selected.id if selected else name
+        self.query_one("#search", Input).value = ""
+        options.display = False
+        if name == "new":
+            self.app.push_screen(CreateExperimentScreen())
+        elif name == "open":
+            self.action_open_selected()
+        elif name == "quit":
+            self.app.exit()
+        else:
+            self.query_one("#menu-message", Static).update(f"Unknown command: /{name}")
+
+    def on_key(self, event: events.Key) -> None:
+        search = self.query_one("#search", Input)
+        options = self.query_one("#menu-commands", OptionList)
+        if search.has_focus and event.key == "down" and not options.display:
+            self.query_one("#experiments", DataTable).focus()
+            event.prevent_default()
+            event.stop()
+            return
+        _navigate_slash_list(event, search, options)
 
     def action_open_selected(self) -> None:
         table = self.query_one("#experiments", DataTable)
         if table.row_count:
             self.app.open_experiment(str(table.get_row_at(table.cursor_row)[0]))
 
-    def action_focus_search(self) -> None:
-        self.query_one("#search", Input).focus()
-
-    def action_focus_new(self) -> None:
-        self.query_one("#new-name", Input).focus()
-
-    def action_focus_list(self) -> None:
-        self.query_one("#experiments", DataTable).focus()
-
-    @on(DataTable.RowHighlighted, "#experiments")
-    def preview_row(self, event: DataTable.RowHighlighted) -> None:
-        record = next((entry for entry in self._entries if entry["name"] == event.row_key.value), None)
-        if record:
-            status = record["runs"][-1]["status"] if record["runs"] else "new"
-            self.query_one("#menu-message", Static).update(
-                f"{record['name']}  ·  {len(record['runs'])} runs  ·  {status}  ·  Enter to open")
+    @on(Button.Pressed, "#open")
+    def open_button(self) -> None:
+        self.action_open_selected()
 
     @on(DataTable.RowSelected, "#experiments")
     def open_row(self, event: DataTable.RowSelected) -> None:
         self.app.open_experiment(str(event.row_key.value))
 
-    @on(Button.Pressed, "#create")
+
+class CreateExperimentScreen(Screen):
+    def compose(self) -> ComposeResult:
+        with Vertical(id="create-dialog"):
+            yield Static("Create experiment", id="create-title")
+            yield Input(placeholder="Experiment name", id="new-name")
+            yield Static("Lowercase letters, digits and hyphens. Type /quit to cancel.", id="create-message")
+
+    def on_mount(self) -> None:
+        self.query_one("#new-name", Input).focus()
+
     @on(Input.Submitted, "#new-name")
-    def create(self) -> None:
-        name = self.query_one("#new-name", Input).value.strip()
+    def create(self, event: Input.Submitted) -> None:
+        name = event.value.strip()
+        if name == "/quit":
+            self.app.pop_screen()
+            return
         try:
             sessions.create_experiment(name, root=self.app.experiments_root,
                                        template=self.app.config_template)
         except (ValueError, OSError) as exc:
-            self.query_one("#menu-message", Static).update(str(exc))
+            self.query_one("#create-message", Static).update(str(exc))
             return
+        self.app.pop_screen()
         self.app.open_experiment(name, configure=True)
 
 
 class ConfigScreen(Screen):
-    BINDINGS = [Binding("ctrl+s", "save", "Enter conversation"),
-                Binding("escape", "back", "Back")]
+    COMMANDS = (("done", "Enter the conversation"), ("quit", "Return to the previous screen"))
 
     def __init__(self, name: str, *, new: bool = False) -> None:
         super().__init__()
@@ -143,12 +217,45 @@ class ConfigScreen(Screen):
         with Horizontal():
             yield Input(id="field-value", disabled=True)
             yield Button("Apply value", id="apply", disabled=True)
-            yield Button("Enter conversation", id="save", variant="primary")
         yield Static("", id="config-message")
-        yield Footer()
+        yield OptionList(id="config-commands")
+        yield Input(placeholder="Type / for commands", id="config-command")
 
     def on_mount(self) -> None:
+        self.query_one("#config-commands", OptionList).display = False
         self.refresh_tree()
+
+    @on(Input.Changed, "#config-command")
+    def filter_commands(self) -> None:
+        _update_slash_list(self.query_one("#config-commands", OptionList),
+                           self.query_one("#config-command", Input).value, self.COMMANDS)
+
+    @on(Input.Submitted, "#config-command")
+    def submit_command(self, event: Input.Submitted) -> None:
+        self._dispatch_command(event.value)
+
+    @on(OptionList.OptionSelected, "#config-commands")
+    def select_command(self, event: OptionList.OptionSelected) -> None:
+        self._dispatch_command("/" + str(event.option_id))
+
+    def _dispatch_command(self, value: str) -> None:
+        name = value[1:].strip().casefold() if value.startswith("/") else ""
+        options = self.query_one("#config-commands", OptionList)
+        if name not in {item[0] for item in self.COMMANDS}:
+            selected = options.highlighted_option
+            name = selected.id if selected else name
+        self.query_one("#config-command", Input).value = ""
+        options.display = False
+        if name == "done":
+            self.action_save()
+        elif name == "quit":
+            self.action_back()
+        else:
+            self.query_one("#config-message", Static).update(f"Unknown command: /{name}")
+
+    def on_key(self, event: events.Key) -> None:
+        _navigate_slash_list(event, self.query_one("#config-command", Input),
+                             self.query_one("#config-commands", OptionList))
 
     def refresh_tree(self) -> None:
         tree = self.query_one("#config-tree", Tree)
@@ -228,21 +335,14 @@ class ConfigScreen(Screen):
         if self.new:
             self.app.push_screen(ConversationScreen(self.experiment_name))
 
-    @on(Button.Pressed, "#save")
-    def save_button(self) -> None:
-        self.action_save()
-
     def action_back(self) -> None:
         self.app.pop_screen()
 
 
 class ConversationScreen(Screen):
-    BINDINGS = [Binding("ctrl+e", "edit_config", "Config"),
-                Binding("ctrl+r", "resume_run", "Resume"),
-                Binding("ctrl+n", "focus_queue", "Queue task"),
-                Binding("ctrl+b", "toggle_details", "Details"),
-                Binding("escape", "back", "Experiments"),
-                Binding("ctrl+q", "app.quit", "Quit")]
+    COMMANDS = (("details", "Toggle run details"), ("resume", "Resume an unfinished run"),
+                ("config", "Edit future run settings"), ("queue", "Queue a request: /queue <text>"),
+                ("quit", "Return to experiments"))
 
     def __init__(self, name: str) -> None:
         super().__init__()
@@ -257,30 +357,24 @@ class ConversationScreen(Screen):
         self._progress_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
 
     def compose(self) -> ComposeResult:
-        yield Static(f"MedBenchAgent  /  {self.experiment_name}", id="session-title")
+        path = sessions.experiment_path(self.experiment_name, self.app.experiments_root)
+        yield Static(f"{self.experiment_name}    {path}", id="session-title")
         yield Static("Ready", id="session-status")
         with Horizontal(id="session-body"):
             with Vertical(id="chat-pane"):
                 yield RichLog(id="conversation", wrap=True, highlight=True, min_width=1)
-                yield Input(placeholder="Describe a task", id="message")
+                yield OptionList(id="session-commands")
+                yield Input(placeholder="Describe a task or type / for commands", id="message")
             with Vertical(id="side-pane"):
                 yield DataTable(id="runs", cursor_type="row", zebra_stripes=True)
                 yield RichLog(id="run-detail", wrap=True, highlight=True, min_width=1)
                 yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
-                with Horizontal(id="queue-bar"):
-                    yield Input(placeholder="New task while answering", id="queued-task")
-                    yield Button("Queue task", id="queue")
-        with Horizontal(id="session-actions"):
-            yield Button("Details  ^B", id="toggle-side")
-            yield Button("Resume run", id="resume")
-            yield Button("Config", id="config")
-            yield Button("Experiments", id="back")
-        yield Footer()
 
     def on_mount(self) -> None:
         self.service = ConversationService(self.experiment_name, root=self.app.experiments_root)
         self.record = self.service.reconcile()
         self.query_one("#runs", DataTable).add_columns("Type", "Status", "Run")
+        self.query_one("#session-commands", OptionList).display = False
         self.refresh_record()
         self.query_one("#run-detail", RichLog).write("Select a run to inspect frozen inputs.")
         self.query_one("#message", Input).focus()
@@ -348,12 +442,56 @@ class ConversationScreen(Screen):
         view.clear()
         view.write(detail)
 
+    @on(Input.Changed, "#message")
+    def filter_commands(self) -> None:
+        _update_slash_list(self.query_one("#session-commands", OptionList),
+                           self.query_one("#message", Input).value, self.COMMANDS)
+
+    @on(OptionList.OptionSelected, "#session-commands")
+    def select_command(self, event: OptionList.OptionSelected) -> None:
+        self._dispatch_command("/" + str(event.option_id))
+
+    def on_key(self, event: events.Key) -> None:
+        _navigate_slash_list(event, self.query_one("#message", Input),
+                             self.query_one("#session-commands", OptionList))
+
+    def _dispatch_command(self, value: str) -> None:
+        name, _, argument = value[1:].strip().partition(" ")
+        name = name.casefold()
+        options = self.query_one("#session-commands", OptionList)
+        if name not in {item[0] for item in self.COMMANDS} and not argument:
+            selected = options.highlighted_option
+            name = selected.id if selected else name
+        options.display = False
+        field = self.query_one("#message", Input)
+        field.value = ""
+        if name == "details":
+            self.action_toggle_details()
+        elif name == "resume":
+            self.action_resume_run()
+        elif name == "config":
+            self.action_edit_config()
+        elif name == "queue":
+            if argument.strip():
+                self._queue_task(argument.strip())
+            else:
+                field.value = "/queue "
+                field.focus()
+                self._set_status("Enter the request after /queue and press Enter.")
+        elif name == "quit":
+            self.action_back()
+        else:
+            self._set_status(f"Unknown command: /{name}")
+
     @on(Input.Submitted, "#message")
     def submit(self, event: Input.Submitted) -> None:
         value = event.value.strip()
-        event.input.value = ""
         if not value:
             return
+        if value.startswith("/"):
+            self._dispatch_command(value)
+            return
+        event.input.value = ""
         if self.pending_question and self.current_run_id:
             try:
                 self.service.answer(self.current_run_id, value)
@@ -367,17 +505,6 @@ class ConversationScreen(Screen):
             self._execute_run(resume_id=run_id, answer=value)
             return
         self._queue_task(value)
-
-    @on(Input.Submitted, "#queued-task")
-    @on(Button.Pressed, "#queue")
-    def queue_task(self) -> None:
-        field = self.query_one("#queued-task", Input)
-        value = field.value.strip()
-        field.value = ""
-        if value:
-            self._queue_task(value)
-        else:
-            field.focus()
 
     def _queue_task(self, value: str) -> None:
         if self.classifying:
@@ -419,7 +546,7 @@ class ConversationScreen(Screen):
             if unfinished["status"] == "waiting_input":
                 self._execute_run(resume_id=unfinished["id"])
             else:
-                self._set_status("Unfinished run available. Press Ctrl+R to resume.")
+                self._set_status("Unfinished run available. Type /resume to continue.")
             return
         if self.record["pending_runs"]:
             self._execute_run()
@@ -463,7 +590,7 @@ class ConversationScreen(Screen):
         elif event.kind in {"finished", "error"}:
             self._flush_progress(limit=None)
             self._set_status(f"{event.payload.get('status')}: {event.payload.get('summary', '')}")
-            self.query_one("#message", Input).placeholder = "Describe a task"
+            self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
 
     def _execution_ended(self) -> None:
         self._flush_progress(limit=None)
@@ -482,68 +609,57 @@ class ConversationScreen(Screen):
         else:
             self._set_status("No unfinished run to resume.")
 
-    @on(Button.Pressed, "#resume")
-    def resume_button(self) -> None:
-        self.action_resume_run()
-
-    def action_focus_queue(self) -> None:
-        self.query_one("#queued-task", Input).focus()
-
     def action_toggle_details(self) -> None:
         sidebar = self.query_one("#side-pane", Vertical)
         sidebar.display = not sidebar.display
 
-    @on(Button.Pressed, "#toggle-side")
-    def toggle_details_button(self) -> None:
-        self.action_toggle_details()
-
     def action_edit_config(self) -> None:
         self.app.push_screen(ConfigScreen(self.experiment_name))
 
-    @on(Button.Pressed, "#config")
-    def config_button(self) -> None:
-        self.action_edit_config()
-
     def action_back(self) -> None:
         if self.running:
-            self._set_status("Wait for the current step or exit; its checkpoint is preserved.")
+            self.app.exit()
             return
         self.app.pop_screen()
 
-    @on(Button.Pressed, "#back")
-    def back_button(self) -> None:
-        self.action_back()
-
 class MBAApp(App):
+    ENABLE_COMMAND_PALETTE = False
     CSS = """
     App, Screen { background: #101319; color: #d9dce5; }
     Screen { layout: vertical; }
-    Footer { background: #171c24; color: #9aa6b6; }
     Button { margin: 0 1 0 0; min-width: 10; background: #242b36; color: #d9dce5; border: none; }
     Button:focus { background: #34445f; }
     Input { background: #1a2029; border: tall #323c4b; }
     Input:focus { border: tall #82aaff; }
     DataTable { background: #171c24; color: #d9dce5; }
+    OptionList { background: #202938; border: solid #4386f7; height: auto; max-height: 8; }
 
     #menu-shell { width: 100%; height: 1fr; padding: 1 3 0 3; }
-    #menu-brand { height: 1; color: #a8c4ff; text-style: bold; }
-    #menu-subtitle { height: 2; color: #8492a4; }
+    #menu-brand { height: 6; color: #5b9cff; text-style: bold; }
+    #menu-subtitle { height: 2; color: #a5b3c9; }
     #menu-panel { width: 100%; height: 1fr; background: #171c24; padding: 1 2; }
     #menu-title { height: 1; color: #a8c4ff; text-style: bold; }
-    #menu-search-bar, #menu-create-bar { width: 100%; height: 3; }
-    #menu-create-bar { background: #171c24; }
+    #menu-search-bar { width: 100%; height: 3; }
     #menu-message { height: 1; color: #9aa6b6; }
     #menu-hint { height: 1; color: #718095; }
     #experiments { width: 100%; height: 1fr; min-height: 3; border: none; }
     #experiments:focus { border: none; }
-    #search, #new-name, #field-value, #queued-task { width: 1fr; }
-    #open, #create { width: 12; }
+    #search, #field-value { width: 1fr; }
+    #open { width: 12; }
+
+    CreateExperimentScreen { align: center middle; }
+    #create-dialog { width: 62; max-width: 100%; height: auto; padding: 1 2;
+                     background: #171c24; border: solid #4386f7; }
+    #create-title { height: 1; color: #82bdff; text-style: bold; }
+    #new-name { height: 3; }
+    #create-message { height: 2; color: #9aa6b6; }
 
     ConfigScreen { padding: 1 2 0 2; }
     #config-title { height: 1; color: #a8c4ff; text-style: bold; }
     #config-tree { height: 1fr; background: #171c24; border: none; }
     #field-label, #config-message { height: 1; color: #9aa6b6; }
     ConfigScreen > Horizontal { height: 3; }
+    #config-command { height: 3; }
 
     #session-title { height: 1; padding: 0 2; color: #a8c4ff; text-style: bold; }
     #session-status { height: 1; padding: 0 2; color: #9aa6b6; }
@@ -555,12 +671,9 @@ class MBAApp(App):
     #runs { width: 100%; height: 30%; min-height: 4; border: none; }
     #run-detail { width: 100%; height: 35%; min-height: 4; border-top: solid #323c4b; }
     #progress { width: 100%; height: 1fr; min-height: 3; border-top: solid #323c4b; }
-    #queue-bar { width: 100%; height: 3; }
-    #queue { width: 12; }
-    #session-actions { width: 100%; height: 3; background: #171c24; padding: 0 2; }
     """
 
-    TITLE = "MBA · MedBenchAgent"
+    TITLE = "MBA"
 
     def __init__(self, *, experiments_root: Path = sessions.EXPERIMENTS_ROOT,
                  config_template: Path | None = None) -> None:
@@ -571,21 +684,8 @@ class MBAApp(App):
     def on_mount(self) -> None:
         self.push_screen(ExperimentMenu())
 
-    def get_system_commands(self, screen: Screen):
-        yield from super().get_system_commands(screen)
-        if isinstance(screen, ExperimentMenu):
-            yield SystemCommand("Search experiments", "Focus the experiment search", screen.action_focus_search)
-            yield SystemCommand("New experiment", "Focus the new experiment field", screen.action_focus_new)
-            yield SystemCommand("Open experiment", "Open the highlighted experiment", screen.action_open_selected)
-        elif isinstance(screen, ConversationScreen):
-            yield SystemCommand("Queue task", "Focus the task queue field", screen.action_focus_queue)
-            yield SystemCommand("Run details", "Toggle the run detail sidebar", screen.action_toggle_details)
-            yield SystemCommand("Resume run", "Resume an unfinished run", screen.action_resume_run)
-            yield SystemCommand("Experiment config", "Edit configuration for future runs", screen.action_edit_config)
-        elif isinstance(screen, ConfigScreen):
-            yield SystemCommand("Enter conversation", "Return to the experiment", screen.action_save)
-
     def open_experiment(self, name: str, *, configure: bool = False) -> None:
+        self.title = name
         if configure:
             self.push_screen(ConfigScreen(name, new=True))
         else:
