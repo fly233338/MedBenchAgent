@@ -1,7 +1,5 @@
 import asyncio
-import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -9,7 +7,6 @@ from medbenchagent.runtime import sessions
 from medbenchagent.runtime.session_supervisor import classify_requirement
 from medbenchagent.agents.source_discovery import discover_source
 from medbenchagent.tui import MBAApp, ConfigScreen, ConversationScreen, ExperimentMenu
-from medbenchagent.settings import load_settings
 
 
 def test_experiment_config_and_source_upsert(tmp_path):
@@ -103,25 +100,6 @@ def test_no_task_reply_does_not_create_run(monkeypatch, tmp_path):
     decision = classify_requirement("hello", known_datasets=[], history=[])
     assert decision.reply
     assert sessions.load_experiment("pilot", root=tmp_path)["runs"] == record["runs"]
-
-
-def test_resume_settings_ignore_changed_experiment_toml(monkeypatch, tmp_path):
-    sessions.create_experiment("pilot", root=tmp_path / "experiments")
-    config = sessions.config_path("pilot", root=tmp_path / "experiments")
-    settings = load_settings(config)
-    saved = tmp_path / "effective_config.json"
-    saved.write_text(json.dumps(settings.snapshot()), encoding="utf-8")
-    config.write_text("invalid = [", encoding="utf-8")
-    runs_root = tmp_path / "runs"
-    runs_root.mkdir()
-    (runs_root / "checkpoints.sqlite").touch()
-    monkeypatch.setattr("medbenchagent.tui._compile_graph",
-                        lambda _checkpointer: SimpleNamespace(get_state=lambda _config: SimpleNamespace(
-                            values={"context": {"effective_config_path": str(saved)}})))
-    screen = ConversationScreen("pilot")
-    screen._app = SimpleNamespace(experiments_root=tmp_path / "experiments")
-    resumed = screen._settings_for_run({"runs_root": str(runs_root), "thread_id": "run"}, resume=True)
-    assert resumed.llm.model == settings.llm.model
 
 
 def test_tui_create_config_conversation(tmp_path):

@@ -13,6 +13,7 @@ dependencies = [
     "chromadb>=0.5.0",
     "httpx>=0.27.0",
     "duckdb==1.5.4",
+    "filelock>=3.0.0",
     "langgraph>=0.6.0",
     "langchain-core>=0.3.0",
     "langgraph-checkpoint-sqlite>=2.0.0",
@@ -40,7 +41,7 @@ data-processing = [
 ]
 
 [project.scripts]
-medbenchagent = "medbenchagent.cli:main"
+medbenchagent = "medbenchagent.entrypoint:main"
 medbench-eval = "medbenchagent.evaluation.eval:main"
 medbench-infer = "medbenchagent.evaluation.inference:main"
 

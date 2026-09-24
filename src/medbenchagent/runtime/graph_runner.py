@@ -1,0 +1,292 @@
+"""Run one LangGraph thread without terminal or Textual dependencies."""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterator, Literal
+
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command, Interrupt
+
+from medbenchagent.runtime.dependencies import verify_resume
+from medbenchagent.runtime.preflight import preflight_errors, rag_capability
+from medbenchagent.settings import active_settings, load_settings, run_settings
+from medbenchagent.workflow.graph import compile_benchmark_graph
+
+
+EventKind = Literal["initialized", "progress", "artifact", "needs_input", "finished", "error"]
+_ARTIFACT_KEYS = {"run_directory", "effective_config_path", "construction_events_path",
+                  "working_blueprint_path", "raw_output_path", "manifest_path", "delivery_path"}
+
+
+@dataclass(frozen=True)
+class RunEvent:
+    run_session_id: str
+    kind: EventKind
+    payload: dict[str, Any]
+
+
+def enforce_offline_mode() -> None:
+    for name, value in {
+        "LANGSMITH_TRACING": "false",
+        "LANGCHAIN_TRACING_V2": "false",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "ANONYMIZED_TELEMETRY": "False",
+    }.items():
+        os.environ[name] = value
+
+
+def _event_parts(event: object) -> tuple[tuple[str, ...], str, dict]:
+    if isinstance(event, tuple) and len(event) == 3:
+        namespace, mode, payload = event
+        if (isinstance(namespace, tuple) and all(isinstance(part, str) for part in namespace)
+                and mode in {"tasks", "updates", "custom"} and isinstance(payload, dict)):
+            return namespace, mode, payload
+    raise ValueError("Expected stream event (namespace, tasks|updates|custom, dictionary payload)")
+
+
+def _question(value: object) -> str:
+    if not isinstance(value, dict) or not isinstance(value.get("question"), str):
+        raise ValueError("Clarification interrupt requires a nonempty question")
+    question = value["question"].strip()
+    if not question:
+        raise ValueError("Clarification interrupt requires a nonempty question")
+    return question
+
+
+def _interrupt(payload: dict) -> dict | None:
+    if "__interrupt__" not in payload:
+        return None
+    values = payload["__interrupt__"]
+    if not isinstance(values, tuple) or not all(isinstance(item, Interrupt) for item in values):
+        raise ValueError("Expected a tuple of LangGraph Interrupt objects")
+    if not values:
+        return None
+    _question(values[0].value)
+    return values[0].value
+
+
+def _recursion_limit(values: object) -> int:
+    profile = values.get("dataset_profile", {}) if isinstance(values, dict) else {}
+    images = profile.get("total_images") if isinstance(profile, dict) else None
+    if not isinstance(images, int) or isinstance(images, bool) or images < 0:
+        return 1_000
+    return max(1_000, images * 4 + 100)
+
+
+def _metadata(values: dict) -> dict:
+    context = values.get("context", {})
+    return {
+        "run_id": values.get("run_id"),
+        "run_directory": values.get("run_directory"),
+        "effective_config_path": context.get("effective_config_path"),
+        "catalog_snapshot_path": context.get("task_catalog_snapshot_path"),
+        "source_decision_path": context.get("source_decision_path"),
+        "selected_assets": {
+            dataset_id: asset.get("entry", {})
+            for dataset_id, asset in context.get("dataset_assets", {}).items()
+        },
+    }
+
+
+def _artifact_paths(value: object) -> Iterator[tuple[str, str]]:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key in _ARTIFACT_KEYS and isinstance(nested, str):
+                yield key, nested
+            else:
+                yield from _artifact_paths(nested)
+
+
+class GraphRunner:
+    def __init__(self, *, graph_factory=compile_benchmark_graph) -> None:
+        self.graph_factory = graph_factory
+
+    def inspect(self, run: dict) -> dict:
+        """Read recovery state after a process disappeared, without executing the graph."""
+        checkpoint_path = Path(run["runs_root"]) / "checkpoints.sqlite"
+        if not checkpoint_path.is_file():
+            return {"status": "interrupted", "summary": "Run checkpoint database is missing"}
+        connection = sqlite3.connect(str(checkpoint_path), check_same_thread=False)
+        try:
+            graph = self.graph_factory(checkpointer=SqliteSaver(connection))
+            snapshot = graph.get_state({"configurable": {"thread_id": run["thread_id"]}})
+        finally:
+            connection.close()
+        if not snapshot.values:
+            return {"status": "interrupted", "summary": "Run checkpoint is missing"}
+        pending = [item for task in snapshot.tasks for item in task.interrupts]
+        status = ("waiting_input" if pending else snapshot.values.get("status")
+                  if not snapshot.next else "interrupted")
+        if status not in {"waiting_input", "complete", "blocked", "failed"}:
+            status = "interrupted"
+        return {"status": status, "summary": snapshot.values.get("summary", ""),
+                **_metadata(snapshot.values)}
+
+    def execute(self, run: dict, experiment_name: str, experiments_root: Path, *,
+                resume: bool = False, answer: str | None = None,
+                settings: Any = None) -> Iterator[RunEvent]:
+        """Start or resume a run; return at an interrupt so the caller can answer later."""
+        enforce_offline_mode()
+        identifier = run["id"]
+        known_directory = run.get("run_directory")
+        connection = None
+        try:
+            if resume:
+                runs_root = Path(run["runs_root"])
+                checkpoint_path = runs_root / "checkpoints.sqlite"
+                if not checkpoint_path.is_file():
+                    raise ValueError("Run checkpoint database is missing")
+                connection = sqlite3.connect(str(checkpoint_path), check_same_thread=False)
+                graph = self.graph_factory(checkpointer=SqliteSaver(connection))
+                config = {"configurable": {"thread_id": run["thread_id"]}, "recursion_limit": 1_000}
+                previous = graph.get_state(config)
+                if not previous.values:
+                    raise ValueError("Unknown resume identifier")
+                context = previous.values.get("context", {})
+                if context.get("prepare_dataset_id") != run["dataset_id"]:
+                    raise ValueError("Resume with the original dataset ID")
+                if (run.get("requested_dataset_ids") is not None and
+                        context.get("requested_dataset_ids") != run["requested_dataset_ids"]):
+                    raise ValueError("Resume preserves the original dataset selection")
+                known_directory = previous.values.get("run_directory") or known_directory
+                snapshot_path = context.get("effective_config_path")
+                if not snapshot_path:
+                    raise ValueError("Run checkpoint or frozen configuration is missing")
+                settings_context = run_settings(snapshot_path)
+            else:
+                settings_context = active_settings(
+                    settings or load_settings(experiments_root / experiment_name / "config.toml")
+                )
+
+            with settings_context as settings:
+                if resume:
+                    if previous.values.get("status") == "complete" and not previous.next:
+                        yield RunEvent(identifier, "finished", {
+                            "status": "complete", "summary": previous.values.get("summary", ""),
+                            **_metadata(previous.values),
+                        })
+                        return
+                    verify_resume(context)
+                errors = preflight_errors(settings, build=run["kind"] == "build_benchmark")
+                if errors:
+                    yield RunEvent(identifier, "error", {
+                        "status": "blocked", "summary": "Local preflight failed: " + "; ".join(errors),
+                        "run_directory": known_directory,
+                    })
+                    return
+                rag = rag_capability(settings)
+                if not rag["available"]:
+                    yield RunEvent(identifier, "progress", {
+                        "text": "Optional RAG unavailable: " + "; ".join(rag["reasons"]),
+                    })
+                if connection is None:
+                    settings.paths.runs_root.mkdir(parents=True, exist_ok=True)
+                    connection = sqlite3.connect(
+                        str(settings.paths.runs_root / "checkpoints.sqlite"), check_same_thread=False
+                    )
+                    graph = self.graph_factory(checkpointer=SqliteSaver(connection))
+                    config = {"configurable": {"thread_id": run["thread_id"]},
+                              "recursion_limit": 1_000}
+                if resume:
+                    pending = [item for task in previous.tasks for item in task.interrupts]
+                    if pending:
+                        question = _question(pending[0].value)
+                        if answer is None:
+                            yield RunEvent(identifier, "needs_input", {"question": question})
+                            return
+                        if not answer.strip():
+                            raise ValueError("Clarification answer cannot be empty")
+                        next_input: object = Command(resume=answer)
+                    else:
+                        if answer is not None:
+                            raise ValueError("This run is not waiting for an answer")
+                        next_input = None
+                else:
+                    if answer is not None:
+                        raise ValueError("A new run cannot accept a clarification answer")
+                    next_input = {
+                        "user_requirement": run["requirement"],
+                        "prepare_dataset_id": run["dataset_id"],
+                        "requested_dataset_ids": run["requested_dataset_ids"],
+                        "entry_intent": run["kind"],
+                        "experiment_name": experiment_name,
+                        "experiments_root": str(experiments_root),
+                    }
+                seen_artifacts: set[tuple[str, str]] = set()
+                while True:
+                    interrupted = None
+                    for event in graph.stream(next_input, config,
+                                              stream_mode=["tasks", "updates", "custom"],
+                                              subgraphs=True):
+                        namespace, mode, payload = _event_parts(event)
+                        if mode == "tasks":
+                            name = payload.get("name")
+                            if name and "generation_step" not in name:
+                                status = ("start" if "input" in payload else "failed" if payload.get("error")
+                                          else "waiting" if payload.get("interrupts") else "done")
+                                yield RunEvent(identifier, "progress", {
+                                    "text": f"[{status}] {' / '.join(namespace + (name,))}",
+                                })
+                        elif mode == "custom":
+                            if payload.get("kind") == "generation_progress":
+                                yield RunEvent(identifier, "progress", {"text": str(payload)})
+                        else:
+                            if not namespace:
+                                initialized = payload.get("initialize")
+                                if isinstance(initialized, dict) and initialized.get("run_directory"):
+                                    known_directory = initialized["run_directory"]
+                                    yield RunEvent(identifier, "initialized", {
+                                        "run_id": initialized.get("run_id"),
+                                        "run_directory": known_directory,
+                                        "runs_root": str(settings.paths.runs_root),
+                                        "effective_config_path": initialized.get("effective_config_path"),
+                                        "catalog_snapshot_path": initialized.get("task_catalog_snapshot_path"),
+                                    })
+                            for name, path in _artifact_paths(payload):
+                                if (name, path) not in seen_artifacts:
+                                    seen_artifacts.add((name, path))
+                                    yield RunEvent(identifier, "artifact", {"name": name, "path": path})
+                            execute = payload.get("execute")
+                            observations = execute.get("observations", []) if isinstance(execute, dict) else []
+                            if observations:
+                                item = observations[-1]
+                                yield RunEvent(identifier, "progress", {
+                                    "text": f"[tool] {item.get('tool')}: {item.get('status')} — {item.get('summary')}",
+                                })
+                            interrupted = interrupted or _interrupt(payload)
+                    snapshot = graph.get_state(config)
+                    values = snapshot.values or {}
+                    known_directory = values.get("run_directory") or known_directory
+                    config["recursion_limit"] = _recursion_limit(values)
+                    if interrupted:
+                        yield RunEvent(identifier, "needs_input", {
+                            "question": _question(interrupted), **_metadata(values),
+                        })
+                        return
+                    if snapshot.next:
+                        next_input = None
+                        continue
+                    yield RunEvent(identifier, "finished", {
+                        "status": values.get("status", "complete"),
+                        "summary": values.get("summary", ""), **_metadata(values),
+                    })
+                    return
+        except (KeyboardInterrupt, EOFError):
+            yield RunEvent(identifier, "error", {
+                "status": "interrupted", "summary": "Run interrupted; checkpoint preserved",
+                "run_directory": known_directory,
+            })
+        except Exception as exc:
+            yield RunEvent(identifier, "error", {
+                "status": ("blocked" if "Code or runtime contract changed" in str(exc)
+                           or not known_directory else "interrupted"),
+                "summary": f"{type(exc).__name__}: {exc}", "run_directory": known_directory,
+            })
+        finally:
+            if connection is not None:
+                connection.close()

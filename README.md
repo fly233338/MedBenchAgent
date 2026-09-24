@@ -15,12 +15,19 @@ uv sync
 uv run medbenchagent
 # Optional: use an existing TOML file as the starting config for newly created experiments.
 uv run medbenchagent --config config/local.toml.example
+# The same conversation and run service is available without the TUI.
+uv run medbenchagent create pilot
+uv run medbenchagent run pilot "Build a chest X-ray benchmark in English"
+uv run medbenchagent resume pilot SESSION_RUN_ID
 ```
 
 The terminal interface creates `experiments/<name>/config.toml` from visible defaults and lets you edit
 non-secret fields with the keyboard. `--config` seeds newly created experiments only; reopening an experiment
 uses its saved TOML. Nonempty supported field environment variables still override TOML values in a new run.
 In the experiment list, use Up/Down and Enter or click a row; Ctrl+F searches and Ctrl+N focuses new experiment input.
+In a conversation, requests submitted while a Run works enter a serial queue. During clarification, the main
+input answers the current Run; the separate Queue task field submits another request. The CLI `run` command
+requires an existing experiment and prints the session Run IDs accepted by `resume`.
 Keep secrets outside version control. The CLI disables optional external tracing, downloads
 and telemetry; the configured language-model API is still used.
 LLM overrides are `MEDBENCH_LLM_API_KEY`, `MEDBENCH_LLM_MODEL`, `MEDBENCH_LLM_BASE_URL`,
@@ -46,6 +53,9 @@ missing raw data: request preparation first, then start a new build run.
 Conversation history and run references live in `experiments/<name>/session.json`. SQLite checkpoints remain
 under the run root and are the recovery authority. Reopening an interrupted run uses its saved effective
 configuration even if experiment TOML changed. Resume verifies code, source identities and selected assets.
+An experiment TOML edit affects a queued Run when it starts and never changes a Run already in progress.
+The global Dataset Catalog registers prepared data, while each Run freezes its own candidate view. A published
+Dataset Bundle remains the data product referenced by that catalog.
 The runtime contract is `agent-runtime.v14`; old checkpoints are not migrated. Code or runtime-contract
 changes require a new run. Existing prepared bundles without v2 integrity bindings must be explicitly prepared again.
 Keep the run directory and prepared dataset assets intact; external input changes are picked up by a new run.

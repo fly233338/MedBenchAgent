@@ -197,14 +197,27 @@ Planning/Allocation delegation 的目标、scope/preference 引用由代码从 R
 DataProcessing 检查工具支持复合 join key、相同的基数/空键/未匹配策略及 sheet/delimiter；检查统计与执行共用校验。
 字段配对与 Protocol 共用数组祖先及实例索引规则，允许同一 finding 中嵌套对象字段，拒绝不同数组误配。
 
-Textual 界面在 `experiments/<name>/` 保存实验配置和原子写入的 session.json 对话/运行索引。
-每项准备或构建运行拥有独立的 LangGraph thread_id、运行目录和 checkpoint；索引不取代 checkpoint。
-终态后界面继续等待输入。配置界面显示全部非密钥字段，按层级用键盘编辑；运行中修改实验 TOML
-只影响下一项运行。运行详情显示实际配置快照、目录视图及资产引用。
-CLI 按 tasks/updates/custom + subgraphs=True 的三元组事件处理流，显示 agent、工具和进度，
-只从 updates 顶层读取
-LangGraph Interrupt，未知格式和缺少有效 question 明确报错。失败报告使用执行期间记录的运行目录，
-checkpoint 诊断失败明确显示，不覆盖原始运行错误及退出状态。
+CLI 与 Textual UI 不相互依赖。入口分发器无子命令时启动 TUI；CLI 的 create/run/resume 与 TUI
+共用 ConversationService 和 GraphRunner。ConversationService 分类对话、持久化 Run 队列并串行调度；
+GraphRunner 独占预检、配置冻结、LangGraph 流、checkpoint 和 interrupt/resume，并向界面发送
+initialized/progress/artifact/needs_input/finished/error 事件。界面不打开 checkpoint。
+每个实验的 session 写入和 Run 执行分别受锁保护，避免 CLI/TUI 同时写坏会话或执行同一 Run。
+独立排队任务可在另一任务运行时提交；前置准备失败只阻断依赖构建，其他队列项继续执行。
+
+| State | 责任与生命周期 |
+| --- | --- |
+| `experiments/<name>/session.json` | 对话消息、Run 索引及队列；不保存图执行进度 |
+| `experiments/<name>/config.toml` | 可编辑实验配置；排队 Run 实际启动时读取 |
+| `<run>/effective_config.json` | 单次 Run 初始化时冻结的非密钥配置，恢复时读取 |
+| `checkpoints.sqlite` | 按 thread_id 保存 LangGraph 进度及 interrupt，是恢复依据 |
+| Dataset Catalog | 全局已准备数据注册表；Run 初始化冻结候选视图 |
+| Dataset Bundle | 已发布的数据产品；数据不可变，Card 修订追加保存 |
+
+每项准备或构建运行拥有独立的 LangGraph thread_id、运行目录和配置快照；终态后会话继续等待输入。
+配置界面显示全部非密钥字段，按层级用键盘编辑；运行中修改实验 TOML 只影响尚未启动的 Run。
+运行详情显示冻结配置、目录与资产引用。GraphRunner 按 tasks/updates/custom + subgraphs=True
+处理事件流，只从 updates 顶层读取 LangGraph Interrupt；未知格式和缺少有效 question 明确报错。
+失败报告使用执行期间记录的运行目录，不用失败的 checkpoint 诊断覆盖原始运行错误。
 构建事件在已知时携带 dataset_id/source_id，模型调用继承工具执行上下文。
 CLI 恢复提示明确代码未变才能续跑，修改代码后必须新建运行。
 构建事件可省略 agent；模型/provider 名称不能填充缺失的 Agent 角色。FinalizationAgent 是全局工具使用 Agent；模板阶段事件归属 TaskPlanningAgent。

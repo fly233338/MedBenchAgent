@@ -107,8 +107,8 @@ def queue_run(record: dict, kind: str, requirement: str, dataset_id: str | None 
     return run
 
 
-def update_run(record: dict, run_id: str, *, root: Path = EXPERIMENTS_ROOT, **changes) -> dict:
-    run = next(run for run in record["runs"] if run["id"] == run_id)
+def update_run(record: dict, session_run_id: str, *, root: Path = EXPERIMENTS_ROOT, **changes) -> dict:
+    run = next(run for run in record["runs"] if run["id"] == session_run_id)
     run.update(changes)
     save_experiment(record, root=root)
     return run

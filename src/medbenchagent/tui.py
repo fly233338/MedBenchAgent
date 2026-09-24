@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import queue
 import json
-import sqlite3
-from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 from rich.text import Text
 from textual import on, work
@@ -18,13 +15,8 @@ from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Input, Label, RichLog, Static, Tree
 
 from medbenchagent.runtime import sessions
-from medbenchagent.settings import active_settings, load_settings, run_settings
-
-
-def _compile_graph(checkpointer):
-    from medbenchagent.workflow.graph import compile_benchmark_graph
-
-    return compile_benchmark_graph(checkpointer=checkpointer)
+from medbenchagent.runtime.conversation_service import ConversationService
+from medbenchagent.runtime.graph_runner import RunEvent
 
 
 class ExperimentMenu(Screen):
@@ -248,18 +240,21 @@ class ConfigScreen(Screen):
 class ConversationScreen(Screen):
     BINDINGS = [Binding("ctrl+e", "edit_config", "Config"),
                 Binding("ctrl+r", "resume_run", "Resume"),
+                Binding("ctrl+n", "focus_queue", "Queue task"),
                 Binding("escape", "back", "Experiments"),
                 Binding("ctrl+q", "app.quit", "Quit")]
 
     def __init__(self, name: str) -> None:
         super().__init__()
         self.experiment_name = name
+        self.service: ConversationService | None = None
         self.record: dict = {}
         self.running = False
+        self.classifying = False
         self.pending_question = False
-        self.answer_queue: queue.Queue[str | None] = queue.Queue()
-        self._progress_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
         self.current_run_id: str | None = None
+        self._displayed_messages: set[str] = set()
+        self._progress_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
 
     def compose(self) -> ComposeResult:
         yield Static(f"MBA · {self.experiment_name}", id="session-title")
@@ -267,11 +262,14 @@ class ConversationScreen(Screen):
         with Horizontal(id="session-body"):
             with Vertical(id="chat-pane"):
                 yield RichLog(id="conversation", wrap=True, highlight=True, min_width=1)
-                yield Input(placeholder="Describe a task or answer the current question", id="message")
+                yield Input(placeholder="Describe a task", id="message")
             with Vertical(id="side-pane"):
                 yield DataTable(id="runs", cursor_type="row", zebra_stripes=True)
                 yield RichLog(id="run-detail", wrap=True, highlight=True, min_width=1)
                 yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
+                with Horizontal(id="queue-bar"):
+                    yield Input(placeholder="New task while answering", id="queued-task")
+                    yield Button("Queue task", id="queue")
         with Horizontal(id="session-actions"):
             yield Button("Resume run", id="resume")
             yield Button("Config", id="config")
@@ -279,52 +277,49 @@ class ConversationScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.record = sessions.load_experiment(self.experiment_name, root=self.app.experiments_root)
-        table = self.query_one("#runs", DataTable)
-        table.add_columns("Type", "Status", "Run")
-        for message in self.record["messages"]:
-            self._write_message(message["role"], message["text"])
-        self.refresh_runs()
-        self.query_one("#run-detail", RichLog).write("Select a run to see its frozen inputs.")
+        self.service = ConversationService(self.experiment_name, root=self.app.experiments_root)
+        self.record = self.service.reconcile()
+        self.query_one("#runs", DataTable).add_columns("Type", "Status", "Run")
+        self.refresh_record()
+        self.query_one("#run-detail", RichLog).write("Select a run to inspect frozen inputs.")
         self.query_one("#message", Input).focus()
         self.set_interval(0.1, self._flush_progress)
         self.set_timer(0.1, self._start_next)
 
-    def _write_message(self, role: str, text: str) -> None:
+    def refresh_record(self) -> None:
+        self.record = self.service.record()
+        for message in self.record["messages"]:
+            if message["id"] not in self._displayed_messages:
+                self._write_message(message["role"], message["text"])
+                self._displayed_messages.add(message["id"])
+        self.refresh_runs()
+
+    def _write_message(self, role: str, content: str) -> None:
         label = "YOU" if role in {"user", "you"} else "MBA"
         color = "#9ec3ef" if label == "YOU" else "#72d8c2"
         line = Text()
         line.append(f" {label} ", style=f"bold {color}")
-        line.append("  " + text)
+        line.append("  " + content)
         self.query_one("#conversation", RichLog).write(line)
 
-    def _set_status(self, text: str) -> None:
-        self.query_one("#session-status", Static).update(text)
+    def _set_status(self, value: str) -> None:
+        self.query_one("#session-status", Static).update(value)
 
-    def _log_progress(self, text: str) -> None:
-        if text:
-            color = ("#72d8c2" if text.startswith(("[done]", "[artifact]")) else
-                     "#e8ac70" if text.startswith(("[waiting]", "Benchmark construction failed:")) else
-                     "#a5b8c8")
-            self.query_one("#progress", RichLog).write(Text(text, style=color))
+    def _log_progress(self, value: str) -> None:
+        if value:
+            color = ("#72d8c2" if value.startswith(("[done]", "[artifact]")) else
+                     "#e8ac70" if value.startswith(("[waiting]", "[failed]")) else "#a5b8c8")
+            self.query_one("#progress", RichLog).write(Text(value, style=color))
 
     def _flush_progress(self, limit: int | None = 100) -> None:
         count = 0
         while limit is None or count < limit:
             try:
-                line = self._progress_queue.get_nowait()
+                value = self._progress_queue.get_nowait()
             except queue.Empty:
                 break
-            self._log_progress(line)
+            self._log_progress(value)
             count += 1
-
-    def _run_initialized(self, run_id: str, metadata: dict) -> None:
-        sessions.update_run(self.record, run_id, root=self.app.experiments_root,
-                            run_id=metadata.get("run_id"),
-                            run_directory=metadata.get("run_directory"),
-                            effective_config_path=metadata.get("effective_config_path"),
-                            catalog_snapshot_path=metadata.get("task_catalog_snapshot_path"))
-        self.refresh_runs()
 
     def refresh_runs(self) -> None:
         table = self.query_one("#runs", DataTable)
@@ -336,9 +331,11 @@ class ConversationScreen(Screen):
     def show_run(self, event: DataTable.RowSelected) -> None:
         run = next(run for run in self.record["runs"] if run["id"] == event.row_key.value)
         detail = (f"{run['kind']} · {run['status']}\n{run['summary']}\n"
-                  f"Run: {run['run_directory']}\nConfig: {run['effective_config_path']}\n"
-                  f"Catalog: {run['catalog_snapshot_path']}\n"
-                  f"Discovered source: {run.get('source_decision_path')}")
+                  f"Session Run: {run['id']}\nLangGraph thread: {run['thread_id']}\n"
+                  f"Run directory: {run['run_directory']}\n"
+                  f"Frozen config: {run['effective_config_path']}\n"
+                  f"Catalog snapshot: {run['catalog_snapshot_path']}\n"
+                  f"Source decision: {run.get('source_decision_path')}")
         snapshot_path = run.get("effective_config_path")
         if snapshot_path and Path(snapshot_path).is_file():
             snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
@@ -352,223 +349,127 @@ class ConversationScreen(Screen):
 
     @on(Input.Submitted, "#message")
     def submit(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
+        value = event.value.strip()
         event.input.value = ""
-        if not text:
+        if not value:
             return
-        if self.pending_question:
-            sessions.add_message(self.record, "user", text, run_id=self.current_run_id,
-                                 root=self.app.experiments_root)
-            self._write_message("you", text)
+        if self.pending_question and self.current_run_id:
+            try:
+                self.service.answer(self.current_run_id, value)
+            except Exception as exc:
+                self._set_status(str(exc))
+                return
+            run_id = self.current_run_id
             self.pending_question = False
-            self.answer_queue.put(text)
-            self._set_status("Running")
+            self.current_run_id = None
+            self.refresh_record()
+            self._execute_run(resume_id=run_id, answer=value)
             return
-        if self.running or any(run["status"] in {"running", "interrupted", "waiting_input"}
-                               for run in self.record["runs"]):
-            self._set_status("Resume the unfinished run before starting another task.")
+        self._queue_task(value)
+
+    @on(Input.Submitted, "#queued-task")
+    @on(Button.Pressed, "#queue")
+    def queue_task(self) -> None:
+        field = self.query_one("#queued-task", Input)
+        value = field.value.strip()
+        field.value = ""
+        if value:
+            self._queue_task(value)
+        else:
+            field.focus()
+
+    def _queue_task(self, value: str) -> None:
+        if self.classifying:
+            self._set_status("Wait for the current request to be classified.")
             return
-        sessions.add_message(self.record, "user", text, root=self.app.experiments_root)
-        self._write_message("you", text)
-        self.running = True
-        event.input.disabled = True
-        self._set_status("Supervisor is interpreting the request")
-        self._classify(text, list(self.record["messages"][:-1]))
+        self.classifying = True
+        self._set_status("Interpreting request…")
+        self._submit_task(value)
 
     @work(thread=True)
-    def _classify(self, text: str, history: list[dict]) -> None:
+    def _submit_task(self, value: str) -> None:
         try:
-            from medbenchagent.data.dataset_catalog import load_dataset_catalog
-            from medbenchagent.runtime.session_supervisor import classify_requirement
-
-            settings = load_settings(sessions.config_path(self.experiment_name, root=self.app.experiments_root))
-            with active_settings(settings):
-                known = [{"dataset_id": e["dataset_id"], "name": e["name"]}
-                         for e in load_dataset_catalog()]
-                known += [{"dataset_id": e["dataset_id"], "name": e["name"]}
-                          for e in settings.dataset_sources]
-                decision = classify_requirement(text, known_datasets=known, history=history)
-            self.app.call_from_thread(self._classified, text, decision)
+            result = self.service.submit(value)
+            self.app.call_from_thread(self._submitted, result)
         except Exception as exc:
-            self.app.call_from_thread(self._classification_failed, str(exc))
+            self.app.call_from_thread(self._submission_failed, str(exc))
 
-    def _classification_failed(self, message: str) -> None:
-        self.running = False
-        self.query_one("#message", Input).disabled = False
-        self._set_status(f"Supervisor error: {message}")
-
-    def _classified(self, text: str, decision: Any) -> None:
-        if decision.reply:
-            sessions.add_message(self.record, "assistant", decision.reply,
-                                 root=self.app.experiments_root)
-            self._write_message("MBA", decision.reply)
-        if not decision.tasks:
-            self.running = False
-            self.query_one("#message", Input).disabled = False
+    def _submitted(self, result) -> None:
+        self.classifying = False
+        self.refresh_record()
+        if result.run_ids:
+            self._set_status(f"Queued {len(result.run_ids)} run(s)")
+        else:
             self._set_status("Ready")
-            return
-        dependency = None
-        for task in decision.tasks:
-            run = sessions.queue_run(self.record, task.kind, text, task.dataset_id,
-                                     task.requested_dataset_ids, dependency,
-                                     root=self.app.experiments_root)
-            dependency = run["id"]
-        self.running = False
-        self.refresh_runs()
         self._start_next()
 
+    def _submission_failed(self, message: str) -> None:
+        self.classifying = False
+        self.refresh_record()
+        self._set_status(f"Supervisor error: {message}")
+
     def _start_next(self) -> None:
-        if self.running:
+        if self.running or self.pending_question:
             return
+        self.refresh_record()
         unfinished = next((run for run in reversed(self.record["runs"])
                            if run["status"] in {"running", "interrupted", "waiting_input"}), None)
         if unfinished:
-            self._set_status("Unfinished run available. Press Ctrl+R to resume.")
+            if unfinished["status"] == "waiting_input":
+                self._execute_run(resume_id=unfinished["id"])
+            else:
+                self._set_status("Unfinished run available. Press Ctrl+R to resume.")
             return
-        run = sessions.pop_pending(self.record, root=self.app.experiments_root)
-        if run:
-            self._launch_run(run, resume=False)
+        if self.record["pending_runs"]:
+            self._execute_run()
 
-    def _settings_for_run(self, run: dict, *, resume: bool):
-        if not resume:
-            return load_settings(sessions.config_path(self.experiment_name,
-                                                      root=self.app.experiments_root))
-        from langgraph.checkpoint.sqlite import SqliteSaver
-
-        runs_root = Path(run["runs_root"])
-        if not (runs_root / "checkpoints.sqlite").is_file():
-            raise ValueError("Run checkpoint database is missing")
-        connection = sqlite3.connect(str(runs_root / "checkpoints.sqlite"))
-        try:
-            graph = _compile_graph(SqliteSaver(connection))
-            snapshot = graph.get_state({"configurable": {"thread_id": run["thread_id"]}})
-            path = snapshot.values.get("context", {}).get("effective_config_path")
-        finally:
-            connection.close()
-        if not path:
-            raise ValueError("Run checkpoint or frozen configuration is missing")
-        with run_settings(path) as saved:
-            return replace(saved, paths=replace(saved.paths, runs_root=runs_root))
-
-    def _launch_run(self, run: dict, *, resume: bool) -> None:
-        settings = None
-        if not resume:
-            try:
-                settings = self._settings_for_run(run, resume=False)
-            except Exception as exc:
-                sessions.update_run(self.record, run["id"], root=self.app.experiments_root,
-                                    status="blocked", summary=f"Invalid experiment configuration: {exc}")
-                sessions.block_dependents(self.record, run["id"], root=self.app.experiments_root)
-                self._set_status(f"Invalid experiment configuration: {exc}")
-                self.refresh_runs()
-                return
+    def _execute_run(self, *, resume_id: str | None = None, answer: str | None = None) -> None:
+        if self.running:
+            return
         self.running = True
-        self.current_run_id = run["id"]
-        self.query_one("#message", Input).disabled = True
-        self._set_status(f"Running {run['kind']}")
-        sessions.update_run(self.record, run["id"], root=self.app.experiments_root,
-                            status="running", runs_root=run.get("runs_root") or str(settings.paths.runs_root))
-        self.refresh_runs()
-        self._execute_run(run["id"], resume, settings)
+        self._set_status("Resuming run" if resume_id else "Running queued tasks")
+        self._execute(resume_id, answer)
 
     @work(thread=True)
-    def _execute_run(self, run_id: str, resume: bool, settings) -> None:
-        from langgraph.checkpoint.sqlite import SqliteSaver
-        from medbenchagent.cli import run_interactive_build
-
-        run = next(run for run in self.record["runs"] if run["id"] == run_id)
-        errors: list[str] = []
-        if resume:
-            try:
-                settings = self._settings_for_run(run, resume=True)
-            except Exception as exc:
-                self.app.call_from_thread(self._run_finished, run_id,
-                                          {"status": "blocked", "summary": f"Cannot resume run: {exc}"})
-                return
-
-        def output(text: str) -> None:
-            if text.startswith(("Benchmark construction failed:", "Local preflight failed:")):
-                errors.append(text)
-            self._progress_queue.put(text)
-
-        def initialized(metadata: dict) -> None:
-            self.app.call_from_thread(self._run_initialized, run_id, metadata)
-
-        def ask(prompt: str) -> str:
-            self.app.call_from_thread(self._show_question, prompt)
-            answer = self.answer_queue.get()
-            if answer is None:
-                raise EOFError
-            return answer
-
+    def _execute(self, resume_id: str | None, answer: str | None) -> None:
         try:
-            with active_settings(settings):
-                status = run_interactive_build(
-                    settings=settings, input_fn=ask, output=output,
-                    initial_requirement=None if resume else run["requirement"],
-                    resume=run["thread_id"] if resume else None,
-                    thread_id=run["thread_id"], dataset_id=run["dataset_id"],
-                    dataset_ids=run["requested_dataset_ids"], show_settings=False,
-                    experiment_name=self.experiment_name, experiments_root=str(self.app.experiments_root),
-                    run_metadata_callback=initialized,
-                )
+            events = (self.service.resume(resume_id, answer=answer) if resume_id
+                      else self.service.drive())
+            for event in events:
+                if event.kind == "progress":
+                    self._progress_queue.put(event.payload.get("text", ""))
+                else:
+                    self.app.call_from_thread(self._on_event, event)
         except Exception as exc:
-            self.app.call_from_thread(self._run_finished, run_id,
-                                      {"status": "failed", "summary": str(exc)})
-            return
-        try:
-            connection = sqlite3.connect(str(Path(run["runs_root"]) / "checkpoints.sqlite"))
-            try:
-                graph = _compile_graph(SqliteSaver(connection))
-                snapshot = graph.get_state({"configurable": {"thread_id": run["thread_id"]}})
-                values = snapshot.values or {}
-            finally:
-                connection.close()
-            context = values.get("context", {})
-            selected_assets = {dataset_id: asset.get("entry", {})
-                               for dataset_id, asset in context.get("dataset_assets", {}).items()}
-            run_status = ("waiting_input" if snapshot.tasks and
-                          any(task.interrupts for task in snapshot.tasks) else values.get("status"))
-            if status != 0 and run_status not in {"complete", "blocked", "failed"}:
-                error_text = errors[-1] if errors else ""
-                run_status = "blocked" if "Code or runtime contract changed" in error_text else "interrupted"
-            changes = {"run_id": values.get("run_id"),
-                       "run_directory": values.get("run_directory"),
-                       "effective_config_path": context.get("effective_config_path"),
-                       "catalog_snapshot_path": context.get("task_catalog_snapshot_path"),
-                       "source_decision_path": context.get("source_decision_path"),
-                       "selected_assets": selected_assets,
-                       "summary": errors[-1] if errors else values.get("summary", ""),
-                       "status": run_status or ("interrupted" if status == 130 else "failed")}
-        except Exception as exc:
-            changes = {"status": "interrupted" if status == 130 else "failed",
-                       "summary": f"Could not inspect checkpoint: {exc}"}
-        self.app.call_from_thread(self._run_finished, run_id, changes)
+            self.app.call_from_thread(self._set_status, f"Run error: {exc}")
+        finally:
+            self.app.call_from_thread(self._execution_ended)
 
-    def _show_question(self, prompt: str) -> None:
-        self.pending_question = True
-        self.query_one("#message", Input).disabled = False
-        self.query_one("#message", Input).focus()
-        self._set_status(prompt)
+    def _on_event(self, event: RunEvent) -> None:
+        self.refresh_record()
+        if event.kind == "initialized":
+            self._set_status(f"Running {event.run_session_id[:8]}")
+            self._progress_queue.put(f"[run] {event.payload.get('run_directory')}")
+        elif event.kind == "artifact":
+            self._progress_queue.put(f"[artifact] {event.payload}")
+        elif event.kind == "needs_input":
+            self.pending_question = True
+            self.current_run_id = event.run_session_id
+            question = event.payload["question"]
+            self._set_status(question)
+            self.query_one("#message", Input).placeholder = question
+            self.query_one("#message", Input).focus()
+        elif event.kind in {"finished", "error"}:
+            self._flush_progress(limit=None)
+            self._set_status(f"{event.payload.get('status')}: {event.payload.get('summary', '')}")
+            self.query_one("#message", Input).placeholder = "Describe a task"
 
-    def _run_finished(self, run_id: str, changes: dict) -> None:
+    def _execution_ended(self) -> None:
         self._flush_progress(limit=None)
-        run = sessions.update_run(self.record, run_id, root=self.app.experiments_root, **changes)
         self.running = False
-        self.current_run_id = None
-        self.pending_question = False
-        self.query_one("#message", Input).disabled = False
-        self.refresh_runs()
-        reply = f"{run['kind']}: {run['status']}. {run['summary']}"
-        sessions.add_message(self.record, "assistant", reply, run_id=run_id,
-                             root=self.app.experiments_root)
-        self._write_message("MBA", reply)
-        self._set_status("Ready" if run["status"] == "complete" else reply)
-        if run["status"] == "complete":
+        self.refresh_record()
+        if not self.pending_question:
             self._start_next()
-        elif run["status"] in {"blocked", "failed"}:
-            sessions.block_dependents(self.record, run_id, root=self.app.experiments_root)
-            self.refresh_runs()
 
     def action_resume_run(self) -> None:
         if self.running:
@@ -576,13 +477,16 @@ class ConversationScreen(Screen):
         run = next((run for run in reversed(self.record["runs"])
                     if run["status"] in {"running", "interrupted", "waiting_input"}), None)
         if run:
-            self._launch_run(run, resume=True)
+            self._execute_run(resume_id=run["id"])
         else:
             self._set_status("No unfinished run to resume.")
 
     @on(Button.Pressed, "#resume")
     def resume_button(self) -> None:
         self.action_resume_run()
+
+    def action_focus_queue(self) -> None:
+        self.query_one("#queued-task", Input).focus()
 
     def action_edit_config(self) -> None:
         self.app.push_screen(ConfigScreen(self.experiment_name))
@@ -600,7 +504,6 @@ class ConversationScreen(Screen):
     @on(Button.Pressed, "#back")
     def back_button(self) -> None:
         self.action_back()
-
 
 class MBAApp(App):
     CSS = """
@@ -656,3 +559,4 @@ class MBAApp(App):
             self.push_screen(ConfigScreen(name, new=True))
         else:
             self.push_screen(ConversationScreen(name))
+

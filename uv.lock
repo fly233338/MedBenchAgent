@@ -1850,6 +1850,7 @@ source = { editable = "." }
 dependencies = [
     { name = "chromadb" },
     { name = "duckdb" },
+    { name = "filelock" },
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "langgraph" },
@@ -1897,6 +1898,7 @@ dev = [
 requires-dist = [
     { name = "chromadb", specifier = ">=0.5.0" },
     { name = "duckdb", specifier = "==1.5.4" },
+    { name = "filelock", specifier = ">=3.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "langchain-core", specifier = ">=0.3.0" },
     { name = "langgraph", specifier = ">=0.6.0" },
