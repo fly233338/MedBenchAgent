@@ -9,35 +9,54 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, RichLog, Static, Tree
+from textual.widgets import Button, DataTable, Footer, Input, Label, RichLog, Static, Tree
 
-from medbenchagent.data.dataset_catalog import load_dataset_catalog
 from medbenchagent.runtime import sessions
-from medbenchagent.runtime.session_supervisor import classify_requirement
 from medbenchagent.settings import active_settings, load_settings, run_settings
-from medbenchagent.workflow.graph import compile_benchmark_graph
+
+
+def _compile_graph(checkpointer):
+    from medbenchagent.workflow.graph import compile_benchmark_graph
+
+    return compile_benchmark_graph(checkpointer=checkpointer)
 
 
 class ExperimentMenu(Screen):
-    BINDINGS = [Binding("ctrl+q", "app.quit", "Quit")]
+    BINDINGS = [Binding("ctrl+f", "focus_search", "Search"),
+                Binding("ctrl+n", "focus_new", "New"),
+                Binding("ctrl+o", "open_selected", "Open"),
+                Binding("escape", "focus_list", "Experiments"),
+                Binding("ctrl+q", "app.quit", "Quit")]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._entries: list[dict] = []
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        yield Static("Experiments · Select a row or enter a new name", id="menu-title")
-        yield DataTable(id="experiments")
-        with Horizontal():
-            yield Input(placeholder="new-experiment-name", id="new-name")
-            yield Button("Create", id="create", variant="primary")
-        yield Static("Names use lowercase letters, digits and hyphens.", id="menu-message")
+        with Vertical(id="menu-shell"):
+            yield Static("MBA", id="menu-brand")
+            yield Static("MEDBENCHAGENT  /  TERMINAL WORKSPACE", id="menu-subtitle")
+            with Vertical(id="menu-panel"):
+                yield Static("EXPERIMENTS", id="menu-title")
+                with Horizontal(id="menu-search-bar"):
+                    yield Input(placeholder="Search experiments  ·  Ctrl+F", id="search")
+                    yield Button("Open", id="open", variant="primary")
+                yield DataTable(id="experiments", cursor_type="row", zebra_stripes=True)
+                yield Static("↑↓ choose  ·  Enter open  ·  Ctrl+N create", id="menu-message")
+                with Horizontal(id="menu-create-bar"):
+                    yield Input(placeholder="New experiment name", id="new-name")
+                    yield Button("Create", id="create")
+            yield Static("Names use lowercase letters, digits and hyphens.", id="menu-hint")
         yield Footer()
 
     def on_mount(self) -> None:
+        self.query_one("#experiments", DataTable).add_columns("EXPERIMENT", "RUNS", "STATUS")
         self.refresh_experiments()
         self.query_one("#experiments", DataTable).focus()
 
@@ -45,12 +64,58 @@ class ExperimentMenu(Screen):
         self.refresh_experiments()
 
     def refresh_experiments(self) -> None:
+        self._entries = sessions.list_experiments(root=self.app.experiments_root)
+        self._render_entries()
+
+    def _render_entries(self) -> None:
         table = self.query_one("#experiments", DataTable)
-        table.clear(columns=True)
-        table.add_columns("Experiment", "Runs", "Latest status")
-        for record in sessions.list_experiments(root=self.app.experiments_root):
+        table.clear()
+        query = self.query_one("#search", Input).value.strip().casefold()
+        matches = [record for record in self._entries if query in record["name"].casefold()]
+        table.styles.height = min(16, max(4, len(matches) + 2))
+        for record in matches:
             status = record["runs"][-1]["status"] if record["runs"] else "new"
-            table.add_row(record["name"], str(len(record["runs"])), status, key=record["name"])
+            status_color = {"complete": "#63d6bd", "blocked": "#e8ac70",
+                            "failed": "#eb7d83", "running": "#a9c7f6"}.get(status, "#aab9ca")
+            table.add_row(record["name"], str(len(record["runs"])),
+                          Text(status.upper(), style=status_color), key=record["name"])
+        if not matches:
+            message = "No matching experiments. Create one below." if query else "No experiments yet. Create one below."
+            self.query_one("#menu-message", Static).update(message)
+        else:
+            self.query_one("#menu-message", Static).update(
+                "↑↓ choose  ·  Enter open  ·  Ctrl+N create")
+
+    @on(Input.Changed, "#search")
+    def filter_experiments(self) -> None:
+        self._render_entries()
+
+    @on(Input.Submitted, "#search")
+    @on(Button.Pressed, "#open")
+    def open_selected(self) -> None:
+        self.action_open_selected()
+
+    def action_open_selected(self) -> None:
+        table = self.query_one("#experiments", DataTable)
+        if table.row_count:
+            self.app.open_experiment(str(table.get_row_at(table.cursor_row)[0]))
+
+    def action_focus_search(self) -> None:
+        self.query_one("#search", Input).focus()
+
+    def action_focus_new(self) -> None:
+        self.query_one("#new-name", Input).focus()
+
+    def action_focus_list(self) -> None:
+        self.query_one("#experiments", DataTable).focus()
+
+    @on(DataTable.RowHighlighted, "#experiments")
+    def preview_row(self, event: DataTable.RowHighlighted) -> None:
+        record = next((entry for entry in self._entries if entry["name"] == event.row_key.value), None)
+        if record:
+            status = record["runs"][-1]["status"] if record["runs"] else "new"
+            self.query_one("#menu-message", Static).update(
+                f"{record['name']}  ·  {len(record['runs'])} runs  ·  {status}  ·  Enter to open")
 
     @on(DataTable.RowSelected, "#experiments")
     def open_row(self, event: DataTable.RowSelected) -> None:
@@ -81,10 +146,9 @@ class ConfigScreen(Screen):
         self.selected_value: object = None
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        yield Static(f"{self.experiment_name} · Configuration (defaults are shown)")
+        yield Static(f"MBA / {self.experiment_name} / CONFIGURATION", id="config-title")
         yield Tree("Configuration", id="config-tree")
-        yield Label("Select a leaf to edit. dataset_sources is managed by preparation.", id="field-label")
+        yield Label("Enter expands a section. Select a value to edit; dataset_sources is managed by preparation.", id="field-label")
         with Horizontal():
             yield Input(id="field-value", disabled=True)
             yield Button("Apply value", id="apply", disabled=True)
@@ -97,6 +161,15 @@ class ConfigScreen(Screen):
 
     def refresh_tree(self) -> None:
         tree = self.query_one("#config-tree", Tree)
+        expanded = set()
+
+        def remember(node) -> None:
+            if node.is_expanded and isinstance(node.data, tuple):
+                expanded.add(node.data)
+            for child in node.children:
+                remember(child)
+
+        remember(tree.root)
         tree.root.remove_children()
         values = sessions.config_values(self.experiment_name, root=self.app.experiments_root)
         values.setdefault("generation", {}).setdefault("max_total_tasks_per_image", None)
@@ -107,7 +180,8 @@ class ConfigScreen(Screen):
                 if isinstance(value, dict):
                     node = parent.add(key, data=current)
                     add(node, value, current)
-                    node.expand()
+                    if current in expanded or (not expanded and current == ("llm",)):
+                        node.expand()
                 else:
                     label = f"{key} = {value!r}"
                     parent.add_leaf(label, data=(current, value))
@@ -184,21 +258,21 @@ class ConversationScreen(Screen):
         self.running = False
         self.pending_question = False
         self.answer_queue: queue.Queue[str | None] = queue.Queue()
+        self._progress_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
         self.current_run_id: str | None = None
 
     def compose(self) -> ComposeResult:
-        yield Header()
         yield Static(f"MBA · {self.experiment_name}", id="session-title")
         yield Static("Ready", id="session-status")
-        with Horizontal():
-            with Vertical():
-                yield RichLog(id="conversation", wrap=True, highlight=True)
+        with Horizontal(id="session-body"):
+            with Vertical(id="chat-pane"):
+                yield RichLog(id="conversation", wrap=True, highlight=True, min_width=1)
                 yield Input(placeholder="Describe a task or answer the current question", id="message")
-            with Vertical():
-                yield DataTable(id="runs")
-                yield RichLog(id="run-detail", wrap=True, highlight=True)
-                yield RichLog(id="progress", wrap=True, highlight=True)
-        with Horizontal():
+            with Vertical(id="side-pane"):
+                yield DataTable(id="runs", cursor_type="row", zebra_stripes=True)
+                yield RichLog(id="run-detail", wrap=True, highlight=True, min_width=1)
+                yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
+        with Horizontal(id="session-actions"):
             yield Button("Resume run", id="resume")
             yield Button("Config", id="config")
             yield Button("Experiments", id="back")
@@ -213,17 +287,36 @@ class ConversationScreen(Screen):
         self.refresh_runs()
         self.query_one("#run-detail", RichLog).write("Select a run to see its frozen inputs.")
         self.query_one("#message", Input).focus()
+        self.set_interval(0.1, self._flush_progress)
         self.set_timer(0.1, self._start_next)
 
     def _write_message(self, role: str, text: str) -> None:
-        self.query_one("#conversation", RichLog).write(f"{role}: {text}")
+        label = "YOU" if role in {"user", "you"} else "MBA"
+        color = "#9ec3ef" if label == "YOU" else "#72d8c2"
+        line = Text()
+        line.append(f" {label} ", style=f"bold {color}")
+        line.append("  " + text)
+        self.query_one("#conversation", RichLog).write(line)
 
     def _set_status(self, text: str) -> None:
         self.query_one("#session-status", Static).update(text)
 
     def _log_progress(self, text: str) -> None:
         if text:
-            self.query_one("#progress", RichLog).write(text)
+            color = ("#72d8c2" if text.startswith(("[done]", "[artifact]")) else
+                     "#e8ac70" if text.startswith(("[waiting]", "Benchmark construction failed:")) else
+                     "#a5b8c8")
+            self.query_one("#progress", RichLog).write(Text(text, style=color))
+
+    def _flush_progress(self, limit: int | None = 100) -> None:
+        count = 0
+        while limit is None or count < limit:
+            try:
+                line = self._progress_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._log_progress(line)
+            count += 1
 
     def _run_initialized(self, run_id: str, metadata: dict) -> None:
         sessions.update_run(self.record, run_id, root=self.app.experiments_root,
@@ -285,6 +378,9 @@ class ConversationScreen(Screen):
     @work(thread=True)
     def _classify(self, text: str, history: list[dict]) -> None:
         try:
+            from medbenchagent.data.dataset_catalog import load_dataset_catalog
+            from medbenchagent.runtime.session_supervisor import classify_requirement
+
             settings = load_settings(sessions.config_path(self.experiment_name, root=self.app.experiments_root))
             with active_settings(settings):
                 known = [{"dataset_id": e["dataset_id"], "name": e["name"]}
@@ -337,12 +433,14 @@ class ConversationScreen(Screen):
         if not resume:
             return load_settings(sessions.config_path(self.experiment_name,
                                                       root=self.app.experiments_root))
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
         runs_root = Path(run["runs_root"])
         if not (runs_root / "checkpoints.sqlite").is_file():
             raise ValueError("Run checkpoint database is missing")
         connection = sqlite3.connect(str(runs_root / "checkpoints.sqlite"))
         try:
-            graph = compile_benchmark_graph(checkpointer=SqliteSaver(connection))
+            graph = _compile_graph(SqliteSaver(connection))
             snapshot = graph.get_state({"configurable": {"thread_id": run["thread_id"]}})
             path = snapshot.values.get("context", {}).get("effective_config_path")
         finally:
@@ -353,15 +451,17 @@ class ConversationScreen(Screen):
             return replace(saved, paths=replace(saved.paths, runs_root=runs_root))
 
     def _launch_run(self, run: dict, *, resume: bool) -> None:
-        try:
-            settings = self._settings_for_run(run, resume=resume)
-        except Exception as exc:
-            sessions.update_run(self.record, run["id"], root=self.app.experiments_root,
-                                status="blocked", summary=f"Invalid experiment configuration: {exc}")
-            sessions.block_dependents(self.record, run["id"], root=self.app.experiments_root)
-            self._set_status(f"Invalid experiment configuration: {exc}")
-            self.refresh_runs()
-            return
+        settings = None
+        if not resume:
+            try:
+                settings = self._settings_for_run(run, resume=False)
+            except Exception as exc:
+                sessions.update_run(self.record, run["id"], root=self.app.experiments_root,
+                                    status="blocked", summary=f"Invalid experiment configuration: {exc}")
+                sessions.block_dependents(self.record, run["id"], root=self.app.experiments_root)
+                self._set_status(f"Invalid experiment configuration: {exc}")
+                self.refresh_runs()
+                return
         self.running = True
         self.current_run_id = run["id"]
         self.query_one("#message", Input).disabled = True
@@ -373,15 +473,23 @@ class ConversationScreen(Screen):
 
     @work(thread=True)
     def _execute_run(self, run_id: str, resume: bool, settings) -> None:
+        from langgraph.checkpoint.sqlite import SqliteSaver
         from medbenchagent.cli import run_interactive_build
 
         run = next(run for run in self.record["runs"] if run["id"] == run_id)
         errors: list[str] = []
+        if resume:
+            try:
+                settings = self._settings_for_run(run, resume=True)
+            except Exception as exc:
+                self.app.call_from_thread(self._run_finished, run_id,
+                                          {"status": "blocked", "summary": f"Cannot resume run: {exc}"})
+                return
 
         def output(text: str) -> None:
             if text.startswith(("Benchmark construction failed:", "Local preflight failed:")):
                 errors.append(text)
-            self.app.call_from_thread(self._log_progress, text)
+            self._progress_queue.put(text)
 
         def initialized(metadata: dict) -> None:
             self.app.call_from_thread(self._run_initialized, run_id, metadata)
@@ -411,7 +519,7 @@ class ConversationScreen(Screen):
         try:
             connection = sqlite3.connect(str(Path(run["runs_root"]) / "checkpoints.sqlite"))
             try:
-                graph = compile_benchmark_graph(checkpointer=SqliteSaver(connection))
+                graph = _compile_graph(SqliteSaver(connection))
                 snapshot = graph.get_state({"configurable": {"thread_id": run["thread_id"]}})
                 values = snapshot.values or {}
             finally:
@@ -444,6 +552,7 @@ class ConversationScreen(Screen):
         self._set_status(prompt)
 
     def _run_finished(self, run_id: str, changes: dict) -> None:
+        self._flush_progress(limit=None)
         run = sessions.update_run(self.record, run_id, root=self.app.experiments_root, **changes)
         self.running = False
         self.current_run_id = None
@@ -495,21 +604,43 @@ class ConversationScreen(Screen):
 
 class MBAApp(App):
     CSS = """
+    App, Screen { background: #0d131b; color: #dce6ef; }
     Screen { layout: vertical; }
-    #menu-title, #session-title, #session-status, #run-detail, #config-message,
-    #menu-message, #field-label { padding: 0 1; }
-    #experiments, #config-tree { height: 1fr; }
-    #conversation { width: 2fr; height: 1fr; border: solid $accent; }
-    #runs { height: 35%; }
-    #run-detail { height: 30%; overflow: auto; }
-    #progress { height: 35%; border: solid $surface-lighten-2; }
-    Horizontal { height: auto; }
-    ConversationScreen > Horizontal { height: 1fr; }
-    ConversationScreen > Horizontal:last-of-type { height: auto; }
-    ConversationScreen Horizontal > Vertical { height: 1fr; }
+    Header { background: #15212b; color: #dce6ef; }
+    Footer { background: #15212b; color: #a5b8c8; }
+    ExperimentMenu { align: center middle; }
+    #menu-shell { width: 84; max-width: 100%; height: 1fr; align: center middle; padding: 1 2; }
+    #menu-brand { height: 3; content-align: center middle; color: #72d8c2; text-style: bold; }
+    #menu-subtitle { height: 2; content-align: center middle; color: #869bab; }
+    #menu-panel { width: 100%; height: auto; max-height: 26; background: #151e28; padding: 1 2; }
+    #menu-title { height: 2; color: #72d8c2; text-style: bold; padding: 0 1; }
+    #menu-search-bar, #menu-create-bar { width: 100%; height: 3; }
+    #menu-create-bar { border-top: solid #263c45; padding-top: 1; height: 4; }
+    #menu-message { height: 2; color: #a5b8c8; padding: 0 1; }
+    #menu-hint { height: 2; content-align: center middle; color: #708696; }
+    #experiments { width: 100%; height: 8; background: #151e28; border: none; }
+    #experiments:focus { border: none; }
+    #config-tree { height: 1fr; border: round #315456; background: #151e28; }
+    #config-title { height: 2; padding: 0 2; color: #72d8c2; text-style: bold; }
+    #field-label, #config-message { padding: 0 1; color: #a5b8c8; }
+    #session-title { height: 2; padding: 0 2; color: #72d8c2; text-style: bold; }
+    #session-status { height: 2; padding: 0 2; color: #a5b8c8; }
+    #session-body { width: 100%; height: 1fr; }
+    #chat-pane { width: 2fr; height: 1fr; min-width: 36; }
+    #side-pane { width: 1fr; height: 1fr; min-width: 28; }
+    #conversation { width: 100%; height: 1fr; border: round #315456; background: #111b25; }
+    #message { width: 100%; height: 3; }
+    #runs { width: 100%; height: 30%; border: round #315456; background: #151e28; }
+    #run-detail { width: 100%; height: 35%; border: round #263c45; background: #111b25; }
+    #progress { width: 100%; height: 35%; border: round #263c45; background: #111b25; }
+    #session-actions { width: 100%; height: 3; background: #151e28; }
+    #menu-search-bar, #menu-create-bar, ConfigScreen > Horizontal { height: auto; }
     Button { margin: 0 1; }
-    Input { width: 1fr; }
+    #search, #new-name, #field-value { width: 1fr; }
+    Input:focus { border: tall #72d8c2; }
     """
+
+    TITLE = "MBA · MedBenchAgent"
 
     def __init__(self, *, experiments_root: Path = sessions.EXPERIMENTS_ROOT,
                  config_template: Path | None = None) -> None:

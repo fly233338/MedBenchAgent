@@ -20,6 +20,7 @@ uv run medbenchagent --config config/local.toml.example
 The terminal interface creates `experiments/<name>/config.toml` from visible defaults and lets you edit
 non-secret fields with the keyboard. `--config` seeds newly created experiments only; reopening an experiment
 uses its saved TOML. Nonempty supported field environment variables still override TOML values in a new run.
+In the experiment list, use Up/Down and Enter or click a row; Ctrl+F searches and Ctrl+N focuses new experiment input.
 Keep secrets outside version control. The CLI disables optional external tracing, downloads
 and telemetry; the configured language-model API is still used.
 LLM overrides are `MEDBENCH_LLM_API_KEY`, `MEDBENCH_LLM_MODEL`, `MEDBENCH_LLM_BASE_URL`,

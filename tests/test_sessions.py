@@ -115,8 +115,8 @@ def test_resume_settings_ignore_changed_experiment_toml(monkeypatch, tmp_path):
     runs_root = tmp_path / "runs"
     runs_root.mkdir()
     (runs_root / "checkpoints.sqlite").touch()
-    monkeypatch.setattr("medbenchagent.tui.compile_benchmark_graph",
-                        lambda **_kwargs: SimpleNamespace(get_state=lambda _config: SimpleNamespace(
+    monkeypatch.setattr("medbenchagent.tui._compile_graph",
+                        lambda _checkpointer: SimpleNamespace(get_state=lambda _config: SimpleNamespace(
                             values={"context": {"effective_config_path": str(saved)}})))
     screen = ConversationScreen("pilot")
     screen._app = SimpleNamespace(experiments_root=tmp_path / "experiments")
@@ -150,5 +150,76 @@ def test_tui_create_config_conversation(tmp_path):
             await pilot.pause()
             assert isinstance(app.screen, ConversationScreen)
             assert (tmp_path / "pilot" / "config.toml").is_file()
+
+    asyncio.run(check())
+
+
+def test_experiment_row_opens_with_enter(tmp_path):
+    sessions.create_experiment("first", root=tmp_path)
+    sessions.create_experiment("second", root=tmp_path)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            assert isinstance(app.screen, ExperimentMenu)
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ConversationScreen)
+            assert app.screen.experiment_name == "first"
+
+    asyncio.run(check())
+
+
+def test_experiment_search_and_keyboard_navigation(tmp_path):
+    sessions.create_experiment("first", root=tmp_path)
+    sessions.create_experiment("second", root=tmp_path)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+f", "f", "i", "r")
+            await pilot.pause()
+            table = app.screen.query_one("#experiments")
+            assert table.row_count == 1
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ConversationScreen)
+            assert app.screen.experiment_name == "first"
+
+    asyncio.run(check())
+
+
+def test_experiment_row_opens_with_mouse(tmp_path):
+    sessions.create_experiment("pilot", root=tmp_path)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.click("#experiments", offset=(2, 1))
+            await pilot.pause()
+            assert isinstance(app.screen, ConversationScreen)
+
+    asyncio.run(check())
+
+
+def test_run_row_shows_details_with_enter(tmp_path):
+    record = sessions.create_experiment("pilot", root=tmp_path)
+    run = sessions.queue_run(record, "prepare_dataset", "Prepare", "breast", root=tmp_path)
+    record["pending_runs"].clear()
+    sessions.update_run(record, run["id"], root=tmp_path,
+                        status="complete", summary="Prepared breast")
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ConversationScreen)
+            table = app.screen.query_one("#runs")
+            table.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            detail = app.screen.query_one("#run-detail")
+            assert any("Prepared breast" in str(line) for line in detail.lines)
 
     asyncio.run(check())
