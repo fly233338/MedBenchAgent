@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rich.text import Text
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
@@ -32,15 +32,15 @@ class ExperimentMenu(Screen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="menu-shell"):
-            yield Static("MBA", id="menu-brand")
-            yield Static("MEDBENCHAGENT  /  TERMINAL WORKSPACE", id="menu-subtitle")
+            yield Static("MedBenchAgent", id="menu-brand")
+            yield Static("Experiments  /  choose a workspace or create a new one", id="menu-subtitle")
             with Vertical(id="menu-panel"):
-                yield Static("EXPERIMENTS", id="menu-title")
+                yield Static("RECENT EXPERIMENTS", id="menu-title")
                 with Horizontal(id="menu-search-bar"):
                     yield Input(placeholder="Search experiments  ·  Ctrl+F", id="search")
                     yield Button("Open", id="open", variant="primary")
                 yield DataTable(id="experiments", cursor_type="row", zebra_stripes=True)
-                yield Static("↑↓ choose  ·  Enter open  ·  Ctrl+N create", id="menu-message")
+                yield Static("↑↓ select  ·  Enter open  ·  Ctrl+N new", id="menu-message")
                 with Horizontal(id="menu-create-bar"):
                     yield Input(placeholder="New experiment name", id="new-name")
                     yield Button("Create", id="create")
@@ -64,7 +64,6 @@ class ExperimentMenu(Screen):
         table.clear()
         query = self.query_one("#search", Input).value.strip().casefold()
         matches = [record for record in self._entries if query in record["name"].casefold()]
-        table.styles.height = min(16, max(4, len(matches) + 2))
         for record in matches:
             status = record["runs"][-1]["status"] if record["runs"] else "new"
             status_color = {"complete": "#63d6bd", "blocked": "#e8ac70",
@@ -76,7 +75,7 @@ class ExperimentMenu(Screen):
             self.query_one("#menu-message", Static).update(message)
         else:
             self.query_one("#menu-message", Static).update(
-                "↑↓ choose  ·  Enter open  ·  Ctrl+N create")
+                "↑↓ select  ·  Enter open  ·  Ctrl+N new")
 
     @on(Input.Changed, "#search")
     def filter_experiments(self) -> None:
@@ -140,7 +139,7 @@ class ConfigScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static(f"MBA / {self.experiment_name} / CONFIGURATION", id="config-title")
         yield Tree("Configuration", id="config-tree")
-        yield Label("Enter expands a section. Select a value to edit; dataset_sources is managed by preparation.", id="field-label")
+        yield Label("Edit values for future runs; dataset_sources is managed by preparation.", id="field-label")
         with Horizontal():
             yield Input(id="field-value", disabled=True)
             yield Button("Apply value", id="apply", disabled=True)
@@ -241,6 +240,7 @@ class ConversationScreen(Screen):
     BINDINGS = [Binding("ctrl+e", "edit_config", "Config"),
                 Binding("ctrl+r", "resume_run", "Resume"),
                 Binding("ctrl+n", "focus_queue", "Queue task"),
+                Binding("ctrl+b", "toggle_details", "Details"),
                 Binding("escape", "back", "Experiments"),
                 Binding("ctrl+q", "app.quit", "Quit")]
 
@@ -257,7 +257,7 @@ class ConversationScreen(Screen):
         self._progress_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
 
     def compose(self) -> ComposeResult:
-        yield Static(f"MBA · {self.experiment_name}", id="session-title")
+        yield Static(f"MedBenchAgent  /  {self.experiment_name}", id="session-title")
         yield Static("Ready", id="session-status")
         with Horizontal(id="session-body"):
             with Vertical(id="chat-pane"):
@@ -271,6 +271,7 @@ class ConversationScreen(Screen):
                     yield Input(placeholder="New task while answering", id="queued-task")
                     yield Button("Queue task", id="queue")
         with Horizontal(id="session-actions"):
+            yield Button("Details  ^B", id="toggle-side")
             yield Button("Resume run", id="resume")
             yield Button("Config", id="config")
             yield Button("Experiments", id="back")
@@ -488,6 +489,14 @@ class ConversationScreen(Screen):
     def action_focus_queue(self) -> None:
         self.query_one("#queued-task", Input).focus()
 
+    def action_toggle_details(self) -> None:
+        sidebar = self.query_one("#side-pane", Vertical)
+        sidebar.display = not sidebar.display
+
+    @on(Button.Pressed, "#toggle-side")
+    def toggle_details_button(self) -> None:
+        self.action_toggle_details()
+
     def action_edit_config(self) -> None:
         self.app.push_screen(ConfigScreen(self.experiment_name))
 
@@ -507,40 +516,48 @@ class ConversationScreen(Screen):
 
 class MBAApp(App):
     CSS = """
-    App, Screen { background: #0d131b; color: #dce6ef; }
+    App, Screen { background: #101319; color: #d9dce5; }
     Screen { layout: vertical; }
-    Header { background: #15212b; color: #dce6ef; }
-    Footer { background: #15212b; color: #a5b8c8; }
-    ExperimentMenu { align: center middle; }
-    #menu-shell { width: 84; max-width: 100%; height: 1fr; align: center middle; padding: 1 2; }
-    #menu-brand { height: 3; content-align: center middle; color: #72d8c2; text-style: bold; }
-    #menu-subtitle { height: 2; content-align: center middle; color: #869bab; }
-    #menu-panel { width: 100%; height: auto; max-height: 26; background: #151e28; padding: 1 2; }
-    #menu-title { height: 2; color: #72d8c2; text-style: bold; padding: 0 1; }
+    Footer { background: #171c24; color: #9aa6b6; }
+    Button { margin: 0 1 0 0; min-width: 10; background: #242b36; color: #d9dce5; border: none; }
+    Button:focus { background: #34445f; }
+    Input { background: #1a2029; border: tall #323c4b; }
+    Input:focus { border: tall #82aaff; }
+    DataTable { background: #171c24; color: #d9dce5; }
+
+    #menu-shell { width: 100%; height: 1fr; padding: 1 3 0 3; }
+    #menu-brand { height: 1; color: #a8c4ff; text-style: bold; }
+    #menu-subtitle { height: 2; color: #8492a4; }
+    #menu-panel { width: 100%; height: 1fr; background: #171c24; padding: 1 2; }
+    #menu-title { height: 1; color: #a8c4ff; text-style: bold; }
     #menu-search-bar, #menu-create-bar { width: 100%; height: 3; }
-    #menu-create-bar { border-top: solid #263c45; padding-top: 1; height: 4; }
-    #menu-message { height: 2; color: #a5b8c8; padding: 0 1; }
-    #menu-hint { height: 2; content-align: center middle; color: #708696; }
-    #experiments { width: 100%; height: 8; background: #151e28; border: none; }
+    #menu-create-bar { background: #171c24; }
+    #menu-message { height: 1; color: #9aa6b6; }
+    #menu-hint { height: 1; color: #718095; }
+    #experiments { width: 100%; height: 1fr; min-height: 3; border: none; }
     #experiments:focus { border: none; }
-    #config-tree { height: 1fr; border: round #315456; background: #151e28; }
-    #config-title { height: 2; padding: 0 2; color: #72d8c2; text-style: bold; }
-    #field-label, #config-message { padding: 0 1; color: #a5b8c8; }
-    #session-title { height: 2; padding: 0 2; color: #72d8c2; text-style: bold; }
-    #session-status { height: 2; padding: 0 2; color: #a5b8c8; }
+    #search, #new-name, #field-value, #queued-task { width: 1fr; }
+    #open, #create { width: 12; }
+
+    ConfigScreen { padding: 1 2 0 2; }
+    #config-title { height: 1; color: #a8c4ff; text-style: bold; }
+    #config-tree { height: 1fr; background: #171c24; border: none; }
+    #field-label, #config-message { height: 1; color: #9aa6b6; }
+    ConfigScreen > Horizontal { height: 3; }
+
+    #session-title { height: 1; padding: 0 2; color: #a8c4ff; text-style: bold; }
+    #session-status { height: 1; padding: 0 2; color: #9aa6b6; }
     #session-body { width: 100%; height: 1fr; }
-    #chat-pane { width: 2fr; height: 1fr; min-width: 36; }
-    #side-pane { width: 1fr; height: 1fr; min-width: 28; }
-    #conversation { width: 100%; height: 1fr; border: round #315456; background: #111b25; }
+    #chat-pane { width: 1fr; height: 1fr; min-width: 24; padding: 0 1 0 2; }
+    #side-pane { width: 36; height: 1fr; min-width: 26; background: #171c24; padding: 0 1; }
+    #conversation { width: 100%; height: 1fr; background: #101319; border: none; }
     #message { width: 100%; height: 3; }
-    #runs { width: 100%; height: 30%; border: round #315456; background: #151e28; }
-    #run-detail { width: 100%; height: 35%; border: round #263c45; background: #111b25; }
-    #progress { width: 100%; height: 35%; border: round #263c45; background: #111b25; }
-    #session-actions { width: 100%; height: 3; background: #151e28; }
-    #menu-search-bar, #menu-create-bar, ConfigScreen > Horizontal { height: auto; }
-    Button { margin: 0 1; }
-    #search, #new-name, #field-value { width: 1fr; }
-    Input:focus { border: tall #72d8c2; }
+    #runs { width: 100%; height: 30%; min-height: 4; border: none; }
+    #run-detail { width: 100%; height: 35%; min-height: 4; border-top: solid #323c4b; }
+    #progress { width: 100%; height: 1fr; min-height: 3; border-top: solid #323c4b; }
+    #queue-bar { width: 100%; height: 3; }
+    #queue { width: 12; }
+    #session-actions { width: 100%; height: 3; background: #171c24; padding: 0 2; }
     """
 
     TITLE = "MBA · MedBenchAgent"
@@ -553,6 +570,20 @@ class MBAApp(App):
 
     def on_mount(self) -> None:
         self.push_screen(ExperimentMenu())
+
+    def get_system_commands(self, screen: Screen):
+        yield from super().get_system_commands(screen)
+        if isinstance(screen, ExperimentMenu):
+            yield SystemCommand("Search experiments", "Focus the experiment search", screen.action_focus_search)
+            yield SystemCommand("New experiment", "Focus the new experiment field", screen.action_focus_new)
+            yield SystemCommand("Open experiment", "Open the highlighted experiment", screen.action_open_selected)
+        elif isinstance(screen, ConversationScreen):
+            yield SystemCommand("Queue task", "Focus the task queue field", screen.action_focus_queue)
+            yield SystemCommand("Run details", "Toggle the run detail sidebar", screen.action_toggle_details)
+            yield SystemCommand("Resume run", "Resume an unfinished run", screen.action_resume_run)
+            yield SystemCommand("Experiment config", "Edit configuration for future runs", screen.action_edit_config)
+        elif isinstance(screen, ConfigScreen):
+            yield SystemCommand("Enter conversation", "Return to the experiment", screen.action_save)
 
     def open_experiment(self, name: str, *, configure: bool = False) -> None:
         if configure:

@@ -88,7 +88,13 @@ class ConversationService:
                                        "summary": f"Could not inspect checkpoint: {exc}"}
                         if run.get("summary") and changes.get("status") == "interrupted":
                             changes.pop("summary", None)
-                        sessions.update_run(record, run["id"], root=self.root, **changes)
+                        updated = sessions.update_run(record, run["id"], root=self.root, **changes)
+                        if updated["status"] in {"complete", "blocked", "failed"}:
+                            reply = f"{updated['kind']}: {updated['status']}. {updated.get('summary', '')}"
+                            sessions.add_message(record, "assistant", reply, run_id=run["id"],
+                                                 root=self.root)
+                            if updated["status"] in {"blocked", "failed"}:
+                                sessions.block_dependents(record, run["id"], root=self.root)
                     return record
         except Timeout:
             return self.record()

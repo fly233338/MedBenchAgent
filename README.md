@@ -28,6 +28,8 @@ In the experiment list, use Up/Down and Enter or click a row; Ctrl+F searches an
 In a conversation, requests submitted while a Run works enter a serial queue. During clarification, the main
 input answers the current Run; the separate Queue task field submits another request. The CLI `run` command
 requires an existing experiment and prints the session Run IDs accepted by `resume`.
+Ctrl+P opens the command palette, and Ctrl+B toggles the Run details sidebar in a conversation.
+The compact layout and command palette follow the interaction style of [OpenCode's TUI](https://opencode.ai/docs/tui/).
 Keep secrets outside version control. The CLI disables optional external tracing, downloads
 and telemetry; the configured language-model API is still used.
 LLM overrides are `MEDBENCH_LLM_API_KEY`, `MEDBENCH_LLM_MODEL`, `MEDBENCH_LLM_BASE_URL`,
