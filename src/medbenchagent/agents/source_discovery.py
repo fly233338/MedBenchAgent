@@ -58,6 +58,15 @@ def _inventory(root: Path) -> dict:
             "table_headers": table_headers, "directory_scan_limited": visited > 2000}
 
 
+def _missing_inputs(root: Path, inventory: dict) -> list[str]:
+    missing = []
+    if not (root / "annotation.jsonl").is_file() and not inventory["counts"]["tables"]:
+        missing.append("annotation or source table")
+    if not inventory["counts"]["images"] and not (root / "image_manifest.jsonl").is_file():
+        missing.append("images or image manifest")
+    return missing
+
+
 def discover_source(context: dict, dataset_id: str) -> dict:
     """Persist a validated source decision before synchronizing experiment TOML."""
     folder = Path(context["run_directory"]) / ".runtime" / "source_discovery" / dataset_id
@@ -91,11 +100,20 @@ def discover_source(context: dict, dataset_id: str) -> dict:
             raise ValueError("Raw directory must not contain this run's output directory")
         inventory = _inventory(root)
         atomic_write_json(folder / "source_inventory.json", inventory)
+        missing = _missing_inputs(root, inventory)
+        if missing:
+            replacement = interrupt({"kind": "clarification", "role": "DataProcessingAgent",
+                                     "question": (f"{root} lacks {', '.join(missing)}. "
+                                                  "Provide the directory containing the dataset tables and images.")})
+            root = Path(replacement).expanduser().resolve()
+            if not root.is_dir() or Path(context["run_directory"]).resolve().is_relative_to(root):
+                raise ValueError(f"Replacement raw directory is unavailable or contains run output: {root}")
+            inventory = _inventory(root)
+            atomic_write_json(folder / "source_inventory.json", inventory)
+            missing = _missing_inputs(root, inventory)
+        if missing:
+            raise ValueError(f"Raw directory lacks {', '.join(missing)}: {root}")
         annotation = (root / "annotation.jsonl").is_file()
-        if not annotation and not inventory["counts"]["tables"]:
-            raise ValueError(f"No annotation or source table found beneath {root}")
-        if not inventory["counts"]["images"] and not (root / "image_manifest.jsonl").is_file():
-            raise ValueError(f"No images or image manifest found beneath {root}")
         source = Source(id="original", root=str(root), kind="annotation" if annotation else "raw")
         proposed_name = proposal.dataset_name or ""
         name = (proposed_name if proposed_name and

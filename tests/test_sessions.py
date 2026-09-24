@@ -78,6 +78,24 @@ def test_source_discovery_persists_decision_before_config(monkeypatch, tmp_path)
     assert sessions.config_values("pilot", root=tmp_path / "experiments")["dataset_sources"][0]["dataset_id"] == "breast"
 
 
+def test_source_discovery_asks_for_complete_directory(monkeypatch, tmp_path):
+    incomplete = tmp_path / "incomplete"
+    incomplete.mkdir()
+    complete = tmp_path / "complete"
+    complete.mkdir()
+    (complete / "clinical.csv").write_text("image,label\na.png,benign\n", encoding="utf-8")
+    (complete / "a.png").write_bytes(b"image")
+    monkeypatch.setattr("medbenchagent.agents.source_discovery.complete_json",
+                        lambda *_args: {"root": str(incomplete), "dataset_name": None})
+    questions = []
+    monkeypatch.setattr("medbenchagent.agents.source_discovery.interrupt",
+                        lambda question: questions.append(question["question"]) or str(complete))
+    entry = discover_source({"run_directory": str(tmp_path / "run"),
+                             "user_requirement": "Prepare the dataset"}, "dataset")
+    assert questions and "tables and images" in questions[0]
+    assert entry["sources"][0]["root"] == str(complete)
+
+
 def test_no_task_reply_does_not_create_run(monkeypatch, tmp_path):
     record = sessions.create_experiment("pilot", root=tmp_path)
     monkeypatch.setattr("medbenchagent.runtime.session_supervisor.complete_json",

@@ -12,18 +12,15 @@ Use Python 3.11 or newer and install the project dependencies:
 
 ```powershell
 uv sync
+uv run medbenchagent
+# Optional: use an existing TOML file as the starting config for newly created experiments.
 uv run medbenchagent --config config/local.toml.example
-uv run medbenchagent experiment new rare-disease-pilot
-uv run medbenchagent experiment rare-disease-pilot
-uv run medbenchagent build
-uv run medbenchagent build --resume <printed-resume-identifier>
 ```
 
-Configure the model API, remote embedding/reranker endpoints, medical materials and dataset catalog in
-an experiment TOML file. The root-level `--config` selects it; without that flag, `MEDBENCH_CONFIG` selects
-an override, then `config/default.toml` supplies defaults. A CLI path is relative to the current directory;
-nonempty supported field environment variables still override TOML values. The CLI prints the active file,
-override keys and effective values. Keep secrets outside version control. The CLI disables optional external tracing, downloads
+The terminal interface creates `experiments/<name>/config.toml` from visible defaults and lets you edit
+non-secret fields with the keyboard. `--config` seeds newly created experiments only; reopening an experiment
+uses its saved TOML. Nonempty supported field environment variables still override TOML values in a new run.
+Keep secrets outside version control. The CLI disables optional external tracing, downloads
 and telemetry; the configured language-model API is still used.
 LLM overrides are `MEDBENCH_LLM_API_KEY`, `MEDBENCH_LLM_MODEL`, `MEDBENCH_LLM_BASE_URL`,
 `MEDBENCH_LLM_TIMEOUT_SECONDS` and `MEDBENCH_LLM_MAX_RETRIES`. Existing `DEEPSEEK_*` aliases remain
@@ -31,7 +28,7 @@ supported; nonempty neutral names take precedence. Empty overrides are ignored; 
 parsed and range-checked. API keys are excluded from configuration snapshots.
 Optional RAG service keys are `MEDBENCH_EMBEDDING_API_KEY` and `MEDBENCH_RERANKER_API_KEY`.
 
-Build, prepare and new experiments share local preflight checks. The Blueprint is required for construction,
+Preparation and construction runs share local preflight checks. The Blueprint is required for construction,
 not preparation alone. PDF materials and configured embedding/reranker endpoints are optional: when absent,
 retrieval tools are disabled and planning starts with empty Materials. Configured services are called only
 when retrieval runs; an HTTP failure stops the run with its checkpoint preserved for recovery. The Planner
@@ -39,23 +36,17 @@ selects references, and retrieval defaults to `rag.result_limit`. These settings
 Post-generation semantic auditing has been removed; remove the obsolete `[audit]` section from local overrides.
 
 The static task template is `config/blueprint.json`. Runs never write back to this file.
-Run initialization freezes the Blueprint template and PDF materials. It does not copy the Dataset Catalog
-or publish a working Blueprint path before that file exists. New selections read the live Catalog and
-freeze their actual candidate universe and Cards; resuming the same selection reuses that snapshot.
-The default command opens a single-experiment prompt. Enter a natural-language requirement to create an
-automatically named experiment and run it, or use `/new [name]`, `/resume [name]`, `/status`, `/config`,
-and `/quit`. `/resume` without a name lists experiments. At a clarification prompt, answer in natural language
-or use `/status`, `/config`, or `/quit`; quitting preserves the checkpoint. The CLI prints agent and tool events
-as they occur, reports the final status, and exits. The `experiment` command retains its text selector.
-An Experiment is a stable name for one persistent LangGraph thread, not a collection of runs.
-Names, status, datasets, Git commit and run-directory references live in `experiments.json` beside the
-configured `paths.runs_root`. SQLite checkpoints remain inside that runs directory and are the recovery authority.
-Open an experiment by name to resume an interruption or answer a pending question; opening a completed
-experiment only displays its results. The active run uses its saved effective configuration even if the
-original TOML has changed. `/resume` searches the registry under the currently selected `paths.runs_root`.
-The original `build/prepare --resume <identifier>` commands remain available for low-level recovery.
-Resume reads the saved run configuration and verifies the recorded source identities. The runtime contract is
-`agent-runtime.v13`; old checkpoints are not migrated. Code or runtime-contract changes require a new run. Existing prepared bundles without v2 integrity bindings must be explicitly prepared again.
+Each run freezes its effective configuration, Blueprint, PDF materials, and the catalog and candidate Cards
+visible at its start. The terminal stays in one experiment conversation after a run ends. Type a new task,
+answer a pending clarification in the same input area, or select a run to inspect its status and frozen paths.
+Ctrl+E opens the configuration editor; Ctrl+R resumes an unfinished run. A single request for preparation
+and construction creates two independent runs in sequence. A build request does not automatically prepare
+missing raw data: request preparation first, then start a new build run.
+Conversation history and run references live in `experiments/<name>/session.json`. SQLite checkpoints remain
+under the run root and are the recovery authority. Reopening an interrupted run uses its saved effective
+configuration even if experiment TOML changed. Resume verifies code, source identities and selected assets.
+The runtime contract is `agent-runtime.v14`; old checkpoints are not migrated. Code or runtime-contract
+changes require a new run. Existing prepared bundles without v2 integrity bindings must be explicitly prepared again.
 Keep the run directory and prepared dataset assets intact; external input changes are picked up by a new run.
 
 The RAG service base URLs include `/v1`. vLLM provides the [OpenAI embeddings endpoint](https://docs.vllm.ai/en/latest/models/pooling_models/embed/)
@@ -81,10 +72,8 @@ Modality scopes explicitly identify every covered modality, inclusion/exclusion 
 alternatives such as CT or MRI stay in one scalar condition. Unsupported scope requires inspected evidence.
 Without explicit allocation preferences, all levels use deterministic equal weights. Non-default or zero weights
 must cite preferences extracted from the user's words; clinical topics alone do not authorize unequal weighting.
-When no prepared dataset matches, the system selects relevant configured sources, prepares and registers
-them, then selects prepared data again. Missing sources or unavailable paths produce a configuration
-diagnostic instead of repeated path questions. Update config and start a new run to change source paths.
-The Supervisor interprets preparation-only, build and preparation-then-build requests; professional agents
+When no prepared dataset matches, the build run reports the missing data and waits for a separate preparation
+request. The session Supervisor interprets preparation-only, build and combined requests; professional agents
 receive explicit structured objectives, constraints, preferences and revision notes under stable instructions.
 Artifact dependencies determine which actions can execute. A changed delegation invalidates its downstream outputs.
 Each Dataset follows Plan → template review, with task defects returned to Planning. Allocation waits until
@@ -111,20 +100,18 @@ Prepare each independent dataset once, then reuse its registered Card in benchma
 
 ```powershell
 uv sync --extra data-processing
-uv run medbenchagent experiment new breast-us-prepare --prepare-dataset breast-us
-uv run medbenchagent prepare --dataset-id breast-us
-uv run medbenchagent prepare --dataset-id breast-us --resume <printed-resume-identifier>
+uv run medbenchagent
+# In the conversation: Prepare BrEaST from D:/Data/BrEaST.
+# Later: Build a 20-question English breast ultrasound benchmark from BrEaST.
 uv run medbenchagent register --dataset-id breast-us --bundle D:/Data/Prepared/breast-us/version
 uv run medbenchagent refresh-card --dataset-id breast-us
-uv run medbenchagent build
-uv run medbenchagent build --dataset breast-us --dataset busbra
-uv run medbenchagent experiment new selected-pilot --dataset breast-us --dataset busbra
 ```
 
-Register raw inputs in `[[dataset_sources]]` in your config, with `dataset_id`, `name`, `description` and
-`[[dataset_sources.sources]]` entries (`id`, `root`, `kind`, `annotation`, optional `version`); see
-`config/local.toml.example`. Relative roots resolve from the project root. `prepare` takes natural-language
-preparation requirements; paths are read from config, never supplied by the model. Valid registered data
+Raw inputs can be discovered from a preparation request. The DataProcessing source-discovery step checks
+the directory, table headers and image files, then records validated sources in the run and experiment TOML.
+It asks for a path when missing, inaccessible or lacking required table/image inputs. You may also preconfigure `[[dataset_sources]]` with
+`dataset_id`, `name`, `description` and source entries (`id`, `root`, `kind`, `annotation`, optional `version`);
+see `config/local.toml.example`. Relative roots resolve from the project root. Valid registered data
 is reused by default even if its original raw sources are unavailable. Explicitly request rebuilding to
 prepare a new version. Disabled or broken registered datasets require repair or explicit rebuilding.
 Supervisor can page datasets and inspect readiness without modifying them.
@@ -150,7 +137,7 @@ provenance, not semantic correctness. Local/Docker backend selection is unchange
 
 Prepared versions live beneath `paths.prepared_datasets_root` (default `datasets/Prepared`). Catalog entries
 contain dataset_id, name, description, available and paths to annotation, image manifest, Profile and Card.
-Existing normalized datasets need `prepare` before selection; build does not prepare the whole catalog.
+Existing normalized datasets need preparation before selection; build does not prepare the whole catalog.
 Already prepared bundles with a missing or v1 Card can use `refresh-card` without reprocessing data.
 Cards describe only the dataset, independent of Blueprint. Source descriptions come from verified document
 quotations; the benchmark goal is never passed to Card generation. The preparation agent must explicitly
@@ -161,8 +148,8 @@ Selection saves all candidate summaries/digests and their order (including unsel
 name-resolution inputs and exclusion reasons in `dataset_candidates.json` and `dataset_selection.json`.
 Resume reuses the frozen decision context; external Card updates do not rewrite historical decisions.
 Explicit dataset selections are honored; otherwise Card summaries guide high-recall selection.
-Repeat `--dataset` to provide exact IDs and bypass both model name resolution and recommendation.
-Explicit datasets found only in configured sources are prepared automatically. Unknown, disabled or broken
+Explicit dataset names in a request are resolved by the session Supervisor. Datasets found only in raw sources
+require a separate preparation run. Unknown, disabled or broken
 explicit datasets produce a diagnostic instead of being silently replaced.
 Selection is a shortlist for deeper planning, not proof that a dataset supports a particular task.
 

@@ -10,9 +10,9 @@
 流程：独立 Dataset 准备 → Profile/Card 注册 → Requirement → Dataset Selection →
 逐 Dataset TaskPlanning ↔ 模板生成与审核 → 全部 Ready → 全局 Allocation → 全部 Generation →
 全局 FinalizationAgent → delivery/benchmark.jsonl。模板阶段在 Plan 后、Allocation 前，任务缺陷返回 Planning。
-这些是产物依赖，不是固定的 Supervisor 调度脚本。统一 Supervisor 持久化 run_intent：
-prepare_dataset、build_benchmark 或 prepare_then_build，以及明确的准备目标 ID。
-prepare/build 命令约束入口目的，Experiment 通用入口由模型解析意图、代码校验。
+这些是产物依赖，不是固定的 Supervisor 调度脚本。会话级 Supervisor 将自然语言解析为独立的
+prepare_dataset、build_benchmark 运行或无任务回复；复合要求排队为先准备、后构建两个运行。
+每项运行持久化单一 run_intent 和自己的 LangGraph thread_id。
 dataset_readiness 和 outstanding_work 从当前有效 artifacts 推导；仅准备在全部目标登记后结束。
 同一数据集的图像、表格等来源可以关联整理；不同数据集的 annotation 不再合并。
 
@@ -24,15 +24,17 @@ dataset_readiness 和 outstanding_work 从当前有效 artifacts 推导；仅准
 
 ## 准备、Card 与 Catalog
 
-`prepare --dataset-id <id>` 通过自然语言准备要求进入 Supervisor，后者只准备这一逻辑数据集；
-支持 `--resume`。`register --dataset-id <id> --bundle <path>` 验证并登记已有完整 bundle。
-构建时也可以显式准备新数据集。准备版本位于 `paths.prepared_datasets_root/<dataset_id>/<version>`，
+会话准备运行通过自然语言要求进入 Supervisor，后者只准备这一逻辑数据集。
+`register --dataset-id <id> --bundle <path>` 验证并登记已有完整 bundle。
+构建缺少已准备数据时报告并等待新的准备要求。准备版本位于 `paths.prepared_datasets_root/<dataset_id>/<version>`，
 默认根目录 datasets/Prepared。准备失败不替换已登记版本。
 
-原始来源在 config 的 dataset_sources 中按 dataset_id、name、description、sources 登记，sources 复用
-Source 契约，root 按项目根目录解析并写入运行配置快照。描述仅用于候选发现，不作为字段语义证据。
+原始来源在实验 config 的 dataset_sources 中按 dataset_id、name、description、sources 登记，sources 复用
+Source 契约。DataProcessing 来源发现先提取用户给出的目录并检查有限文件清单、表头和图片；
+根目录缺失、不可访问或缺少必要表格/图片时才询问。校验后的决议先写入运行目录，再幂等写回实验 TOML；同 ID 不覆盖
+冲突来源。没有可靠来源说明时 description 可为空，且不作为字段语义证据。
 Supervisor 的 list_datasets/inspect_dataset_status 只读观察 Catalog、来源和有效性，不发布数据。
-prepare_data 只接收 dataset_id、mode 和 feedback；代码解析配置来源。默认 reuse_or_prepare 冻结并核验
+prepare_data 只接收 dataset_id、mode 和 feedback；代码使用配置来源或已验证的运行内来源决议。默认 reuse_or_prepare 冻结并核验
 已有 Card，绑定有效 prepared 版本；原始路径不可用不阻止复用。显式 rebuild 创建新版本；禁用或损坏
 的注册项不得被普通准备静默覆盖。缺失 Catalog 文件视为空，已有但格式损坏的 Catalog 明确报错。
 
@@ -82,24 +84,22 @@ Card 生成仅接收 Profile 和该准备元数据，绝不接收 benchmark user
 的确定性数据绑定，不复用其名称、描述、字段角色或能力提示；没有来源元数据时基于 Profile 重新总结。
 
 Catalog 条目保存 dataset_id、name、description、available 和 annotation_path、image_manifest_path、
-profile_path、dataset_card_path。普通构建不自动准备整个候选目录；缺少标准准备数据使用 prepare，已准备
+profile_path、dataset_card_path。普通构建不自动准备整个候选目录；缺少标准准备数据使用独立准备运行，已准备
 但缺少/仍使用 v1 Card 的数据使用 refresh-card。显式指定优先；其余候选即使只有一个也经过相关性选择。
-CLI 可重复 --dataset 直接给出 ID，绕过模型名称解析及推荐。Selection 只负责高召回 shortlist，
-不提前证明任务可执行。新准备数据发布 PreparedCandidates 版本，使旧 Selection 及其下游失效；
-新选择操作读取当前 Catalog 并冻结新快照，同一操作恢复保留原快照。
-运行初始化不复制 Catalog；effective_config 保留真实目录路径。初始化只冻结 Blueprint 模板和 PDF
+会话 Supervisor 可把用户明确提到的数据集名解析为 ID。Selection 只负责高召回 shortlist，
+不提前证明任务可执行。运行初始化冻结 Catalog 条目和候选 Card，并记录内容摘要供恢复核验；本运行新准备的数据可加入自己的视图，
+其他运行对全局 Catalog 的修改不进入该视图。effective_config 保留真实目录路径。
+初始化还冻结 Blueprint 模板和 PDF
 materials，不返回尚未创建的 working_blueprint_path；Requirement/Planning 写出文件后才发布该路径。
 
 每次 Selection 在操作目录创建 dataset_candidates.json：记录实际需求与版本、名称解析所见目录、解析
 结果、完整候选顺序、每个候选的 Card 摘要与内容摘要、以及不可用/未准备/未请求原因。模型看到的候选
 Card 原文复制到该目录的 candidate_cards/；dataset_selection.json 同时保存冻结输入、选择方式和结果。
 DatasetCandidates 是独立 artifact，Selection 依赖 Requirement、该快照和选中数据的 Card 版本。
-同一操作恢复复用快照及已完成决策，不读取未选中候选的实时 Card；新 Selection 操作创建新快照。
+同一操作恢复复用快照及已完成决策，不读取未选中候选的实时 Card；新 Selection 操作只从运行冻结视图创建快照。
 选中数据继续核验 annotation、Profile、manifest 与冻结 Card 的一致性，外部 Card 刷新不改变运行中版本。
 
-无匹配 prepared 数据时，从同一快照保存的配置来源中选择；显式目标仅存在于配置来源时直接准备。
-source_selection.json 保存来源选择输入与决策；路径不可用、无相关来源或显式目标损坏时 blocked，
-报告具体配置问题，不询问路径。来源选择只授权准备；注册后重新进行 prepared 数据选择。
+无匹配 prepared 数据时，构建运行 blocked 并说明需要另起准备运行；不会在同一运行内转为准备。
 
 ## 执行后端
 
@@ -115,9 +115,9 @@ Local 使用当前解释器、独立工作目录和 UTF-8，超时结束对应�
 本地生成代码具有当前用户权限，不提供挂载/网络隔离和容器内存限制。DuckDB 内存/线程配置两端通用。
 本地依赖安装命令为 `uv sync --extra data-processing`，缺依赖时报告具体错误。
 
-build、prepare、Experiment 以及直接图调用共用按意图的本地预检：校验 Catalog 格式与 LLM 配置，
-仅构建需要有效 Blueprint；准备后端在实际准备前检查。CLI 根级 --config 选择覆盖 TOML，优先于
-MEDBENCH_CONFIG，字段环境变量仍覆盖 TOML；run 创建时冻结 effective_config，恢复使用保存配置。
+会话运行与直接图调用共用按意图的本地预检：校验 Catalog 格式与 LLM 配置，
+仅构建需要有效 Blueprint；准备后端在实际准备前检查。CLI 根级 --config 仅作为新实验的初始模板，
+字段环境变量仍覆盖实验 TOML；run 创建时冻结 effective_config，恢复使用保存配置。
 PDF 或 embedding/reranker endpoint 与 model 缺失只降低 RAG 能力，不阻止无检索规划；能力与原因在 CLI
 和 Agent 观察中可见。服务可用性在实际检索时确认，HTTP 故障中断执行并保留 checkpoint。
 
@@ -191,22 +191,20 @@ Supervisor 从有效产物和模板返修请求计算 pending_plan/templates/gen
 有效已完成阶段不可通过重复委派重做；上游失效使下游重新进入 pending。委派不覆盖原始要求和 Info，
 也不是新增研究偏好的来源；结构校验不声称能判定所有语义偏移。
 
-Supervisor 的初始 set_intent 校验配置/Catalog ID，意图确定后不再向模型开放；代码仍可转换 build→prepare_then_build。
+会话 Supervisor 先确定任务类型；运行内的 set_intent 只接受准备或构建，构建不会转换为准备。
 Planning/Allocation delegation 的目标、scope/preference 引用由代码从 Requirement 生成；模型仅提供诊断 revision_notes，
 这些文字不单独改变 artifact identity。真正返修由 Requirement 或具体模板反馈版本驱动。
 DataProcessing 检查工具支持复合 join key、相同的基数/空键/未匹配策略及 sheet/delimiter；检查统计与执行共用校验。
 字段配对与 Protocol 共用数组祖先及实例索引规则，允许同一 finding 中嵌套对象字段，拒绝不同数组误配。
 
-Experiment 为 thread_id 的稳定命名索引，位于 runs_root 同级 experiments.json，记录模式、数据集摘要、
-run_directory、状态、Git commit 和时间。CLI 根据 checkpoint/interrupt/执行结果更新 registry；
-registry 不参与 Agent 决策，不取代 checkpoint。完成实验只展示产物，不自动重跑或追加需求。
-默认命令提供单实验输入提示：自然语言创建自动命名实验，/new 可指定名称，/resume 选择旧实验，
-/status、/config 显示状态及生效配置，/quit 退出。澄清节点接受自然语言回答和只读命令；终态报告后
-进程退出。保留 experiment 文本选择器和 --resume UUID 高级恢复接口；不实现多 Run 或批量实验管理。
+Textual 界面在 `experiments/<name>/` 保存实验配置和原子写入的 session.json 对话/运行索引。
+每项准备或构建运行拥有独立的 LangGraph thread_id、运行目录和 checkpoint；索引不取代 checkpoint。
+终态后界面继续等待输入。配置界面显示全部非密钥字段，按层级用键盘编辑；运行中修改实验 TOML
+只影响下一项运行。运行详情显示实际配置快照、目录视图及资产引用。
 CLI 按 tasks/updates/custom + subgraphs=True 的三元组事件处理流，显示 agent、工具和进度，
 只从 updates 顶层读取
 LangGraph Interrupt，未知格式和缺少有效 question 明确报错。失败报告使用执行期间记录的运行目录，
-Experiment 收尾的 checkpoint/registry 诊断失败明确显示，不覆盖原始运行错误及退出状态。
+checkpoint 诊断失败明确显示，不覆盖原始运行错误及退出状态。
 构建事件在已知时携带 dataset_id/source_id，模型调用继承工具执行上下文。
 CLI 恢复提示明确代码未变才能续跑，修改代码后必须新建运行。
 构建事件可省略 agent；模型/provider 名称不能填充缺失的 Agent 角色。FinalizationAgent 是全局工具使用 Agent；模板阶段事件归属 TaskPlanningAgent。
@@ -244,7 +242,7 @@ Planning 文档、RAG 和用户语义依据都使用正式 evidence reference；
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置并校验已登记数据。运行契约为 agent-runtime.v13；
+SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v14；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner 必须逐项 resolve_sample_scope，
