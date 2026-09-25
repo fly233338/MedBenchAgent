@@ -36,7 +36,7 @@ Source 契约。DataProcessing 来源发现先提取用户给出的目录并检�
 Supervisor 的 list_datasets/inspect_dataset_status 只读观察 Catalog、来源和有效性，不发布数据。
 prepare_data 只接收 dataset_id、mode 和 feedback；代码使用配置来源或已验证的运行内来源决议。默认 reuse_or_prepare 冻结并核验
 已有 Card，绑定有效 prepared 版本；原始路径不可用不阻止复用。显式 rebuild 创建新版本；禁用或损坏
-的注册项不得被普通准备静默覆盖。缺失 Catalog 文件视为空，已有但格式损坏的 Catalog 明确报错。
+的注册项不得被普通准备静默覆盖。缺失 Catalog 文件按配置路径原子初始化为 `{"datasets":[]}`；已有但格式损坏的 Catalog 明确报错且不覆盖。
 
 每个 Source 的准备链为 Inspection → SourceFingerprint → SemanticPreparationSpec → ExecutionPlan →
 CandidateExtraction → PopulationDecision/PreparationValidation → Annotation → ImageInventory/ImagePlan →
@@ -223,16 +223,22 @@ Planning/Allocation delegation 的目标、scope/preference 引用由代码从 R
 DataProcessing 检查工具支持复合 join key、相同的基数/空键/未匹配策略及 sheet/delimiter；检查统计与执行共用校验。
 字段配对与 Protocol 共用数组祖先及实例索引规则，允许同一 finding 中嵌套对象字段，拒绝不同数组误配。
 
-CLI 与 Textual UI 不相互依赖。入口分发器无子命令时启动 TUI；CLI 的 create/run/resume 与 TUI
-共用 ConversationService 和 GraphRunner。ConversationService 分类对话、持久化 Run 队列并串行调度；
+CLI 与 Textual UI 不相互依赖。入口分发器无子命令时启动 TUI；CLI 的 create/run/resume/resume-intake 与 TUI
+共用 ConversationService 和 GraphRunner。ConversationService 分类对话、持久化准备 Intake 与 Run 队列并串行调度；
 GraphRunner 独占预检、配置冻结、LangGraph 流、checkpoint 和 interrupt/resume，并向界面发送
 initialized/progress/artifact/needs_input/finished/error 事件。界面不打开 checkpoint。
 每个实验的 session 写入和 Run 执行分别受锁保护，避免 CLI/TUI 同时写坏会话或执行同一 Run。
 独立排队任务可在另一任务运行时提交；前置准备失败只阻断依赖构建，其他队列项继续执行。
+会话提交先在 `mba-session.v2` 记录独立的 processing 状态；分类、结构与业务校验完成后一次提交正式消息和 Run。
+失败状态与原请求保留供界面显示，但不进入 Supervisor 对话历史；遗留 processing 在恢复时标为失败。
+准备新 Dataset 时，Session 层结构化收集展示名、规范 ID、原始目录与显式重建意图；缺项组成可恢复的问题批次，
+逐题回答后才创建 Run。已确认值传入图与 SourceDiscovery，后者验证路径和文件事实，不重复解析会话原文。
+LLM 层对 JSON/Pydantic/业务契约错误最多反馈修复两次，API transport 重试仍独立；会话回复从同一次结构化
+调用的 JSON reply 字段增量预览，校验成功后才写入历史。
 
 | State | 责任与生命周期 |
 | --- | --- |
-| `experiments/<name>/session.json` | 对话消息、Run 索引及队列；不保存图执行进度 |
+| `experiments/<name>/session.json` | 正式消息、提交状态、Intake 问题批次、Run 索引及队列；不保存图执行进度 |
 | `experiments/<name>/config.toml` | 可编辑实验配置；排队 Run 实际启动时读取 |
 | `<run>/effective_config.json` | 单次 Run 初始化时冻结的非密钥配置，恢复时读取 |
 | `checkpoints.sqlite` | 按 thread_id 保存 LangGraph 进度及 interrupt，是恢复依据 |

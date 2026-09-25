@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import pytest
 
+from medbenchagent.cli import _parser
 from medbenchagent.data.dataset_catalog import DatasetCatalogError, load_dataset_catalog
 from medbenchagent.runtime import sessions
 from medbenchagent.runtime.conversation_service import ConversationService
@@ -69,6 +70,12 @@ def test_v1_session_is_upgraded_on_next_save(tmp_path):
     assert migrated["messages"] == record["messages"]
 
 
+def test_cli_can_resume_preparation_intake():
+    parsed = _parser().parse_args(["resume-intake", "pilot"])
+    assert parsed.command == "resume-intake"
+    assert parsed.experiment == "pilot"
+
+
 def test_cancelled_intake_allows_new_request(tmp_path, monkeypatch):
     service, _ = _service(tmp_path, monkeypatch)
     monkeypatch.setattr("medbenchagent.runtime.conversation_service.classify_requirement",
@@ -105,6 +112,7 @@ def test_new_dataset_intake_and_resume(tmp_path, monkeypatch):
     assert record["runs"][0]["dataset_name"] == "BrEaST"
     assert record["runs"][0]["source_root"] == str(root)
     assert record["submissions"][0]["status"] == "accepted"
+    assert record["submissions"][0]["question_batch_status"] == "completed"
     assert reopened.pending_intake() is None
 
 
@@ -133,4 +141,3 @@ def test_reply_preview_decodes_split_escapes_and_resets():
     pieces.clear()
     preview.feed('{"reply":"fixed","tasks":[]}')
     assert "".join(pieces) == "fixed"
-

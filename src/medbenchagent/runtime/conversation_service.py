@@ -60,6 +60,8 @@ class ConversationService:
             dependency = run["id"]
             run_ids.append(run["id"])
         submission["status"] = "accepted"
+        if submission.get("questions"):
+            submission["question_batch_status"] = "completed"
         submission["run_ids"] = run_ids
         sessions.save_experiment(record, root=self.root)
         return Submission(submission["reply"], tuple(run_ids))
@@ -102,7 +104,7 @@ class ConversationService:
                 current["reply"] = decision.reply
                 if questions:
                     current.update(status="awaiting_input", decision=decision.model_dump(),
-                                   questions=questions)
+                                   questions=questions, question_batch_status="pending")
                     current["questions"][0]["status"] = "current"
                     sessions.save_experiment(record, root=self.root)
                     return Submission(decision.reply, (), questions[0])
@@ -139,6 +141,7 @@ class ConversationService:
                 current = next(item for item in record["submissions"] if item["id"] == submission_id)
                 question = current["questions"][current["current"]]
                 question.update(answer=text, status="answered")
+                current["question_batch_status"] = "current"
                 current["decision"]["tasks"][0][field] = value
                 current["current"] += 1
                 current["error"] = ""
@@ -164,6 +167,7 @@ class ConversationService:
             if current is None:
                 raise ValueError("No preparation question is pending")
             current["status"] = "cancelled"
+            current["question_batch_status"] = "cancelled"
             sessions.save_experiment(record, root=self.root)
 
     def answer(self, run_id: str, text: str) -> None:

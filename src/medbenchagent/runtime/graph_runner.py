@@ -150,6 +150,11 @@ class GraphRunner:
                 context = previous.values.get("context", {})
                 if context.get("prepare_dataset_id") != run["dataset_id"]:
                     raise ValueError("Resume with the original dataset ID")
+                for run_key, context_key in (("dataset_name", "intake_dataset_name"),
+                                             ("source_root", "intake_source_root"),
+                                             ("rebuild", "requested_rebuild")):
+                    if run_key in run and context.get(context_key) != run[run_key]:
+                        raise ValueError(f"Resume with the original {run_key}")
                 if (run.get("requested_dataset_ids") is not None and
                         context.get("requested_dataset_ids") != run["requested_dataset_ids"]):
                     raise ValueError("Resume preserves the original dataset selection")

@@ -19,6 +19,7 @@ uv run medbenchagent --config config/local.toml.example
 uv run medbenchagent create pilot
 uv run medbenchagent run pilot "Build a chest X-ray benchmark in English"
 uv run medbenchagent resume pilot SESSION_RUN_ID
+uv run medbenchagent resume-intake pilot
 ```
 
 The terminal interface creates `experiments/<name>/config.toml` from visible defaults and lets you edit
@@ -26,9 +27,12 @@ non-secret fields with the keyboard. `--config` seeds newly created experiments 
 uses its saved TOML. Nonempty supported field environment variables still override TOML values in a new run.
 The experiment search stays available on the home screen. Type `/` there to list commands; `/new` opens
 the create dialog, `/open` opens the highlighted experiment, and `/quit` exits. During a conversation,
-type `/` in the message input to list `/details`, `/resume`, `/config`, `/queue`, and `/quit`.
+type `/` in the message input to list `/details`, `/resume`, `/config`, `/queue`, `/cancel`, and `/quit`.
 Use `/queue <request>` to add an independent task while answering a clarification; ordinary input answers
-the current question. Runs execute serially. `/quit` returns to the experiment list, or exits the TUI
+the current question. Preparation questions are answered one field at a time and block new submissions until
+complete; `/cancel` abandons that batch. Reopening the experiment resumes the current question, and
+`resume-intake` does the same in the CLI. Runs execute serially. Ctrl+C exits the TUI; an active run stops
+after the next saved graph boundary and can be resumed. `/quit` returns to the experiment list, or exits the TUI
 when used from that list. The layout draws on [OpenCode's TUI](https://opencode.ai/docs/tui/).
 The CLI `run` command requires an existing experiment and prints the session Run IDs accepted by `resume`.
 Keep secrets outside version control. The CLI disables optional external tracing, downloads
@@ -59,6 +63,11 @@ configuration even if experiment TOML changed. Resume verifies code, source iden
 An experiment TOML edit affects a queued Run when it starts and never changes a Run already in progress.
 The global Dataset Catalog registers prepared data, while each Run freezes its own candidate view. A published
 Dataset Bundle remains the data product referenced by that catalog.
+The Catalog starts as `datasets/dataset_catalog.json` containing `{"datasets":[]}`; a missing configured
+Catalog is initialized automatically, while malformed content is reported without being replaced. Failed
+session submissions remain visible after reopening but are excluded from future Supervisor history. The
+Supervisor validates its JSON contract and makes at most two correction calls for malformed decisions.
+Its TUI reply streams from the decision call and is saved only after validation succeeds.
 The runtime contract is `agent-runtime.v15`; old checkpoints are not migrated. Code or runtime-contract
 changes require a new run. Existing prepared bundles without v2 integrity bindings must be explicitly prepared again.
 Keep the run directory and prepared dataset assets intact; external input changes are picked up by a new run.
