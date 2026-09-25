@@ -46,15 +46,21 @@ def population():
             "input": "images", "image_id": "id", "image_path": "path"}
 
 
-def grounded_plan(c):
+def grounded_spec(c):
     count = call(c, pipeline.inspect_image_population, population=population())
     doc = call(c, data_processing.read_text, path="README.md")
-    return {"mapping": {"authoritative_population": "All distinct image IDs", "expected_images": 3,
-                        "entity_meanings": {}, "reason": "Source codebook",
-                        "population_reference": count, "inspection_references": [count],
-                        "semantic_evidence": [{"source": "document", "reference": doc,
-                                               "quote": "One image per distinct id"}]},
-            "fallback_reason": "Custom label aggregation"}
+    c.update(pipeline.save_source_fingerprint(c, inspection_references=[count, doc])["updates"])
+    observed = {"meaning": "Preserve source values", "inspection_references": [count],
+                "interpretation": "preserve"}
+    return {"population": {**observed, "meaning": "One image per distinct id",
+                           "interpretation": "interpreted",
+                           "semantic_evidence": [{"source": "document", "reference": doc,
+                                                  "quote": "One image per distinct id"}]},
+            "population_reference": count, "expected_images": 3,
+            "identities": {entity: observed for entity in ("patient", "case", "study", "image")},
+            "fields": [{**observed, "target": target, "source_path": "images.csv", "source_field": column}
+                       for target, column in (("image.image_id", "id"), ("image.image_path", "path"))],
+            "missing": observed, "findings": observed, "spatial": observed}
 
 
 def test_population_counts_unique_images_after_join_and_filter(tmp_path):
@@ -82,44 +88,46 @@ def test_population_rejects_missing_or_empty_identities(tmp_path, contents):
 
 
 @pytest.mark.parametrize("fault,match", [
-    ("count", "expected_images"), ("reference", "Unknown evidence"),
+    ("count", "expected_images"), ("reference", "Population evidence must belong"),
     ("semantic", "Source semantics"), ("quote", "exact quotation"),
     ("foreign", "another dataset"), ("stale", "stale"),
 ])
-def test_mapping_rejects_unfounded_population(tmp_path, monkeypatch, fault, match):
+def test_semantic_spec_rejects_unfounded_population(tmp_path, monkeypatch, fault, match):
     c = setup_source(tmp_path, monkeypatch)
-    plan = grounded_plan(c)
+    spec = grounded_spec(c)
     if fault == "count":
-        plan["mapping"]["expected_images"] = 4  # Raw row count is not image count.
+        spec["expected_images"] = 4  # Raw row count is not image count.
     elif fault == "reference":
-        plan["mapping"]["population_reference"] = "invented"
+        spec["population_reference"] = "invented"
     elif fault == "semantic":
-        plan["mapping"]["semantic_evidence"] = []
+        spec["population"]["semantic_evidence"] = []
     elif fault == "quote":
-        plan["mapping"]["semantic_evidence"][0]["quote"] = "Invented population"
+        spec["population"]["semantic_evidence"][0]["quote"] = "Invented population"
     elif fault == "foreign":
-        record = evidence(c, plan["mapping"]["population_reference"])
+        item = spec["population"]["semantic_evidence"][0]
+        record = evidence(c, item["reference"])
         from medbenchagent.runtime.inspection import save_evidence
         other = {**c, "dataset_scope": "other"}
-        plan["mapping"]["population_reference"] = save_evidence(other, record["operation"], record["arguments"], record["value"], (), source_ids=["one"])
+        item["reference"] = save_evidence(other, record["operation"], record["arguments"],
+                                          record["value"], (), source_ids=["one"])
     else:
         publish(c, "Source", {"revision": 2}, ())
     with pytest.raises(ValueError, match=match):
-        pipeline.save_preparation_plan(c, plan=plan)
-    assert not (Path(c["operation_directory"]) / "preparation.json").exists()
+        pipeline.save_semantic_spec(c, spec=spec)
+    assert not (Path(c["operation_directory"]) / "spec.json").exists()
 
 
-def test_mapping_receipts_survive_private_state_reload(tmp_path, monkeypatch):
+def test_semantic_spec_receipts_survive_private_state_reload(tmp_path, monkeypatch):
     c = setup_source(tmp_path, monkeypatch)
-    plan = grounded_plan(c)
+    spec = grounded_spec(c)
     restored = json.loads(json.dumps(c))
     index = pipeline.describe(restored)["inspection_references"]["entries"]
-    assert any(row["reference"] == plan["mapping"]["population_reference"] and row["operation"] == "image_population" for row in index)
+    assert any(row["reference"] == spec["population_reference"] and row["operation"] == "image_population" for row in index)
     assert all("value" not in row for row in index)
-    result = pipeline.save_preparation_plan(restored, plan=plan)
-    saved = json.loads(Path(result["updates"]["preparation_plan_path"]).read_text(encoding="utf-8"))
-    assert saved["mapping"]["expected_images"] == 3
-    assert saved["mapping"]["population_reference"] == plan["mapping"]["population_reference"]
+    result = pipeline.save_semantic_spec(restored, spec=spec)
+    saved = json.loads(Path(result["updates"]["semantic_spec_path"]).read_text(encoding="utf-8"))
+    assert saved["expected_images"] == 3
+    assert saved["population_reference"] == spec["population_reference"]
     publish(restored, "Source", {"revision": 2}, ())
     assert pipeline.describe(restored)["inspection_references"]["entries"] == []
 

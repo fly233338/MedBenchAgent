@@ -14,6 +14,9 @@ def test_auto_falls_back_but_pinned_docker_does_not(monkeypatch):
     settings = {**get_settings().data_processing, "backend": "auto"}
     runtime = execution.select_backend(settings)
     assert runtime["backend"] == "local" and runtime["selection_reason"]
+    with pytest.raises(ValueError, match="explicit backend=local"):
+        execution.require_script_runtime(runtime)
+    execution.require_script_runtime(execution.select_backend({**settings, "backend": "local"}))
     with pytest.raises(ValueError, match="Docker"):
         execution.select_backend({**settings, "backend": "docker"})
     assert execution.select_backend(settings, runtime) == runtime

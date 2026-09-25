@@ -14,14 +14,14 @@ def _context(tmp_path):
     return context
 
 
-def test_invalid_annotation_script_is_repairable(tmp_path):
-    context = _context(tmp_path)
-    path = tmp_path / "plan.json"
-    path.write_text(json.dumps({"mapping": {"authoritative_population": "images", "expected_images": 1,
-        "entity_meanings": {}, "reason": "README"}, "fallback_reason": "custom binary source"}), encoding="utf-8")
-    context["preparation_plan_path"] = str(path)
+def test_invalid_dataset_adapter_is_repairable(tmp_path, monkeypatch):
+    from test_preparation_evidence import grounded_spec, setup_source
+
+    context = setup_source(tmp_path, monkeypatch)
+    context.update(pipeline.save_semantic_spec(context, spec=grounded_spec(context))["updates"])
     with pytest.raises(ValueError, match="Invalid Python"):
-        pipeline.write_fallback(context, code="if :")
+        pipeline.save_dataset_adapter(context, code="if :")
+    assert pipeline.save_dataset_adapter(context, code="pass")["status"] == "success"
 
 
 def test_execution_alone_cannot_publish_data(tmp_path):
