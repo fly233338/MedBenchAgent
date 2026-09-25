@@ -24,9 +24,14 @@ def verify_population(root, expected_path, annotation, source_id):
         with Path(expected_path).open(encoding="utf-8") as handle:
             for line in handle:
                 row = json.loads(line)
+                if not isinstance(row, dict) or not {"source_id", "image_id", "image_path"} <= row.keys():
+                    raise ValueError("Population rows require source_id, image_id and image_path")
                 if row["source_id"] != source_id:
                     raise ValueError("Inspected population belongs to another source")
-                db.execute("INSERT INTO expected VALUES (?,?)", identity(root, row["image_id"], row["image_path"]))
+                key, path = identity(root, row["image_id"], row["image_path"])
+                if db.execute("SELECT 1 FROM expected WHERE id=? OR path=?", [key, path]).fetchone():
+                    raise ValueError("Duplicate expected population identity/path")
+                db.execute("INSERT INTO expected VALUES (?,?)", [key, path])
         with Path(annotation).open(encoding="utf-8") as handle:
             for line in handle:
                 image = json.loads(line)["record"]["image"]
@@ -38,3 +43,41 @@ def verify_population(root, expected_path, annotation, source_id):
         extra = db.execute("SELECT * FROM (SELECT * FROM emitted EXCEPT SELECT * FROM expected) ORDER BY id LIMIT 10").fetchall()
         if missing or extra:
             raise ValueError("Emitted population differs from inspection: " + json.dumps({"missing": missing, "extra_or_changed": extra}))
+
+
+def inspect_json_population(root, source_id, population, output):
+    from medbenchagent.data.contracts import JsonPopulation
+    from medbenchagent.data.locators import json_objects, pointer
+    spec = JsonPopulation.model_validate(population)
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    count, included = 0, 0
+    with connect(scratch=output / "scratch") as db, (output / "population.jsonl").open("w", encoding="utf-8") as handle:
+        db.execute("CREATE TABLE identities (id VARCHAR PRIMARY KEY, path VARCHAR UNIQUE)")
+        for locator, item in json_objects(root, spec.path, spec.collection):
+            count += 1
+            if not isinstance(item, dict):
+                raise ValueError("Population collection entries must be objects")
+            def field(name):
+                return pointer(item, name) if name.startswith("/") else item[name]
+            try:
+                if spec.field:
+                    raw = field(spec.field)
+                    match = any(type(raw) is type(v) and raw == v for v in spec.values)
+                    if match != spec.keep:
+                        continue
+                key, path = identity(root, field(spec.image_id), field(spec.image_path))
+            except KeyError as exc:
+                raise ValueError(f"Population field is absent: {exc}") from exc
+            prior = db.execute("SELECT path FROM identities WHERE id=?", [key]).fetchone()
+            if prior and prior[0] == path:
+                continue
+            if prior or db.execute("SELECT 1 FROM identities WHERE path=?", [path]).fetchone():
+                raise ValueError("Population identities and paths must be one-to-one")
+            db.execute("INSERT INTO identities VALUES (?,?)", [key, path])
+            handle.write(json.dumps({"source_id": source_id, "image_id": key, "image_path": path,
+                                     "locator": locator.model_dump()}, ensure_ascii=False) + "\n")
+            included += 1
+    if not included:
+        raise ValueError("Population has no images")
+    return {"rows": count, "unique_images": included, "coverage": "full", "population_file": "population.jsonl"}

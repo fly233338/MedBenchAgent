@@ -5,56 +5,115 @@ in LangGraph; the data modules do not implement another workflow scheduler.
 
 ## Preparation
 
-`prepare_data(sources, dataset_id, feedback)` selects all sources of ONE logical dataset at once. Independent
-datasets must be prepared separately. The CLI exposes prepare --dataset-id and register --dataset-id --bundle. A Source has `id`, nullable
-`version`, `kind` (`raw` or `annotation`), `root`, and optional `annotation` (default `annotation.jsonl`).
-Source IDs are unique within a selection. Each source has scoped artifact dependencies, so processing one
-source cannot invalidate another by overwriting a global Mapping pointer.
+A run prepares all sources of ONE logical dataset. Sources retain `id`, nullable declared `version`,
+`kind` (`raw` or `annotation`), `root`, and `annotation`. Artifact identity and used-file contents are distinct
+from the user-declared source version. No checkpoint migration is performed (`agent-runtime.v15`).
 
-The agent selects one source, inspects evidence, saves a PreparationPlan and executes it. A minimal plan:
+The source-scoped chain is:
+
+`Source → SourceFingerprint → SemanticPreparationSpec → ExecutionPlan → CandidateExtraction →
+PopulationDecision / PreparationValidation → Annotation → ImageInventory / ImagePlan → NormalizedSource`.
+
+- `save_source_fingerprint(inspection_references)` freezes selected real inspections, coverage and
+  denominators, source inventory and the current used-file index. Subsequent unrelated reads do not invalidate it.
+- `save_semantic_spec(spec)` saves `semantic-preparation.v1`. Required decisions cover population,
+  all four identities, missingness, finding pairing and spatial conventions. Relationships, field mappings
+  and scalar entity invariants are explicit. `expected_images` is optional source evidence, not a script count.
+- Each decision has `meaning`, `inspection_references`, `interpretation` (preserve/interpreted), and
+  `semantic_evidence` (source=document/user, reference, exact quote). Interpreted decisions require evidence.
+  Population decisions for raw sources always require interpretation evidence. Facts must be in the fingerprint.
+- Each field decision adds `target`, `source_path`, `source_field`, `transformation`
+  (preserve/value_mapping/custom), optional scalar `mapping`, and `unmapped` (error/preserve).
+  Targets use canonical dotted paths, with `[]` for array objects, e.g. `image.annotation.findings[].label`.
+  Source fields are table column names or JSON Pointers; source_sheet/source_delimiter bind table reader options.
+  Direct bindings are independently compared;
+  custom transformations require evidence and are explicitly outside that semantic proof.
+- Raw specs must declare image ID/path mappings. Every non-null emitted field needs a decision;
+  absent patient/case/study IDs remain null. Namespace assignment belongs to trusted normalization.
+- `save_dataset_adapter(code)` saves Python and returns its artifact reference. It requires a Spec,
+  not an unsupported-operator reason. `save_execution_plan(plan)` binds the current Spec, Fingerprint,
+  implementation and runtime. Example built-in request:
 
 ```json
 {
-  "schema_version": "preparation.v1",
-  "mapping": {
-    "authoritative_population": "one row per image in labels.csv",
-    "expected_images": 100,
-    "entity_meanings": {"image": "one acquisition image"},
-    "evidence": ["README: annotation table definition"],
-    "invariant_fields": []
-  },
+  "executor": "built_in",
   "steps": [
-    {"op":"read","path":"labels.csv","output":"labels"},
-    {"op":"emit","input":"labels","fields":{
-      "image.image_id":"image_id",
-      "image.image_path":"filename",
-      "image.annotation.diagnosis":"diagnosis"
+    {"op": "read", "path": "labels.csv", "output": "labels"},
+    {"op": "emit", "input": "labels", "fields": {
+      "image.image_id": "image_id",
+      "image.image_path": "filename",
+      "image.annotation.diagnosis": "diagnosis"
     }}
   ]
 }
 ```
 
-The mapping's expected count is the number of authoritative image records emitted before image quarantine.
-Read/select/filter/rename/cast/value_mapping/missing_normalization/join/group_findings/namespace_ids/bbox/
-mask_to_bbox/emit are the supported operations. Each nonterminal step has a unique output and references
-only earlier inputs. Arbitrary SQL and executable expressions are not part of the contract.
+Generated requests use `{"executor":"generated_python","adapter_reference":"<current artifact id>"}`
+and no steps. The previous `save_preparation_plan` / `write_fallback` Agent tools are removed. The old
+`PreparationPlan` remains a low-level operator-call type only; the new Agent does not construct or publish it.
 
-- CSV/TSV preserve strings by default; explicitly cast non-ID columns.
-- Join keys, cardinality, null keys and unmatched behavior are mandatory decisions. Overlapping columns
-  require rename; accidental many-to-many expansion is rejected.
-- `group_findings` groups by image keys and builds objects from same-row fields. It retains source row
-  locators, including joined/grouped rows, in stable order.
-- `bbox` supports xyxy, xywh, cxcywh and normalized xyxy. Normalized coordinates require dimension columns.
-- `mask_to_bbox` requires foreground labels, `single` or `by_value` instance semantics, and dimension
-  columns. Mask/image sizes must agree. Empty masks produce no box; no resize is performed.
-- `emit.fields` maps canonical paths to columns. Optional IDs/modality/anatomy default to null. Missing
-  image IDs use stable source locators. Do not use this mechanism to invent patient/case/study identities.
+### Dataset Adapter I/O
 
-Every emitted intermediate row contains `{record, record_ref}`. `provenance.jsonl` contains
-`{id, locators, step}`; each locator is `relative-file:positive-row` or
-`relative-file#sheet=sheet-name:positive-row`. IDs link emitted records to this index. Fallback plans have
-`fallback_reason` and no operator steps; their Python must satisfy the identical contract. Missing/reused
-references and nonexistent source files are rejected. A file's semantic meaning still requires evidence.
+Scripts read `MEDBENCH_SOURCE_ROOT`, `MEDBENCH_SPEC_PATH`, `MEDBENCH_INPUTS_PATH`, and write only candidates
+under `MEDBENCH_WORK_DIR`. Input instructions include the provenance JSON schema. Docker mounts spec,
+inputs, source and code read-only. Local execution follows the same contract without filesystem isolation.
+Do not assign final provenance, namespace IDs, normalize images, update Catalog or write completion markers.
+
+`annotation.jsonl` contains `{record, record_ref}`. `provenance.jsonl` contains:
+
+```json
+{
+  "schema_version": "extraction-provenance.v1",
+  "id": "record:1",
+  "step": "extract",
+  "locators": [{"kind": "table", "path": "labels.csv", "row": 1}],
+  "findings": []
+}
+```
+
+Each locator uses `source-locator.v1` (default):
+
+| Kind | Address |
+| --- | --- |
+| table | path, one-based logical data row, optional sheet and delimiter; CSV text line numbers are not row numbers |
+| json | path and JSON Pointer; root Pointer is empty, object keys use `~0`/`~1` escaping |
+| jsonl | path, one-based record number, optional Pointer within the record |
+| mask | path and foreground integer labels; optional instance must exist and belong to foreground |
+
+Every annotation array object also needs a `findings` entry with its concrete output JSON Pointer and
+source locators. `group_findings` supplies these automatically. Masks must be two-dimensional and agree
+with the referenced image geometry; empty foreground results are allowed without an asserted instance.
+Parsers use the selected backend and disk-backed row indexes. JSON documents over 64 MiB must be exported
+to JSONL; JSONL scans are streaming. Unknown binary annotation formats require a trusted reader first.
+
+### Population and admission
+
+`inspect_image_population` supports relational selection/join; `inspect_json_structure` inspects object
+shape and `inspect_json_population` enumerates an explicit collection with direct ID/path fields and optional
+scalar equality filtering. Both produce full image ID/path manifests before extraction. Preview counts do
+not substitute for the population. The framework reconciles every candidate identity before quarantine.
+
+`inspect_population_capability` recognizes aggregate_filter, nested_array_join and derived_identity as
+outside the fixed population inspectors. A real structure inspection and a source-grounded Spec must
+justify needing that operation. The gap cannot be substituted for an execution failure or missing evidence.
+These custom selections use generated Python and `population_mode=human_review`; the script must also
+emit full `population.jsonl` rows with source_id/image_id/image_path. `read_candidate_population` pages it.
+
+`execute_extraction` runs twice in independent output directories and publishes CandidateExtraction only.
+`validate_preparation` verifies source versions, output content, locator existence, direct mappings, finding
+associations and complete identity correspondence. Human-review candidates pass technical checks before
+an issue is created. LangGraph routes the natural-language answer back to the preparation agent;
+approve/reject/clarify parsing binds to Source, Fingerprint, Spec, ExecutionPlan and CandidateExtraction.
+Rejection requires revision, clarification requires a clearer answer, and changed inputs invalidate approval.
+
+Only accepted candidates become Annotation. Assurance is `independently_reconciled`,
+`input_annotation_only`, or `human_reviewed_selection_completeness_unproven`. These do not assert that
+arbitrary Python transformations or medical interpretations are independently proven. Canonical/image QA
+and entity invariant checks remain in trusted normalization/publication.
+
+`kind=annotation` executes a fixed identity import automatically in `select_source`, generating its
+structural Spec, candidates and validation using this same chain. Existing image manifests still locate
+images. This proves completeness only against the supplied annotation. Semantic recoding uses a raw source.
 
 ## Normalization, quality and identity
 
@@ -79,8 +138,8 @@ provenance in `dedup.jsonl`. No perceptual or cross-library identity inference i
 
 ## Harmonization and publication
 
-A `harmonization.v1` plan contains source-specific field decisions with `field`, `action`, `target`,
-optional scalar `mapping`, optional numeric `scale`/`offset`, and `evidence`. Decisions are unique per
+A `harmonization.v2` plan contains source-specific field decisions with `field`, `action`, `target`,
+optional scalar `mapping`, optional numeric `scale`/`offset`, `reason`, `inspection_references` and `semantic_evidence`. Decisions are unique per
 source field. `merge` requires a target with the same entity scope and array depth. `keep_separate` and
 `exclude` do not accept value transformations. Missing fields or vocabulary entries are rejected.
 
@@ -96,8 +155,22 @@ in operator reports. `ready.json` is written after final indexing and input veri
 Sources are treated as read-only inputs, not frozen snapshots; Docker enforces read-only mounts, local code does not. File listings detect population/stat changes and
 the disk-backed used-file index checks content digests. Source changes reject reuse. Completed plans and
 outputs are immutable; new plans create new artifacts. Receipts pin the backend: Docker records image ID; local Python records interpreter and related library versions.
-Raw operations execute twice with independent outputs; standard fixed PNG/JPEG imports also compare two
+Extractors execute twice with independent outputs; standard fixed PNG/JPEG imports also compare two
 normalizations. Repeat directories are removed only after comparison.
+
+
+New bundles archive preparation artifacts under `preparation/<source>/<operation>/`: Fingerprint, Spec,
+execution plan, adapter when used, complete population, upstream provenance, validation, runtime, frozen
+inspection/user receipts and source inventory. `preparation/index.json` binds their contents and assurance;
+ready/access includes preparation_path/preparation_digest and admission/reuse verifies every bound file.
+Final plan_ref is bundle-relative and points to execution_plan.json, which links spec.json. Older bundles
+are not patched and retain legacy_unknown preparation assurance. Canonical annotation, image manifest,
+Profile/Card and Catalog interfaces are unchanged.
+
+Execution receipts and validation receipts are separate. Reuse verifies bound outputs; an incomplete
+attempt directory is retained and replaced by a clean attempt. Runtime errors never downgrade the backend.
+Quantity accounting is candidate images = retained + whole-image quarantine + equivalent duplicates removed;
+upstream selection is separate and human review never upgrades its independent completeness guarantee.
 
 ## Queries and eligibility
 
@@ -134,7 +207,9 @@ throughput validation is implied by these tests.
 
 `data_processing.backend` is auto/docker/local. Auto selects once at preparation initialization, after bounded
 Docker CLI/daemon/image/startup probes. Business errors never switch backend. Local runs fixed operations and
-generated fallback Python in a subprocess with timeout and process-tree cleanup; it has current-user permissions.
+generated Python in a subprocess with timeout and process-tree cleanup; it has current-user permissions.
+Generated Python requires explicit local selection; auto-to-local may run fixed operations only. The runtime
+records both requested_backend and resolved backend. Switching requires a new run.
 Install local dependencies explicitly using `uv sync --extra data-processing`. Both backends use environment
 paths MEDBENCH_SOURCE_ROOT, MEDBENCH_WORK_DIR, MEDBENCH_ANNOTATION_PATH and MEDBENCH_DATA_SCRATCH.
 

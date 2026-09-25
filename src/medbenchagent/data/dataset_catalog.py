@@ -80,6 +80,9 @@ def load_prepared_assets(entry):
     if ready.get("schema_version") != "dataset-bundle.v2":
         raise DatasetCatalogError("Prepared version lacks current integrity contracts; prepare a new version")
     access = ready["access"]
+    if ready.get("preparation_schema") is not None:
+        if ready["preparation_schema"] != "preparation-archive.v1" or not access.get("preparation_path") or not access.get("preparation_digest"):
+            raise DatasetCatalogError("Prepared version lacks its preparation evidence binding")
     from medbenchagent.data.integrity import verify_prepared_indexes
     try:
         verify_prepared_indexes(access)

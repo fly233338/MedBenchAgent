@@ -6,7 +6,7 @@ from pathlib import Path
 
 import duckdb
 
-from medbenchagent.data.contracts import PreparationPlan, Source
+from medbenchagent.data.contracts import PreparationPlan, ExecutionPlan, Source, SourceLocator
 from medbenchagent.data.sources import namespace_id
 from medbenchagent.data.validation import source_image_path
 
@@ -63,13 +63,14 @@ def read_relation(db, root, path, table, *, sheet=None, delimiter=","):
     else:
         raise ValueError(f"Unsupported table format: {suffix}")
     db.execute(f"CREATE TABLE {quoted(table)} AS {expression}")
-    if {"_lineage", "rowid"} & set(columns(db, table)):
+    if {"_lineage", "rowid", "__medbench_locators"} & set(columns(db, table)):
         raise ValueError("Source columns _lineage and rowid are reserved; rename before import")
     # Physical input row locator is retained through every relational step.
     db.execute(f"ALTER TABLE {quoted(table)} ADD COLUMN _lineage VARCHAR[]")
-    locator = path + (f"#sheet={sheet or 0}" if suffix in {".xls", ".xlsx"} else "")
+    locator = SourceLocator(kind="table", path=path, row=1, sheet=sheet, delimiter=delimiter).model_dump()
     db.execute(
-        f"UPDATE {quoted(table)} SET _lineage=[? || ':' || CAST(rowid+1 AS VARCHAR)]", [locator]
+        f"UPDATE {quoted(table)} SET _lineage=[CAST(json_merge_patch(?::JSON, json_object('row',rowid+1)) AS VARCHAR)]",
+        [json.dumps(locator)],
     )
 
 
@@ -206,16 +207,15 @@ def inspect_image_population(root, source, population, output):
     """Count actual distinct nonempty image identities after declared filters and joins."""
     from medbenchagent.data.contracts import Population
     population = Population.model_validate(population)
-    plan = PreparationPlan.model_validate({
-        "mapping": {"authoritative_population": "Population inspection", "expected_images": 1,
-                    "entity_meanings": {}, "reason": "Deterministic inspection"},
+    plan = ExecutionPlan.model_validate({
+        "executor": "built_in",
         "steps": [*(step.model_dump() for step in population.steps),
                   {"op": "emit", "input": population.input, "fields": {"image.image_id": population.image_id, "image.image_path": population.image_path}}],
     })
     return execute_plan(root, source, plan, output, population_only=True)
 
 
-def execute_plan(root, source: Source, plan: PreparationPlan, output, *, population_only=False):
+def execute_plan(root, source: Source, plan: PreparationPlan | ExecutionPlan, output, *, population_only=False):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     reports = []
@@ -286,8 +286,12 @@ def execute_plan(root, source: Source, plan: PreparationPlan, output, *, populat
                             if not isinstance(record["image"]["image_id"], str) or not record["image"]["image_id"].strip():
                                 raise ValueError("Emit requires an explicit nonempty image.image_id")
                             ref = f"record:{count}"
+                            from medbenchagent.data.locators import extract_findings
+                            findings = extract_findings(record)
                             provenance.write(
-                                json.dumps({"id": ref, "locators": row["_lineage"], "step": index})
+                                json.dumps({"schema_version": "extraction-provenance.v1", "id": ref,
+                                            "locators": [json.loads(loc) for loc in row["_lineage"]],
+                                            "findings": findings, "step": index})
                                 + "\n"
                             )
                             # Provenance is attached at normalization, after raw record validation.
@@ -300,7 +304,7 @@ def execute_plan(root, source: Source, plan: PreparationPlan, output, *, populat
                                 + "\n"
                             )
                 reports.append({"op": "emit", "images": count})
-                if count != plan.mapping.expected_images:
+                if isinstance(plan, PreparationPlan) and count != plan.mapping.expected_images:
                     raise ValueError("Emitted image count differs from authoritative population")
                 continue
             before = db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
@@ -387,7 +391,10 @@ def execute_plan(root, source: Source, plan: PreparationPlan, output, *, populat
                 reports.append({"op": "join", **stats})
             elif step.op == "group_findings":
                 require_columns(db, step.input, [*step.keys, *step.fields.values()])
+                if "__medbench_locators" in step.fields:
+                    raise ValueError("Finding lineage is assigned by the engine")
                 fields = ",".join(f"{quoted(k)} := {quoted(v)}" for k, v in step.fields.items())
+                fields += ", __medbench_locators := _lineage"
                 keys = ",".join(map(quoted, step.keys))
                 select = (
                     f"{keys}, list(struct_pack({fields}) ORDER BY _lineage) AS {quoted(step.target)}, "
@@ -481,9 +488,11 @@ def _row_transform(db, root, source, step):
                                 ]
                             )
                     result = (boxes[0] if boxes else None) if step.instances == "single" else boxes
-                updates.append((result, values[0]))
+                    row["_lineage"] = [*row["_lineage"], SourceLocator(kind="mask", path=row[step.field],
+                                       foreground=step.foreground).model_dump_json()]
+                updates.append((result, row["_lineage"], values[0]))
             db.executemany(
-                f"UPDATE {quoted(step.output)} SET {quoted(target)}=? WHERE rowid=?", updates
+                f"UPDATE {quoted(step.output)} SET {quoted(target)}=?, _lineage=? WHERE rowid=?", updates
             )
     finally:
         cursor.close()

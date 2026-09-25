@@ -38,17 +38,40 @@ prepare_data 只接收 dataset_id、mode 和 feedback；代码使用配置来源
 已有 Card，绑定有效 prepared 版本；原始路径不可用不阻止复用。显式 rebuild 创建新版本；禁用或损坏
 的注册项不得被普通准备静默覆盖。缺失 Catalog 文件视为空，已有但格式损坏的 Catalog 明确报错。
 
-每个 Source 有独立 Inventory、PreparationPlan、Annotation、ImageInventory/ImagePlan 和 NormalizedSource。
-PreparationPlan 保存语义依据及顺序算子；不引入第二套 DAG 或表达式语言。CSV 保留字符串 ID，join 显式
-定义基数、空键与未匹配策略；group_findings 保留同实体标签与 bbox 配对。标准算子无法表达时，Agent
-可以记录原因并生成 Python，输出相同的 annotation 包装和 provenance 索引。
-保存 Mapping 前须调用 inspect_image_population：复用 read/select/rename/filter/join 算子，
-明确最终关系和图像身份字段，检查非空身份并计算 unique_images（不以行数代替图像数）。
-Population 同时物化来源、字符串 image_id 与原始相对路径的身份明细；operator/fallback 的 intermediate
-在隔离去重前逐项对账，拒绝缺失、额外、重复和 ID—路径错配，不用 lineage 补造图像 ID。
-Mapping 的 population_reference 指向该检查，expected_images 必须相等；inspection_references
-关联真实检查，semantic_evidence 以 source/reference/quote 引用已读取来源文档或已解决用户决议。
-计数检查证明数量，不能代替总体选择的语义判断；无法检查的身份/总体需要补充依据，不接受自报数字。
+每个 Source 的准备链为 Inspection → SourceFingerprint → SemanticPreparationSpec → ExecutionPlan →
+CandidateExtraction → PopulationDecision/PreparationValidation → Annotation → ImageInventory/ImagePlan →
+NormalizedSource。事实、语义、实现与验收分开保存；不引入第二套 DAG。Fingerprint 由框架从选定的真实
+检查回执组装，保存统计覆盖范围、分母、文件清单与当时已读文件索引；无关检查不自动改写已冻结事实。
+Spec 描述总体、四类身份、关系、字段映射、缺失、finding 配对、坐标和实体不变量，不包含执行步骤。
+关键解释引用来源文档逐字引文或用户决议；检查事实不能代替医学语义依据。
+
+ExecutionPlan 按 Source 选择 built_in 顺序算子或 generated_python Dataset Adapter。两者平级，代码不再
+要求 fallback_reason。生成代码读取只读 Spec/输入说明，输出 {record, record_ref} annotation 与版本化
+结构化 provenance；不赋予 namespace、可信 provenance、质量结论或发布权限。CSV 保留字符串 ID；
+join 显式声明基数、空键与未匹配策略，group_findings 保留逐 finding 来源。现有 PreparationPlan 只保留为
+底层算子调用契约，不再进入 Agent 工具、状态或发布链；新主链直接执行 ExecutionPlan。
+
+总体检查复用 read/select/rename/filter/join，或按明确 JSON 对象集合和直接字段条件枚举完整图像清单。
+隔离去重前逐项检查 image ID→路径，拒绝遗漏、额外、重复与错配。expected_images 可作为来源断言；
+实际总体数量由框架计算。JSON 文件限制 64 MiB，大型对象来源需先导出 JSONL；JSONL 流式扫描。
+仅 aggregate_filter、nested_array_join、derived_identity 等固定检查器未支持的选择能力允许记录能力缺口；
+Spec 仍须用来源依据解释为何需要该操作。能力缺口不是运行失败、缺依赖或普通对账错误的替代。
+特殊来源先生成完整候选清单并通过结构/locator 检查，再经 LangGraph 澄清审核总体选择；自然语言解析
+为 approve/reject/clarify。问题绑定 Source、Fingerprint、Spec、ExecutionPlan 与 CandidateExtraction，
+任何相关修订使批准失效。批准只允许继续验收，发布标记 human_reviewed_selection_completeness_unproven，
+不宣称独立证明了完整性。普通来源无额外人工审批。
+
+可信 locator 解析在选定执行后端内进行：表格逻辑行与 reader 参数、JSON/JSONL Pointer、二维 mask 标签。
+按文件建立磁盘索引，确认记录/对象存在；标注数组对象各自绑定 finding locator。直接映射按 Spec 逐项
+核对，custom 转换语义依赖已记录依据，不声称任意 Python 的语义被形式化证明。schema/坏图仍按现有
+规则整图隔离；总体、来源引用、重复性或 mask 对应几何错误阻断提取，环境失败不能当作坏图。
+
+kind=annotation 由框架在 select_source 内自动执行 identity import、候选提取和同一验收，保留 manifest
+的图像位置解析规则；只保证相对于输入 annotation 的完整性。需要重编码时以 raw 来源走显式 Spec。
+规范化继续执行图像 QA、整图隔离、像素去重、harmonization 和实体一致性规则。新 bundle 的 preparation/
+索引归档 Spec、Fingerprint、执行计划、Adapter、总体、引用和验证依据；ready/access 绑定索引，admission
+及复用校验全部归档文件。plan_ref 指向 bundle 内 execution_plan.json，再链接 Spec。旧 bundle 不补写
+依据，按已有接口读取，其准备保证级别为 legacy_unknown。
 
 Harmonization 只用于一个 Dataset 内有依据的来源字段整理，不建立全局医学本体。未对齐字段保留
 `<entity>.annotation.sources.<source_id>`；单来源空计划为 identity，缺失不补为阴性。
@@ -107,6 +130,9 @@ DatasetCandidates 是独立 artifact，Selection 依赖 Requirement、该快照�
 配置镜像及最小启动能力；不可用时记录原因并使用本地 Python。强制 docker 时预检失败直接报错。
 不自动拉取镜像或安装依赖。实际后端保存到 execution_runtime.json 和操作回执，后续操作及恢复不切换；
 业务失败、超时或中途 Docker 故障不触发降级。
+运行记录同时保存 requested_backend 与实际 backend；auto→local 仅允许内建操作，生成 Python 必须
+显式选择 local 并开启新运行。执行回执与验收回执分开；完成回执绑定输出内容，半成品目录保留为
+incomplete 尝试，重试使用干净目录，不因结果文件存在而认定完成。
 
 两个后端共用 MEDBENCH_SOURCE_ROOT、MEDBENCH_WORK_DIR、MEDBENCH_ANNOTATION_PATH、
 MEDBENCH_DATA_SCRATCH 路径契约。固定操作和生成脚本都运行在子进程，保留超时、产物验证、来源检查
@@ -255,7 +281,7 @@ Planning 文档、RAG 和用户语义依据都使用正式 evidence reference；
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v14；
+SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v15；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner 必须逐项 resolve_sample_scope，

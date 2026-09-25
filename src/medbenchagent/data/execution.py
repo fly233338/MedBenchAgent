@@ -51,6 +51,8 @@ def docker_identity(settings, *, smoke=True):
 
 def select_backend(settings, saved=None):
     """Resolve auto only once; a saved runtime never silently switches backend."""
+    if saved and "requested_backend" not in saved:
+        raise ValueError("Obsolete preparation runtime; start a new run")
     mode = saved["backend"] if saved else settings["backend"]
     reason = None
     if mode in {"auto", "docker"}:
@@ -63,9 +65,31 @@ def select_backend(settings, saved=None):
             identity = local_identity()
     else:
         identity = local_identity()
-    if saved and {k: v for k, v in saved.items() if k != "selection_reason"} != identity:
+    if saved and {k: v for k, v in saved.items() if k not in {"selection_reason", "requested_backend"}} != identity:
         raise ValueError("Preparation runtime changed; start a new preparation execution")
-    return {**identity, "selection_reason": saved.get("selection_reason") if saved else reason}
+    return {**identity, "requested_backend": saved["requested_backend"] if saved else settings["backend"],
+            "selection_reason": saved.get("selection_reason") if saved else reason}
+
+
+def require_script_runtime(runtime):
+    if runtime["backend"] == "local" and runtime["requested_backend"] != "local":
+        raise ValueError("Generated Python requires explicit backend=local; start a new run, or use Docker")
+
+
+def output_digests(output):
+    from medbenchagent.data.sources import digest_file
+    return {p.relative_to(output).as_posix(): digest_file(p) for p in sorted(Path(output).rglob("*"))
+            if p.is_file() and not {"scratch", "cache"}.intersection(p.relative_to(output).parts)}
+
+
+def verify_output_digests(output, expected):
+    from medbenchagent.data.sources import digest_file
+    from medbenchagent.data.validation import source_image_path
+    if not expected:
+        raise ValueError("Prepared operation has no output binding")
+    for name, digest in expected.items():
+        if digest_file(source_image_path(output, name)) != digest:
+            raise ValueError("Prepared operation output changed or is incomplete; use a new operation")
 
 
 def _local_run(command, *, cwd, env, timeout):
@@ -87,7 +111,7 @@ def _local_run(command, *, cwd, env, timeout):
         raise ValueError((stdout + "\n" + stderr)[-5000:] + hint)
 
 
-def run(context, output, *, script=None, request=None, annotation=None):
+def run(context, output, *, script=None, request=None, annotation=None, specification=None, inputs=None, provenance=None):
     """Execute a fixed operation or generated script with an immutable completion receipt."""
     from medbenchagent.data.sources import verify_source, digest_file
 
@@ -97,6 +121,8 @@ def run(context, output, *, script=None, request=None, annotation=None):
     runtime_file = Path(context.get("bundle_root", output.parent)) / "execution_runtime.json"
     saved = json.loads(runtime_file.read_text(encoding="utf-8")) if runtime_file.is_file() else context.get("execution_runtime")
     runtime = select_backend(settings, saved)
+    if script:
+        require_script_runtime(runtime)
     atomic_write_json(runtime_file, runtime)
     context["execution_runtime"] = runtime
     if context.get("source_manifest"):
@@ -105,12 +131,21 @@ def run(context, output, *, script=None, request=None, annotation=None):
     receipt = output.parent / f"{output.name}-{kind}.complete.json"
     identity = {"runtime": runtime, "script": digest_file(script) if script else None,
                 "request": request, "annotation": annotation,
+                "annotation_digest": digest_file(annotation) if annotation else None,
+                "specification": digest_file(specification) if specification else None,
+                "inputs": digest_file(inputs) if inputs else None,
+                "provenance": digest_file(provenance) if provenance else None,
                 "dependencies": context.get("artifact_versions", {})}
     if receipt.is_file():
-        if json.loads(receipt.read_text(encoding="utf-8")) != identity:
+        saved_receipt = json.loads(receipt.read_text(encoding="utf-8"))
+        if saved_receipt["identity"] != identity:
             raise ValueError("Prepared operation dependencies changed; use a new operation directory")
+        verify_output_digests(output, saved_receipt["outputs"])
         if (output / ("result.json" if request else "annotation.jsonl")).is_file():
             return json.loads((output / "result.json").read_text(encoding="utf-8")) if request else None
+    elif any(output.iterdir()):
+        output.rename(output.with_name(output.name + ".incomplete-" + uuid4().hex))
+        output.mkdir()
     request_path = output.parent / (output.name + "-request.json")
     if request is not None:
         atomic_write_json(request_path, request)
@@ -123,6 +158,9 @@ def run(context, output, *, script=None, request=None, annotation=None):
         environment.update(PYTHONPATH=project, MEDBENCH_SOURCE_ROOT=source,
                            MEDBENCH_WORK_DIR=str(output), MEDBENCH_DATA_SCRATCH=str(output / "scratch"),
                            MEDBENCH_ANNOTATION_PATH=str(Path(annotation).resolve()) if annotation else "")
+        for name, path in (("SPEC", specification), ("INPUTS", inputs), ("PROVENANCE", provenance)):
+            if path:
+                environment[f"MEDBENCH_{name}_PATH"] = str(Path(path).resolve())
         arguments = [str(Path(script).resolve())] if script else ["-m", "medbenchagent.data.preparation_ops", str(request_path)]
         _local_run([sys.executable, *arguments], cwd=output, env={**os.environ, **environment},
                    timeout=settings["timeout_seconds"])
@@ -137,6 +175,10 @@ def run(context, output, *, script=None, request=None, annotation=None):
         for key, value in environment.items():
             command += ["--env", f"{key}={value}"]
         mounts = [(source, "/source", True), (project, "/project", True), (str(output), "/work", False)]
+        for name, path in (("spec", specification), ("inputs", inputs), ("provenance", provenance)):
+            if path:
+                command += ["--env", f"MEDBENCH_{name.upper()}_PATH=/{name}.json"]
+                mounts.append((str(Path(path).resolve()), f"/{name}.json", True))
         if annotation:
             mounts.append((str(Path(annotation).resolve()), "/annotation/annotation.jsonl", True))
         mounts.append((str(Path(script).resolve()) if script else str(request_path), "/script.py" if script else "/request.json", True))
@@ -156,5 +198,5 @@ def run(context, output, *, script=None, request=None, annotation=None):
     expected = output / ("result.json" if request else "annotation.jsonl")
     if not expected.is_file():
         raise ValueError(f"Preparation did not produce {expected.name}")
-    atomic_write_json(receipt, identity)
+    atomic_write_json(receipt, {"identity": identity, "outputs": output_digests(output)})
     return json.loads(expected.read_text(encoding="utf-8")) if request else None

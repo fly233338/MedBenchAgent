@@ -68,7 +68,11 @@ def read_text(context, *, path, offset=0, source_id=None, page=1):
         for key in (
             "annotation_script_path",
             "image_script_path",
-            "preparation_plan_path",
+            "fingerprint_path",
+            "semantic_spec_path",
+            "execution_plan_path",
+            "candidate_path",
+            "preparation_validation_path",
             "inventory_path",
             "image_inventory_path",
             "image_plan_path",
@@ -104,7 +108,8 @@ def inspect_table(context, *, path, sheet=None, delimiter=","):
         Path(context["operation_directory"]) / "inspection",
         request={"operation": "table", "path": path, "sheet": sheet, "delimiter": delimiter},
     )
-    return _inventory(context, f"table:{path}:{sheet}:{delimiter}", value)
+    return _inventory(context, f"table:{path}:{sheet}:{delimiter}", value,
+                      operation="table", arguments={"path": path, "sheet": sheet, "delimiter": delimiter})
 
 
 def inspect_join(context, **arguments):
@@ -118,7 +123,7 @@ def inspect_join(context, **arguments):
         request={"operation": "join", **arguments},
     )
     key = "join:" + json.dumps(arguments, sort_keys=True)
-    return _inventory(context, key, value)
+    return _inventory(context, key, value, operation="join", arguments=arguments)
 
 
 def save_image_plan(context, *, overrides):

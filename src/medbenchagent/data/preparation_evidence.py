@@ -16,6 +16,8 @@ def semantic_evidence(context, evidence, source_id):
             from medbenchagent.runtime.inspection import evidence as read_evidence
             receipt = read_evidence(context, item.reference)
             issue = context.get("issues", {}).get(receipt["value"].get("issue_id"), {})
+            if issue.get("reference") == "population_selection":
+                raise ValueError("Population selection approval is not evidence for field semantics")
             if (receipt["kind"] != "user" or issue.get("status") != "resolved"
                     or issue.get("kind") != "semantic" or issue.get("role") != "DataProcessingAgent"
                     or issue.get("dataset_id") != context.get("dataset_scope")
@@ -25,25 +27,6 @@ def semantic_evidence(context, evidence, source_id):
             text = receipt["value"]["text"]
         if not item.quote.strip() or item.quote not in text:
             raise ValueError("Semantic evidence requires an exact quotation")
-
-
-def mapping_evidence(context, mapping):
-    source = context["source_scope"]
-    if not mapping.population_reference:
-        raise ValueError("Mapping requires an inspected population_reference; inspect image identities first")
-    receipt = inspection(context, mapping.population_reference, source_id=source)
-    if receipt["operation"] != "image_population":
-        raise ValueError("Mapping population_reference must identify an image population inspection")
-    from medbenchagent.data.sources import digest_file
-    if digest_file(receipt["value"]["population_path"]) != receipt["value"]["population_digest"]:
-        raise ValueError("Inspected population identities changed")
-    if receipt["value"]["unique_images"] != mapping.expected_images:
-        raise ValueError("expected_images differs from the inspected authoritative population")
-    if not mapping.inspection_references:
-        raise ValueError("Mapping requires actual inspection references")
-    for reference in mapping.inspection_references:
-        inspection(context, reference, source_id=source)
-    semantic_evidence(context, mapping.semantic_evidence, source)
 
 
 def alignment_evidence(context, field):

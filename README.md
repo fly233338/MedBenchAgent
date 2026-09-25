@@ -59,7 +59,7 @@ configuration even if experiment TOML changed. Resume verifies code, source iden
 An experiment TOML edit affects a queued Run when it starts and never changes a Run already in progress.
 The global Dataset Catalog registers prepared data, while each Run freezes its own candidate view. A published
 Dataset Bundle remains the data product referenced by that catalog.
-The runtime contract is `agent-runtime.v14`; old checkpoints are not migrated. Code or runtime-contract
+The runtime contract is `agent-runtime.v15`; old checkpoints are not migrated. Code or runtime-contract
 changes require a new run. Existing prepared bundles without v2 integrity bindings must be explicitly prepared again.
 Keep the run directory and prepared dataset assets intact; external input changes are picked up by a new run.
 
@@ -134,20 +134,31 @@ must use separate IDs and preparation runs. The agent inspects evidence, saves t
 normalizes images, validates the bundle, creates its Card, then updates the registry. `register` accepts
 an already complete bundle with its Card. Failures do not replace the previous registered version.
 
-Before saving a raw Mapping, `inspect_image_population` measures distinct image IDs using declared
-source reads, filters and joins. `population_reference` binds that inspection and `expected_images` must
-match its unique-image count. The inspection also records source image IDs and paths; operator and fallback
-intermediates must match that population exactly before quarantine/deduplication. Emit must provide explicit IDs. Mapping also requires inspection references and source-document quotations
-or resolved user decisions supporting the population choice. Explicit Harmonization decisions require
-normalized-field inspections; merges, recoding, unit conversion and exclusions also require semantic evidence.
-Free-text preparation `evidence` is now named `reason`; actual citations use evidence references.
-References are checked against their dataset/source and input versions. `list_evidence` and `read_evidence`
-recall past inspections, documents, RAG passages and user decisions without retaining their full payloads in prompts.
-Source `read_text` freezes cited text/PDF documents; `freeze_documentation` selects additional documents for future
-planning. Text PDFs support page references; scanned/encrypted documents require supported text input, not OCR.
-Prepared v2 binds cache and asset indexes. Finalization checks the actual referenced output image bytes; changing
-a database, image or frozen document requires a new prepared version. Quotation and count checks establish
-provenance, not semantic correctness. Local/Docker backend selection is unchanged.
+Preparation separates source facts (`SourceFingerprint`), source-supported meanings
+(`SemanticPreparationSpec`), implementation (`ExecutionPlan`) and trusted validation. Built-in operators
+and generated Python adapters are equal choices; no fallback justification is required. Both emit candidates,
+then undergo locator, direct field-binding and exact image-population checks before image normalization.
+Canonical annotation imports automatically traverse the same gates when selected.
+
+`inspect_image_population` independently enumerates table/join populations; `inspect_json_population`
+handles JSON object collections and direct field filters. Special selection operations unsupported by these
+inspectors require a source-grounded capability decision and a version-bound human population review.
+That approval is recorded as selection review with completeness **not independently proven**; it cannot
+waive invalid locators, population mismatches, source changes or image checks. Ordinary sources remain automatic.
+JSON files over 64 MiB require export to JSONL. Structured locators resolve actual table rows, JSON objects
+and 2D masks; finding objects retain their own source associations. Custom Python semantics remain grounded
+in documented decisions rather than claimed to be formally verified.
+
+Backend `auto` may resolve to local for fixed operations. Generated Python requires Docker or **explicit**
+`backend = "local"` in a new run; local code has current-user permissions. Runtime identities and output
+content are pinned for replay. New bundle preparation sidecars archive specifications, code, population
+and validation evidence, and are checked on admission/reuse. Existing bundles are not modified.
+
+Explicit Harmonization decisions require normalized-field inspections; merges, recoding, unit conversion
+and exclusions also require semantic evidence. `list_evidence` and `read_evidence` recall version-bound
+inspections and user answers. Source `read_text` freezes cited text/PDF documents; `freeze_documentation`
+selects further documents for planning (text PDFs only, no OCR). Cache and asset integrity checks remain in place.
+See [data contracts](docs/DATA_LAYER.md) and the [validation checklist](docs/PREPARATION_VALIDATION.md).
 
 Prepared versions live beneath `paths.prepared_datasets_root` (default `datasets/Prepared`). Catalog entries
 contain dataset_id, name, description, available and paths to annotation, image manifest, Profile and Card.

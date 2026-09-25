@@ -12,6 +12,8 @@ def verify_cache(access):
 
 def verify_prepared_indexes(access):
     verify_cache(access)
+    from medbenchagent.data.preparation import verify_preparation_archive
+    verify_preparation_archive(access)
     for name in ("image_integrity", "documentation"):
         path = access.get(name + "_path")
         expected = access.get(name + "_digest")

@@ -26,6 +26,16 @@ class DataProcessingContext(SupervisorContext, total=False):
     source_scope: str | None
     bundle_root: str
     normalized_sources: dict[str, str]
+    fingerprint_path: str | None
+    semantic_spec_path: str | None
+    execution_plan_path: str | None
+    candidate_path: str | None
+    preparation_validation_path: str | None
+    population_decision_path: str | None
+    accepted_population_path: str | None
+    population_review_issue: str | None
+    preparation_archives: dict[str, dict]
+    source_invariants: dict[str, list[str]]
 
 
 class AllocationContext(SupervisorContext, total=False):

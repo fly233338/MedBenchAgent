@@ -8,7 +8,6 @@ from pathlib import Path
 from medbenchagent.data.contracts import (
     Contract,
     HarmonizationPlan,
-    PreparationPlan,
     Population,
     Source,
     Text,
@@ -26,7 +25,7 @@ from medbenchagent.runtime.contexts import DataProcessingContext
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.inspection import inspected, inspection_index
-from medbenchagent.data.preparation_evidence import mapping_evidence, alignment_evidence
+from medbenchagent.data.preparation_evidence import alignment_evidence
 from medbenchagent.runtime.tool_contracts import (
     InspectFilesArguments,
     ReadTextArguments,
@@ -40,6 +39,15 @@ from medbenchagent.data.dataset_card import (
 )
 
 
+from medbenchagent.agents.preparation import (
+    bound, save_source_fingerprint, save_semantic_spec, save_dataset_adapter,
+    save_execution_plan, execute_extraction, validate_preparation, prepare_annotation_import,
+    inspect_json_population, inspect_population_capability, inspect_json_structure, read_candidate_population,
+    FingerprintArguments, SpecArguments, ExecutionArguments, AdapterArguments,
+    JsonPopulationArguments, CapabilityArguments, JsonStructureArguments,
+)
+
+
 class SourceChoice(Contract):
     source_id: Text
 
@@ -47,10 +55,6 @@ class SourceChoice(Contract):
 class SourceTextArguments(ReadTextArguments):
     source_id: Text | None = None
     page: int = 1
-
-
-class PlanArguments(Contract):
-    plan: PreparationPlan
 
 
 class PopulationArguments(Contract):
@@ -69,10 +73,6 @@ class SourceValuesArguments(TableArguments):
     field: Text
     offset: int = 0
     limit: int = 50
-
-
-class FallbackArguments(Contract):
-    code: Text
 
 
 class SourceFieldArguments(SourceChoice):
@@ -187,7 +187,17 @@ def select_source(context, *, source_id):
         source_root=str(Path(source.root).resolve()),
         active_source=source.model_dump(),
         source_manifest=str(folder),
-        preparation_plan_path=None,
+        fingerprint_path=None,
+        semantic_spec_path=None,
+        execution_plan_path=None,
+        candidate_path=None,
+        preparation_validation_path=None,
+        population_decision_path=None,
+        accepted_population_path=None,
+        population_review_issue=None,
+        population_review_path=None,
+        population_assurance=None,
+        adapter_reference=None,
         inventory_path=None,
         image_inventory_path=None,
         image_plan_path=None,
@@ -197,116 +207,14 @@ def select_source(context, *, source_id):
         **versions,
     )
     if source.kind == "annotation":
-        annotation = source_image_path(source.root, source.annotation)
-        paths = [source.annotation]
-        if (Path(source.root) / "image_manifest.jsonl").is_file():
-            paths.append("image_manifest.jsonl")
-        track_files(folder, paths)
-        updates.update(prepared_annotation_path=str(annotation))
-        updates.update(publish(context, "Annotation", {"path": str(annotation)}, ("Source",)))
+        # Identity import has no semantic choices; still traverse the same candidate and validation gates.
+        imported = {**context, **updates}
+        for operation in (prepare_annotation_import, execute_extraction, validate_preparation):
+            outcome = operation(imported)
+            imported.update(outcome["updates"])
+            updates.update(outcome["updates"])
     return result(
         "success", f"Selected {source.id}; inspect source facts before planning", **updates
-    )
-
-
-def save_preparation_plan(context, *, plan):
-    """Save evidence and typed executable steps as one immutable preparation plan."""
-    require(context, "Inventory")
-    plan = PreparationPlan.model_validate(plan)
-    mapping_evidence(context, plan.mapping)
-    files = [step.path for step in plan.steps if step.op == "read"]
-    track_files(context["source_manifest"], files)
-    path = Path(context["operation_directory"]) / "preparation.json"
-    atomic_write_json(path, plan.model_dump())
-    versions = publish(context, "Mapping", {"path": str(path)}, ("Inventory",))
-    return result("success", "Preparation plan saved", preparation_plan_path=str(path), **versions)
-
-
-def execute_preparation(context):
-    """Execute the operator plan twice and retain the validated annotation intermediate."""
-    from medbenchagent.agents.data_processing import _run
-
-    require(context, "Mapping")
-    verify_source(context["source_manifest"])
-    plan = json.loads(Path(context["preparation_plan_path"]).read_text(encoding="utf-8"))
-    mapping_evidence(context, PreparationPlan.model_validate(plan).mapping)
-    folder = Path(context["operation_directory"])
-    first, repeat = folder / "annotation", folder / "repeat"
-    if plan.get("fallback_reason"):
-        require(context, "AnnotationScript")
-        with (Path(context["source_manifest"]) / "files.jsonl").open(encoding="utf-8") as handle:
-            track_files(context["source_manifest"], (json.loads(line)["path"] for line in handle))
-        arguments = {"script": context["annotation_script_path"]}
-    else:
-        arguments = {
-            "request": {
-                "operation": "execute_plan",
-                "source": context["active_source"],
-                "plan": plan,
-            }
-        }
-    for target in (first, repeat):
-        _run(context, target, **arguments)
-    compare_outputs(first, repeat)
-    verify_source(context["source_manifest"])
-    # Fallback must produce the same wrapped rows and provenance index as operators.
-    if not (first / "provenance.jsonl").is_file():
-        raise ValueError("Preparation must emit provenance.jsonl with source record locators")
-    from medbenchagent.data.lineage import validate_lineage
-
-    count = validate_lineage(
-        first / "annotation.jsonl", first / "provenance.jsonl", context["source_root"]
-    )
-    if count != plan["mapping"]["expected_images"]:
-        raise ValueError("Prepared count differs from authoritative population")
-    from medbenchagent.runtime.inspection import inspection
-    from medbenchagent.data.population import verify_population
-    population = inspection(context, plan["mapping"]["population_reference"], source_id=context["source_scope"])["value"]
-    verify_population(context["source_root"], population["population_path"], first / "annotation.jsonl", context["source_scope"])
-    remove_work_directory(repeat, folder)
-    versions = publish(
-        context,
-        "Annotation",
-        {"path": str(first / "annotation.jsonl")},
-        ("Mapping", "AnnotationScript") if plan.get("fallback_reason") else ("Mapping",),
-    )
-    return result(
-        "success",
-        "Deterministic annotation intermediate ready",
-        prepared_annotation_path=str(first / "annotation.jsonl"),
-        wrapped_annotation=True,
-        **versions,
-    )
-
-
-def write_fallback(context, *, code):
-    """Save fallback Python only for a plan with a recorded unsupported-operator reason.
-
-    Read source root from os.environ["MEDBENCH_SOURCE_ROOT"]. Write annotation.jsonl
-    with {record,record_ref} rows and provenance.jsonl with {id,locators,step} under
-    os.environ["MEDBENCH_WORK_DIR"]. Use pathlib; never hardcode container paths.
-    Locators identify actual source rows.
-    """
-    require(context, "Mapping")
-    plan = PreparationPlan.model_validate_json(
-        Path(context["preparation_plan_path"]).read_text(encoding="utf-8")
-    )
-    if not plan.fallback_reason:
-        raise ValueError(
-            "Use standard operators or record why they cannot express this transformation"
-        )
-    try:
-        compile(code, "prepare.py", "exec")
-    except SyntaxError as exc:
-        raise ValueError(f"Invalid Python at line {exc.lineno}: {exc.msg}") from exc
-    path = Path(context["operation_directory"]) / "prepare.py"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(code, encoding="utf-8")
-    return result(
-        "success",
-        "Fallback saved",
-        annotation_script_path=str(path),
-        **publish(context, "AnnotationScript", {"path": str(path)}, ("Mapping",)),
     )
 
 
@@ -359,7 +267,7 @@ def inspect_images(context):
     """Inspect referenced 2D images and identify unresolved display policies."""
     from medbenchagent.agents.data_processing import _run
 
-    require(context, "Annotation")
+    bound(context, "Annotation")
     output = Path(context["operation_directory"]) / "images"
     details = _run(
         context,
@@ -407,7 +315,7 @@ def normalize_images(context):
     """Normalize and validate images twice, quarantine local errors, then publish this source."""
     from medbenchagent.agents.data_processing import _run
 
-    require(context, "ImagePlan")
+    bound(context, "ImagePlan", "Annotation")
     verify_source(context["source_manifest"])
     # Inputs used by image processing are hashed before execution, including sidecars.
     paths = []
@@ -445,7 +353,9 @@ def normalize_images(context):
         / Path(context["operation_directory"]).name
     )
     repeat = Path(context["operation_directory"]) / "repeat"
-    plan_ref = "preparation.json" if context.get("preparation_plan_path") else "standard-import"
+    from medbenchagent.data.preparation import archive_source
+    archived = archive_source(context)
+    plan_ref = archived["plan_ref"]
     request = {
         "operation": "normalize",
         "source": source,
@@ -457,27 +367,21 @@ def normalize_images(context):
         _run(context, target, request=request, annotation=context["prepared_annotation_path"])
     compare_outputs(normalized, repeat)
     verify_source(context["source_manifest"])
-    if context.get("wrapped_annotation"):
-        shutil.copyfile(
-            Path(context["prepared_annotation_path"]).parent / "provenance.jsonl",
-            normalized / "upstream_provenance.jsonl",
-        )
-        shutil.copyfile(context["preparation_plan_path"], normalized / "preparation.json")
-        if context.get("annotation_script_path"):
-            shutil.copyfile(context["annotation_script_path"], normalized / "fallback.py")
+    shutil.copyfile(Path(context["prepared_annotation_path"]).parent / "provenance.jsonl",
+                    normalized / "upstream_provenance.jsonl")
     remove_work_directory(repeat, context["operation_directory"])
     entries = {**context.get("normalized_sources", {}), source["id"]: str(normalized)}
-    plans = dict(context.get("source_plans", {}))
-    plans[source["id"]] = (
-        str(normalized / "preparation.json") if plan_ref != "standard-import" else plan_ref
-    )
+    archives = {**context.get("preparation_archives", {}), source["id"]: archived}
+    invariants = {**context.get("source_invariants", {}), source["id"]:
+                  json.loads(Path(context["semantic_spec_path"]).read_text(encoding="utf-8"))["invariant_fields"]}
     return result(
         "success",
         f"Source {source['id']} normalized; select the next source or harmonize",
         normalized_sources=entries,
-        source_plans=plans,
+        preparation_archives=archives,
+        source_invariants=invariants,
         **publish(
-            context, "NormalizedSource", {"path": str(normalized)}, ("ImagePlan", "Annotation")
+            context, "NormalizedSource", {"path": str(normalized)}, ("ImagePlan", "Annotation", "PreparationValidation")
         ),
     )
 
@@ -547,7 +451,7 @@ def finish(context):
     """Publish one complete bundle and its query cache; all selected sources are required."""
     from medbenchagent.data.bundle import publish_bundle
 
-    require(context, "Harmonization")
+    bound(context, "Harmonization")
     metadata_path = Path(context["bundle_root"]) / "dataset_metadata.json"
     if not metadata_path.is_file():
         raise ValueError("Record dataset metadata first; use source_references=[] when no reliable description exists")
@@ -559,14 +463,15 @@ def finish(context):
     )
     for field in plan.fields:
         alignment_evidence(context, field)
-    invariants = {}
-    for source, path in context.get("source_plans", {}).items():
-        if path != "standard-import":
-            invariants[source] = PreparationPlan.model_validate_json(
-                Path(path).read_text(encoding="utf-8")
-            ).mapping.invariant_fields
+    invariants = context.get("source_invariants", {})
+    from medbenchagent.data.preparation import write_preparation_index, verify_preparation_archive
+    if set(context.get("preparation_archives", {})) != {s["id"] for s in context["sources"]}:
+        raise ValueError("Every source needs archived preparation validation")
+    preparation_access = write_preparation_index(context["bundle_root"], context["preparation_archives"])
+    verify_preparation_archive(preparation_access)
 
     def verify_inputs():
+        verify_preparation_archive(preparation_access)
         for source in context["sources"]:
             verify_source(Path(context["bundle_root"]) / "source_manifests" / source["id"])
 
@@ -578,6 +483,7 @@ def finish(context):
         if saved_plan != plan:
             raise ValueError("Published bundle is immutable; start a new dataset version")
         access = json.loads(ready.read_text(encoding="utf-8"))["access"]
+        verify_preparation_archive(access)
     else:
         _, access = publish_bundle(
             context["bundle_root"],
@@ -585,6 +491,7 @@ def finish(context):
             plan,
             invariants=invariants,
             verify_inputs=verify_inputs,
+            preparation_access=preparation_access,
         )
     from medbenchagent.data.dataset_card import build_card
     from medbenchagent.data.dataset_catalog import register_dataset
@@ -605,7 +512,13 @@ def describe(context: DataProcessingContext):
         "sources": context["sources"],
         "active_source": context.get("source_scope"),
         "normalized_sources": context.get("normalized_sources", {}),
-        "plan": context.get("preparation_plan_path"),
+        "fingerprint": context.get("fingerprint_path"),
+        "semantic_spec": context.get("semantic_spec_path"),
+        "execution_plan": context.get("execution_plan_path"),
+        "candidate": context.get("candidate_path"),
+        "population_assurance": context.get("population_assurance"),
+        "population_review_issue": context.get("population_review_issue"),
+        "runtime": context.get("execution_runtime"),
         "harmonization": context.get("harmonization_path"),
         "dataset_metadata": context.get("dataset_metadata_path"),
         "inspection_references": inspection_index(context),
@@ -633,16 +546,19 @@ def available_tools(context: DataProcessingContext):
         available.add("select_source")
     if active and active not in normalized and current("Source"):
         available |= {"inspect_files", "read_text", "inspect_table", "inspect_join", "inspect_metadata", "inspect_source_values", "inspect_image_population"}
+        available |= {"inspect_json_population", "inspect_population_capability", "inspect_json_structure"}
+        if context.get("active_source", {}).get("kind") == "annotation" and not current("ExecutionPlan"):
+            available.add("prepare_annotation_import")
         if current("Inventory"):
-            available.add("save_preparation_plan")
-        if current("Mapping"):
-            plan = json.loads(Path(context["preparation_plan_path"]).read_text(encoding="utf-8"))
-            if plan.get("fallback_reason"):
-                available.add("write_fallback")
-                if current("AnnotationScript"):
-                    available.add("execute_preparation")
-            else:
-                available.add("execute_preparation")
+            available.add("save_source_fingerprint")
+        if current("SourceFingerprint"):
+            available.add("save_semantic_spec")
+        if current("SemanticPreparationSpec"):
+            available |= {"save_dataset_adapter", "save_execution_plan"}
+        if current("ExecutionPlan"):
+            available.add("execute_extraction")
+        if current("CandidateExtraction"):
+            available |= {"validate_preparation", "read_candidate_population"}
         if current("Annotation"):
             available.add("inspect_images")
         if current("ImageInventory"):
@@ -679,9 +595,17 @@ def compile_pipeline(*, checkpointer=None):
             inspect_metadata,
             inspect_source_values,
             inspect_image_population,
-            save_preparation_plan,
-            execute_preparation,
-            write_fallback,
+            save_source_fingerprint,
+            save_semantic_spec,
+            save_dataset_adapter,
+            save_execution_plan,
+            execute_extraction,
+            validate_preparation,
+            prepare_annotation_import,
+            inspect_json_population,
+            inspect_json_structure,
+            inspect_population_capability,
+            read_candidate_population,
             inspect_images,
             save_image_plan,
             read_image_inventory,
@@ -694,14 +618,23 @@ def compile_pipeline(*, checkpointer=None):
     }
     return compile_agent(
         "DataProcessingAgent",
-        "Prepare every selected source sequentially. Select a source, inspect evidence, then for raw inputs "
-        "save a typed preparation plan and execute it. Use standard operators; code fallback requires a reason. "
-        "Before saving Mapping, inspect_image_population with existing read/filter/join steps and explicit image_id and image_path fields. Preserve those identities in the intermediate. "
-        "Use its inspection_reference as population_reference and its unique_images as expected_images. "
-        "Supply actual inspection_references and semantic_evidence (source=document or user, reference, exact quote) "
-        "to explain the authoritative population. Read source documentation with read_text or ask_user. "
-        "Annotation inputs skip only mapping, never quality/image checks. Inspect images, save source-supported "
-        "image policies, normalize_images. Invalid local records are quarantined; ambiguous semantics require ask_user. "
+        "Prepare every selected source sequentially. Inspect source facts and an independent image population. "
+        "Freeze relevant receipts with save_source_fingerprint, then save_semantic_spec to document population, "
+        "all four identities, relationships, every output field/constant, missingness, finding pairing and coordinates. "
+        "Use exact document/user evidence for interpretations. Preserve source IDs in candidates; normalization namespaces them. "
+        "Choose built_in or generated_python equally; Python needs no unsupported-operator excuse. Save an adapter "
+        "before referencing it in save_execution_plan. Execution only creates candidates: execute_extraction, then "
+        "validate_preparation before inspect_images/save_image_plan/normalize_images. Canonical annotation sources "
+        "traverse identity import, extraction and validation automatically on select_source; they do not skip validation. "
+        "For nested JSON inspect_json_structure and inspect_json_population. Direct field bindings use dotted canonical "
+        "targets with [] for arrays, source_path and source_field (column or JSON Pointer). Custom transformations require evidence. "
+        "If required selection operations exceed fixed inspector capabilities, inspect_population_capability records "
+        "the gap. Use human_review only with source-grounded selection rules. validate_preparation supplies a review "
+        "issue; ask_user with its exact issue_id. Only explicit approval permits re-validation; rejection needs revised "
+        "selection, unclear answers need clarification. Never use review to bypass errors or missing semantic evidence. "
+        "read_candidate_population pages the full review list. auto resolved to local cannot execute Python: "
+        "explicit local selection requires a new run. Raw JSON files above 64 MiB require JSONL export. "
+        "Invalid local records are quarantined; ambiguous semantics require ask_user. "
         "Never infer labels or identity from medical knowledge. Preserve finding/bbox pairing and missing vs negative. "
         "Use save_dataset_metadata with verbatim quotations from inspected source documentation when available. "
         "read_text freezes inspected source documentation (PDF supports page, no OCR). Use freeze_documentation "
@@ -718,7 +651,8 @@ def compile_pipeline(*, checkpointer=None):
         finish,
         available_tools=available_tools,
         read_tools=frozenset({"inspect_files", "read_text", "inspect_table", "inspect_join", "inspect_metadata",
-                              "inspect_source_values", "inspect_image_population", "inspect_images", "read_image_inventory", "inspect_normalized"}),
+                              "inspect_source_values", "inspect_image_population", "inspect_json_population", "inspect_json_structure",
+                              "inspect_population_capability", "read_candidate_population", "inspect_images", "read_image_inventory", "inspect_normalized"}),
         args_schemas={
             "select_source": SourceChoice,
             "inspect_files": InspectFilesArguments,
@@ -728,8 +662,14 @@ def compile_pipeline(*, checkpointer=None):
             "inspect_metadata": MetadataArguments,
             "inspect_source_values": SourceValuesArguments,
             "inspect_image_population": PopulationArguments,
-            "save_preparation_plan": PlanArguments,
-            "write_fallback": FallbackArguments,
+            "save_source_fingerprint": FingerprintArguments,
+            "save_semantic_spec": SpecArguments,
+            "save_dataset_adapter": AdapterArguments,
+            "save_execution_plan": ExecutionArguments,
+            "inspect_json_population": JsonPopulationArguments,
+            "inspect_population_capability": CapabilityArguments,
+            "inspect_json_structure": JsonStructureArguments,
+            "read_candidate_population": PageArguments,
             "save_image_plan": ImagePlanArguments,
             "read_image_inventory": PageArguments,
             "inspect_normalized": SourceFieldArguments,

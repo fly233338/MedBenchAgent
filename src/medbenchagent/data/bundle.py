@@ -352,7 +352,7 @@ def _remove(value, parts):
 
 
 def publish_bundle(
-    bundle, normalized, plan: HarmonizationPlan, *, invariants=None, verify_inputs=None
+    bundle, normalized, plan: HarmonizationPlan, *, invariants=None, verify_inputs=None, preparation_access=None
 ):
     """Inputs already live inside the bundle; publishing never recopies their image assets."""
     bundle = Path(bundle).resolve()
@@ -556,11 +556,16 @@ def publish_bundle(
     access.update(image_integrity_path=str(bundle / "asset_integrity.jsonl"),
                   image_integrity_digest=digest_file(bundle / "asset_integrity.jsonl"),
                   documentation_path=str(documentation), documentation_digest=digest_file(documentation))
+    if preparation_access:
+        from medbenchagent.data.preparation import verify_preparation_archive
+        verify_preparation_archive(preparation_access)
+        access.update(preparation_access)
     if verify_inputs:
         verify_inputs()
     atomic_write_json(
         bundle / "ready.json",
-        {"schema_version": "dataset-bundle.v2", "access": access, "sources": sorted(normalized)},
+        {"schema_version": "dataset-bundle.v2", "access": access, "sources": sorted(normalized),
+         **({"preparation_schema": "preparation-archive.v1"} if preparation_access else {})},
     )
     return profile, access
 

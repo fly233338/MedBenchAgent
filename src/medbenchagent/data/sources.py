@@ -39,6 +39,10 @@ def remove_work_directory(path, parent):
     target, root = Path(path).resolve(), Path(parent).resolve()
     if target == root or not target.is_relative_to(root):
         raise ValueError("Temporary directory must be beneath its operation directory")
+    # A removed repeat directory must not retain a completion receipt claiming its outputs exist.
+    # Delete the receipt first: interruption during cleanup then permits a clean repeat attempt.
+    for receipt in target.parent.glob(target.name + "-*.complete.json"):
+        receipt.unlink()
     shutil.rmtree(target)
 
 

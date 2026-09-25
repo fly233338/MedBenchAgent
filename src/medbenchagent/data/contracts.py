@@ -188,6 +188,7 @@ class Mapping(Contract):
 
 
 class PreparationPlan(Contract):
+    """Existing low-level operator request; agents use SemanticPreparationSpec and ExecutionPlan."""
     schema_version: Literal["preparation.v2"] = "preparation.v2"
     mapping: Mapping
     steps: list[Step] = Field(default_factory=list)
@@ -212,6 +213,168 @@ class PreparationPlan(Contract):
                     raise ValueError("Step outputs must be unique")
                 names.add(step.output)
         return self
+
+
+class SemanticDecision(Contract):
+    meaning: Text
+    inspection_references: list[Text] = Field(min_length=1)
+    semantic_evidence: list[PreparationEvidence] = Field(default_factory=list)
+    interpretation: Literal["preserve", "interpreted"] = "interpreted"
+
+
+class FieldMeaning(SemanticDecision):
+    target: Text
+    source_field: str | None = None
+    source_path: str | None = None
+    source_sheet: str | None = None
+    source_delimiter: str = ","
+    transformation: Literal["preserve", "value_mapping", "custom"] = "preserve"
+    mapping: list[ValueMapping] = Field(default_factory=list)
+    unmapped: Literal["error", "preserve"] = "error"
+
+    @model_validator(mode="after")
+    def field_contract(self):
+        if not self.target.startswith(tuple(e + "." for e in ("patient", "case", "study", "image"))):
+            raise ValueError("Field target must belong to a canonical entity")
+        if self.transformation != "custom" and (not self.source_field or not self.source_path):
+            raise ValueError("Direct mappings require source_path and source_field")
+        if self.transformation == "value_mapping" and not self.mapping:
+            raise ValueError("Value mapping requires explicit values")
+        if self.transformation != "value_mapping" and self.mapping:
+            raise ValueError("Only value_mapping accepts a mapping")
+        if self.transformation != "preserve" and self.interpretation != "interpreted":
+            raise ValueError("Transformations require interpreted semantic evidence")
+        import json
+        keys = [json.dumps(item.value, allow_nan=False) for item in self.mapping]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Semantic value mappings must be unique")
+        return self
+
+
+class SemanticPreparationSpec(Contract):
+    schema_version: Literal["semantic-preparation.v1"] = "semantic-preparation.v1"
+    population: SemanticDecision
+    population_mode: Literal["independent", "human_review"] = "independent"
+    population_reference: Text
+    expected_images: int | None = Field(default=None, gt=0)
+    identities: dict[str, SemanticDecision]
+    relationships: list[SemanticDecision] = Field(default_factory=list)
+    fields: list[FieldMeaning] = Field(default_factory=list)
+    missing: SemanticDecision
+    findings: SemanticDecision
+    spatial: SemanticDecision
+    invariant_fields: list[Text] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def identities_and_fields(self):
+        if set(self.identities) != {"patient", "case", "study", "image"}:
+            raise ValueError("Describe all four identity sources; absent optional identities remain null")
+        targets = [f.target for f in self.fields]
+        if len(targets) != len(set(targets)):
+            raise ValueError("Semantic field targets must be unique")
+        if any(path not in targets or "[]" in path or not path.startswith(
+                ("patient.annotation.", "case.annotation.", "study.annotation.")) for path in self.invariant_fields):
+            raise ValueError("Entity invariants require declared scalar patient/case/study annotation fields")
+        return self
+
+
+class SourceFingerprint(Contract):
+    schema_version: Literal["source-fingerprint.v1"] = "source-fingerprint.v1"
+    dataset_id: Text
+    source: Source
+    source_artifact: Text
+    files_path: Text
+    used_files_path: Text
+    inspections: list[dict]
+    capabilities: list[Text]
+
+
+class ExecutionPlan(Contract):
+    schema_version: Literal["preparation-execution.v1"] = "preparation-execution.v1"
+    executor: Literal["built_in", "generated_python"]
+    steps: list[Step] = Field(default_factory=list)
+    adapter_reference: str | None = None
+    reason: str = ""
+    identity_import: bool = False
+
+    @model_validator(mode="after")
+    def executable(self):
+        if self.executor == "generated_python":
+            if self.steps or self.identity_import or not self.adapter_reference:
+                raise ValueError("Generated Python requires only an adapter reference")
+        elif self.adapter_reference or (bool(self.steps) == self.identity_import):
+            raise ValueError("Built-in execution requires steps or identity import")
+        if self.steps:
+            if not isinstance(self.steps[-1], Emit):
+                raise ValueError("Built-in steps must end in emit")
+            names = set()
+            for index, step in enumerate(self.steps):
+                if isinstance(step, Emit) and index != len(self.steps) - 1:
+                    raise ValueError("Emit must be the final step")
+                for key in ("input", "right"):
+                    if hasattr(step, key) and getattr(step, key) not in names:
+                        raise ValueError("Step references an unknown input relation")
+                if hasattr(step, "output"):
+                    if step.output in names:
+                        raise ValueError("Step outputs must be unique")
+                    names.add(step.output)
+            if any(isinstance(step, Namespace) for step in self.steps):
+                raise ValueError("Identity namespaces are assigned by trusted normalization")
+        return self
+
+
+class SourceLocator(Contract):
+    schema_version: Literal["source-locator.v1"] = "source-locator.v1"
+    kind: Literal["table", "json", "jsonl", "mask"]
+    path: Text
+    row: int | None = Field(default=None, ge=1)
+    sheet: str | None = None
+    delimiter: str = ","
+    pointer: str = ""
+    foreground: list[int] = Field(default_factory=list)
+    instance: int | None = None
+
+    @model_validator(mode="after")
+    def address(self):
+        if (self.kind in {"table", "jsonl"}) != (self.row is not None):
+            raise ValueError("Table/JSONL locators require a positive logical record number")
+        if self.pointer and (self.kind not in {"json", "jsonl"} or not self.pointer.startswith("/")):
+            raise ValueError("Only JSON locators accept a JSON Pointer")
+        if self.kind != "table" and (self.sheet is not None or self.delimiter != ","):
+            raise ValueError("Reader options belong to table locators")
+        if (self.kind == "mask") != bool(self.foreground):
+            raise ValueError("Mask locators require foreground labels")
+        if self.instance is not None and (self.kind != "mask" or self.instance not in self.foreground):
+            raise ValueError("A mask instance must be one of its foreground labels")
+        return self
+
+
+class FindingReference(Contract):
+    target: Text
+    locators: list[SourceLocator] = Field(min_length=1)
+
+
+class ExtractionProvenance(Contract):
+    schema_version: Literal["extraction-provenance.v1"] = "extraction-provenance.v1"
+    id: Text
+    locators: list[SourceLocator] = Field(min_length=1)
+    findings: list[FindingReference] = Field(default_factory=list)
+    step: int | str
+
+
+class JsonPopulation(Contract):
+    path: Text
+    collection: str = ""
+    image_id: Text
+    image_path: Text
+    field: str | None = None
+    values: list[Scalar] = Field(default_factory=list)
+    keep: bool = True
+
+
+class PopulationAnswer(Contract):
+    decision: Literal["approve", "reject", "clarify"]
+    reason: Text
 
 
 class FieldAlignment(Contract):

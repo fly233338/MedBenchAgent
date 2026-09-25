@@ -44,10 +44,24 @@ def main():
         result = inspect_image_population(root, Source.model_validate(request["source"]),
                                           request["population"], Path(os.environ["MEDBENCH_WORK_DIR"]))
     elif operation == "execute_plan":
-        from medbenchagent.data.contracts import Source, PreparationPlan
+        from medbenchagent.data.contracts import Source, ExecutionPlan
         from medbenchagent.data.operators import execute_plan
         result = execute_plan(root, Source.model_validate(request["source"]),
-                              PreparationPlan.model_validate(request["plan"]), Path(os.environ["MEDBENCH_WORK_DIR"]))
+                              ExecutionPlan.model_validate(request["plan"]), Path(os.environ["MEDBENCH_WORK_DIR"]))
+    elif operation == "json_population":
+        from medbenchagent.data.population import inspect_json_population
+        result = inspect_json_population(root, request["source_id"], request["population"], os.environ["MEDBENCH_WORK_DIR"])
+    elif operation == "identity_import":
+        from medbenchagent.data.preparation import import_annotation
+        from medbenchagent.data.contracts import Source
+        result = import_annotation(root, Source.model_validate(request["source"]), os.environ["MEDBENCH_WORK_DIR"])
+    elif operation == "validate_extraction":
+        from medbenchagent.data.lineage import validate_lineage
+        from medbenchagent.data.contracts import SemanticPreparationSpec
+        result = {"count": validate_lineage(os.environ["MEDBENCH_ANNOTATION_PATH"],
+                  os.environ["MEDBENCH_PROVENANCE_PATH"], root,
+                  spec=SemanticPreparationSpec.model_validate(request["spec"]),
+                  scratch=os.environ["MEDBENCH_DATA_SCRATCH"])}
     elif operation == "normalize":
         from medbenchagent.data.contracts import Source
         from medbenchagent.data.bundle import normalize_source
