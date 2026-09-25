@@ -52,8 +52,8 @@ def create_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT, template: Pat
         config.unlink()
         folder.rmdir()
         raise
-    record = {"schema_version": "mba-session.v1", "name": name, "created_at": _now(),
-              "messages": [], "runs": [], "pending_runs": []}
+    record = {"schema_version": "mba-session.v2", "name": name, "created_at": _now(),
+              "messages": [], "runs": [], "pending_runs": [], "submissions": []}
     atomic_write_json(folder / "session.json", record)
     return record
 
@@ -64,8 +64,11 @@ def load_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT) -> dict:
     if not path.is_file():
         raise ValueError(f"Unknown experiment: {name}")
     record = json.loads(path.read_text(encoding="utf-8"))
-    if record.get("schema_version") != "mba-session.v1" or record.get("name") != name:
+    if record.get("schema_version") not in {"mba-session.v1", "mba-session.v2"} or record.get("name") != name:
         raise ValueError(f"Invalid experiment session: {name}")
+    if record["schema_version"] == "mba-session.v1":
+        record["schema_version"] = "mba-session.v2"
+        record["submissions"] = []
     return record
 
 
@@ -84,26 +87,31 @@ def save_experiment(record: dict, *, root: Path = EXPERIMENTS_ROOT) -> None:
 
 
 def add_message(record: dict, role: str, text: str, *, run_id: str | None = None,
-                root: Path = EXPERIMENTS_ROOT) -> dict:
+                root: Path = EXPERIMENTS_ROOT, save: bool = True) -> dict:
     message = {"id": str(uuid4()), "role": role, "text": text, "at": _now(), "run_id": run_id}
     record["messages"].append(message)
-    save_experiment(record, root=root)
+    if save:
+        save_experiment(record, root=root)
     return message
 
 
 def queue_run(record: dict, kind: str, requirement: str, dataset_id: str | None = None,
               requested_dataset_ids: list[str] | None = None, depends_on: str | None = None,
-              *, root: Path = EXPERIMENTS_ROOT) -> dict:
+              *, root: Path = EXPERIMENTS_ROOT, save: bool = True,
+              dataset_name: str | None = None, source_root: str | None = None,
+              rebuild: bool = False) -> dict:
     if kind not in {"prepare_dataset", "build_benchmark"}:
         raise ValueError("Unknown run kind")
     run = {"id": str(uuid4()), "thread_id": str(uuid4()), "kind": kind,
            "requirement": requirement, "dataset_id": dataset_id,
            "requested_dataset_ids": requested_dataset_ids, "depends_on": depends_on, "status": "queued",
+           "dataset_name": dataset_name, "source_root": source_root, "rebuild": rebuild,
            "run_id": None, "run_directory": None, "effective_config_path": None,
            "catalog_snapshot_path": None, "summary": "", "created_at": _now()}
     record["runs"].append(run)
     record["pending_runs"].append(run["id"])
-    save_experiment(record, root=root)
+    if save:
+        save_experiment(record, root=root)
     return run
 
 

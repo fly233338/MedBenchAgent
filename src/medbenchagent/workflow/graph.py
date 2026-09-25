@@ -40,6 +40,9 @@ class BenchmarkInputState(TypedDict, total=False):
     max_total_tasks_per_image: int | None
     question_temperature: float
     prepare_dataset_id: str
+    intake_dataset_name: str
+    intake_source_root: str
+    requested_rebuild: bool
     entry_intent: str
     requested_dataset_ids: list[str]
     experiment_name: str
@@ -355,6 +358,10 @@ def compile_benchmark_graph(*, checkpointer=None):
         from medbenchagent.agents.data_processing import compile_data_processing_agent
         if dataset_id not in preparation_pending(context):
             raise ValueError("Dataset is not an outstanding preparation target; update run intent first")
+        if context.get("requested_rebuild"):
+            mode = "rebuild"
+        elif mode == "rebuild" and context.get("requested_rebuild") is False:
+            raise ValueError("Rebuild requires an explicit user request")
         operation = Path(context["operation_directory"])
         if mode == "reuse_or_prepare" and (operation / "reused_dataset.json").is_file():
             return reuse_prepared(context, dataset_id)
@@ -524,6 +531,9 @@ def compile_benchmark_graph(*, checkpointer=None):
                        registration_catalog_path=str(settings.paths.dataset_catalog),
                        rag_capability=rag_capability(settings),
                        prepare_dataset_id=state.get("prepare_dataset_id"),
+                       intake_dataset_name=state.get("intake_dataset_name"),
+                       intake_source_root=state.get("intake_source_root"),
+                       requested_rebuild=state.get("requested_rebuild"),
                        entry_intent=state.get("entry_intent"),
                        requested_dataset_ids=state.get("requested_dataset_ids"))
         context["experiment_name"] = state.get("experiment_name")

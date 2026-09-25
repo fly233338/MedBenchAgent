@@ -79,11 +79,15 @@ def discover_source(context: dict, dataset_id: str) -> dict:
         if proposal_path.is_file():
             proposal = RootProposal.model_validate_json(proposal_path.read_text(encoding="utf-8"))
         else:
-            proposal = RootProposal.model_validate(complete_json(
-                "Extract the raw dataset root path and dataset name from the user's request. "
-                "Return exactly root and dataset_name; use null when absent. Do not invent paths or medical facts.",
-                context["user_requirement"],
-            ))
+            if context.get("intake_source_root") or context.get("intake_dataset_name"):
+                proposal = RootProposal(root=context.get("intake_source_root"),
+                                        dataset_name=context.get("intake_dataset_name"))
+            else:
+                proposal = RootProposal.model_validate(complete_json(
+                    "Extract the raw dataset root path and dataset name from the user's request. "
+                    "Return exactly root and dataset_name; use null when absent. Do not invent paths or medical facts.",
+                    context["user_requirement"],
+                ))
             atomic_write_json(proposal_path, proposal.model_dump())
         root_text = proposal.root
         if not root_text:
@@ -116,7 +120,8 @@ def discover_source(context: dict, dataset_id: str) -> dict:
         annotation = (root / "annotation.jsonl").is_file()
         source = Source(id="original", root=str(root), kind="annotation" if annotation else "raw")
         proposed_name = proposal.dataset_name or ""
-        name = (proposed_name if proposed_name and
+        name = (proposed_name if context.get("intake_dataset_name") else
+                proposed_name if proposed_name and
                 proposed_name.casefold() in (context["user_requirement"] + root.name).casefold()
                 else root.name)
         entry = {"dataset_id": dataset_id, "name": name,

@@ -1,8 +1,10 @@
 """Registry of independently prepared, immutable dataset versions."""
 
 import json
+import os
 from pathlib import Path
 import re
+import tempfile
 from uuid import uuid4
 from medbenchagent import settings
 from medbenchagent.data.dataset_card import build_card, read_card, validate_semantics
@@ -26,7 +28,21 @@ def validate_dataset_id(value):
 def load_dataset_catalog(catalog_path=None):
     path = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
     if not path.exists():
-        return []
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                             delete=False) as stream:
+                temporary = Path(stream.name)
+                json.dump({"datasets": []}, stream, indent=2)
+                stream.write("\n")
+            try:
+                os.rename(temporary, path)
+            except FileExistsError:
+                pass
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
     try:
         catalog = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:

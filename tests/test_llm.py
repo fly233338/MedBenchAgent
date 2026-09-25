@@ -1,10 +1,63 @@
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
+from pydantic import BaseModel
 
 import medbenchagent.runtime.llm as llm
 from medbenchagent.settings import get_settings
+
+
+class _Decision(BaseModel):
+    kind: Literal["prepare_dataset"]
+
+
+def test_validated_json_repairs_schema_error(monkeypatch):
+    outputs = iter(['{"kind":"prepare"}', '{"kind":"prepare_dataset"}'])
+    requests = []
+
+    def create(**kwargs):
+        requests.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=next(outputs)))])
+
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    result = llm.complete_validated_json("system", "user", _Decision)
+    assert result.kind == "prepare_dataset"
+    assert len(requests) == 2
+    assert "prepare_dataset" in requests[1]["messages"][-1]["content"]
+
+
+def test_validated_json_stops_repeated_error(monkeypatch):
+    requests = []
+
+    def create(**kwargs):
+        requests.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"kind":"prepare"}'))])
+
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    with pytest.raises(llm.ModelUnavailable, match="failed validation"):
+        llm.complete_validated_json("system", "user", _Decision)
+    assert len(requests) == 2
+
+
+def test_validated_json_streams_single_successful_call(monkeypatch):
+    requests = []
+
+    def create(**kwargs):
+        requests.append(kwargs)
+        return iter(SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=piece))])
+                    for piece in ('{"kind":', '"prepare_dataset"}'))
+
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    pieces = []
+    assert llm.complete_validated_json("system", "user", _Decision, on_chunk=pieces.append).kind == "prepare_dataset"
+    assert pieces == ['{"kind":', '"prepare_dataset"}']
+    assert len(requests) == 1
+    assert requests[0]["stream"] is True
 
 
 def test_json_api_configuration_and_client_reuse(monkeypatch) -> None:

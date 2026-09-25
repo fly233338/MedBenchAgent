@@ -6,7 +6,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, Callable, Iterator, Literal
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command, Interrupt
@@ -129,7 +129,7 @@ class GraphRunner:
 
     def execute(self, run: dict, experiment_name: str, experiments_root: Path, *,
                 resume: bool = False, answer: str | None = None,
-                settings: Any = None) -> Iterator[RunEvent]:
+                settings: Any = None, stop_requested: Callable[[], bool] | None = None) -> Iterator[RunEvent]:
         """Start or resume a run; return at an interrupt so the caller can answer later."""
         enforce_offline_mode()
         identifier = run["id"]
@@ -212,6 +212,9 @@ class GraphRunner:
                     next_input = {
                         "user_requirement": run["requirement"],
                         "prepare_dataset_id": run["dataset_id"],
+                        "intake_dataset_name": run.get("dataset_name"),
+                        "intake_source_root": run.get("source_root"),
+                        "requested_rebuild": run.get("rebuild", False),
                         "requested_dataset_ids": run["requested_dataset_ids"],
                         "entry_intent": run["kind"],
                         "experiment_name": experiment_name,
@@ -263,6 +266,12 @@ class GraphRunner:
                     values = snapshot.values or {}
                     known_directory = values.get("run_directory") or known_directory
                     config["recursion_limit"] = _recursion_limit(values)
+                    if snapshot.next and stop_requested is not None and stop_requested():
+                        yield RunEvent(identifier, "error", {
+                            "status": "interrupted", "summary": "Run interrupted; checkpoint preserved",
+                            "run_directory": known_directory,
+                        })
+                        return
                     if interrupted:
                         yield RunEvent(identifier, "needs_input", {
                             "question": _question(interrupted), **_metadata(values),

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from medbenchagent.runtime import sessions
-from medbenchagent.runtime.session_supervisor import classify_requirement
+from medbenchagent.runtime.session_supervisor import SessionDecision, classify_requirement
 from medbenchagent.agents.source_discovery import discover_source
 from medbenchagent.tui import MBAApp, ConfigScreen, ConversationScreen, ExperimentMenu
 
@@ -49,11 +49,11 @@ def test_failed_preparation_blocks_queued_build(tmp_path):
 
 
 def test_session_supervisor_contract(monkeypatch):
-    monkeypatch.setattr("medbenchagent.runtime.session_supervisor.complete_json",
-                        lambda *_args, **_kwargs: {"tasks": [
+    monkeypatch.setattr("medbenchagent.runtime.session_supervisor.complete_validated_json",
+                        lambda *_args, **_kwargs: SessionDecision.model_validate({"tasks": [
                             {"kind": "prepare_dataset", "dataset_id": "breast", "requested_dataset_ids": None},
                             {"kind": "build_benchmark", "dataset_id": None,
-                             "requested_dataset_ids": ["breast"]}], "reply": ""})
+                             "requested_dataset_ids": ["breast"]}], "reply": "I can prepare and build."}))
     decision = classify_requirement("prepare then build", known_datasets=[], history=[])
     assert [task.kind for task in decision.tasks] == ["prepare_dataset", "build_benchmark"]
 
@@ -93,10 +93,26 @@ def test_source_discovery_asks_for_complete_directory(monkeypatch, tmp_path):
     assert entry["sources"][0]["root"] == str(complete)
 
 
+def test_source_discovery_uses_structured_intake_without_model_parse(monkeypatch, tmp_path):
+    root = tmp_path / "BrEaST"
+    root.mkdir()
+    (root / "clinical.csv").write_text("image,label\na.png,benign\n", encoding="utf-8")
+    (root / "a.png").write_bytes(b"image")
+    monkeypatch.setattr("medbenchagent.agents.source_discovery.complete_json",
+                        lambda *_args, **_kwargs: pytest.fail("source was parsed twice"))
+    entry = discover_source({"run_directory": str(tmp_path / "run"),
+                             "user_requirement": "prepare a dataset",
+                             "intake_dataset_name": "BrEaST",
+                             "intake_source_root": str(root)}, "breast")
+    assert entry["name"] == "BrEaST"
+    assert entry["sources"][0]["root"] == str(root)
+
+
 def test_no_task_reply_does_not_create_run(monkeypatch, tmp_path):
     record = sessions.create_experiment("pilot", root=tmp_path)
-    monkeypatch.setattr("medbenchagent.runtime.session_supervisor.complete_json",
-                        lambda *_args, **_kwargs: {"tasks": [], "reply": "Please describe a preparation or benchmark task."})
+    monkeypatch.setattr("medbenchagent.runtime.session_supervisor.complete_validated_json",
+                        lambda *_args, **_kwargs: SessionDecision(
+                            tasks=[], reply="Please describe a preparation or benchmark task."))
     decision = classify_requirement("hello", known_datasets=[], history=[])
     assert decision.reply
     assert sessions.load_experiment("pilot", root=tmp_path)["runs"] == record["runs"]
