@@ -1,4 +1,0 @@
-interface:
-  display_name: "Prepare Medical Images"
-  short_description: "Convert referenced source images into verified PNG assets."
-  default_prompt: "Use $prepare-medical-images to convert the images referenced by my annotation.jsonl."
