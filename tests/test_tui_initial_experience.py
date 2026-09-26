@@ -5,6 +5,7 @@ import pytest
 
 from medbenchagent.runtime import sessions
 from medbenchagent.runtime.graph_runner import RunEvent
+from medbenchagent import tui
 from medbenchagent.tui import MBAApp, ConversationScreen, ExperimentMenu, RemoveExperimentScreen, _brand
 
 
@@ -122,12 +123,19 @@ def test_conversation_mount_remains_responsive_during_recovery(tmp_path, monkeyp
         release.set()
 
 
-def test_menu_ascii_brand_and_confirmed_remove(tmp_path):
+def test_menu_colored_brand_and_confirmed_remove(tmp_path, monkeypatch):
     sessions.create_experiment("pilot", root=tmp_path)
     sessions.create_experiment("other", root=tmp_path)
-    lines = _brand().plain.splitlines()
-    assert len(lines) == 5
+    monkeypatch.setattr(tui, "_supports_block_glyphs", lambda: True)
+    brand = _brand()
+    lines = brand.plain.splitlines()
+    assert len(lines) == 3
     assert max(map(len, lines)) <= 72
+    assert len({span.style for span in brand.spans}) > 3
+    monkeypatch.setattr(tui, "_supports_block_glyphs", lambda: False)
+    fallback = _brand()
+    assert fallback.plain == "MedBenchAgent"
+    assert len({span.style for span in fallback.spans}) > 3
 
     async def check():
         app = MBAApp(experiments_root=tmp_path)

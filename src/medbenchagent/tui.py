@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import json
+import sys
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -28,12 +29,43 @@ _STATUS_COLORS = {"complete": "#63d6bd", "blocked": "#e8ac70", "waiting_input": 
                   "failed": "#eb7d83", "interrupted": "#e8ac70", "running": "#a9c7f6"}
 
 
+def _supports_block_glyphs() -> bool:
+    try:
+        "█▄▀".encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+    except (LookupError, UnicodeEncodeError):
+        return False
+    return True
+
+
 def _brand() -> Text:
-    return Text(r""" __  __        _ ___              _      _                _
-|  \/  |___ __| | _ ) ___ _ _  __| |_   /_\  __ _ ___ _ _| |_
-| |\/| / -_) _` | _ \/ -_) ' \/ _| ' \ / _ \/ _` / -_) ' \  _|
-|_|  |_\___\__,_|___/\___|_||_\__|_||_/_/ \_\__, \___|_||_\
-                                            |___/""", style="bold #82bdff")
+    glyphs = {
+        "M": ("█▄ ▄█", "█ ▀ █", "▀   ▀"),
+        "E": ("█▀▀▀", "█▀▀ ", "▀▀▀▀"),
+        "D": ("█▀▀▄", "█  █", "▀▀▀ "),
+        "B": ("█▀▀▄", "█▀▀▄", "▀▀▀ "),
+        "N": ("█▄  █", "█ ▀▄█", "▀   ▀"),
+        "C": ("█▀▀▀", "█   ", "▀▀▀▀"),
+        "H": ("█  █", "█▀▀█", "▀  ▀"),
+        "A": ("▄▀▀▄", "█▀▀█", "▀  ▀"),
+        "G": ("█▀▀▀", "█ ▀█", "▀▀▀▀"),
+        "T": ("▀█▀", " █ ", " ▀ "),
+    }
+    colors = ("#65e5d4", "#69dfdf", "#70d7eb", "#77cef6", "#80c3ff",
+              "#8bb7ff", "#98aafe", "#a99cfa", "#b991f1", "#c789e7",
+              "#d483d9", "#df82c9", "#e78cbb")
+    title = Text()
+    if not _supports_block_glyphs():
+        for letter, color in zip("MedBenchAgent", colors, strict=True):
+            title.append(letter, style=f"bold {color}")
+        return title
+    for row in range(3):
+        for index, letter in enumerate("MEDBENCHAGENT"):
+            if index:
+                title.append(" ")
+            title.append(glyphs[letter][row], style=f"bold {colors[index]}")
+        if row < 2:
+            title.append("\n")
+    return title
 
 
 def _update_slash_list(options: OptionList, value: str,
@@ -884,7 +916,7 @@ class MBAApp(App):
     OptionList { background: #202938; border: solid #4386f7; height: auto; max-height: 8; }
 
     #menu-shell { width: 100%; height: 1fr; padding: 1 3 0 3; }
-    #menu-brand { height: 5; color: #5b9cff; text-style: bold; }
+    #menu-brand { height: auto; max-height: 4; }
     #menu-subtitle { height: 2; color: #a5b3c9; }
     #menu-panel { width: 100%; height: 1fr; background: #171c24; padding: 1 2; }
     #menu-title { height: 1; color: #a8c4ff; text-style: bold; }
