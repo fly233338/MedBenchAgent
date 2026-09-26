@@ -49,8 +49,7 @@ PopulationDecision / PreparationValidation → Annotation → ImageInventory / I
 ```
 
 Generated requests use `{"executor":"generated_python","adapter_reference":"<current artifact id>"}`
-and no steps. The previous `save_preparation_plan` / `write_fallback` Agent tools are removed. The old
-`PreparationPlan` remains a low-level operator-call type only; the new Agent does not construct or publish it.
+and no steps. `PreparationPlan` is a low-level operator-call type, not an Agent planning or publication interface.
 
 ### Dataset Adapter I/O
 
@@ -208,7 +207,7 @@ throughput validation is implied by these tests.
 `data_processing.backend` is auto/docker/local. Auto selects once at preparation initialization, after bounded
 Docker CLI/daemon/image/startup probes. Business errors never switch backend. Local runs fixed operations and
 generated Python in a subprocess with timeout and process-tree cleanup; it has current-user permissions.
-Generated Python requires explicit local selection; auto-to-local may run fixed operations only. The runtime
+Generated Python requires Docker or explicit local selection; auto-to-local may run fixed operations only. The runtime
 records both requested_backend and resolved backend. Switching requires a new run.
 Install local dependencies explicitly using `uv sync --extra data-processing`. Both backends use environment
 paths MEDBENCH_SOURCE_ROOT, MEDBENCH_WORK_DIR, MEDBENCH_ANNOTATION_PATH and MEDBENCH_DATA_SCRATCH.
@@ -235,4 +234,5 @@ reuse these inputs; external changes to rejected Cards do not invalidate an alre
 Selection and subsequent task planning reuse this cache. Core Concepts are shared across datasets; Leaf and
 Extension identities are local. Planning publishes eligible_count without quotas. Global Allocation computes
 Concept/Dataset/Leaf counts independently of the plans. Only final benchmark samples are merged; source
-annotations, image manifests and local audits remain independent.
+annotations and image manifests remain independent. Finalization performs dataset-local checks and publishes
+one global audit report with the delivery.

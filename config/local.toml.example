@@ -1,5 +1,8 @@
-# Copy this file to a location of your choice and pass --config <path> to the CLI.
-# Values here override config/default.toml. Keep credentials in environment variables.
+# Copy to config/local.toml and pass --config config/local.toml before the CLI command.
+# This seeds NEW experiments only; existing experiments use experiments/<name>/config.toml.
+# Relative data paths resolve from the repository root. Nonempty supported environment
+# variables override TOML for new runs; resume uses frozen settings. Keep credentials in .env
+# or process environment variables (see .env.example).
 
 # Optional raw sources. Prepared datasets continue to use paths.dataset_catalog.
 # [[dataset_sources]]

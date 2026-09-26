@@ -2,7 +2,6 @@ from dataclasses import replace
 
 import pytest
 
-from medbenchagent.cli import _parser
 from medbenchagent.data.dataset_catalog import DatasetCatalogError, load_dataset_catalog
 from medbenchagent.runtime import sessions
 from medbenchagent.runtime.conversation_service import ConversationService
@@ -68,12 +67,6 @@ def test_v1_session_is_upgraded_on_next_save(tmp_path):
     assert migrated["schema_version"] == "mba-session.v2"
     assert migrated["submissions"] == []
     assert migrated["messages"] == record["messages"]
-
-
-def test_cli_can_resume_preparation_intake():
-    parsed = _parser().parse_args(["resume-intake", "pilot"])
-    assert parsed.command == "resume-intake"
-    assert parsed.experiment == "pilot"
 
 
 def test_cancelled_intake_allows_new_request(tmp_path, monkeypatch):

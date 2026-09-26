@@ -38,6 +38,30 @@ def source_fixture(root, source_id="a", rows=None, pixel=123):
     return Source(id=source_id, root=str(root), kind="annotation")
 
 
+def test_annotation_rejects_noncanonical_or_invalid_boxes():
+    from medbenchagent.data.validation import validate_record
+
+    row = record()
+    row["image"]["annotation"] = {"findings": [{"bbox": [1, 2.5, 8, 9.25]}]}
+    validate_record(row)
+    invalid = [
+        {"bbox": value} for value in (
+            [1, 2, 8], [True, 2, 8, 9], [1, 2, float("inf"), 9],
+            [-1, 2, 8, 9], [8, 2, 1, 9], [1, 9, 8, 2],
+            {"xmin": 1, "ymin": 2, "xmax": 8, "ymax": 9},
+        )
+    ]
+    invalid += [
+        {"xmin": 1, "ymin": 2, "xmax": 8, "ymax": 9},
+        {"x": 1, "y": 2, "width": 7, "height": 7},
+        {"cx": 4.5, "cy": 5.5, "width": 7, "height": 7},
+    ]
+    for finding in invalid:
+        row["image"]["annotation"] = {"findings": [finding]}
+        with pytest.raises(ValueError, match="bbox"):
+            validate_record(row)
+
+
 def test_source_versions_do_not_overwrite_each_other(tmp_path):
     context = {"run_directory": str(tmp_path)}
     for source in ("a", "b"):
