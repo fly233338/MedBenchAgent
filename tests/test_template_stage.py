@@ -23,7 +23,7 @@ def template_context(tmp_path, monkeypatch):
 
 
 def model_responses(monkeypatch, verdicts, calls):
-    def model(system, prompt, **kwargs):
+    def model(system, prompt, *contracts, **kwargs):
         calls.append(json.loads(prompt))
         if system.startswith("Review"):
             return {"verdict": next(verdicts), "reason": "Clarify specification"}
@@ -102,3 +102,19 @@ def test_template_attempt_budget_survives_redelegation(tmp_path, monkeypatch):
     assert len(calls) == 4
     assert call(copy.deepcopy(c), prepare_templates)["status"] == "blocked"
     assert len(calls) == 4
+
+
+def test_template_service_failure_reuses_pending_attempt(tmp_path, monkeypatch):
+    from medbenchagent.runtime.llm import ModelUnavailable
+    c = template_context(tmp_path, monkeypatch)
+    c["limits"]["max_reworks"] = 0
+    def fail(*args, **kwargs):
+        raise ModelUnavailable("Service offline")
+    monkeypatch.setattr("medbenchagent.agents.templates.create_templates", fail)
+    with pytest.raises(ModelUnavailable):
+        call(c, prepare_templates)
+    monkeypatch.setattr("medbenchagent.agents.templates.create_templates",
+                        lambda *a, **kw: ["Status?", "Which status?", "Identify status."])
+    monkeypatch.setattr("medbenchagent.agents.templates.review_templates",
+                        lambda *a, **kw: {"verdict": "approved", "reason": "Valid"})
+    assert call(c, prepare_templates)["status"] == "success"

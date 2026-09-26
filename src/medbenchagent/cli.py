@@ -51,13 +51,19 @@ def _render(event: RunEvent) -> None:
             print(f"Run directory: {payload['run_directory']}")
     elif event.kind == "error":
         print(f"Run {event.run_session_id}: {payload.get('status')}. {payload.get('summary', '')}", file=sys.stderr)
+        if payload.get("recovery_hint"):
+            print(payload["recovery_hint"], file=sys.stderr)
         if payload.get("run_directory"):
             print(f"Preserved run artifacts: {payload['run_directory']}", file=sys.stderr)
 
 
 def _consume(service: ConversationService, events: Iterable[RunEvent]) -> int:
     status = 0
-    for event in events:
+    events = iter(events)
+    while True:
+        event = next(events, None)
+        if event is None:
+            return status
         if event.kind == "needs_input":
             question = event.payload["question"]
             print(f"\n{question}")
@@ -73,7 +79,8 @@ def _consume(service: ConversationService, events: Iterable[RunEvent]) -> int:
                 print("Answer cannot be empty; use the resume command later.", file=sys.stderr)
                 return 2
             service.answer(event.run_session_id, answer)
-            return _consume(service, service.resume(event.run_session_id, answer=answer))
+            events = iter(service.resume(event.run_session_id, answer=answer))
+            continue
         _render(event)
         if event.kind == "error":
             status = event.payload.get("exit_code", 1)
@@ -81,7 +88,6 @@ def _consume(service: ConversationService, events: Iterable[RunEvent]) -> int:
                 return status
         elif event.kind == "finished" and event.payload.get("status") in {"blocked", "failed"}:
             status = 1
-    return status
 
 
 def _answer_intake(service: ConversationService) -> int:

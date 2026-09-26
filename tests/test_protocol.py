@@ -84,7 +84,7 @@ def test_template_builder_and_reviewer_never_receive_answer_contract(tmp_path, m
     count = get_settings().generation.question_template_count
     prompts = []
 
-    def model(system, prompt, **kwargs):
+    def model(system, prompt, *contracts, **kwargs):
         prompts.append(json.loads(prompt))
         if system.startswith("Review"):
             return {"verdict": "approved", "reason": "Valid specification"}

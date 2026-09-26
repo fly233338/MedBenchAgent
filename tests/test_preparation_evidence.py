@@ -25,7 +25,7 @@ def setup_source(tmp_path, monkeypatch):
     c = {"run_directory": str(tmp_path / "run"), "operation_directory": str(tmp_path / "ops"),
          "bundle_root": str(bundle), "dataset_scope": "dataset", "source_scope": "one",
          "sources": [source.model_dump()], "active_source": source.model_dump(), "source_root": str(raw),
-         "source_manifest": str(manifest)}
+         "source_manifest": str(manifest), "execution_runtime": {"backend": "local", "requested_backend": "local"}}
     publish(c, "Source", {"manifest": str(manifest)}, ())
     def run(context, output, *, request, **kwargs):
         assert request["operation"] == "image_population"

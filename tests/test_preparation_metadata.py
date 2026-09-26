@@ -21,7 +21,7 @@ def test_metadata_is_extracted_from_verified_quotes_not_benchmark_goal(tmp_path,
                "user_requirement": "GOAL_LOCALIZATION_ONLY"}
     publish(context, "source/s/Source", {}, ())
     prompts = []
-    def model(system, prompt):
+    def model(system, prompt, *contracts):
         prompts.append(prompt)
         assert "GOAL_" not in prompt
         assert json.loads(prompt)["source_references"][0]["quote"] == quote

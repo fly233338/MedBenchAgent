@@ -534,7 +534,7 @@ def test_review_receives_mapping_and_verified_semantic_basis(tmp_path, monkeypat
     call(c, planning.finish_discovery)
     captured = {}
 
-    def review(system, prompt):
+    def review(system, prompt, *contracts):
         captured.update(json.loads(prompt))
         assert "Opaque codes" in system
         return {"issues": []}

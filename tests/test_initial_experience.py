@@ -165,5 +165,11 @@ def test_invalid_intake_answer_stays_on_current_question(tmp_path, monkeypatch):
         service.answer_intake(str(tmp_path / "missing"))
     assert service.pending_intake()["current"] == 0
     assert service.pending_intake()["questions"][0]["answer"] is None
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="lacks"):
+        service.answer_intake(str(empty))
+    assert service.pending_intake()["current"] == 0
+    assert service.pending_intake()["questions"][0]["answer"] is None
 
 

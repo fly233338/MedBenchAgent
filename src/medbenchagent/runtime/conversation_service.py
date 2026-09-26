@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 from pathlib import Path
 from typing import Callable, Iterator
 from uuid import uuid4
@@ -136,6 +137,7 @@ class ConversationService:
                     raise ValueError("No preparation question is pending")
                 submission_id = current["id"]
                 field = current["questions"][current["current"]]["field"]
+                decision = deepcopy(current["decision"])
             try:
                 settings = load_settings(sessions.config_path(self.name, root=self.root))
                 with active_settings(settings):
@@ -144,6 +146,12 @@ class ConversationService:
                         raise ValueError(f"Raw directory is unavailable: {value}")
                     if field == "dataset_id" and not value.strip():
                         raise ValueError("Dataset ID cannot be empty")
+                    decision["tasks"][0][field] = value
+                    tasks, questions = resolve_intake(SessionDecision.model_validate(decision),
+                                                      load_dataset_catalog(), settings.dataset_sources)
+                    invalid = next((q for q in questions if q["field"] == field), None)
+                    if invalid:
+                        raise ValueError(invalid["prompt"])
             except Exception as exc:
                 with self.session_lock:
                     record = sessions.load_experiment(self.name, root=self.root)
@@ -157,19 +165,12 @@ class ConversationService:
                 question = current["questions"][current["current"]]
                 question.update(answer=text, status="answered")
                 current["question_batch_status"] = "current"
-                current["decision"]["tasks"][0][field] = value
+                current["decision"] = decision
                 current["current"] += 1
                 current["error"] = ""
-                if current["current"] < len(current["questions"]):
-                    next_question = current["questions"][current["current"]]
-                    next_question["status"] = "current"
-                    sessions.save_experiment(record, root=self.root)
-                    return Submission(current["reply"], (), next_question)
-                with active_settings(settings):
-                    tasks, questions = resolve_intake(SessionDecision.model_validate(current["decision"]),
-                                                      load_dataset_catalog(), settings.dataset_sources)
+                # Recompute the remainder: resolving a name/ID can make an old source question unnecessary.
+                current["questions"] = current["questions"][:current["current"]] + questions
                 if questions:
-                    current["questions"].extend(questions)
                     current["questions"][current["current"]]["status"] = "current"
                     sessions.save_experiment(record, root=self.root)
                     return Submission(current["reply"], (), current["questions"][current["current"]])
@@ -292,6 +293,8 @@ class ConversationService:
                                              stop_requested=stop_requested):
                 self._apply(event)
                 yield event
+        # Release the run lock before scheduling dependent or independent queued work.
+        yield from self.drive(stop_requested=stop_requested)
 
     def _apply(self, event: RunEvent) -> None:
         if event.kind not in {"initialized", "needs_input", "finished", "error"}:

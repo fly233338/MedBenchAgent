@@ -69,6 +69,25 @@ def test_failed_preparation_blocks_queued_build(tmp_path):
     assert sessions.pop_pending(record, root=tmp_path)["id"] == preparation["id"]
 
 
+def test_resume_continues_dependent_queue(tmp_path):
+    from medbenchagent.runtime.conversation_service import ConversationService
+    from medbenchagent.runtime.graph_runner import RunEvent
+    record = sessions.create_experiment("pilot", root=tmp_path)
+    prep = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
+    build = sessions.queue_run(record, "build_benchmark", "build", depends_on=prep["id"], root=tmp_path)
+    sessions.pop_pending(record, root=tmp_path)
+    sessions.update_run(record, prep["id"], status="waiting_input", root=tmp_path)
+    calls = []
+    class Runner:
+        def execute(self, run, *args, **kwargs):
+            calls.append(run["id"])
+            yield RunEvent(run["id"], "finished", {"status": "complete", "summary": "Done"})
+    service = ConversationService("pilot", root=tmp_path, runner=Runner())
+    assert len(list(service.resume(prep["id"], answer="yes"))) == 2
+    assert calls == [prep["id"], build["id"]]
+    assert all(run["status"] == "complete" for run in service.record()["runs"])
+
+
 def test_session_supervisor_contract(monkeypatch):
     monkeypatch.setattr("medbenchagent.runtime.session_supervisor.complete_validated_json",
                         lambda *_args, **_kwargs: SessionDecision.model_validate({"tasks": [
@@ -97,6 +116,7 @@ def test_source_discovery_persists_decision_before_config(monkeypatch, tmp_path)
 
 
 def test_source_discovery_asks_for_complete_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr("medbenchagent.runtime.preparation_intake.parse_answer", lambda field, text: text)
     incomplete = tmp_path / "incomplete"
     incomplete.mkdir()
     complete = tmp_path / "complete"
@@ -106,11 +126,13 @@ def test_source_discovery_asks_for_complete_directory(monkeypatch, tmp_path):
     monkeypatch.setattr("medbenchagent.agents.source_discovery.complete_json",
                         lambda *_args: {"root": str(incomplete), "dataset_name": None})
     questions = []
+    answers = iter([str(tmp_path / "missing"), str(complete)])
     monkeypatch.setattr("medbenchagent.agents.source_discovery.interrupt",
-                        lambda question: questions.append(question["question"]) or str(complete))
+                        lambda question: questions.append(question["question"]) or next(answers))
     entry = discover_source({"run_directory": str(tmp_path / "run"),
                              "user_requirement": "Prepare the dataset"}, "dataset")
     assert questions and "tables and images" in questions[0]
+    assert len(questions) == 2 and "unavailable" in questions[1]
     assert entry["sources"][0]["root"] == str(complete)
 
 

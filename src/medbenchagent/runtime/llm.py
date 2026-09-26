@@ -4,24 +4,25 @@ from __future__ import annotations
 
 import json
 import time
+from threading import Lock
 from typing import Any, Callable, TypeVar
 
 from langsmith.wrappers import wrap_openai
 from openai import APIError, OpenAI
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from medbenchagent.runtime.construction import record_llm_call
 from medbenchagent.settings import get_llm_api_key, get_settings
 
-_CLIENT: OpenAI | None = None
-_CLIENT_CONFIG: tuple[str, str, float, int, str] | None = None
+_CLIENTS: dict[tuple, OpenAI] = {}
+_CLIENT_LOCK = Lock()
 
 
 class ModelUnavailable(RuntimeError):
-    """Raised when the planning model is not configured or returns invalid JSON."""
+    """Raised when the model service cannot complete a request."""
 
 
-class StructuredOutputError(ModelUnavailable):
+class StructuredOutputError(ValueError):
     """Raised after model output cannot be repaired to satisfy a contract."""
 
 
@@ -29,78 +30,52 @@ T = TypeVar("T", bound=BaseModel)
 
 
 def clear_client_cache() -> None:
-    """Drop the process-local client; intended for configuration changes and tests."""
-    global _CLIENT, _CLIENT_CONFIG
-    if _CLIENT is not None:
-        _CLIENT.close()
-    _CLIENT = None
-    _CLIENT_CONFIG = None
+    """Close cached clients only at shutdown or in tests, after requests have stopped."""
+    with _CLIENT_LOCK:
+        for client in _CLIENTS.values():
+            client.close()
+        _CLIENTS.clear()
 
 
 def _client() -> OpenAI:
-    global _CLIENT, _CLIENT_CONFIG
     settings = get_settings().llm
     api_key = get_llm_api_key() or "local-vllm"
     config = (api_key, settings.base_url, settings.timeout_seconds, settings.max_retries, settings.trace_name)
-    if _CLIENT is None or _CLIENT_CONFIG != config:
-        if _CLIENT is not None:
-            _CLIENT.close()
-        raw_client = OpenAI(
-            api_key=api_key,
-            base_url=settings.base_url,
-            timeout=settings.timeout_seconds,
-            max_retries=settings.max_retries,
-        )
-        _CLIENT = wrap_openai(raw_client, chat_name=settings.trace_name)
-        _CLIENT_CONFIG = config
-    return _CLIENT
+    with _CLIENT_LOCK:
+        if config not in _CLIENTS:
+            raw_client = OpenAI(
+                api_key=api_key,
+                base_url=settings.base_url,
+                timeout=settings.timeout_seconds,
+                max_retries=settings.max_retries,
+            )
+            _CLIENTS[config] = wrap_openai(raw_client, chat_name=settings.trace_name)
+        return _CLIENTS[config]
+
+
+class JsonObject(BaseModel):
+    model_config = ConfigDict(extra="allow")
 
 
 def complete_json(
-    system_prompt: str, user_prompt: str, *, temperature: float | None = None
+    system_prompt: str, user_prompt: str, schema: type[BaseModel] = JsonObject,
+    validate: Callable[[BaseModel], None] | None = None, *, temperature: float | None = None,
 ) -> dict[str, Any]:
-    """Return a JSON object from the configured OpenAI-compatible endpoint."""
-    started = time.perf_counter()
-    settings = get_settings().llm
-    model = settings.model
-
-    try:
-        response = _client().chat.completions.create(
-            model=model,
-            temperature=settings.default_temperature if temperature is None else temperature,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-    except APIError as exc:
-        record_llm_call(status="failure", started=started, error_type=type(exc).__name__)
-        raise ModelUnavailable(f"LLM request failed: {type(exc).__name__}.") from exc
-    content = response.choices[0].message.content
-    if not content:
-        record_llm_call(status="failure", started=started, error_type="empty_response", response=response)
-        raise ModelUnavailable("LLM returned an empty response.")
-    try:
-        result = json.loads(content)
-    except json.JSONDecodeError as exc:
-        record_llm_call(status="failure", started=started, error_type="invalid_json", response=response)
-        raise ModelUnavailable("LLM did not return valid JSON.") from exc
-    if not isinstance(result, dict):
-        record_llm_call(status="failure", started=started, error_type="invalid_json_object", response=response)
-        raise ModelUnavailable("LLM JSON response must be an object.")
-    record_llm_call(status="success", started=started, response=response)
-    return result
+    """Return validated JSON using the same bounded repair path as agent decisions."""
+    return complete_validated_json(system_prompt, user_prompt, schema,
+                                   temperature=temperature, validate=validate).model_dump(exclude_unset=True)
 
 
 def complete_validated_json(
     system_prompt: str, user_prompt: str, schema: type[T], *,
     validate: Callable[[T], None] | None = None,
+    temperature: float | None = None,
     on_chunk: Callable[[str], None] | None = None,
     on_retry: Callable[[], None] | None = None,
 ) -> T:
     """Repair model contract errors, independently of API transport retries."""
-    messages = [{"role": "system", "content": system_prompt},
+    messages = [{"role": "system", "content": system_prompt + "\nReturn JSON matching this schema:\n"
+                 + json.dumps(schema.model_json_schema(), ensure_ascii=False)},
                 {"role": "user", "content": user_prompt}]
     previous: tuple[str, str] | None = None
     for attempt in range(3):
@@ -108,13 +83,13 @@ def complete_validated_json(
         try:
             response = _client().chat.completions.create(
                 model=get_settings().llm.model,
-                temperature=get_settings().llm.default_temperature,
+                temperature=get_settings().llm.default_temperature if temperature is None else temperature,
                 response_format={"type": "json_object"},
                 messages=messages,
                 stream=on_chunk is not None,
             )
             if on_chunk is None:
-                raw = response.choices[0].message.content or ""
+                raw = (response.choices[0].message.content or "") if response.choices else ""
             else:
                 pieces = []
                 for chunk in response:

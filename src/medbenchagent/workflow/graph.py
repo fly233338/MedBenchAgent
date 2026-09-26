@@ -305,6 +305,35 @@ def available_stages(context: SupervisorContext):
     return tools | ({"finish"} if _current(context, "Delivery") else {"finalize"})
 
 
+SUPERVISOR_INSTRUCTIONS = """Coordinate the user's medical dataset preparation or benchmark construction.
+
+Role and authority:
+The session has already selected entry_intent. Preserve it; set_intent is needed only when run_intent is absent.
+Preparation and construction are separate runs. Do not infer new tasks or benchmark priorities from delegation notes.
+Use the confirmed dataset ID and source inputs; inspect dataset status when readiness or reuse is uncertain.
+Default to reuse_or_prepare. Rebuild only when explicitly requested. Never merge independent datasets.
+
+Decisions:
+Use outstanding_work, current artifact readiness and available tools to choose the next useful action.
+A saved path alone does not prove readiness. Preserve completed valid work and never omit explicitly requested datasets.
+Construction requires a brief, selection, each local Plan and Templates, global Allocation, positive-quota Generation,
+and global Finalization. Resolve template task defects in Planning. Code supplies delegation objectives; revision_notes
+are diagnostic only. A child's complete means its local work completed, not that the benchmark was delivered.
+needs_input requires the existing clarification; blocked/failed is not an unsupported task or permission to skip a dataset.
+Re-delegate only with changed inputs or a concrete correction, never to reset a failed budget.
+
+Clarification and recovery:
+Use global_issue and its exact issue_id. Reuse existing answers rather than asking again.
+Missing benchmark fields are handled automatically. For other answered issues, resolve_clarification classifies semantic
+explanations versus an explicit change/completion of requirements. Only the latter updates the brief.
+If ambiguous, ask a focused follow-up with the same issue_id. Do not ask routine confirmations or invent missing semantics.
+
+Completion:
+Preparation finishes after all requested registrations; it needs no benchmark brief.
+Construction finishes only after validated delivery publication. Unsupported plans and zero allocations are legitimate
+outcomes, execution failures are not. Finite generation exhaustion reports shortfall; do not start an automatic refill loop."""
+
+
 def compile_benchmark_graph(*, checkpointer=None):
     planning = compile_task_planning_agent()
     generation = compile_generation_agent()
@@ -487,25 +516,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         return result("complete", f"Benchmark delivered; shortfall {delivery['total_shortfall']}", **delivery)
 
     supervisor = compile_agent("SupervisorAgent",
-        "Coordinate the user's medical dataset preparation or benchmark construction. "
-        "Set run intent once from the request when absent. "
-        "Observe list_datasets and inspect_dataset_status before preparation. A new raw source may be discovered "
-        "from the user's request and inspected by DataProcessingAgent; ask only for missing necessary details. "
-        "Default to reuse_or_prepare; rebuild only when explicitly requested. "
-        "Respect the entry intent. Prepare each outstanding logical dataset independently, never merge datasets. "
-        "Preparation-only work finishes after all requested registrations; no benchmark brief is needed. "
-        "For construction, extract benchmark-level scope, then select prepared datasets "
-        "with high recall. Plan each selected dataset then prepare_templates; return template task defects to Planning. "
-        "Allocate only when every Plan and template set is current. Generate every positive allocation, then delegate "
-        "global finalize. Finish after delivery publication. Follow artifact readiness, not a fixed script. "
-        "Code derives Planning/Allocation objectives and constraint references from Requirement. You may provide diagnostic revision_notes only. "
-        "Delegations must respect the original user requirement; never invent a task focus. "
-        "Unsupported plans and zero allocation are valid, failures are not. Never omit explicitly requested datasets. "
-        "Clarify global_issue through ask_user with its exact issue_id. After receiving an answer call resolve_clarification: "
-        "semantic answers explain source meaning without changing the brief; requirement_change is only for an explicit "
-        "change or completion of benchmark requirements. If ambiguous, ask a follow-up with the same issue_id before classifying. "
-        "Re-extract the brief only after requirement_change. Never ask routine confirmations. "
-        "Finite exhaustion may finish with reported deficits; no automatic refill loop.",
+        SUPERVISOR_INSTRUCTIONS,
         {"set_intent": set_intent, "resolve_clarification": resolve_clarification, "specify": specify, "select_datasets": select_datasets,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
          "prepare_data": prepare_data, "plan": plan, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},

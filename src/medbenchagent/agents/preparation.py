@@ -95,7 +95,10 @@ def _population(context, reference):
 
 
 def save_source_fingerprint(context, *, inspection_references):
-    """Freeze selected factual receipts, including their coverage; unrelated later reads do not invalidate it."""
+    """Freeze current inspection references and coverage into SourceFingerprint.
+
+    Include population and all field inspections needed by the spec. Unrelated later reads do not invalidate it.
+    """
     source = Source.model_validate(context["active_source"])
     source_artifact = _record(context, "Source")
     verify_source(context["source_manifest"])
@@ -131,7 +134,10 @@ def save_source_fingerprint(context, *, inspection_references):
 
 
 def save_semantic_spec(context, *, spec):
-    """Record source-supported meanings, identity, missing values and geometry without executable steps."""
+    """Publish SemanticPreparationSpec from the current SourceFingerprint and exact semantic evidence.
+
+    Record meanings, identity, missingness and geometry, not executable steps. Revision invalidates dependent extraction.
+    """
     bound(context, "SourceFingerprint")
     spec = SemanticPreparationSpec.model_validate(spec)
     allowed = {item["reference"] for item in _read(context["fingerprint_path"])["inspections"]}
@@ -188,6 +194,8 @@ def save_dataset_adapter(context, *, code):
     Human-review specs additionally require population.jsonl (source_id, image_id, image_path).
     Code never assigns trusted provenance, namespaces, approval, normalized images or ready markers.
     """
+    from medbenchagent.data.execution import require_script_runtime
+    require_script_runtime(context["execution_runtime"])
     bound(context, "SemanticPreparationSpec")
     try:
         compile(code, "adapter.py", "exec")
@@ -211,6 +219,8 @@ def save_execution_plan(context, *, plan):
     if context["active_source"]["kind"] == "annotation" and not plan.identity_import:
         raise ValueError("Use a raw source for semantic recoding of canonical imports")
     if plan.executor == "generated_python":
+        from medbenchagent.data.execution import require_script_runtime
+        require_script_runtime(context["execution_runtime"])
         adapter = _record(context, "DatasetAdapter")
         if adapter["id"] != plan.adapter_reference:
             raise ValueError("Execution plan references an obsolete adapter")
@@ -352,7 +362,11 @@ def _candidate(context):
 
 
 def validate_preparation(context):
-    """Resolve provenance and reconcile the pre-quarantine population before admitting image processing."""
+    """Validate current CandidateExtraction against the spec and inspected population.
+
+    Publishes PreparationValidation and Annotation on acceptance; needs_input returns the exact population review
+    issue_id to ask. Approval permits re-validation, never bypasses provenance or population checks.
+    """
     from medbenchagent.agents.data_processing import _run
     from medbenchagent.data.population import verify_population
     spec = _spec(context)

@@ -24,6 +24,24 @@ def test_invalid_dataset_adapter_is_repairable(tmp_path, monkeypatch):
     assert pipeline.save_dataset_adapter(context, code="pass")["status"] == "success"
 
 
+def test_preparation_observation_tracks_readiness_and_runtime(tmp_path, monkeypatch):
+    from test_preparation_evidence import grounded_spec, setup_source
+    context = setup_source(tmp_path, monkeypatch)
+    context.update(pipeline.save_semantic_spec(context, spec=grounded_spec(context))["updates"])
+    assert "save_dataset_adapter" in pipeline.available_tools(context)
+    context["execution_runtime"]["requested_backend"] = "auto"
+    observed = pipeline.describe(context)
+    assert observed["source_readiness"]["one"]["SemanticPreparationSpec"]
+    assert observed["pending_source_ids"] == ["one"]
+    assert not observed["completion"]["can_finish"]
+    assert not observed["execution_capabilities"]["generated_python"]
+    assert "save_dataset_adapter" not in pipeline.available_tools(context)
+    with pytest.raises(ValueError, match="explicit backend=local"):
+        pipeline.save_dataset_adapter(context, code="pass")
+    publish(context, "SourceFingerprint", {"revision": "changed"}, ("Source",))
+    assert not pipeline.describe(context)["source_readiness"]["one"]["SemanticPreparationSpec"]
+
+
 def test_execution_alone_cannot_publish_data(tmp_path):
     with pytest.raises(ValueError, match="Harmonization"):
         pipeline.finish(_context(tmp_path))

@@ -60,7 +60,7 @@ def test_validated_json_stops_repeated_error(monkeypatch):
 
     monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
-    with pytest.raises(llm.ModelUnavailable, match="failed validation"):
+    with pytest.raises(llm.StructuredOutputError, match="failed validation"):
         llm.complete_validated_json("system", "user", _Decision)
     assert len(requests) == 2
 
@@ -87,7 +87,7 @@ def test_json_api_configuration_and_client_reuse(monkeypatch) -> None:
                          model="test-model", timeout_seconds=17, max_retries=2)
     captured = {}
     requests = []
-    responses = iter(['{"ok":true}', '{"ok":true}', '[]', 'not json'])
+    responses = iter(['{"ok":true}', '{"ok":true}', '[]', '{"ok":true}'])
 
     def create(**kwargs):
         requests.append(kwargs)
@@ -117,11 +117,44 @@ def test_json_api_configuration_and_client_reuse(monkeypatch) -> None:
         assert captured["max_retries"] == configured.max_retries
         assert requests[0]["model"] == configured.model
         assert requests[0]["response_format"] == {"type": "json_object"}
-        assert requests[0]["messages"] == [{"role": "system", "content": "system"},
-                                           {"role": "user", "content": "user"}]
-        with pytest.raises(llm.ModelUnavailable, match="must be an object"):
-            llm.complete_json("system", "user")
-        with pytest.raises(llm.ModelUnavailable, match="valid JSON"):
-            llm.complete_json("system", "user")
+        assert "schema" in requests[0]["messages"][0]["content"]
+        assert requests[0]["messages"][1] == {"role": "user", "content": "user"}
+        assert llm.complete_json("system", "user") == {"ok": True}
+        assert len(requests) == 4
+    finally:
+        llm.clear_client_cache()
+
+
+@pytest.mark.parametrize("choices", [[], [SimpleNamespace(message=SimpleNamespace(content=""))],
+                                    [SimpleNamespace(message=SimpleNamespace(content="not json"))]])
+def test_empty_or_invalid_response_is_repaired(monkeypatch, choices):
+    responses = iter([SimpleNamespace(choices=choices), SimpleNamespace(choices=[
+        SimpleNamespace(message=SimpleNamespace(content='{"kind":"prepare_dataset"}'))])])
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=lambda **kwargs: next(responses)))))
+    assert llm.complete_validated_json("system", "user", _Decision).kind == "prepare_dataset"
+
+
+def test_config_switch_does_not_close_active_clients(monkeypatch):
+    configured = get_settings().llm
+    closed = []
+    clients = []
+
+    def create(**kwargs):
+        client = SimpleNamespace(close=lambda: closed.append(kwargs["base_url"]))
+        clients.append(client)
+        return client
+
+    llm.clear_client_cache()
+    monkeypatch.setattr(llm, "OpenAI", create)
+    monkeypatch.setattr(llm, "wrap_openai", lambda client, **kwargs: client)
+    monkeypatch.setattr(llm, "get_llm_api_key", lambda: "test")
+    monkeypatch.setattr(llm, "get_settings", lambda: SimpleNamespace(llm=configured))
+    try:
+        first = llm._client()
+        configured = replace(configured, base_url="http://other.invalid/v1")
+        assert llm._client() is not first
+        assert not closed
+        assert len(clients) == 2
     finally:
         llm.clear_client_cache()

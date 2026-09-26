@@ -1901,7 +1901,7 @@ requires-dist = [
     { name = "filelock", specifier = ">=3.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "langchain-core", specifier = ">=0.3.0" },
-    { name = "langgraph", specifier = ">=0.6.0" },
+    { name = "langgraph", specifier = ">=1.2.9" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0.0" },
     { name = "langsmith", specifier = ">=0.3.45,<1.0.0" },
     { name = "nibabel", marker = "extra == 'data-processing'", specifier = "==5.3.2" },

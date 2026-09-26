@@ -115,7 +115,7 @@ def test_multi_disease_scope_does_not_invent_focus():
 
 
 def test_extract_uses_benchmark_level_schema(monkeypatch) -> None:
-    def fake_complete_json(system_prompt: str, user_prompt: str):
+    def fake_complete_json(system_prompt: str, user_prompt: str, *contracts):
         return grounded({
             "diseases": ["breast cancer"],
             "modalities": ["mammography"],

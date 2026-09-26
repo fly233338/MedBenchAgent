@@ -105,7 +105,7 @@ def test_snapshot_preserves_rejected_candidates_and_replays_without_live_cards(t
     catalog.write_text(json.dumps(payload), encoding="utf-8")
     responses = iter([{"dataset_ids": None}, {"selected_dataset_ids": ["a"], "selection_reason": {"a": "Relevant"}}])
     prompts = []
-    def model(system, prompt):
+    def model(system, prompt, *contracts):
         prompts.append(json.loads(prompt))
         return next(responses)
     monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json", model)
@@ -141,7 +141,7 @@ def test_model_failure_reuses_candidate_snapshot_on_retry(tmp_path, monkeypatch)
     c = context(tmp_path, monkeypatch)
     for dataset in ("a", "b"):
         prepared_dataset(tmp_path, dataset, monkeypatch)
-    def failing(system, prompt):
+    def failing(system, prompt, *contracts):
         if "Extract only" in system:
             return {"dataset_ids": None}
         raise ValueError("Temporary model failure")
@@ -151,7 +151,7 @@ def test_model_failure_reuses_candidate_snapshot_on_retry(tmp_path, monkeypatch)
     snapshot = Path(c["operation_directory"]) / "dataset_candidates.json"
     before = snapshot.read_bytes()
     (tmp_path / "catalog.json").write_text('{"datasets":[]}', encoding="utf-8")
-    def retry(system, prompt):
+    def retry(system, prompt, *contracts):
         assert "Extract only" not in system
         assert [v["dataset_id"] for v in json.loads(prompt)["cards"]] == ["a", "b"]
         return {"selected_dataset_ids": ["a"], "selection_reason": {"a": "Relevant"}}

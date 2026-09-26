@@ -35,7 +35,7 @@ def prepare_templates(context):
                                    "feedback_id": f"{context['dataset_scope']}:{leaf_id}:{attempts.index(last)}"})
                     break
                 # A saved generated set can resume its review without regenerating it.
-                if last and last.get("templates") and "review" not in last:
+                if last and "review" not in last:
                     attempt = last
                 else:
                     if len(attempts) >= 1 + context.get("limits", {}).get("max_reworks", 3):
@@ -43,6 +43,7 @@ def prepare_templates(context):
                     attempt = {"input": key, "feedback": last.get("review", {}).get("reason", "") if last else ""}
                     attempts.append(attempt)
                     atomic_write_json(ledger_path, ledger)
+                if "templates" not in attempt:
                     try:
                         with event_context(agent="TaskPlanningAgent", task_id=leaf_id, operation="create_templates"):
                             attempt["templates"] = create_templates(specification, attempt["feedback"],

@@ -86,37 +86,34 @@ def discover_source(context: dict, dataset_id: str) -> dict:
                 proposal = RootProposal.model_validate(complete_json(
                     "Extract the raw dataset root path and dataset name from the user's request. "
                     "Return exactly root and dataset_name; use null when absent. Do not invent paths or medical facts.",
-                    context["user_requirement"],
+                    context["user_requirement"], RootProposal,
                 ))
             atomic_write_json(proposal_path, proposal.model_dump())
+        from medbenchagent.runtime.preparation_intake import parse_answer
         root_text = proposal.root
-        if not root_text:
-            root_text = interrupt({"kind": "clarification", "role": "DataProcessingAgent",
-                                   "question": f"Where is the raw directory for {dataset_id}?"})
-        root = Path(root_text).expanduser().resolve()
-        if not root.is_dir():
-            replacement = interrupt({"kind": "clarification", "role": "DataProcessingAgent",
-                                     "question": f"The raw directory is unavailable: {root}. Provide an accessible directory."})
-            root = Path(replacement).expanduser().resolve()
-        if not root.is_dir():
-            raise ValueError(f"Raw directory is unavailable: {root}")
-        if Path(context["run_directory"]).resolve().is_relative_to(root):
-            raise ValueError("Raw directory must not contain this run's output directory")
-        inventory = _inventory(root)
-        atomic_write_json(folder / "source_inventory.json", inventory)
-        missing = _missing_inputs(root, inventory)
-        if missing:
-            replacement = interrupt({"kind": "clarification", "role": "DataProcessingAgent",
-                                     "question": (f"{root} lacks {', '.join(missing)}. "
-                                                  "Provide the directory containing the dataset tables and images.")})
-            root = Path(replacement).expanduser().resolve()
-            if not root.is_dir() or Path(context["run_directory"]).resolve().is_relative_to(root):
-                raise ValueError(f"Replacement raw directory is unavailable or contains run output: {root}")
-            inventory = _inventory(root)
-            atomic_write_json(folder / "source_inventory.json", inventory)
-            missing = _missing_inputs(root, inventory)
-        if missing:
-            raise ValueError(f"Raw directory lacks {', '.join(missing)}: {root}")
+        question = f"Where is the raw directory for {dataset_id}?"
+        while True:
+            if not root_text:
+                answer = interrupt({"kind": "clarification", "role": "DataProcessingAgent",
+                                    "question": question})
+                try:
+                    root_text = parse_answer("source_root", answer)
+                except ValueError as exc:
+                    question = f"Could not understand the directory: {exc}. Provide the raw dataset directory."
+                    continue
+            root = Path(root_text).expanduser().resolve()
+            if not root.is_dir():
+                question = f"The raw directory is unavailable: {root}. Provide an accessible directory."
+            elif Path(context["run_directory"]).resolve().is_relative_to(root):
+                question = "Raw directory must not contain this run's output directory. Provide a separate source directory."
+            else:
+                inventory = _inventory(root)
+                atomic_write_json(folder / "source_inventory.json", inventory)
+                missing = _missing_inputs(root, inventory)
+                if not missing:
+                    break
+                question = f"{root} lacks {', '.join(missing)}. Provide the directory containing the dataset tables and images."
+            root_text = None
         annotation = (root / "annotation.jsonl").is_file()
         source = Source(id="original", root=str(root), kind="annotation" if annotation else "raw")
         proposed_name = proposal.dataset_name or ""

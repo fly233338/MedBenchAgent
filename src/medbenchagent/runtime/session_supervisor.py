@@ -69,7 +69,9 @@ def classify_requirement(text: str, *, known_datasets: list[dict], history: list
 
     return complete_validated_json(
         "You are the session Supervisor for MedBenchAgent. Return a JSON object with reply and tasks. "
-        "reply must be useful natural-language text. Each task.kind MUST be exactly "
+        "reply must be useful natural-language text. "
+        "Your reply describes only the accepted request, never completed work or guaranteed results. "
+        "Each task.kind MUST be exactly "
         "'prepare_dataset' or 'build_benchmark'; never use 'prepare' or 'build'. "
         "Each task may have dataset_id, dataset_name, source_root, rebuild, requested_dataset_ids. "
         "For preparation, a new dataset is valid even when absent from known_datasets. Preserve its display "

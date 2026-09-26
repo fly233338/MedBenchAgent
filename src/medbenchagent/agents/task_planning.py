@@ -589,6 +589,7 @@ def propose_extension(context, **proposal):
             },
             ensure_ascii=False,
         ),
+        ExtensionDecision,
     )
     decision = ExtensionDecision.model_validate(decision).model_dump()
     tree["proposals"][key] = {**proposal, "decision": decision}
@@ -703,6 +704,7 @@ def review_tree(context):
             },
             ensure_ascii=False,
         ),
+        GlobalReview,
     )
     issues = GlobalReview.model_validate(review).model_dump()["issues"]
     if any(not set(i["node_ids"]) <= set(tree["concepts"]) | set(tree["tasks"]) for i in issues):
@@ -763,6 +765,11 @@ def finish(context):
 
 def describe(context: TaskPlanningContext):
     try:
+        require(context, "Materials")
+        materials_initialized = True
+    except ValueError:
+        materials_initialized = False
+    try:
         tree = _tree(context)
     except ValueError as exc:
         return {
@@ -773,6 +780,7 @@ def describe(context: TaskPlanningContext):
         }
     return {
         "rag_capability": context.get("rag_capability"),
+        "materials_initialized": materials_initialized,
         "dataset_summary": _profile(context).get("summary", {}) if context.get("dataset_access_manifest") else {},
         "requirement": context.get("benchmark_info"),
         "sample_scope": context.get("sample_scope", []),
@@ -857,7 +865,9 @@ def compile_task_planning_agent(*, checkpointer=None):
     )
     return compile_agent(
         "TaskPlanningAgent",
-        "Build a two-level Medical Concept -> executable Leaf plan. The dataset is already assigned and prepared. Select references (an empty selection is allowed). "
+        "Build a two-level Medical Concept -> executable Leaf plan. The dataset is already assigned and prepared. "
+        "Preserve initialized Materials. Select references only when needed or deliberately revising them; "
+        "without RAG, initialization already supplies empty Materials. "
         "Modality scope needs one in/not_in condition and modality_bindings covering each requested modality. "
         "Coded/renamed values need matching semantic_basis references. Unsupported scope requires inspection_references. "
         "Unsupported decisions require inspection_references returned by field/document tools; reuse current evidence when relevant. "

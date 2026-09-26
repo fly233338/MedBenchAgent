@@ -17,7 +17,7 @@ def test_auto_falls_back_but_pinned_docker_does_not(monkeypatch):
     with pytest.raises(ValueError, match="explicit backend=local"):
         execution.require_script_runtime(runtime)
     execution.require_script_runtime(execution.select_backend({**settings, "backend": "local"}))
-    with pytest.raises(ValueError, match="Docker"):
+    with pytest.raises(execution.ExecutionUnavailable, match="Docker"):
         execution.select_backend({**settings, "backend": "docker"})
     assert execution.select_backend(settings, runtime) == runtime
 
@@ -52,9 +52,27 @@ def test_local_fixed_operation_script_and_receipt(tmp_path, monkeypatch):
 def test_local_timeout_terminates_process(tmp_path):
     import os
     import sys
-    with pytest.raises(ValueError, match="budget"):
+    with pytest.raises(execution.ExecutionUnavailable, match="budget"):
         execution._local_run([sys.executable, "-c", "import time; time.sleep(30)"],
                              cwd=tmp_path, env=os.environ.copy(), timeout=0.1)
+
+
+def test_docker_timeout_cleans_up_the_started_container(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(execution, "select_backend", lambda *a: {
+        "backend": "docker", "requested_backend": "docker", "image_id": "test-image"})
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "run":
+            raise subprocess.TimeoutExpired(command, 1)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(execution.subprocess, "run", run)
+    with pytest.raises(execution.ExecutionUnavailable, match="budget"):
+        execution.run({"source_root": str(tmp_path), "bundle_root": str(tmp_path / "bundle")},
+                      tmp_path / "output", request={"operation": "table", "path": "data.csv"})
+    container_name = commands[0][commands[0].index("--name") + 1]
+    assert commands[1] == ["docker", "rm", "-f", container_name]
 
 
 @pytest.mark.parametrize("failure", [ValueError("missing image"), subprocess.TimeoutExpired("docker", 30)])

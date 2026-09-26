@@ -90,16 +90,23 @@ changing the result. Use a new run or model identifier when service weights chan
   question; `/queue` explicitly submits new work.
 - `/quit` returns from a conversation to the experiment list, stopping active work at a
   saved boundary first. Ctrl+C exits the application through the same stopping mechanism,
-  including when the configuration screen is open. A model call already in flight must finish.
+  including when the configuration screen is open. LangGraph drains at a saved superstep boundary;
+  an in-flight model call or tool finishes or times out before stopping.
 
-Replies stream during interpretation and enter history after validation. Failed requests
+Replies enter history only after validation. Failed requests
 remain visible but do not enter the Supervisor's accepted conversation history.
 Select a run in the sidebar to inspect its identifiers, frozen settings and asset paths.
+Model/service and execution-environment failures preserve the checkpoint rather than consuming
+agent correction budgets. Resolve the reported failure before `/resume`; do not repeatedly
+resume an unchanged fault. CLI `resume` also continues queued work after the resumed run ends.
+Malformed model output receives at most two contract-repair attempts; missing user facts remain
+clarification questions. Invalid preparation answers keep the current question open.
+
 
 `session.json` stores conversation and queue state; `checkpoints.sqlite` under the run
 root stores graph recovery state. Keep these and the referenced prepared assets intact.
 Resume requires unchanged code, runtime contract and frozen inputs. After changing code,
-start a new run; old checkpoints are not migrated. Current contract: `agent-runtime.v15`.
+start a new run; old checkpoints are not migrated. Current contract: `agent-runtime.v16`.
 
 ## Data preparation and delivery
 

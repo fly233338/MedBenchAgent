@@ -816,6 +816,8 @@ class ConversationScreen(Screen):
             self.query_one("#message", Input).focus()
         elif event.kind in {"finished", "error"}:
             self._flush_progress()
+            if event.payload.get("recovery_hint"):
+                self._progress_queue.put(event.payload["recovery_hint"])
             self._set_status(f"{event.payload.get('status')}: {event.payload.get('summary', '')}")
             self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
             if not self.pending_intake:
@@ -850,6 +852,8 @@ class ConversationScreen(Screen):
     def action_back(self) -> None:
         self.back_requested = True
         self.stop_event.set()
+        if self.service is not None:
+            self.service.runner.request_stop()
         if not self._finish_navigation():
             self._set_status("Stopping at the next saved run boundary…")
 
@@ -951,6 +955,8 @@ class MBAApp(App):
             screen = active[-1]
             screen.exit_requested = True
             screen.stop_event.set()
+            if screen.service is not None:
+                screen.service.runner.request_stop()
             screen._set_status("Stopping at the next saved run boundary…")
             while self.screen is not screen:
                 self.pop_screen()

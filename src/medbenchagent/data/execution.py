@@ -18,6 +18,10 @@ PACKAGES = ("duckdb", "pydantic", "pandas", "openpyxl", "xlrd", "Pillow", "numpy
             "pylibjpeg-libjpeg", "pylibjpeg-openjpeg")
 
 
+class ExecutionUnavailable(RuntimeError):
+    """An execution environment failure that agent argument repairs cannot resolve."""
+
+
 def local_identity():
     versions = {}
     for package in PACKAGES:
@@ -60,7 +64,7 @@ def select_backend(settings, saved=None):
             identity = docker_identity(settings, smoke=saved is None)
         except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
             if mode == "docker":
-                raise ValueError(f"Pinned Docker runtime unavailable: {exc}") from exc
+                raise ExecutionUnavailable(f"Pinned Docker runtime unavailable: {exc}") from exc
             reason = str(exc)
             identity = local_identity()
     else:
@@ -105,9 +109,11 @@ def _local_run(command, *, cwd, env, timeout):
         else:
             os.killpg(process.pid, signal.SIGKILL)
         process.communicate()
-        raise ValueError("Preparation exceeded its execution budget") from None
+        raise ExecutionUnavailable("Preparation exceeded its execution budget") from None
     if process.returncode:
         hint = " Install local processing dependencies with uv sync --extra data-processing." if "ModuleNotFoundError" in stderr else ""
+        if hint:
+            raise ExecutionUnavailable((stdout + "\n" + stderr)[-5000:] + hint)
         raise ValueError((stdout + "\n" + stderr)[-5000:] + hint)
 
 
@@ -165,8 +171,8 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
         _local_run([sys.executable, *arguments], cwd=output, env={**os.environ, **environment},
                    timeout=settings["timeout_seconds"])
     else:
-        name = "medbench-data-" + uuid4().hex
-        command = ["docker", "run", "--name", name, "--rm", "--pull=never", "--network=none",
+        container_name = "medbench-data-" + uuid4().hex
+        command = ["docker", "run", "--name", container_name, "--rm", "--pull=never", "--network=none",
                    "--read-only", f"--memory={settings['container_memory']}", f"--cpus={settings['threads']}",
                    "--pids-limit=128", "--cap-drop=ALL", "--security-opt=no-new-privileges",
                    "--tmpfs", "/tmp:rw,size=256m", "--workdir", "/work"]
@@ -189,9 +195,11 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
             completed = subprocess.run(command + [runtime["image_id"]] + arguments, capture_output=True,
                                        text=True, encoding="utf-8", timeout=settings["timeout_seconds"], check=False)
         except subprocess.TimeoutExpired:
-            subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False, timeout=30)
-            raise ValueError("Preparation exceeded its execution budget") from None
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, check=False, timeout=30)
+            raise ExecutionUnavailable("Preparation exceeded its execution budget") from None
         if completed.returncode:
+            if completed.returncode in {125, 126, 127} or "ModuleNotFoundError" in completed.stderr:
+                raise ExecutionUnavailable((completed.stdout + "\n" + completed.stderr)[-5000:])
             raise ValueError((completed.stdout + "\n" + completed.stderr)[-5000:])
     if context.get("source_manifest"):
         verify_source(context["source_manifest"])

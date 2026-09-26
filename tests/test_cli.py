@@ -65,3 +65,73 @@ def test_runner_emits_initialized_and_clarification(tmp_path: Path, monkeypatch)
     assert [event.kind for event in events if event.kind in {"initialized", "needs_input"}] == [
         "initialized", "needs_input"]
     assert events[-1].payload["question"] == "Which language?"
+
+
+@pytest.mark.parametrize("stop_at_start", [False, True])
+def test_runner_drains_and_resumes_without_repeating_work(tmp_path, monkeypatch, stop_at_start):
+    from langgraph.graph import StateGraph, START, END
+    from medbenchagent.settings import active_settings
+
+    monkeypatch.setattr("medbenchagent.runtime.preflight.preflight_errors", lambda *a, **kw: [])
+    monkeypatch.setattr("medbenchagent.runtime.preflight.rag_capability", lambda s: {"available": True})
+    monkeypatch.setattr("medbenchagent.runtime.dependencies.verify_resume", lambda c: None)
+    settings = SimpleNamespace(paths=SimpleNamespace(runs_root=tmp_path), harness={"max_calls": 500})
+    monkeypatch.setattr("medbenchagent.runtime.graph_runner.run_settings", lambda path: active_settings(settings))
+    calls = []
+
+    def factory(checkpointer):
+        graph = StateGraph(dict)
+        def initialize(state):
+            return {"run_directory": str(tmp_path / "run"), "context": {
+                "effective_config_path": "frozen.json", "limits": settings.harness}}
+        def work(state):
+            calls.append("work")
+            if not stop_at_start:
+                runner.request_stop()
+            return state
+        child = StateGraph(dict)
+        child.add_node("work", work)
+        child.add_node("after_work", lambda state: state)
+        child.add_edge(START, "work")
+        child.add_edge("work", "after_work")
+        child.add_edge("after_work", END)
+        child_graph = child.compile()
+        graph.add_node("initialize", initialize)
+        graph.add_node("work", lambda state: child_graph.invoke(state))
+        graph.add_node("finish", lambda state: {**state, "status": "complete"})
+        graph.add_edge(START, "initialize")
+        graph.add_edge("initialize", "work")
+        graph.add_edge("work", "finish")
+        graph.add_edge("finish", END)
+        return graph.compile(checkpointer=checkpointer)
+
+    runner = GraphRunner(graph_factory=factory)
+    run = {"id": "run", "thread_id": "drain", "kind": "build_benchmark", "requirement": "build",
+           "dataset_id": None, "requested_dataset_ids": None, "runs_root": str(tmp_path)}
+    events = list(runner.execute(run, "pilot", tmp_path, settings=settings,
+                                 stop_requested=lambda: stop_at_start))
+    assert events[-1].payload["status"] == "interrupted"
+    if stop_at_start:
+        assert not calls
+    resumed = list(runner.execute(run, "pilot", tmp_path, resume=True))
+    assert resumed[-1].payload["status"] == "complete"
+    assert calls == ["work"]
+
+
+def test_cli_many_clarifications_use_iteration(monkeypatch):
+    from medbenchagent.cli import _consume
+    from medbenchagent.runtime.graph_runner import RunEvent
+    count = 0
+    class Service:
+        def answer(self, run_id, text):
+            pass
+        def resume(self, run_id, answer=None):
+            nonlocal count
+            count += 1
+            if count < 1100:
+                yield RunEvent("r", "needs_input", {"question": "Clarify"})
+            else:
+                yield RunEvent("r", "finished", {"status": "complete"})
+    monkeypatch.setattr("builtins.input", lambda prompt: "answer")
+    assert _consume(Service(), iter([RunEvent("r", "needs_input", {"question": "Clarify"})])) == 0
+    assert count == 1100

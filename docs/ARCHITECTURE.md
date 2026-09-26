@@ -232,14 +232,19 @@ initialized/progress/artifact/needs_input/finished/error 事件。界面不打�
 TUI 首页后台扫描实验；Conversation 页面先挂载，再后台导入会话服务并恢复状态。进度日志分批显示，
 不会为界面刷新新增持久化缓存。首页 /remove 确认后只删除未被会话或运行锁占用的 experiment 工作区，
 不删除独立运行目录、全局 Catalog 或 prepared dataset。
-Ctrl+C 从整个页面栈找到活动会话并请求在保存边界停止，配置页不会绕过运行退出流程。
+Ctrl+C 从整个页面栈找到活动会话，通过 LangGraph RunControl.request_drain 请求在 superstep 保存边界停止，
+配置页不会绕过运行退出流程。每次执行使用独立控制对象，GraphDrained 保留 checkpoint；在途调用完成或超时后停止。
+GraphRunner 使用同步 checkpoint 持久化，缺少合法终态不得推断为 complete。
 会话 /quit 同样等待当前运行及提交完成后返回首页；停止请求阻止继续启动排队运行。
 独立排队任务可在另一任务运行时提交；前置准备失败只阻断依赖构建，其他队列项继续执行。
 会话提交先在 `mba-session.v2` 记录独立的 processing 状态；分类、结构与业务校验完成后一次提交正式消息和 Run。
 失败状态与原请求保留供界面显示，但不进入 Supervisor 对话历史；遗留 processing 在恢复时标为失败。
 准备新 Dataset 时，Session 层结构化收集展示名、规范 ID、原始目录与显式重建意图；缺项组成可恢复的问题批次，
 逐题回答后才创建 Run。已确认值传入图与 SourceDiscovery，后者验证路径和文件事实，不重复解析会话原文。
-LLM 层对 JSON/Pydantic/业务契约错误最多反馈修复两次，API transport 重试仍独立。
+LLM 层统一通过结构化调用向模型提供 JSON Schema；JSON/Pydantic/业务契约错误最多反馈修复两次，
+API transport 重试仍由 SDK 独立处理。StructuredOutputError 是可修正契约错误，ModelUnavailable 是
+服务故障；后者及执行环境故障向 GraphRunner 传播，保留 checkpoint，不消耗 Agent 决策失败预算。
+客户端按配置缓存并加锁创建；切换配置不关闭在途请求的客户端。Intake 回答先验证后推进，错误保留当前问题。
 准备请求的用户可见回复在确定性 Intake 规范化后生成；缺项时只显示中性说明与问题，完成后确认展示名、
 规范 ID 和已提供的来源目录。分类中的模型回复不提前展示，最终确认与 Run 参数一致。
 
@@ -253,6 +258,8 @@ LLM 层对 JSON/Pydantic/业务契约错误最多反馈修复两次，API transp
 | Dataset Bundle | 已发布的数据产品；数据不可变，Card 修订追加保存 |
 
 每项准备或构建运行拥有独立的 LangGraph thread_id、运行目录和配置快照；终态后会话继续等待输入。
+ConversationService 恢复运行后释放锁，再驱动后续队列，CLI/TUI 共用；CLI 连续澄清采用迭代消费事件。
+错误事件可带 error_category 与 recovery_hint，界面显示原始问题及恢复方式。
 配置界面显示全部非密钥字段，按层级用键盘编辑；运行中修改实验 TOML 只影响尚未启动的 Run。
 运行详情显示冻结配置、目录与资产引用。GraphRunner 按 tasks/updates/custom + subgraphs=True
 处理事件流，只从 updates 顶层读取 LangGraph Interrupt；未知格式和缺少有效 question 明确报错。
@@ -267,6 +274,14 @@ Supervisor 共享状态只保留选中 ID、各 Dataset 产物引用和进度摘
 
 共享 Harness 对决策动作和工具参数使用同一结构化校验反馈修复；修复调用不消耗 Agent 执行步数，
 修复耗尽才计一次 Agent 决策失败，预算阻断保留最后的具体错误。Harness 使用一致的工具可见/执行门控。
+Supervisor 提示按职责、状态调度、澄清和完成条件组织，不重新识别已确定 entry_intent；有效产物与可见工具
+决定可执行动作。DataProcessing 的观察提供逐来源有效阶段、待处理来源、后端能力、验收摘要和完成门槛，
+均从已有依赖与产物推导，不维护额外流程状态。generated_python 不可用时隐藏 Adapter 工具，保存及执行仍验证。
+提示引导恢复已有证据、询问具体语义缺口，保留 annotation-driven 边界；TaskPlanning 复用自动初始化的 Materials。
+模板生成的服务中断复用未完成尝试，不额外消耗返修次数。
+运行控制直接使用 LangGraph 原生 [RunControl](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/runtime.py)，
+错误边界参考 [ToolNode](https://github.com/langchain-ai/langgraph/blob/main/libs/prebuilt/langgraph/prebuilt/tool_node.py)
+的可修正工具错误与控制异常分离方式；本项目继续负责领域门控和操作回执。
 专业 Agent 局部 ask_user 使用
 LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete、needs_input、blocked、failed。
 私有观察有界，完整资料通过工具读取；人工等待不计入运行时间。超出预算 blocked。
@@ -296,7 +311,7 @@ Planning 文档、RAG 和用户语义依据都使用正式 evidence reference；
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v15；
+SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v16；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner 必须逐项 resolve_sample_scope，

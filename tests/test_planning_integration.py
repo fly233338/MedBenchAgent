@@ -80,7 +80,7 @@ def test_complete_build(tmp_path, monkeypatch, harness_model, dataset_count, ask
     harness_model(model)
     monkeypatch.setattr("medbenchagent.agents.task_planning.complete_json", lambda *a: {"issues": []})
     template_reviews = []
-    def templates(system, prompt, **kwargs):
+    def templates(system, prompt, *contracts, **kwargs):
         language = json.loads(prompt)["specification"]["language"]
         assert language in ({"zh", "en"} if revise else {"en"})
         if system.startswith("Review"):

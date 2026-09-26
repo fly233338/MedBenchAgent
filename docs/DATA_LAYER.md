@@ -7,7 +7,7 @@ in LangGraph; the data modules do not implement another workflow scheduler.
 
 A run prepares all sources of ONE logical dataset. Sources retain `id`, nullable declared `version`,
 `kind` (`raw` or `annotation`), `root`, and `annotation`. Artifact identity and used-file contents are distinct
-from the user-declared source version. No checkpoint migration is performed (`agent-runtime.v15`).
+from the user-declared source version. No checkpoint migration is performed (`agent-runtime.v16`).
 
 The source-scoped chain is:
 

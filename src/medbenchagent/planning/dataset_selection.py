@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-from pydantic import Field
 from medbenchagent.data.contracts import Contract, Text
 from medbenchagent.data.dataset_catalog import dataset_by_id, load_prepared, load_dataset_catalog, resolve_path
 from medbenchagent.data.dataset_card import card_summary
@@ -19,8 +18,14 @@ class ExplicitDatasets(Contract):
 
 
 class Selection(Contract):
-    selected_dataset_ids: list[Text] = Field(min_length=1)
+    selected_dataset_ids: list[Text]
     selection_reason: dict[str, Text]
+
+
+def _validate_selection(selection, candidates):
+    ids = selection.selected_dataset_ids
+    if len(ids) != len(set(ids)) or set(ids) != set(selection.selection_reason) or not set(ids) <= set(candidates):
+        raise ValueError("Selection IDs/reasons must match unique prepared candidates")
 
 
 def _candidate_snapshot(context, path):
@@ -64,6 +69,7 @@ def _candidate_snapshot(context, path):
                 'Otherwise return their IDs in dataset_ids. Resolve supplied names to IDs; preserve unknown names '
                 'as unknown IDs so validation can report them. Do not recommend datasets.',
                 json.dumps(snapshot["name_resolution_input"], ensure_ascii=False),
+                ExplicitDatasets,
             )).dataset_ids
         if requested is not None and (not requested or len(requested) != len(set(requested))):
             raise ValueError("Explicit dataset selection must be nonempty and unique")
@@ -164,14 +170,14 @@ def select_datasets(context):
                 "not guaranteed sample contribution. Never invent IDs. Return selected_dataset_ids and selection_reason "
                 "keyed by exactly the selected IDs. Return an empty selection if none match.",
                 json.dumps(snapshot["selection_input"], ensure_ascii=False),
+                Selection, lambda parsed: _validate_selection(parsed, snapshot["candidates"]),
             )
     if response == {"selected_dataset_ids": [], "selection_reason": {}}:
         atomic_write_json(path, {**snapshot, **response})
         return _missing_prepared(context, snapshot, folder)
     selection = Selection.model_validate(response)
     ids = selection.selected_dataset_ids
-    if len(ids) != len(set(ids)) or set(ids) != set(selection.selection_reason) or not set(ids) <= set(snapshot["candidates"]):
-        raise ValueError("Selection IDs/reasons must match unique prepared candidates")
+    _validate_selection(selection, snapshot["candidates"])
     atomic_write_json(path, {**snapshot, **selection.model_dump()})
     assets = {}
     for identifier in ids:

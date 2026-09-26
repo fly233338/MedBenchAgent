@@ -1,6 +1,38 @@
 from langgraph.checkpoint.memory import MemorySaver
+import pytest
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.workflow.graph import compile_benchmark_graph
+
+
+def test_service_failure_resumes_without_consuming_agent_budget(tmp_path, monkeypatch, harness_model):
+    from medbenchagent.runtime.llm import ModelUnavailable
+    calls = []
+    actions = iter(["compute", "finish"])
+
+    def model(*args):
+        if calls == ["compute"]:
+            calls.append("outage")
+            raise ModelUnavailable("Service unavailable")
+        return {"tool": next(actions), "arguments": {}, "reason": "Continue"}
+
+    harness_model(model)
+    def compute(context):
+        calls.append("compute")
+        return result("success", "Saved")
+
+    graph = compile_agent("TestAgent", "Test", {"compute": compute}, lambda c: {},
+                          lambda c: result("complete", "Done"), checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "outage"}}
+    context = {"run_id": "test", "run_directory": str(tmp_path),
+               "construction_events_path": str(tmp_path / "events"),
+               "operation_directory": str(tmp_path / "ops")}
+    with pytest.raises(ModelUnavailable):
+        graph.invoke({"context": context}, config)
+    saved = graph.get_state(config).values
+    assert saved["decision_failures"] == saved["failures"] == 0
+    output = graph.invoke(None, config)
+    assert output["result"]["status"] == "complete"
+    assert calls == ["compute", "outage"]
 
 
 def test_supervisor_replaces_fixed_role_chain():

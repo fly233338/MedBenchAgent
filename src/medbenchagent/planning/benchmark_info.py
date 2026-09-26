@@ -6,6 +6,9 @@ import re
 import json
 from pathlib import Path
 from typing import Any
+from pydantic import BaseModel, ConfigDict, Field
+from medbenchagent.planning.scope import ScopeRequirement
+from medbenchagent.runtime.tool_contracts import AllocationPreference
 
 from medbenchagent.runtime.llm import complete_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
@@ -13,6 +16,21 @@ from medbenchagent.settings import get_settings
 
 REQUIRED_FIELDS = ("clinical_scope", "language", "sample_count")
 OPTIONAL_FIELDS = ("diseases", "modalities", "evaluation_focus")
+
+
+class ExtractedBrief(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    clinical_scope: str | None = None
+    diseases: list[str] = Field(default_factory=list)
+    modalities: list[str] = Field(default_factory=list)
+    evaluation_focus: str | None = None
+    language: str | None = None
+    # Explicit invalid values must survive extraction so the user can correct them.
+    sample_count: Any = None
+    sample_scope: list[ScopeRequirement]
+    allocation_preferences: list[AllocationPreference] = Field(default_factory=list)
+    evidence: list[dict[str, Any]]
+    max_total_tasks_per_image: int | None = Field(default=None, gt=0)
 
 EXTRACTION_PROMPT = """Extract a medical VLM benchmark request into one JSON object.
 Return these keys and no wrapper object:
@@ -117,7 +135,13 @@ def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = N
         EXTRACTION_PROMPT,
         f"Current values: {json.dumps(existing or {})}\n\nUser requirement:\n{requirement}"
         f"\n\nQuote evidence only from these user inputs: {json.dumps(user_inputs, ensure_ascii=False)}",
+        ExtractedBrief,
+        lambda parsed: _validate_extraction(parsed.model_dump(exclude_unset=True), existing, user_inputs),
     )
+    return _validate_extraction(result, existing, user_inputs)
+
+
+def _validate_extraction(result, existing, user_inputs):
     info = merge_info(existing or {}, result)
     if not isinstance(result.get("sample_scope"), list):
         raise ValueError("Extraction must include sample_scope as a list, including explicit modalities")

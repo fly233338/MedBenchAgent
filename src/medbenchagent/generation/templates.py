@@ -45,6 +45,10 @@ class TemplateReview(NoArguments):
     reason: NonEmpty
 
 
+class TemplateSet(NoArguments):
+    templates: list[NonEmpty]
+
+
 def create_templates(specification: TemplateSpecification, feedback="", *, temperature=None):
     """Generate a template set; the separate template stage owns review and retries."""
     specification = TemplateSpecification.model_validate(specification)
@@ -55,6 +59,7 @@ def create_templates(specification: TemplateSpecification, feedback="", *, tempe
         "without revealing it. Use the requested language. Every template must apply to every eligible record. "
         "Do not assume facts absent from the specification.",
         json.dumps({"specification": specification.model_dump(), "feedback": feedback}, ensure_ascii=False),
+        TemplateSet, lambda parsed: validate_templates(specification, parsed.templates),
         temperature=get_settings().generation.question_temperature if temperature is None else temperature,
     )
     return validate_templates(specification, response.get("templates"))
@@ -70,6 +75,7 @@ def review_templates(specification: TemplateSpecification, templates: list[str],
         "must change before valid questions can be written. Do not invent labels or research preferences. "
         'Return {"verdict":"approved|revise_templates|revise_plan","reason":"specific reason"}.',
         json.dumps({"specification": specification.model_dump(), "templates": templates, "feedback": feedback}, ensure_ascii=False),
+        TemplateReview,
     )).model_dump()
 
 

@@ -67,11 +67,14 @@ def _interrupt(payload: dict) -> dict | None:
 
 
 def _recursion_limit(values: object) -> int:
+    context = values.get("context", {}) if isinstance(values, dict) else {}
+    calls = context.get("limits", {}).get("max_calls", 60)
+    base = max(1_000, 3 * calls + 10)
     profile = values.get("dataset_profile", {}) if isinstance(values, dict) else {}
     images = profile.get("total_images") if isinstance(profile, dict) else None
     if not isinstance(images, int) or isinstance(images, bool) or images < 0:
-        return 1_000
-    return max(1_000, images * 4 + 100)
+        return base
+    return max(base, images * 4 + 100)
 
 
 def _metadata(values: dict) -> dict:
@@ -101,6 +104,13 @@ def _artifact_paths(value: object) -> Iterator[tuple[str, str]]:
 class GraphRunner:
     def __init__(self, *, graph_factory=None) -> None:
         self.graph_factory = graph_factory
+        self._control = None
+
+    def request_stop(self) -> None:
+        """Request a checkpointed stop from the UI thread without closing a live stream."""
+        control = self._control
+        if control is not None:
+            control.request_drain("user_stop")
 
     def _graph(self, connection):
         from langgraph.checkpoint.sqlite import SqliteSaver
@@ -170,6 +180,8 @@ class GraphRunner:
                 settings: Any = None, stop_requested: Callable[[], bool] | None = None) -> Iterator[RunEvent]:
         """Start or resume a run; return at an interrupt so the caller can answer later."""
         from langgraph.types import Command
+        from langgraph.runtime import RunControl
+        from langgraph.errors import GraphDrained
         from medbenchagent.runtime.dependencies import verify_resume
         from medbenchagent.runtime.preflight import preflight_errors, rag_capability
 
@@ -177,6 +189,8 @@ class GraphRunner:
         identifier = run["id"]
         known_directory = run.get("run_directory")
         connection = None
+        control = RunControl()
+        self._control = control
         try:
             if resume:
                 runs_root = Path(run["runs_root"])
@@ -211,6 +225,9 @@ class GraphRunner:
                 )
 
             with settings_context as settings:
+                config_limits = getattr(settings, "harness", {})
+                if resume:
+                    config["recursion_limit"] = _recursion_limit(previous.values)
                 if resume:
                     if previous.values.get("status") == "complete" and not previous.next:
                         yield RunEvent(identifier, "finished", {
@@ -238,7 +255,7 @@ class GraphRunner:
                     )
                     graph = self._graph(connection)
                     config = {"configurable": {"thread_id": run["thread_id"]},
-                              "recursion_limit": 1_000}
+                              "recursion_limit": _recursion_limit({"context": {"limits": config_limits}})}
                 if resume:
                     pending = [item for task in previous.tasks for item in task.interrupts]
                     if pending:
@@ -270,9 +287,17 @@ class GraphRunner:
                 seen_artifacts: set[tuple[str, str]] = set()
                 while True:
                     interrupted = None
+                    initializing = not resume and next_input is not None
+                    if stop_requested is not None and stop_requested():
+                        control.request_drain("user_stop")
+                    # Freeze configuration before honoring a drain; an input-only checkpoint cannot resume.
                     for event in graph.stream(next_input, config,
                                               stream_mode=["tasks", "updates", "custom"],
-                                              subgraphs=True):
+                                              subgraphs=True, control=None if initializing else control,
+                                              interrupt_after=["initialize"] if initializing else None,
+                                              durability="sync"):
+                        if stop_requested is not None and stop_requested():
+                            control.request_drain("user_stop")
                         namespace, mode, payload = _event_parts(event)
                         if mode == "tasks":
                             name = payload.get("name")
@@ -308,7 +333,8 @@ class GraphRunner:
                                 yield RunEvent(identifier, "progress", {
                                     "text": f"[tool] {item.get('tool')}: {item.get('status')} — {item.get('summary')}",
                                 })
-                            interrupted = interrupted or _interrupt(payload)
+                            if not namespace:
+                                interrupted = interrupted or _interrupt(payload)
                     snapshot = graph.get_state(config)
                     values = snapshot.values or {}
                     known_directory = values.get("run_directory") or known_directory
@@ -327,22 +353,33 @@ class GraphRunner:
                     if snapshot.next:
                         next_input = None
                         continue
+                    if values.get("status") not in {"complete", "blocked", "failed"}:
+                        raise ValueError("Graph ended without a valid terminal status")
                     yield RunEvent(identifier, "finished", {
-                        "status": values.get("status", "complete"),
+                        "status": values["status"],
                         "summary": values.get("summary", ""), **_metadata(values),
                     })
                     return
-        except (KeyboardInterrupt, EOFError):
+        except (GraphDrained, KeyboardInterrupt, EOFError):
             yield RunEvent(identifier, "error", {
                 "status": "interrupted", "summary": "Run interrupted; checkpoint preserved",
                 "run_directory": known_directory, "exit_code": 130,
             })
         except Exception as exc:
+            from medbenchagent.runtime.llm import ModelUnavailable
+            from medbenchagent.data.execution import ExecutionUnavailable
+            category = ("model_service" if isinstance(exc, ModelUnavailable) else
+                        "execution_environment" if isinstance(exc, (ExecutionUnavailable, OSError)) else "runtime")
+            restart_required = "Code or runtime contract changed" in str(exc) or not known_directory
             yield RunEvent(identifier, "error", {
-                "status": ("blocked" if "Code or runtime contract changed" in str(exc)
-                           or not known_directory else "interrupted"),
+                "status": "blocked" if restart_required else "interrupted",
                 "summary": f"{type(exc).__name__}: {exc}", "run_directory": known_directory,
+                "error_category": category,
+                "recovery_hint": ("Correct the configuration or input and submit a new run."
+                                  if restart_required else
+                                  "Checkpoint preserved. Resolve the reported failure before resuming; code/input changes require a new run."),
             })
         finally:
+            self._control = None
             if connection is not None:
                 connection.close()
