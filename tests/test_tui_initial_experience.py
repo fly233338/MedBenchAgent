@@ -5,7 +5,7 @@ import pytest
 
 from medbenchagent.runtime import sessions
 from medbenchagent.runtime.graph_runner import RunEvent
-from medbenchagent.tui import MBAApp, ConversationScreen
+from medbenchagent.tui import MBAApp, ConversationScreen, ExperimentMenu, RemoveExperimentScreen, _brand
 
 
 def test_plain_text_status_and_incremental_run_rows(tmp_path, monkeypatch):
@@ -120,6 +120,42 @@ def test_conversation_mount_remains_responsive_during_recovery(tmp_path, monkeyp
         asyncio.run(check())
     finally:
         release.set()
+
+
+def test_menu_ascii_brand_and_confirmed_remove(tmp_path):
+    sessions.create_experiment("pilot", root=tmp_path)
+    sessions.create_experiment("other", root=tmp_path)
+    lines = _brand().plain.splitlines()
+    assert len(lines) == 5
+    assert max(map(len, lines)) <= 72
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            menu = app.screen
+            assert isinstance(menu, ExperimentMenu)
+            table = menu.query_one("#experiments")
+            selected = str(table.get_row_at(table.cursor_row)[0])
+
+            menu._dispatch_command("/remove")
+            await pilot.pause()
+            assert isinstance(app.screen, RemoveExperimentScreen)
+            assert app.screen.experiment_name == selected
+            await pilot.press("escape")
+            await pilot.pause()
+            assert (tmp_path / selected / "session.json").is_file()
+
+            menu._dispatch_command("/remove")
+            await pilot.pause()
+            app.screen.query_one("#confirm-remove").press()
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert not (tmp_path / selected).exists()
+            assert len(sessions.list_experiments(root=tmp_path)) == 1
+
+    asyncio.run(check())
 
 
 def test_quit_waits_for_run_then_returns_to_experiments(tmp_path):

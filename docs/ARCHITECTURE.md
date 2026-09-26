@@ -229,7 +229,9 @@ CLI 与 Textual UI 不相互依赖。入口分发器无子命令时启动 TUI；
 GraphRunner 独占预检、配置冻结、LangGraph 流、checkpoint 和 interrupt/resume，并向界面发送
 initialized/progress/artifact/needs_input/finished/error 事件。界面不打开 checkpoint。
 每个实验的 session 写入和 Run 执行分别受锁保护，避免 CLI/TUI 同时写坏会话或执行同一 Run。
-TUI 首页后台扫描实验，回复预览合并刷新，进度日志分批显示；不会为界面刷新新增持久化缓存。
+TUI 首页后台扫描实验；Conversation 页面先挂载，再后台导入会话服务并恢复状态。进度日志分批显示，
+不会为界面刷新新增持久化缓存。首页 /remove 确认后只删除未被会话或运行锁占用的 experiment 工作区，
+不删除独立运行目录、全局 Catalog 或 prepared dataset。
 Ctrl+C 从整个页面栈找到活动会话并请求在保存边界停止，配置页不会绕过运行退出流程。
 会话 /quit 同样等待当前运行及提交完成后返回首页；停止请求阻止继续启动排队运行。
 独立排队任务可在另一任务运行时提交；前置准备失败只阻断依赖构建，其他队列项继续执行。
@@ -237,8 +239,9 @@ Ctrl+C 从整个页面栈找到活动会话并请求在保存边界停止，配�
 失败状态与原请求保留供界面显示，但不进入 Supervisor 对话历史；遗留 processing 在恢复时标为失败。
 准备新 Dataset 时，Session 层结构化收集展示名、规范 ID、原始目录与显式重建意图；缺项组成可恢复的问题批次，
 逐题回答后才创建 Run。已确认值传入图与 SourceDiscovery，后者验证路径和文件事实，不重复解析会话原文。
-LLM 层对 JSON/Pydantic/业务契约错误最多反馈修复两次，API transport 重试仍独立；会话回复从同一次结构化
-调用的 JSON reply 字段增量预览，校验成功后才写入历史。
+LLM 层对 JSON/Pydantic/业务契约错误最多反馈修复两次，API transport 重试仍独立。
+准备请求的用户可见回复在确定性 Intake 规范化后生成；缺项时只显示中性说明与问题，完成后确认展示名、
+规范 ID 和已提供的来源目录。分类中的模型回复不提前展示，最终确认与 Run 参数一致。
 
 | State | 责任与生命周期 |
 | --- | --- |
@@ -262,7 +265,9 @@ Supervisor 共享状态只保留选中 ID、各 Dataset 产物引用和进度摘
 局部状态文件，重新委派时恢复；不整体回灌父状态。第一版串行调度，所有 Plan/模板 Ready 后才可 Allocation。
 零配额 Dataset 明确跳过；全局 FinalizationAgent 有独立私有状态，父状态只保留状态引用与交付摘要。
 
-共享 Harness 使用严格 Pydantic JSON 参数和一致的工具可见/执行门控。专业 Agent 局部 ask_user 使用
+共享 Harness 对决策动作和工具参数使用同一结构化校验反馈修复；修复调用不消耗 Agent 执行步数，
+修复耗尽才计一次 Agent 决策失败，预算阻断保留最后的具体错误。Harness 使用一致的工具可见/执行门控。
+专业 Agent 局部 ask_user 使用
 LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete、needs_input、blocked、failed。
 私有观察有界，完整资料通过工具读取；人工等待不计入运行时间。超出预算 blocked。
 查询工具的成功重复不占 max_reworks，仍受总步数、时间和连续失败预算约束；修改/审核维持返工限制。

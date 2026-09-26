@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import tomlkit
+from filelock import FileLock, Timeout
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_settings
@@ -80,6 +83,23 @@ def list_experiments(*, root: Path = EXPERIMENTS_ROOT) -> list[dict]:
         if folder.is_dir() and (folder / "session.json").is_file():
             records.append(load_experiment(folder.name, root=root))
     return sorted(records, key=lambda record: record["created_at"], reverse=True)
+
+
+def remove_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT) -> None:
+    """Remove one idle experiment workspace without touching shared run or dataset roots."""
+    folder = experiment_path(name, root)
+    if folder.is_symlink() or folder.resolve().parent != root.resolve():
+        raise ValueError("Experiment workspace must be a direct directory under the experiments root")
+    if not folder.is_dir():
+        raise ValueError(f"Unknown experiment: {name}")
+    try:
+        with ExitStack() as stack:
+            for filename in ("submit.lock", "run.lock", "session.json.lock"):
+                stack.enter_context(FileLock(str(folder / filename)).acquire(timeout=0))
+            load_experiment(name, root=root)
+    except Timeout as exc:
+        raise ValueError(f"Experiment is in use: {name}") from exc
+    shutil.rmtree(folder)
 
 
 def save_experiment(record: dict, *, root: Path = EXPERIMENTS_ROOT) -> None:

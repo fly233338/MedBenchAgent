@@ -23,6 +23,8 @@ see [inference and evaluation](docs/EVALUATION.md).
 
 The TUI home screen lists experiments. Type `/new` to create one, edit its configuration,
 then `/done` to enter the conversation. Existing experiments open with Enter or `/open`.
+Use `/remove` to delete the selected experiment workspace after confirmation. This keeps
+external run artifacts, the Dataset Catalog, and prepared datasets.
 
 The same workflow is available through the CLI:
 
@@ -78,13 +80,14 @@ changing the result. Use a new run or model identifier when service weights chan
 
 ## TUI controls and recovery
 
-- Home: search experiments, `/new`, `/open`, `/quit`.
+- Home: search experiments, `/new`, `/open`, `/remove`, `/quit`.
 - Configuration: choose a field, edit and apply; `/done` continues, `/quit` returns.
   Changes affect runs that have not started. Dataset sources are managed by preparation.
 - Conversation: `/details` toggles the existing sidebar; `/config` edits future settings;
   `/resume` continues unfinished work; `/queue <request>` queues independent work.
 - Preparation questions: answer one field at a time or `/cancel` the pending question batch.
-  Ordinary input answers a pending run question; `/queue` explicitly submits new work.
+  Linux absolute paths are accepted as answers. Ordinary input answers a pending run
+  question; `/queue` explicitly submits new work.
 - `/quit` returns from a conversation to the experiment list, stopping active work at a
   saved boundary first. Ctrl+C exits the application through the same stopping mechanism,
   including when the configuration screen is open. A model call already in flight must finish.

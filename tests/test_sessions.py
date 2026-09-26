@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from filelock import FileLock
 
 from medbenchagent.runtime import sessions
 from medbenchagent.runtime.session_supervisor import SessionDecision, classify_requirement
@@ -22,6 +23,26 @@ def test_experiment_config_and_source_upsert(tmp_path):
     assert len(sessions.config_values("breast-pilot", root=tmp_path)["dataset_sources"]) == 1
     with pytest.raises(ValueError, match="Conflicting"):
         sessions.upsert_dataset_source("breast-pilot", {**source, "name": "Other"}, root=tmp_path)
+
+
+def test_remove_experiment_only_deletes_idle_workspace(tmp_path):
+    experiments = tmp_path / "experiments"
+    sessions.create_experiment("pilot", root=experiments)
+    sessions.create_experiment("other", root=experiments)
+    external_runs = tmp_path / "runs"
+    external_runs.mkdir()
+    (external_runs / "keep.txt").write_text("run output", encoding="utf-8")
+
+    lock = FileLock(str(experiments / "pilot" / "run.lock"))
+    with lock.acquire(timeout=0):
+        with pytest.raises(ValueError, match="in use"):
+            sessions.remove_experiment("pilot", root=experiments)
+    sessions.remove_experiment("pilot", root=experiments)
+    assert not (experiments / "pilot").exists()
+    assert (experiments / "other" / "session.json").is_file()
+    assert (external_runs / "keep.txt").read_text(encoding="utf-8") == "run output"
+    with pytest.raises(ValueError, match="Experiment name"):
+        sessions.remove_experiment("../other", root=experiments)
 
 
 def test_independent_runs_and_dependency(tmp_path):

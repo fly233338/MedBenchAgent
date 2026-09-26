@@ -13,7 +13,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, DataTable, Input, Label, OptionList, RichLog, Static, Tree
 from textual.widgets.option_list import Option
 
@@ -29,7 +29,11 @@ _STATUS_COLORS = {"complete": "#63d6bd", "blocked": "#e8ac70", "waiting_input": 
 
 
 def _brand() -> Text:
-    return Text("MedBenchAgent", style="bold #82bdff")
+    return Text(r""" __  __        _ ___              _      _                _
+|  \/  |___ __| | _ ) ___ _ _  __| |_   /_\  __ _ ___ _ _| |_
+| |\/| / -_) _` | _ \/ -_) ' \/ _| ' \ / _ \/ _` / -_) ' \  _|
+|_|  |_\___\__,_|___/\___|_||_\__|_||_/_/ \_\__, \___|_||_\
+                                            |___/""", style="bold #82bdff")
 
 
 def _update_slash_list(options: OptionList, value: str,
@@ -55,8 +59,38 @@ def _navigate_slash_list(event: events.Key, field: Input, options: OptionList) -
     event.stop()
 
 
+class RemoveExperimentScreen(ModalScreen[bool]):
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.experiment_name = name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="remove-dialog"):
+            yield Static("Remove experiment?", id="remove-title")
+            yield Static(self.experiment_name, id="remove-name")
+            yield Static("Deletes this workspace and its conversation. External run artifacts and datasets remain.",
+                         id="remove-message")
+            with Horizontal(id="remove-actions"):
+                yield Button("Remove", id="confirm-remove", variant="error")
+                yield Button("Cancel", id="cancel-remove")
+
+    @on(Button.Pressed, "#confirm-remove")
+    def confirm(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#cancel-remove")
+    def cancel(self) -> None:
+        self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class ExperimentMenu(Screen):
     COMMANDS = (("new", "Create an experiment"), ("open", "Open the selected experiment"),
+                ("remove", "Remove the selected experiment"),
                 ("quit", "Exit MedBenchAgent"))
 
     def __init__(self) -> None:
@@ -64,6 +98,8 @@ class ExperimentMenu(Screen):
         self._entries: list[dict] = []
         self._visible_entries: list[tuple] = []
         self._scan_id = 0
+        self._removing = False
+        self._removal_message = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="menu-shell"):
@@ -110,6 +146,9 @@ class ExperimentMenu(Screen):
         self._render_entries()
         if error:
             self.query_one("#menu-message", Static).update(Text(error))
+        elif self._removal_message:
+            self.query_one("#menu-message", Static).update(Text(self._removal_message))
+            self._removal_message = ""
 
     def _render_entries(self) -> None:
         table = self.query_one("#experiments", DataTable)
@@ -157,16 +196,52 @@ class ExperimentMenu(Screen):
         if name not in {item[0] for item in self.COMMANDS}:
             selected = options.highlighted_option
             name = selected.id if selected else name
+        table = self.query_one("#experiments", DataTable)
+        selected_name = str(table.get_row_at(table.cursor_row)[0]) if table.row_count else None
         self.query_one("#search", Input).value = ""
         options.display = False
         if name == "new":
             self.app.push_screen(CreateExperimentScreen())
         elif name == "open":
             self.action_open_selected()
+        elif name == "remove":
+            if self._removing:
+                self.query_one("#menu-message", Static).update("Removal is already in progress.")
+            elif selected_name is None:
+                self.query_one("#menu-message", Static).update("Select an experiment to remove.")
+            else:
+                self.app.push_screen(RemoveExperimentScreen(selected_name),
+                                     lambda confirmed: self._confirm_remove(selected_name, confirmed))
         elif name == "quit":
             self.app.exit()
         else:
             self.query_one("#menu-message", Static).update(Text(f"Unknown command: /{name}"))
+
+    def _confirm_remove(self, name: str, confirmed: bool) -> None:
+        if not confirmed:
+            return
+        self._removing = True
+        self.query_one("#menu-message", Static).update(f"Removing {name}…")
+        self._remove_workspace(name)
+
+    @work(thread=True)
+    def _remove_workspace(self, name: str) -> None:
+        try:
+            sessions.remove_experiment(name, root=self.app.experiments_root)
+        except Exception as exc:
+            self.app.call_from_thread(self._remove_finished, name, str(exc))
+        else:
+            self.app.call_from_thread(self._remove_finished, name, "")
+
+    def _remove_finished(self, name: str, error: str) -> None:
+        if not self.is_mounted:
+            return
+        self._removing = False
+        if error:
+            self.query_one("#menu-message", Static).update(Text(error))
+        else:
+            self._removal_message = f"Removed experiment {name}."
+            self.refresh_experiments()
 
     def on_key(self, event: events.Key) -> None:
         search = self.query_one("#search", Input)
@@ -805,7 +880,7 @@ class MBAApp(App):
     OptionList { background: #202938; border: solid #4386f7; height: auto; max-height: 8; }
 
     #menu-shell { width: 100%; height: 1fr; padding: 1 3 0 3; }
-    #menu-brand { height: 3; color: #5b9cff; text-style: bold; }
+    #menu-brand { height: 5; color: #5b9cff; text-style: bold; }
     #menu-subtitle { height: 2; color: #a5b3c9; }
     #menu-panel { width: 100%; height: 1fr; background: #171c24; padding: 1 2; }
     #menu-title { height: 1; color: #a8c4ff; text-style: bold; }
@@ -816,6 +891,14 @@ class MBAApp(App):
     #experiments:focus { border: none; }
     #search, #field-value { width: 1fr; }
     #open { width: 12; }
+
+    RemoveExperimentScreen { align: center middle; }
+    #remove-dialog { width: 68; max-width: 100%; height: auto; padding: 1 2;
+                     background: #171c24; border: solid #eb7d83; }
+    #remove-title { height: 1; color: #eb7d83; text-style: bold; }
+    #remove-name { height: 1; color: #d9dce5; text-style: bold; }
+    #remove-message { height: auto; color: #9aa6b6; }
+    #remove-actions { height: 3; }
 
     CreateExperimentScreen { align: center middle; }
     #create-dialog { width: 62; max-width: 100%; height: auto; padding: 1 2;
