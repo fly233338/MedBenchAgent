@@ -123,7 +123,9 @@ def compile_agent(
                 detail = f"{len(history)} consecutive {category} failures"
             else:
                 detail = f"{exceeded} reached"
-            last_error = state.get("last_failure") or state["result"].get("summary", "")
+            last_error = state.get("last_failure", "")
+            if not last_error and state["result"]["status"] == "failed":
+                last_error = state["result"].get("summary", "")
             summary = f"Execution budget exhausted ({exceeded}): {detail}"
             if last_error:
                 summary += f". Last error: {last_error}"

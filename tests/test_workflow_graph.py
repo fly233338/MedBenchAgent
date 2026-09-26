@@ -81,6 +81,21 @@ def test_harness_stops_repeated_invalid_actions(tmp_path, monkeypatch, harness_m
     assert "Last error:" in output["result"]["summary"]
 
 
+def test_call_budget_after_success_does_not_report_a_false_error(tmp_path, harness_model):
+    harness_model(lambda *a: {"tool": "compute", "arguments": {}, "reason": "Inspect"})
+    graph = compile_agent("TestAgent", "Test", {"compute": lambda _context: result("success", "Computed")},
+                          lambda _context: {}, lambda _context: result("complete", "Done"))
+    output = graph.invoke({"context": {
+        "run_id": "run", "run_directory": str(tmp_path),
+        "construction_events_path": str(tmp_path / "events"),
+        "operation_directory": str(tmp_path / "ops"),
+        "limits": {"max_calls": 1},
+    }})
+    assert output["result"]["status"] == "blocked"
+    assert "max_calls" in output["result"]["summary"]
+    assert "Last error:" not in output["result"]["summary"]
+
+
 def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, monkeypatch, harness_model):
     import sqlite3
     from langgraph.checkpoint.sqlite import SqliteSaver
