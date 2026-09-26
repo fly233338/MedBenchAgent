@@ -26,16 +26,14 @@ def test_intent_gates_preparation_and_benchmark_stages(tmp_path, monkeypatch):
     assert "prepare_data" not in available_stages(build_context)
 
 
-def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monkeypatch):
+def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monkeypatch, harness_model):
     actions = iter(
         [
             {"tool": "compute", "arguments": {}, "reason": "Needed"},
             {"tool": "finish", "arguments": {}, "reason": "Done"},
         ]
     )
-    monkeypatch.setattr(
-        "medbenchagent.runtime.harness.complete_json", lambda *a, **k: next(actions)
-    )
+    harness_model(lambda *a: next(actions))
     calls = []
 
     def compute(context):
@@ -61,10 +59,8 @@ def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monke
     assert calls == [1]
 
 
-def test_harness_stops_repeated_invalid_actions(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "medbenchagent.runtime.harness.complete_json", lambda *a, **k: {"invalid": True}
-    )
+def test_harness_stops_repeated_invalid_actions(tmp_path, monkeypatch, harness_model):
+    harness_model(lambda *a: {"invalid": True})
     graph = compile_agent(
         "TestAgent", "Test", {}, lambda c: {}, lambda c: result("complete", "Done")
     )
@@ -80,9 +76,12 @@ def test_harness_stops_repeated_invalid_actions(tmp_path, monkeypatch):
     )
     assert output["result"]["status"] == "blocked"
     assert output["step"] == 2
+    assert output["decision_failures"] == 2
+    assert output["repair_attempts"] == 4
+    assert "Last error:" in output["result"]["summary"]
 
 
-def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, monkeypatch):
+def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, monkeypatch, harness_model):
     import sqlite3
     from langgraph.checkpoint.sqlite import SqliteSaver
     from langgraph.types import Command
@@ -96,9 +95,7 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
             {"tool": "finish", "arguments": {}, "reason": "Complete"},
         ]
     )
-    monkeypatch.setattr(
-        "medbenchagent.runtime.harness.complete_json", lambda *a, **k: next(actions)
-    )
+    harness_model(lambda *a: next(actions))
     calls = []
 
     def compute(context):
@@ -137,14 +134,14 @@ def test_sqlite_resume_keeps_completed_tool_and_excludes_human_wait(tmp_path, mo
     assert resumed["observations"][0]["summary"] == "Input examined"
 
 
-def test_dynamic_catalog_and_execution_use_same_gate(tmp_path, monkeypatch):
+def test_dynamic_catalog_and_execution_use_same_gate(tmp_path, monkeypatch, harness_model):
     import json
     prompts = []
     actions = iter(["guarded", "finish"])
     def model(_, prompt):
         prompts.append(json.loads(prompt))
         return {"tool": next(actions), "arguments": {}, "reason": "Attempt"}
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", model)
+    harness_model(model)
     calls = []
     graph = compile_agent("Gate", "Gate", {"guarded": lambda c: calls.append(1)}, lambda c: {},
                           lambda c: result("complete", "Done"), available_tools=lambda c: {"finish", "ask_user"})
@@ -152,11 +149,11 @@ def test_dynamic_catalog_and_execution_use_same_gate(tmp_path, monkeypatch):
                               "construction_events_path": str(tmp_path / "events")}})
     assert not calls
     assert "guarded" not in prompts[0]["tools"]
-    assert prompts[1]["last_result"]["status"] == "failed"
+    assert len(prompts) == 2
 
 
-def test_global_needs_input_is_structured(tmp_path, monkeypatch):
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *args: {
+def test_global_needs_input_is_structured(tmp_path, monkeypatch, harness_model):
+    harness_model(lambda *args: {
         "tool": "ask_user", "arguments": {"question": "Clarify target", "scope": "global"}, "reason": "Ambiguous"})
     graph = compile_agent("Child", "Child", {}, lambda c: {}, lambda c: result("complete", "Done"))
     output = graph.invoke({"context": {"run_id": "input", "run_directory": str(tmp_path), "operation_directory": str(tmp_path / "ops"),

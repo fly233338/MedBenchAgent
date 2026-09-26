@@ -65,12 +65,12 @@ def allocation_context(tmp_path):
     return c
 
 
-def test_no_preferences_allocate_without_any_model_call(tmp_path, monkeypatch):
+def test_no_preferences_allocate_without_any_model_call(tmp_path, monkeypatch, harness_model):
     import json
     from pathlib import Path
     from medbenchagent.agents.allocation import compile_allocation_agent
     c = allocation_context(tmp_path)
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *a: pytest.fail("Default allocation must not call LLM"))
+    harness_model(lambda *a: pytest.fail("Default allocation must not call LLM"))
     output = compile_allocation_agent().invoke({"context": c})
     assert output["result"]["status"] == "complete"
     data = json.loads(Path(output["context"]["allocation_path"]).read_text(encoding="utf-8"))

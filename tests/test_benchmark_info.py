@@ -65,7 +65,7 @@ def test_null_sample_scope_is_a_repairable_contract_error(monkeypatch):
         benchmark_info.extract_benchmark_info("Build")
 
 
-def test_required_field_clarification_resumes_without_model_routing(tmp_path, monkeypatch):
+def test_required_field_clarification_resumes_without_model_routing(tmp_path, monkeypatch, harness_model):
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.types import Command
     from medbenchagent.runtime.harness import compile_agent, result
@@ -75,7 +75,7 @@ def test_required_field_clarification_resumes_without_model_routing(tmp_path, mo
                     grounded({"clinical_scope": "Imaging", "language": "zh", "sample_count": 2}, "中文两题")])
     monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: next(answers))
     choices = iter(["specify", "finish"])
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *a: {
+    harness_model(lambda *a: {
         "tool": next(choices), "arguments": {}, "reason": "Test"})
     graph = compile_agent("SupervisorAgent", "Test", {"specify": specify}, lambda c: {},
                           lambda c: result("complete", "Done"), automatic_action=required_field_action,

@@ -573,9 +573,6 @@ class ConversationScreen(Screen):
         name, _, argument = value[1:].strip().partition(" ")
         name = name.casefold()
         options = self.query_one("#session-commands", OptionList)
-        if name not in {item[0] for item in self.COMMANDS} and not argument:
-            selected = options.highlighted_option
-            name = selected.id if selected else name
         options.display = False
         field = self.query_one("#message", Input)
         field.value = ""
@@ -613,8 +610,12 @@ class ConversationScreen(Screen):
         value = event.value.strip()
         if not value:
             return
-        if value.startswith("/"):
+        command = value[1:].split(" ", 1)[0].casefold() if value.startswith("/") else ""
+        if command in {name for name, _ in self.COMMANDS}:
             self._dispatch_command(value)
+            return
+        if value.startswith("/") and not (self.pending_intake or self.pending_question):
+            self._set_status(f"Unknown command: /{command}")
             return
         if self.exit_requested or self.back_requested:
             self._set_status("Stopping; resume the saved run before submitting more work.")

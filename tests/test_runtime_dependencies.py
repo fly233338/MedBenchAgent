@@ -98,7 +98,7 @@ def test_dataset_and_nested_source_scopes_are_independent(tmp_path):
     assert require(context, "Plan")["Plan"]["id"] == first_b
 
 
-def test_nested_specialist_interrupt_resumes_its_checkpoint(tmp_path, monkeypatch):
+def test_nested_specialist_interrupt_resumes_its_checkpoint(tmp_path, monkeypatch, harness_model):
     import sqlite3
     from langgraph.checkpoint.sqlite import SqliteSaver
     from langgraph.types import Command
@@ -118,7 +118,7 @@ def test_nested_specialist_interrupt_resumes_its_checkpoint(tmp_path, monkeypatc
             "reason": "Needed",
         }
 
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", decide)
+    harness_model(decide)
 
     def build(connection):
         def compute(context):

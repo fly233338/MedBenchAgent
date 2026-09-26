@@ -52,7 +52,7 @@ def test_evidence_cannot_cross_roles_or_sources_and_pages_structures(tmp_path):
         read_evidence({**c, "agent_role": "TaskPlanningAgent"}, reference=ref)
 
 
-def test_successful_queries_do_not_consume_rework_budget(tmp_path, monkeypatch):
+def test_successful_queries_do_not_consume_rework_budget(tmp_path, monkeypatch, harness_model):
     c = context(tmp_path)
     c["limits"] = {"max_reworks": 0, "max_calls": 12}
     calls = []
@@ -60,7 +60,7 @@ def test_successful_queries_do_not_consume_rework_budget(tmp_path, monkeypatch):
         calls.append(1)
         return result("success", "Read facts")
     actions = iter(["query"] * 7 + ["finish"])
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *args: {
+    harness_model(lambda *args: {
         "tool": next(actions), "arguments": {}, "reason": "Recall facts"})
     graph = compile_agent("TaskPlanningAgent", "Read facts", {"query": query}, lambda _: {},
                           lambda _: result("complete", "Done"), read_tools=frozenset({"query"}))
@@ -95,7 +95,7 @@ def test_source_version_creates_new_issue_and_multisource_is_explicit(tmp_path):
         semantic_evidence(c, cited, "b")
 
 
-def test_display_clarification_interrupt_resume_and_parameter_binding(tmp_path, monkeypatch):
+def test_display_clarification_interrupt_resume_and_parameter_binding(tmp_path, monkeypatch, harness_model):
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.types import Command
     from medbenchagent.agents.data_processing import save_image_plan
@@ -107,7 +107,7 @@ def test_display_clarification_interrupt_resume_and_parameter_binding(tmp_path, 
     c["image_inventory_path"] = str(inventory)
     publish(c, "ImageInventory", {"path": str(inventory)}, ("Source",))
     actions = iter(["ask_user", "finish"])
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *args: {
+    harness_model(lambda *args: {
         "tool": (tool := next(actions)), "arguments": {"question": "Which window for im?", "image_ids": ["im"]} if tool == "ask_user" else {},
         "reason": "Missing display policy"})
     policy = {"encoding": "window", "low": 0.0, "high": 80.0, "invert": True}

@@ -11,10 +11,10 @@ from typing import Any, Callable, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from medbenchagent.runtime.construction import event_context, record_event
-from medbenchagent.runtime.llm import ModelUnavailable, complete_json
+from medbenchagent.runtime.llm import ModelUnavailable, StructuredOutputError, complete_validated_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.tool_contracts import AskUserArguments, NoArguments
 from medbenchagent.runtime.clarifications import new_issue, answer_payload, record_answer, resolve_semantic_answer
@@ -27,11 +27,24 @@ class AgentState(TypedDict, total=False):
     step: int
     elapsed: float
     failures: int
+    decision_failures: int
+    execution_failures: int
+    repair_attempts: int
+    failure_history: list[str]
+    last_failure: str
     attempts: dict[str, int]
     observations: list[dict[str, Any]]
 
 
 Tool = Callable[..., dict[str, Any]]
+
+
+class ToolAction(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    tool: str
+    arguments: dict[str, Any]
+    reason: str
 
 
 def result(status: str, summary: str, **updates: Any) -> dict[str, Any]:
@@ -85,6 +98,11 @@ def compile_agent(
             "step": 0,
             "elapsed": 0.0,
             "failures": 0,
+            "decision_failures": 0,
+            "execution_failures": 0,
+            "repair_attempts": 0,
+            "failure_history": [],
+            "last_failure": "",
             "attempts": {},
             "observations": [],
             "result": result("running", "Ready"),
@@ -93,20 +111,40 @@ def compile_agent(
     def decide(state: AgentState) -> dict:
         context = state["context"]
         limits = context.get("limits", {})
-        if (
-            state["step"] >= limits.get("max_calls", 60)
-            or state["elapsed"] >= limits.get("max_seconds", 3600)
-            or state["failures"] >= limits.get("max_failures", 3)
-        ):
-            return {
-                "result": result(
-                    "blocked", "Execution budget exhausted; inspect the last tool result."
-                )
-            }
+        exceeded = (
+            "max_calls" if state["step"] >= limits.get("max_calls", 60) else
+            "max_seconds" if state["elapsed"] >= limits.get("max_seconds", 3600) else
+            "max_failures" if state["failures"] >= limits.get("max_failures", 3) else None
+        )
+        if exceeded:
+            history = state.get("failure_history", [])
+            if exceeded == "max_failures" and history:
+                category = history[-1] if len(set(history)) == 1 else "Agent"
+                detail = f"{len(history)} consecutive {category} failures"
+            else:
+                detail = f"{exceeded} reached"
+            last_error = state.get("last_failure") or state["result"].get("summary", "")
+            summary = f"Execution budget exhausted ({exceeded}): {detail}"
+            if last_error:
+                summary += f". Last error: {last_error}"
+            return {"result": result("blocked", summary)}
         enabled = available_tools(context) | {"list_evidence", "read_evidence"} if available_tools is not None else set(catalog)
         automatic = automatic_action(context) if automatic_action else None
         if automatic and automatic["tool"] in enabled:
             return {"action": automatic}
+        def validate_action(action: ToolAction) -> None:
+            if action.tool not in catalog:
+                raise ValueError(f"Unknown tool: {action.tool}")
+            if action.tool not in enabled:
+                raise ValueError(f"Tool is not available in the current state: {action.tool}")
+            schemas[action.tool].model_validate(action.arguments)
+
+        repair_count = 0
+
+        def count_repair() -> None:
+            nonlocal repair_count
+            repair_count += 1
+
         started = time.monotonic()
         with event_context(
             construction_events_path=context["construction_events_path"],
@@ -117,7 +155,7 @@ def compile_agent(
             operation="decide",
         ):
             try:
-                action = complete_json(
+                action = complete_validated_json(
                     instructions
                     + '\nReturn exactly {"tool":"name","arguments":{},"reason":"brief reason"}. '
                     "Choose a registered tool, finish, or ask_user according to its JSON Schema. "
@@ -139,24 +177,26 @@ def compile_agent(
                         },
                         ensure_ascii=False,
                     ),
+                    ToolAction,
+                    validate=validate_action,
+                    on_retry=count_repair,
                 )
-                if (
-                    set(action) != {"tool", "arguments", "reason"}
-                    or not isinstance(action["tool"], str)
-                    or action["tool"] not in {*tools, "finish", "ask_user"}
-                    or not isinstance(action["arguments"], dict)
-                    or not isinstance(action["reason"], str)
-                ):
-                    raise ValueError("Invalid tool action")
-            except (ModelUnavailable, ValueError) as exc:
+            except ModelUnavailable as exc:
+                category = "decision validation" if isinstance(exc, StructuredOutputError) else "model request"
                 return {
                     "result": result("failed", str(exc)),
                     "failures": state["failures"] + 1,
+                    "decision_failures": state.get("decision_failures", 0) + 1,
+                    "repair_attempts": state.get("repair_attempts", 0) + repair_count,
+                    "failure_history": [*state.get("failure_history", []), category][-limits.get("max_failures", 3):],
+                    "last_failure": str(exc),
                     "step": state["step"] + 1,
                     "action": {},
                     "elapsed": state["elapsed"] + time.monotonic() - started,
                 }
-        return {"action": action, "elapsed": state["elapsed"] + time.monotonic() - started}
+        return {"action": action.model_dump(),
+                "repair_attempts": state.get("repair_attempts", 0) + repair_count,
+                "elapsed": state["elapsed"] + time.monotonic() - started}
 
     def execute(state: AgentState) -> dict:
         started = time.monotonic()
@@ -346,6 +386,10 @@ def compile_agent(
             "observations": observations,
             "elapsed": state["elapsed"] + time.monotonic() - started,
             "failures": state["failures"] + 1 if outcome["status"] == "failed" else 0,
+            "execution_failures": state.get("execution_failures", 0) + (outcome["status"] == "failed"),
+            "failure_history": ([*state.get("failure_history", []), "tool execution"][-context.get("limits", {}).get("max_failures", 3):]
+                                if outcome["status"] == "failed" else []),
+            "last_failure": outcome["summary"] if outcome["status"] == "failed" else "",
         }
 
     graph = StateGraph(AgentState)

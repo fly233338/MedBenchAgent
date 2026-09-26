@@ -21,6 +21,10 @@ class ModelUnavailable(RuntimeError):
     """Raised when the planning model is not configured or returns invalid JSON."""
 
 
+class StructuredOutputError(ModelUnavailable):
+    """Raised after model output cannot be repaired to satisfy a contract."""
+
+
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -140,7 +144,7 @@ def complete_validated_json(
             feedback = feedback[:600]
             record_llm_call(status="failure", started=started, error_type="validation_error")
             if attempt == 2 or (raw, feedback) == previous:
-                raise ModelUnavailable(f"LLM structured response failed validation: {feedback}") from exc
+                raise StructuredOutputError(f"LLM structured response failed validation: {feedback}") from exc
             previous = raw, feedback
             messages.extend([{"role": "assistant", "content": raw[:6000]},
                              {"role": "user", "content":

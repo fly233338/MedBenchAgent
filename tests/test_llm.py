@@ -29,6 +29,28 @@ def test_validated_json_repairs_schema_error(monkeypatch):
     assert "prepare_dataset" in requests[1]["messages"][-1]["content"]
 
 
+def test_validated_json_repairs_business_contract_error(monkeypatch):
+    outputs = iter(['{"kind":"prepare_dataset"}', '{"kind":"prepare_dataset"}'])
+    requests = []
+
+    def create(**kwargs):
+        requests.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=next(outputs)))])
+
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    attempts = []
+
+    def validate(_decision):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ValueError("tool arguments are invalid")
+
+    llm.complete_validated_json("system", "user", _Decision, validate=validate)
+    assert len(requests) == 2
+    assert "tool arguments are invalid" in requests[1]["messages"][-1]["content"]
+
+
 def test_validated_json_stops_repeated_error(monkeypatch):
     requests = []
 

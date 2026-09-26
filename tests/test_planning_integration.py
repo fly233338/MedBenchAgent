@@ -15,7 +15,7 @@ from test_dataset_cards import prepared_dataset
 
 
 @pytest.mark.parametrize("dataset_count,ask_global,revise,template_repair", [(1, False, False, False), (2, False, False, False), (2, True, False, False), (2, False, True, False), (1, False, False, True)])
-def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise, template_repair):
+def test_complete_build(tmp_path, monkeypatch, harness_model, dataset_count, ask_global, revise, template_repair):
     template = tmp_path / "core.json"
     template.write_text(json.dumps({"concepts": {"status": {"origin": "core", "category": "clinical", "description": "Status", "require": "Explicit annotation"}}}), encoding="utf-8")
     configured = settings.get_settings()
@@ -77,7 +77,7 @@ def test_complete_build(tmp_path, monkeypatch, dataset_count, ask_global, revise
         if name in {"plan", "allocate"}:
             arguments = {**arguments, "delegation": {"revision_notes": "Diagnostic note"}}
         return {"tool": name, "arguments": arguments, "reason": "Required action"}
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", model)
+    harness_model(model)
     monkeypatch.setattr("medbenchagent.agents.task_planning.complete_json", lambda *a: {"issues": []})
     template_reviews = []
     def templates(system, prompt, **kwargs):

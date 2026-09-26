@@ -10,7 +10,7 @@ from test_dataset_cards import prepared_dataset
 
 
 @pytest.mark.parametrize("rebuild,interrupt_prepare", [(False, False), (True, False), (False, True)])
-def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path, monkeypatch, rebuild, interrupt_prepare):
+def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path, monkeypatch, harness_model, rebuild, interrupt_prepare):
     cfg = settings.get_settings()
     cfg = replace(cfg, paths=replace(cfg.paths, dataset_catalog=tmp_path / "catalog.json",
                                     prepared_datasets_root=tmp_path / "prepared", runs_root=tmp_path / "runs"),
@@ -38,7 +38,7 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
     def model(*args):
         tool, arguments = next(actions)
         return {"tool": tool, "arguments": arguments, "reason": "Prepare one dataset"}
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", model)
+    harness_model(model)
     graph = compile_benchmark_graph(checkpointer=MemorySaver())
     output = graph.invoke({"user_requirement": "Prepare these standard annotations", "prepare_dataset_id": "new"},
                           {"configurable": {"thread_id": "prepare"}, "recursion_limit": 100})
@@ -62,7 +62,7 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
         assert Path(previous["annotation_path"]).is_file()
 
 
-def test_supervisor_reuses_without_starting_data_processing(tmp_path, monkeypatch):
+def test_supervisor_reuses_without_starting_data_processing(tmp_path, monkeypatch, harness_model):
     cfg = settings.get_settings()
     monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, paths=replace(cfg.paths,
                         dataset_catalog=tmp_path / "catalog.json", runs_root=tmp_path / "runs")))
@@ -72,13 +72,13 @@ def test_supervisor_reuses_without_starting_data_processing(tmp_path, monkeypatc
     def model(*args):
         tool, arguments = next(actions)
         return {"tool": tool, "arguments": arguments, "reason": "Reuse"}
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", model)
+    harness_model(model)
     output = compile_benchmark_graph().invoke({"user_requirement": "Prepare if needed", "prepare_dataset_id": "a"})
     assert output["status"] == "complete"
     assert output["prepared_entries"]["a"]["annotation_path"] == entry["annotation_path"]
 
 
-def test_prepare_discovers_unconfigured_source_from_request(tmp_path, monkeypatch):
+def test_prepare_discovers_unconfigured_source_from_request(tmp_path, monkeypatch, harness_model):
     cfg = settings.get_settings()
     cfg = replace(cfg, paths=replace(cfg.paths, dataset_catalog=tmp_path / "catalog.json",
                                      prepared_datasets_root=tmp_path / "prepared",
@@ -98,9 +98,8 @@ def test_prepare_discovers_unconfigured_source_from_request(tmp_path, monkeypatc
         ("save_dataset_metadata", {"source_references": []}),
         ("save_harmonization", {"plan": {}}), ("finish", {}), ("finish", {}),
     ])
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json",
-                        lambda *_a: {"tool": (action := next(actions))[0],
-                                     "arguments": action[1], "reason": "Prepare dataset"})
+    harness_model(lambda *_a: {"tool": (action := next(actions))[0],
+                               "arguments": action[1], "reason": "Prepare dataset"})
     output = compile_benchmark_graph(checkpointer=MemorySaver()).invoke(
         {"user_requirement": f"Prepare New from {source}", "prepare_dataset_id": "new"},
         {"configurable": {"thread_id": "discover"}, "recursion_limit": 100})

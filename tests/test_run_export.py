@@ -205,7 +205,7 @@ def test_publication_failure_and_resume(tmp_path, monkeypatch, after_rename):
     assert (Path(c["run_directory"]) / "delivery/complete.json").is_file()
 
 
-def test_finalization_agent_uses_tools_and_reads_anomalies(tmp_path, monkeypatch):
+def test_finalization_agent_uses_tools_and_reads_anomalies(tmp_path, monkeypatch, harness_model):
     c = export_context(tmp_path, monkeypatch)
     actions = iter([("inspect_inputs", {}), ("inspect_dataset", {"dataset_id": "a"}),
                     ("read_issues", {"dataset_id": "a"}), ("assemble_candidates", {}),
@@ -214,7 +214,7 @@ def test_finalization_agent_uses_tools_and_reads_anomalies(tmp_path, monkeypatch
         tool, arguments = next(actions)
         assert tool in json.loads(prompt)["tools"]
         return {"tool": tool, "arguments": arguments, "reason": "Inspect and finalize"}
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", model)
+    harness_model(model)
     outcome = agent.compile_finalization_agent().invoke({"context": c}, {"recursion_limit": 50})
     assert outcome["result"]["status"] == "complete"
     assert outcome["context"]["item_count"] == 1

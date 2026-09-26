@@ -22,7 +22,7 @@ class ProfileArguments(NoArguments):
     ],
 )
 def test_invalid_arguments_are_reported_before_execution(
-    tmp_path, monkeypatch, tool, arguments, field
+    tmp_path, monkeypatch, harness_model, tool, arguments, field
 ):
     prompts = []
     actions = iter(
@@ -36,7 +36,7 @@ def test_invalid_arguments_are_reported_before_execution(
         prompts.append(json.loads(prompt))
         return next(actions)
 
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", decide)
+    adapter = harness_model(decide)
     calls = []
     graph = compile_agent(
         "Test",
@@ -57,20 +57,23 @@ def test_invalid_arguments_are_reported_before_execution(
     )
     assert output["result"]["status"] == "complete"
     assert not calls
-    assert prompts[1]["last_result"]["errors"][0]["field"] == field
+    assert len(prompts) == 2
+    assert field in adapter.validation_errors[0]
+    assert output["repair_attempts"] == 1
+    assert output["execution_failures"] == 0
     assert prompts[0]["tools"]["profile"]["parameters"]["additionalProperties"] is False
     assert "finish" in prompts[0]["tools"]
     assert "ask_user" in prompts[0]["tools"]
 
 
-def test_validated_defaults_reach_named_parameters(tmp_path, monkeypatch):
+def test_validated_defaults_reach_named_parameters(tmp_path, monkeypatch, harness_model):
     actions = iter(
         [
             {"tool": "profile", "arguments": {}, "reason": "Profile"},
             {"tool": "finish", "arguments": {}, "reason": "Done"},
         ]
     )
-    monkeypatch.setattr("medbenchagent.runtime.harness.complete_json", lambda *a: next(actions))
+    harness_model(lambda *a: next(actions))
 
     def profile(context, *, revision, refresh):
         assert revision == "1"
@@ -98,15 +101,12 @@ def test_validated_defaults_reach_named_parameters(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("error", [KeyError("internal"), TypeError("internal")])
-def test_internal_programming_errors_are_not_parameter_feedback(tmp_path, monkeypatch, error):
-    monkeypatch.setattr(
-        "medbenchagent.runtime.harness.complete_json",
-        lambda *a: {
-            "tool": "broken",
-            "arguments": {},
-            "reason": "Execute",
-        },
-    )
+def test_internal_programming_errors_are_not_parameter_feedback(tmp_path, monkeypatch, harness_model, error):
+    harness_model(lambda *a: {
+        "tool": "broken",
+        "arguments": {},
+        "reason": "Execute",
+    })
 
     def broken(context):
         raise error

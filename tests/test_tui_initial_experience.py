@@ -60,6 +60,45 @@ def test_plain_text_preview_and_incremental_run_rows(tmp_path, monkeypatch):
     asyncio.run(check())
 
 
+def test_question_inputs_distinguish_absolute_paths_from_commands(tmp_path, monkeypatch):
+    sessions.create_experiment("pilot", root=tmp_path)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            app.open_experiment("pilot")
+            await pilot.pause()
+            screen = app.screen
+            field = screen.query_one("#message")
+            answers = []
+            commands = []
+            monkeypatch.setattr(screen, "_answer_intake", answers.append)
+            monkeypatch.setattr(screen, "_dispatch_command", commands.append)
+            screen.pending_intake = True
+
+            field.value = "/public/home/data/BrEaST"
+            await pilot.press("enter")
+            assert answers == ["/public/home/data/BrEaST"]
+            assert commands == []
+
+            screen.classifying = False
+            field.value = "/cancel"
+            await pilot.press("enter")
+            assert commands == ["/cancel"]
+
+            screen.pending_intake = False
+            screen.pending_question = True
+            screen.current_run_id = "run"
+            run_answers = []
+            monkeypatch.setattr(screen.service, "answer", lambda _run, value: run_answers.append(value))
+            monkeypatch.setattr(screen, "_execute_run", lambda **_kwargs: None)
+            field.value = "/mnt/data/raw"
+            await pilot.press("enter")
+            assert run_answers == ["/mnt/data/raw"]
+
+    asyncio.run(check())
+
+
 def test_quit_waits_for_run_then_returns_to_experiments(tmp_path):
     sessions.create_experiment("pilot", root=tmp_path)
 
