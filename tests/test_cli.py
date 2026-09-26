@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import pytest
 from langgraph.types import Interrupt
 
-from medbenchagent.cli import _parser
+from medbenchagent.cli import _answer_intake, _parser
+from medbenchagent.runtime.conversation_service import Submission
 from medbenchagent.runtime.graph_runner import GraphRunner
 
 
@@ -18,6 +19,24 @@ def test_parser_exposes_terminal_commands() -> None:
     assert parser.parse_args(["register", "--dataset-id", "a", "--bundle", "b"]).command == "register"
     with pytest.raises(SystemExit):
         parser.parse_args(["build"])
+
+
+def test_cli_shows_resolved_preparation_confirmation(monkeypatch, capsys):
+    pending = [{"questions": [{"prompt": "Where is the raw dataset directory?"}], "current": 0}]
+
+    class Service:
+        def pending_intake(self):
+            return pending.pop(0) if pending else None
+
+        def answer_intake(self, _answer):
+            return Submission("Dataset BrEaST (ID: breast) is confirmed for preparation.", ("run-1",))
+
+        def drive(self):
+            return iter(())
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "/mnt/data/BrEaST")
+    assert _answer_intake(Service()) == 0
+    assert "BrEaST (ID: breast)" in capsys.readouterr().out
 
 
 def test_runner_emits_initialized_and_clarification(tmp_path: Path, monkeypatch) -> None:

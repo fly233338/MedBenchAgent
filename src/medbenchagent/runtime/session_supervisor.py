@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-import re
-from typing import Callable, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -64,67 +63,20 @@ class SessionDecision(BaseModel):
         return self
 
 
-class ReplyPreview:
-    """Expose complete decoded characters from the streamed JSON reply string."""
-
-    def __init__(self, emit: Callable[[str], None]) -> None:
-        self.emit = emit
-        self.buffer = ""
-        self.sent = 0
-
-    def feed(self, chunk: str) -> None:
-        self.buffer += chunk
-        match = re.search(r'"reply"\s*:\s*"', self.buffer)
-        if not match:
-            return
-        value = self.buffer[match.end():]
-        escaped = False
-        end = len(value)
-        for index, char in enumerate(value):
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                end = index
-                break
-        prefix = value[:end]
-        if prefix.endswith("\\"):
-            prefix = prefix[:-1]
-        try:
-            decoded = json.loads('"' + prefix + '"')
-        except json.JSONDecodeError:
-            return
-        if len(decoded) > self.sent:
-            self.emit(decoded[self.sent:])
-            self.sent = len(decoded)
-
-    def reset(self) -> None:
-        self.buffer = ""
-        self.sent = 0
-
-
-def classify_requirement(text: str, *, known_datasets: list[dict], history: list[dict],
-                         on_reply_delta: Callable[[str], None] | None = None,
-                         on_reply_reset: Callable[[], None] | None = None) -> SessionDecision:
+def classify_requirement(text: str, *, known_datasets: list[dict], history: list[dict]) -> SessionDecision:
     if not text.strip():
         raise ValueError("Enter a request")
-    preview = ReplyPreview(on_reply_delta) if on_reply_delta is not None else None
-
-    def reset() -> None:
-        if preview is not None:
-            preview.reset()
-        if on_reply_reset is not None:
-            on_reply_reset()
 
     return complete_validated_json(
-        "You are the session Supervisor for MedBenchAgent. Return exactly a JSON object with reply first "
-        "and tasks second. reply must be useful natural-language text. Each task.kind MUST be exactly "
+        "You are the session Supervisor for MedBenchAgent. Return a JSON object with reply and tasks. "
+        "reply must be useful natural-language text. Each task.kind MUST be exactly "
         "'prepare_dataset' or 'build_benchmark'; never use 'prepare' or 'build'. "
         "Each task may have dataset_id, dataset_name, source_root, rebuild, requested_dataset_ids. "
         "For preparation, a new dataset is valid even when absent from known_datasets. Preserve its display "
         "name separately from its internal ID. Extract any user-provided raw directory. Do not request an "
         "ID when it can be derived from the name. Set rebuild true only when explicitly requested. "
+        "For preparation, do not promise a final dataset ID, source root, or completion of intake in reply; "
+        "those are determined after this decision is validated. "
         "For build, requested_dataset_ids is null unless the user identifies datasets; map known names "
         "to known IDs. Do not invent a preparation task for a build request. If intent itself is unclear, "
         "return no tasks and ask a concise question. Tasks may be empty, one preparation, one build, "
@@ -133,6 +85,4 @@ def classify_requirement(text: str, *, known_datasets: list[dict], history: list
                     "recent_dialogue": [{"role": m["role"], "text": m["text"]} for m in history[-8:]]},
                    ensure_ascii=False),
         SessionDecision,
-        on_chunk=preview.feed if preview is not None else None,
-        on_retry=reset,
     )

@@ -1,11 +1,14 @@
 from dataclasses import replace
+import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
 from medbenchagent.data.dataset_catalog import DatasetCatalogError, load_dataset_catalog
 from medbenchagent.runtime import sessions
 from medbenchagent.runtime.conversation_service import ConversationService
-from medbenchagent.runtime.session_supervisor import ReplyPreview, SessionDecision
+from medbenchagent.runtime.graph_runner import GraphRunner
+from medbenchagent.runtime.session_supervisor import SessionDecision
 from medbenchagent.settings import get_settings
 
 
@@ -58,6 +61,39 @@ def test_processing_submission_is_reconciled(tmp_path, monkeypatch):
     assert service.record()["messages"] == []
 
 
+def test_idle_reconcile_reads_session_once(tmp_path, monkeypatch):
+    service, _ = _service(tmp_path, monkeypatch)
+    original = sessions.load_experiment
+    reads = []
+
+    def load(*args, **kwargs):
+        reads.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sessions, "load_experiment", load)
+    service.reconcile()
+    assert len(reads) == 1
+
+
+def test_checkpoint_recovery_compiles_once_per_database(tmp_path):
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    sqlite3.connect(runs_root / "checkpoints.sqlite").close()
+    compilations = []
+    state_reads = []
+
+    def factory(*, checkpointer):
+        compilations.append(checkpointer)
+        return SimpleNamespace(get_state=lambda config: state_reads.append(config) or SimpleNamespace(values={}))
+
+    runs = [{"id": str(index), "thread_id": str(index), "runs_root": str(runs_root)}
+            for index in range(2)]
+    results = GraphRunner(graph_factory=factory).inspect_many(runs)
+    assert len(compilations) == 1
+    assert len(state_reads) == 2
+    assert all(value["status"] == "interrupted" for value in results.values())
+
+
 def test_v1_session_is_upgraded_on_next_save(tmp_path):
     record = sessions.create_experiment("pilot", root=tmp_path)
     record.pop("submissions")
@@ -87,11 +123,14 @@ def test_new_dataset_intake_and_resume(tmp_path, monkeypatch):
     root = _raw_dataset(tmp_path)
     monkeypatch.setattr("medbenchagent.runtime.conversation_service.classify_requirement",
                         lambda *_args, **_kwargs: SessionDecision.model_validate({
-                            "tasks": [{"kind": "prepare_dataset"}], "reply": "Let's prepare it."}))
+                            "tasks": [{"kind": "prepare_dataset"}],
+                            "reply": "The source root is optional and the ID will keep its case."}))
     monkeypatch.setattr("medbenchagent.runtime.conversation_service.parse_answer",
                         lambda _field, text: text)
     first = service.submit("I'd like to prepare a dataset")
     assert first.question["field"] == "dataset_name"
+    assert "source root" not in first.reply
+    assert "ID" not in first.reply
     assert service.record()["messages"] == service.record()["runs"] == []
     reopened = ConversationService("pilot", root=service.root)
     assert reopened.pending_intake()["current"] == 0
@@ -100,12 +139,16 @@ def test_new_dataset_intake_and_resume(tmp_path, monkeypatch):
     assert reopened.pending_intake()["current"] == 1
     done = reopened.answer_intake(str(root))
     assert len(done.run_ids) == 1
+    assert "BrEaST (ID: breast)" in done.reply
+    assert str(root) in done.reply
     record = reopened.record()
     assert record["runs"][0]["dataset_id"] == "breast"
     assert record["runs"][0]["dataset_name"] == "BrEaST"
     assert record["runs"][0]["source_root"] == str(root)
     assert record["submissions"][0]["status"] == "accepted"
     assert record["submissions"][0]["question_batch_status"] == "completed"
+    assert record["messages"][-1]["text"] == done.reply
+    assert all("keep its case" not in message["text"] for message in record["messages"])
     assert reopened.pending_intake() is None
 
 
@@ -124,13 +167,3 @@ def test_invalid_intake_answer_stays_on_current_question(tmp_path, monkeypatch):
     assert service.pending_intake()["questions"][0]["answer"] is None
 
 
-def test_reply_preview_decodes_split_escapes_and_resets():
-    pieces = []
-    preview = ReplyPreview(pieces.append)
-    for chunk in ('{"reply":"Hello\\', 'nBrE', 'aST", "tasks":[]}'):
-        preview.feed(chunk)
-    assert "".join(pieces) == "Hello\nBrEaST"
-    preview.reset()
-    pieces.clear()
-    preview.feed('{"reply":"fixed","tasks":[]}')
-    assert "".join(pieces) == "fixed"

@@ -101,6 +101,8 @@ def _answer_intake(service: ConversationService) -> int:
             print(f"Invalid answer: {exc}", file=sys.stderr)
             continue
         if result.run_ids:
+            if result.reply:
+                print(result.reply)
             for run_id in result.run_ids:
                 print(f"Queued run: {run_id}")
     return _consume(service, service.drive())

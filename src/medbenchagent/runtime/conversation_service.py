@@ -24,6 +24,20 @@ class Submission:
     question: dict | None = None
 
 
+def _preparation_reply(tasks: list, questions: list[dict]) -> str:
+    if questions:
+        return "I can prepare the dataset after the requested details are confirmed."
+    preparation = tasks[0]
+    reply = (f"Dataset {preparation.dataset_name} (ID: {preparation.dataset_id}) is confirmed"
+             f" for preparation")
+    if preparation.source_root:
+        reply += f" from {preparation.source_root}"
+    reply += "."
+    if len(tasks) > 1:
+        reply += " A benchmark build will be queued after preparation."
+    return reply
+
+
 class ConversationService:
     def __init__(self, name: str, *, root: Path = sessions.EXPERIMENTS_ROOT,
                  runner: GraphRunner | None = None) -> None:
@@ -45,11 +59,13 @@ class ConversationService:
 
     def _accept(self, record: dict, submission: dict, tasks: list) -> Submission:
         sessions.add_message(record, "user", submission["text"], root=self.root, save=False)
-        sessions.add_message(record, "assistant", submission["reply"], root=self.root, save=False)
+        if submission.get("initial_reply"):
+            sessions.add_message(record, "assistant", submission["initial_reply"], root=self.root, save=False)
         for question in submission.get("questions", []):
             if question["answer"] is not None:
                 sessions.add_message(record, "assistant", question["prompt"], root=self.root, save=False)
                 sessions.add_message(record, "user", question["answer"], root=self.root, save=False)
+        sessions.add_message(record, "assistant", submission["reply"], root=self.root, save=False)
         dependency = None
         run_ids = []
         for task in tasks:
@@ -66,8 +82,7 @@ class ConversationService:
         sessions.save_experiment(record, root=self.root)
         return Submission(submission["reply"], tuple(run_ids))
 
-    def submit(self, text: str, *, on_reply_delta: Callable[[str], None] | None = None,
-               on_reply_reset: Callable[[], None] | None = None) -> Submission:
+    def submit(self, text: str) -> Submission:
         if not text.strip():
             raise ValueError("Enter a request")
         with self.submit_lock:
@@ -87,9 +102,7 @@ class ConversationService:
                     known = [{"dataset_id": item["dataset_id"], "name": item["name"]} for item in catalog]
                     known.extend({"dataset_id": item["dataset_id"], "name": item["name"]}
                                  for item in settings.dataset_sources)
-                    callbacks = ({"on_reply_delta": on_reply_delta, "on_reply_reset": on_reply_reset}
-                                 if on_reply_delta is not None else {})
-                    decision = classify_requirement(text, known_datasets=known, history=history, **callbacks)
+                    decision = classify_requirement(text, known_datasets=known, history=history)
                     tasks, questions = resolve_intake(decision, catalog, settings.dataset_sources)
             except Exception as exc:
                 with self.session_lock:
@@ -101,13 +114,15 @@ class ConversationService:
             with self.session_lock:
                 record = sessions.load_experiment(self.name, root=self.root)
                 current = next(item for item in record["submissions"] if item["id"] == submission["id"])
-                current["reply"] = decision.reply
+                preparation = bool(decision.tasks and decision.tasks[0].kind == "prepare_dataset")
+                current["reply"] = _preparation_reply(tasks, questions) if preparation else decision.reply
                 if questions:
                     current.update(status="awaiting_input", decision=decision.model_dump(),
-                                   questions=questions, question_batch_status="pending")
+                                   questions=questions, question_batch_status="pending",
+                                   initial_reply=current["reply"])
                     current["questions"][0]["status"] = "current"
                     sessions.save_experiment(record, root=self.root)
-                    return Submission(decision.reply, (), questions[0])
+                    return Submission(current["reply"], (), questions[0])
                 return self._accept(record, current, tasks)
 
     def answer_intake(self, text: str) -> Submission:
@@ -158,6 +173,7 @@ class ConversationService:
                     current["questions"][current["current"]]["status"] = "current"
                     sessions.save_experiment(record, root=self.root)
                     return Submission(current["reply"], (), current["questions"][current["current"]])
+                current["reply"] = _preparation_reply(tasks, [])
                 return self._accept(record, current, tasks)
 
     def cancel_intake(self) -> None:
@@ -182,6 +198,7 @@ class ConversationService:
 
     def reconcile(self) -> dict:
         """Repair stale running entries after a process exit; an active owner keeps its lock."""
+        record = None
         try:
             with self.submit_lock.acquire(timeout=0):
                 with self.session_lock:
@@ -192,19 +209,19 @@ class ConversationService:
                     if stale:
                         sessions.save_experiment(record, root=self.root)
         except Timeout:
-            pass
+            record = self.record()
+        if not any(run["status"] == "running" for run in record["runs"]):
+            return record
         try:
             with self.run_lock.acquire(timeout=0):
                 with self.session_lock:
                     record = sessions.load_experiment(self.name, root=self.root)
+                    stale_runs = [run for run in record["runs"] if run["status"] == "running"]
+                    inspected = self.runner.inspect_many(stale_runs)
                     for run in record["runs"]:
                         if run["status"] != "running":
                             continue
-                        try:
-                            changes = self.runner.inspect(run)
-                        except Exception as exc:
-                            changes = {"status": "interrupted",
-                                       "summary": f"Could not inspect checkpoint: {exc}"}
+                        changes = inspected[run["id"]]
                         if run.get("summary") and changes.get("status") == "interrupted":
                             changes.pop("summary", None)
                         updated = sessions.update_run(record, run["id"], root=self.root, **changes)

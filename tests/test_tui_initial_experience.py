@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pytest
 
@@ -7,7 +8,7 @@ from medbenchagent.runtime.graph_runner import RunEvent
 from medbenchagent.tui import MBAApp, ConversationScreen
 
 
-def test_plain_text_preview_and_incremental_run_rows(tmp_path, monkeypatch):
+def test_plain_text_status_and_incremental_run_rows(tmp_path, monkeypatch):
     sessions.create_experiment("pilot", root=tmp_path)
 
     async def check():
@@ -19,17 +20,6 @@ def test_plain_text_preview_and_incremental_run_rows(tmp_path, monkeypatch):
             assert isinstance(screen, ConversationScreen)
             screen._set_status("[type=literal_error, input_value='prepare']")
             assert "[type=literal_error" in str(screen.query_one("#session-status").content)
-            screen._reply_delta("First")
-            screen._reply_delta(" part")
-            screen._flush_reply()
-            assert "MBA  First part" in str(screen.query_one("#reply-preview").content)
-            screen._reply_queue.put(None)
-            screen._reply_delta("Repaired")
-            screen._flush_reply()
-            assert "MBA  Repaired" == str(screen.query_one("#reply-preview").content)
-            screen._reply_reset()
-            screen._flush_reply()
-            assert not screen.query_one("#reply-scroll").display
             record = sessions.load_experiment("pilot", root=tmp_path)
             run = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
             screen.refresh_record()
@@ -97,6 +87,39 @@ def test_question_inputs_distinguish_absolute_paths_from_commands(tmp_path, monk
             assert run_answers == ["/mnt/data/raw"]
 
     asyncio.run(check())
+
+
+def test_conversation_mount_remains_responsive_during_recovery(tmp_path, monkeypatch):
+    from medbenchagent.runtime.conversation_service import ConversationService
+
+    sessions.create_experiment("pilot", root=tmp_path)
+    release = threading.Event()
+    original = ConversationService.reconcile
+
+    def slow_reconcile(service):
+        release.wait(timeout=3)
+        return original(service)
+
+    monkeypatch.setattr(ConversationService, "reconcile", slow_reconcile)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            app.open_experiment("pilot")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ConversationScreen)
+            assert "Loading experiment" in str(screen.query_one("#session-status").content)
+            release.set()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert screen.service is not None
+            assert "Ready" in str(screen.query_one("#session-status").content)
+
+    try:
+        asyncio.run(check())
+    finally:
+        release.set()
 
 
 def test_quit_waits_for_run_then_returns_to_experiments(tmp_path):

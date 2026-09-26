@@ -114,15 +114,47 @@ class GraphRunner:
 
     def inspect(self, run: dict) -> dict:
         """Read recovery state after a process disappeared, without executing the graph."""
-        checkpoint_path = Path(run["runs_root"]) / "checkpoints.sqlite"
-        if not checkpoint_path.is_file():
-            return {"status": "interrupted", "summary": "Run checkpoint database is missing"}
-        connection = sqlite3.connect(str(checkpoint_path), check_same_thread=False)
-        try:
-            graph = self._graph(connection)
-            snapshot = graph.get_state({"configurable": {"thread_id": run["thread_id"]}})
-        finally:
-            connection.close()
+        identifier = run.get("id", "_single")
+        return self.inspect_many([{**run, "id": identifier}])[identifier]
+
+    def inspect_many(self, runs: list[dict]) -> dict[str, dict]:
+        """Compile once per checkpoint database when reconciling several stale runs."""
+        grouped: dict[str | None, list[dict]] = {}
+        for run in runs:
+            grouped.setdefault(run.get("runs_root"), []).append(run)
+        results = {}
+        for runs_root, group in grouped.items():
+            if not runs_root:
+                for run in group:
+                    results[run["id"]] = {"status": "interrupted", "summary": "Run checkpoint path is missing"}
+                continue
+            checkpoint_path = Path(runs_root) / "checkpoints.sqlite"
+            if not checkpoint_path.is_file():
+                for run in group:
+                    results[run["id"]] = {"status": "interrupted", "summary": "Run checkpoint database is missing"}
+                continue
+            connection = None
+            try:
+                connection = sqlite3.connect(str(checkpoint_path), check_same_thread=False)
+                graph = self._graph(connection)
+                for run in group:
+                    try:
+                        snapshot = graph.get_state({"configurable": {"thread_id": run["thread_id"]}})
+                        results[run["id"]] = self._inspection_result(snapshot)
+                    except Exception as exc:
+                        results[run["id"]] = {"status": "interrupted",
+                                              "summary": f"Could not inspect checkpoint: {exc}"}
+            except Exception as exc:
+                for run in group:
+                    results[run["id"]] = {"status": "interrupted",
+                                          "summary": f"Could not inspect checkpoint: {exc}"}
+            finally:
+                if connection is not None:
+                    connection.close()
+        return results
+
+    @staticmethod
+    def _inspection_result(snapshot) -> dict:
         if not snapshot.values:
             return {"status": "interrupted", "summary": "Run checkpoint is missing"}
         pending = [item for task in snapshot.tasks for item in task.interrupts]

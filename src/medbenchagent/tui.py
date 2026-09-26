@@ -384,8 +384,6 @@ class ConversationScreen(Screen):
         self.stop_event = threading.Event()
         self.exit_requested = False
         self.back_requested = False
-        self._preview_text = ""
-        self._reply_queue: queue.SimpleQueue[str | None] = queue.SimpleQueue()
 
     def compose(self) -> ComposeResult:
         path = sessions.experiment_path(self.experiment_name, self.app.experiments_root)
@@ -394,8 +392,6 @@ class ConversationScreen(Screen):
         with Horizontal(id="session-body"):
             with Vertical(id="chat-pane"):
                 yield RichLog(id="conversation", wrap=True, highlight=True, min_width=1)
-                with VerticalScroll(id="reply-scroll"):
-                    yield Static("", id="reply-preview")
                 with VerticalScroll(id="question-scroll"):
                     yield Static("", id="intake-question")
                 yield OptionList(id="session-commands")
@@ -406,19 +402,38 @@ class ConversationScreen(Screen):
                 yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
 
     def on_mount(self) -> None:
-        from medbenchagent.runtime.conversation_service import ConversationService
-
-        self.service = ConversationService(self.experiment_name, root=self.app.experiments_root)
-        self.record = self.service.reconcile()
         self.query_one("#runs", DataTable).add_columns("Type", "Status", "Run")
         self.query_one("#session-commands", OptionList).display = False
-        self.refresh_record(self.record)
-        self._render_intake()
+        self._set_status("Loading experiment…")
         self.query_one("#run-detail", RichLog).write("Select a run to inspect frozen inputs.")
         self.query_one("#message", Input).focus()
         self.set_interval(0.1, self._flush_progress)
-        self.set_interval(0.05, self._flush_reply)
-        self.set_timer(0.1, self._start_next)
+        self._load_session()
+
+    @work(thread=True)
+    def _load_session(self) -> None:
+        try:
+            from medbenchagent.runtime.conversation_service import ConversationService
+
+            service = ConversationService(self.experiment_name, root=self.app.experiments_root)
+            record = service.reconcile()
+        except Exception as exc:
+            self.app.call_from_thread(self._session_load_failed, str(exc))
+        else:
+            self.app.call_from_thread(self._session_loaded, service, record)
+
+    def _session_loaded(self, service: ConversationService, record: dict) -> None:
+        if not self.is_mounted:
+            return
+        self.service = service
+        self.refresh_record(record)
+        self._render_intake()
+        self._set_status("Ready")
+        self._start_next(refresh=False)
+
+    def _session_load_failed(self, error: str) -> None:
+        if self.is_mounted:
+            self._set_status(f"Could not open experiment: {error}")
 
     def refresh_record(self, record: dict | None = None) -> None:
         self.record = record if record is not None else self.service.record()
@@ -453,42 +468,6 @@ class ConversationScreen(Screen):
         view.update(Text(f"{intake['reply']}\nQuestion {intake['current'] + 1} of {len(intake['questions'])}: "
                          f"{question['prompt']}\n{intake.get('error', '')}"))
         self.query_one("#message", Input).placeholder = "Answer this question or type /cancel"
-
-    def _reply_delta(self, piece: str) -> None:
-        self._reply_queue.put(piece)
-
-    def _flush_reply(self) -> None:
-        if self._reply_queue.empty():
-            return
-        pieces = []
-        while not self._reply_queue.empty():
-            piece = self._reply_queue.get_nowait()
-            if piece is None:
-                self._preview_text = ""
-                pieces.clear()
-            else:
-                pieces.append(piece)
-        if not pieces and not self._preview_text:
-            self.query_one("#reply-scroll").display = False
-            return
-        if not pieces:
-            return
-        self._preview_text += "".join(pieces)
-        view = self.query_one("#reply-preview", Static)
-        scroll = self.query_one("#reply-scroll", VerticalScroll)
-        follow = not scroll.display or scroll.is_vertical_scroll_end
-        scroll.display = True
-        view.update(Text("MBA  " + self._preview_text))
-        if follow:
-            scroll.scroll_end(animate=False)
-
-    def _reply_reset(self) -> None:
-        while not self._reply_queue.empty():
-            self._reply_queue.get_nowait()
-        self._preview_text = ""
-        view = self.query_one("#reply-preview", Static)
-        view.update(Text(""))
-        self.query_one("#reply-scroll").display = False
 
     def _write_message(self, role: str, content: str) -> None:
         label = "YOU" if role in {"user", "you"} else "MBA"
@@ -574,6 +553,9 @@ class ConversationScreen(Screen):
         name = name.casefold()
         options = self.query_one("#session-commands", OptionList)
         options.display = False
+        if self.service is None and name != "quit":
+            self._set_status("Experiment is still loading")
+            return
         field = self.query_one("#message", Input)
         field.value = ""
         if name == "details":
@@ -616,6 +598,9 @@ class ConversationScreen(Screen):
             return
         if value.startswith("/") and not (self.pending_intake or self.pending_question):
             self._set_status(f"Unknown command: /{command}")
+            return
+        if self.service is None:
+            self._set_status("Experiment is still loading")
             return
         if self.exit_requested or self.back_requested:
             self._set_status("Stopping; resume the saved run before submitting more work.")
@@ -673,18 +658,13 @@ class ConversationScreen(Screen):
     @work(thread=True)
     def _submit_task(self, value: str) -> None:
         try:
-            result = self.service.submit(
-                value,
-                on_reply_delta=self._reply_delta,
-                on_reply_reset=lambda: self._reply_queue.put(None),
-            )
+            result = self.service.submit(value)
             self.app.call_from_thread(self._submitted, result)
         except Exception as exc:
             self.app.call_from_thread(self._submission_failed, str(exc))
 
     def _submitted(self, result) -> None:
         self.classifying = False
-        self._reply_reset()
         self.refresh_record()
         self._render_intake()
         if result.question:
@@ -698,13 +678,12 @@ class ConversationScreen(Screen):
 
     def _submission_failed(self, message: str) -> None:
         self.classifying = False
-        self._reply_reset()
         self.refresh_record()
         self._set_status(f"Supervisor error: {message}")
         self._finish_navigation()
 
     def _start_next(self, *, refresh: bool = True) -> None:
-        if self.running or self.pending_question or self.exit_requested or self.back_requested:
+        if self.service is None or self.running or self.pending_question or self.exit_requested or self.back_requested:
             return
         if refresh:
             self.refresh_record()
@@ -859,8 +838,8 @@ class MBAApp(App):
     #chat-pane { width: 1fr; height: 1fr; min-width: 24; padding: 0 1 0 2; }
     #side-pane { width: 36; height: 1fr; min-width: 26; background: #171c24; padding: 0 1; }
     #conversation { width: 100%; height: 1fr; background: #101319; border: none; }
-    #reply-scroll, #question-scroll { height: auto; max-height: 8; display: none; }
-    #reply-preview, #intake-question { height: auto; padding: 0 1; color: #72d8c2; }
+    #question-scroll { height: auto; max-height: 8; display: none; }
+    #intake-question { height: auto; padding: 0 1; color: #72d8c2; }
     #question-scroll { border-left: solid #e8ac70; }
     #message { width: 100%; height: 3; }
     #runs { width: 100%; height: 30%; min-height: 4; border: none; }
