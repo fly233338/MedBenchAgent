@@ -254,11 +254,14 @@ def _number(value: object, key: str, *, minimum: float, maximum: float) -> float
 
 
 def _dataset_sources(values: object) -> tuple[dict[str, Any], ...]:
+    if not isinstance(values, list):
+        raise ValueError("dataset_sources must be an array of tables")
+    if not values:
+        return ()
+
     from medbenchagent.data.contracts import SourcesArguments
     from medbenchagent.data.dataset_catalog import validate_dataset_id
 
-    if not isinstance(values, list):
-        raise ValueError("dataset_sources must be an array of tables")
     entries, seen = [], set()
     for item in values:
         if not isinstance(item, dict) or set(item) != {"dataset_id", "name", "description", "sources"}:

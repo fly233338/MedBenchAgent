@@ -8,13 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Literal
 
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.types import Command, Interrupt
-
-from medbenchagent.runtime.dependencies import verify_resume
-from medbenchagent.runtime.preflight import preflight_errors, rag_capability
 from medbenchagent.settings import active_settings, load_settings, run_settings
-from medbenchagent.workflow.graph import compile_benchmark_graph
 
 
 EventKind = Literal["initialized", "progress", "artifact", "needs_input", "finished", "error"]
@@ -59,6 +53,8 @@ def _question(value: object) -> str:
 
 
 def _interrupt(payload: dict) -> dict | None:
+    from langgraph.types import Interrupt
+
     if "__interrupt__" not in payload:
         return None
     values = payload["__interrupt__"]
@@ -103,8 +99,18 @@ def _artifact_paths(value: object) -> Iterator[tuple[str, str]]:
 
 
 class GraphRunner:
-    def __init__(self, *, graph_factory=compile_benchmark_graph) -> None:
+    def __init__(self, *, graph_factory=None) -> None:
         self.graph_factory = graph_factory
+
+    def _graph(self, connection):
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        factory = self.graph_factory
+        if factory is None:
+            from medbenchagent.workflow.graph import compile_benchmark_graph
+
+            factory = compile_benchmark_graph
+        return factory(checkpointer=SqliteSaver(connection))
 
     def inspect(self, run: dict) -> dict:
         """Read recovery state after a process disappeared, without executing the graph."""
@@ -113,7 +119,7 @@ class GraphRunner:
             return {"status": "interrupted", "summary": "Run checkpoint database is missing"}
         connection = sqlite3.connect(str(checkpoint_path), check_same_thread=False)
         try:
-            graph = self.graph_factory(checkpointer=SqliteSaver(connection))
+            graph = self._graph(connection)
             snapshot = graph.get_state({"configurable": {"thread_id": run["thread_id"]}})
         finally:
             connection.close()
@@ -131,6 +137,10 @@ class GraphRunner:
                 resume: bool = False, answer: str | None = None,
                 settings: Any = None, stop_requested: Callable[[], bool] | None = None) -> Iterator[RunEvent]:
         """Start or resume a run; return at an interrupt so the caller can answer later."""
+        from langgraph.types import Command
+        from medbenchagent.runtime.dependencies import verify_resume
+        from medbenchagent.runtime.preflight import preflight_errors, rag_capability
+
         enforce_offline_mode()
         identifier = run["id"]
         known_directory = run.get("run_directory")
@@ -142,7 +152,7 @@ class GraphRunner:
                 if not checkpoint_path.is_file():
                     raise ValueError("Run checkpoint database is missing")
                 connection = sqlite3.connect(str(checkpoint_path), check_same_thread=False)
-                graph = self.graph_factory(checkpointer=SqliteSaver(connection))
+                graph = self._graph(connection)
                 config = {"configurable": {"thread_id": run["thread_id"]}, "recursion_limit": 1_000}
                 previous = graph.get_state(config)
                 if not previous.values:
@@ -194,7 +204,7 @@ class GraphRunner:
                     connection = sqlite3.connect(
                         str(settings.paths.runs_root / "checkpoints.sqlite"), check_same_thread=False
                     )
-                    graph = self.graph_factory(checkpointer=SqliteSaver(connection))
+                    graph = self._graph(connection)
                     config = {"configurable": {"thread_id": run["thread_id"]},
                               "recursion_limit": 1_000}
                 if resume:
@@ -293,7 +303,7 @@ class GraphRunner:
         except (KeyboardInterrupt, EOFError):
             yield RunEvent(identifier, "error", {
                 "status": "interrupted", "summary": "Run interrupted; checkpoint preserved",
-                "run_directory": known_directory,
+                "run_directory": known_directory, "exit_code": 130,
             })
         except Exception as exc:
             yield RunEvent(identifier, "error", {

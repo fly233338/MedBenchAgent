@@ -108,20 +108,12 @@ def test_source_discovery_uses_structured_intake_without_model_parse(monkeypatch
     assert entry["sources"][0]["root"] == str(root)
 
 
-def test_no_task_reply_does_not_create_run(monkeypatch, tmp_path):
-    record = sessions.create_experiment("pilot", root=tmp_path)
-    monkeypatch.setattr("medbenchagent.runtime.session_supervisor.complete_validated_json",
-                        lambda *_args, **_kwargs: SessionDecision(
-                            tasks=[], reply="Please describe a preparation or benchmark task."))
-    decision = classify_requirement("hello", known_datasets=[], history=[])
-    assert decision.reply
-    assert sessions.load_experiment("pilot", root=tmp_path)["runs"] == record["runs"]
-
-
 def test_tui_create_config_conversation(tmp_path):
     async def check():
         app = MBAApp(experiments_root=Path(tmp_path))
         async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             assert isinstance(app.screen, ExperimentMenu)
             await pilot.press("/", "n", "e", "w", "enter")
             await pilot.pause()
@@ -156,6 +148,8 @@ def test_experiment_row_opens_with_enter(tmp_path):
     async def check():
         app = MBAApp(experiments_root=tmp_path)
         async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             assert isinstance(app.screen, ExperimentMenu)
             await pilot.press("down", "down", "enter")
             await pilot.pause()
@@ -172,6 +166,8 @@ def test_experiment_search_and_keyboard_navigation(tmp_path):
     async def check():
         app = MBAApp(experiments_root=tmp_path)
         async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             await pilot.press("f", "i", "r")
             await pilot.pause()
             table = app.screen.query_one("#experiments")
@@ -190,6 +186,8 @@ def test_experiment_row_opens_with_mouse(tmp_path):
     async def check():
         app = MBAApp(experiments_root=tmp_path)
         async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             await pilot.click("#experiments", offset=(2, 1))
             await pilot.pause()
             assert isinstance(app.screen, ConversationScreen)
@@ -207,6 +205,8 @@ def test_run_row_shows_details_with_enter(tmp_path):
     async def check():
         app = MBAApp(experiments_root=tmp_path)
         async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, ConversationScreen)

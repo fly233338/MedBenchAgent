@@ -14,14 +14,15 @@ def test_parser_exposes_terminal_commands() -> None:
     assert parser.parse_args(["create", "pilot"]).experiment == "pilot"
     assert parser.parse_args(["run", "pilot", "build a benchmark"]).command == "run"
     assert parser.parse_args(["resume", "pilot", "run-id"]).run_id == "run-id"
+    assert parser.parse_args(["resume-intake", "pilot"]).command == "resume-intake"
     assert parser.parse_args(["register", "--dataset-id", "a", "--bundle", "b"]).command == "register"
     with pytest.raises(SystemExit):
         parser.parse_args(["build"])
 
 
 def test_runner_emits_initialized_and_clarification(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("medbenchagent.runtime.graph_runner.preflight_errors", lambda *_args, **_kw: [])
-    monkeypatch.setattr("medbenchagent.runtime.graph_runner.rag_capability",
+    monkeypatch.setattr("medbenchagent.runtime.preflight.preflight_errors", lambda *_args, **_kw: [])
+    monkeypatch.setattr("medbenchagent.runtime.preflight.rag_capability",
                         lambda _settings: {"available": True})
     question = Interrupt(value={"question": "Which language?"}, id="question-1")
 

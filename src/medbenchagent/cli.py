@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from medbenchagent.runtime import sessions
-from medbenchagent.runtime.conversation_service import ConversationService
-from medbenchagent.runtime.graph_runner import RunEvent
-from medbenchagent.runtime.llm import ModelUnavailable
+
+if TYPE_CHECKING:
+    from medbenchagent.runtime.conversation_service import ConversationService
+    from medbenchagent.runtime.graph_runner import RunEvent
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -48,9 +50,9 @@ def _render(event: RunEvent) -> None:
         if payload.get("run_directory"):
             print(f"Run directory: {payload['run_directory']}")
     elif event.kind == "error":
-        print(f"Run {event.run_session_id}: {payload.get('status')}. {payload.get('summary', '')}")
+        print(f"Run {event.run_session_id}: {payload.get('status')}. {payload.get('summary', '')}", file=sys.stderr)
         if payload.get("run_directory"):
-            print(f"Preserved run artifacts: {payload['run_directory']}")
+            print(f"Preserved run artifacts: {payload['run_directory']}", file=sys.stderr)
 
 
 def _consume(service: ConversationService, events: Iterable[RunEvent]) -> int:
@@ -65,32 +67,38 @@ def _consume(service: ConversationService, events: Iterable[RunEvent]) -> int:
             try:
                 answer = input("Your response: ").strip()
             except (EOFError, KeyboardInterrupt):
-                print("\nRun checkpoint preserved; use the resume command later.")
+                print("\nRun checkpoint preserved; use the resume command later.", file=sys.stderr)
                 return 130
             if not answer:
-                print("Answer cannot be empty; use the resume command later.")
+                print("Answer cannot be empty; use the resume command later.", file=sys.stderr)
                 return 2
             service.answer(event.run_session_id, answer)
             return _consume(service, service.resume(event.run_session_id, answer=answer))
         _render(event)
         if event.kind == "error":
+            status = event.payload.get("exit_code", 1)
+            if status == 130:
+                return status
+        elif event.kind == "finished" and event.payload.get("status") in {"blocked", "failed"}:
             status = 1
     return status
 
 
 def _answer_intake(service: ConversationService) -> int:
+    from medbenchagent.runtime.llm import ModelUnavailable
+
     while pending := service.pending_intake():
         question = pending["questions"][pending["current"]]
         print(f"Question {pending['current'] + 1} of {len(pending['questions'])}: {question['prompt']}")
         try:
             answer = input("Your response: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nAnswers saved; use resume-intake later.")
+            print("\nAnswers saved; use resume-intake later.", file=sys.stderr)
             return 130
         try:
             result = service.answer_intake(answer)
         except (ValueError, ModelUnavailable) as exc:
-            print(f"Invalid answer: {exc}")
+            print(f"Invalid answer: {exc}", file=sys.stderr)
             continue
         if result.run_ids:
             for run_id in result.run_ids:
@@ -113,6 +121,8 @@ def run_command(args: argparse.Namespace) -> int:
         sessions.create_experiment(args.experiment, template=args.config)
         print(f"Created experiment {args.experiment}")
         return 0
+    from medbenchagent.runtime.conversation_service import ConversationService
+
     service = ConversationService(args.experiment)
     service.reconcile()
     if args.command == "run":

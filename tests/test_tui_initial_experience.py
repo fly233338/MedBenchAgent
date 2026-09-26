@@ -21,9 +21,15 @@ def test_plain_text_preview_and_incremental_run_rows(tmp_path, monkeypatch):
             assert "[type=literal_error" in str(screen.query_one("#session-status").content)
             screen._reply_delta("First")
             screen._reply_delta(" part")
+            screen._flush_reply()
             assert "MBA  First part" in str(screen.query_one("#reply-preview").content)
+            screen._reply_queue.put(None)
+            screen._reply_delta("Repaired")
+            screen._flush_reply()
+            assert "MBA  Repaired" == str(screen.query_one("#reply-preview").content)
             screen._reply_reset()
-            assert not screen.query_one("#reply-preview").display
+            screen._flush_reply()
+            assert not screen.query_one("#reply-scroll").display
             record = sessions.load_experiment("pilot", root=tmp_path)
             run = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
             screen.refresh_record()
@@ -32,13 +38,45 @@ def test_plain_text_preview_and_incremental_run_rows(tmp_path, monkeypatch):
             monkeypatch.setattr(table, "clear", lambda: pytest.fail("full table rebuild"))
             sessions.update_run(record, run["id"], root=tmp_path, status="running")
             screen.refresh_record()
-            assert table.get_cell_at((0, 1)) == "running"
-            monkeypatch.setattr(screen.service, "record", lambda: pytest.fail("artifact reread session"))
-            screen._on_event(RunEvent(run["id"], "artifact", {"name": "test", "path": "asset"}))
+            assert str(table.get_cell_at((0, 1))) == "running"
+            with monkeypatch.context() as patch:
+                patch.setattr(screen.service, "record", lambda: pytest.fail("artifact reread session"))
+                screen._on_event(RunEvent(run["id"], "artifact", {"name": "test", "path": "asset"}))
             screen.running = True
+            screen.action_edit_config()
+            await pilot.pause()
             app.action_request_exit()
             assert screen.stop_event.is_set()
             assert screen.exit_requested
+            await pilot.pause()
+            assert app.screen is screen
+            screen.classifying = True
+            screen._submission_failed("Interrupted submission")
+            assert app.is_running  # the run must finish before the app exits
+            screen._execution_ended()
+            await pilot.pause()
+            assert not app.is_running
+
+    asyncio.run(check())
+
+
+def test_quit_waits_for_run_then_returns_to_experiments(tmp_path):
+    sessions.create_experiment("pilot", root=tmp_path)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            app.open_experiment("pilot")
+            await pilot.pause()
+            screen = app.screen
+            screen.running = True
+            screen.action_back()
+            assert screen.stop_event.is_set()
+            assert app.screen is screen
+            screen._execution_ended()
+            await pilot.pause()
+            assert app.is_running
+            assert not isinstance(app.screen, ConversationScreen)
 
     asyncio.run(check())
 

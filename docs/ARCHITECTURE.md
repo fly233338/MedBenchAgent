@@ -223,11 +223,15 @@ Planning/Allocation delegation 的目标、scope/preference 引用由代码从 R
 DataProcessing 检查工具支持复合 join key、相同的基数/空键/未匹配策略及 sheet/delimiter；检查统计与执行共用校验。
 字段配对与 Protocol 共用数组祖先及实例索引规则，允许同一 finding 中嵌套对象字段，拒绝不同数组误配。
 
+CLI 帮助、TUI 首页与配置浏览不提前加载模型服务和工作流；执行时按需加载。
 CLI 与 Textual UI 不相互依赖。入口分发器无子命令时启动 TUI；CLI 的 create/run/resume/resume-intake 与 TUI
 共用 ConversationService 和 GraphRunner。ConversationService 分类对话、持久化准备 Intake 与 Run 队列并串行调度；
 GraphRunner 独占预检、配置冻结、LangGraph 流、checkpoint 和 interrupt/resume，并向界面发送
 initialized/progress/artifact/needs_input/finished/error 事件。界面不打开 checkpoint。
 每个实验的 session 写入和 Run 执行分别受锁保护，避免 CLI/TUI 同时写坏会话或执行同一 Run。
+TUI 首页后台扫描实验，回复预览合并刷新，进度日志分批显示；不会为界面刷新新增持久化缓存。
+Ctrl+C 从整个页面栈找到活动会话并请求在保存边界停止，配置页不会绕过运行退出流程。
+会话 /quit 同样等待当前运行及提交完成后返回首页；停止请求阻止继续启动排队运行。
 独立排队任务可在另一任务运行时提交；前置准备失败只阻断依赖构建，其他队列项继续执行。
 会话提交先在 `mba-session.v2` 记录独立的 processing 状态；分类、结构与业务校验完成后一次提交正式消息和 Run。
 失败状态与原请求保留供界面显示，但不进入 Supervisor 对话历史；遗留 processing 在恢复时标为失败。

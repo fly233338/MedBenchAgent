@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+
 from medbenchagent.cli import _parser, run_command
-from medbenchagent.runtime.graph_runner import enforce_offline_mode
 
 
 def main() -> None:
@@ -11,10 +12,23 @@ def main() -> None:
     args = parser.parse_args()
     if args.config and not args.config.is_file():
         parser.error(f"Configuration template does not exist: {args.config}")
+    from medbenchagent.runtime.graph_runner import enforce_offline_mode
+
     enforce_offline_mode()
     if args.command is None:
         from medbenchagent.tui import MBAApp
 
         MBAApp(config_template=args.config.resolve() if args.config else None).run()
         return
-    raise SystemExit(run_command(args))
+    try:
+        status = run_command(args)
+    except (KeyboardInterrupt, EOFError):
+        print("\nInterrupted. Use resume or resume-intake for saved work.", file=sys.stderr)
+        status = 130
+    except (ValueError, OSError) as exc:
+        print(f"Error: {exc}\nCheck the experiment/configuration and command arguments (--help).", file=sys.stderr)
+        status = 2
+    except RuntimeError as exc:
+        print(f"Execution failed: {exc}", file=sys.stderr)
+        status = 1
+    raise SystemExit(status)

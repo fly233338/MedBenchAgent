@@ -6,19 +6,26 @@ import queue
 import json
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Input, Label, OptionList, RichLog, Static, Tree
 from textual.widgets.option_list import Option
 
 from medbenchagent.runtime import sessions
-from medbenchagent.runtime.conversation_service import ConversationService
-from medbenchagent.runtime.graph_runner import RunEvent
+
+if TYPE_CHECKING:
+    from medbenchagent.runtime.conversation_service import ConversationService
+    from medbenchagent.runtime.graph_runner import RunEvent
+
+
+_STATUS_COLORS = {"complete": "#63d6bd", "blocked": "#e8ac70", "waiting_input": "#e8ac70",
+                  "failed": "#eb7d83", "interrupted": "#e8ac70", "running": "#a9c7f6"}
 
 
 def _brand() -> Text:
@@ -55,6 +62,8 @@ class ExperimentMenu(Screen):
     def __init__(self) -> None:
         super().__init__()
         self._entries: list[dict] = []
+        self._visible_entries: list[tuple] = []
+        self._scan_id = 0
 
     def compose(self) -> ComposeResult:
         with Vertical(id="menu-shell"):
@@ -81,22 +90,44 @@ class ExperimentMenu(Screen):
         self.refresh_experiments()
 
     def refresh_experiments(self) -> None:
-        self._entries = sessions.list_experiments(root=self.app.experiments_root)
+        self._scan_id += 1
+        self.query_one("#menu-message", Static).update("Loading experiments…")
+        self._load_experiments(self._scan_id)
+
+    @work(thread=True)
+    def _load_experiments(self, scan_id: int) -> None:
+        try:
+            entries = sessions.list_experiments(root=self.app.experiments_root)
+        except (ValueError, OSError) as exc:
+            self.app.call_from_thread(self._loaded_experiments, scan_id, [], str(exc))
+        else:
+            self.app.call_from_thread(self._loaded_experiments, scan_id, entries, "")
+
+    def _loaded_experiments(self, scan_id: int, entries: list[dict], error: str) -> None:
+        if scan_id != self._scan_id:
+            return
+        self._entries = entries
         self._render_entries()
+        if error:
+            self.query_one("#menu-message", Static).update(Text(error))
 
     def _render_entries(self) -> None:
         table = self.query_one("#experiments", DataTable)
-        table.clear()
         query = self.query_one("#search", Input).value.strip().casefold()
         if query.startswith("/"):
             query = ""
         matches = [record for record in self._entries if query in record["name"].casefold()]
-        for record in matches:
-            status = record["runs"][-1]["status"] if record["runs"] else "new"
-            status_color = {"complete": "#63d6bd", "blocked": "#e8ac70",
-                            "failed": "#eb7d83", "running": "#a9c7f6"}.get(status, "#aab9ca")
-            table.add_row(record["name"], str(len(record["runs"])),
-                          Text(status.upper(), style=status_color), key=record["name"])
+        rows = [(record["name"], len(record["runs"]),
+                 record["runs"][-1]["status"] if record["runs"] else "new") for record in matches]
+        if rows != self._visible_entries:
+            selected = table.get_row_at(table.cursor_row)[0] if table.row_count else None
+            table.clear()
+            for name, count, status in rows:
+                status_color = _STATUS_COLORS.get(status, "#aab9ca")
+                table.add_row(name, str(count), Text(status.upper(), style=status_color), key=name)
+            self._visible_entries = rows
+            if selected in [row[0] for row in rows]:
+                table.move_cursor(row=[row[0] for row in rows].index(selected))
         if not matches:
             message = "No matching experiments. Type /new to create." if query else "No experiments yet. Type /new to create."
             self.query_one("#menu-message", Static).update(Text(message))
@@ -255,6 +286,7 @@ class ConfigScreen(Screen):
                 remember(child)
 
         remember(tree.root)
+        had_tree = bool(tree.root.children)
         tree.root.remove_children()
         values = sessions.config_values(self.experiment_name, root=self.app.experiments_root)
         values.setdefault("generation", {}).setdefault("max_total_tasks_per_image", None)
@@ -265,11 +297,14 @@ class ConfigScreen(Screen):
                 if isinstance(value, dict):
                     node = parent.add(key, data=current)
                     add(node, value, current)
-                    if current in expanded or (not expanded and current == ("llm",)):
+                    if current in expanded or (not had_tree and current == ("llm",)):
                         node.expand()
                 else:
                     label = f"{key} = {value!r}"
-                    parent.add_leaf(label, data=(current, value))
+                    node = parent.add_leaf(Text(label), data=(current, value))
+                    if current == self.selected:
+                        tree.move_cursor(node)
+                        self.selected_value = value
 
         add(tree.root, values)
         tree.root.expand()
@@ -311,7 +346,7 @@ class ConfigScreen(Screen):
                 value = raw
             sessions.update_config_value(self.experiment_name, self.selected, value,
                                          root=self.app.experiments_root)
-        except (ValueError, TypeError, KeyError) as exc:
+        except (ValueError, TypeError, KeyError, OSError) as exc:
             self.query_one("#config-message", Static).update(Text(str(exc)))
             return
         self.query_one("#config-message", Static).update("Saved. Changes apply to the next run.")
@@ -340,6 +375,7 @@ class ConversationScreen(Screen):
         self.running = False
         self.classifying = False
         self.pending_question = False
+        self._run_question = ""
         self.pending_intake = False
         self.current_run_id: str | None = None
         self._displayed_messages: set[str] = set()
@@ -347,7 +383,9 @@ class ConversationScreen(Screen):
         self._progress_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
         self.stop_event = threading.Event()
         self.exit_requested = False
+        self.back_requested = False
         self._preview_text = ""
+        self._reply_queue: queue.SimpleQueue[str | None] = queue.SimpleQueue()
 
     def compose(self) -> ComposeResult:
         path = sessions.experiment_path(self.experiment_name, self.app.experiments_root)
@@ -356,8 +394,10 @@ class ConversationScreen(Screen):
         with Horizontal(id="session-body"):
             with Vertical(id="chat-pane"):
                 yield RichLog(id="conversation", wrap=True, highlight=True, min_width=1)
-                yield Static("", id="reply-preview")
-                yield Static("", id="intake-question")
+                with VerticalScroll(id="reply-scroll"):
+                    yield Static("", id="reply-preview")
+                with VerticalScroll(id="question-scroll"):
+                    yield Static("", id="intake-question")
                 yield OptionList(id="session-commands")
                 yield Input(placeholder="Describe a task or type / for commands", id="message")
             with Vertical(id="side-pane"):
@@ -366,19 +406,22 @@ class ConversationScreen(Screen):
                 yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
 
     def on_mount(self) -> None:
+        from medbenchagent.runtime.conversation_service import ConversationService
+
         self.service = ConversationService(self.experiment_name, root=self.app.experiments_root)
         self.record = self.service.reconcile()
         self.query_one("#runs", DataTable).add_columns("Type", "Status", "Run")
         self.query_one("#session-commands", OptionList).display = False
-        self.refresh_record()
+        self.refresh_record(self.record)
         self._render_intake()
         self.query_one("#run-detail", RichLog).write("Select a run to inspect frozen inputs.")
         self.query_one("#message", Input).focus()
         self.set_interval(0.1, self._flush_progress)
+        self.set_interval(0.05, self._flush_reply)
         self.set_timer(0.1, self._start_next)
 
-    def refresh_record(self) -> None:
-        self.record = self.service.record()
+    def refresh_record(self, record: dict | None = None) -> None:
+        self.record = record if record is not None else self.service.record()
         for message in self.record["messages"]:
             if message["id"] not in self._displayed_messages:
                 self._write_message(message["role"], message["text"])
@@ -391,30 +434,61 @@ class ConversationScreen(Screen):
         self.refresh_runs()
 
     def _render_intake(self) -> None:
-        intake = self.service.pending_intake()
+        intake = next((item for item in self.record["submissions"]
+                       if item["status"] == "awaiting_input"), None)
         self.pending_intake = intake is not None
         view = self.query_one("#intake-question", Static)
+        container = self.query_one("#question-scroll")
         if intake is None:
-            view.display = False
+            if self.pending_question:
+                container.display = True
+                view.update(Text(self._run_question))
+                self.query_one("#message", Input).placeholder = "Answer this question or /queue another request"
+                return
+            container.display = False
             self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
             return
         question = intake["questions"][intake["current"]]
-        view.display = True
+        container.display = True
         view.update(Text(f"{intake['reply']}\nQuestion {intake['current'] + 1} of {len(intake['questions'])}: "
                          f"{question['prompt']}\n{intake.get('error', '')}"))
         self.query_one("#message", Input).placeholder = "Answer this question or type /cancel"
 
     def _reply_delta(self, piece: str) -> None:
-        self._preview_text += piece
+        self._reply_queue.put(piece)
+
+    def _flush_reply(self) -> None:
+        if self._reply_queue.empty():
+            return
+        pieces = []
+        while not self._reply_queue.empty():
+            piece = self._reply_queue.get_nowait()
+            if piece is None:
+                self._preview_text = ""
+                pieces.clear()
+            else:
+                pieces.append(piece)
+        if not pieces and not self._preview_text:
+            self.query_one("#reply-scroll").display = False
+            return
+        if not pieces:
+            return
+        self._preview_text += "".join(pieces)
         view = self.query_one("#reply-preview", Static)
-        view.display = True
+        scroll = self.query_one("#reply-scroll", VerticalScroll)
+        follow = not scroll.display or scroll.is_vertical_scroll_end
+        scroll.display = True
         view.update(Text("MBA  " + self._preview_text))
+        if follow:
+            scroll.scroll_end(animate=False)
 
     def _reply_reset(self) -> None:
+        while not self._reply_queue.empty():
+            self._reply_queue.get_nowait()
         self._preview_text = ""
         view = self.query_one("#reply-preview", Static)
         view.update(Text(""))
-        view.display = False
+        self.query_one("#reply-scroll").display = False
 
     def _write_message(self, role: str, content: str) -> None:
         label = "YOU" if role in {"user", "you"} else "MBA"
@@ -422,7 +496,8 @@ class ConversationScreen(Screen):
         line = Text()
         line.append(f" {label} ", style=f"bold {color}")
         line.append("  " + content)
-        self.query_one("#conversation", RichLog).write(line)
+        log = self.query_one("#conversation", RichLog)
+        log.write(line, scroll_end=log.is_vertical_scroll_end)
 
     def _set_status(self, value: str) -> None:
         self.query_one("#session-status", Static).update(Text(value))
@@ -431,11 +506,12 @@ class ConversationScreen(Screen):
         if value:
             color = ("#72d8c2" if value.startswith(("[done]", "[artifact]")) else
                      "#e8ac70" if value.startswith(("[waiting]", "[failed]")) else "#a5b8c8")
-            self.query_one("#progress", RichLog).write(Text(value, style=color))
+            log = self.query_one("#progress", RichLog)
+            log.write(Text(value, style=color), scroll_end=log.is_vertical_scroll_end)
 
-    def _flush_progress(self, limit: int | None = 100) -> None:
+    def _flush_progress(self, limit: int = 100) -> None:
         count = 0
-        while limit is None or count < limit:
+        while count < limit:
             try:
                 value = self._progress_queue.get_nowait()
             except queue.Empty:
@@ -448,10 +524,12 @@ class ConversationScreen(Screen):
         if table.row_count > len(self.record["runs"]):
             table.clear()
         for index, run in enumerate(self.record["runs"]):
+            values = (run["kind"], Text(run["status"], style=_STATUS_COLORS.get(run["status"], "#aab9ca")),
+                      run["id"][:8])
             if index >= table.row_count:
-                table.add_row(run["kind"], run["status"], run["id"][:8], key=run["id"])
+                table.add_row(*values, key=run["id"])
             else:
-                for column, value in enumerate((run["kind"], run["status"], run["id"][:8])):
+                for column, value in enumerate(values):
                     if table.get_cell_at((index, column)) != value:
                         table.update_cell_at((index, column), value)
 
@@ -466,9 +544,12 @@ class ConversationScreen(Screen):
                   f"Source decision: {run.get('source_decision_path')}")
         snapshot_path = run.get("effective_config_path")
         if snapshot_path and Path(snapshot_path).is_file():
-            snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
-            detail += "\nEnvironment overrides: " + ", ".join(snapshot.get("environment_overrides", []))
-            detail += "\nEffective settings:\n" + json.dumps(snapshot["settings"], ensure_ascii=False, indent=2)
+            try:
+                snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
+                detail += "\nEnvironment overrides: " + ", ".join(snapshot.get("environment_overrides", []))
+                detail += "\nEffective settings:\n" + json.dumps(snapshot["settings"], ensure_ascii=False, indent=2)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                detail += f"\nCannot read frozen configuration: {exc}"
         if run.get("selected_assets"):
             detail += "\nSelected assets:\n" + json.dumps(run["selected_assets"], ensure_ascii=False, indent=2)
         view = self.query_one("#run-detail", RichLog)
@@ -535,6 +616,9 @@ class ConversationScreen(Screen):
         if value.startswith("/"):
             self._dispatch_command(value)
             return
+        if self.exit_requested or self.back_requested:
+            self._set_status("Stopping; resume the saved run before submitting more work.")
+            return
         if self.classifying:
             self._set_status("Wait for the current request to finish")
             return
@@ -551,6 +635,8 @@ class ConversationScreen(Screen):
                 return
             run_id = self.current_run_id
             self.pending_question = False
+            self._run_question = ""
+            self.query_one("#question-scroll").display = False
             self.current_run_id = None
             self.refresh_record()
             self._execute_run(resume_id=run_id, answer=value)
@@ -558,6 +644,9 @@ class ConversationScreen(Screen):
         self._queue_task(value)
 
     def _queue_task(self, value: str) -> None:
+        if self.exit_requested or self.back_requested:
+            self._set_status("Stopping; resume the saved run before submitting more work.")
+            return
         if self.classifying:
             self._set_status("Wait for the current request to be classified.")
             return
@@ -578,16 +667,15 @@ class ConversationScreen(Screen):
         self.refresh_record()
         self._render_intake()
         self._set_status(message)
-        if self.exit_requested:
-            self.app.exit()
+        self._finish_navigation()
 
     @work(thread=True)
     def _submit_task(self, value: str) -> None:
         try:
             result = self.service.submit(
                 value,
-                on_reply_delta=lambda piece: self.app.call_from_thread(self._reply_delta, piece),
-                on_reply_reset=lambda: self.app.call_from_thread(self._reply_reset),
+                on_reply_delta=self._reply_delta,
+                on_reply_reset=lambda: self._reply_queue.put(None),
             )
             self.app.call_from_thread(self._submitted, result)
         except Exception as exc:
@@ -604,22 +692,21 @@ class ConversationScreen(Screen):
             self._set_status(f"Queued {len(result.run_ids)} run(s)")
         else:
             self._set_status("Ready")
-        self._start_next()
-        if self.exit_requested:
-            self.app.exit()
+        if not self._finish_navigation():
+            self._start_next(refresh=False)
 
     def _submission_failed(self, message: str) -> None:
         self.classifying = False
         self._reply_reset()
         self.refresh_record()
         self._set_status(f"Supervisor error: {message}")
-        if self.exit_requested:
-            self.app.exit()
+        self._finish_navigation()
 
-    def _start_next(self) -> None:
-        if self.running or self.pending_question or self.exit_requested:
+    def _start_next(self, *, refresh: bool = True) -> None:
+        if self.running or self.pending_question or self.exit_requested or self.back_requested:
             return
-        self.refresh_record()
+        if refresh:
+            self.refresh_record()
         unfinished = next((run for run in reversed(self.record["runs"])
                            if run["status"] in {"running", "interrupted", "waiting_input"}), None)
         if unfinished:
@@ -666,23 +753,27 @@ class ConversationScreen(Screen):
             self.pending_question = True
             self.current_run_id = event.run_session_id
             question = event.payload["question"]
-            self._set_status(question)
-            self.query_one("#message", Input).placeholder = question
+            self._run_question = question
+            self._set_status("Answer the run question to continue")
+            self.query_one("#question-scroll").display = True
+            self.query_one("#intake-question", Static).update(Text(question))
+            self.query_one("#message", Input).placeholder = "Answer this question or /queue another request"
             self.query_one("#message", Input).focus()
         elif event.kind in {"finished", "error"}:
-            self._flush_progress(limit=None)
+            self._flush_progress()
             self._set_status(f"{event.payload.get('status')}: {event.payload.get('summary', '')}")
             self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
+            if not self.pending_intake:
+                self.query_one("#question-scroll").display = False
 
     def _execution_ended(self) -> None:
-        self._flush_progress(limit=None)
+        self._flush_progress()
         self.running = False
         self.refresh_record()
-        if self.exit_requested:
-            self.app.exit()
+        if self._finish_navigation():
             return
         if not self.pending_question:
-            self._start_next()
+            self._start_next(refresh=False)
 
     def action_resume_run(self) -> None:
         if self.running:
@@ -702,10 +793,23 @@ class ConversationScreen(Screen):
         self.app.push_screen(ConfigScreen(self.experiment_name))
 
     def action_back(self) -> None:
-        if self.running:
+        self.back_requested = True
+        self.stop_event.set()
+        if not self._finish_navigation():
+            self._set_status("Stopping at the next saved run boundary…")
+
+    def _finish_navigation(self) -> bool:
+        if self.running or self.classifying:
+            return False
+        if self.exit_requested:
             self.app.exit()
-            return
-        self.app.pop_screen()
+            return True
+        if self.back_requested:
+            while self.app.screen is not self:
+                self.app.pop_screen()
+            self.app.pop_screen()
+            return True
+        return False
 
 class MBAApp(App):
     ENABLE_COMMAND_PALETTE = False
@@ -743,21 +847,27 @@ class MBAApp(App):
     ConfigScreen { padding: 1 2 0 2; }
     #config-title { height: 1; color: #a8c4ff; text-style: bold; }
     #config-tree { height: 1fr; background: #171c24; border: none; }
-    #field-label, #config-message { height: 1; color: #9aa6b6; }
+    #field-label { height: 1; color: #9aa6b6; }
+    #config-message, #menu-message { height: auto; max-height: 3; overflow-y: auto; color: #9aa6b6; }
     ConfigScreen > Horizontal { height: 3; }
     #config-command { height: 3; }
 
     #session-title { height: 1; padding: 0 2; color: #a8c4ff; text-style: bold; }
-    #session-status { height: 1; padding: 0 2; color: #9aa6b6; }
+    #session-status { height: auto; max-height: 4; overflow-y: auto; padding: 0 2; color: #9aa6b6; }
     #session-body { width: 100%; height: 1fr; }
     #chat-pane { width: 1fr; height: 1fr; min-width: 24; padding: 0 1 0 2; }
     #side-pane { width: 36; height: 1fr; min-width: 26; background: #171c24; padding: 0 1; }
     #conversation { width: 100%; height: 1fr; background: #101319; border: none; }
-    #reply-preview, #intake-question { height: auto; max-height: 4; padding: 0 1; color: #72d8c2; }
+    #reply-scroll, #question-scroll { height: auto; max-height: 8; display: none; }
+    #reply-preview, #intake-question { height: auto; padding: 0 1; color: #72d8c2; }
+    #question-scroll { border-left: solid #e8ac70; }
     #message { width: 100%; height: 3; }
     #runs { width: 100%; height: 30%; min-height: 4; border: none; }
     #run-detail { width: 100%; height: 35%; min-height: 4; border-top: solid #323c4b; }
     #progress { width: 100%; height: 1fr; min-height: 3; border-top: solid #323c4b; }
+    .compact #chat-pane { padding: 0 1; }
+    .compact #side-pane { width: 26; min-width: 18; }
+    .compact #session-title { padding: 0 1; }
     """
 
     TITLE = "MBA"
@@ -772,13 +882,20 @@ class MBAApp(App):
         self.push_screen(ExperimentMenu())
 
     def action_request_exit(self) -> None:
-        screen = self.screen
-        if isinstance(screen, ConversationScreen) and (screen.running or screen.classifying):
+        active = [screen for screen in self.screen_stack
+                  if isinstance(screen, ConversationScreen) and (screen.running or screen.classifying)]
+        if active:
+            screen = active[-1]
             screen.exit_requested = True
             screen.stop_event.set()
             screen._set_status("Stopping at the next saved run boundary…")
+            while self.screen is not screen:
+                self.pop_screen()
         else:
             self.exit()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.set_class(event.size.width < 100, "compact")
 
     def open_experiment(self, name: str, *, configure: bool = False) -> None:
         self.title = name

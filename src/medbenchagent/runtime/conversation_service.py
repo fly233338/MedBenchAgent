@@ -223,6 +223,8 @@ class ConversationService:
         try:
             with self.run_lock.acquire(timeout=0):
                 while True:
+                    if stop_requested is not None and stop_requested():
+                        return
                     with self.session_lock:
                         record = sessions.load_experiment(self.name, root=self.root)
                         if any(run["status"] in {"running", "interrupted", "waiting_input"}
