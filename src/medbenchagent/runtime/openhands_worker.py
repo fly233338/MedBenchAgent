@@ -60,7 +60,9 @@ def main(request_path: str, result_path: str) -> None:
         raise RuntimeError("Coding worker requires the configured LLM API key")
     # Keep the credential in the LLM object, away from terminal/file-editor subprocesses.
     os.environ.pop("MEDBENCH_LLM_API_KEY", None)
-    model = "openai/" + request["model"]
+    # The run freezes the exact OpenAI-compatible model id.  Provider prefixes
+    # are not portable across local gateways and must not be invented here.
+    model = request["model"]
     llm = LLM(model=model, base_url=request["base_url"], max_output_tokens=8192,
               api_key=SecretStr(key), usage_id="medbench_coding_worker")
     agent = Agent(llm=llm, tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)])
@@ -104,7 +106,16 @@ def main(request_path: str, result_path: str) -> None:
     if request["feedback"]:
         prompt += "\nValidator feedback to fix: " + request["feedback"]
     conversation.send_message(prompt)
-    conversation.run()
+    try:
+        conversation.run()
+    except Exception as exc:
+        # Keep the process contract machine-readable while leaving the full
+        # traceback in stderr for diagnosis.
+        result = {"status": "failed", "conversation_id": request["conversation_id"],
+                  "outputs": {}, "question": "",
+                  "diagnostic": f"OpenHands conversation failed: {type(exc).__name__}: {exc}"}
+        Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        raise
     diagnostic = replay_source_script(request, workspace) if request["kind"] == "source_inventory" else ""
     produced = {name: str((workspace / "outputs" / name).resolve()) for name in request["required_outputs"]
                 if (workspace / "outputs" / name).is_file()}

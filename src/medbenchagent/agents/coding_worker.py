@@ -54,6 +54,10 @@ class CodingResult(BaseModel):
     outputs: dict[str, str] = Field(default_factory=dict)
     question: str = ""
     diagnostic: str = ""
+    error_category: Literal["", "environment_unavailable", "model_unavailable",
+                            "worker_execution_failed", "worker_output_invalid",
+                            "source_changed", "source_semantics_unresolved"] = ""
+    retryable: bool = False
 
 
 class CodingWorker(Protocol):
@@ -133,6 +137,9 @@ class OpenHandsCodingWorker:
         conversation_id = task.conversation_id or str(uuid.uuid5(uuid.NAMESPACE_URL,
                                                                   f"{task.task_id}:attempt:{task.attempt}"))
         request = task.model_dump(exclude={"source_manifest", "inputs"})
+        # The frozen model identity is already OpenAI-compatible.  Do not add a
+        # provider prefix here: local gateways expose the exact id returned by
+        # /models and reject otherwise equivalent aliases.
         if runtime["backend"] == "docker":
             request.update(workspace="/workspace", source_root="/workspace/source",
                            conversation_id=conversation_id, base_url=_container_url(task.base_url),
@@ -162,8 +169,9 @@ class OpenHandsCodingWorker:
             if self.runtime is None:
                 image_id = image
             else:
-                return CodingResult(status="blocked", conversation_id=conversation_id,
-                                    diagnostic=str(exc))
+                return self._record_result(workspace, task, CodingResult(
+                    status="blocked", conversation_id=conversation_id,
+                    diagnostic=str(exc), error_category="environment_unavailable"))
         probe = (
             "import json,os,sys,urllib.request;"
             "url,model=sys.argv[1:3];"
@@ -181,11 +189,15 @@ class OpenHandsCodingWorker:
                  request["base_url"], task.model],
                 env=environment, capture_output=True, text=True, timeout=30, check=False)
             if check.returncode:
-                return CodingResult(status="blocked", conversation_id=conversation_id,
-                                    diagnostic="OpenHands container cannot reach the frozen Chat model")
+                return self._record_result(workspace, task, CodingResult(
+                    status="blocked", conversation_id=conversation_id,
+                    diagnostic="OpenHands container cannot reach the frozen Chat model",
+                    error_category="model_unavailable"))
         except (OSError, subprocess.TimeoutExpired):
-            return CodingResult(status="blocked", conversation_id=conversation_id,
-                                diagnostic="OpenHands container cannot probe the frozen Chat model")
+            return self._record_result(workspace, task, CodingResult(
+                status="blocked", conversation_id=conversation_id,
+                diagnostic="OpenHands container cannot probe the frozen Chat model",
+                error_category="environment_unavailable"))
         container_name = "medbench-worker-" + uuid.uuid5(
             uuid.NAMESPACE_URL, f"{task.task_id}:attempt:{task.attempt}").hex
         command = ["docker", "run", "-d", "--pull=never", "--name", container_name,
@@ -205,14 +217,18 @@ class OpenHandsCodingWorker:
                 started = subprocess.run(command, env=environment, capture_output=True,
                                          text=True, timeout=30, check=False)
                 if started.returncode:
-                    return CodingResult(status="failed", conversation_id=conversation_id,
-                                        diagnostic="OpenHands container could not start: " +
-                                        (started.stderr.strip()[:300] or "see Docker daemon"))
+                    return self._record_result(workspace, task, CodingResult(
+                        status="failed", conversation_id=conversation_id,
+                        diagnostic="OpenHands container could not start: " +
+                        (started.stderr.strip()[:300] or "see Docker daemon"),
+                        error_category="environment_unavailable", retryable=True))
             completed = subprocess.run(["docker", "wait", container_name], capture_output=True,
                                        text=True, timeout=task.timeout_seconds, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return CodingResult(status="failed", conversation_id=conversation_id,
-                                diagnostic=f"OpenHands worker unavailable: {type(exc).__name__}")
+            return self._record_result(workspace, task, CodingResult(
+                status="failed", conversation_id=conversation_id,
+                diagnostic=f"OpenHands worker unavailable: {type(exc).__name__}",
+                error_category="worker_execution_failed", retryable=True))
         finally:
             try:
                 with (workspace / "logs" / "stdout.log").open("a", encoding="utf-8") as stdout, \
@@ -225,10 +241,26 @@ class OpenHandsCodingWorker:
                 pass
         self._forward_events(workspace, task.construction_events_path)
         if completed.returncode or (getattr(completed, "stdout", "0") or "0").strip() != "0" or not result_path.is_file():
-            return CodingResult(status="failed", conversation_id=conversation_id,
-                                diagnostic=self._failure_summary(workspace / "logs" / "stderr.log"))
+            return self._record_result(workspace, task, CodingResult(
+                status="failed", conversation_id=conversation_id,
+                diagnostic=self._failure_summary(workspace / "logs" / "stderr.log"),
+                error_category="worker_execution_failed", retryable=True))
         result = CodingResult.model_validate_json(result_path.read_text(encoding="utf-8"))
-        return self._validate_outputs(task, result, workspace, conversation_id, runtime["backend"])
+        return self._record_result(workspace, task,
+                                   self._validate_outputs(task, result, workspace, conversation_id, runtime["backend"]))
+
+    @staticmethod
+    def _record_result(workspace: Path, task: CodingTask, result: CodingResult) -> CodingResult:
+        """Persist an immutable attempt receipt used by recovery and diagnosis."""
+        receipt = {
+            "task_id": task.task_id, "kind": task.kind, "attempt": task.attempt,
+            "conversation_id": result.conversation_id, "status": result.status,
+            "error_category": result.error_category, "retryable": result.retryable,
+            "diagnostic": result.diagnostic, "outputs": result.outputs,
+            "model": task.model, "base_url": task.base_url,
+        }
+        atomic_write_json(workspace / "state" / f"coding_attempt_{task.attempt}.json", receipt)
+        return result
 
     def _run_local(self, task, workspace, request_path, result_path, conversation_id, key):
         runner = Path(__file__).resolve().parents[1] / "runtime" / "openhands_worker.py"
@@ -239,6 +271,7 @@ class OpenHandsCodingWorker:
         environment = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1",
                        "MEDBENCH_LLM_API_KEY": key}
         try:
+            timed_out = False
             with (workspace / "logs" / "stdout.log").open("a", encoding="utf-8") as stdout, \
                     (workspace / "logs" / "stderr.log").open("a", encoding="utf-8") as stderr:
                 process = subprocess.Popen(
@@ -249,23 +282,32 @@ class OpenHandsCodingWorker:
                 try:
                     process.wait(timeout=task.timeout_seconds)
                 except subprocess.TimeoutExpired:
+                    timed_out = True
                     if os.name == "nt":
                         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                                        capture_output=True, check=False, timeout=30)
                     else:
                         os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
-                    return CodingResult(status="failed", conversation_id=conversation_id,
-                                        diagnostic="OpenHands worker exceeded its time budget")
+            if timed_out:
+                return self._record_result(workspace, task, CodingResult(
+                    status="failed", conversation_id=conversation_id,
+                    diagnostic="OpenHands worker exceeded its time budget",
+                    error_category="worker_execution_failed", retryable=True))
         except OSError as exc:
-            return CodingResult(status="blocked", conversation_id=conversation_id,
-                                diagnostic=f"OpenHands local dependencies unavailable: {type(exc).__name__}")
+            return self._record_result(workspace, task, CodingResult(
+                status="blocked", conversation_id=conversation_id,
+                diagnostic=f"OpenHands local dependencies unavailable: {type(exc).__name__}",
+                error_category="environment_unavailable"))
         self._forward_events(workspace, task.construction_events_path)
         if process.returncode or not result_path.is_file():
-            return CodingResult(status="failed", conversation_id=conversation_id,
-                                diagnostic=self._failure_summary(workspace / "logs" / "stderr.log"))
+            return self._record_result(workspace, task, CodingResult(
+                status="failed", conversation_id=conversation_id,
+                diagnostic=self._failure_summary(workspace / "logs" / "stderr.log"),
+                error_category="worker_execution_failed", retryable=True))
         result = CodingResult.model_validate_json(result_path.read_text(encoding="utf-8"))
-        return self._validate_outputs(task, result, workspace, conversation_id, "local")
+        return self._record_result(workspace, task,
+                                   self._validate_outputs(task, result, workspace, conversation_id, "local"))
 
     @staticmethod
     def _forward_events(workspace: Path, destination: str) -> None:

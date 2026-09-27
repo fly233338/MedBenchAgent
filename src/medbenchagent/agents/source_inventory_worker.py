@@ -77,7 +77,9 @@ def build_source_inventory(context):
             updates["source_inventory_question"] = diagnostic
         status = ("blocked" if worker_result.status == "blocked"
                   or attempts >= context.get("coding_worker_max_revisions", 3) else "failed")
-        return result(status, diagnostic, source_inventory_feedback=diagnostic, **updates)
+        return result(status, diagnostic, source_inventory_feedback=diagnostic,
+                      source_inventory_error_category=worker_result.error_category,
+                      source_inventory_retryable=worker_result.retryable, **updates)
     try:
         verified = validate_source_report(context, worker_result.outputs["source_report.json"],
                                           worker_result.outputs["image_population.jsonl"],
@@ -88,7 +90,9 @@ def build_source_inventory(context):
         feedback = str(exc)
         return result("blocked" if attempts >= context.get("coding_worker_max_revisions", 3) else "failed",
                       f"Source report validation failed: {feedback}",
-                      source_inventory_feedback=feedback, **updates)
+                      source_inventory_feedback=feedback,
+                      source_inventory_error_category="worker_output_invalid",
+                      source_inventory_retryable=True, **updates)
     report = verified["report"]
     stable_report = Path(context["operation_directory"]) / "source_report.json"
     stable_script = Path(context["operation_directory"]) / "inspect_source.py"
