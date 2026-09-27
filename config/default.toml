@@ -13,7 +13,7 @@ prepared_datasets_root = "datasets/Prepared"
 [llm]
 model = ""
 base_url = "http://127.0.0.1:8005/v1"
-timeout_seconds = 120
+timeout_seconds = 300
 max_retries = 0
 default_temperature = 0.0
 # OpenHands SDK 1.49.6 defaults to "high". Set this explicitly because

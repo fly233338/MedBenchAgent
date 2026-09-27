@@ -150,14 +150,25 @@ def read_evidence(context, *, reference, pointer=None, offset=0, limit=20, text_
         page = {"text": value[offset:offset + 4000], "next_offset": offset + 4000 if offset + 4000 < len(value) else None}
     elif isinstance(value, (dict, list)):
         entries = list(value.items()) if isinstance(value, dict) else value
+        # Keep tool output bounded; the complete receipt remains on disk and
+        # can be requested by pointer/page when needed.
+        def compact(item):
+            if isinstance(item, str):
+                return item if len(item) <= 600 else item[:600] + "…"
+            if isinstance(item, dict):
+                return {key: compact(val) for key, val in item.items()}
+            if isinstance(item, list):
+                return [compact(val) for val in item]
+            return item
+        entries = [(key, compact(item)) for key, item in entries] if isinstance(value, dict) else [compact(item) for item in entries]
         page = {"entries": entries[offset:offset + limit], "total": len(entries),
                 "next_offset": offset + limit if offset + limit < len(entries) else None}
     else:
         page = {"value": value}
     text = json.dumps(page, ensure_ascii=False)
-    if len(text) > 5000 or text_offset:
-        page = {"serialized_page": text[text_offset:text_offset + 4000],
-                "next_text_offset": text_offset + 4000 if text_offset + 4000 < len(text) else None}
+    if len(text) > 3000 or text_offset:
+        page = {"serialized_page": text[text_offset:text_offset + 2500],
+                "next_text_offset": text_offset + 2500 if text_offset + 2500 < len(text) else None}
     return result("success", json.dumps({"reference": reference, "kind": receipt["kind"], **page}, ensure_ascii=False))
 
 

@@ -8,7 +8,7 @@ from threading import Lock
 from typing import Any, Callable, TypeVar
 
 from langsmith.wrappers import wrap_openai
-from openai import APIError, OpenAI
+from openai import APIError, APITimeoutError, OpenAI
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from medbenchagent.runtime.construction import record_llm_call
@@ -108,6 +108,8 @@ def complete_validated_json(
                 raw = "".join(pieces)
         except APIError as exc:
             record_llm_call(status="failure", started=started, error_type=type(exc).__name__)
+            if isinstance(exc, APITimeoutError):
+                raise ModelUnavailable("LLM request timed out after the configured limit; no immediate retry was attempted.") from exc
             raise ModelUnavailable(f"LLM request failed: {type(exc).__name__}.") from exc
         try:
             data = json.loads(raw)

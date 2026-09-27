@@ -559,6 +559,8 @@ class ConversationScreen(Screen):
         self._context_tokens: int | None = None
         self._context_window: int | None = None
         self._context_model: str = ""
+        self._status_text = "Ready"
+        self._context_summary = "◉ n/a"
         self._sidebar_width: int | None = None
         self._drag_start: tuple[int, int] | None = None
         self.stop_event = threading.Event()
@@ -771,12 +773,22 @@ class ConversationScreen(Screen):
             self._revealing = None
 
     def _set_status(self, value: str) -> None:
-        self.query_one("#session-status", Static).update(Text(value))
+        self._status_text = value
+        self._render_status()
+
+    def _render_status(self) -> None:
+        self.query_one("#session-status", Static).update(
+            Text(f"{self._status_text} · Context {self._context_summary}")
+        )
 
     def _follow_run(self, run_id: str, run_directory: str | None) -> None:
         if self._progress_run_id == run_id:
             return
         self._progress_run_id = run_id
+        self._context_tokens = None
+        self._context_window = None
+        self._context_model = ""
+        self._context_summary = "◉ n/a"
         runtime_name = Path(run_directory).name if run_directory else ""
         self._set_status(f"Running {runtime_name} · {run_id[:8]}" if runtime_name else f"Running {run_id[:8]}")
         self._progress_entries.clear()
@@ -885,17 +897,13 @@ class ConversationScreen(Screen):
 
     def _update_context_indicator(self) -> None:
         if self._context_tokens is None:
-            value = "◉ n/a"
+            self._context_summary = "◉ n/a"
         elif self._context_window:
             ratio = self._context_tokens / self._context_window
-            value = f"◉ {ratio:.0%}"
+            self._context_summary = f"◉ {ratio:.0%}"
         else:
-            value = f"◉ {self._context_tokens:,}"
-        status = self.query_one("#session-status", Static)
-        current = str(status.renderable)
-        if " · Context " in current:
-            current = current.split(" · Context ", 1)[0]
-        status.update(Text(f"{current} · Context {value}"))
+            self._context_summary = f"◉ {self._context_tokens:,}"
+        self._render_status()
 
     def _poll_construction_events(self) -> None:
         path = self._event_path

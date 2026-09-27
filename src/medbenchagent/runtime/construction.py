@@ -90,6 +90,11 @@ def record_llm_call(
         latency_ms=round((time.perf_counter() - started) * 1000, 3),
         input_tokens=prompt_tokens if available else 0,
         output_tokens=completion_tokens if available else 0,
+        context_tokens=prompt_tokens if available else None,
+        context_window_tokens=context.get("context_window_tokens"),
+        context_ratio=(prompt_tokens / context.get("context_window_tokens")
+                       if available and context.get("context_window_tokens") else None),
+        reasoning_effort=context.get("reasoning_effort", get_settings().llm.reasoning_effort) or None,
         token_usage_available=available,
         error_type=error_type,
         call_id=call_id,
