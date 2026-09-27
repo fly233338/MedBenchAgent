@@ -4,6 +4,9 @@
 
 ## 契约与事实
 
+- OpenHands 的 source_report、总体清单和检查脚本是候选；原始来源上的 MedBench 全量复核通过后才产生正式 evidence 与 Fingerprint。
+- 表格及直接 JSON/JSONL 总体重算记录数、唯一图像、路径、可选 mask 引用和原始分类计数；特殊总体只验证候选结构并保留现有人审门槛。
+- 检查脚本须在来源副本上重复运行两次且产物一致；Worker 会话恢复不得重复执行已完成的任务。
 - Fingerprint 只来自当前 Source 的真实检查；文档、用户回答、未知或跨 Source 回执不能伪装为全量事实。
 - 全量计数、抽样元数据与有界预览区分覆盖范围和分母；追加无关 inspection 不使 Spec 失效。
 - Spec 对四类身份、总体、缺失、finding 配对与空间含义完整记录；解释性决策、custom 和编码转换需要精确证据。

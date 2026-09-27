@@ -42,12 +42,19 @@ prepare_data 只接收 dataset_id、mode 和 feedback；代码使用配置来源
 CandidateExtraction → PopulationDecision/PreparationValidation → Annotation → ImageInventory/ImagePlan →
 NormalizedSource。事实、语义、实现与验收分开保存；不引入第二套 DAG。Fingerprint 由框架从选定的真实
 检查回执组装，保存统计覆盖范围、分母、文件清单与当时已读文件索引；无关检查不自动改写已冻结事实。
+原始 Source 默认先委派一次 OpenHands CodingWorker，在独立工作区的来源副本上探索并生成
+`source_report.json`、候选图像总体清单与可复运行检查脚本。MedBench 从原始来源重新计数，核验
+图像、可选 mask 路径与关系及原始分类值，再建立正式证据并冻结 SourceFingerprint；Worker 文件和
+assert 不具有发布权限。表格来源支持重复 finding 行的一致图像身份；固定检查器无法证明的嵌套
+总体只验证候选清单结构，明确进入现有人审选择路径。`legacy` 配置仅用于迁移期对比。
 Spec 描述总体、四类身份、关系、字段映射、缺失、finding 配对、坐标和实体不变量，不包含执行步骤。
 关键解释引用来源文档逐字引文或用户决议；检查事实不能代替医学语义依据。
 
 ExecutionPlan 按 Source 选择 built_in 顺序算子或 generated_python Dataset Adapter。两者平级，代码不再
 要求 fallback_reason。生成代码读取只读 Spec/输入说明，输出 {record, record_ref} annotation 与版本化
 结构化 provenance；不赋予 namespace、可信 provenance、质量结论或发布权限。CSV 保留字符串 ID；
+需要 generated_python 时，OpenHands CodingWorker 根据已冻结 Spec 编写和调试候选 adapter；
+MedBench 的 save_dataset_adapter、双次提取、来源核验、PreparationValidation 与归档继续控制验收。
 join 显式声明基数、空键与未匹配策略，group_findings 保留逐 finding 来源。现有 PreparationPlan 只保留为
 底层算子调用契约，不再进入 Agent 工具、状态或发布链；新主链直接执行 ExecutionPlan。
 
@@ -125,6 +132,12 @@ DatasetCandidates 是独立 artifact，Selection 依赖 Requirement、该快照�
 无匹配 prepared 数据时，构建运行 blocked 并说明需要另起准备运行；不会在同一运行内转为准备。
 
 ## 执行后端
+
+项目基线为 Python 3.12。CodingWorker 使用固定版本的 OpenHands SDK/Tools，在独立 Python 3.12
+环境运行；任务、会话 ID、工作区和预算绑定到准备私有状态。OpenHands 保存自身会话事件，LangGraph
+保存委派状态；恢复时同一任务重连同一会话。只接收任务工作区内的 Worker 产物，来源副本与原始
+Source 分离，并在委派前后核验原始来源。
+默认准备运行启用 OpenHands；依赖或服务失败明确阻断，不静默转为旧检查循环。
 
 `data_processing.backend` 为 auto（默认）、docker 或 local。auto 在准备开始前检查 Docker CLI、daemon、
 配置镜像及最小启动能力；不可用时记录原因并使用本地 Python。强制 docker 时预检失败直接报错。
@@ -318,7 +331,7 @@ Planning 文档、RAG 和用户语义依据都使用正式 evidence reference；
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v16；
+SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v17；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner 必须逐项 resolve_sample_scope，

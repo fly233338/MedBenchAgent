@@ -7,7 +7,7 @@ in LangGraph; the data modules do not implement another workflow scheduler.
 
 A run prepares all sources of ONE logical dataset. Sources retain `id`, nullable declared `version`,
 `kind` (`raw` or `annotation`), `root`, and `annotation`. Artifact identity and used-file contents are distinct
-from the user-declared source version. No checkpoint migration is performed (`agent-runtime.v16`).
+from the user-declared source version. No checkpoint migration is performed (`agent-runtime.v17`).
 
 The source-scoped chain is:
 
@@ -16,6 +16,9 @@ PopulationDecision / PreparationValidation → Annotation → ImageInventory / I
 
 - `save_source_fingerprint(inspection_references)` freezes selected real inspections, coverage and
   denominators, source inventory and the current used-file index. Subsequent unrelated reads do not invalidate it.
+- Raw-source OpenHands work produces `source-report.v1`, a candidate population list, and a replayable inspection
+  script. MedBench reopens the original source and validates the full table or direct JSON population before
+  freezing evidence. Special selections retain the existing human-review assurance level.
 - `save_semantic_spec(spec)` saves `semantic-preparation.v1`. Required decisions cover population,
   all four identities, missingness, finding pairing and spatial conventions. Relationships, field mappings
   and scalar entity invariants are explicit. `expected_images` is optional source evidence, not a script count.

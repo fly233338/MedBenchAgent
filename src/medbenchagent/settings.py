@@ -293,6 +293,9 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     backend = values["data_processing"]["backend"]
     if backend not in {"auto", "docker", "local"}:
         raise ValueError("data_processing.backend must be auto, docker, or local")
+    worker_backend = values["data_processing"]["coding_worker_backend"]
+    if worker_backend not in {"openhands", "legacy"}:
+        raise ValueError("data_processing.coding_worker_backend must be openhands or legacy")
     return AppSettings(
         benchmark=BenchmarkSettings(default_sample_count=_integer(values["benchmark"]["default_sample_count"],
                                                                   "benchmark.default_sample_count", minimum=1)),
@@ -302,7 +305,11 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                          "memory_limit": _string(values["data_processing"]["memory_limit"], "data_processing.memory_limit"),
                          "threads": _integer(values["data_processing"]["threads"], "data_processing.threads", minimum=1),
                          "container_memory": _string(values["data_processing"]["container_memory"], "data_processing.container_memory"),
-                         "timeout_seconds": _integer(values["data_processing"]["timeout_seconds"], "data_processing.timeout_seconds", minimum=1)},
+                         "timeout_seconds": _integer(values["data_processing"]["timeout_seconds"], "data_processing.timeout_seconds", minimum=1),
+                         "coding_worker_backend": worker_backend,
+                         "coding_worker_max_iterations": _integer(values["data_processing"]["coding_worker_max_iterations"], "data_processing.coding_worker_max_iterations", minimum=1),
+                         "coding_worker_timeout_seconds": _integer(values["data_processing"]["coding_worker_timeout_seconds"], "data_processing.coding_worker_timeout_seconds", minimum=1),
+                         "coding_worker_max_revisions": _integer(values["data_processing"]["coding_worker_max_revisions"], "data_processing.coding_worker_max_revisions", minimum=1)},
         paths=PathSettings(
             **{key: _resolve_path(value, f"paths.{key}") for key, value in paths.items()}
         ),

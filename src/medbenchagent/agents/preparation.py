@@ -128,8 +128,11 @@ def save_source_fingerprint(context, *, inspection_references):
                                     used_files_path=str(used_path),
                                     inspections=receipts, capabilities=CAPABILITIES)
     atomic_write_json(path, fingerprint.model_dump())
-    versions = publish(context, "SourceFingerprint", {"path": str(path), "receipts": [{"path": p} for p in paths],
-                                                      "files_path": fingerprint.files_path, "used_files_path": str(used_path)}, ("Source",))
+    references = {"path": str(path), "receipts": [{"path": p} for p in paths],
+                  "files_path": fingerprint.files_path, "used_files_path": str(used_path)}
+    if context.get("source_report_path"):
+        references["report_path"] = context["source_report_path"]
+    versions = publish(context, "SourceFingerprint", references, ("Source",))
     return result("success", "Source facts frozen; semantic decisions are separate", fingerprint_path=str(path), **versions)
 
 

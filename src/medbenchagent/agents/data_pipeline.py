@@ -33,6 +33,7 @@ from medbenchagent.runtime.tool_contracts import (
     JoinArguments,
     ImagePlanArguments,
     PageArguments,
+    FeedbackArguments,
 )
 from medbenchagent.data.dataset_card import (
     SourceReference, DatasetDescription, PreparationMetadata,
@@ -155,6 +156,10 @@ def initialize(context, sources, dataset_id):
         dataset_scope=dataset_id,
         agent_role="DataProcessingAgent",
         execution_runtime=runtime,
+        coding_worker_backend=get_settings().data_processing["coding_worker_backend"],
+        coding_worker_max_iterations=get_settings().data_processing["coding_worker_max_iterations"],
+        coding_worker_timeout_seconds=get_settings().data_processing["coding_worker_timeout_seconds"],
+        coding_worker_max_revisions=get_settings().data_processing["coding_worker_max_revisions"],
         bundle_root=str(bundle),
         normalized_sources={},
         source_scope=None,
@@ -203,6 +208,17 @@ def select_source(context, *, source_id):
         population_assurance=None,
         adapter_reference=None,
         inventory_path=None,
+        source_report_path=None,
+        source_report_reference=None,
+        source_population_reference=None,
+        source_inspection_script_path=None,
+        source_inventory_conversation_id=None,
+        source_inventory_attempts=0,
+        source_inventory_feedback="",
+        source_inventory_question="",
+        adapter_worker_conversation_id=None,
+        adapter_worker_spec_version=None,
+        adapter_worker_attempts=0,
         image_inventory_path=None,
         image_plan_path=None,
         annotation_script_path=None,
@@ -534,7 +550,7 @@ def execution_capabilities(context):
 
 
 def describe(context: DataProcessingContext):
-    stages = ("Source", "Inventory", "SourceFingerprint", "SemanticPreparationSpec", "ExecutionPlan",
+    stages = ("Source", "SourceFingerprint", "SemanticPreparationSpec", "ExecutionPlan",
               "CandidateExtraction", "PreparationValidation", "Annotation", "ImageInventory",
               "ImagePlan", "NormalizedSource")
     readiness = {s["id"]: {kind: _current(context, f"source/{s['id']}/{kind}") for kind in stages}
@@ -566,6 +582,13 @@ def describe(context: DataProcessingContext):
         "harmonization": context.get("harmonization_path"),
         "dataset_metadata": context.get("dataset_metadata_path"),
         "inspection_references": inspection_index(context),
+        "source_report_reference": context.get("source_report_reference"),
+        "source_population_reference": context.get("source_population_reference"),
+        "source_inventory_question": context.get("source_inventory_question"),
+        "next_milestone": ("Validate a worker source report and freeze SourceFingerprint"
+                           if context.get("coding_worker_backend") == "openhands"
+                           and context.get("source_scope") and not _current(context, "SourceFingerprint")
+                           else "Use current source artifacts to prepare the next valid stage"),
 
         "clarification": context.get("clarification"),
     }
@@ -585,7 +608,12 @@ def available_tools(context: DataProcessingContext):
     if not active or active in normalized:
         available.add("select_source")
     if active and active not in normalized and current("Source"):
-        available |= {"inspect_files", "read_text", "inspect_table", "inspect_join", "inspect_metadata", "inspect_source_values", "inspect_image_population"}
+        if context.get("coding_worker_backend") == "openhands" and context.get("active_source", {}).get("kind") == "raw" and not current("SourceFingerprint"):
+            available.add("build_source_inventory")
+            return available
+        available |= {"read_text", "inspect_join", "inspect_metadata", "inspect_source_values", "inspect_image_population"}
+        if context.get("coding_worker_backend") != "openhands":
+            available |= {"inspect_files", "inspect_table"}
         available |= {"inspect_json_population", "inspect_population_capability", "inspect_json_structure"}
         if context.get("active_source", {}).get("kind") == "annotation" and not current("ExecutionPlan"):
             available.add("prepare_annotation_import")
@@ -596,7 +624,8 @@ def available_tools(context: DataProcessingContext):
         if current("SemanticPreparationSpec"):
             available.add("save_execution_plan")
             if execution_capabilities(context)["generated_python"]:
-                available.add("save_dataset_adapter")
+                available.add("develop_dataset_adapter" if context.get("coding_worker_backend") == "openhands"
+                              else "save_dataset_adapter")
         if current("ExecutionPlan"):
             available.add("execute_extraction")
         if current("CandidateExtraction"):
@@ -622,9 +651,17 @@ Use source_readiness and completion to resume from current valid artifacts; thes
 not a script to restart. Paths may refer to stale outputs. Use only currently available tools.
 The benchmark goal must never change the source population, labels, missingness or dataset description.
 
+For raw sources using the coding worker, select_source starts one bounded OpenHands inventory task.
+The worker explores files and writes a source report, population list and inspection script; MedBench validates
+the entire source and freezes SourceFingerprint. Do not repeat directory or table inspection to decide whether
+this stage is complete. The worker's report is a proposal, never semantic authority. After a validated report,
+use its evidence references to build SemanticPreparationSpec, and ask about exact unresolved meanings.
+
 Inspection and evidence:
-Inspect actual files, fields, identities and an independent image population. Read relevant codebooks/manuals before
-asking about unresolved semantics; list_evidence/read_evidence recover earlier inspections and user decisions.
+Use the validated source report and population references as the starting facts. Inspect additional exact values,
+relationships or documentation only for a specific gap needed by the semantic spec. Never repeat a directory or
+table listing to decide whether the source is understood. Read relevant codebooks/manuals before asking about
+unresolved semantics; list_evidence/read_evidence recover earlier inspections and user decisions.
 Ask about the exact field/raw value or relationship, with context and the consequence of the missing interpretation.
 Select the source before asking about its semantics; source-scoped questions use that active source.
 Never infer labels or identity from medical knowledge. Preserve missing versus negative and finding/bbox pairing.
@@ -670,11 +707,15 @@ def compile_pipeline(*, checkpointer=None):
         inspect_join,
         save_image_plan,
     )
+    from medbenchagent.agents.source_inventory_worker import build_source_inventory
+    from medbenchagent.agents.adapter_worker import develop_dataset_adapter
 
     tools = {
         f.__name__: f
         for f in (
             select_source,
+            build_source_inventory,
+            develop_dataset_adapter,
             inspect_files,
             read_text,
             inspect_table,
@@ -710,6 +751,12 @@ def compile_pipeline(*, checkpointer=None):
         describe,
         finish,
         available_tools=available_tools,
+        automatic_action=lambda context: (
+            {"tool": "build_source_inventory", "arguments": {}, "reason": "Complete the current source inventory milestone"}
+            if "build_source_inventory" in available_tools(context)
+            and (not context.get("source_inventory_question")
+                 or (context.get("clarification") or {}).get("status") == "resolved") else None
+        ),
         read_tools=frozenset({"inspect_files", "read_text", "inspect_table", "inspect_join", "inspect_metadata",
                               "inspect_source_values", "inspect_image_population", "inspect_json_population", "inspect_json_structure",
                               "inspect_population_capability", "read_candidate_population", "inspect_images", "read_image_inventory", "inspect_normalized"}),
@@ -725,6 +772,7 @@ def compile_pipeline(*, checkpointer=None):
             "save_source_fingerprint": FingerprintArguments,
             "save_semantic_spec": SpecArguments,
             "save_dataset_adapter": AdapterArguments,
+            "develop_dataset_adapter": FeedbackArguments,
             "save_execution_plan": ExecutionArguments,
             "inspect_json_population": JsonPopulationArguments,
             "inspect_population_capability": CapabilityArguments,

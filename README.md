@@ -7,7 +7,7 @@ annotations; generation does not call a vision model to infer labels.
 
 ## Install and start
 
-Use Python 3.11+ and run from the repository root:
+Use Python 3.12+ and run from the repository root:
 
 ```powershell
 uv sync
@@ -19,6 +19,12 @@ uv run --extra data-processing medbenchagent
 The default installation includes CSV and Excel preparation dependencies. Keep the
 `--extra data-processing` flag on `uv run` when working with medical image formats;
 it installs the additional readers and decoders for that invocation.
+Raw dataset preparation uses OpenHands SDK 1.49.6 for source exploration and Python
+adapter development. On its first use, `uv` installs the pinned SDK and tools into a
+separate Python 3.12 environment; the prepared source is copied once into the run's
+CodingWorker workspace. MedBench independently validates the worker's source report
+before using it as evidence. The experiment's `data_processing.coding_worker_backend`
+can be set to `legacy` during migration comparisons.
 
 Configure your language-model endpoint and model in the experiment configuration or
 with the environment variables below. The defaults point to a local endpoint; no service

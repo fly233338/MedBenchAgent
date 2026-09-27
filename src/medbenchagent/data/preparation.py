@@ -105,6 +105,10 @@ def archive_source(context):
     if context.get("annotation_script_path") and execution["plan"]["executor"] == "generated_python":
         files["adapter.py"] = context["annotation_script_path"]
         execution["adapter_path"] = "adapter.py"
+    if context.get("source_report_path"):
+        files["source_report.json"] = context["source_report_path"]
+    if context.get("source_inspection_script_path"):
+        files["inspect_source.py"] = context["source_inspection_script_path"]
     files["files.jsonl"] = fingerprint.files_path
     files["used_files.jsonl"] = fingerprint.used_files_path
     for name, path in files.items():

@@ -14,7 +14,7 @@ Run evaluation in a separate Conda environment rather than the project's locked
 `uv` environment:
 
 ```bash
-conda create -n medbench-eval python=3.11 -y
+conda create -n medbench-eval python=3.12 -y
 conda activate medbench-eval
 python -m pip install -r requirements/evaluation.txt
 ```
