@@ -20,11 +20,10 @@ The default installation includes CSV and Excel preparation dependencies. Keep t
 `--extra data-processing` flag on `uv run` when working with medical image formats;
 it installs the additional readers and decoders for that invocation.
 Raw dataset preparation uses OpenHands SDK 1.49.6 for source exploration and Python
-adapter development. On its first use, `uv` installs the pinned SDK and tools into a
-separate Python 3.12 environment; the prepared source is copied once into the run's
-CodingWorker workspace. MedBench independently validates the worker's source report
-before using it as evidence. The experiment's `data_processing.coding_worker_backend`
-can be set to `legacy` during migration comparisons.
+adapter development. OpenHands CodingWorker and the deterministic DataProcessing
+executor share the run-frozen `auto`/`docker`/`local` resolver; only their image and
+dependency settings differ. MedBench independently validates the worker's source report
+before using it as evidence.
 
 Configure your language-model endpoint and model in the experiment configuration or
 with the environment variables below. The defaults point to a local endpoint; no service
@@ -103,8 +102,8 @@ image before preparing a raw dataset:
 docker build -f config/coding-worker.Dockerfile -t medbench-openhands:local .
 ```
 
-This requirement is independent of `data_processing.backend`, which selects the later
-deterministic execution backend.
+The image is a component dependency. The backend itself is selected once per run and
+shared by DataProcessing and OpenHands CodingWorker.
 
 By default, the original source is mounted read-only and the Worker writes candidates
 under `.runtime/<run>/workers/openhands/<dataset>/<source>/outputs/`. Docker or the configured
@@ -144,7 +143,7 @@ clarification questions. Invalid preparation answers keep the current question o
 `session.json` stores conversation and queue state; `checkpoints.sqlite` under the run
 root stores graph recovery state. Keep these and the referenced prepared assets intact.
 Resume requires unchanged code, runtime contract and frozen inputs. After changing code,
-start a new run; old checkpoints are not migrated. Current contract: `agent-runtime.v16`.
+start a new run; old checkpoints are not migrated. Current contract: `agent-runtime.v20`.
 Changing `pyproject.toml` or `uv.lock`, or changing the pinned local preparation packages,
 also invalidates an existing preparation checkpoint. Create a new run after installing
 missing preparation dependencies for an already-started run.
@@ -156,10 +155,10 @@ IDs. Supply a raw directory in the preparation request or configure `[[dataset_s
 in the template. Missing information is collected before preparation. Valid registered
 data is reused by default; explicitly request rebuilding to create a new version.
 
-`data_processing.backend` is `auto`, `docker`, or `local`. Auto probes Docker and may use
-local execution for built-in operations. Generated Python requires Docker or explicit
-`local` in a new run. Local execution uses the current user's permissions. The selected
-backend remains fixed for the run; dependencies and Docker images are not installed automatically.
+`data_processing.backend` is `auto`, `docker`, or `local`. Run initialization resolves it
+once and freezes it for both deterministic DataProcessing and OpenHands CodingWorker.
+Local execution uses the current user's permissions. Component images and dependencies are
+checked separately; they never select or switch the run backend.
 
 ```powershell
 # Optional Docker backend image:

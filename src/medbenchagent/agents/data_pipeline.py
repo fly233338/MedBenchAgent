@@ -129,25 +129,38 @@ def initialize(context, sources, dataset_id):
     sources = [Source.model_validate(s) for s in sources]
     from medbenchagent.data.dataset_catalog import validate_dataset_id
     from medbenchagent.settings import get_settings
-    from medbenchagent.data.execution import select_backend
+    from medbenchagent.data.execution import (
+        select_backend, docker_image_id, data_dependency_identity,
+    )
     validate_dataset_id(dataset_id)
     if not sources or len({s.id for s in sources}) != len(sources):
         raise ValueError("Provide nonempty sources with unique IDs within this dataset")
+    runtime = context.get("execution_runtime") or select_backend(get_settings().data_processing)
     marker = Path(context["operation_directory"]) / "preparation.json"
     if marker.is_file():
         saved = json.loads(marker.read_text(encoding="utf-8"))
         if saved["sources"] != [s.model_dump() for s in sources] or saved["dataset_id"] != dataset_id:
             raise ValueError("Preparation inputs changed; use a new operation")
         bundle = Path(saved["bundle"])
-        runtime = select_backend(get_settings().data_processing, saved["runtime"])
+        if saved["runtime"] != runtime:
+            raise ValueError("Frozen execution runtime changed; start a new run")
     else:
         from medbenchagent.runtime.run_artifacts import version_directory_name
 
         bundle = get_settings().paths.prepared_datasets_root / dataset_id / version_directory_name(uuid4())
-        runtime = select_backend(get_settings().data_processing)
         atomic_write_json(marker, {"sources": [s.model_dump() for s in sources], "dataset_id": dataset_id,
                                    "bundle": str(bundle), "runtime": runtime})
-    atomic_write_json(bundle / "execution_runtime.json", runtime)
+    runtime_path = bundle / "execution_runtime.json"
+    if runtime_path.is_file():
+        data_runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        if any(data_runtime.get(key) != value for key, value in runtime.items()):
+            raise ValueError("Prepared data runtime differs from the frozen run")
+    else:
+        component = ({"image_id": docker_image_id(get_settings().data_processing["image"])}
+                     if runtime["backend"] == "docker" else
+                     {"packages": data_dependency_identity()})
+        data_runtime = {**runtime, **component}
+        atomic_write_json(runtime_path, data_runtime)
     for source in sources:
         if bundle.resolve().is_relative_to(Path(source.root).resolve()):
             raise ValueError("Run output must not be beneath a source directory")
@@ -158,7 +171,7 @@ def initialize(context, sources, dataset_id):
         dataset_scope=dataset_id,
         agent_role="DataProcessingAgent",
         execution_runtime=runtime,
-        coding_worker_backend=get_settings().data_processing["coding_worker_backend"],
+        data_runtime=data_runtime,
         coding_worker_max_iterations=get_settings().data_processing["coding_worker_max_iterations"],
         coding_worker_timeout_seconds=get_settings().data_processing["coding_worker_timeout_seconds"],
         coding_worker_max_revisions=get_settings().data_processing["coding_worker_max_revisions"],
@@ -591,8 +604,7 @@ def describe(context: DataProcessingContext):
         "source_population_reference": context.get("source_population_reference"),
         "source_inventory_question": context.get("source_inventory_question"),
         "next_milestone": ("Validate a worker source report and freeze SourceFingerprint"
-                           if context.get("coding_worker_backend") == "openhands"
-                           and context.get("source_scope") and not _current(context, "SourceFingerprint")
+                           if context.get("source_scope") and not _current(context, "SourceFingerprint")
                            else "Use current source artifacts to prepare the next valid stage"),
 
         "clarification": context.get("clarification"),
@@ -613,13 +625,12 @@ def available_tools(context: DataProcessingContext):
     if not active or active in normalized:
         available.add("select_source")
     if active and active not in normalized and current("Source"):
-        if context.get("coding_worker_backend") == "openhands" and context.get("active_source", {}).get("kind") == "raw" and not current("SourceFingerprint"):
+        if context.get("active_source", {}).get("kind") == "raw" and not current("SourceFingerprint"):
             available.add("build_source_inventory")
             return available
         available |= {"read_text", "inspect_join", "inspect_metadata", "inspect_source_values", "inspect_image_population"}
-        if context.get("coding_worker_backend") != "openhands":
-            available |= {"inspect_files", "inspect_table"}
-        available |= {"inspect_json_population", "inspect_population_capability", "inspect_json_structure"}
+        available |= {"inspect_files", "inspect_table", "inspect_json_population",
+                      "inspect_population_capability", "inspect_json_structure"}
         if context.get("active_source", {}).get("kind") == "annotation" and not current("ExecutionPlan"):
             available.add("prepare_annotation_import")
         if current("Inventory"):
@@ -629,8 +640,9 @@ def available_tools(context: DataProcessingContext):
         if current("SemanticPreparationSpec"):
             available.add("save_execution_plan")
             if execution_capabilities(context)["generated_python"]:
-                available.add("develop_dataset_adapter" if context.get("coding_worker_backend") == "openhands"
-                              else "save_dataset_adapter")
+                available.add("develop_dataset_adapter")
+                if context.get("execution_runtime", {}).get("requested_backend") != "auto":
+                    available.add("save_dataset_adapter")
         if current("ExecutionPlan"):
             available.add("execute_extraction")
         if current("CandidateExtraction"):

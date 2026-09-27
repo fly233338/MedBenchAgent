@@ -55,7 +55,6 @@ timeout_seconds = 600
 memory_limit = "1GB"
 threads = 2
 container_memory = "4g"
-coding_worker_backend = "openhands"
 source_workspace_mode = "readonly_mount"
 coding_worker_image = "medbench-openhands:local"
 coding_worker_max_iterations = 40

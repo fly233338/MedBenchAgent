@@ -207,9 +207,11 @@ throughput validation is implied by these tests.
 
 ## Backend, Cards and registry
 
-`data_processing.backend` is auto/docker/local. Auto selects once at preparation initialization, after bounded
-Docker CLI/daemon/image/startup probes. Business errors never switch backend. Local runs fixed operations and
-generated Python in a subprocess with timeout and process-tree cleanup; it has current-user permissions.
+`data_processing.backend` is auto/docker/local. Run initialization selects it once after bounded Docker
+CLI/daemon probes and freezes the result. DataProcessing and OpenHands CodingWorker consume that same
+runtime; component-specific images and dependencies are resolved separately. Business errors never switch
+backend. Local runs fixed operations and generated Python in a subprocess with timeout and process-tree cleanup;
+it has current-user permissions.
 Generated Python requires Docker or explicit local selection; auto-to-local may run fixed operations only. The runtime
 records both requested_backend and resolved backend. Switching requires a new run.
 CSV/Excel readers are part of the default installation. For DICOM, NIfTI or NRRD local preparation,

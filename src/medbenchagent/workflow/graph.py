@@ -146,7 +146,8 @@ def specify(context: SupervisorContext):
 
 COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path", "artifact_versions",
           "limits", "user_requirement", "benchmark_info", "seed", "max_tasks_per_image", "question_temperature",
-          "registration_catalog_path", "sample_scope", "max_total_tasks_per_image", "allocation_preferences")
+          "registration_catalog_path", "sample_scope", "max_total_tasks_per_image", "allocation_preferences",
+          "execution_runtime")
 
 
 def required_field_action(context):
@@ -563,11 +564,15 @@ def compile_benchmark_graph(*, checkpointer=None):
         if errors := preflight_errors(settings, build=state.get("entry_intent") == "build_benchmark"):
             raise ValueError("Local preflight failed: " + "; ".join(errors))
         from medbenchagent.runtime.model_services import resolve_run_services
+        from medbenchagent.data.execution import select_backend
 
         settings = resolve_run_services(settings)
+        execution_runtime = select_backend(settings.data_processing)
         defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature")}
-        run = initialize_run(settings=settings, graph_overrides=overrides)
+        run = initialize_run(settings=settings, graph_overrides=overrides,
+                             execution_runtime=execution_runtime)
         context = dict(run, **(defaults | overrides), user_requirement=requirement,
+                       execution_runtime=execution_runtime,
                        operation_directory=str(Path(run["run_directory"]) / "agents" /
                                                "SupervisorAgent"), limits=settings.harness,
                        registration_catalog_path=str(settings.paths.dataset_catalog),

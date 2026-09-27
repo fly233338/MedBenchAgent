@@ -84,6 +84,8 @@ def test_ambiguous_display_requires_recorded_decision(tmp_path, monkeypatch):
 def test_container_uses_fixed_image_readonly_mounts_and_no_network(tmp_path, monkeypatch):
     from types import SimpleNamespace
     context = _context(tmp_path)
+    context["execution_runtime"] = {"backend": "docker", "requested_backend": "auto",
+                                     "docker_server_version": "test"}
     context["source_root"] = str(tmp_path / "source")
     Path(context["source_root"]).mkdir()
     output = tmp_path / "output"
@@ -105,6 +107,6 @@ def test_container_uses_fixed_image_readonly_mounts_and_no_network(tmp_path, mon
     assert any("target=/project,readonly" in item for item in command)
     before = len(commands)
     preparation._run(context, output, request={"operation": "table", "path": "a.csv"})
-    assert len(commands) == before + 2  # daemon and image identity checked; operation not rerun
+    assert len(commands) == before  # frozen component identity reuses the completed operation
     with pytest.raises(ValueError, match="dependencies changed"):
         preparation._run(context, output, request={"operation": "table", "path": "b.csv"})

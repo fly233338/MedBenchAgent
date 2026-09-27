@@ -8,7 +8,7 @@ from pathlib import Path
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-CONTRACT_VERSION = "agent-runtime.v19"
+CONTRACT_VERSION = "agent-runtime.v20"
 
 SOURCE_KINDS = frozenset({"Source", "Inventory", "Annotation",
                           "SourceFingerprint", "SemanticPreparationSpec", "DatasetAdapter", "ExecutionPlan",
@@ -143,6 +143,9 @@ def verify_resume(context):
     saved = json.loads(path.read_text(encoding="utf-8"))
     if saved != {"contract": CONTRACT_VERSION, "code": code_identity()}:
         raise ValueError("Code or runtime contract changed; start a new run")
+    frozen = json.loads(Path(context["effective_config_path"]).read_text(encoding="utf-8"))
+    if frozen.get("execution_runtime") != context.get("execution_runtime"):
+        raise ValueError("Frozen execution runtime changed; start a new run")
     from medbenchagent.runtime.run_artifacts import verify_catalog_snapshot
     catalog_snapshot = context.get("task_catalog_snapshot_path")
     catalog_digest = context.get("task_catalog_snapshot_digest")
@@ -168,6 +171,7 @@ def initialize_dependencies(context, settings):
         "DataConfig": {
             "profile": snapshot["dataset_profile"],
             "preparation": snapshot["data_processing"],
+            "runtime": context["execution_runtime"],
         },
         "PlanningConfig": {
             "rag": snapshot["rag"],
@@ -187,6 +191,8 @@ def initialize_dependencies(context, settings):
         path = Path(context["run_directory"]) / "control" / "config" / f"{kind}.json"
         atomic_write_json(path, value)
         publish(context, kind, {"path": str(path)}, ())
+    atomic_write_json(Path(context["run_directory"]) / "control" / "execution_runtime.json",
+                      context["execution_runtime"])
     atomic_write_json(
         Path(context["run_directory"]) / "control" / "contract.json",
         {"contract": CONTRACT_VERSION, "code": code_identity()},

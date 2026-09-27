@@ -37,6 +37,7 @@ def initialize_run(
     *,
     settings: AppSettings | None = None,
     graph_overrides: dict[str, object] | None = None,
+    execution_runtime: dict[str, object] | None = None,
 ) -> dict[str, str]:
     """Create one time-named run directory while retaining a full UUID run_id."""
     active_settings = settings or get_settings()
@@ -57,6 +58,8 @@ def initialize_run(
     )
     effective_config_path = run_directory / "effective_config.json"
     snapshot = active_settings.snapshot(graph_overrides)
+    if execution_runtime is not None:
+        snapshot["execution_runtime"] = execution_runtime
     inputs = run_directory / "inputs"
     inputs.mkdir(parents=True)
     source = active_settings.paths.blueprint_template

@@ -133,19 +133,17 @@ DatasetCandidates 是独立 artifact，Selection 依赖 Requirement、该快照�
 
 ## 执行后端
 
-项目基线为 Python 3.12。CodingWorker 使用固定版本的 OpenHands SDK/Tools，在独立 Python 3.12
-Docker 镜像运行；任务、会话 ID、工作区和预算绑定到准备私有状态。默认将原始 Source 只读挂载，
+项目基线为 Python 3.12。CodingWorker 使用固定版本的 OpenHands SDK/Tools；它与确定性
+DataProcessing executor 共用 Run 初始化时冻结的 auto/docker/local runtime。任务、会话 ID、工作区和预算绑定到准备私有状态。默认将原始 Source 只读挂载，
 显式 copy 模式才建立独立快照并只读挂载。Worker 只能将候选写入工作区，MedBench 始终对原始
 Source 独立验证，并在委派前后核验原始来源。进程中断恢复同一尝试与 conversation；validator
 返修保留工作区但创建新 conversation，不携带完整旧历史。单次模型输出上限为 8192 token。
 默认准备运行启用 OpenHands；依赖或服务失败明确阻断，不静默转为旧检查循环。
 
-`data_processing.backend` 为 auto（默认）、docker 或 local。auto 在准备开始前检查 Docker CLI、daemon、
-配置镜像及最小启动能力；不可用时记录原因并使用本地 Python。强制 docker 时预检失败直接报错。
+`data_processing.backend` 为 auto（默认）、docker 或 local。Run 初始化时只解析一次并冻结；auto 检查 Docker CLI、daemon 和最小启动能力；不可用时记录原因并使用本地 Python。强制 docker 时预检失败直接报错。
 不自动拉取镜像或安装依赖。实际后端保存到 execution_runtime.json 和操作回执，后续操作及恢复不切换；
 业务失败、超时或中途 Docker 故障不触发降级。
-运行记录同时保存 requested_backend 与实际 backend；auto→local 仅允许内建操作，生成 Python 必须
-显式选择 local 并开启新运行。执行回执与验收回执分开；完成回执绑定输出内容，半成品目录保留为
+运行记录同时保存 requested_backend 与实际 backend；DataProcessing 与 OpenHands 读取同一结果，不再各自选择 backend。组件只解析自己的 image/dependency identity。执行回执与验收回执分开；完成回执绑定输出内容，半成品目录保留为
 incomplete 尝试，重试使用干净目录，不因结果文件存在而认定完成。
 
 两个后端共用 MEDBENCH_SOURCE_ROOT、MEDBENCH_WORK_DIR、MEDBENCH_ANNOTATION_PATH、

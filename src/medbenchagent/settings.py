@@ -293,9 +293,6 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     backend = values["data_processing"]["backend"]
     if backend not in {"auto", "docker", "local"}:
         raise ValueError("data_processing.backend must be auto, docker, or local")
-    worker_backend = values["data_processing"]["coding_worker_backend"]
-    if worker_backend not in {"openhands", "legacy"}:
-        raise ValueError("data_processing.coding_worker_backend must be openhands or legacy")
     workspace_mode = values["data_processing"]["source_workspace_mode"]
     if workspace_mode not in {"readonly_mount", "copy"}:
         raise ValueError("data_processing.source_workspace_mode must be readonly_mount or copy")
@@ -309,7 +306,6 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                          "threads": _integer(values["data_processing"]["threads"], "data_processing.threads", minimum=1),
                          "container_memory": _string(values["data_processing"]["container_memory"], "data_processing.container_memory"),
                          "timeout_seconds": _integer(values["data_processing"]["timeout_seconds"], "data_processing.timeout_seconds", minimum=1),
-                         "coding_worker_backend": worker_backend,
                          "source_workspace_mode": workspace_mode,
                          "coding_worker_image": _string(values["data_processing"]["coding_worker_image"], "data_processing.coding_worker_image"),
                          "coding_worker_max_iterations": _integer(values["data_processing"]["coding_worker_max_iterations"], "data_processing.coding_worker_max_iterations", minimum=1),

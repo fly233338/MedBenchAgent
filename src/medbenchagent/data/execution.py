@@ -23,46 +23,60 @@ class ExecutionUnavailable(RuntimeError):
     """An execution environment failure that agent argument repairs cannot resolve."""
 
 
-def local_identity():
+def data_dependency_identity():
     versions = {}
     for package in PACKAGES:
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             versions[package] = None
-    return {"backend": "local", "python": sys.executable, "version": sys.version,
-            "packages": versions}
+    return versions
 
 
-def docker_identity(settings, *, smoke=True):
-    commands = [["docker", "info", "--format={{.OSType}}"],
-                ["docker", "image", "inspect", "--format={{.Id}}", settings["image"]]]
-    image_id = None
-    for command in commands:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
-        if completed.returncode:
-            raise ValueError(completed.stderr.strip() or "Docker preparation runtime unavailable")
-        image_id = completed.stdout.strip()
-    if smoke:
-        completed = subprocess.run(
-            ["docker", "run", "--rm", "--pull=never", "--network=none", "--read-only",
-             image_id, "python", "-c", "pass"],
-            capture_output=True, text=True, timeout=30, check=False,
-        )
-        if completed.returncode:
-            raise ValueError(completed.stderr.strip() or "Docker cannot start the preparation image")
-    return {"backend": "docker", "image_id": image_id}
+def local_identity():
+    return {"backend": "local", "python": sys.executable, "version": sys.version}
+
+
+def docker_identity(_settings=None, *, smoke=True):
+    """Check the shared Docker engine; component images are checked at use."""
+    completed = subprocess.run(["docker", "info", "--format={{.OSType}}"],
+                               capture_output=True, text=True, timeout=30, check=False)
+    if completed.returncode or getattr(completed, "stdout", "").strip() != "linux":
+        raise ValueError(getattr(completed, "stderr", "").strip() or "A Linux Docker daemon is required")
+    version = subprocess.run(["docker", "version", "--format={{.Server.Version}}"],
+                             capture_output=True, text=True, timeout=30, check=False)
+    if version.returncode or not getattr(version, "stdout", "").strip():
+        raise ValueError(getattr(version, "stderr", "").strip() or "Docker server version is unavailable")
+    return {"backend": "docker", "docker_server_version": version.stdout.strip()}
+
+
+def docker_image_id(image: str) -> str:
+    """Resolve one component image without choosing a backend or pulling it."""
+    try:
+        completed = subprocess.run(["docker", "image", "inspect", "--format={{.Id}}", image],
+                                   capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ExecutionUnavailable(f"Docker image unavailable: {image}") from exc
+    if completed.returncode or not getattr(completed, "stdout", "").strip():
+        raise ExecutionUnavailable(f"Docker image unavailable: {image}")
+    return completed.stdout.strip()
 
 
 def select_backend(settings, saved=None):
     """Resolve auto only once; a saved runtime never silently switches backend."""
-    if saved and "requested_backend" not in saved:
-        raise ValueError("Obsolete preparation runtime; start a new run")
+    if saved:
+        if "requested_backend" not in saved:
+            raise ValueError("Obsolete execution runtime; start a new run")
+        current = (local_identity() if saved["backend"] == "local"
+                   else docker_identity(settings, smoke=False))
+        if any(saved.get(key) != value for key, value in current.items()):
+            raise ValueError("Preparation runtime changed; start a new run")
+        return saved
     mode = saved["backend"] if saved else settings["backend"]
     reason = None
     if mode in {"auto", "docker"}:
         try:
-            identity = docker_identity(settings, smoke=saved is None)
+            identity = docker_identity(settings)
         except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
             if mode == "docker":
                 raise ExecutionUnavailable(f"Pinned Docker runtime unavailable: {exc}") from exc
@@ -70,10 +84,7 @@ def select_backend(settings, saved=None):
             identity = local_identity()
     else:
         identity = local_identity()
-    if saved and {k: v for k, v in saved.items() if k not in {"selection_reason", "requested_backend"}} != identity:
-        raise ValueError("Preparation runtime changed; start a new preparation execution")
-    return {**identity, "requested_backend": saved["requested_backend"] if saved else settings["backend"],
-            "selection_reason": saved.get("selection_reason") if saved else reason}
+    return {**identity, "requested_backend": settings["backend"], "selection_reason": reason}
 
 
 def require_script_runtime(runtime):
@@ -126,19 +137,32 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
     output.mkdir(parents=True, exist_ok=True)
     settings = get_settings().data_processing
     runtime_file = Path(context.get("bundle_root", output.parent)) / "execution_runtime.json"
-    saved = json.loads(runtime_file.read_text(encoding="utf-8")) if runtime_file.is_file() else context.get("execution_runtime")
-    runtime = select_backend(settings, saved)
+    saved = json.loads(runtime_file.read_text(encoding="utf-8")) if runtime_file.is_file() else None
+    runtime = context.get("execution_runtime")
+    if runtime is None:
+        runtime = ({k: v for k, v in saved.items() if k not in {"image_id", "packages"}}
+                   if saved else select_backend(settings))
     if script:
         require_script_runtime(runtime)
-    atomic_write_json(runtime_file, runtime)
+    data_runtime = context.get("data_runtime") or saved
+    if data_runtime is None:
+        component = ({"image_id": docker_image_id(settings["image"])}
+                     if runtime["backend"] == "docker" and "image_id" not in runtime else
+                     {"packages": data_dependency_identity()} if runtime["backend"] == "local" else {})
+        data_runtime = {**runtime, **component}
+    if saved is not None and saved != data_runtime:
+        raise ValueError("Prepared data runtime differs from its frozen identity")
+    if saved is None:
+        atomic_write_json(runtime_file, data_runtime)
     context["execution_runtime"] = runtime
+    context["data_runtime"] = data_runtime
     if context.get("source_manifest"):
         verify_source(context["source_manifest"])
     kind = "script" if script else request["operation"]
     receipts = Path(context.get("operation_directory", output.parent)) / "receipts"
     receipts.mkdir(parents=True, exist_ok=True)
     receipt = receipts / f"{output.name}-{kind}.complete.json"
-    identity = {"runtime": runtime, "script": digest_file(script) if script else None,
+    identity = {"runtime": data_runtime, "script": digest_file(script) if script else None,
                 "request": request, "annotation": annotation,
                 "annotation_digest": digest_file(annotation) if annotation else None,
                 "specification": digest_file(specification) if specification else None,
@@ -200,7 +224,7 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
             command += ["--mount", f"type=bind,source={host},target={target}" + (",readonly" if readonly else "")]
         arguments = ["python", "/script.py"] if script else ["python", "-m", "medbenchagent.data.preparation_ops", "/request.json"]
         try:
-            completed = subprocess.run(command + [runtime["image_id"]] + arguments, capture_output=True,
+            completed = subprocess.run(command + [data_runtime["image_id"]] + arguments, capture_output=True,
                                        text=True, encoding="utf-8", timeout=settings["timeout_seconds"], check=False)
         except subprocess.TimeoutExpired:
             subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, check=False, timeout=30)
