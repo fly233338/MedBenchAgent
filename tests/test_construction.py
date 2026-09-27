@@ -9,7 +9,7 @@ from medbenchagent.runtime.construction import (
 
 def test_llm_events_include_contextual_model_and_component(tmp_path: Path, monkeypatch) -> None:
     events_path = tmp_path / "construction_events.jsonl"
-    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "deepseek-v4-flash")
+    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "test-chat-model")
     from medbenchagent.settings import load_settings, active_settings
     configured = load_settings()
     with active_settings(configured), event_context(
@@ -34,7 +34,7 @@ def test_llm_events_include_contextual_model_and_component(tmp_path: Path, monke
     assert event["component"] == "letter"
     assert event["dataset_id"] == "dataset-a"
     assert event["source_id"] == "source-one"
-    assert event["model"] == "deepseek-v4-flash"
+    assert event["model"] == "test-chat-model"
 
 
 def test_event_without_agent_does_not_invent_provider_role(tmp_path):

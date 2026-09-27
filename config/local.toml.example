@@ -18,6 +18,9 @@
 [benchmark]
 default_sample_count = 1000 # Used only when the user did not supply a count; language is asked.
 
+# [llm]
+# model = "your-chat-model" # Optional when /v1/models returns exactly one model.
+
 [rag]
 embedding_base_url = "http://127.0.0.1:8001/v1"
 # embedding_model = "Qwen/Qwen3-Embedding-0.6B" # Required only for multi-model endpoints.

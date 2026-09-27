@@ -143,7 +143,7 @@ class OpenHandsCodingWorker:
             "assert model in [item['id'] for item in body['data']]"
         )
         environment = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1",
-                       "MEDBENCH_LLM_API_KEY": key or "local-vllm"}
+                       "MEDBENCH_LLM_API_KEY": key}
         try:
             check = subprocess.run(
                 ["docker", "run", "--rm", "--add-host", "host.docker.internal:host-gateway",

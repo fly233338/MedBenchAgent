@@ -164,7 +164,7 @@
   <text x="1280" y="190" class="section">模型、存储与约束</text>
   <text x="1280" y="208" class="small">Runtime dependencies</text>
   <rect x="1285" y="245" width="250" height="88" rx="12" class="purple"/>
-  <text x="1410" y="275" text-anchor="middle" class="node-title" fill="#5b21b6">DeepSeek v4 flash</text>
+  <text x="1410" y="275" text-anchor="middle" class="node-title" fill="#5b21b6">Discovered Chat model</text>
   <text x="1410" y="296" text-anchor="middle" class="node-sub" fill="#5b21b6">OpenAI-compatible vLLM</text>
   <text x="1410" y="312" text-anchor="middle" class="node-sub" fill="#5b21b6">temperature 0 · JSON mode</text>
   <rect x="1285" y="395" width="250" height="88" rx="12" class="green"/>

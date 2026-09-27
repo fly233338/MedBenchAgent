@@ -255,7 +255,7 @@ def _rag(context):
     require(context, "Materials")
     return LocalPdfRag(
         context["materials_root"],
-        Path(context["run_directory"]) / ".runtime" / "agents" / "TaskPlanningAgent" / context["dataset_scope"] / "rag",
+        Path(context["run_directory"]) / "agents" / "TaskPlanningAgent" / context["dataset_scope"] / "rag",
         context["selected_material_files"],
     )
 

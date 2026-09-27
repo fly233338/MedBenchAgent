@@ -19,9 +19,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.toml"
 
 _ENVIRONMENT_OVERRIDES = {
-    "DEEPSEEK_MODEL": ("llm", "model"),
-    "DEEPSEEK_BASE_URL": ("llm", "base_url"),
-    "DEEPSEEK_TIMEOUT_SECONDS": ("llm", "timeout_seconds"),
     "RAG_MIN_RERANK_SCORE": ("rag", "min_rerank_score"),
     "MEDBENCH_LLM_MODEL": ("llm", "model"),
     "MEDBENCH_LLM_BASE_URL": ("llm", "base_url"),
@@ -177,14 +174,16 @@ def load_project_env() -> None:
     load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
-def get_llm_api_key() -> str | None:
-    """Read the optional API key in the sole configuration module."""
-    return os.getenv("MEDBENCH_LLM_API_KEY") or None
+def get_llm_api_key() -> str:
+    """Read the Chat credential without storing it in run settings."""
+    return os.getenv("MEDBENCH_LLM_API_KEY") or "local-vllm"
 
 
-def get_rag_api_key(kind: str) -> str | None:
-    """Keep optional vLLM credentials outside configuration snapshots."""
-    return os.getenv(f"MEDBENCH_{kind.upper()}_API_KEY") or None
+def get_rag_api_key(kind: str) -> str:
+    """Keep each retrieval credential separate and outside snapshots."""
+    if kind not in {"embedding", "reranker"}:
+        raise ValueError("Unknown RAG service")
+    return os.getenv(f"MEDBENCH_{kind.upper()}_API_KEY") or "local-vllm"
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any], *, prefix: str = "") -> None:
@@ -379,6 +378,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         if isinstance(override.get("llm"), dict):
             override["llm"].pop("trace_name", None)
         _merge(values, override)
+    # Redirect the old default saved in existing experiment TOMLs.
+    if str(values["paths"]["runs_root"]).replace("\\", "/").rstrip("/") == "benchmarks/runs":
+        values["paths"]["runs_root"] = ".runtime"
     env_keys: list[str] = []
     overrides = {target: (name, os.environ[name]) for name, target in _ENVIRONMENT_OVERRIDES.items()
                  if os.getenv(name)}

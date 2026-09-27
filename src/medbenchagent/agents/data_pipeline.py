@@ -141,7 +141,9 @@ def initialize(context, sources, dataset_id):
         bundle = Path(saved["bundle"])
         runtime = select_backend(get_settings().data_processing, saved["runtime"])
     else:
-        bundle = get_settings().paths.prepared_datasets_root / dataset_id / str(uuid4())
+        from medbenchagent.runtime.run_artifacts import version_directory_name
+
+        bundle = get_settings().paths.prepared_datasets_root / dataset_id / version_directory_name(uuid4())
         runtime = select_backend(get_settings().data_processing)
         atomic_write_json(marker, {"sources": [s.model_dump() for s in sources], "dataset_id": dataset_id,
                                    "bundle": str(bundle), "runtime": runtime})
@@ -416,7 +418,9 @@ def inspect_normalized(context, *, source_id, field=None, offset=0):
 
     require(context, f"source/{source_id}/NormalizedSource")
     folder = Path(context["normalized_sources"][source_id])
-    profile, access = prepare_annotation_dataset(folder / "annotation.jsonl", folder / "cache")
+    profile, access = prepare_annotation_dataset(
+        folder / "annotation.jsonl", folder / "cache",
+        scratch_root=Path(context["operation_directory"]) / "profile")
     if field:
         value = DatasetQuery(access).values(field, offset=offset)
     else:
@@ -515,6 +519,7 @@ def finish(context):
             invariants=invariants,
             verify_inputs=verify_inputs,
             preparation_access=preparation_access,
+            work_root=Path(context["operation_directory"]) / "publication",
         )
     from medbenchagent.data.dataset_card import build_card
     from medbenchagent.data.dataset_catalog import register_dataset

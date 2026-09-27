@@ -35,7 +35,7 @@ def develop_dataset_adapter(context, *, feedback=""):
                 if context.get("adapter_worker_spec_version") == spec_version else 0) + 1
     if attempts > context.get("coding_worker_max_revisions", 3):
         return result("blocked", "Adapter worker revision budget exhausted")
-    workspace = (Path(context["run_directory"]) / ".runtime" / "workers" / "openhands" /
+    workspace = (Path(context["run_directory"]) / "workers" / "openhands" /
                  context["dataset_scope"] / source["id"])
     contract = Path(context["operation_directory"]) / "adapter_contract.txt"
     contract.parent.mkdir(parents=True, exist_ok=True)

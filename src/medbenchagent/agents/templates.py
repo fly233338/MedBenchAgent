@@ -16,7 +16,7 @@ def prepare_templates(context):
     """Approve every executable Leaf's templates, or return precise Planning revision requests."""
     versions = require(context, "Plan", "TemplateConfig")
     plan = json.loads(Path(context["working_blueprint_path"]).read_text(encoding="utf-8"))
-    root = (Path(context["run_directory"]) / ".runtime" / "agents" / "TaskPlanningAgent" /
+    root = (Path(context["run_directory"]) / "agents" / "TaskPlanningAgent" /
             context["dataset_scope"] / "templates")
     ledger_path = root / "attempts.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.is_file() else {}

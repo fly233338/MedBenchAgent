@@ -93,6 +93,7 @@ def build_dataset_profile(records):
     return build_profile(records)
 
 
-def prepare_annotation_dataset(annotation_path, cache_root, *, revision="1", refresh=False):
+def prepare_annotation_dataset(annotation_path, cache_root, *, revision="1", refresh=False, scratch_root=None):
     from medbenchagent.data.index import prepare_dataset
-    return prepare_dataset(annotation_path, cache_root, revision=revision, refresh=refresh)
+    return prepare_dataset(annotation_path, cache_root, revision=revision, refresh=refresh,
+                           scratch_root=scratch_root)

@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import os
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -71,7 +72,7 @@ def normalize_source(
     policies = policies or {}
     counts = Counter()
     with (
-        connect(scratch=output / "scratch") as db,
+        connect(scratch=Path(os.environ.get("MEDBENCH_DATA_SCRATCH", output / "scratch"))) as db,
         Path(annotation).open(encoding="utf-8") as input_file,
         (output / "annotation.jsonl").open("w", encoding="utf-8") as records,
         (output / "image_manifest.jsonl").open("w", encoding="utf-8") as manifest,
@@ -352,7 +353,8 @@ def _remove(value, parts):
 
 
 def publish_bundle(
-    bundle, normalized, plan: HarmonizationPlan, *, invariants=None, verify_inputs=None, preparation_access=None
+    bundle, normalized, plan: HarmonizationPlan, *, invariants=None, verify_inputs=None,
+    preparation_access=None, work_root=None
 ):
     """Inputs already live inside the bundle; publishing never recopies their image assets."""
     bundle = Path(bundle).resolve()
@@ -361,8 +363,10 @@ def publish_bundle(
         raise ValueError("Bundle is immutable; select a new output version")
     observed = set()
     counts = Counter()
+    work = Path(work_root) if work_root is not None else bundle
+    work.mkdir(parents=True, exist_ok=True)
     with (
-        connect(bundle / "publication.duckdb", bundle / "scratch") as db,
+        connect(work / "publication.duckdb", work / "scratch") as db,
         (bundle / "quarantine.jsonl").open("w", encoding="utf-8") as quarantine,
         (bundle / "dedup.jsonl").open("w", encoding="utf-8") as dedup,
         (bundle / "entity_quality.jsonl").open("w", encoding="utf-8") as entity_report,
@@ -549,7 +553,8 @@ def publish_bundle(
     atomic_write_json(bundle / "quality_report.json", dict(counts))
     from medbenchagent.data.dataset import prepare_annotation_dataset
 
-    profile, access = prepare_annotation_dataset(bundle / "annotation.jsonl", bundle / "cache")
+    profile, access = prepare_annotation_dataset(
+        bundle / "annotation.jsonl", bundle / "cache", scratch_root=work / "profile")
     documentation = bundle / "documentation/index.json"
     if not documentation.exists():
         atomic_write_json(documentation, {"schema_version": "dataset-documentation.v1", "documents": []})

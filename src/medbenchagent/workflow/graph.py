@@ -182,7 +182,7 @@ def canonical_delegation(context, dataset=None):
 
 
 def agent_operation(context, agent, dataset_id=None, role=None):
-    root = Path(context["run_directory"]) / ".runtime" / "agents"
+    root = Path(context["run_directory"]) / "agents"
     parent = Path(context["operation_directory"]).relative_to(root / "SupervisorAgent")
     path = root / agent
     if dataset_id:
@@ -456,7 +456,7 @@ def compile_benchmark_graph(*, checkpointer=None):
             outcome["updates"]["discovered_sources"] = {**context.get("discovered_sources", {}),
                                                             dataset_id: discovered}
             outcome["updates"]["source_decision_path"] = str(
-                Path(context["run_directory"]) / ".runtime" / "discovery" / "sources" /
+                Path(context["run_directory"]) / "discovery" / "sources" /
                 dataset_id / "source_decision.json")
         if output["result"]["status"] == "complete":
             entries = {**context.get("prepared_entries", {}), dataset_id: output["context"]["dataset_entry"]}
@@ -568,7 +568,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature")}
         run = initialize_run(settings=settings, graph_overrides=overrides)
         context = dict(run, **(defaults | overrides), user_requirement=requirement,
-                       operation_directory=str(Path(run["run_directory"]) / ".runtime" / "agents" /
+                       operation_directory=str(Path(run["run_directory"]) / "agents" /
                                                "SupervisorAgent"), limits=settings.harness,
                        registration_catalog_path=str(settings.paths.dataset_catalog),
                        rag_capability=rag_capability(settings),

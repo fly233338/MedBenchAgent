@@ -1,6 +1,7 @@
 """Disk-backed profiling, preserving array witnesses and bounded Python buffers."""
 
 import json
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -248,7 +249,7 @@ def build_profile(records):
         return profile_database(db, structures)
 
 
-def prepare_dataset(annotation_path, cache_root, *, revision="1", refresh=False):
+def prepare_dataset(annotation_path, cache_root, *, revision="1", refresh=False, scratch_root=None):
     source = Path(annotation_path).resolve()
     if source.name != "annotation.jsonl" or not source.is_file():
         raise AnnotationValidationError("Input must be an existing annotation.jsonl")
@@ -275,9 +276,11 @@ def prepare_dataset(annotation_path, cache_root, *, revision="1", refresh=False)
         from medbenchagent.data.integrity import verify_cache
         verify_cache(access)
         return json.loads(profile_path.read_text(encoding="utf-8")), access
-    temporary = folder / "building.duckdb"
+    work = Path(scratch_root) if scratch_root is not None else folder
+    work.mkdir(parents=True, exist_ok=True)
+    temporary = work / "building.duckdb"
     temporary.unlink(missing_ok=True)
-    with connect(temporary, folder / "scratch") as db:
+    with connect(temporary, work / "scratch") as db:
         create_tables(db)
         structures = ingest(db, iter_annotation_jsonl(source))
         profile = profile_database(db, structures)
@@ -286,7 +289,7 @@ def prepare_dataset(annotation_path, cache_root, *, revision="1", refresh=False)
         profile["summary"]["quality"] = json.loads(quality.read_text(encoding="utf-8"))
     if digest_file(source) != digest:
         raise ValueError("Annotation changed during indexing")
-    temporary.replace(database_path)
+    shutil.move(str(temporary), database_path)
     atomic_write_json(profile_path, profile)
     access = {
         "annotation_path": str(source),

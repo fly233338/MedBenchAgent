@@ -22,6 +22,7 @@ htmlcov/
 
 # Runtime planning artifacts (DuckDB, inventories, and local RAG indexes)
 benchmarks/
+.runtime/
 experiments/
 .langgraph_api/
 

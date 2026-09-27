@@ -27,7 +27,7 @@ dataset_readiness 和 outstanding_work 从当前有效 artifacts 推导；仅准
 会话准备运行通过自然语言要求进入 Supervisor，后者只准备这一逻辑数据集。
 `register --dataset-id <id> --bundle <path>` 验证并登记已有完整 bundle。
 构建缺少已准备数据时报告并等待新的准备要求。准备版本位于 `paths.prepared_datasets_root/<dataset_id>/<version>`，
-默认根目录 datasets/Prepared。准备失败不替换已登记版本。
+默认根目录 datasets/Prepared。版本目录使用 UTC 时间戳加八位 UUID，准备失败不替换已登记版本。
 
 原始来源在实验 config 的 dataset_sources 中按 dataset_id、name、description、sources 登记，sources 复用
 Source 契约。DataProcessing 来源发现先提取用户给出的目录并检查有限文件清单、表头和图片；
@@ -277,12 +277,12 @@ API transport 重试仍由 SDK 独立处理。StructuredOutputError 是可修正
 | Dataset Catalog | 全局已准备数据注册表；Run 初始化冻结候选视图 |
 | Dataset Bundle | 已发布的数据产品；数据不可变，Card 修订追加保存 |
 
-Run 的 `.runtime/control/` 保存 contract、artifact DAG 与阶段配置；
-`.runtime/inputs/` 保存冻结的 Catalog、Card、Blueprint 与 Materials；
-`.runtime/evidence/` 保存证据索引及正文；`.runtime/discovery/sources/` 保存来源决议；
-`.runtime/agents/` 保存各 Agent 的操作回执和私有状态；
-`.runtime/workers/openhands/` 保存只读来源挂载点以外的候选、会话、状态与日志。
-顶层只保留 effective_config.json、construction_events.jsonl 和 `.runtime/`。
+项目根目录 `.runtime/<UTC时间戳_短UUID>/` 是单次 Run 的工作目录，完整 UUID 保留为 run_id。
+其中 `control/` 保存 contract、artifact DAG 与阶段配置；`inputs/` 保存冻结的 Catalog、
+Card、Blueprint 与 Materials；`evidence/` 保存证据索引及正文；
+`discovery/sources/` 保存来源决议；`agents/` 保存各 Agent 的操作回执和私有状态；
+`workers/openhands/` 保存候选、会话、状态与日志。candidate、repeat、scratch 与 validation
+中间产物留在该 Run 目录；prepared bundle 只保存最终资产与必要归档。
 
 每项准备或构建运行拥有独立的 LangGraph thread_id、运行目录和配置快照；终态后会话继续等待输入。
 ConversationService 恢复运行后释放锁，再驱动后续队列，CLI/TUI 共用；CLI 连续澄清采用迭代消费事件。
@@ -316,7 +316,7 @@ LangGraph interrupt，跨职责问题返回 Supervisor。明确区分 complete�
 私有观察有界，完整资料通过工具读取；人工等待不计入运行时间。超出预算 blocked。
 查询工具的成功重复不占 max_reworks，仍受总步数、时间和连续失败预算约束；修改/审核维持返工限制。
 公共提示将所有工具、文档、标注与 RAG 正文视为数据，而不是可授权执行的指令。
-证据正文保存到 .runtime/evidence/，SQLite 只索引元数据；Context 不保存 inspections/source_documents/retrieved_passages 全文。
+证据正文保存到 Run 的 evidence/，SQLite 只索引元数据；Context 不保存 inspections/source_documents/retrieved_passages 全文。
 list_evidence 分页筛选类型、来源和有效性；read_evidence 支持文本片段、结构化 pointer 与分页，拒绝跨角色/数据集及过期引用。
 Planning 文档、RAG 和用户语义依据都使用正式 evidence reference；证据分别绑定 Dataset/Source、Materials 或问题相关输入版本。
 私有状态使用 agent-private-state.v1 外层 schema，加载、保存和父子交接验证角色、作用域、关键路径及引用类型。
@@ -340,7 +340,7 @@ Planning 文档、RAG 和用户语义依据都使用正式 evidence reference；
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v18；
+SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v19；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner 必须逐项 resolve_sample_scope，

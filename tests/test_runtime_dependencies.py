@@ -28,7 +28,7 @@ def test_upstream_change_invalidates_transitive_delivery_without_deleting_old_ve
     publish(context, "Dataset", {"path": "new.json"})
     with pytest.raises(ValueError, match="stale"):
         require(context, "GenerationCheck")
-    index = json.loads((tmp_path / ".runtime/control/artifacts.json").read_text())
+    index = json.loads((tmp_path / "control/artifacts.json").read_text())
     assert old in index["versions"]
 
 

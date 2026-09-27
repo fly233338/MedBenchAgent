@@ -23,7 +23,7 @@ def build_source_inventory(context):
         raise ValueError("Coding inventory is only for raw sources")
     require(context, "Source")
     source_version = next(iter(require(context, "Source").values()))["id"]
-    workspace = (Path(context["run_directory"]) / ".runtime" / "workers" / "openhands" /
+    workspace = (Path(context["run_directory"]) / "workers" / "openhands" /
                  context["dataset_scope"] / source["id"])
     workspace.mkdir(parents=True, exist_ok=True)
     schema_path = Path(context["operation_directory"]) / "source_report.schema.json"
@@ -121,7 +121,7 @@ def build_source_inventory(context):
     context["source_report_path"] = str(stable_report)
     frozen = save_source_fingerprint(context, inspection_references=[table_ref, population_ref])
     updates.update(frozen["updates"])
-    updates.update(evidence_index_path=str(Path(context["run_directory"]) / ".runtime" / "evidence" / "index.sqlite"),
+    updates.update(evidence_index_path=str(Path(context["run_directory"]) / "evidence" / "index.sqlite"),
                    source_report_path=str(stable_report),
                    source_report_reference=table_ref, source_population_reference=population_ref,
                    source_inspection_script_path=str(stable_script),

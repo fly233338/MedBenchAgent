@@ -33,7 +33,7 @@ def _scope(context):
 
 
 def _folder(context):
-    return Path(context["run_directory"]) / ".runtime" / "evidence"
+    return Path(context["run_directory"]) / "evidence"
 
 
 def _index(context):

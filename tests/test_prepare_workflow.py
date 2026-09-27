@@ -119,7 +119,7 @@ def test_prepare_discovers_unconfigured_source_from_request(tmp_path, monkeypatc
         {"user_requirement": f"Prepare New from {source}", "prepare_dataset_id": "new"},
         {"configurable": {"thread_id": "discover"}, "recursion_limit": 100})
     assert output["status"] == "complete"
-    assert (Path(output["run_directory"]) / ".runtime/discovery/sources/new/source_decision.json").is_file()
+    assert (Path(output["run_directory"]) / "discovery/sources/new/source_decision.json").is_file()
 
 
 def test_preparation_tools_follow_existing_artifact_dependencies(tmp_path):

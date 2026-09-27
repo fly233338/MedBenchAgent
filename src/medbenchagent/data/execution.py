@@ -3,6 +3,7 @@
 import importlib.metadata
 import json
 import os
+import shutil
 from pathlib import Path
 import signal
 import subprocess
@@ -134,7 +135,9 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
     if context.get("source_manifest"):
         verify_source(context["source_manifest"])
     kind = "script" if script else request["operation"]
-    receipt = output.parent / f"{output.name}-{kind}.complete.json"
+    receipts = Path(context.get("operation_directory", output.parent)) / "receipts"
+    receipts.mkdir(parents=True, exist_ok=True)
+    receipt = receipts / f"{output.name}-{kind}.complete.json"
     identity = {"runtime": runtime, "script": digest_file(script) if script else None,
                 "request": request, "annotation": annotation,
                 "annotation_digest": digest_file(annotation) if annotation else None,
@@ -150,19 +153,23 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
         if (output / ("result.json" if request else "annotation.jsonl")).is_file():
             return json.loads((output / "result.json").read_text(encoding="utf-8")) if request else None
     elif any(output.iterdir()):
-        output.rename(output.with_name(output.name + ".incomplete-" + uuid4().hex))
+        incomplete = Path(context.get("operation_directory", output.parent)) / "incomplete"
+        incomplete.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(output), str(incomplete / (output.name + "-" + uuid4().hex)))
         output.mkdir()
-    request_path = output.parent / (output.name + "-request.json")
+    request_path = receipts / (output.name + "-request.json")
     if request is not None:
         atomic_write_json(request_path, request)
     source = str(Path(context["source_root"]).resolve())
     project = str(Path(__file__).resolve().parents[2])
+    scratch = Path(context.get("operation_directory", output.parent)) / "scratch" / output.name
+    scratch.mkdir(parents=True, exist_ok=True)
     environment = {"MEDBENCH_DATA_MEMORY": settings["memory_limit"],
                    "MEDBENCH_DATA_THREADS": str(settings["threads"]),
                    "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     if runtime["backend"] == "local":
         environment.update(PYTHONPATH=project, MEDBENCH_SOURCE_ROOT=source,
-                           MEDBENCH_WORK_DIR=str(output), MEDBENCH_DATA_SCRATCH=str(output / "scratch"),
+                           MEDBENCH_WORK_DIR=str(output), MEDBENCH_DATA_SCRATCH=str(scratch),
                            MEDBENCH_ANNOTATION_PATH=str(Path(annotation).resolve()) if annotation else "")
         for name, path in (("SPEC", specification), ("INPUTS", inputs), ("PROVENANCE", provenance)):
             if path:
@@ -177,10 +184,11 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
                    "--pids-limit=128", "--cap-drop=ALL", "--security-opt=no-new-privileges",
                    "--tmpfs", "/tmp:rw,size=256m", "--workdir", "/work"]
         environment.update(PYTHONPATH="/project", MEDBENCH_SOURCE_ROOT="/source", MEDBENCH_WORK_DIR="/work",
-                           MEDBENCH_DATA_SCRATCH="/work/scratch", MEDBENCH_ANNOTATION_PATH="/annotation/annotation.jsonl" if annotation else "")
+                           MEDBENCH_DATA_SCRATCH="/scratch", MEDBENCH_ANNOTATION_PATH="/annotation/annotation.jsonl" if annotation else "")
         for key, value in environment.items():
             command += ["--env", f"{key}={value}"]
-        mounts = [(source, "/source", True), (project, "/project", True), (str(output), "/work", False)]
+        mounts = [(source, "/source", True), (project, "/project", True),
+                  (str(output), "/work", False), (str(scratch), "/scratch", False)]
         for name, path in (("spec", specification), ("inputs", inputs), ("provenance", provenance)):
             if path:
                 command += ["--env", f"MEDBENCH_{name.upper()}_PATH=/{name}.json"]

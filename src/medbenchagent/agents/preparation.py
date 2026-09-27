@@ -114,7 +114,7 @@ def save_source_fingerprint(context, *, inspection_references):
         receipts.append({"reference": ref, "operation": operation, "arguments": receipt["arguments"],
                          "coverage": coverage, "denominator": denominator,
                          "facts": {k: v for k, v in value.items() if k not in {"text", "samples", "entries"}} if isinstance(value, dict) else {}})
-        paths.append(str(Path(context["run_directory"]) / ".runtime/evidence" / (ref + ".json")))
+        paths.append(str(Path(context["run_directory"]) / "evidence" / (ref + ".json")))
     path = Path(context["operation_directory"]) / "fingerprint.json"
     used_path = path.with_name("used_files.jsonl")
     used_path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,7 +152,7 @@ def save_semantic_spec(context, *, spec):
             inspection(context, ref, source_id=context["source_scope"])
         if decision.interpretation == "interpreted" or decision.semantic_evidence:
             semantic_evidence(context, decision.semantic_evidence, context["source_scope"])
-        evidence_paths.extend(str(Path(context["run_directory"]) / ".runtime/evidence" / (e.reference + ".json"))
+        evidence_paths.extend(str(Path(context["run_directory"]) / "evidence" / (e.reference + ".json"))
                               for e in decision.semantic_evidence)
     if spec.population_reference not in allowed:
         raise ValueError("Population evidence must belong to the fingerprint")
@@ -417,7 +417,7 @@ def validate_preparation(context):
     atomic_write_json(decision_path, {"schema_version": "population-decision.v1", "count": count,
                       "assurance": assurance, "population_digest": digest_file(population_path), "answer_reference": answer_reference})
     versions = publish(context, "PopulationDecision", {"path": str(decision_path), "population_path": population_path,
-                       "answer_path": str(Path(context["run_directory"]) / ".runtime/evidence" / (answer_reference + ".json")) if answer_reference else None},
+                       "answer_path": str(Path(context["run_directory"]) / "evidence" / (answer_reference + ".json")) if answer_reference else None},
                        ("SemanticPreparationSpec", "CandidateExtraction"))
     atomic_write_json(validation_path, {"schema_version": "preparation-validation.v1", "count": count,
                       "assurance": assurance, "checks": ["source_version", "repeatability", "locator_existence", "direct_field_bindings", "finding_references", "population_identity"],

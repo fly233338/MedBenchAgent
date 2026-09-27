@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from medbenchagent.runtime.construction import record_event
@@ -26,17 +27,23 @@ def atomic_write_json(path: str | Path, value: object) -> None:
             temporary.unlink()
 
 
+def version_directory_name(identifier: uuid.UUID) -> str:
+    """Readable UTC creation time plus a short random suffix."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ_") + identifier.hex[:8]
+
+
 def initialize_run(
     runs_root: str | Path | None = None,
     *,
     settings: AppSettings | None = None,
     graph_overrides: dict[str, object] | None = None,
 ) -> dict[str, str]:
-    """Create one UUID-named run directory before the first model call."""
+    """Create one time-named run directory while retaining a full UUID run_id."""
     active_settings = settings or get_settings()
-    run_id = str(uuid.uuid4())
+    identifier = uuid.uuid4()
+    run_id = str(identifier)
     run_directory = Path(runs_root) if runs_root is not None else active_settings.paths.runs_root
-    run_directory = run_directory / run_id
+    run_directory = run_directory / version_directory_name(identifier)
     run_directory.mkdir(parents=True, exist_ok=False)
     events_path = run_directory / "construction_events.jsonl"
     events_path.touch(exist_ok=False)
@@ -50,7 +57,7 @@ def initialize_run(
     )
     effective_config_path = run_directory / "effective_config.json"
     snapshot = active_settings.snapshot(graph_overrides)
-    inputs = run_directory / ".runtime" / "inputs"
+    inputs = run_directory / "inputs"
     inputs.mkdir(parents=True)
     source = active_settings.paths.blueprint_template
     if source.is_file():

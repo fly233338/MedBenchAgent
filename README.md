@@ -61,6 +61,11 @@ before its dependent build. Independent queued work runs serially.
 | Supported nonempty field environment variables | Override TOML for a new run; empty values are ignored |
 | `<run>/effective_config.json` | Frozen settings used on resume, unaffected by subsequent TOML edits |
 
+Runs live under the project root at `.runtime/<UTC timestamp>_<short UUID>/`, with
+checkpoints at `.runtime/checkpoints.sqlite`. Prepared dataset versions use the same
+directory naming beneath `datasets/Prepared/<dataset_id>/`. The full UUID remains the
+run's `run_id`.
+
 Copy `config/local.toml.example` to `config/local.toml` and use
 `uv run medbenchagent --config config/local.toml` to seed new experiments.
 Reopening an experiment uses its saved TOML. Relative data/material/output paths resolve
@@ -74,13 +79,11 @@ or the CLI's explicit creation template.
 
 Supported field overrides are `MEDBENCH_LLM_MODEL`, `MEDBENCH_LLM_BASE_URL`,
 `MEDBENCH_LLM_TIMEOUT_SECONDS`, `MEDBENCH_LLM_MAX_RETRIES`, and `RAG_MIN_RERANK_SCORE`.
-Legacy `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_TIMEOUT_SECONDS` remain supported;
-the corresponding nonempty `MEDBENCH_*` names take precedence.
 An existing experiment's `llm.trace_name` is ignored; new configurations omit it.
 
 Keep the three independent credentials in `MEDBENCH_LLM_API_KEY`,
-`MEDBENCH_EMBEDDING_API_KEY`, and `MEDBENCH_RERANKER_API_KEY`. Keys are optional for
-unauthenticated local services and are excluded from configuration snapshots.
+`MEDBENCH_EMBEDDING_API_KEY`, and `MEDBENCH_RERANKER_API_KEY`. Each defaults to
+`local-vllm` when unset; keys are excluded from configuration snapshots and run artifacts.
 CLI/TUI entrypoints disable optional tracing, model downloads and telemetry; configured
 model APIs are still called.
 
@@ -104,7 +107,7 @@ This requirement is independent of `data_processing.backend`, which selects the 
 deterministic execution backend.
 
 By default, the original source is mounted read-only and the Worker writes candidates
-under `.runtime/workers/openhands/<dataset>/<source>/outputs/`. Docker or the configured
+under `.runtime/<run>/workers/openhands/<dataset>/<source>/outputs/`. Docker or the configured
 image being unavailable blocks the Worker. Set `data_processing.source_workspace_mode = "copy"`
 only when an explicit source copy is desired; its snapshot is still mounted
 read-only. MedBench validates candidates against the original source. A validator repair

@@ -69,7 +69,7 @@ def _missing_inputs(root: Path, inventory: dict) -> list[str]:
 
 def discover_source(context: dict, dataset_id: str) -> dict:
     """Persist a validated source decision before synchronizing experiment TOML."""
-    folder = Path(context["run_directory"]) / ".runtime" / "discovery" / "sources" / dataset_id
+    folder = Path(context["run_directory"]) / "discovery" / "sources" / dataset_id
     folder.mkdir(parents=True, exist_ok=True)
     decision_path = folder / "source_decision.json"
     if decision_path.is_file():

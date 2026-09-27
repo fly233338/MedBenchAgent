@@ -127,7 +127,7 @@ def test_source_discovery_persists_decision_before_config(monkeypatch, tmp_path)
     context = {"run_directory": str(run_directory), "user_requirement": f"Prepare BrEaST at {root}",
                "experiment_name": "pilot", "experiments_root": str(tmp_path / "experiments")}
     entry = discover_source(context, "breast")
-    assert (run_directory / ".runtime/discovery/sources/breast/source_decision.json").is_file()
+    assert (run_directory / "discovery/sources/breast/source_decision.json").is_file()
     assert entry == discover_source(context, "breast")
     assert sessions.config_values("pilot", root=tmp_path / "experiments")["dataset_sources"][0]["dataset_id"] == "breast"
 

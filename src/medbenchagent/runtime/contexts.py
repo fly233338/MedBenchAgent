@@ -90,7 +90,7 @@ def validate_context(context, role, dataset):
     if role in {"AllocationAgent", "FinalizationAgent"} and dataset is not None:
         raise ValueError("Global specialist state cannot carry a dataset scope")
     if context.get("evidence_index_path"):
-        expected = Path(context["run_directory"]) / ".runtime/evidence/index.sqlite"
+        expected = Path(context["run_directory"]) / "evidence/index.sqlite"
         if Path(context["evidence_index_path"]).resolve() != expected.resolve():
             raise ValueError("Evidence index must belong to the current run")
 

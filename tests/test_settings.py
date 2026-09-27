@@ -9,7 +9,6 @@ from medbenchagent.settings import load_project_env, load_settings
 
 
 @pytest.mark.parametrize("name,value,section,key,expected", [
-    ("DEEPSEEK_TIMEOUT_SECONDS", "180", "llm", "timeout_seconds", 180),
     ("MEDBENCH_LLM_TIMEOUT_SECONDS", "0.5", "llm", "timeout_seconds", 0.5),
     ("MEDBENCH_LLM_MAX_RETRIES", "0", "llm", "max_retries", 0),
     ("RAG_MIN_RERANK_SCORE", "0.5", "rag", "min_rerank_score", 0.5),
@@ -32,27 +31,26 @@ def test_invalid_numeric_environment_names_variable(monkeypatch, name, value):
         load_settings()
 
 
-def test_neutral_names_take_precedence_and_empty_names_use_alias(monkeypatch):
+def test_model_override_and_key_default(monkeypatch):
     from medbenchagent.settings import get_llm_api_key
-    for suffix in ("MODEL", "API_KEY"):
-        monkeypatch.setenv("DEEPSEEK_" + suffix, "legacy")
-        monkeypatch.setenv("MEDBENCH_LLM_" + suffix, "new")
+    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "new")
+    monkeypatch.setenv("MEDBENCH_LLM_API_KEY", "new")
     assert load_settings().llm.model == "new"
     assert get_llm_api_key() == "new"
     monkeypatch.setenv("MEDBENCH_LLM_MODEL", "")
     monkeypatch.setenv("MEDBENCH_LLM_API_KEY", "")
-    assert load_settings().llm.model == "legacy"
-    assert get_llm_api_key() is None
+    assert load_settings().llm.model == ""
+    assert get_llm_api_key() == "local-vllm"
 
 
 def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / ".env").write_text("DEEPSEEK_MODEL=from-file\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("MEDBENCH_LLM_MODEL=from-file\n", encoding="utf-8")
     monkeypatch.setattr("medbenchagent.settings.PROJECT_ROOT", tmp_path)
-    monkeypatch.setenv("DEEPSEEK_MODEL", "from-process")
+    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "from-process")
 
     load_project_env()
 
-    assert os.environ["DEEPSEEK_MODEL"] == "from-process"
+    assert os.environ["MEDBENCH_LLM_MODEL"] == "from-process"
 
 
 def test_explicit_toml_then_environment_override_and_empty_value(tmp_path: Path, monkeypatch) -> None:
@@ -63,7 +61,7 @@ def test_explicit_toml_then_environment_override_and_empty_value(tmp_path: Path,
         "[generation]\nquestion_template_count = 5\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("DEEPSEEK_MODEL", "from-environment")
+    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "from-environment")
     monkeypatch.setenv("RAG_MIN_RERANK_SCORE", "")
 
     settings = load_settings(local)
@@ -116,7 +114,7 @@ def test_explicit_toml_rejects_unknown_keys(tmp_path: Path) -> None:
 
 
 def test_initialize_run_writes_secret_free_effective_configuration(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "not-in-snapshot")
+    monkeypatch.setenv("MEDBENCH_LLM_API_KEY", "not-in-snapshot")
     settings = load_settings()
 
     run = initialize_run(
