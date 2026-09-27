@@ -67,15 +67,9 @@ def initialize_run(
         target = inputs / source.name
         shutil.copyfile(source, target)
         snapshot["settings"]["paths"]["blueprint_template"] = str(target)
-    materials = inputs / "materials"
-    materials.mkdir()
-    for source in active_settings.paths.materials_root.rglob("*"):
-        if not source.is_file() or source.suffix.lower() != ".pdf":
-            continue
-        target = materials / source.relative_to(active_settings.paths.materials_root)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-    snapshot["settings"]["paths"]["materials_root"] = str(materials)
+    # Materials remain external read-only inputs.  Freeze the configured path
+    # in the run snapshot; selection records file digests later.
+    snapshot["settings"]["paths"]["materials_root"] = str(active_settings.paths.materials_root)
     atomic_write_json(effective_config_path, snapshot)
     from medbenchagent.data.dataset_catalog import load_dataset_catalog, resolve_path
     from medbenchagent.data.sources import digest_file

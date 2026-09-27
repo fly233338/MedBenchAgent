@@ -556,6 +556,9 @@ class ConversationScreen(Screen):
         self._event_partial = b""
         self._discard_event_line = False
         self._agents: list[str] = []
+        self._context_tokens: int | None = None
+        self._context_window: int | None = None
+        self._context_model: str = ""
         self._sidebar_width: int | None = None
         self._drag_start: tuple[int, int] | None = None
         self.stop_event = threading.Event()
@@ -774,6 +777,8 @@ class ConversationScreen(Screen):
         if self._progress_run_id == run_id:
             return
         self._progress_run_id = run_id
+        runtime_name = Path(run_directory).name if run_directory else ""
+        self._set_status(f"Running {runtime_name} · {run_id[:8]}" if runtime_name else f"Running {run_id[:8]}")
         self._progress_entries.clear()
         self._agents.clear()
         self._event_path = Path(run_directory) / "construction_events.jsonl" if run_directory else None
@@ -837,7 +842,8 @@ class ConversationScreen(Screen):
         agent = event.get("agent")
         kind = event.get("event_type")
         if not isinstance(agent, str) or kind not in {
-            "agent_step_started", "tool_started", "tool_result", "llm_call", "llm_validation_error"
+            "agent_step_started", "tool_started", "tool_result", "llm_call", "llm_validation_error",
+            "coding_worker_event"
         }:
             return
         operation = event.get("operation", "")
@@ -845,7 +851,11 @@ class ConversationScreen(Screen):
         label = agent.removesuffix("Agent")
         timestamp = event.get("timestamp", "")
         time = timestamp[11:19] if isinstance(timestamp, str) else ""
-        if kind == "agent_step_started":
+        if kind == "coding_worker_event":
+            operation = str(event.get("operation") or "event")
+            detail = f"OpenHands · {operation.removesuffix('Event')}"
+            status = event.get("status", "running")
+        elif kind == "agent_step_started":
             detail = "deciding"
         elif kind == "tool_started":
             detail = f"{operation} · running"
@@ -858,12 +868,34 @@ class ConversationScreen(Screen):
             latency = event.get("latency_ms")
             duration = f" ({latency / 1000:.1f}s)" if isinstance(latency, (int, float)) else ""
             detail = f"{operation} · model {status}{duration}"
+        if kind == "llm_call":
+            if isinstance(event.get("input_tokens"), int):
+                self._context_tokens = event["input_tokens"]
+            if isinstance(event.get("context_window_tokens"), int):
+                self._context_window = event["context_window_tokens"]
+            if isinstance(event.get("model"), str):
+                self._context_model = event["model"]
+            self._update_context_indicator()
         self._add_agent(agent)
         self._append_progress(agent, f"{time}  {label}: {detail}", status, render=render)
-        if kind in {"agent_step_started", "tool_started"}:
+        if kind in {"agent_step_started", "tool_started", "coding_worker_event"}:
             self.query_one("#active-agent", Static).update(f"Working: {label} · {operation}")
         elif kind in {"tool_result", "llm_call"}:
             self.query_one("#active-agent", Static).update(f"Latest: {label} · {operation}")
+
+    def _update_context_indicator(self) -> None:
+        if self._context_tokens is None:
+            value = "◉ n/a"
+        elif self._context_window:
+            ratio = self._context_tokens / self._context_window
+            value = f"◉ {ratio:.0%}"
+        else:
+            value = f"◉ {self._context_tokens:,}"
+        status = self.query_one("#session-status", Static)
+        current = str(status.renderable)
+        if " · Context " in current:
+            current = current.split(" · Context ", 1)[0]
+        status.update(Text(f"{current} · Context {value}"))
 
     def _poll_construction_events(self) -> None:
         path = self._event_path

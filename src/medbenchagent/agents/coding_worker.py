@@ -9,6 +9,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 import uuid
 from pathlib import Path
 from typing import Literal, Protocol
@@ -40,7 +41,7 @@ class CodingTask(BaseModel):
     conversation_id: str | None = None
     model: str
     base_url: str
-    reasoning_effort: str = "medium"
+    reasoning_effort: str = ""
     construction_events_path: str = ""
     run_id: str = ""
     dataset_id: str = ""
@@ -162,7 +163,14 @@ class OpenHandsCodingWorker:
 
         key = get_llm_api_key()
         if runtime["backend"] == "local":
-            return self._run_local(task, workspace, request_path, result_path, conversation_id, key)
+            forward_stop = threading.Event()
+            forwarder = self._start_event_forwarder(workspace, task.construction_events_path, forward_stop)
+            try:
+                return self._run_local(task, workspace, request_path, result_path, conversation_id, key)
+            finally:
+                forward_stop.set()
+                forwarder.join(timeout=2)
+                self._forward_events(workspace, task.construction_events_path)
         image = settings["coding_worker_image"]
         try:
             image_id = docker_image_id(image)
@@ -199,6 +207,8 @@ class OpenHandsCodingWorker:
                 status="blocked", conversation_id=conversation_id,
                 diagnostic="OpenHands container cannot probe the frozen Chat model",
                 error_category="environment_unavailable"))
+        forward_stop = threading.Event()
+        forwarder = self._start_event_forwarder(workspace, task.construction_events_path, forward_stop)
         container_name = "medbench-worker-" + uuid.uuid5(
             uuid.NAMESPACE_URL, f"{task.task_id}:attempt:{task.attempt}").hex
         command = ["docker", "run", "-d", "--pull=never", "--name", container_name,
@@ -240,6 +250,8 @@ class OpenHandsCodingWorker:
                                timeout=30, check=False)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        forward_stop.set()
+        forwarder.join(timeout=2)
         self._forward_events(workspace, task.construction_events_path)
         if completed.returncode or (getattr(completed, "stdout", "0") or "0").strip() != "0" or not result_path.is_file():
             return self._record_result(workspace, task, CodingResult(
@@ -249,6 +261,16 @@ class OpenHandsCodingWorker:
         result = CodingResult.model_validate_json(result_path.read_text(encoding="utf-8"))
         return self._record_result(workspace, task,
                                    self._validate_outputs(task, result, workspace, conversation_id, runtime["backend"]))
+
+    @staticmethod
+    def _start_event_forwarder(workspace: Path, destination: str, stop: threading.Event):
+        def loop():
+            while not stop.is_set():
+                OpenHandsCodingWorker._forward_events(workspace, destination)
+                stop.wait(0.5)
+        thread = threading.Thread(target=loop, name="openhands-event-forwarder", daemon=True)
+        thread.start()
+        return thread
 
     @staticmethod
     def _record_result(workspace: Path, task: CodingTask, result: CodingResult) -> CodingResult:

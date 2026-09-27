@@ -85,13 +85,16 @@ def complete_validated_json(
     for attempt in range(3):
         started = time.perf_counter()
         try:
-            response = _client().chat.completions.create(
-                model=model,
-                temperature=get_settings().llm.default_temperature if temperature is None else temperature,
-                response_format={"type": "json_object"},
-                messages=messages,
-                stream=on_chunk is not None,
-            )
+            request = {
+                "model": model,
+                "temperature": get_settings().llm.default_temperature if temperature is None else temperature,
+                "response_format": {"type": "json_object"},
+                "messages": messages,
+                "stream": on_chunk is not None,
+            }
+            if settings.llm.reasoning_effort:
+                request["reasoning_effort"] = settings.llm.reasoning_effort
+            response = _client().chat.completions.create(**request)
             if on_chunk is None:
                 raw = (response.choices[0].message.content or "") if response.choices else ""
             else:

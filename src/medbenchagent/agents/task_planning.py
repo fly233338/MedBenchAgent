@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import json
-import shutil
 from pathlib import Path
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.contexts import TaskPlanningContext
@@ -235,24 +234,29 @@ def select_materials(context, *, files):
     if files == context.get("selected_material_files"):
         require(context, "Materials")
         return result("success", "These references are already selected")
-    root = Path(context["operation_directory"]) / "materials"
-    root.mkdir(parents=True, exist_ok=True)
-    for file in files:
-        destination = root / file
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(get_settings().paths.materials_root / file, destination)
-    versions = publish(context, "Materials", {"root": str(root), "files": files}, ())
+    root = get_settings().paths.materials_root.resolve()
+    from medbenchagent.data.sources import digest_file
+    digests = {file: digest_file(root / file) for file in files}
+    versions = publish(context, "Materials", {"root": str(root), "files": files,
+                                                "digests": digests}, ())
     return result(
         "success",
         "References selected; reconcile affected planning evidence",
         selected_material_files=files,
         materials_root=str(root),
+        material_digests=digests,
         **versions,
     )
 
 
 def _rag(context):
     require(context, "Materials")
+    from medbenchagent.data.sources import digest_file
+    root = Path(context["materials_root"]).resolve()
+    for file, expected in context.get("material_digests", {}).items():
+        path = (root / file).resolve()
+        if not path.is_relative_to(root) or not path.is_file() or digest_file(path) != expected:
+            raise ValueError(f"Selected medical material changed or is unavailable: {file}")
     return LocalPdfRag(
         context["materials_root"],
         Path(context["run_directory"]) / "agents" / "TaskPlanningAgent" / context["dataset_scope"] / "rag",

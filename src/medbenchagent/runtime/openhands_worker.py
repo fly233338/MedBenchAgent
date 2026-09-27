@@ -70,9 +70,12 @@ def main(request_path: str, result_path: str) -> None:
     model = _litellm_model(request["model"])
     # OpenHands 1.49.6 defaults this to "high". Reasoning levels are not
     # universal across gateways, so always use the run-frozen explicit value.
-    llm = LLM(model=model, base_url=request["base_url"], max_output_tokens=8192,
-              reasoning_effort=request.get("reasoning_effort") or "medium",
-              api_key=SecretStr(key), usage_id="medbench_coding_worker")
+    llm_kwargs = {"model": model, "base_url": request["base_url"],
+                  "max_output_tokens": 8192, "api_key": SecretStr(key),
+                  "usage_id": "medbench_coding_worker"}
+    if request.get("reasoning_effort"):
+        llm_kwargs["reasoning_effort"] = request["reasoning_effort"]
+    llm = LLM(**llm_kwargs)
     agent = Agent(llm=llm, tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)])
     event_path = Path(request["construction_events_path"]) if request.get("construction_events_path") else None
     if event_path:
