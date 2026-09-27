@@ -256,7 +256,7 @@ def test_quit_waits_for_run_then_returns_to_experiments(tmp_path):
 
 
 @pytest.mark.parametrize("screen_name", ["menu", "config", "conversation"])
-def test_ctrl_c_exits_from_each_screen(tmp_path, screen_name):
+def test_escape_exits_from_each_screen(tmp_path, screen_name):
     sessions.create_experiment("pilot", root=tmp_path)
 
     async def check():
@@ -265,8 +265,28 @@ def test_ctrl_c_exits_from_each_screen(tmp_path, screen_name):
             if screen_name != "menu":
                 app.open_experiment("pilot", configure=screen_name == "config")
                 await pilot.pause()
-            await pilot.press("ctrl+c")
+            await pilot.press("escape")
             await pilot.pause()
             assert not app.is_running
+
+    asyncio.run(check())
+
+
+def test_ctrl_c_copies_selected_input_without_exiting(tmp_path):
+    sessions.create_experiment("pilot", root=tmp_path)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            app.open_experiment("pilot")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            field = app.screen.query_one("#message")
+            field.value = "copy this path"
+            field.focus()
+            await pilot.press("ctrl+shift+a", "ctrl+c")
+            await pilot.pause()
+            assert app.clipboard == "copy this path"
+            assert app.is_running
 
     asyncio.run(check())

@@ -12,9 +12,13 @@ Use Python 3.11+ and run from the repository root:
 ```powershell
 uv sync
 uv run medbenchagent
-# Optional local data preparation dependencies:
-uv sync --extra data-processing
+# For DICOM, NIfTI and NRRD source formats:
+uv run --extra data-processing medbenchagent
 ```
+
+The default installation includes CSV and Excel preparation dependencies. Keep the
+`--extra data-processing` flag on `uv run` when working with medical image formats;
+it installs the additional readers and decoders for that invocation.
 
 Configure your language-model endpoint and model in the experiment configuration or
 with the environment variables below. The defaults point to a local endpoint; no service
@@ -89,8 +93,8 @@ changing the result. Use a new run or model identifier when service weights chan
   Linux absolute paths are accepted as answers. Ordinary input answers a pending run
   question; `/queue` explicitly submits new work.
 - `/quit` returns from a conversation to the experiment list, stopping active work at a
-  saved boundary first. Ctrl+C exits the application through the same stopping mechanism,
-  including when the configuration screen is open. LangGraph drains at a saved superstep boundary;
+  saved boundary first. Ctrl+C copies selected text; Escape exits through the same stopping
+  mechanism, including when the configuration screen is open. LangGraph drains at a saved superstep boundary;
   an in-flight model call or tool finishes or times out before stopping.
 
 Replies enter history only after validation. Failed requests
@@ -107,6 +111,9 @@ clarification questions. Invalid preparation answers keep the current question o
 root stores graph recovery state. Keep these and the referenced prepared assets intact.
 Resume requires unchanged code, runtime contract and frozen inputs. After changing code,
 start a new run; old checkpoints are not migrated. Current contract: `agent-runtime.v16`.
+Changing `pyproject.toml` or `uv.lock`, or changing the pinned local preparation packages,
+also invalidates an existing preparation checkpoint. Create a new run after installing
+missing preparation dependencies for an already-started run.
 
 ## Data preparation and delivery
 
@@ -162,8 +169,8 @@ uv run pytest
 ```
 
 Tests cover project behavior and core contracts, without personal skills, real model
-services or GPU checkpoints. Local preparation dependencies are installed with
-`uv sync --extra data-processing`; some environment-specific cases may be skipped.
+services or GPU checkpoints. CSV/Excel dependencies are installed by default;
+medical image readers need `--extra data-processing`. Some environment-specific cases may be skipped.
 Do not treat offline tests as proof of real Docker, model or large-dataset performance.
 
 For configuration errors, check the named key and the experiment's saved TOML. For

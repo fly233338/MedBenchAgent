@@ -139,7 +139,8 @@ MEDBENCH_DATA_SCRATCH 路径契约。固定操作和生成脚本都运行在子�
 及两次输出一致性比较。Docker 使用只读源/代码挂载、禁网、内存/CPU/进程限制，记录实际镜像 ID。
 Local 使用当前解释器、独立工作目录和 UTF-8，超时结束对应进程树；记录解释器和相关库版本。
 本地生成代码具有当前用户权限，不提供挂载/网络隔离和容器内存限制。DuckDB 内存/线程配置两端通用。
-本地依赖安装命令为 `uv sync --extra data-processing`，缺依赖时报告具体错误。
+CSV/Excel 及 NumPy 处理依赖属于基础安装；DICOM/NIfTI/NRRD 的额外本地解码依赖使用
+`uv run --extra data-processing medbenchagent` 安装，缺依赖时报告具体错误。
 
 会话运行与直接图调用共用按意图的本地预检：校验 Catalog 格式与 LLM 配置，
 仅构建需要有效 Blueprint；准备后端在实际准备前检查。CLI 根级 --config 仅作为新实验的初始模板，

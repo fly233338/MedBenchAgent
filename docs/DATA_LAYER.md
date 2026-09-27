@@ -209,7 +209,8 @@ Docker CLI/daemon/image/startup probes. Business errors never switch backend. Lo
 generated Python in a subprocess with timeout and process-tree cleanup; it has current-user permissions.
 Generated Python requires Docker or explicit local selection; auto-to-local may run fixed operations only. The runtime
 records both requested_backend and resolved backend. Switching requires a new run.
-Install local dependencies explicitly using `uv sync --extra data-processing`. Both backends use environment
+CSV/Excel readers are part of the default installation. For DICOM, NIfTI or NRRD local preparation,
+run with `uv run --extra data-processing medbenchagent`. Both backends use environment
 paths MEDBENCH_SOURCE_ROOT, MEDBENCH_WORK_DIR, MEDBENCH_ANNOTATION_PATH and MEDBENCH_DATA_SCRATCH.
 
 A bundle version lives under prepared_datasets_root/<dataset_id>/<version>. Card v2 copies deterministic

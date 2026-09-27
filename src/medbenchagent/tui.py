@@ -1052,7 +1052,7 @@ class ConversationScreen(Screen):
 
 class MBAApp(App):
     ENABLE_COMMAND_PALETTE = False
-    BINDINGS = [Binding("ctrl+c", "request_exit", "Exit", priority=True)]
+    BINDINGS = [Binding("escape", "request_exit", "Exit")]
     CSS = """
     App, Screen { background: #101319; color: #d9dce5; }
     Screen { layout: vertical; }
@@ -1153,6 +1153,9 @@ class MBAApp(App):
                 self.pop_screen()
         else:
             self.exit()
+
+    def action_quit(self) -> None:
+        self.action_request_exit()
 
     def on_resize(self, event: events.Resize) -> None:
         self.set_class(event.size.width < 100, "compact")
