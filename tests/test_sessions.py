@@ -255,7 +255,7 @@ def test_experiment_row_opens_with_mouse(tmp_path):
     asyncio.run(check())
 
 
-def test_run_row_shows_details_with_enter(tmp_path):
+def test_run_list_only_shows_status(tmp_path):
     record = sessions.create_experiment("pilot", root=tmp_path)
     run = sessions.queue_run(record, "prepare_dataset", "Prepare", "breast", root=tmp_path)
     record["pending_runs"].clear()
@@ -271,10 +271,9 @@ def test_run_row_shows_details_with_enter(tmp_path):
             await pilot.pause()
             assert isinstance(app.screen, ConversationScreen)
             table = app.screen.query_one("#runs")
-            table.focus()
-            await pilot.press("enter")
-            await pilot.pause()
-            detail = app.screen.query_one("#run-detail")
-            assert any("Prepared breast" in str(line) for line in detail.lines)
+            assert table.row_count == 1
+            assert str(table.get_cell_at((0, 1))) == "complete"
+            assert not app.screen.query("#run-detail")
+            assert app.screen.query_one("#progress").size.height > 0
 
     asyncio.run(check())

@@ -151,6 +151,9 @@ def compile_agent(
             repair_count += 1
 
         started = time.monotonic()
+        record_event(context["construction_events_path"], "agent_step_started",
+                     run_id=context["run_id"], agent=name, dataset_id=context.get("dataset_scope"),
+                     source_id=context.get("source_scope"), operation="decide", status="running")
         with event_context(
             construction_events_path=context["construction_events_path"],
             run_id=context["run_id"],
@@ -223,6 +226,9 @@ def compile_agent(
             }
         operation = Path(context["operation_directory"]) / name / f"{step}.json"
         dependencies = dict(context.get("artifact_versions", {}))
+        record_event(context["construction_events_path"], "tool_started",
+                     run_id=context["run_id"], agent=name, dataset_id=context.get("dataset_scope"),
+                     source_id=context.get("source_scope"), operation=tool_name, status="running")
         try:
             arguments = schemas[tool_name].model_validate(arguments).model_dump()
             parameter_error = None

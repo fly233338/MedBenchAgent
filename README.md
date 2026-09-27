@@ -87,7 +87,8 @@ changing the result. Use a new run or model identifier when service weights chan
 - Home: search experiments, `/new`, `/open`, `/remove`, `/quit`.
 - Configuration: choose a field, edit and apply; `/done` continues, `/quit` returns.
   Changes affect runs that have not started. Dataset sources are managed by preparation.
-- Conversation: `/details` toggles the existing sidebar; `/config` edits future settings;
+- Conversation: `/details` toggles the sidebar; drag its left edge to change width.
+  The progress panel follows the current run and filters activity by Agent. `/config` edits future settings;
   `/resume` continues unfinished work; `/queue <request>` queues independent work.
 - Preparation questions: answer one field at a time or `/cancel` the pending question batch.
   Linux absolute paths are accepted as answers. Ordinary input answers a pending run
@@ -99,7 +100,7 @@ changing the result. Use a new run or model identifier when service weights chan
 
 Replies enter history only after validation. Failed requests
 remain visible but do not enter the Supervisor's accepted conversation history.
-Select a run in the sidebar to inspect its identifiers, frozen settings and asset paths.
+The run list shows status only; frozen settings and asset paths remain in the run directory.
 Model/service and execution-environment failures preserve the checkpoint rather than consuming
 agent correction budgets. Resolve the reported failure before `/resume`; do not repeatedly
 resume an unchanged fault. CLI `resume` also continues queued work after the resumed run ends.

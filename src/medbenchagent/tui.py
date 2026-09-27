@@ -6,6 +6,7 @@ import queue
 import json
 import sys
 import threading
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,7 +16,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, DataTable, Input, Label, OptionList, RichLog, Static, Tree
+from textual.widgets import Button, DataTable, Input, Label, OptionList, RichLog, Select, Static, Tree
 from textual.widgets.option_list import Option
 
 from medbenchagent.runtime import sessions
@@ -25,8 +26,45 @@ if TYPE_CHECKING:
     from medbenchagent.runtime.graph_runner import RunEvent
 
 
-_STATUS_COLORS = {"complete": "#63d6bd", "blocked": "#e8ac70", "waiting_input": "#e8ac70",
-                  "failed": "#eb7d83", "interrupted": "#e8ac70", "running": "#a9c7f6"}
+_STATUS_COLORS = {"complete": "#63d6bd", "success": "#63d6bd", "blocked": "#e8ac70",
+                  "waiting_input": "#e8ac70", "needs_input": "#e8ac70", "failed": "#eb7d83",
+                  "interrupted": "#e8ac70", "running": "#a9c7f6"}
+_MAX_EVENT_LINE_BYTES = 1_048_576
+
+
+def _progress_color(value: str, status: str) -> str:
+    if status in _STATUS_COLORS:
+        return _STATUS_COLORS[status]
+    if value.startswith(("[done]", "[artifact]")):
+        return "#72d8c2"
+    if value.startswith(("[waiting]", "[failed]")):
+        return "#e8ac70"
+    return "#a5b8c8"
+
+
+def _recent_event_lines(path: Path, limit: int = 600) -> tuple[list[bytes], int]:
+    """Read recent complete JSONL rows without scanning an entire long run log."""
+    with path.open("rb") as stream:
+        stream.seek(0, 2)
+        end = stream.tell()
+        cursor = end
+        chunks = []
+        newlines = 0
+        while cursor and newlines <= limit and end - cursor < 4 * _MAX_EVENT_LINE_BYTES:
+            size = min(65536, cursor)
+            cursor -= size
+            stream.seek(cursor)
+            chunk = stream.read(size)
+            chunks.append(chunk)
+            newlines += chunk.count(b"\n")
+    data = b"".join(reversed(chunks))
+    if cursor and b"\n" in data:
+        data = data.split(b"\n", 1)[1]
+    complete, _, partial = data.rpartition(b"\n")
+    if not complete and data.endswith(b"\n"):
+        complete = data[:-1]
+        partial = b""
+    return complete.splitlines()[-limit:], end - len(partial)
 
 
 def _supports_block_glyphs() -> bool:
@@ -510,7 +548,16 @@ class ConversationScreen(Screen):
         self._revealing: ChatMessage | None = None
         self._reveal_position = 0
         self._pending_answer_bubble: ChatMessage | None = None
-        self._progress_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
+        self._progress_queue: queue.SimpleQueue[tuple[str | None, str]] = queue.SimpleQueue()
+        self._progress_entries: deque[tuple[str | None, str, str]] = deque(maxlen=600)
+        self._progress_run_id: str | None = None
+        self._event_path: Path | None = None
+        self._event_offset = 0
+        self._event_partial = b""
+        self._discard_event_line = False
+        self._agents: list[str] = []
+        self._sidebar_width: int | None = None
+        self._drag_start: tuple[int, int] | None = None
         self.stop_event = threading.Event()
         self.exit_requested = False
         self.back_requested = False
@@ -528,16 +575,17 @@ class ConversationScreen(Screen):
                     yield Static("Your answer will let MBA continue.", id="question-hint")
                 yield OptionList(id="session-commands")
                 yield Input(placeholder="Describe a task or type / for commands", id="message")
+            yield Static("", id="side-resize-handle")
             with Vertical(id="side-pane"):
-                yield DataTable(id="runs", cursor_type="row", zebra_stripes=True)
-                yield RichLog(id="run-detail", wrap=True, highlight=True, min_width=1)
+                yield DataTable(id="runs", cursor_type="none", zebra_stripes=True)
+                yield Static("Latest activity: waiting", id="active-agent")
+                yield Select([("All agents", "*")], value="*", allow_blank=False, id="agent-filter")
                 yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
 
     def on_mount(self) -> None:
         self.query_one("#runs", DataTable).add_columns("Type", "Status", "Run")
         self.query_one("#session-commands", OptionList).display = False
         self._set_status("Loading experiment…")
-        self.query_one("#run-detail", RichLog).write("Select a run to inspect frozen inputs.")
         self.query_one("#message", Input).focus()
         self.set_interval(0.1, self._flush_progress)
         self._load_session()
@@ -559,6 +607,9 @@ class ConversationScreen(Screen):
             return
         self.service = service
         self.refresh_record(record)
+        recent = next((run for run in reversed(record["runs"]) if run.get("run_directory")), None)
+        if recent:
+            self._follow_run(recent["id"], recent["run_directory"])
         self._history_loaded = True
         self._render_intake()
         self._set_status("Ready")
@@ -719,22 +770,151 @@ class ConversationScreen(Screen):
     def _set_status(self, value: str) -> None:
         self.query_one("#session-status", Static).update(Text(value))
 
-    def _log_progress(self, value: str) -> None:
-        if value:
-            color = ("#72d8c2" if value.startswith(("[done]", "[artifact]")) else
-                     "#e8ac70" if value.startswith(("[waiting]", "[failed]")) else "#a5b8c8")
+    def _follow_run(self, run_id: str, run_directory: str | None) -> None:
+        if self._progress_run_id == run_id:
+            return
+        self._progress_run_id = run_id
+        self._progress_entries.clear()
+        self._agents.clear()
+        self._event_path = Path(run_directory) / "construction_events.jsonl" if run_directory else None
+        self._event_offset = 0
+        self._event_partial = b""
+        self._discard_event_line = False
+        self.query_one("#active-agent", Static).update("Latest activity: waiting")
+        self.query_one("#agent-filter", Select).set_options([("All agents", "*")])
+        self.query_one("#agent-filter", Select).value = "*"
+        lines = []
+        if self._event_path is not None:
+            try:
+                lines, self._event_offset = _recent_event_lines(self._event_path)
+            except OSError:
+                pass
+        for line in lines:
+            if len(line) <= _MAX_EVENT_LINE_BYTES:
+                self._read_construction_event(line, render=False)
+        self._render_progress()
+
+    def _add_agent(self, agent: str) -> None:
+        if agent in self._agents:
+            return
+        self._agents.append(agent)
+        selector = self.query_one("#agent-filter", Select)
+        selected = selector.value
+        selector.set_options([("All agents", "*"),
+                              *((name.removesuffix("Agent"), name) for name in self._agents)])
+        selector.value = selected if selected in {"*", *self._agents} else "*"
+
+    def _append_progress(self, agent: str | None, value: str, status: str = "", *, render: bool = True) -> None:
+        if not value:
+            return
+        self._progress_entries.append((agent, value, status))
+        if render and self.query_one("#agent-filter", Select).value in {"*", agent}:
             log = self.query_one("#progress", RichLog)
-            log.write(Text(value, style=color), scroll_end=log.is_vertical_scroll_end)
+            log.write(Text(value, style=_progress_color(value, status)), scroll_end=log.is_vertical_scroll_end)
+
+    def _render_progress(self) -> None:
+        log = self.query_one("#progress", RichLog)
+        log.clear()
+        selected = self.query_one("#agent-filter", Select).value
+        for agent, value, status in self._progress_entries:
+            if selected in {"*", agent}:
+                self._append_progress_render(log, value, status)
+
+    def _append_progress_render(self, log: RichLog, value: str, status: str) -> None:
+        log.write(Text(value, style=_progress_color(value, status)), scroll_end=True)
+
+    @on(Select.Changed, "#agent-filter")
+    def agent_filter_changed(self, _event: Select.Changed) -> None:
+        self._render_progress()
+
+    def _read_construction_event(self, line: bytes, *, render: bool = True) -> None:
+        try:
+            event = json.loads(line)
+        except (UnicodeDecodeError, ValueError):
+            return
+        if not isinstance(event, dict):
+            return
+        agent = event.get("agent")
+        kind = event.get("event_type")
+        if not isinstance(agent, str) or kind not in {
+            "agent_step_started", "tool_started", "tool_result", "llm_call", "llm_validation_error"
+        }:
+            return
+        operation = event.get("operation", "")
+        status = event.get("status", "")
+        label = agent.removesuffix("Agent")
+        timestamp = event.get("timestamp", "")
+        time = timestamp[11:19] if isinstance(timestamp, str) else ""
+        if kind == "agent_step_started":
+            detail = "deciding"
+        elif kind == "tool_started":
+            detail = f"{operation} · running"
+        elif kind == "tool_result":
+            detail = f"{operation} · {status}: {str(event.get('summary', ''))[:240]}"
+        elif kind == "llm_validation_error":
+            detail = f"{operation} · invalid model output; repairing"
+            status = "failed"
+        else:
+            latency = event.get("latency_ms")
+            duration = f" ({latency / 1000:.1f}s)" if isinstance(latency, (int, float)) else ""
+            detail = f"{operation} · model {status}{duration}"
+        self._add_agent(agent)
+        self._append_progress(agent, f"{time}  {label}: {detail}", status, render=render)
+        if kind in {"agent_step_started", "tool_started"}:
+            self.query_one("#active-agent", Static).update(f"Working: {label} · {operation}")
+        elif kind in {"tool_result", "llm_call"}:
+            self.query_one("#active-agent", Static).update(f"Latest: {label} · {operation}")
+
+    def _poll_construction_events(self) -> None:
+        path = self._event_path
+        if path is None:
+            return
+        try:
+            with path.open("rb") as stream:
+                stream.seek(0, 2)
+                size = stream.tell()
+                if size < self._event_offset:
+                    self._event_offset = 0
+                    self._event_partial = b""
+                    self._discard_event_line = False
+                stream.seek(self._event_offset)
+                chunk = stream.read(65536)
+        except OSError:
+            return
+        self._event_offset += len(chunk)
+        if not chunk:
+            return
+        data = self._event_partial + chunk
+        if self._discard_event_line:
+            end = data.find(b"\n")
+            if end < 0:
+                return
+            data = data[end + 1:]
+            self._discard_event_line = False
+        lines = data.split(b"\n")
+        self._event_partial = lines.pop()
+        if len(self._event_partial) > _MAX_EVENT_LINE_BYTES:
+            self._event_partial = b""
+            self._discard_event_line = True
+        for line in lines:
+            if len(line) <= _MAX_EVENT_LINE_BYTES:
+                self._read_construction_event(line)
 
     def _flush_progress(self, limit: int = 100) -> None:
         count = 0
         while count < limit:
             try:
-                value = self._progress_queue.get_nowait()
+                run_id, value = self._progress_queue.get_nowait()
             except queue.Empty:
                 break
-            self._log_progress(value)
+            if run_id == self._progress_run_id or self._progress_run_id is None:
+                if not (self._event_path and value.startswith("[tool]")) and not (
+                    value.startswith(("[start]", "[done]"))
+                    and value.endswith((" / decide", " / execute"))
+                ):
+                    self._append_progress(None, value)
             count += 1
+        self._poll_construction_events()
 
     def refresh_runs(self) -> None:
         table = self.query_one("#runs", DataTable)
@@ -749,29 +929,6 @@ class ConversationScreen(Screen):
                 for column, value in enumerate(values):
                     if table.get_cell_at((index, column)) != value:
                         table.update_cell_at((index, column), value)
-
-    @on(DataTable.RowSelected, "#runs")
-    def show_run(self, event: DataTable.RowSelected) -> None:
-        run = next(run for run in self.record["runs"] if run["id"] == event.row_key.value)
-        detail = (f"{run['kind']} · {run['status']}\n{run['summary']}\n"
-                  f"Session Run: {run['id']}\nLangGraph thread: {run['thread_id']}\n"
-                  f"Run directory: {run['run_directory']}\n"
-                  f"Frozen config: {run['effective_config_path']}\n"
-                  f"Catalog snapshot: {run['catalog_snapshot_path']}\n"
-                  f"Source decision: {run.get('source_decision_path')}")
-        snapshot_path = run.get("effective_config_path")
-        if snapshot_path and Path(snapshot_path).is_file():
-            try:
-                snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
-                detail += "\nEnvironment overrides: " + ", ".join(snapshot.get("environment_overrides", []))
-                detail += "\nEffective settings:\n" + json.dumps(snapshot["settings"], ensure_ascii=False, indent=2)
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                detail += f"\nCannot read frozen configuration: {exc}"
-        if run.get("selected_assets"):
-            detail += "\nSelected assets:\n" + json.dumps(run["selected_assets"], ensure_ascii=False, indent=2)
-        view = self.query_one("#run-detail", RichLog)
-        view.clear()
-        view.write(Text(detail))
 
     @on(Input.Changed, "#message")
     def filter_commands(self) -> None:
@@ -954,6 +1111,10 @@ class ConversationScreen(Screen):
     def _execute_run(self, *, resume_id: str | None = None, answer: str | None = None) -> None:
         if self.running:
             return
+        if resume_id:
+            run = next((item for item in self.record["runs"] if item["id"] == resume_id), None)
+            if run and run.get("run_directory"):
+                self._follow_run(run["id"], run["run_directory"])
         self.running = True
         self._show_thinking()
         self._set_status("Resuming run" if resume_id else "Running queued tasks")
@@ -967,7 +1128,7 @@ class ConversationScreen(Screen):
                       else self.service.drive(stop_requested=self.stop_event.is_set))
             for event in events:
                 if event.kind == "progress":
-                    self._progress_queue.put(event.payload.get("text", ""))
+                    self._progress_queue.put((event.run_session_id, event.payload.get("text", "")))
                 else:
                     self.app.call_from_thread(self._on_event, event)
         except Exception as exc:
@@ -979,10 +1140,12 @@ class ConversationScreen(Screen):
         if event.kind in {"initialized", "needs_input", "finished", "error"}:
             self.refresh_record()
         if event.kind == "initialized":
+            if event.payload.get("run_directory"):
+                self._follow_run(event.run_session_id, event.payload["run_directory"])
             self._set_status(f"Running {event.run_session_id[:8]}")
-            self._progress_queue.put(f"[run] {event.payload.get('run_directory')}")
+            self._progress_queue.put((event.run_session_id, f"[run] {event.payload.get('run_directory')}"))
         elif event.kind == "artifact":
-            self._progress_queue.put(f"[artifact] {event.payload}")
+            self._progress_queue.put((event.run_session_id, f"[artifact] {event.payload}"))
         elif event.kind == "needs_input":
             self._hide_thinking()
             self.pending_question = True
@@ -993,10 +1156,16 @@ class ConversationScreen(Screen):
             self._render_intake()
             self.query_one("#message", Input).focus()
         elif event.kind in {"finished", "error"}:
+            if event.run_session_id != self._progress_run_id:
+                run = next((item for item in self.record["runs"] if item["id"] == event.run_session_id), None)
+                self._follow_run(event.run_session_id, event.payload.get("run_directory") or
+                                 (run.get("run_directory") if run else None))
             self._hide_thinking()
             self._flush_progress()
+            self._progress_queue.put((event.run_session_id,
+                                      f"[{event.payload.get('status', event.kind)}] {event.payload.get('summary', '')}"))
             if event.payload.get("recovery_hint"):
-                self._progress_queue.put(event.payload["recovery_hint"])
+                self._progress_queue.put((event.run_session_id, event.payload["recovery_hint"]))
             self._set_status(f"{event.payload.get('status')}: {event.payload.get('summary', '')}")
             self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
             if not self.pending_intake:
@@ -1025,6 +1194,50 @@ class ConversationScreen(Screen):
     def action_toggle_details(self) -> None:
         sidebar = self.query_one("#side-pane", Vertical)
         sidebar.display = not sidebar.display
+        self.query_one("#side-resize-handle", Static).display = sidebar.display
+        if not sidebar.display and self._drag_start is not None:
+            self.query_one("#side-resize-handle", Static).capture_mouse(False)
+            self._drag_start = None
+
+    def _clamp_sidebar_width(self, width: int) -> int:
+        minimum = 18 if self.app.has_class("compact") else 26
+        maximum = max(minimum, self.size.width - 24 - 4)
+        return max(minimum, min(maximum, width))
+
+    @on(events.MouseDown, "#side-resize-handle")
+    def start_sidebar_drag(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            return
+        handle = self.query_one("#side-resize-handle", Static)
+        self._drag_start = (event.screen_x, self.query_one("#side-pane", Vertical).outer_size.width)
+        handle.capture_mouse()
+        event.stop()
+
+    @on(events.MouseMove, "#side-resize-handle")
+    def drag_sidebar(self, event: events.MouseMove) -> None:
+        if self._drag_start is None:
+            return
+        start_x, start_width = self._drag_start
+        self._sidebar_width = self._clamp_sidebar_width(start_width + start_x - event.screen_x)
+        self.query_one("#side-pane", Vertical).styles.width = self._sidebar_width
+        event.stop()
+
+    @on(events.MouseUp, "#side-resize-handle")
+    def end_sidebar_drag(self, event: events.MouseUp) -> None:
+        if self._drag_start is not None:
+            self.query_one("#side-resize-handle", Static).capture_mouse(False)
+            self._drag_start = None
+            event.stop()
+
+    def on_resize(self, _event: events.Resize) -> None:
+        if self._sidebar_width is not None and self.is_mounted:
+            self._sidebar_width = self._clamp_sidebar_width(self._sidebar_width)
+            self.query_one("#side-pane", Vertical).styles.width = self._sidebar_width
+
+    def on_unmount(self) -> None:
+        if self._drag_start is not None:
+            self.query_one("#side-resize-handle", Static).capture_mouse(False)
+            self._drag_start = None
 
     def action_edit_config(self) -> None:
         self.app.push_screen(ConfigScreen(self.experiment_name))
@@ -1103,6 +1316,8 @@ class MBAApp(App):
     #session-status { height: auto; max-height: 4; overflow-y: auto; padding: 0 2; color: #9aa6b6; }
     #session-body { width: 100%; height: 1fr; }
     #chat-pane { width: 1fr; height: 1fr; min-width: 24; padding: 0 1 0 2; }
+    #side-resize-handle { width: 1; min-width: 1; height: 1fr;
+                          background: #34445f; pointer: w-resize; }
     #side-pane { width: 36; height: 1fr; min-width: 26; background: #171c24; padding: 0 1; }
     #conversation { width: 100%; height: 1fr; background: #101319; border: none; }
     .chat-row { width: 100%; height: auto; margin: 0 0 1 0; }
@@ -1120,7 +1335,8 @@ class MBAApp(App):
     #question-hint { height: 1; color: #baa993; }
     #message { width: 100%; height: 3; }
     #runs { width: 100%; height: 30%; min-height: 4; border: none; }
-    #run-detail { width: 100%; height: 35%; min-height: 4; border-top: solid #323c4b; }
+    #active-agent { height: auto; max-height: 2; padding: 0 1; color: #a8c4ff; }
+    #agent-filter { width: 100%; height: 3; }
     #progress { width: 100%; height: 1fr; min-height: 3; border-top: solid #323c4b; }
     .compact #chat-pane { padding: 0 1; }
     .compact #side-pane { width: 26; min-width: 18; }

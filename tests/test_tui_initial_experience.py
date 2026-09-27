@@ -1,10 +1,13 @@
 import asyncio
+import json
 import threading
 from types import SimpleNamespace
 
 import pytest
+from textual.widgets import Select
 
 from medbenchagent.runtime import sessions
+from medbenchagent.runtime.construction import record_event
 from medbenchagent.runtime.graph_runner import RunEvent
 from medbenchagent import tui
 from medbenchagent.tui import MBAApp, ChatMessage, ConversationScreen, ExperimentMenu, RemoveExperimentScreen, _brand
@@ -154,6 +157,98 @@ def test_run_question_card_archives_answer(tmp_path, monkeypatch):
                 "What does status 0 mean?", "Benign"]
             assert [bubble.full_text for bubble in screen.query(ChatMessage)] == [
                 "What does status 0 mean?", "Benign"]
+
+    asyncio.run(check())
+
+
+def test_agent_progress_filter_keeps_live_and_saved_events(tmp_path):
+    record = sessions.create_experiment("pilot", root=tmp_path)
+    run = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
+    record["pending_runs"].clear()
+    folder = tmp_path / "run"
+    folder.mkdir()
+    sessions.update_run(record, run["id"], root=tmp_path, status="complete", run_directory=str(folder))
+    events = folder / "construction_events.jsonl"
+    record_event(events, "tool_started", agent="SupervisorAgent", operation="prepare_data", status="running")
+    record_event(events, "tool_result", agent="DataProcessingAgent", operation="inspect_table",
+                 status="success", summary="Table inspected")
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            app.open_experiment("pilot")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            screen = app.screen
+            progress = screen.query_one("#progress")
+            assert any("prepare_data" in str(line) for line in progress.lines)
+            assert any("inspect_table" in str(line) for line in progress.lines)
+            screen.query_one("#agent-filter", Select).value = "DataProcessingAgent"
+            await pilot.pause()
+            assert any("inspect_table" in str(line) for line in progress.lines)
+            assert not any("prepare_data" in str(line) for line in progress.lines)
+            record_event(events, "tool_started", agent="DataProcessingAgent",
+                         operation="inspect_images", status="running")
+            screen._flush_progress()
+            assert any("inspect_images" in str(line) for line in progress.lines)
+            assert "DataProcessing" in str(screen.query_one("#active-agent").content)
+            partial = json.dumps({"timestamp": "2026-01-01T00:00:00Z", "event_type": "tool_result",
+                                  "agent": "DataProcessingAgent", "operation": "inspect_images",
+                                  "status": "success", "summary": "Images inspected"}).encode()
+            with events.open("ab") as stream:
+                stream.write(partial)
+            screen._flush_progress()
+            assert not any("Images inspected" in str(line) for line in progress.lines)
+            with events.open("ab") as stream:
+                stream.write(b"\n")
+            screen._flush_progress()
+            await pilot.pause()
+            assert any("Images" in str(line) for line in progress.lines)
+            assert any("Images inspected" in entry[1] for entry in screen._progress_entries)
+            screen.query_one("#agent-filter", Select).value = "*"
+            await pilot.pause()
+            assert any("prepare_data" in str(line) for line in progress.lines)
+            screen._on_event(RunEvent("new-run", "error", {"status": "blocked", "summary": "Invalid config"}))
+            screen._flush_progress()
+            await pilot.pause()
+            assert screen._progress_run_id == "new-run"
+            assert any("Invalid" in str(line) for line in progress.lines)
+            assert any("Invalid config" in entry[1] for entry in screen._progress_entries)
+
+    asyncio.run(check())
+
+
+def test_sidebar_drag_and_toggle(tmp_path):
+    sessions.create_experiment("pilot", root=tmp_path)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            app.open_experiment("pilot")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            screen = app.screen
+            side = screen.query_one("#side-pane")
+            original = side.outer_size.width
+            await pilot.mouse_down("#side-resize-handle")
+            await pilot.hover("#chat-pane", offset=(5, 5))
+            await pilot.pause()
+            assert side.outer_size.width > original
+            assert screen.query_one("#chat-pane").size.width >= 24
+            expanded = side.outer_size.width
+            await pilot.hover("#side-pane", offset=(expanded - 1, 1))
+            await pilot.pause()
+            assert 18 <= side.outer_size.width < expanded
+            await pilot.mouse_up("#side-pane", offset=(1, 1))
+            await pilot.resize_terminal(70, 24)
+            await pilot.pause()
+            assert screen.query_one("#chat-pane").size.width >= 24
+            screen.action_toggle_details()
+            assert not side.display
+            assert not screen.query_one("#side-resize-handle").display
+            screen.action_toggle_details()
+            assert side.display
+            assert screen.query_one("#side-resize-handle").display
 
     asyncio.run(check())
 

@@ -231,7 +231,9 @@ GraphRunner 独占预检、配置冻结、LangGraph 流、checkpoint 和 interru
 initialized/progress/artifact/needs_input/finished/error 事件。界面不打开 checkpoint。
 每个实验的 session 写入和 Run 执行分别受锁保护，避免 CLI/TUI 同时写坏会话或执行同一 Run。
 TUI 首页后台扫描实验；Conversation 页面先挂载，再后台导入会话服务并恢复状态。进度日志分批显示，
-不会为界面刷新新增持久化缓存。首页 /remove 确认后只删除未被会话或运行锁占用的 experiment 工作区，
+不会为界面刷新新增持久化缓存。右侧只保留 Run 状态列表与按 Agent 筛选的当前 Run 进度；界面增量读取
+construction_events.jsonl 的 Agent 决策、模型与工具事件，最多显示最近 600 条。侧栏边缘可拖动调整本次页面宽度。
+首页 /remove 确认后只删除未被会话或运行锁占用的 experiment 工作区，
 不删除独立运行目录、全局 Catalog 或 prepared dataset。
 Conversation 使用左右消息卡片；提交文本先临时显示，正式消息按 ID 与内容合并。模型处理时显示临时 Thinking，
 已校验的回复仅在 TUI 中逐段展示。Intake 与运行澄清使用独立问题卡片，运行问题及回答幂等归档到会话消息。

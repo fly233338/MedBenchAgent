@@ -100,6 +100,11 @@ def test_validated_defaults_reach_named_parameters(tmp_path, monkeypatch, harnes
         }
     )
     assert output["context"]["profiled"]
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert ("Test", "decide") in {(item.get("agent"), item.get("operation")) for item in events
+                                 if item["event_type"] == "agent_step_started"}
+    assert ("Test", "profile") in {(item.get("agent"), item.get("operation")) for item in events
+                                  if item["event_type"] == "tool_started"}
 
 
 def test_source_clarification_is_repaired_before_execution(tmp_path, harness_model):
