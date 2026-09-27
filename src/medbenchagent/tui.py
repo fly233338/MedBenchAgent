@@ -91,6 +91,21 @@ def _navigate_slash_list(event: events.Key, field: Input, options: OptionList) -
     event.stop()
 
 
+class ChatMessage(Static):
+    """One conversation bubble, optionally awaiting a persisted message ID."""
+
+    def __init__(self, role: str, content: str, *, message_id: str | None = None) -> None:
+        super().__init__(Text(content), classes=f"chat-bubble {role}")
+        self.role = role
+        self.full_text = content
+        self.message_id = message_id
+        self.chat_row: Horizontal | None = None
+        self.border_title = "YOU" if role == "user" else "MBA"
+
+    def show_text(self, content: str) -> None:
+        self.update(Text(content))
+
+
 class RemoveExperimentScreen(ModalScreen[bool]):
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
@@ -486,7 +501,15 @@ class ConversationScreen(Screen):
         self.pending_intake = False
         self.current_run_id: str | None = None
         self._displayed_messages: set[str] = set()
+        self._message_widgets: dict[str, ChatMessage] = {}
         self._displayed_failures: set[str] = set()
+        self._optimistic_messages: list[ChatMessage] = []
+        self._history_loaded = False
+        self._thinking_row: Horizontal | None = None
+        self._reveal_timer = None
+        self._revealing: ChatMessage | None = None
+        self._reveal_position = 0
+        self._pending_answer_bubble: ChatMessage | None = None
         self._progress_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
         self.stop_event = threading.Event()
         self.exit_requested = False
@@ -498,9 +521,11 @@ class ConversationScreen(Screen):
         yield Static("Ready", id="session-status")
         with Horizontal(id="session-body"):
             with Vertical(id="chat-pane"):
-                yield RichLog(id="conversation", wrap=True, highlight=True, min_width=1)
-                with VerticalScroll(id="question-scroll"):
+                yield VerticalScroll(id="conversation")
+                with VerticalScroll(id="question-card"):
+                    yield Static("? MBA needs your input", id="question-title")
                     yield Static("", id="intake-question")
+                    yield Static("Your answer will let MBA continue.", id="question-hint")
                 yield OptionList(id="session-commands")
                 yield Input(placeholder="Describe a task or type / for commands", id="message")
             with Vertical(id="side-pane"):
@@ -534,6 +559,7 @@ class ConversationScreen(Screen):
             return
         self.service = service
         self.refresh_record(record)
+        self._history_loaded = True
         self._render_intake()
         self._set_status("Ready")
         self._start_next(refresh=False)
@@ -544,23 +570,70 @@ class ConversationScreen(Screen):
 
     def refresh_record(self, record: dict | None = None) -> None:
         self.record = record if record is not None else self.service.record()
+        def awaiting_answer(message: dict) -> bool:
+            return any(run["id"] == message.get("run_id")
+                       and run.get("pending_question") == message["text"]
+                       and not run.get("pending_answer") and run["status"] == "waiting_input"
+                       for run in self.record["runs"])
+
+        new_messages = [message for message in self.record["messages"]
+                        if message["id"] not in self._displayed_messages and not awaiting_answer(message)]
+        latest_reply = next((message["id"] for message in reversed(new_messages)
+                             if message["role"] == "assistant" and not any(
+                                 run.get("pending_question") == message["text"]
+                                 and run["id"] == message.get("run_id") for run in self.record["runs"])), None)
+        added_ids = []
         for message in self.record["messages"]:
+            if awaiting_answer(message):
+                continue
             if message["id"] not in self._displayed_messages:
-                self._write_message(message["role"], message["text"])
+                matched = next((item for item in self._optimistic_messages
+                                if item.role == message["role"] and item.full_text == message["text"]), None)
+                if matched:
+                    matched.message_id = message["id"]
+                    self._optimistic_messages.remove(matched)
+                    bubble = matched
+                else:
+                    bubble = self._write_message(message["role"], message["text"], message_id=message["id"],
+                                                 reveal=self._history_loaded and message["id"] == latest_reply)
+                self._message_widgets[message["id"]] = bubble
                 self._displayed_messages.add(message["id"])
+                added_ids.append(message["id"])
         for submission in self.record["submissions"]:
             if submission["status"] == "failed" and submission["id"] not in self._displayed_failures:
-                self.query_one("#conversation", RichLog).write(
-                    Text(f" FAILED REQUEST  {submission['text']}\n {submission['error']}", style="#eb7d83"))
+                matched = next((item for item in self._optimistic_messages
+                                if item.role == "user" and item.full_text == submission["text"]), None)
+                if matched:
+                    self._optimistic_messages.remove(matched)
+                    matched.add_class("failed")
+                    matched.show_text(f"{submission['text']}\nError: {submission['error']}")
+                else:
+                    self._write_message("user", f"{submission['text']}\nError: {submission['error']}", failed=True)
                 self._displayed_failures.add(submission["id"])
+        if added_ids:
+            self.call_after_refresh(self._position_messages, added_ids)
         self.refresh_runs()
+
+    def _position_messages(self, added_ids: list[str]) -> None:
+        view = self.query_one("#conversation", VerticalScroll)
+        ordered = [message["id"] for message in self.record["messages"]
+                   if message["id"] in self._message_widgets]
+        positions = {message_id: index for index, message_id in enumerate(ordered)}
+        for message_id in added_ids:
+            row = self._message_widgets[message_id].chat_row
+            index = positions[message_id]
+            previous = self._message_widgets[ordered[index - 1]].chat_row if index else None
+            if previous is not None and row is not previous:
+                view.move_child(row, after=previous)
+            elif previous is None and view.children and row is not view.children[0]:
+                view.move_child(row, before=view.children[0])
 
     def _render_intake(self) -> None:
         intake = next((item for item in self.record["submissions"]
                        if item["status"] == "awaiting_input"), None)
         self.pending_intake = intake is not None
         view = self.query_one("#intake-question", Static)
-        container = self.query_one("#question-scroll")
+        container = self.query_one("#question-card")
         if intake is None:
             if self.pending_question:
                 container.display = True
@@ -576,14 +649,72 @@ class ConversationScreen(Screen):
                          f"{question['prompt']}\n{intake.get('error', '')}"))
         self.query_one("#message", Input).placeholder = "Answer this question or type /cancel"
 
-    def _write_message(self, role: str, content: str) -> None:
-        label = "YOU" if role in {"user", "you"} else "MBA"
-        color = "#9ec3ef" if label == "YOU" else "#72d8c2"
-        line = Text()
-        line.append(f" {label} ", style=f"bold {color}")
-        line.append("  " + content)
-        log = self.query_one("#conversation", RichLog)
-        log.write(line, scroll_end=log.is_vertical_scroll_end)
+    def _write_message(self, role: str, content: str, *, message_id: str | None = None,
+                       reveal: bool = False, failed: bool = False) -> ChatMessage:
+        role = "user" if role in {"user", "you"} else "assistant"
+        view = self.query_one("#conversation", VerticalScroll)
+        was_at_end = view.is_vertical_scroll_end
+        bubble = ChatMessage(role, "" if reveal else content, message_id=message_id)
+        bubble.full_text = content
+        if failed:
+            bubble.add_class("failed")
+        row = Horizontal(bubble, classes=f"chat-row {role}")
+        bubble.chat_row = row
+        view.mount(row)
+        if was_at_end:
+            view.scroll_end(animate=False)
+        if reveal:
+            self._start_reveal(bubble)
+        return bubble
+
+    def _show_optimistic(self, content: str) -> ChatMessage:
+        bubble = self._write_message("user", content)
+        self._optimistic_messages.append(bubble)
+        return bubble
+
+    def _remove_optimistic(self, bubble: ChatMessage, *, restore_input: bool = False) -> None:
+        if bubble in self._optimistic_messages:
+            self._optimistic_messages.remove(bubble)
+            bubble.chat_row.remove()
+        if restore_input:
+            field = self.query_one("#message", Input)
+            field.value = bubble.full_text
+            field.focus()
+
+    def _show_thinking(self) -> None:
+        if self._thinking_row is None:
+            bubble = ChatMessage("assistant", "⚙ Thinking…")
+            bubble.add_class("thinking")
+            self._thinking_row = Horizontal(bubble, classes="chat-row assistant")
+            self.query_one("#conversation", VerticalScroll).mount(self._thinking_row)
+            self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
+
+    def _hide_thinking(self) -> None:
+        if self._thinking_row is not None:
+            self._thinking_row.remove()
+            self._thinking_row = None
+
+    def _start_reveal(self, bubble: ChatMessage) -> None:
+        if self._reveal_timer is not None:
+            self._reveal_timer.stop()
+        if self._revealing is not None:
+            self._revealing.show_text(self._revealing.full_text)
+        self._revealing = bubble
+        self._reveal_position = 0
+        self._reveal_timer = self.set_interval(0.025, self._reveal_step)
+
+    def _reveal_step(self) -> None:
+        bubble = self._revealing
+        if bubble is None:
+            return
+        self._reveal_position = min(len(bubble.full_text), self._reveal_position + 4)
+        bubble.show_text(bubble.full_text[:self._reveal_position])
+        if self.query_one("#conversation", VerticalScroll).is_vertical_scroll_end:
+            self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
+        if self._reveal_position == len(bubble.full_text):
+            self._reveal_timer.stop()
+            self._reveal_timer = None
+            self._revealing = None
 
     def _set_status(self, value: str) -> None:
         self.query_one("#session-status", Static).update(Text(value))
@@ -677,6 +808,8 @@ class ConversationScreen(Screen):
                 return
             try:
                 self.service.cancel_intake()
+                for bubble in list(self._optimistic_messages):
+                    self._remove_optimistic(bubble)
                 self.refresh_record()
                 self._render_intake()
                 self._set_status("Preparation questions cancelled")
@@ -717,19 +850,23 @@ class ConversationScreen(Screen):
             return
         event.input.value = ""
         if self.pending_intake:
+            self._pending_answer_bubble = self._show_optimistic(value)
             self.classifying = True
+            self._show_thinking()
             self._answer_intake(value)
             return
         if self.pending_question and self.current_run_id:
+            bubble = self._show_optimistic(value)
             try:
                 self.service.answer(self.current_run_id, value)
             except Exception as exc:
+                self._remove_optimistic(bubble, restore_input=True)
                 self._set_status(str(exc))
                 return
             run_id = self.current_run_id
             self.pending_question = False
             self._run_question = ""
-            self.query_one("#question-scroll").display = False
+            self.query_one("#question-card").display = False
             self.current_run_id = None
             self.refresh_record()
             self._execute_run(resume_id=run_id, answer=value)
@@ -744,6 +881,8 @@ class ConversationScreen(Screen):
             self._set_status("Wait for the current request to be classified.")
             return
         self.classifying = True
+        self._show_optimistic(value)
+        self._show_thinking()
         self._set_status("Interpreting request…")
         self._submit_task(value)
 
@@ -757,6 +896,10 @@ class ConversationScreen(Screen):
 
     def _intake_failed(self, message: str) -> None:
         self.classifying = False
+        self._hide_thinking()
+        if self._pending_answer_bubble is not None:
+            self._remove_optimistic(self._pending_answer_bubble, restore_input=True)
+            self._pending_answer_bubble = None
         self.refresh_record()
         self._render_intake()
         self._set_status(message)
@@ -772,6 +915,8 @@ class ConversationScreen(Screen):
 
     def _submitted(self, result) -> None:
         self.classifying = False
+        self._pending_answer_bubble = None
+        self._hide_thinking()
         self.refresh_record()
         self._render_intake()
         if result.question:
@@ -785,6 +930,7 @@ class ConversationScreen(Screen):
 
     def _submission_failed(self, message: str) -> None:
         self.classifying = False
+        self._hide_thinking()
         self.refresh_record()
         self._set_status(f"Supervisor error: {message}")
         self._finish_navigation()
@@ -809,6 +955,7 @@ class ConversationScreen(Screen):
         if self.running:
             return
         self.running = True
+        self._show_thinking()
         self._set_status("Resuming run" if resume_id else "Running queued tasks")
         self._execute(resume_id, answer)
 
@@ -837,26 +984,27 @@ class ConversationScreen(Screen):
         elif event.kind == "artifact":
             self._progress_queue.put(f"[artifact] {event.payload}")
         elif event.kind == "needs_input":
+            self._hide_thinking()
             self.pending_question = True
             self.current_run_id = event.run_session_id
             question = event.payload["question"]
             self._run_question = question
             self._set_status("Answer the run question to continue")
-            self.query_one("#question-scroll").display = True
-            self.query_one("#intake-question", Static).update(Text(question))
-            self.query_one("#message", Input).placeholder = "Answer this question or /queue another request"
+            self._render_intake()
             self.query_one("#message", Input).focus()
         elif event.kind in {"finished", "error"}:
+            self._hide_thinking()
             self._flush_progress()
             if event.payload.get("recovery_hint"):
                 self._progress_queue.put(event.payload["recovery_hint"])
             self._set_status(f"{event.payload.get('status')}: {event.payload.get('summary', '')}")
             self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
             if not self.pending_intake:
-                self.query_one("#question-scroll").display = False
+                self.query_one("#question-card").display = False
 
     def _execution_ended(self) -> None:
         self._flush_progress()
+        self._hide_thinking()
         self.running = False
         self.refresh_record()
         if self._finish_navigation():
@@ -957,15 +1105,26 @@ class MBAApp(App):
     #chat-pane { width: 1fr; height: 1fr; min-width: 24; padding: 0 1 0 2; }
     #side-pane { width: 36; height: 1fr; min-width: 26; background: #171c24; padding: 0 1; }
     #conversation { width: 100%; height: 1fr; background: #101319; border: none; }
-    #question-scroll { height: auto; max-height: 8; display: none; }
-    #intake-question { height: auto; padding: 0 1; color: #72d8c2; }
-    #question-scroll { border-left: solid #e8ac70; }
+    .chat-row { width: 100%; height: auto; margin: 0 0 1 0; }
+    .chat-row.user { align: right top; }
+    .chat-row.assistant { align: left top; }
+    .chat-bubble { width: 75%; height: auto; min-height: 3; padding: 0 1;
+                   border: round #3a5964; background: #18252b; color: #d9dce5; }
+    .chat-bubble.user { width: 70%; border: round #3b5275; background: #1b2535; }
+    .chat-bubble.failed { border: round #eb7d83; color: #eb9ca1; }
+    .chat-bubble.thinking { width: auto; color: #a5b8c8; }
+    #question-card { height: auto; max-height: 10; display: none; margin: 1 0;
+                     padding: 0 1; border: round #e8ac70; background: #211d1a; }
+    #question-title { height: 1; color: #e8ac70; text-style: bold; }
+    #intake-question { height: auto; color: #e9e0d6; }
+    #question-hint { height: 1; color: #baa993; }
     #message { width: 100%; height: 3; }
     #runs { width: 100%; height: 30%; min-height: 4; border: none; }
     #run-detail { width: 100%; height: 35%; min-height: 4; border-top: solid #323c4b; }
     #progress { width: 100%; height: 1fr; min-height: 3; border-top: solid #323c4b; }
     .compact #chat-pane { padding: 0 1; }
     .compact #side-pane { width: 26; min-width: 18; }
+    .compact .chat-bubble, .compact .chat-bubble.user { width: 95%; }
     .compact #session-title { padding: 0 1; }
     """
 

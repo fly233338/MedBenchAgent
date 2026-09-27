@@ -150,11 +150,21 @@ COMMON = ("run_id", "run_directory", "construction_events_path", "effective_conf
 
 
 def required_field_action(context):
-    """Route only code-created missing-field clarifications without a model decision."""
+    """Route confirmed intake and code-created field clarifications without a model decision."""
     issue = context.get("global_issue")
     if issue and issue.get("purpose") == "benchmark_fields":
         return {"tool": "ask_user", "arguments": {"question": issue["question"], "issue_id": issue["issue_id"]},
                 "reason": "Complete required benchmark fields"}
+    if (context.get("entry_intent") == "prepare_dataset" and context.get("intake_dataset_name")
+            and context.get("run_intent", {}).get("intent") == "prepare_dataset" and not issue):
+        pending = preparation_pending(context)
+        if not pending:
+            return {"tool": "finish", "arguments": {}, "reason": "Preparation registration is complete"}
+        if context.get("last_agent_result", {}).get("status") not in {"failed", "blocked"}:
+            return {"tool": "prepare_data", "arguments": {
+                "dataset_id": pending[0],
+                "mode": "rebuild" if context.get("requested_rebuild") else "reuse_or_prepare",
+            }, "reason": "Prepare the dataset confirmed during intake"}
     clarification = context.get("clarification") or {}
     if (clarification.get("purpose") == "benchmark_fields"
             and context.get("brief_requirement") != context["user_requirement"]):
@@ -209,6 +219,7 @@ def child_result(context, dataset_id, role, output):
 def describe(context: SupervisorContext):
     details = {key: context.get(key) for key in (
         "user_requirement", "benchmark_info", "brief_ready", "brief_missing_fields", "sample_count_source", "prepare_dataset_id", "selected_dataset_ids",
+        "intake_dataset_name", "intake_source_root", "requested_rebuild",
         "dataset_task_plans", "dataset_templates", "template_revision_requests", "dataset_generations", "delivery_counts", "allocation_path", "prepared_entries",
         "artifact_versions", "global_issue", "last_agent_result", "entry_intent", "run_intent", "requested_dataset_ids")}
     ids = set(context.get("selected_dataset_ids", [])) | set(context.get("run_intent", {}).get("prepare_dataset_ids", []))
@@ -311,6 +322,7 @@ Role and authority:
 The session has already selected entry_intent. Preserve it; set_intent is needed only when run_intent is absent.
 Preparation and construction are separate runs. Do not infer new tasks or benchmark priorities from delegation notes.
 Use the confirmed dataset ID and source inputs; inspect dataset status when readiness or reuse is uncertain.
+An intake_source_root is already confirmed; do not ask for that path again. SourceDiscovery verifies its contents.
 Default to reuse_or_prepare. Rebuild only when explicitly requested. Never merge independent datasets.
 
 Decisions:

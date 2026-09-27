@@ -17,7 +17,8 @@ from medbenchagent.runtime.construction import event_context, record_event
 from medbenchagent.runtime.llm import StructuredOutputError, complete_validated_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.tool_contracts import AskUserArguments, NoArguments
-from medbenchagent.runtime.clarifications import new_issue, answer_payload, record_answer, resolve_semantic_answer
+from medbenchagent.runtime.clarifications import (new_issue, answer_payload, record_answer,
+                                                  resolve_semantic_answer, validate_ask_user)
 
 
 class AgentState(TypedDict, total=False):
@@ -139,7 +140,9 @@ def compile_agent(
                 raise ValueError(f"Unknown tool: {action.tool}")
             if action.tool not in enabled:
                 raise ValueError(f"Tool is not available in the current state: {action.tool}")
-            schemas[action.tool].model_validate(action.arguments)
+            arguments = schemas[action.tool].model_validate(action.arguments)
+            if action.tool == "ask_user":
+                validate_ask_user(context, name, arguments.model_dump())
 
         repair_count = 0
 

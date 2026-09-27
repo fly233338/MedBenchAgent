@@ -15,17 +15,43 @@ def issue_context(context, issue):
     return {**context, "agent_role": issue["role"], "dataset_scope": issue["dataset_id"]}
 
 
-def new_issue(role, context, reference, question, *, subject_scope=None, source_ids=None, image_ids=None):
-    from medbenchagent.runtime.dependencies import artifact_key, require
-    dataset = context.get("dataset_scope")
+def resolve_subject(context, role, subject_scope=None, source_ids=None):
+    """Resolve the source set identically for decision validation and issue creation."""
     scope = subject_scope or ("source" if context.get("source_scope") else "dataset")
-    sources = sorted(set(source_ids or ([context["source_scope"]] if scope == "source" and context.get("source_scope") else [])))
+    sources = sorted(set(source_ids or ([context["source_scope"]]
+                                  if scope == "source" and context.get("source_scope") else [])))
     if (scope == "dataset" and sources or scope == "source" and len(sources) != 1
             or scope == "multi_source" and len(sources) < 2):
         raise ValueError("Clarification scope requires the corresponding source set")
-    available = {s["id"] for s in context.get("sources", [])}
+    available = {source["id"] for source in context.get("sources", [])}
     if not set(sources) <= available:
         raise ValueError("Clarification references an unknown source")
+    if role == "DataProcessingAgent" and scope == "source" and sources != [context.get("source_scope")]:
+        raise ValueError("Select the source before asking a source-scoped clarification")
+    return scope, sources
+
+
+def validate_ask_user(context, role, arguments):
+    """Reject correctable clarification arguments before a tool attempt is counted."""
+    issue_id = arguments["issue_id"]
+    pending = context.get("global_issue")
+    if issue_id:
+        issue = (pending if role == "SupervisorAgent" else context.get("issues", {}).get(issue_id))
+        if (not issue or issue["issue_id"] != issue_id
+                or role != "SupervisorAgent" and issue["role"] != role):
+            raise ValueError("ask_user must reference the pending issue_id, or omit it for a new question")
+        return
+    if pending:
+        raise ValueError("ask_user must reference the pending issue_id")
+    new_issue(role, context, arguments["reference"] or "clarification", arguments["question"],
+              subject_scope=arguments["subject_scope"], source_ids=arguments["source_ids"],
+              image_ids=arguments["image_ids"])
+
+
+def new_issue(role, context, reference, question, *, subject_scope=None, source_ids=None, image_ids=None):
+    from medbenchagent.runtime.dependencies import artifact_key, require
+    dataset = context.get("dataset_scope")
+    scope, sources = resolve_subject(context, role, subject_scope, source_ids)
     kinds = [f"source/{source}/Source" for source in sources]
     for source in sources:
         normalized = f"source/{source}/NormalizedSource"

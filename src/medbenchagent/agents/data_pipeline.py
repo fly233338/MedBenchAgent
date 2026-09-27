@@ -626,6 +626,7 @@ Inspection and evidence:
 Inspect actual files, fields, identities and an independent image population. Read relevant codebooks/manuals before
 asking about unresolved semantics; list_evidence/read_evidence recover earlier inspections and user decisions.
 Ask about the exact field/raw value or relationship, with context and the consequence of the missing interpretation.
+Select the source before asking about its semantics; source-scoped questions use that active source.
 Never infer labels or identity from medical knowledge. Preserve missing versus negative and finding/bbox pairing.
 read_text freezes inspected documentation; freeze_documentation selects additional documents for future planning.
 PDF reading is page-based without OCR. Only frozen documentation remains available after preparation.

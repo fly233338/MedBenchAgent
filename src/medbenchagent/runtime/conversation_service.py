@@ -195,7 +195,13 @@ class ConversationService:
             run = next((item for item in record["runs"] if item["id"] == run_id), None)
             if run is None or run["status"] != "waiting_input":
                 raise ValueError("Run is not waiting for an answer")
-            sessions.add_message(record, "user", text, run_id=run_id, root=self.root)
+            if run.get("pending_answer"):
+                if run["pending_answer"] != text:
+                    raise ValueError("This run question already has an answer")
+                return
+            sessions.add_message(record, "user", text, run_id=run_id, root=self.root, save=False)
+            run["pending_answer"] = text
+            sessions.save_experiment(record, root=self.root)
 
     def reconcile(self) -> dict:
         """Repair stale running entries after a process exit; an active owner keeps its lock."""
@@ -280,6 +286,8 @@ class ConversationService:
 
     def resume(self, run_id: str, *, answer: str | None = None,
                stop_requested: Callable[[], bool] | None = None) -> Iterator[RunEvent]:
+        if answer is not None:
+            self.answer(run_id, answer)
         with self.run_lock.acquire(timeout=0):
             with self.session_lock:
                 record = sessions.load_experiment(self.name, root=self.root)
@@ -310,10 +318,20 @@ class ConversationService:
                 changes["status"] = "waiting_input"
             elif event.kind == "error":
                 changes["status"] = event.payload.get("status", "failed")
-            sessions.update_run(record, event.run_session_id, root=self.root, **changes)
+            run.update(changes)
+            if event.kind == "needs_input":
+                question = event.payload["question"]
+                if run.get("pending_question") != question or run.get("pending_answer"):
+                    sessions.add_message(record, "assistant", question, run_id=run["id"],
+                                         root=self.root, save=False)
+                run["pending_question"] = question
+                run["pending_answer"] = None
             if event.kind in {"finished", "error"}:
-                current = next(item for item in record["runs"] if item["id"] == run["id"])
-                reply = f"{current['kind']}: {current['status']}. {current.get('summary', '')}"
-                sessions.add_message(record, "assistant", reply, run_id=run["id"], root=self.root)
-                if current["status"] in {"blocked", "failed"}:
+                run["pending_question"] = None
+                run["pending_answer"] = None
+                reply = f"{run['kind']}: {run['status']}. {run.get('summary', '')}"
+                sessions.add_message(record, "assistant", reply, run_id=run["id"],
+                                     root=self.root, save=False)
+                if run["status"] in {"blocked", "failed"}:
                     sessions.block_dependents(record, run["id"], root=self.root)
+            sessions.save_experiment(record, root=self.root)

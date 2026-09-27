@@ -88,6 +88,23 @@ def test_resume_continues_dependent_queue(tmp_path):
     assert all(run["status"] == "complete" for run in service.record()["runs"])
 
 
+def test_run_question_and_answer_are_archived_once(tmp_path):
+    from medbenchagent.runtime.conversation_service import ConversationService
+    from medbenchagent.runtime.graph_runner import RunEvent
+
+    record = sessions.create_experiment("pilot", root=tmp_path)
+    run = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
+    service = ConversationService("pilot", root=tmp_path)
+    event = RunEvent(run["id"], "needs_input", {"question": "What does status 0 mean?"})
+    service._apply(event)
+    service._apply(event)
+    assert [item["text"] for item in service.record()["messages"]] == ["What does status 0 mean?"]
+    service.answer(run["id"], "It means benign")
+    service.answer(run["id"], "It means benign")
+    assert [item["text"] for item in service.record()["messages"]] == [
+        "What does status 0 mean?", "It means benign"]
+
+
 def test_session_supervisor_contract(monkeypatch):
     monkeypatch.setattr("medbenchagent.runtime.session_supervisor.complete_validated_json",
                         lambda *_args, **_kwargs: SessionDecision.model_validate({"tasks": [

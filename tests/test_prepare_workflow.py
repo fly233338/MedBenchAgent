@@ -78,6 +78,21 @@ def test_supervisor_reuses_without_starting_data_processing(tmp_path, monkeypatc
     assert output["prepared_entries"]["a"]["annotation_path"] == entry["annotation_path"]
 
 
+def test_confirmed_intake_prepares_and_finishes_without_supervisor_question(tmp_path, monkeypatch, harness_model):
+    cfg = settings.get_settings()
+    monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, paths=replace(cfg.paths,
+                        dataset_catalog=tmp_path / "catalog.json", runs_root=tmp_path / "runs")))
+    entry = prepared_dataset(tmp_path, "a", monkeypatch)
+    confirmed_root = tmp_path / "confirmed"
+    confirmed_root.mkdir()
+    harness_model(lambda *_args: pytest.fail("Confirmed intake must not invoke Supervisor decisions"))
+    output = compile_benchmark_graph().invoke({"user_requirement": "Prepare A",
+                                               "prepare_dataset_id": "a", "intake_dataset_name": "A",
+                                               "intake_source_root": str(confirmed_root)})
+    assert output["status"] == "complete"
+    assert output["prepared_entries"]["a"]["annotation_path"] == entry["annotation_path"]
+
+
 def test_prepare_discovers_unconfigured_source_from_request(tmp_path, monkeypatch, harness_model):
     cfg = settings.get_settings()
     cfg = replace(cfg, paths=replace(cfg.paths, dataset_catalog=tmp_path / "catalog.json",

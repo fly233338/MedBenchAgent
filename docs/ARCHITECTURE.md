@@ -232,6 +232,8 @@ initialized/progress/artifact/needs_input/finished/error 事件。界面不打�
 TUI 首页后台扫描实验；Conversation 页面先挂载，再后台导入会话服务并恢复状态。进度日志分批显示，
 不会为界面刷新新增持久化缓存。首页 /remove 确认后只删除未被会话或运行锁占用的 experiment 工作区，
 不删除独立运行目录、全局 Catalog 或 prepared dataset。
+Conversation 使用左右消息卡片；提交文本先临时显示，正式消息按 ID 与内容合并。模型处理时显示临时 Thinking，
+已校验的回复仅在 TUI 中逐段展示。Intake 与运行澄清使用独立问题卡片，运行问题及回答幂等归档到会话消息。
 Ctrl+C 从整个页面栈找到活动会话，通过 LangGraph RunControl.request_drain 请求在 superstep 保存边界停止，
 配置页不会绕过运行退出流程。每次执行使用独立控制对象，GraphDrained 保留 checkpoint；在途调用完成或超时后停止。
 GraphRunner 使用同步 checkpoint 持久化，缺少合法终态不得推断为 complete。
@@ -274,6 +276,8 @@ Supervisor 共享状态只保留选中 ID、各 Dataset 产物引用和进度摘
 
 共享 Harness 对决策动作和工具参数使用同一结构化校验反馈修复；修复调用不消耗 Agent 执行步数，
 修复耗尽才计一次 Agent 决策失败，预算阻断保留最后的具体错误。Harness 使用一致的工具可见/执行门控。
+ask_user 在决策校验时解析 subject_scope/source_ids、当前来源与待处理 issue_id，非法组合先交给模型修复；
+DataProcessing 的单来源澄清要求先选中该 Source。已完成 Intake 的准备运行由 Supervisor 确定性委派准备并在登记后结束。
 Supervisor 提示按职责、状态调度、澄清和完成条件组织，不重新识别已确定 entry_intent；有效产物与可见工具
 决定可执行动作。DataProcessing 的观察提供逐来源有效阶段、待处理来源、后端能力、验收摘要和完成门槛，
 均从已有依赖与产物推导，不维护额外流程状态。generated_python 不可用时隐藏 Adapter 工具，保存及执行仍验证。

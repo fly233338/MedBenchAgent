@@ -1,12 +1,13 @@
 import asyncio
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from medbenchagent.runtime import sessions
 from medbenchagent.runtime.graph_runner import RunEvent
 from medbenchagent import tui
-from medbenchagent.tui import MBAApp, ConversationScreen, ExperimentMenu, RemoveExperimentScreen, _brand
+from medbenchagent.tui import MBAApp, ChatMessage, ConversationScreen, ExperimentMenu, RemoveExperimentScreen, _brand
 
 
 def test_plain_text_status_and_incremental_run_rows(tmp_path, monkeypatch):
@@ -86,6 +87,73 @@ def test_question_inputs_distinguish_absolute_paths_from_commands(tmp_path, monk
             field.value = "/mnt/data/raw"
             await pilot.press("enter")
             assert run_answers == ["/mnt/data/raw"]
+
+    asyncio.run(check())
+
+
+def test_conversation_shows_optimistic_message_then_reconciles_reply(tmp_path, monkeypatch):
+    sessions.create_experiment("pilot", root=tmp_path)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            app.open_experiment("pilot")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            screen = app.screen
+            monkeypatch.setattr(screen, "_submit_task", lambda _value: None)
+            field = screen.query_one("#message")
+            field.value = "Prepare BrEaST"
+            await pilot.press("enter")
+            await pilot.pause()
+            bubbles = list(screen.query(ChatMessage))
+            assert [bubble.full_text for bubble in bubbles] == ["Prepare BrEaST", "⚙ Thinking…"]
+            assert screen.record["messages"] == []
+
+            record = sessions.load_experiment("pilot", root=tmp_path)
+            sessions.add_message(record, "user", "Prepare BrEaST", root=tmp_path, save=False)
+            sessions.add_message(record, "assistant", "Ready to prepare.", root=tmp_path)
+            screen._submitted(SimpleNamespace(question=None, run_ids=()))
+            await pilot.pause()
+            bubbles = list(screen.query(ChatMessage))
+            assert [bubble.full_text for bubble in bubbles] == ["Prepare BrEaST", "Ready to prepare."]
+            assert bubbles[0].message_id == record["messages"][0]["id"]
+            assert bubbles[1].styles.width.value == 95
+            app.set_class(False, "compact")
+            await pilot.pause()
+            assert bubbles[1].styles.width.value == 75
+
+    asyncio.run(check())
+
+
+def test_run_question_card_archives_answer(tmp_path, monkeypatch):
+    sessions.create_experiment("pilot", root=tmp_path)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            app.open_experiment("pilot")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            screen = app.screen
+            record = sessions.load_experiment("pilot", root=tmp_path)
+            run = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
+            event = RunEvent(run["id"], "needs_input", {"question": "What does status 0 mean?"})
+            screen.service._apply(event)
+            screen._on_event(event)
+            await pilot.pause()
+            assert screen.query_one("#question-card").display
+            assert "status 0" in str(screen.query_one("#intake-question").content)
+            monkeypatch.setattr(screen, "_execute_run", lambda **_kwargs: None)
+            field = screen.query_one("#message")
+            field.value = "Benign"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not screen.query_one("#question-card").display
+            assert [item["text"] for item in screen.service.record()["messages"]] == [
+                "What does status 0 mean?", "Benign"]
+            assert [bubble.full_text for bubble in screen.query(ChatMessage)] == [
+                "What does status 0 mean?", "Benign"]
 
     asyncio.run(check())
 

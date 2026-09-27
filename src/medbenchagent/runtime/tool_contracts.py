@@ -19,9 +19,22 @@ class AskUserArguments(NoArguments):
     reference: str = ""
     scope: Literal["local", "global"] = "local"
     issue_id: str = ""
-    subject_scope: Literal["dataset", "source", "multi_source"] | None = None
-    source_ids: list[NonEmpty] = Field(default_factory=list)
+    subject_scope: Literal["dataset", "source", "multi_source"] | None = Field(
+        default=None, description="Dataset scope has no source IDs; source needs one selected source; multi_source needs at least two.")
+    source_ids: list[NonEmpty] = Field(
+        default_factory=list, description="Source IDs for the subject scope. A selected active source can be inferred for source scope.")
     image_ids: list[NonEmpty] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_source_set(self):
+        count = len(set(self.source_ids))
+        if self.subject_scope == "dataset" and count:
+            raise ValueError("Dataset clarification must not include source_ids")
+        if self.subject_scope == "source" and count > 1:
+            raise ValueError("Source clarification requires exactly one source_id")
+        if self.subject_scope == "multi_source" and count < 2:
+            raise ValueError("Multi-source clarification requires at least two source_ids")
+        return self
 
 
 class FeedbackArguments(NoArguments):

@@ -3,7 +3,8 @@ import json
 import pytest
 
 from medbenchagent.runtime.harness import compile_agent, result
-from medbenchagent.runtime.tool_contracts import NoArguments
+from medbenchagent.runtime.clarifications import resolve_subject, validate_ask_user
+from medbenchagent.runtime.tool_contracts import AskUserArguments, NoArguments
 
 
 class ProfileArguments(NoArguments):
@@ -18,6 +19,7 @@ class ProfileArguments(NoArguments):
         ("profile", {"extra": 1}, "extra"),
         ("ask_user", {}, "question"),
         ("ask_user", {"question": "  "}, "question"),
+        ("ask_user", {"question": "Compare labels", "subject_scope": "multi_source"}, "source_ids"),
         ("finish", {"approved": True}, "approved"),
     ],
 )
@@ -98,6 +100,32 @@ def test_validated_defaults_reach_named_parameters(tmp_path, monkeypatch, harnes
         }
     )
     assert output["context"]["profiled"]
+
+
+def test_source_clarification_is_repaired_before_execution(tmp_path, harness_model):
+    actions = iter([
+        {"tool": "ask_user", "arguments": {"question": "What does status 0 mean?",
+                                         "subject_scope": "source", "source_ids": ["one"]}, "reason": "Clarify"},
+        {"tool": "finish", "arguments": {}, "reason": "Stop"},
+    ])
+    adapter = harness_model(lambda *_args: next(actions))
+    graph = compile_agent("DataProcessingAgent", "Test", {}, lambda _context: {},
+                          lambda _context: result("complete", "Done"))
+    output = graph.invoke({"context": {"run_id": "test", "sources": [{"id": "one"}],
+                                       "operation_directory": str(tmp_path / "ops"),
+                                       "construction_events_path": str(tmp_path / "events.jsonl")}})
+    assert output["result"]["status"] == "complete"
+    assert output["repair_attempts"] == 1
+    assert output["execution_failures"] == 0
+    assert "Select the source" in adapter.validation_errors[0]
+    assert resolve_subject({"source_scope": "one", "sources": [{"id": "one"}]},
+                           "DataProcessingAgent", "source", []) == ("source", ["one"])
+
+
+def test_supervisor_can_follow_up_on_child_issue():
+    issue = {"issue_id": "issue-1", "role": "DataProcessingAgent"}
+    arguments = AskUserArguments(question="Which code applies?", issue_id="issue-1").model_dump()
+    validate_ask_user({"global_issue": issue}, "SupervisorAgent", arguments)
 
 
 @pytest.mark.parametrize("error", [KeyError("internal"), TypeError("internal")])
