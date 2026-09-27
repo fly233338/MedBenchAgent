@@ -20,6 +20,7 @@ default_sample_count = 1000 # Used only when the user did not supply a count; la
 
 # [llm]
 # model = "your-chat-model" # Optional when /v1/models returns exactly one model.
+# reasoning_effort = "medium" # Must be supported by the configured gateway/model.
 
 [rag]
 embedding_base_url = "http://127.0.0.1:8001/v1"

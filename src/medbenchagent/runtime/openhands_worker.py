@@ -68,7 +68,10 @@ def main(request_path: str, result_path: str) -> None:
     # The run freezes the exact gateway model id.  LiteLLM needs an explicit
     # provider at this adapter boundary; the gateway still receives the raw id.
     model = _litellm_model(request["model"])
+    # OpenHands 1.49.6 defaults this to "high". Reasoning levels are not
+    # universal across gateways, so always use the run-frozen explicit value.
     llm = LLM(model=model, base_url=request["base_url"], max_output_tokens=8192,
+              reasoning_effort=request.get("reasoning_effort") or "medium",
               api_key=SecretStr(key), usage_id="medbench_coding_worker")
     agent = Agent(llm=llm, tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)])
     event_path = Path(request["construction_events_path"]) if request.get("construction_events_path") else None

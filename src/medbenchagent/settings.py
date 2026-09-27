@@ -24,6 +24,7 @@ _ENVIRONMENT_OVERRIDES = {
     "MEDBENCH_LLM_BASE_URL": ("llm", "base_url"),
     "MEDBENCH_LLM_TIMEOUT_SECONDS": ("llm", "timeout_seconds"),
     "MEDBENCH_LLM_MAX_RETRIES": ("llm", "max_retries"),
+    "MEDBENCH_LLM_REASONING_EFFORT": ("llm", "reasoning_effort"),
 }
 
 
@@ -43,6 +44,7 @@ class LlmSettings:
     timeout_seconds: float
     max_retries: int
     default_temperature: float
+    reasoning_effort: str
 
 
 @dataclass(frozen=True)
@@ -320,6 +322,9 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
             timeout_seconds=_number(llm["timeout_seconds"], "llm.timeout_seconds", minimum=0.000001, maximum=float("inf")),
             max_retries=_integer(llm["max_retries"], "llm.max_retries", minimum=0),
             default_temperature=_number(llm["default_temperature"], "llm.default_temperature", minimum=0, maximum=2),
+            # Older frozen runs predate this setting; medium avoids OpenHands'
+            # SDK default (high) while keeping those runs resumable.
+            reasoning_effort=_optional_string(llm.get("reasoning_effort", "medium"), "llm.reasoning_effort"),
         ),
         rag=RagSettings(
             embedding_base_url=_optional_string(rag["embedding_base_url"], "rag.embedding_base_url"),

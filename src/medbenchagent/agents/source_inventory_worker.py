@@ -65,6 +65,7 @@ def build_source_inventory(context):
         max_iterations=context.get("coding_worker_max_iterations", 40),
         timeout_seconds=context.get("coding_worker_timeout_seconds", 1800),
         model=get_settings().llm.model, base_url=get_settings().llm.base_url,
+        reasoning_effort=get_settings().llm.reasoning_effort,
         construction_events_path=context["construction_events_path"], run_id=context["run_id"],
         dataset_id=context["dataset_scope"], source_id=source["id"],
     )

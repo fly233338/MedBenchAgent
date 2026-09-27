@@ -77,8 +77,13 @@ The optional root `.env` is loaded without replacing existing process variables.
 or the CLI's explicit creation template.
 
 Supported field overrides are `MEDBENCH_LLM_MODEL`, `MEDBENCH_LLM_BASE_URL`,
-`MEDBENCH_LLM_TIMEOUT_SECONDS`, `MEDBENCH_LLM_MAX_RETRIES`, and `RAG_MIN_RERANK_SCORE`.
+`MEDBENCH_LLM_TIMEOUT_SECONDS`, `MEDBENCH_LLM_MAX_RETRIES`,
+`MEDBENCH_LLM_REASONING_EFFORT`, and `RAG_MIN_RERANK_SCORE`.
 An existing experiment's `llm.trace_name` is ignored; new configurations omit it.
+
+`llm.reasoning_effort` is passed to the OpenHands CodingWorker and is frozen with the
+run. Choose a value supported by the configured gateway/model, such as `low`, `medium`,
+or `xhigh`; OpenHands SDK 1.49.6 otherwise defaults to `high`, which some gateways reject.
 
 Keep the three independent credentials in `MEDBENCH_LLM_API_KEY`,
 `MEDBENCH_EMBEDDING_API_KEY`, and `MEDBENCH_RERANKER_API_KEY`. Each defaults to
