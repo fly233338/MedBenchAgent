@@ -21,10 +21,8 @@ TODO.md
 htmlcov/
 
 # Runtime planning artifacts (DuckDB, inventories, and local RAG indexes)
-benchmarks/runs/
+benchmarks/
 experiments/
-benchmarks/rag_cache/
-benchmarks/dataset_cache/
 .langgraph_api/
 
 # IDE and OS files

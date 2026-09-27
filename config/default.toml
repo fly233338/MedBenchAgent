@@ -19,10 +19,10 @@ default_temperature = 0.0
 trace_name = "DeepSeek"
 
 [rag]
-embedding_base_url = ""
-embedding_model = ""
-reranker_base_url = ""
-reranker_model = ""
+embedding_base_url = "http://127.0.0.1:8006/v1"
+embedding_model = "Qwen/Qwen3-Embedding-0.6B"
+reranker_base_url = "http://127.0.0.1:8007/v1"
+reranker_model = "Qwen/Qwen3-Reranker-0.6B"
 chunk_size = 1200
 chunk_overlap = 200
 candidate_count = 12
