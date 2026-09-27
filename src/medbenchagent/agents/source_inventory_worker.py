@@ -23,7 +23,8 @@ def build_source_inventory(context):
         raise ValueError("Coding inventory is only for raw sources")
     require(context, "Source")
     source_version = next(iter(require(context, "Source").values()))["id"]
-    workspace = Path(context["run_directory"]) / ".runtime" / "coding_workers" / context["dataset_scope"] / source["id"]
+    workspace = (Path(context["run_directory"]) / ".runtime" / "workers" / "openhands" /
+                 context["dataset_scope"] / source["id"])
     workspace.mkdir(parents=True, exist_ok=True)
     schema_path = Path(context["operation_directory"]) / "source_report.schema.json"
     atomic_write_json(schema_path, SourceReport.model_json_schema())
@@ -57,7 +58,10 @@ def build_source_inventory(context):
         objective=objective, required_outputs=["source_report.json", "image_population.jsonl", "inspect_source.py"],
         inputs={"source_report.schema.json": str(schema_path)},
         feedback=feedback,
-        conversation_id=context.get("source_inventory_conversation_id"),
+        attempt=attempts,
+        conversation_id=(context.get("source_inventory_conversation_id")
+                         if context.get("source_inventory_question") and clarification.get("status") == "resolved"
+                         else None),
         max_iterations=context.get("coding_worker_max_iterations", 40),
         timeout_seconds=context.get("coding_worker_timeout_seconds", 1800),
         model=get_settings().llm.model, base_url=get_settings().llm.base_url,

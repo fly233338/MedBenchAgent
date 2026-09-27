@@ -13,8 +13,11 @@ def rag_capability(settings):
         ("Embedding", settings.rag.embedding_base_url, settings.rag.embedding_model),
         ("Reranker", settings.rag.reranker_base_url, settings.rag.reranker_model),
     ):
-        if not base_url or not model:
-            reasons.append(f"{label} endpoint and model must be configured")
+        status = settings.service_status.get(label.lower())
+        if status and status != "available":
+            reasons.append(status)
+        elif not base_url or not model:
+            reasons.append(f"{label} endpoint or resolved model is unavailable")
         else:
             url = urlparse(base_url)
             if url.scheme not in {"http", "https"} or not url.netloc:
@@ -29,8 +32,6 @@ def rag_capability(settings):
 def preflight_errors(settings, *, build=False):
     """Require only resources needed by this intent; retrieval remains optional."""
     errors = []
-    if not settings.llm.model.strip():
-        errors.append("LLM model must be configured")
     url = urlparse(settings.llm.base_url)
     if url.scheme not in {"http", "https"} or not url.netloc:
         errors.append("LLM base_url must be an HTTP(S) URL")

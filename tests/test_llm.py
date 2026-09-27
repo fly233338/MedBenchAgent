@@ -9,6 +9,11 @@ import medbenchagent.runtime.llm as llm
 from medbenchagent.settings import get_settings
 
 
+@pytest.fixture(autouse=True)
+def no_live_discovery(monkeypatch):
+    monkeypatch.setattr(llm, "resolve_model_service", lambda _kind, _url, model, _key: model or "test-chat")
+
+
 class _Decision(BaseModel):
     kind: Literal["prepare_dataset"]
 

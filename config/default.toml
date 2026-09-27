@@ -11,18 +11,17 @@ runs_root = "benchmarks/runs"
 prepared_datasets_root = "datasets/Prepared"
 
 [llm]
-model = "deepseek-v4-flash"
+model = ""
 base_url = "http://127.0.0.1:8005/v1"
 timeout_seconds = 120
 max_retries = 0
 default_temperature = 0.0
-trace_name = "DeepSeek"
 
 [rag]
 embedding_base_url = "http://127.0.0.1:8006/v1"
-embedding_model = "Qwen/Qwen3-Embedding-0.6B"
+embedding_model = ""
 reranker_base_url = "http://127.0.0.1:8007/v1"
-reranker_model = "Qwen/Qwen3-Reranker-0.6B"
+reranker_model = ""
 chunk_size = 1200
 chunk_overlap = 200
 candidate_count = 12
@@ -57,6 +56,8 @@ memory_limit = "1GB"
 threads = 2
 container_memory = "4g"
 coding_worker_backend = "openhands"
+source_workspace_mode = "readonly_mount"
+coding_worker_image = "medbench-openhands:local"
 coding_worker_max_iterations = 40
 coding_worker_timeout_seconds = 1800
 coding_worker_max_revisions = 3

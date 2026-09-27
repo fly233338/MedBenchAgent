@@ -76,17 +76,41 @@ Supported field overrides are `MEDBENCH_LLM_MODEL`, `MEDBENCH_LLM_BASE_URL`,
 `MEDBENCH_LLM_TIMEOUT_SECONDS`, `MEDBENCH_LLM_MAX_RETRIES`, and `RAG_MIN_RERANK_SCORE`.
 Legacy `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_TIMEOUT_SECONDS` remain supported;
 the corresponding nonempty `MEDBENCH_*` names take precedence.
+An existing experiment's `llm.trace_name` is ignored; new configurations omit it.
 
-Keep secrets in `MEDBENCH_LLM_API_KEY` (legacy `DEEPSEEK_API_KEY`),
+Keep the three independent credentials in `MEDBENCH_LLM_API_KEY`,
 `MEDBENCH_EMBEDDING_API_KEY`, and `MEDBENCH_RERANKER_API_KEY`. Keys are optional for
 unauthenticated local services and are excluded from configuration snapshots.
 CLI/TUI entrypoints disable optional tracing, model downloads and telemetry; configured
 model APIs are still called.
 
-RAG is optional. Configure embedding and reranker endpoints/models in `[rag]` and put
-PDF references under `paths.materials_root`. Without these, planning continues without
-retrieval. Configured service failures preserve recovery state rather than silently
-changing the result. Use a new run or model identifier when service weights change.
+At run initialization, each configured service queries `/v1/models` with its own key.
+One model is selected automatically; endpoints with multiple models need an explicit
+`model`, `embedding_model`, or `reranker_model` override. The resolved identities,
+URLs and runtime policy are frozen in `effective_config.json`; resume verifies each
+available frozen model using current credentials, so keys may rotate. Chat discovery
+failure blocks the run. RAG remains optional: unavailable embedding or reranker services
+are recorded as unavailable for that run, and planning continues without retrieval.
+Start a new run to use a RAG service that becomes available later.
+
+Raw-source CodingWorker tasks require Docker on Linux or Windows. Build the pinned worker
+image before preparing a raw dataset:
+
+```powershell
+docker build -f config/coding-worker.Dockerfile -t medbench-openhands:local .
+```
+
+This requirement is independent of `data_processing.backend`, which selects the later
+deterministic execution backend.
+
+By default, the original source is mounted read-only and the Worker writes candidates
+under `.runtime/workers/openhands/<dataset>/<source>/outputs/`. Docker or the configured
+image being unavailable blocks the Worker. Set `data_processing.source_workspace_mode = "copy"`
+only when an explicit source copy is desired; its snapshot is still mounted
+read-only. MedBench validates candidates against the original source. A validator repair
+starts a fresh OpenHands conversation in the same workspace, while an interrupted attempt
+reuses its conversation. Loopback model URLs are routed to the Docker host and checked
+against the run's frozen Chat model before the Worker starts.
 
 ## TUI controls and recovery
 

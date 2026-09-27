@@ -12,6 +12,7 @@ from openai import APIError, OpenAI
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from medbenchagent.runtime.construction import record_llm_call
+from medbenchagent.runtime.model_services import resolve_model_service
 from medbenchagent.settings import get_llm_api_key, get_settings
 
 _CLIENTS: dict[tuple, OpenAI] = {}
@@ -40,7 +41,7 @@ def clear_client_cache() -> None:
 def _client() -> OpenAI:
     settings = get_settings().llm
     api_key = get_llm_api_key() or "local-vllm"
-    config = (api_key, settings.base_url, settings.timeout_seconds, settings.max_retries, settings.trace_name)
+    config = (api_key, settings.base_url, settings.timeout_seconds, settings.max_retries)
     with _CLIENT_LOCK:
         if config not in _CLIENTS:
             raw_client = OpenAI(
@@ -49,7 +50,7 @@ def _client() -> OpenAI:
                 timeout=settings.timeout_seconds,
                 max_retries=settings.max_retries,
             )
-            _CLIENTS[config] = wrap_openai(raw_client, chat_name=settings.trace_name)
+            _CLIENTS[config] = wrap_openai(raw_client, chat_name="medbench-llm")
         return _CLIENTS[config]
 
 
@@ -74,6 +75,9 @@ def complete_validated_json(
     on_retry: Callable[[], None] | None = None,
 ) -> T:
     """Repair model contract errors, independently of API transport retries."""
+    settings = get_settings()
+    model = (settings.llm.model if getattr(settings, "service_status", {}).get("chat") == "available" else
+             resolve_model_service("Chat", settings.llm.base_url, settings.llm.model, get_llm_api_key()))
     messages = [{"role": "system", "content": system_prompt + "\nReturn JSON matching this schema:\n"
                  + json.dumps(schema.model_json_schema(), ensure_ascii=False)},
                 {"role": "user", "content": user_prompt}]
@@ -82,7 +86,7 @@ def complete_validated_json(
         started = time.perf_counter()
         try:
             response = _client().chat.completions.create(
-                model=get_settings().llm.model,
+                model=model,
                 temperature=get_settings().llm.default_temperature if temperature is None else temperature,
                 response_format={"type": "json_object"},
                 messages=messages,

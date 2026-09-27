@@ -42,7 +42,7 @@ def test_neutral_names_take_precedence_and_empty_names_use_alias(monkeypatch):
     monkeypatch.setenv("MEDBENCH_LLM_MODEL", "")
     monkeypatch.setenv("MEDBENCH_LLM_API_KEY", "")
     assert load_settings().llm.model == "legacy"
-    assert get_llm_api_key() == "legacy"
+    assert get_llm_api_key() is None
 
 
 def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypatch) -> None:

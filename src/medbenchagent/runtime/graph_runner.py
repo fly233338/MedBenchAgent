@@ -243,11 +243,12 @@ class GraphRunner:
                         "run_directory": known_directory,
                     })
                     return
-                rag = rag_capability(settings)
-                if not rag["available"]:
-                    yield RunEvent(identifier, "progress", {
-                        "text": "Optional RAG unavailable: " + "; ".join(rag["reasons"]),
-                    })
+                if resume:
+                    rag = rag_capability(settings)
+                    if not rag["available"]:
+                        yield RunEvent(identifier, "progress", {
+                            "text": "Optional RAG unavailable: " + "; ".join(rag["reasons"]),
+                        })
                 if connection is None:
                     settings.paths.runs_root.mkdir(parents=True, exist_ok=True)
                     connection = sqlite3.connect(
@@ -322,6 +323,14 @@ class GraphRunner:
                                         "effective_config_path": initialized.get("effective_config_path"),
                                         "catalog_snapshot_path": initialized.get("task_catalog_snapshot_path"),
                                     })
+                                    frozen_path = initialized.get("effective_config_path")
+                                    if frozen_path and Path(frozen_path).is_file():
+                                        with run_settings(frozen_path) as frozen:
+                                            rag = rag_capability(frozen)
+                                            if not rag["available"]:
+                                                yield RunEvent(identifier, "progress", {
+                                                    "text": "Optional RAG unavailable: " + "; ".join(rag["reasons"]),
+                                                })
                             for name, path in _artifact_paths(payload):
                                 if (name, path) not in seen_artifacts:
                                     seen_artifacts.add((name, path))
@@ -367,8 +376,9 @@ class GraphRunner:
             })
         except Exception as exc:
             from medbenchagent.runtime.llm import ModelUnavailable
+            from medbenchagent.runtime.model_services import ModelDiscoveryError
             from medbenchagent.data.execution import ExecutionUnavailable
-            category = ("model_service" if isinstance(exc, ModelUnavailable) else
+            category = ("model_service" if isinstance(exc, (ModelUnavailable, ModelDiscoveryError)) else
                         "execution_environment" if isinstance(exc, (ExecutionUnavailable, OSError)) else "runtime")
             restart_required = "Code or runtime contract changed" in str(exc) or not known_directory
             yield RunEvent(identifier, "error", {

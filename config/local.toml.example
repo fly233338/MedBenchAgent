@@ -20,12 +20,14 @@ default_sample_count = 1000 # Used only when the user did not supply a count; la
 
 [rag]
 embedding_base_url = "http://127.0.0.1:8001/v1"
-embedding_model = "Qwen/Qwen3-Embedding-0.6B"
+# embedding_model = "Qwen/Qwen3-Embedding-0.6B" # Required only for multi-model endpoints.
 reranker_base_url = "http://127.0.0.1:8002/v1"
-reranker_model = "Qwen/Qwen3-Reranker-0.6B"
+# reranker_model = "Qwen/Qwen3-Reranker-0.6B"
 
 [generation]
 question_template_count = 3
 
 # [data_processing]
 # backend = "auto"  # auto, docker, or local
+# source_workspace_mode = "copy" # Explicitly copy a large source before a read-only mount.
+# coding_worker_image = "medbench-openhands:local"

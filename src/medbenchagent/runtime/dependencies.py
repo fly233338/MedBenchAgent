@@ -8,7 +8,7 @@ from pathlib import Path
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-CONTRACT_VERSION = "agent-runtime.v17"
+CONTRACT_VERSION = "agent-runtime.v18"
 
 SOURCE_KINDS = frozenset({"Source", "Inventory", "Annotation",
                           "SourceFingerprint", "SemanticPreparationSpec", "DatasetAdapter", "ExecutionPlan",
@@ -63,7 +63,7 @@ DEPENDENCIES = {
 
 
 def index_path(context):
-    return Path(context["run_directory"]) / ".runtime" / "artifacts.json"
+    return Path(context["run_directory"]) / ".runtime" / "control" / "artifacts.json"
 
 
 def read_index(context):
@@ -137,7 +137,7 @@ def code_identity():
 
 
 def verify_resume(context):
-    path = Path(context["run_directory"]) / ".runtime" / "contract.json"
+    path = Path(context["run_directory"]) / ".runtime" / "control" / "contract.json"
     if not path.is_file():
         raise ValueError("This checkpoint uses an obsolete runtime; start a new run")
     saved = json.loads(path.read_text(encoding="utf-8"))
@@ -184,11 +184,11 @@ def initialize_dependencies(context, settings):
         "FinalizationConfig": {"seed": context["seed"], "policy": "final-task.v1"},
     }
     for kind, value in configs.items():
-        path = Path(context["run_directory"]) / ".runtime" / "config" / f"{kind}.json"
+        path = Path(context["run_directory"]) / ".runtime" / "control" / "config" / f"{kind}.json"
         atomic_write_json(path, value)
         publish(context, kind, {"path": str(path)}, ())
     atomic_write_json(
-        Path(context["run_directory"]) / ".runtime" / "contract.json",
+        Path(context["run_directory"]) / ".runtime" / "control" / "contract.json",
         {"contract": CONTRACT_VERSION, "code": code_identity()},
     )
 

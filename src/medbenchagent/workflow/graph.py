@@ -181,6 +181,17 @@ def canonical_delegation(context, dataset=None):
             "preference_ids": [p["id"] for p in context.get("allocation_preferences", [])]}
 
 
+def agent_operation(context, agent, dataset_id=None, role=None):
+    root = Path(context["run_directory"]) / ".runtime" / "agents"
+    parent = Path(context["operation_directory"]).relative_to(root / "SupervisorAgent")
+    path = root / agent
+    if dataset_id:
+        path /= dataset_id
+    if role:
+        path /= role
+    return str(path / parent)
+
+
 def child_context(context, dataset_id, role):
     if dataset_id not in context.get("selected_dataset_ids", []):
         raise ValueError("Dataset is not selected")
@@ -192,14 +203,16 @@ def child_context(context, dataset_id, role):
     child.update(agent_role=ROLES[role], dataset_scope=dataset_id, selected_dataset_id=dataset_id,
                  annotation_path=asset["access"]["annotation_path"], dataset_entry=asset["entry"],
                  dataset_access_manifest=asset["access"], dataset_card_summary=asset["card_summary"],
-                 operation_directory=str(Path(context["operation_directory"]) / role / dataset_id))
+                 operation_directory=agent_operation(
+                     context, {"planning": "TaskPlanningAgent", "templates": "TaskPlanningAgent",
+                               "generation": "GenerationAgent"}[role], dataset_id, role))
     return inject_answers(context, child, {"planning": "TaskPlanningAgent", "generation": "GenerationAgent",
                                           "templates": "TaskPlanningAgent"}[role], dataset_id)
 
 
 def child_result(context, dataset_id, role, output):
     child = output["context"]
-    path = Path(context["operation_directory"]) / f"{role}-{dataset_id}-state.json"
+    path = Path(child["operation_directory"]) / "state.json"
     save_context(path, child, role, dataset_id)
     states = {k: dict(v) for k, v in context.get("child_states", {}).items()}
     states.setdefault(dataset_id, {})[role] = str(path)
@@ -429,10 +442,10 @@ def compile_benchmark_graph(*, checkpointer=None):
             if child["preparation_mode"] != mode:
                 raise ValueError("Preparation mode changed; resume with the original mode")
             child.update({k: context[k] for k in COMMON if k in context})
-            child["operation_directory"] = context["operation_directory"]
+            child["operation_directory"] = agent_operation(context, "DataProcessingAgent", dataset_id)
         else:
             child = {k: context[k] for k in COMMON if k in context}
-            child["operation_directory"] = context["operation_directory"]
+            child["operation_directory"] = agent_operation(context, "DataProcessingAgent", dataset_id)
             child = initialize(child, sources, dataset_id)
             child["preparation_mode"] = mode
         child["feedback"] = feedback
@@ -443,7 +456,7 @@ def compile_benchmark_graph(*, checkpointer=None):
             outcome["updates"]["discovered_sources"] = {**context.get("discovered_sources", {}),
                                                             dataset_id: discovered}
             outcome["updates"]["source_decision_path"] = str(
-                Path(context["run_directory"]) / ".runtime" / "source_discovery" /
+                Path(context["run_directory"]) / ".runtime" / "discovery" / "sources" /
                 dataset_id / "source_decision.json")
         if output["result"]["status"] == "complete":
             entries = {**context.get("prepared_entries", {}), dataset_id: output["context"]["dataset_entry"]}
@@ -456,7 +469,8 @@ def compile_benchmark_graph(*, checkpointer=None):
         """Delegate global Concept-first allocation after every selected dataset plan is complete."""
         saved = context.get("allocation_state_path")
         child = load_context(saved, "allocation") if saved else {}
-        child.update({k: context[k] for k in (*COMMON, "selected_dataset_ids", "dataset_task_plans", "operation_directory") if k in context})
+        child.update({k: context[k] for k in (*COMMON, "selected_dataset_ids", "dataset_task_plans") if k in context})
+        child["operation_directory"] = agent_operation(context, "AllocationAgent")
         inject_answers(context, child, "AllocationAgent")
         child["delegation"] = canonical_delegation(context)
         child["diagnostic_notes"] = (delegation or {}).get("revision_notes", "")
@@ -466,7 +480,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         if not any(leaf["eligible_count"] for p in _plans(child).values() for leaf in p["tasks"].values()):
             return result("blocked", "All selected datasets completed planning without eligible tasks")
         output = allocation.invoke({"context": child})
-        state_path = Path(context["operation_directory"]) / "allocation-state.json"
+        state_path = Path(child["operation_directory"]) / "state.json"
         save_context(state_path, output["context"], "allocation")
         updates = {k: output["context"][k] for k in ("artifact_versions", "allocation_path", "global_issue") if k in output["context"]}
         updates["last_agent_result"] = output["result"]
@@ -505,10 +519,11 @@ def compile_benchmark_graph(*, checkpointer=None):
         saved = context.get("finalization_state_path")
         child = load_context(saved, "finalization") if saved else {}
         child.update({k: context[k] for k in (*COMMON, "selected_dataset_ids", "dataset_assets", "dataset_task_plans",
-                     "dataset_templates", "dataset_generations", "allocation_path", "operation_directory") if k in context})
+                     "dataset_templates", "dataset_generations", "allocation_path") if k in context})
+        child["operation_directory"] = agent_operation(context, "FinalizationAgent")
         inject_answers(context, child, "FinalizationAgent")
         output = finalization.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
-        path = Path(context["operation_directory"]) / "finalization-state.json"
+        path = Path(child["operation_directory"]) / "state.json"
         save_context(path, output["context"], "finalization")
         updates = {"artifact_versions": output["context"]["artifact_versions"], "finalization_state_path": str(path),
                    "last_agent_result": output["result"]}
@@ -547,10 +562,14 @@ def compile_benchmark_graph(*, checkpointer=None):
         settings = get_settings()
         if errors := preflight_errors(settings, build=state.get("entry_intent") == "build_benchmark"):
             raise ValueError("Local preflight failed: " + "; ".join(errors))
+        from medbenchagent.runtime.model_services import resolve_run_services
+
+        settings = resolve_run_services(settings)
         defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature")}
-        run = initialize_run(graph_overrides=overrides)
+        run = initialize_run(settings=settings, graph_overrides=overrides)
         context = dict(run, **(defaults | overrides), user_requirement=requirement,
-                       operation_directory=str(Path(run["run_directory"]) / ".runtime"), limits=settings.harness,
+                       operation_directory=str(Path(run["run_directory"]) / ".runtime" / "agents" /
+                                               "SupervisorAgent"), limits=settings.harness,
                        registration_catalog_path=str(settings.paths.dataset_catalog),
                        rag_capability=rag_capability(settings),
                        prepare_dataset_id=state.get("prepare_dataset_id"),
@@ -574,6 +593,9 @@ def compile_benchmark_graph(*, checkpointer=None):
     def run_supervisor(state):
         verify_resume(state["context"])
         with run_settings(state["context"]["effective_config_path"]):
+            from medbenchagent.runtime.model_services import verify_frozen_services
+
+            verify_frozen_services(get_settings())
             if errors := preflight_errors(get_settings(), build=state["context"].get("run_intent", {}).get("intent") == "build_benchmark"):
                 raise ValueError("Local preflight failed: " + "; ".join(errors))
             output = supervisor.invoke({"context": state["context"]})

@@ -9,8 +9,10 @@ from medbenchagent.runtime.construction import (
 
 def test_llm_events_include_contextual_model_and_component(tmp_path: Path, monkeypatch) -> None:
     events_path = tmp_path / "construction_events.jsonl"
-    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
-    with event_context(
+    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "deepseek-v4-flash")
+    from medbenchagent.settings import load_settings, active_settings
+    configured = load_settings()
+    with active_settings(configured), event_context(
         construction_events_path=events_path,
         run_id="run",
         dataset_id="dataset-a",

@@ -134,9 +134,10 @@ DatasetCandidates 是独立 artifact，Selection 依赖 Requirement、该快照�
 ## 执行后端
 
 项目基线为 Python 3.12。CodingWorker 使用固定版本的 OpenHands SDK/Tools，在独立 Python 3.12
-环境运行；任务、会话 ID、工作区和预算绑定到准备私有状态。OpenHands 保存自身会话事件，LangGraph
-保存委派状态；恢复时同一任务重连同一会话。只接收任务工作区内的 Worker 产物，来源副本与原始
-Source 分离，并在委派前后核验原始来源。
+Docker 镜像运行；任务、会话 ID、工作区和预算绑定到准备私有状态。默认将原始 Source 只读挂载，
+显式 copy 模式才建立独立快照并只读挂载。Worker 只能将候选写入工作区，MedBench 始终对原始
+Source 独立验证，并在委派前后核验原始来源。进程中断恢复同一尝试与 conversation；validator
+返修保留工作区但创建新 conversation，不携带完整旧历史。单次模型输出上限为 8192 token。
 默认准备运行启用 OpenHands；依赖或服务失败明确阻断，不静默转为旧检查循环。
 
 `data_processing.backend` 为 auto（默认）、docker 或 local。auto 在准备开始前检查 Docker CLI、daemon、
@@ -155,11 +156,12 @@ Local 使用当前解释器、独立工作目录和 UTF-8，超时结束对应�
 CSV/Excel 及 NumPy 处理依赖属于基础安装；DICOM/NIfTI/NRRD 的额外本地解码依赖使用
 `uv run --extra data-processing medbenchagent` 安装，缺依赖时报告具体错误。
 
-会话运行与直接图调用共用按意图的本地预检：校验 Catalog 格式与 LLM 配置，
+会话运行与直接图调用共用按意图的本地预检：校验 Catalog 格式与 LLM endpoint，
 仅构建需要有效 Blueprint；准备后端在实际准备前检查。CLI 根级 --config 仅作为新实验的初始模板，
-字段环境变量仍覆盖实验 TOML；run 创建时冻结 effective_config，恢复使用保存配置。
-PDF 或 embedding/reranker endpoint 与 model 缺失只降低 RAG 能力，不阻止无检索规划；能力与原因在 CLI
-和 Agent 观察中可见。服务可用性在实际检索时确认，HTTP 故障中断执行并保留 checkpoint。
+字段环境变量仍覆盖实验 TOML；run 创建时以各服务独立 credential 查询 /v1/models，冻结已解析模型身份
+到 effective_config，恢复使用保存配置并以当前 credential 验证冻结身份。Chat 发现失败阻断；
+embedding/reranker 发现失败只冻结该运行的 RAG 不可用原因，不阻止无检索规划。
+已启用的检索服务在实际调用时发生 HTTP 故障仍中断执行并保留 checkpoint。
 
 ## 局部规划与全局分配
 
@@ -275,6 +277,13 @@ API transport 重试仍由 SDK 独立处理。StructuredOutputError 是可修正
 | Dataset Catalog | 全局已准备数据注册表；Run 初始化冻结候选视图 |
 | Dataset Bundle | 已发布的数据产品；数据不可变，Card 修订追加保存 |
 
+Run 的 `.runtime/control/` 保存 contract、artifact DAG 与阶段配置；
+`.runtime/inputs/` 保存冻结的 Catalog、Card、Blueprint 与 Materials；
+`.runtime/evidence/` 保存证据索引及正文；`.runtime/discovery/sources/` 保存来源决议；
+`.runtime/agents/` 保存各 Agent 的操作回执和私有状态；
+`.runtime/workers/openhands/` 保存只读来源挂载点以外的候选、会话、状态与日志。
+顶层只保留 effective_config.json、construction_events.jsonl 和 `.runtime/`。
+
 每项准备或构建运行拥有独立的 LangGraph thread_id、运行目录和配置快照；终态后会话继续等待输入。
 ConversationService 恢复运行后释放锁，再驱动后续队列，CLI/TUI 共用；CLI 连续澄清采用迭代消费事件。
 错误事件可带 error_category 与 recovery_hint，界面显示原始问题及恢复方式。
@@ -331,7 +340,7 @@ Planning 文档、RAG 和用户语义依据都使用正式 evidence reference；
 Source 依赖嵌套为 dataset/<id>/source/<source_id>/<kind>，没有跨数据集共享 current 指针。
 依赖递归失效但保留旧版本。文件 artifact identity 包含内容摘要，不能仅靠路径复用。
 操作回执绑定参数和输入版本，完成结果可重用；生成子图保留游标与逐阶段进度。
-SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v17；
+SQLite checkpoint 支持恢复，读取保存的配置和 Catalog 视图并校验已登记数据。运行契约为 agent-runtime.v18；
 代码或契约变化要求新运行，不迁移旧 checkpoint。
 
 Requirement 独立保存 sample_scope（用户原文与范围 ID）。Planner 必须逐项 resolve_sample_scope，

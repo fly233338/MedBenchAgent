@@ -156,7 +156,7 @@ def test_source_change_invalidates_worker_report(tmp_path):
         validate_source_report(context, report, population, tmp_path / "verified")
 
 
-def test_worker_resume_reuses_conversation_and_restores_source_snapshot(tmp_path, monkeypatch):
+def test_worker_repair_uses_new_conversation_and_readonly_source_mount(tmp_path, monkeypatch):
     raw = tmp_path / "raw"
     raw.mkdir()
     (raw / "records.csv").write_text("id,path\n1,image.png\n", encoding="utf-8")
@@ -164,43 +164,41 @@ def test_worker_resume_reuses_conversation_and_restores_source_snapshot(tmp_path
     workspace = tmp_path / "worker"
     seen = []
 
-    class Process:
-        returncode = 0
+    def run(command, **kwargs):
+        from types import SimpleNamespace
+        if command[1:3] == ["image", "inspect"] or "-c" in command:
+            return SimpleNamespace(returncode=0)
+        if command[1:3] == ["container", "inspect"]:
+            return SimpleNamespace(returncode=1)
+        if command[1] in {"logs", "rm"}:
+            return SimpleNamespace(returncode=0)
+        if command[1] == "wait":
+            return SimpleNamespace(returncode=0, stdout="0\n")
+        request = json.loads((workspace / "state" / "coding_task.json").read_text(encoding="utf-8"))
+        seen.append((request, command))
+        (workspace / "outputs" / "adapter.py").write_text("print('candidate')\n", encoding="utf-8")
+        (workspace / "state" / "coding_result_dataset_adapter.json").write_text(json.dumps({
+            "status": "complete", "conversation_id": request["conversation_id"],
+            "outputs": {"adapter.py": "/workspace/outputs/adapter.py"}}), encoding="utf-8")
+        return SimpleNamespace(returncode=0)
 
-        def __init__(self, command, **kwargs):
-            request = json.loads(Path(command[-2]).read_text(encoding="utf-8"))
-            seen.append(request)
-            (workspace / "adapter.py").write_text("print('candidate')\n", encoding="utf-8")
-            Path(command[-1]).write_text(json.dumps({"status": "complete",
-                "conversation_id": request["conversation_id"],
-                "outputs": {"adapter.py": str(workspace / "adapter.py")}}), encoding="utf-8")
-
-        def wait(self, **kwargs):
-            return 0
-
-    monkeypatch.setattr("medbenchagent.agents.coding_worker.subprocess.Popen", Process)
+    monkeypatch.setattr("medbenchagent.agents.coding_worker.subprocess.run", run)
     task = CodingTask(task_id="run:s:adapter", kind="dataset_adapter", source_root=str(raw),
                       source_manifest=str(manifest), workspace=str(workspace),
                       objective="Write adapter", required_outputs=["adapter.py"], model="openai/test",
                       base_url="http://localhost")
     worker = OpenHandsCodingWorker()
     first = worker.run(task)
-    cached = worker.run(task.model_copy(update={"conversation_id": first.conversation_id}))
+    cached = worker.run(task)
     assert cached.status == "complete" and len(seen) == 1
-    (workspace / "conversations" / first.conversation_id).mkdir(parents=True)
-    (workspace / "coding_result_dataset_adapter.json").unlink()
-    recovered = worker.run(task.model_copy(update={"conversation_id": first.conversation_id}))
-    assert recovered.status == "complete" and len(seen) == 1
-    staged = workspace / "source" / "records.csv"
-    staged.chmod(0o644)
-    staged.write_text("tampered\n", encoding="utf-8")
-    second = worker.run(task.model_copy(update={"conversation_id": first.conversation_id,
-                                         "feedback": "Repair validation"}))
+    second = worker.run(task.model_copy(update={"attempt": 2, "feedback": "Repair validation"}))
     assert first.status == second.status == "complete"
-    assert first.conversation_id == second.conversation_id
-    assert seen[0]["conversation_id"] == seen[1]["conversation_id"]
-    assert "source_manifest" not in seen[0]
-    assert staged.read_text(encoding="utf-8") == (raw / "records.csv").read_text(encoding="utf-8")
+    assert first.conversation_id != second.conversation_id
+    assert len(seen) == 2
+    assert not (workspace / "source_snapshot").exists()
+    assert any(str(raw) in item for item in seen[0][1])
+    assert any("dst=/workspace/source,readonly" in item for item in seen[0][1])
+    assert "source_manifest" not in seen[0][0]
 
 
 def test_special_population_requires_existing_review_path(tmp_path):
@@ -289,9 +287,10 @@ def test_adapter_worker_only_publishes_candidate_code_after_spec(tmp_path, monke
 
 def test_inspection_script_must_replay_identically(tmp_path):
     workspace = tmp_path / "worker"
-    (workspace / "source").mkdir(parents=True)
+    for name in ("source", "outputs", "state", "work"):
+        (workspace / name).mkdir(parents=True)
     (workspace / "source" / "count.txt").write_text("2", encoding="utf-8")
-    script = workspace / "inspect_source.py"
+    script = workspace / "outputs" / "inspect_source.py"
     script.write_text(
         "import os\nfrom pathlib import Path\n"
         "root = Path(os.environ['MEDBENCH_SOURCE_ROOT'])\n"
@@ -302,8 +301,8 @@ def test_inspection_script_must_replay_identically(tmp_path):
     )
     request = {"task_id": "run:source:inventory"}
     assert replay_source_script(request, workspace) == ""
-    assert (workspace / "source_report.json").read_text(encoding="utf-8") == "2"
-    assert json.loads((workspace / "source_inventory_replayed.json").read_text())["task_id"] == request["task_id"]
+    assert (workspace / "outputs" / "source_report.json").read_text(encoding="utf-8") == "2"
+    assert json.loads((workspace / "state" / "source_inventory_replayed.json").read_text())["task_id"] == request["task_id"]
     script.write_text(
         "import os, uuid\nfrom pathlib import Path\n"
         "out = Path(os.environ['MEDBENCH_WORK_DIR'])\n"

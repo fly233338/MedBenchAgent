@@ -46,7 +46,6 @@ class LlmSettings:
     timeout_seconds: float
     max_retries: int
     default_temperature: float
-    trace_name: str
 
 
 @dataclass(frozen=True)
@@ -98,6 +97,7 @@ class AppSettings:
     default_config_path: Path
     local_config_path: Path | None
     environment_overrides: tuple[str, ...]
+    service_status: dict[str, str]
 
     def snapshot(self, graph_overrides: dict[str, object] | None = None) -> dict[str, object]:
         """Return non-sensitive settings without API or LangSmith credentials."""
@@ -126,6 +126,7 @@ class AppSettings:
                     for key in self.rag.__dataclass_fields__
                     for value in (getattr(self.rag, key),)
                 },
+                "model_services": self.service_status,
                 "generation": generation,
                 "dataset_profile": {
                     key: getattr(self.dataset_profile, key)
@@ -178,7 +179,7 @@ def load_project_env() -> None:
 
 def get_llm_api_key() -> str | None:
     """Read the optional API key in the sole configuration module."""
-    return os.getenv("MEDBENCH_LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or None
+    return os.getenv("MEDBENCH_LLM_API_KEY") or None
 
 
 def get_rag_api_key(kind: str) -> str | None:
@@ -296,6 +297,9 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     worker_backend = values["data_processing"]["coding_worker_backend"]
     if worker_backend not in {"openhands", "legacy"}:
         raise ValueError("data_processing.coding_worker_backend must be openhands or legacy")
+    workspace_mode = values["data_processing"]["source_workspace_mode"]
+    if workspace_mode not in {"readonly_mount", "copy"}:
+        raise ValueError("data_processing.source_workspace_mode must be readonly_mount or copy")
     return AppSettings(
         benchmark=BenchmarkSettings(default_sample_count=_integer(values["benchmark"]["default_sample_count"],
                                                                   "benchmark.default_sample_count", minimum=1)),
@@ -307,6 +311,8 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                          "container_memory": _string(values["data_processing"]["container_memory"], "data_processing.container_memory"),
                          "timeout_seconds": _integer(values["data_processing"]["timeout_seconds"], "data_processing.timeout_seconds", minimum=1),
                          "coding_worker_backend": worker_backend,
+                         "source_workspace_mode": workspace_mode,
+                         "coding_worker_image": _string(values["data_processing"]["coding_worker_image"], "data_processing.coding_worker_image"),
                          "coding_worker_max_iterations": _integer(values["data_processing"]["coding_worker_max_iterations"], "data_processing.coding_worker_max_iterations", minimum=1),
                          "coding_worker_timeout_seconds": _integer(values["data_processing"]["coding_worker_timeout_seconds"], "data_processing.coding_worker_timeout_seconds", minimum=1),
                          "coding_worker_max_revisions": _integer(values["data_processing"]["coding_worker_max_revisions"], "data_processing.coding_worker_max_revisions", minimum=1)},
@@ -314,12 +320,11 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
             **{key: _resolve_path(value, f"paths.{key}") for key, value in paths.items()}
         ),
         llm=LlmSettings(
-            model=_string(llm["model"], "llm.model"),
+            model=_optional_string(llm["model"], "llm.model"),
             base_url=_string(llm["base_url"], "llm.base_url"),
             timeout_seconds=_number(llm["timeout_seconds"], "llm.timeout_seconds", minimum=0.000001, maximum=float("inf")),
             max_retries=_integer(llm["max_retries"], "llm.max_retries", minimum=0),
             default_temperature=_number(llm["default_temperature"], "llm.default_temperature", minimum=0, maximum=2),
-            trace_name=_string(llm["trace_name"], "llm.trace_name"),
         ),
         rag=RagSettings(
             embedding_base_url=_optional_string(rag["embedding_base_url"], "rag.embedding_base_url"),
@@ -355,6 +360,7 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
         default_config_path=default_path,
         local_config_path=local_path,
         environment_overrides=tuple(env_keys),
+        service_status=dict(values.get("model_services", {})),
     )
 
 
@@ -368,7 +374,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         local_path = (Path(raw_path).expanduser().resolve() if config_path is not None
                       else _resolve_path(str(raw_path), "MEDBENCH_CONFIG"))
     if local_path:
-        _merge(values, _read_toml(local_path))
+        override = _read_toml(local_path)
+        # Existing experiment TOMLs may still contain the removed tracing label.
+        if isinstance(override.get("llm"), dict):
+            override["llm"].pop("trace_name", None)
+        _merge(values, override)
     env_keys: list[str] = []
     overrides = {target: (name, os.environ[name]) for name, target in _ENVIRONMENT_OVERRIDES.items()
                  if os.getenv(name)}

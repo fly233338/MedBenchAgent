@@ -22,7 +22,7 @@ Each provenance object needs id equal to record_ref, one or more real source-loc
 findings locators for finding objects, and a step identifier. Do not assign trusted provenance,
 namespaces, quality decisions, publication flags or output image transformations.
 Use only source files and declared semantic decisions. Preserve missing versus negative.
-Run the script locally against the disposable source copy and inspect its output before finishing.
+Run the script against the read-only source and inspect its output before finishing.
 """
 
 
@@ -35,7 +35,8 @@ def develop_dataset_adapter(context, *, feedback=""):
                 if context.get("adapter_worker_spec_version") == spec_version else 0) + 1
     if attempts > context.get("coding_worker_max_revisions", 3):
         return result("blocked", "Adapter worker revision budget exhausted")
-    workspace = Path(context["run_directory"]) / ".runtime" / "coding_workers" / context["dataset_scope"] / source["id"]
+    workspace = (Path(context["run_directory"]) / ".runtime" / "workers" / "openhands" /
+                 context["dataset_scope"] / source["id"])
     contract = Path(context["operation_directory"]) / "adapter_contract.txt"
     contract.parent.mkdir(parents=True, exist_ok=True)
     contract.write_text(ADAPTER_CONTRACT, encoding="utf-8")
@@ -46,14 +47,15 @@ def develop_dataset_adapter(context, *, feedback=""):
         task_id=f"{context['run_id']}:{context['dataset_scope']}:{source['id']}:{spec_version}:adapter",
         kind="dataset_adapter", source_root=context["source_root"],
         source_manifest=context["source_manifest"], workspace=str(workspace),
-        objective="Implement the current specification as adapter.py. Read inputs/adapter_contract.txt "
-                  "and inputs/spec.json. Return code only in the workspace; MedBench will validate and publish it.",
+        objective="Implement the current specification as outputs/adapter.py. Read inputs/adapter_contract.txt "
+                  "and inputs/spec.json. Return code only under outputs/; MedBench will validate and publish it.",
         required_outputs=["adapter.py"],
         inputs={"adapter_contract.txt": str(contract), "spec.json": context["semantic_spec_path"],
                 "adapter_inputs.json": str(inputs_path)},
         feedback=feedback,
+        attempt=attempts,
         conversation_id=(context.get("adapter_worker_conversation_id")
-                         if context.get("adapter_worker_spec_version") == spec_version else None),
+                         if not feedback and context.get("adapter_worker_spec_version") == spec_version else None),
         max_iterations=context.get("coding_worker_max_iterations", 40),
         timeout_seconds=context.get("coding_worker_timeout_seconds", 1800),
         model=get_settings().llm.model, base_url=get_settings().llm.base_url,
@@ -65,7 +67,8 @@ def develop_dataset_adapter(context, *, feedback=""):
                "adapter_worker_spec_version": spec_version,
                "adapter_worker_attempts": attempts}
     if outcome.status != "complete":
-        return result("blocked" if outcome.status in {"failed", "blocked"} else "failed",
+        return result("blocked" if outcome.status == "blocked" or attempts >= context.get("coding_worker_max_revisions", 3)
+                      else "failed",
                       outcome.question or outcome.diagnostic or "Adapter worker did not finish", **updates)
     code = Path(outcome.outputs["adapter.py"]).read_text(encoding="utf-8")
     try:
