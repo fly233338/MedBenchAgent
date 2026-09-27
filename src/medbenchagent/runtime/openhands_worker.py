@@ -86,7 +86,10 @@ def main(request_path: str, result_path: str) -> None:
             item = {"timestamp": datetime.now(timezone.utc).isoformat(),
                     "event_type": "coding_worker_event", "run_id": request["run_id"],
                     "agent": "OpenHandsCodingWorker", "dataset_id": request["dataset_id"],
-                    "source_id": request["source_id"], "operation": type(event).__name__,
+                    "source_id": request["source_id"], "phase": "CandidateDiscovery",
+                    "attempt": request.get("attempt"), "conversation_id": request["conversation_id"],
+                    "model": request.get("model"), "reasoning_effort": request.get("reasoning_effort") or None,
+                    "operation": type(event).__name__,
                     "status": "running"}
             with event_path.open("a", encoding="utf-8") as events:
                 events.write(json.dumps(item, ensure_ascii=False) + "\n")
