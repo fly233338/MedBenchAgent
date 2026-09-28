@@ -22,18 +22,13 @@ from medbenchagent.data.sources import (
 from medbenchagent.data.validation import source_image_path
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.contexts import DataProcessingContext
-from medbenchagent.runtime.harness import compile_agent, result
+from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.inspection import inspected, inspection_index
 from medbenchagent.data.preparation_evidence import alignment_evidence
 from medbenchagent.runtime.tool_contracts import (
-    InspectFilesArguments,
     ReadTextArguments,
     TableArguments,
-    JoinArguments,
-    ImagePlanArguments,
-    PageArguments,
-    FeedbackArguments,
 )
 from medbenchagent.data.dataset_card import (
     SourceReference, DatasetDescription, PreparationMetadata,
@@ -41,11 +36,7 @@ from medbenchagent.data.dataset_card import (
 
 
 from medbenchagent.agents.preparation import (
-    bound, save_source_fingerprint, save_semantic_spec, save_dataset_adapter,
-    save_execution_plan, execute_extraction, validate_preparation, prepare_annotation_import,
-    inspect_json_population, inspect_population_capability, inspect_json_structure, read_candidate_population,
-    FingerprintArguments, SpecArguments, ExecutionArguments, AdapterArguments,
-    JsonPopulationArguments, CapabilityArguments, JsonStructureArguments,
+    bound, execute_extraction, validate_preparation, prepare_annotation_import,
 )
 
 
@@ -716,91 +707,4 @@ If no reliable description exists, explicitly save_dataset_metadata(source_refer
 Finish only when completion.can_finish is true: all sources normalized, harmonization current and metadata saved."""
 
 
-def compile_pipeline(*, checkpointer=None):
-    from medbenchagent.agents.data_processing import (
-        inspect_files,
-        read_text,
-        inspect_table,
-        inspect_join,
-        save_image_plan,
-    )
-    from medbenchagent.agents.source_inventory_worker import build_source_inventory
-    from medbenchagent.agents.adapter_worker import develop_dataset_adapter
 
-    tools = {
-        f.__name__: f
-        for f in (
-            select_source,
-            build_source_inventory,
-            develop_dataset_adapter,
-            inspect_files,
-            read_text,
-            inspect_table,
-            inspect_join,
-            inspect_metadata,
-            inspect_source_values,
-            inspect_image_population,
-            save_source_fingerprint,
-            save_semantic_spec,
-            save_dataset_adapter,
-            save_execution_plan,
-            execute_extraction,
-            validate_preparation,
-            prepare_annotation_import,
-            inspect_json_population,
-            inspect_json_structure,
-            inspect_population_capability,
-            read_candidate_population,
-            inspect_images,
-            save_image_plan,
-            read_image_inventory,
-            normalize_images,
-            inspect_normalized,
-            save_harmonization,
-            save_dataset_metadata,
-            freeze_documentation,
-        )
-    }
-    return compile_agent(
-        "DataProcessingAgent",
-        DATA_PROCESSING_INSTRUCTIONS,
-        tools,
-        describe,
-        finish,
-        available_tools=available_tools,
-        automatic_action=lambda context: (
-            {"tool": "build_source_inventory", "arguments": {}, "reason": "Complete the current source inventory milestone"}
-            if "build_source_inventory" in available_tools(context)
-            and (not context.get("source_inventory_question")
-                 or (context.get("clarification") or {}).get("status") == "resolved") else None
-        ),
-        read_tools=frozenset({"inspect_files", "read_text", "inspect_table", "inspect_join", "inspect_metadata",
-                              "inspect_source_values", "inspect_image_population", "inspect_json_population", "inspect_json_structure",
-                              "inspect_population_capability", "read_candidate_population", "inspect_images", "read_image_inventory", "inspect_normalized"}),
-        args_schemas={
-            "select_source": SourceChoice,
-            "inspect_files": InspectFilesArguments,
-            "read_text": SourceTextArguments,
-            "inspect_table": TableArguments,
-            "inspect_join": JoinArguments,
-            "inspect_metadata": MetadataArguments,
-            "inspect_source_values": SourceValuesArguments,
-            "inspect_image_population": PopulationArguments,
-            "save_source_fingerprint": FingerprintArguments,
-            "save_semantic_spec": SpecArguments,
-            "save_dataset_adapter": AdapterArguments,
-            "develop_dataset_adapter": FeedbackArguments,
-            "save_execution_plan": ExecutionArguments,
-            "inspect_json_population": JsonPopulationArguments,
-            "inspect_population_capability": CapabilityArguments,
-            "inspect_json_structure": JsonStructureArguments,
-            "read_candidate_population": PageArguments,
-            "save_image_plan": ImagePlanArguments,
-            "read_image_inventory": PageArguments,
-            "inspect_normalized": SourceFieldArguments,
-            "save_harmonization": HarmonizationArguments,
-            "save_dataset_metadata": DatasetMetadataArguments,
-            "freeze_documentation": FreezeDocumentsArguments,
-        },
-        checkpointer=checkpointer,
-    )
