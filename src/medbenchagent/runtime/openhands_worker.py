@@ -103,18 +103,27 @@ def main(request_path: str, result_path: str) -> None:
                                 delete_on_close=False, callbacks=[on_event])
     outputs = ", ".join(request["required_outputs"])
     prompt = (
-        "You are a data inspection and Python coding worker. Work only inside this workspace. "
+        "You are the MedBench preparation coding agent. Work only inside this workspace. "
         f"The read-only source is at {request['source_root']} and additional inputs are in ./inputs. "
-        "Write scratch files under ./work and final candidate files under ./outputs. "
-        "Do not infer clinical meaning, publish data, or edit the source. "
-        f"Objective: {request['objective']}\n"
-        f"Required files under ./outputs: {outputs}. "
+        "Write scratch files under ./work, persistent progress under ./state, and candidate files under ./outputs. "
+        "The source is immutable: never edit, copy-over, delete, or rename source files. "
+        "Use only source files, frozen input documents, user clarifications, and tool results as evidence. "
+        "Never infer medical meaning, identity, labels, missingness, or population membership from general knowledge. "
+        "Preserve raw strings and distinguish missing from negative. Every image, mask, finding, and label must be "
+        "traceable to a source-relative locator. Cover the complete source population; if completeness cannot be "
+        "proved, record that explicitly and ask one concrete question naming the field/value, context, and consequence. "
+        "You may write and run a deterministic Python adapter for non-standard structures such as nested arrays or "
+        "ampersand-separated mask cells, but its output is only a candidate until MedBench validates it. "
+        "Before finishing, run the script, inspect counts and outputs, fix failures, and run it again. "
+        "Do not repeat an inspection whose result is already present in workspace/state or the supplied feedback. "
+        "Do not claim publication or readiness; submit candidates and an explicit summary of unresolved questions. "
+        f"Objective: {request['objective']}\nRequired files under ./outputs: {outputs}. "
     )
-    if request["kind"] == "source_inventory":
+    if request["kind"] in {"preparation", "source_inventory"}:
         prompt += ("Inspect the complete relevant population, not a sample. Use source-relative paths "
                    "in reports. State unresolved semantic questions in source_report.json uncertainties. "
                    "Run outputs/inspect_source.py and check its results before finishing.")
-    else:
+    elif request["kind"] == "dataset_adapter":
         prompt += ("Read inputs/adapter_contract.txt and inputs/spec.json. Test adapter.py using "
                    "MEDBENCH_SOURCE_ROOT=$MEDBENCH_SOURCE_ROOT, MEDBENCH_SPEC_PATH=./inputs/spec.json, "
                    "MEDBENCH_INPUTS_PATH=./inputs/adapter_inputs.json and a writable trial "
@@ -132,13 +141,14 @@ def main(request_path: str, result_path: str) -> None:
                   "diagnostic": f"OpenHands conversation failed: {type(exc).__name__}: {exc}"}
         Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         raise
-    diagnostic = replay_source_script(request, workspace) if request["kind"] == "source_inventory" else ""
+    diagnostic = replay_source_script(request, workspace) if request["kind"] in {"preparation", "source_inventory"} else ""
     produced = {name: str((workspace / "outputs" / name).resolve()) for name in request["required_outputs"]
                 if (workspace / "outputs" / name).is_file()}
     complete = not diagnostic and len(produced) == len(request["required_outputs"])
     result = {"status": "complete" if complete else "failed",
               "conversation_id": request["conversation_id"], "outputs": produced,
-              "question": "", "diagnostic": "" if complete else diagnostic or "Required worker outputs are missing"}
+              "question": "", "diagnostic": "" if complete else diagnostic or "Required worker outputs are missing",
+              "state": "submitted" if complete else "validation_failed"}
     Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
 
 

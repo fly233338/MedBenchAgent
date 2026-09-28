@@ -26,7 +26,7 @@ class CodingTask(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     task_id: str
-    kind: Literal["source_inventory", "dataset_adapter"]
+    kind: Literal["preparation", "source_inventory", "dataset_adapter"]
     source_root: str
     source_manifest: str
     workspace: str
@@ -59,6 +59,7 @@ class CodingResult(BaseModel):
                             "worker_execution_failed", "worker_output_invalid",
                             "source_changed", "source_semantics_unresolved"] = ""
     retryable: bool = False
+    state: Literal["running", "needs_user_input", "submitted", "validation_failed", "complete", "blocked"] = "complete"
 
 
 class CodingWorker(Protocol):
@@ -260,7 +261,7 @@ class OpenHandsCodingWorker:
             "task_id": task.task_id, "kind": task.kind, "attempt": task.attempt,
             "conversation_id": result.conversation_id, "status": result.status,
             "error_category": result.error_category, "retryable": result.retryable,
-            "diagnostic": result.diagnostic, "outputs": result.outputs,
+            "diagnostic": result.diagnostic, "outputs": result.outputs, "state": result.state,
             "model": task.model, "base_url": task.base_url,
         }
         atomic_write_json(workspace / "state" / f"coding_attempt_{task.attempt}.json", receipt)

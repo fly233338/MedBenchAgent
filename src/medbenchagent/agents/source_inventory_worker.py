@@ -55,7 +55,10 @@ def build_source_inventory(context):
         task_id=f"{context['run_id']}:{context['dataset_scope']}:{source['id']}:{source_version}:inventory",
         kind="source_inventory", source_root=context["source_root"],
         source_manifest=context["source_manifest"], workspace=str(workspace),
-        objective=objective, required_outputs=["source_report.json", "image_population.jsonl", "inspect_source.py"],
+        objective=(objective + " After the inventory, also identify the exact semantic gaps and the transformation "
+                   "steps needed for a deterministic annotation adapter. Keep those findings in the report and "
+                   "prepare the workspace so a later validation feedback message can continue this same conversation."),
+        required_outputs=["source_report.json", "image_population.jsonl", "inspect_source.py"],
         inputs={"source_report.schema.json": str(schema_path)},
         feedback=feedback,
         attempt=attempts,
