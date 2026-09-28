@@ -28,12 +28,18 @@ def _reconciliation_error(output: Path, *, kind: str, row_number: int,
         "source_locator": source_locator,
         "expected": expected,
         "actual": actual,
+        "source_record": expected,
+        "candidate_record": actual,
         "field_diffs": [
             {"field": key, "expected": expected.get(key),
              "actual": actual.get(key) if isinstance(actual, dict) else None}
             for key in expected
             if not isinstance(actual, dict) or actual.get(key) != expected.get(key)
-        ],
+        ] + ([{"field": key, "expected": None, "actual": actual[key]}
+               for key in actual if isinstance(actual, dict) and key not in expected]),
+        "schema_diff": {"missing_fields": [key for key in expected if not isinstance(actual, dict) or key not in actual],
+                        "extra_fields": [key for key in actual if isinstance(actual, dict) and key not in expected]},
+        "requires_user_clarification": False,
         "message": message,
         "repair_hint": "Compare the candidate row with the expected source row and change only the mapping or adapter logic responsible for the listed fields.",
     }
@@ -376,7 +382,11 @@ def _validate_json_population(context, report, candidate_population_path, output
             except (ValueError, TypeError) as exc:
                 raise ValueError(f"Worker JSON population is missing or invalid at row {rows}") from exc
             if claimed != expected:
-                raise ValueError(f"Worker JSON population differs from source at row {rows}")
+                raise _reconciliation_error(
+                    output, kind="row_mismatch", row_number=rows,
+                    source_locator={"file": binding.path, "pointer": locator, "row": rows},
+                    expected=expected, actual=claimed,
+                    message=f"Worker JSON population differs from source at row {rows}")
             if len(preview) < 3:
                 preview.append(record)
             if first_image_row:

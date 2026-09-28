@@ -14,6 +14,7 @@ from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.inspection import save_evidence
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_settings
+from medbenchagent.runtime.preparation_session import write_summary
 
 
 def build_source_inventory(context):
@@ -69,6 +70,8 @@ def build_source_inventory(context):
         reasoning_effort=get_settings().llm.reasoning_effort,
         construction_events_path=context["construction_events_path"], run_id=context["run_id"],
         dataset_id=context["dataset_scope"], source_id=source["id"],
+        workflow_step="source_inventory", source_digest=context.get("source_digest", ""),
+        context_summary_path=str(workspace / "state" / "context_summary.json"),
     )
     worker_result = coding_worker(context).run(task)
     updates = {"source_inventory_conversation_id": worker_result.conversation_id,
@@ -135,5 +138,10 @@ def build_source_inventory(context):
                    source_report_reference=table_ref, source_population_reference=population_ref,
                    source_inspection_script_path=str(stable_script),
                    source_inventory_feedback="", source_inventory_question="")
+    write_summary(workspace, objective=objective,
+                  facts=[f"Verified {verified['rows']} source rows", f"Verified {verified['unique_images']} unique images",
+                         f"Verified {verified['mask_references']} mask references", "Source facts are independently validated"],
+                  unresolved=report.uncertainties, current_task="source_inventory",
+                  artifacts=[str(stable_report), str(stable_script), verified["population_path"]])
     return result("success", f"Verified {verified['rows']} rows, {verified['unique_images']} images and "
                   f"{verified['mask_references']} masks; source facts frozen", **updates)

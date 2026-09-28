@@ -18,31 +18,25 @@ def _litellm_model(model: str) -> str:
     return model if "/" in model else "openai/" + model
 
 
-def _workflow_skill() -> str:
-    """Load the repository skill so runtime and the reusable skill stay aligned."""
-    path = Path(__file__).resolve().parents[3] / ".codex" / "skills" / "medbench-data-preparation" / "SKILL.md"
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-
 def _write_session_state(workspace: Path, request: dict, *, status: str, summary: str = "") -> None:
-    state = {
-        "schema_version": "preparation-session.v1",
-        "task_id": request["task_id"],
-        "kind": request["kind"],
-        "source_root": request["source_root"],
-        "conversation_id": request["conversation_id"],
-        "attempt": request.get("attempt", 1),
-        "status": status,
-        "summary": summary[-4000:],
-        "required_outputs": request.get("required_outputs", []),
-    }
-    (workspace / "state").mkdir(parents=True, exist_ok=True)
-    (workspace / "state" / "session_state.json").write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    bounded = (summary or "")[:6000]
+    state = {"schema_version": "preparation-session.v2", "task_id": request["task_id"],
+             "kind": request["kind"], "source_root": request["source_root"],
+             "source_digest": request.get("source_digest", ""),
+             "workflow_step": request.get("workflow_step", ""),
+             "conversation_id": request["conversation_id"], "attempt": request.get("attempt", 1),
+             "status": status, "last_feedback": {"message": bounded} if bounded else {},
+             "stop_reason": bounded if status in {"blocked", "failed"} else "",
+             "required_outputs": request.get("required_outputs", [])}
+    state_dir = workspace / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "session_state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary_doc = {"schema_version": "preparation-context.v1", "objective": request.get("objective", "")[:2000],
+                   "verified_facts": ["Workspace initialized; source is mounted read-only."],
+                   "unresolved": [bounded] if bounded else [], "current_task": request.get("workflow_step", ""),
+                   "validator_feedback": {"message": bounded} if bounded else {},
+                   "artifacts": request.get("required_outputs", [])}
+    (state_dir / "context_summary.json").write_text(json.dumps(summary_doc, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def replay_source_script(request: dict, workspace: Path) -> str:
@@ -130,7 +124,18 @@ def main(request_path: str, result_path: str) -> None:
                                 max_iteration_per_run=request["max_iterations"], stuck_detection=True,
                                 delete_on_close=False, callbacks=[on_event])
     outputs = ", ".join(request["required_outputs"])
-    prompt = _workflow_skill() + "\n\n" + (
+    summary_path = workspace / "state" / "context_summary.json"
+    persisted_summary = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else "{}"
+    workflow = """
+You are the long-lived MedBench preparation agent. Complete exploration, evidence capture, mapping,
+adapter implementation, execution, reconciliation, and repair in this same conversation. Use the workspace
+as durable memory and keep verified facts, inferences, user decisions, unresolved questions, validator feedback,
+and artifact paths separate. Read state/context_summary.json before acting and do not repeat inspections whose
+fingerprint is unchanged. Keep large results in files and pass bounded excerpts only. Ask one concrete question
+when source evidence cannot prove a semantic choice. Never claim publication or medical correctness; deterministic
+MedBench validation controls acceptance. Repeated actions that produce no new information must stop with a blocker.
+"""
+    prompt = workflow + "\n\nPERSISTED CONTEXT SUMMARY (bounded):\n" + persisted_summary[:8000] + "\n\n" + (
         "You are the MedBench preparation coding agent. Work only inside this workspace. "
         f"The read-only source is at {request['source_root']} and additional inputs are in ./inputs. "
         "Write scratch files under ./work, persistent progress under ./state, and candidate files under ./outputs. "
@@ -157,7 +162,7 @@ def main(request_path: str, result_path: str) -> None:
                    "MEDBENCH_INPUTS_PATH=./inputs/adapter_inputs.json and a writable trial "
                    "MEDBENCH_WORK_DIR. Keep trial outputs under ./work.")
     if request["feedback"]:
-        prompt += "\nValidator feedback to fix: " + request["feedback"]
+        prompt += "\nValidator feedback to fix (full report is in workspace): " + request["feedback"][:6000]
     conversation.send_message(prompt)
     try:
         conversation.run()

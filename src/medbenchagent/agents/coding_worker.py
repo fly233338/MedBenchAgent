@@ -45,6 +45,9 @@ class CodingTask(BaseModel):
     run_id: str = ""
     dataset_id: str = ""
     source_id: str = ""
+    workflow_step: str = ""
+    source_digest: str = ""
+    context_summary_path: str = ""
 
 
 class CodingResult(BaseModel):
@@ -108,6 +111,13 @@ class OpenHandsCodingWorker:
             raise ValueError("Worker workspace and original source must be separate")
         for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
             (workspace / name).mkdir(parents=True, exist_ok=True)
+        from medbenchagent.runtime.preparation_session import write_session
+        write_session(workspace, task=task.model_dump(), status="running", step=task.workflow_step,
+                      attempt=task.attempt, source_digest=task.source_digest)
+        if task.context_summary_path and Path(task.context_summary_path).is_file():
+            # The summary is an input to the long-lived conversation, never a replacement
+            # for artifacts kept in the workspace.
+            shutil.copyfile(task.context_summary_path, workspace / "state" / "context_summary.json")
         self._forward_events(workspace, task.construction_events_path)
         # Local workers read the frozen original source directly. Docker mounts
         # that same path read-only below; neither backend creates a source copy.
