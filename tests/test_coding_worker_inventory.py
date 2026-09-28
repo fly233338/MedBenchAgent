@@ -6,12 +6,28 @@ from openpyxl import Workbook
 from PIL import Image
 
 from medbenchagent.agents import source_inventory_worker
-from medbenchagent.agents.coding_worker import CodingResult, CodingTask, OpenHandsCodingWorker
+from medbenchagent.agents.coding_worker import (CodingResult, CodingTask, OpenHandsCodingWorker,
+                                                _copy_context_summary)
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.source_report import validate_source_report
 from medbenchagent.data.sources import inventory_source
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.openhands_worker import replay_source_script
+
+
+def test_context_summary_copy_skips_same_resolved_path(tmp_path, monkeypatch):
+    workspace = tmp_path / "worker"
+    summary = workspace / "state" / "context_summary.json"
+    summary.parent.mkdir(parents=True)
+    summary.write_text('{"ok": true}', encoding="utf-8")
+    calls = []
+    monkeypatch.setattr("medbenchagent.agents.coding_worker.shutil.copyfile",
+                        lambda source, target: calls.append((source, target)))
+
+    _copy_context_summary(str(summary), workspace)
+
+    assert calls == []
+    assert summary.read_text(encoding="utf-8") == '{"ok": true}'
 
 
 def breast_source(tmp_path):
@@ -146,6 +162,21 @@ def test_false_worker_report_cannot_publish_population(tmp_path, change, match):
     with pytest.raises(ValueError, match=match):
         validate_source_report(context, report_path, population_path, tmp_path / "verified")
     assert not (Path(context["bundle_root"]) / "preparation" / "original").exists()
+
+
+def test_identity_numbers_are_rejected_with_field_diff(tmp_path):
+    context, report_path, population_path, _ = breast_source(tmp_path)
+    rows = population_path.read_text(encoding="utf-8").splitlines()
+    first = json.loads(rows[0])
+    first["row_id"] = 1
+    first["image_id"] = 1
+    rows[0] = json.dumps(first)
+    population_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="differs from source"):
+        validate_source_report(context, report_path, population_path, tmp_path / "verified")
+    report = json.loads((tmp_path / "verified" / "reconciliation_report.json").read_text(encoding="utf-8"))
+    assert {item["field"] for item in report["field_diffs"]} == {"row_id", "image_id"}
 
 
 def test_source_change_invalidates_worker_report(tmp_path):

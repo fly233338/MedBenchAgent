@@ -41,6 +41,8 @@ def build_source_inventory(context):
         "inputs/source_report.schema.json, image_population.jsonl, and inspect_source.py. "
         "For a tabular population, every source row must yield exactly one JSONL line with keys "
         "source_id, row_id, image_id, image_path, mask_paths, classification. "
+        "The source_id, row_id, and image_id values in every JSONL line must be JSON strings, even when "
+        "the source spreadsheet contains numeric-looking values; never emit them as JSON numbers. "
         "For a direct JSON/JSONL object collection, use the json population kind and the same "
         "six JSONL keys for every selected object. record_count is the full object or table row count. "
         "inspect_source.py must read MEDBENCH_SOURCE_ROOT and MEDBENCH_WORK_DIR, then write "

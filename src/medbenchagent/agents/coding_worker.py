@@ -85,6 +85,16 @@ def _mount(source: Path, target: str, *, readonly: bool = False) -> str:
     return f"type=bind,src={source},dst={target}" + (",readonly" if readonly else "")
 
 
+def _copy_context_summary(source: str, workspace: Path) -> None:
+    """Copy a persisted summary only when it is not already the workspace summary."""
+    if not source:
+        return
+    source_path = Path(source).resolve()
+    target_path = (workspace / "state" / "context_summary.json").resolve()
+    if source_path.is_file() and source_path != target_path:
+        shutil.copyfile(source_path, target_path)
+
+
 class OpenHandsCodingWorker:
     """Run candidate coding on the backend frozen for the parent run."""
 
@@ -114,10 +124,9 @@ class OpenHandsCodingWorker:
         from medbenchagent.runtime.preparation_session import write_session
         write_session(workspace, task=task.model_dump(), status="running", step=task.workflow_step,
                       attempt=task.attempt, source_digest=task.source_digest)
-        if task.context_summary_path and Path(task.context_summary_path).is_file():
-            # The summary is an input to the long-lived conversation, never a replacement
-            # for artifacts kept in the workspace.
-            shutil.copyfile(task.context_summary_path, workspace / "state" / "context_summary.json")
+        # The summary is an input to the long-lived conversation, never a replacement
+        # for artifacts kept in the workspace.
+        _copy_context_summary(task.context_summary_path, workspace)
         self._forward_events(workspace, task.construction_events_path)
         # Local workers read the frozen original source directly. Docker mounts
         # that same path read-only below; neither backend creates a source copy.
