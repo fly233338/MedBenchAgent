@@ -181,5 +181,5 @@ def save_image_plan(context, *, overrides):
 
 
 def compile_data_processing_agent(*, checkpointer=None):
-    from medbenchagent.agents.data_pipeline import compile_pipeline
-    return compile_pipeline(checkpointer=checkpointer)
+    from medbenchagent.agents.dataset_agent import compile_dataset_agent
+    return compile_dataset_agent(checkpointer=checkpointer)

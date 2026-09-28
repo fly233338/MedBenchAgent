@@ -31,12 +31,6 @@ def _write_session_state(workspace: Path, request: dict, *, status: str, summary
     state_dir = workspace / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "session_state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    summary_doc = {"schema_version": "preparation-context.v1", "objective": request.get("objective", "")[:2000],
-                   "verified_facts": ["Workspace initialized; source is mounted read-only."],
-                   "unresolved": [bounded] if bounded else [], "current_task": request.get("workflow_step", ""),
-                   "validator_feedback": {"message": bounded} if bounded else {},
-                   "artifacts": request.get("required_outputs", [])}
-    (state_dir / "context_summary.json").write_text(json.dumps(summary_doc, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def replay_source_script(request: dict, workspace: Path) -> str:
@@ -124,8 +118,6 @@ def main(request_path: str, result_path: str) -> None:
                                 max_iteration_per_run=request["max_iterations"], stuck_detection=True,
                                 delete_on_close=False, callbacks=[on_event])
     outputs = ", ".join(request["required_outputs"])
-    summary_path = workspace / "state" / "context_summary.json"
-    persisted_summary = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else "{}"
     workflow = """
 You are the long-lived MedBench preparation agent. Complete exploration, evidence capture, mapping,
 adapter implementation, execution, reconciliation, and repair in this same conversation. Use the workspace
@@ -135,7 +127,7 @@ fingerprint is unchanged. Keep large results in files and pass bounded excerpts 
 when source evidence cannot prove a semantic choice. Never claim publication or medical correctness; deterministic
 MedBench validation controls acceptance. Repeated actions that produce no new information must stop with a blocker.
 """
-    prompt = workflow + "\n\nPERSISTED CONTEXT SUMMARY (bounded):\n" + persisted_summary[:8000] + "\n\n" + (
+    prompt = workflow + "\n\n" + (
         "You are the MedBench preparation coding agent. Work only inside this workspace. "
         f"The read-only source is at {request['source_root']} and additional inputs are in ./inputs. "
         "Write scratch files under ./work, persistent progress under ./state, and candidate files under ./outputs. "
@@ -152,10 +144,14 @@ MedBench validation controls acceptance. Repeated actions that produce no new in
         "Do not claim publication or readiness; submit candidates and an explicit summary of unresolved questions. "
         f"Objective: {request['objective']}\nRequired files under ./outputs: {outputs}. "
     )
-    if request["kind"] in {"preparation", "source_inventory"}:
+    if request["kind"] == "source_inventory":
         prompt += ("Inspect the complete relevant population, not a sample. Use source-relative paths "
                    "in reports. State unresolved semantic questions in source_report.json uncertainties. "
                    "Run outputs/inspect_source.py and check its results before finishing.")
+    elif request["kind"] == "preparation":
+        prompt += ("Complete the entire preparation workflow in this session. Write the required reports and "
+                   "candidate completion marker under ./outputs, and stop only for a concrete user question "
+                   "or after candidate/complete.json is ready.")
     elif request["kind"] == "dataset_adapter":
         prompt += ("Read inputs/adapter_contract.txt and inputs/spec.json. Test adapter.py using "
                    "MEDBENCH_SOURCE_ROOT=$MEDBENCH_SOURCE_ROOT, MEDBENCH_SPEC_PATH=./inputs/spec.json, "
@@ -175,7 +171,7 @@ MedBench validation controls acceptance. Repeated actions that produce no new in
         _write_session_state(workspace, request, status="blocked", summary=result["diagnostic"])
         Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         raise
-    diagnostic = replay_source_script(request, workspace) if request["kind"] in {"preparation", "source_inventory"} else ""
+    diagnostic = replay_source_script(request, workspace) if request["kind"] == "source_inventory" else ""
     produced = {name: str((workspace / "outputs" / name).resolve()) for name in request["required_outputs"]
                 if (workspace / "outputs" / name).is_file()}
     complete = not diagnostic and len(produced) == len(request["required_outputs"])
