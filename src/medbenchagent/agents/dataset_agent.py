@@ -12,7 +12,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from medbenchagent.agents.coding_worker import CodingTask, coding_worker
+from medbenchagent.runtime.dataset_runtime import DatasetAgentTask, dataset_runtime
 from medbenchagent.runtime.preparation_session import load_session, write_session
 from medbenchagent.settings import get_settings
 
@@ -33,11 +33,11 @@ class DatasetAgentState(TypedDict, total=False):
     context: dict
 
 
-def _task(context: dict, workspace: Path) -> CodingTask:
+def _task(context: dict, workspace: Path) -> DatasetAgentTask:
     source = context["active_source"]
     session = load_session(workspace)
     conversation_id = session.get("conversation_id") or None
-    return CodingTask(
+    return DatasetAgentTask(
         task_id=f"{context['run_id']}:{context['dataset_scope']}:{source['id']}:preparation",
         kind="preparation", source_root=context["source_root"],
         source_manifest=context["source_manifest"], workspace=str(workspace),
@@ -64,7 +64,7 @@ def run_dataset_agent(context: dict):
         task = task.model_copy(update={"attempt": attempt, "feedback": feedback})
         write_session(workspace, task=task.model_dump(), status="running", step="preparation",
                       attempt=attempt)
-        outcome = coding_worker(context).run(task)
+        outcome = dataset_runtime(context).run(task)
         if outcome.status != "complete":
             break
         gate_error, payload = _candidate_gate(workspace)
@@ -120,4 +120,6 @@ def compile_dataset_agent(*, checkpointer=None):
     graph.add_edge(START, "dataset_processing_agent")
     graph.add_edge("dataset_processing_agent", END)
     return graph.compile(checkpointer=checkpointer)
+
+
 

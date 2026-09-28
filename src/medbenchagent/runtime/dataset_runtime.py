@@ -22,7 +22,7 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_llm_api_key, get_settings
 
 
-class CodingTask(BaseModel):
+class DatasetAgentTask(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     task_id: str
@@ -50,7 +50,7 @@ class CodingTask(BaseModel):
     context_summary_path: str = ""
 
 
-class CodingResult(BaseModel):
+class DatasetAgentResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     status: Literal["complete", "needs_input", "blocked", "failed"]
@@ -65,8 +65,8 @@ class CodingResult(BaseModel):
     state: Literal["running", "needs_user_input", "submitted", "validation_failed", "complete", "blocked"] = "complete"
 
 
-class CodingWorker(Protocol):
-    def run(self, task: CodingTask) -> CodingResult: ...
+class DatasetRuntimeProtocol(Protocol):
+    def run(self, task: DatasetAgentTask) -> DatasetAgentResult: ...
 
 
 def _container_url(base_url: str) -> str:
@@ -95,7 +95,7 @@ def _copy_context_summary(source: str, workspace: Path) -> None:
         shutil.copyfile(source_path, target_path)
 
 
-class OpenHandsCodingWorker:
+class OpenHandsDatasetRuntime:
     """Run candidate coding on the backend frozen for the parent run."""
 
     _requirements = (
@@ -109,7 +109,7 @@ class OpenHandsCodingWorker:
     def __init__(self, runtime=None):
         self.runtime = runtime
 
-    def run(self, task: CodingTask) -> CodingResult:
+    def run(self, task: DatasetAgentTask) -> DatasetAgentResult:
         verify_source(task.source_manifest)
         settings = get_settings().data_processing
         # Production callers pass the run-frozen resolver result. Direct worker use
@@ -156,7 +156,7 @@ class OpenHandsCodingWorker:
         result_path = workspace / "state" / f"coding_result_{task.kind}.json"
         if request_path.is_file() and json.loads(request_path.read_text(encoding="utf-8")) == request:
             if result_path.is_file():
-                cached = CodingResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+                cached = DatasetAgentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
                 if cached.status == "complete":
                     return self._validate_outputs(task, cached, workspace, conversation_id, runtime["backend"])
         result_path.unlink(missing_ok=True)
@@ -179,7 +179,7 @@ class OpenHandsCodingWorker:
             if self.runtime is None:
                 image_id = image
             else:
-                return self._record_result(workspace, task, CodingResult(
+                return self._record_result(workspace, task, DatasetAgentResult(
                     status="blocked", conversation_id=conversation_id,
                     diagnostic=str(exc), error_category="environment_unavailable"))
         probe = (
@@ -199,12 +199,12 @@ class OpenHandsCodingWorker:
                  request["base_url"], task.model],
                 env=environment, capture_output=True, text=True, timeout=30, check=False)
             if check.returncode:
-                return self._record_result(workspace, task, CodingResult(
+                return self._record_result(workspace, task, DatasetAgentResult(
                     status="blocked", conversation_id=conversation_id,
                     diagnostic="OpenHands container cannot reach the frozen Chat model",
                     error_category="model_unavailable"))
         except (OSError, subprocess.TimeoutExpired):
-            return self._record_result(workspace, task, CodingResult(
+            return self._record_result(workspace, task, DatasetAgentResult(
                 status="blocked", conversation_id=conversation_id,
                 diagnostic="OpenHands container cannot probe the frozen Chat model",
                 error_category="environment_unavailable"))
@@ -229,7 +229,7 @@ class OpenHandsCodingWorker:
                 started = subprocess.run(command, env=environment, capture_output=True,
                                          text=True, timeout=30, check=False)
                 if started.returncode:
-                    return self._record_result(workspace, task, CodingResult(
+                    return self._record_result(workspace, task, DatasetAgentResult(
                         status="failed", conversation_id=conversation_id,
                         diagnostic="OpenHands container could not start: " +
                         (started.stderr.strip()[:300] or "see Docker daemon"),
@@ -237,7 +237,7 @@ class OpenHandsCodingWorker:
             completed = subprocess.run(["docker", "wait", container_name], capture_output=True,
                                        text=True, timeout=task.timeout_seconds, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return self._record_result(workspace, task, CodingResult(
+            return self._record_result(workspace, task, DatasetAgentResult(
                 status="failed", conversation_id=conversation_id,
                 diagnostic=f"OpenHands worker unavailable: {type(exc).__name__}",
                 error_category="worker_execution_failed", retryable=True))
@@ -255,11 +255,11 @@ class OpenHandsCodingWorker:
         forwarder.join(timeout=2)
         self._forward_events(workspace, task.construction_events_path)
         if completed.returncode or (getattr(completed, "stdout", "0") or "0").strip() != "0" or not result_path.is_file():
-            return self._record_result(workspace, task, CodingResult(
+            return self._record_result(workspace, task, DatasetAgentResult(
                 status="failed", conversation_id=conversation_id,
                 diagnostic=self._failure_summary(workspace / "logs" / "stderr.log"),
                 error_category="worker_execution_failed", retryable=True))
-        result = CodingResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        result = DatasetAgentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
         return self._record_result(workspace, task,
                                    self._validate_outputs(task, result, workspace, conversation_id, runtime["backend"]))
 
@@ -267,14 +267,14 @@ class OpenHandsCodingWorker:
     def _start_event_forwarder(workspace: Path, destination: str, stop: threading.Event):
         def loop():
             while not stop.is_set():
-                OpenHandsCodingWorker._forward_events(workspace, destination)
+                OpenHandsDatasetRuntime._forward_events(workspace, destination)
                 stop.wait(0.5)
         thread = threading.Thread(target=loop, name="openhands-event-forwarder", daemon=True)
         thread.start()
         return thread
 
     @staticmethod
-    def _record_result(workspace: Path, task: CodingTask, result: CodingResult) -> CodingResult:
+    def _record_result(workspace: Path, task: DatasetAgentTask, result: DatasetAgentResult) -> DatasetAgentResult:
         """Persist an immutable attempt receipt used by recovery and diagnosis."""
         receipt = {
             "task_id": task.task_id, "kind": task.kind, "attempt": task.attempt,
@@ -314,22 +314,22 @@ class OpenHandsCodingWorker:
                         os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
             if timed_out:
-                return self._record_result(workspace, task, CodingResult(
+                return self._record_result(workspace, task, DatasetAgentResult(
                     status="failed", conversation_id=conversation_id,
                     diagnostic="OpenHands worker exceeded its time budget",
                     error_category="worker_execution_failed", retryable=True))
         except OSError as exc:
-            return self._record_result(workspace, task, CodingResult(
+            return self._record_result(workspace, task, DatasetAgentResult(
                 status="blocked", conversation_id=conversation_id,
                 diagnostic=f"OpenHands local dependencies unavailable: {type(exc).__name__}",
                 error_category="environment_unavailable"))
         self._forward_events(workspace, task.construction_events_path)
         if process.returncode or not result_path.is_file():
-            return self._record_result(workspace, task, CodingResult(
+            return self._record_result(workspace, task, DatasetAgentResult(
                 status="failed", conversation_id=conversation_id,
                 diagnostic=self._failure_summary(workspace / "logs" / "stderr.log"),
                 error_category="worker_execution_failed", retryable=True))
-        result = CodingResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        result = DatasetAgentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
         return self._record_result(workspace, task,
                                    self._validate_outputs(task, result, workspace, conversation_id, "local"))
 
@@ -358,14 +358,14 @@ class OpenHandsCodingWorker:
             output = re.search(r"requested (\d+) output tokens", tail)
             input_tokens = re.search(r"prompt contains at least (\d+) input tokens", tail)
             if limit and output and input_tokens:
-                return (f"CodingWorker context window exceeded: input={input_tokens[1]}, "
+                return (f"DatasetRuntimeProtocol context window exceeded: input={input_tokens[1]}, "
                         f"reserved_output={output[1]}, model_limit={limit[1]}; see logs/stderr.log")
-            return "CodingWorker context window exceeded; see logs/stderr.log for details"
+            return "DatasetRuntimeProtocol context window exceeded; see logs/stderr.log for details"
         return "OpenHands worker failed; see logs/stderr.log for details"
 
     @staticmethod
-    def _validate_outputs(task: CodingTask, result: CodingResult, workspace: Path,
-                          conversation_id: str, backend: str) -> CodingResult:
+    def _validate_outputs(task: DatasetAgentTask, result: DatasetAgentResult, workspace: Path,
+                          conversation_id: str, backend: str) -> DatasetAgentResult:
         if result.conversation_id != conversation_id:
             raise ValueError("Worker returned another conversation identity")
         if result.status == "complete" and set(result.outputs) != set(task.required_outputs):
@@ -382,5 +382,7 @@ class OpenHandsCodingWorker:
         return result.model_copy(update={"outputs": outputs})
 
 
-def coding_worker(context) -> CodingWorker:
-    return OpenHandsCodingWorker(context.get("execution_runtime"))
+def dataset_runtime(context) -> DatasetRuntimeProtocol:
+    return OpenHandsDatasetRuntime(context.get("execution_runtime"))
+
+
