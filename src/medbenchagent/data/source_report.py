@@ -15,6 +15,34 @@ from medbenchagent.data.sources import digest_file, track_files, verify_source
 from medbenchagent.data.validation import source_image_path
 
 
+def _reconciliation_error(output: Path, *, kind: str, row_number: int,
+                          source_locator: dict, expected: dict, actual: object,
+                          message: str) -> ValueError:
+    """Persist actionable source/candidate evidence before raising validation failure."""
+    output.mkdir(parents=True, exist_ok=True)
+    report = {
+        "schema_version": "reconciliation-report.v1",
+        "status": "failed",
+        "error_kind": kind,
+        "row_number": row_number,
+        "source_locator": source_locator,
+        "expected": expected,
+        "actual": actual,
+        "field_diffs": [
+            {"field": key, "expected": expected.get(key),
+             "actual": actual.get(key) if isinstance(actual, dict) else None}
+            for key in expected
+            if not isinstance(actual, dict) or actual.get(key) != expected.get(key)
+        ],
+        "message": message,
+        "repair_hint": "Compare the candidate row with the expected source row and change only the mapping or adapter logic responsible for the listed fields.",
+    }
+    (output / "reconciliation_report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return ValueError(message + "; see reconciliation_report.json for expected/actual field diffs")
+
+
 class ReportTable(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -205,7 +233,12 @@ def validate_source_report(context, report_path, candidate_population_path, outp
                     except (ValueError, TypeError) as exc:
                         raise ValueError(f"Worker population is missing or invalid at row {rows}") from exc
                     if claimed != expected:
-                        raise ValueError(f"Worker population differs from source at row {rows}")
+                        raise _reconciliation_error(
+                            output, kind="row_mismatch", row_number=rows,
+                            source_locator={"file": binding.table_path, "sheet": binding.sheet,
+                                            "row": rows + 1}, expected=expected,
+                            actual=claimed,
+                            message=f"Worker population differs from source at row {rows}")
                     if len(preview) < 3:
                         preview.append(record)
                     if first_image_row:

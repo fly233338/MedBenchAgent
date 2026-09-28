@@ -18,6 +18,33 @@ def _litellm_model(model: str) -> str:
     return model if "/" in model else "openai/" + model
 
 
+def _workflow_skill() -> str:
+    """Load the repository skill so runtime and the reusable skill stay aligned."""
+    path = Path(__file__).resolve().parents[3] / ".codex" / "skills" / "medbench-data-preparation" / "SKILL.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _write_session_state(workspace: Path, request: dict, *, status: str, summary: str = "") -> None:
+    state = {
+        "schema_version": "preparation-session.v1",
+        "task_id": request["task_id"],
+        "kind": request["kind"],
+        "source_root": request["source_root"],
+        "conversation_id": request["conversation_id"],
+        "attempt": request.get("attempt", 1),
+        "status": status,
+        "summary": summary[-4000:],
+        "required_outputs": request.get("required_outputs", []),
+    }
+    (workspace / "state").mkdir(parents=True, exist_ok=True)
+    (workspace / "state" / "session_state.json").write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def replay_source_script(request: dict, workspace: Path) -> str:
     """Re-run the worker's inspection code twice before accepting its files."""
     script = workspace / "outputs" / "inspect_source.py"
@@ -61,6 +88,7 @@ def main(request_path: str, result_path: str) -> None:
 
     request = json.loads(Path(request_path).read_text(encoding="utf-8"))
     workspace = Path(request["workspace"]).resolve()
+    _write_session_state(workspace, request, status="running")
     key = os.getenv("MEDBENCH_LLM_API_KEY")
     if not key:
         raise RuntimeError("Coding worker requires the configured LLM API key")
@@ -102,7 +130,7 @@ def main(request_path: str, result_path: str) -> None:
                                 max_iteration_per_run=request["max_iterations"], stuck_detection=True,
                                 delete_on_close=False, callbacks=[on_event])
     outputs = ", ".join(request["required_outputs"])
-    prompt = (
+    prompt = _workflow_skill() + "\n\n" + (
         "You are the MedBench preparation coding agent. Work only inside this workspace. "
         f"The read-only source is at {request['source_root']} and additional inputs are in ./inputs. "
         "Write scratch files under ./work, persistent progress under ./state, and candidate files under ./outputs. "
@@ -139,6 +167,7 @@ def main(request_path: str, result_path: str) -> None:
         result = {"status": "failed", "conversation_id": request["conversation_id"],
                   "outputs": {}, "question": "",
                   "diagnostic": f"OpenHands conversation failed: {type(exc).__name__}: {exc}"}
+        _write_session_state(workspace, request, status="blocked", summary=result["diagnostic"])
         Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         raise
     diagnostic = replay_source_script(request, workspace) if request["kind"] in {"preparation", "source_inventory"} else ""
@@ -149,6 +178,8 @@ def main(request_path: str, result_path: str) -> None:
               "conversation_id": request["conversation_id"], "outputs": produced,
               "question": "", "diagnostic": "" if complete else diagnostic or "Required worker outputs are missing",
               "state": "submitted" if complete else "validation_failed"}
+    _write_session_state(workspace, request,
+                         status=result["state"], summary=result["diagnostic"])
     Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
 
 

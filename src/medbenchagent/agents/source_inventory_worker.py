@@ -62,9 +62,7 @@ def build_source_inventory(context):
         inputs={"source_report.schema.json": str(schema_path)},
         feedback=feedback,
         attempt=attempts,
-        conversation_id=(context.get("source_inventory_conversation_id")
-                         if context.get("source_inventory_question") and clarification.get("status") == "resolved"
-                         else None),
+        conversation_id=context.get("source_inventory_conversation_id") or None,
         max_iterations=context.get("coding_worker_max_iterations", 40),
         timeout_seconds=context.get("coding_worker_timeout_seconds", 1800),
         model=get_settings().llm.model, base_url=get_settings().llm.base_url,
@@ -92,6 +90,9 @@ def build_source_inventory(context):
         compile(script, "inspect_source.py", "exec")
     except (ValueError, SyntaxError) as exc:
         feedback = str(exc)
+        reconciliation = Path(context["operation_directory"]) / "verified" / "reconciliation_report.json"
+        if reconciliation.is_file():
+            feedback += "\nStructured reconciliation report:\n" + reconciliation.read_text(encoding="utf-8")
         return result("blocked" if attempts >= context.get("coding_worker_max_revisions", 3) else "failed",
                       f"Source report validation failed: {feedback}",
                       source_inventory_feedback=feedback,
