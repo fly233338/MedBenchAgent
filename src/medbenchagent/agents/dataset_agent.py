@@ -15,6 +15,8 @@ from langgraph.graph import END, START, StateGraph
 from medbenchagent.runtime.dataset_runtime import DatasetAgentTask, dataset_runtime
 from medbenchagent.runtime.preparation_session import load_session, write_session
 from medbenchagent.settings import get_settings
+from medbenchagent.data.contracts import Source
+from medbenchagent.data.sources import inventory_source
 
 
 DATASET_WORKFLOW_PROMPT = """You are the dataset processing coding agent. Work continuously in one OpenHands
@@ -31,6 +33,7 @@ claim medical correctness or publication. If a user decision is required, stop w
 
 class DatasetAgentState(TypedDict, total=False):
     context: dict
+    result: dict
 
 
 def _task(context: dict, workspace: Path) -> DatasetAgentTask:
@@ -54,6 +57,16 @@ def _task(context: dict, workspace: Path) -> DatasetAgentTask:
 
 
 def run_dataset_agent(context: dict):
+    context = dict(context)
+    if not context.get("active_source"):
+        sources = [Source.model_validate(item) for item in context.get("sources", [])]
+        if not sources:
+            return {"status": "blocked", "summary": "Dataset has no configured source", "updates": {}}
+        source = sources[0]
+        manifest = Path(context["bundle_root"]) / "source_manifests" / source.id
+        inventory_source(source, manifest)
+        context.update(source_scope=source.id, active_source=source.model_dump(),
+                       source_root=str(Path(source.root).resolve()), source_manifest=str(manifest))
     source = context["active_source"]
     workspace = Path(context["run_directory"]) / "workers" / "openhands" / context["dataset_scope"] / source["id"]
     workspace.mkdir(parents=True, exist_ok=True)
@@ -113,7 +126,7 @@ def compile_dataset_agent(*, checkpointer=None):
         outcome = run_dataset_agent(context)
         context.update(outcome.get("updates", {}))
         context["dataset_agent_result"] = {k: v for k, v in outcome.items() if k != "updates"}
-        return {"context": context}
+        return {"context": context, "result": context["dataset_agent_result"]}
 
     graph = StateGraph(DatasetAgentState)
     graph.add_node("dataset_processing_agent", execute)
