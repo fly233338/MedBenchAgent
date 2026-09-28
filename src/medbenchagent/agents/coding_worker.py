@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import filecmp
 import os
 import re
 import shutil
@@ -109,27 +108,9 @@ class OpenHandsCodingWorker:
         for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
             (workspace / name).mkdir(parents=True, exist_ok=True)
         self._forward_events(workspace, task.construction_events_path)
+        # Local workers read the frozen original source directly. Docker mounts
+        # that same path read-only below; neither backend creates a source copy.
         source = source_root
-        if runtime["backend"] == "local" or settings["source_workspace_mode"] == "copy":
-            source = workspace / ("source" if runtime["backend"] == "local" else "source_snapshot")
-            if not source.exists():
-                shutil.copytree(source_root, source)
-            listed = set()
-            with (Path(task.source_manifest) / "files.jsonl").open(encoding="utf-8") as handle:
-                for line in handle:
-                    relative = json.loads(line)["path"]
-                    listed.add(relative)
-                    staged = source / relative
-                    if staged.is_symlink() or not staged.is_file() or not filecmp.cmp(
-                            source_root / relative, staged, shallow=False):
-                        raise ValueError(f"Worker source snapshot differs from original: {relative}")
-            if any(path.is_symlink() or path.relative_to(source).as_posix() not in listed
-                   for path in source.rglob("*") if path.is_file() or path.is_symlink()):
-                raise ValueError("Worker source snapshot contains an unlisted file")
-            if runtime["backend"] == "local":
-                for staged in source.rglob("*"):
-                    if staged.is_file():
-                        staged.chmod(0o444)
         for name, path in task.inputs.items():
             destination = (workspace / "inputs" / name).resolve()
             if not destination.is_relative_to(workspace / "inputs"):

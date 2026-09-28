@@ -42,7 +42,7 @@ prepare_data 只接收 dataset_id、mode 和 feedback；代码使用配置来源
 CandidateExtraction → PopulationDecision/PreparationValidation → Annotation → ImageInventory/ImagePlan →
 NormalizedSource。事实、语义、实现与验收分开保存；不引入第二套 DAG。Fingerprint 由框架从选定的真实
 检查回执组装，保存统计覆盖范围、分母、文件清单与当时已读文件索引；无关检查不自动改写已冻结事实。
-原始 Source 默认先委派一次 OpenHands CodingWorker，在独立工作区的来源副本上探索并生成
+原始 Source 默认先委派一次 OpenHands CodingWorker，在独立工作区通过只读路径访问原始来源并生成
 `source_report.json`、候选图像总体清单与可复运行检查脚本。MedBench 从原始来源重新计数，核验
 图像、可选 mask 路径与关系及原始分类值，再建立正式证据并冻结 SourceFingerprint；Worker 文件和
 assert 不具有发布权限。表格来源支持重复 finding 行的一致图像身份；固定检查器无法证明的嵌套
@@ -134,8 +134,7 @@ DatasetCandidates 是独立 artifact，Selection 依赖 Requirement、该快照�
 ## 执行后端
 
 项目基线为 Python 3.12。CodingWorker 使用固定版本的 OpenHands SDK/Tools；它与确定性
-DataProcessing executor 共用 Run 初始化时冻结的 auto/docker/local runtime。任务、会话 ID、工作区和预算绑定到准备私有状态。默认将原始 Source 只读挂载，
-显式 copy 模式才建立独立快照并只读挂载。Worker 只能将候选写入工作区，MedBench 始终对原始
+DataProcessing executor 共用 Run 初始化时冻结的 auto/docker/local runtime。任务、会话 ID、工作区和预算绑定到准备私有状态。默认将原始 Source 只读挂载；Local Worker 直接读取原始路径，不创建来源副本。Worker 只能将候选写入工作区，MedBench 始终对原始
 Source 独立验证，并在委派前后核验原始来源。进程中断恢复同一尝试与 conversation；validator
 返修保留工作区但创建新 conversation，不携带完整旧历史。单次模型输出上限为 8192 token。
 默认准备运行启用 OpenHands；依赖或服务失败明确阻断，不静默转为旧检查循环。
@@ -490,3 +489,5 @@ MedGemma 重解析按已确认的原生 `[0,1]` yxyx 协议处理，因此可纠
 修改图流程、稳定类型、输入输出契约、产物名称、模型职责或数据可见边界时，必须同步更新本文。
 `README.md` 面向使用方式；`AGENTS.md` 面向工作约束；本地旧 SVG/Draw.io 和历史运行产物均不是
 当前架构真相源。本文不描述部署拓扑、威胁模型或未来规划。
+
+

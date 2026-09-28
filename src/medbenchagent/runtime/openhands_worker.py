@@ -26,10 +26,11 @@ def replay_source_script(request: dict, workspace: Path) -> str:
     replay_marker = workspace / "state" / "source_inventory_replayed.json"
     replay_marker.unlink(missing_ok=True)
     replay = []
+    source_root = Path(request.get("source_root", workspace / "source")).resolve()
     with tempfile.TemporaryDirectory(dir=workspace / "work") as first, \
             tempfile.TemporaryDirectory(dir=workspace / "work") as second:
         for trial in (Path(first), Path(second)):
-            environment = {**os.environ, "MEDBENCH_SOURCE_ROOT": str(workspace / "source"),
+            environment = {**os.environ, "MEDBENCH_SOURCE_ROOT": str(source_root),
                            "MEDBENCH_WORK_DIR": str(trial)}
             try:
                 completed = subprocess.run([sys.executable, str(script)], cwd=workspace,
@@ -103,7 +104,7 @@ def main(request_path: str, result_path: str) -> None:
     outputs = ", ".join(request["required_outputs"])
     prompt = (
         "You are a data inspection and Python coding worker. Work only inside this workspace. "
-        "The read-only source is in ./source and additional inputs are in ./inputs. "
+        f"The read-only source is at {request['source_root']} and additional inputs are in ./inputs. "
         "Write scratch files under ./work and final candidate files under ./outputs. "
         "Do not infer clinical meaning, publish data, or edit the source. "
         f"Objective: {request['objective']}\n"
@@ -115,7 +116,7 @@ def main(request_path: str, result_path: str) -> None:
                    "Run outputs/inspect_source.py and check its results before finishing.")
     else:
         prompt += ("Read inputs/adapter_contract.txt and inputs/spec.json. Test adapter.py using "
-                   "MEDBENCH_SOURCE_ROOT=./source, MEDBENCH_SPEC_PATH=./inputs/spec.json, "
+                   "MEDBENCH_SOURCE_ROOT=$MEDBENCH_SOURCE_ROOT, MEDBENCH_SPEC_PATH=./inputs/spec.json, "
                    "MEDBENCH_INPUTS_PATH=./inputs/adapter_inputs.json and a writable trial "
                    "MEDBENCH_WORK_DIR. Keep trial outputs under ./work.")
     if request["feedback"]:
