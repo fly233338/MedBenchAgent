@@ -324,7 +324,7 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
             default_temperature=_number(llm["default_temperature"], "llm.default_temperature", minimum=0, maximum=2),
             # Older frozen runs predate this setting; medium avoids OpenHands'
             # SDK default (high) while keeping those runs resumable.
-            reasoning_effort=_optional_string(llm.get("reasoning_effort", ""), "llm.reasoning_effort"),
+            reasoning_effort=_optional_string(llm.get("reasoning_effort", "medium"), "llm.reasoning_effort"),
         ),
         rag=RagSettings(
             embedding_base_url=_optional_string(rag["embedding_base_url"], "rag.embedding_base_url"),

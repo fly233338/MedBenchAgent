@@ -18,7 +18,7 @@ max_retries = 0
 default_temperature = 0.0
 # OpenHands SDK 1.49.6 defaults to "high". Set this explicitly because
 # reasoning levels are gateway/model specific (the default gateway accepts medium).
-reasoning_effort = ""
+reasoning_effort = "medium"
 
 [rag]
 embedding_base_url = "http://127.0.0.1:8006/v1"

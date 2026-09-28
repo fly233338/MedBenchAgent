@@ -41,7 +41,7 @@ class CodingTask(BaseModel):
     conversation_id: str | None = None
     model: str
     base_url: str
-    reasoning_effort: str = ""
+    reasoning_effort: str = "medium"
     construction_events_path: str = ""
     run_id: str = ""
     dataset_id: str = ""

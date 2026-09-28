@@ -73,8 +73,9 @@ def main(request_path: str, result_path: str) -> None:
     llm_kwargs = {"model": model, "base_url": request["base_url"],
                   "max_output_tokens": 8192, "api_key": SecretStr(key),
                   "usage_id": "medbench_coding_worker"}
-    if request.get("reasoning_effort"):
-        llm_kwargs["reasoning_effort"] = request["reasoning_effort"]
+    # OpenHands defaults to high, which is not accepted by this vLLM service;
+    # keep the previously working explicit medium default.
+    llm_kwargs["reasoning_effort"] = request.get("reasoning_effort") or "medium"
     llm = LLM(**llm_kwargs)
     agent = Agent(llm=llm, tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)])
     event_path = Path(request["construction_events_path"]) if request.get("construction_events_path") else None
