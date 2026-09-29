@@ -24,6 +24,15 @@ dataset_readiness 和 outstanding_work 从当前有效 artifacts 推导；仅准
 
 ## 准备、Card 与 Catalog
 
+### Coding Session 数据准备边界
+
+数据准备的业务入口是一个可恢复的 Coding Session。Session 绑定单一 workspace、
+conversation_id 和运行时后端；Coding Agent 负责探索全部 source、编写可复现转换代码、
+执行样本与全量转换，并在 workspace 中提交候选产物。宿主只读取候选、运行确定性 validator，
+再完成 bundle、Profile、Card 和 Catalog 注册。澄清或 validator 返修继续发送到同一 Session，
+不会由宿主重新编排 inventory/mapping 等阶段。新候选使用 `annotation.v4`，旧 prepared bundle
+保持只读兼容。候选最终化入口为 `data.finalization.finalize_prepared_dataset`。
+
 会话准备运行通过自然语言要求进入 Supervisor，后者只准备这一逻辑数据集。
 `register --dataset-id <id> --bundle <path>` 验证并登记已有完整 bundle。
 构建缺少已准备数据时报告并等待新的准备要求。准备版本位于 `paths.prepared_datasets_root/<dataset_id>/<version>`，

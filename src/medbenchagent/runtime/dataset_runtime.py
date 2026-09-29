@@ -20,6 +20,7 @@ from medbenchagent.data.sources import verify_source
 from medbenchagent.data.execution import ExecutionUnavailable, docker_image_id
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_llm_api_key, get_settings
+from medbenchagent.runtime.preparation_session import CodingSession, CodingResult  # noqa: F401
 
 
 class DatasetAgentTask(BaseModel):
@@ -108,7 +109,7 @@ class OpenHandsDatasetRuntime:
         source_root = Path(task.source_root).resolve()
         if workspace.is_relative_to(source_root) or source_root.is_relative_to(workspace):
             raise ValueError("Worker workspace and original source must be separate")
-        for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
+        for name in ("inputs", "work", "outputs", "output", "notes", "scripts", "tests", "state", "logs", "conversations"):
             (workspace / name).mkdir(parents=True, exist_ok=True)
         from medbenchagent.runtime.preparation_session import write_session
         write_session(workspace, task=task.model_dump(), status="running", step=task.workflow_step,
@@ -202,7 +203,7 @@ class OpenHandsDatasetRuntime:
                    "--add-host", "host.docker.internal:host-gateway",
                    "-e", "MEDBENCH_LLM_API_KEY", "-w", "/workspace", "--mount",
                    _mount(source, "/workspace/source", readonly=True)]
-        for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
+        for name in ("inputs", "work", "outputs", "output", "notes", "scripts", "tests", "state", "logs", "conversations"):
             command.extend(["--mount", _mount(workspace / name, f"/workspace/{name}",
                                               readonly=name == "inputs")])
         command.extend([image_id, "python", "/app/openhands_worker.py",

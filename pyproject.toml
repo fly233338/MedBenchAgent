@@ -58,6 +58,8 @@ packages = ["src/medbenchagent"]
 [tool.hatch.build.targets.wheel.force-include]
 "src/medbenchagent/schemas/annotation.v2.schema.json" = "medbenchagent/schemas/annotation.v2.schema.json"
 "src/medbenchagent/schemas/annotation.v3.schema.json" = "medbenchagent/schemas/annotation.v3.schema.json"
+"src/medbenchagent/schemas/annotation.v4.schema.json" = "medbenchagent/schemas/annotation.v4.schema.json"
+"src/medbenchagent/prompts/data_preparation_agent.md" = "medbenchagent/prompts/data_preparation_agent.md"
 
 [dependency-groups]
 dev = [

@@ -460,6 +460,17 @@ def compile_benchmark_graph(*, checkpointer=None):
                 Path(context["run_directory"]) / "discovery" / "sources" /
                 dataset_id / "source_decision.json")
         if output["result"]["status"] == "complete":
+            # Coding Agent submissions are finalized deterministically by the
+            # host before they are exposed to planning.
+            if "dataset_entry" not in output["context"]:
+                from medbenchagent.data.finalization import finalize_prepared_dataset
+                candidate = output["context"].get("preparation_candidate", {})
+                candidate_path = candidate.get("candidate_path") if isinstance(candidate, dict) else None
+                if candidate_path:
+                    finalized = finalize_prepared_dataset(candidate_path, output["context"])
+                    output["context"].update({"dataset_entry": finalized["dataset_entry"],
+                                               "annotation_path": finalized["annotation_path"],
+                                               "dataset_access_manifest": finalized["access_manifest"]})
             entries = {**context.get("prepared_entries", {}), dataset_id: output["context"]["dataset_entry"]}
             outcome["updates"]["prepared_entries"] = entries
             published = dict(context, artifact_versions=outcome["updates"]["artifact_versions"])

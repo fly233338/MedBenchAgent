@@ -4,11 +4,71 @@ from __future__ import annotations
 
 import hashlib
 import json
+import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
 SESSION_SCHEMA = "preparation-session.v2"
+
+
+@dataclass(frozen=True)
+class CodingResult:
+    """Stable business result returned by a long-lived preparation session."""
+    status: str
+    conversation_id: str
+    workspace: str
+    candidate: str = ""
+    question: str = ""
+    diagnostic: str = ""
+
+
+class CodingSession:
+    """Small resumable facade around the OpenHands task runner.
+
+    ``runner`` receives the user-visible message and the persisted session state.
+    Keeping this adapter independent lets local and Docker workers share the same
+    lifecycle and makes the contract straightforward to test with a fake runner.
+    """
+
+    def __init__(self, workspace: Path, conversation_id: str, runner):
+        self.workspace = Path(workspace)
+        self.conversation_id = conversation_id
+        self.runner = runner
+        self._cancelled = False
+
+    async def run(self, task: str) -> CodingResult:
+        return await self._execute(task)
+
+    async def continue_with(self, message: str) -> CodingResult:
+        return await self._execute(message)
+
+    async def _execute(self, message: str) -> CodingResult:
+        if self._cancelled:
+            return CodingResult("blocked", self.conversation_id, str(self.workspace),
+                                diagnostic="Coding session was cancelled")
+        payload = {"conversation_id": self.conversation_id, "message": message}
+        write_session(self.workspace, task=payload, status="running", step="coding")
+        try:
+            result = await asyncio.to_thread(self.runner, payload)
+        except Exception as exc:  # runner errors become a diagnosable blocked state
+            write_session(self.workspace, task=payload, status="blocked", step="coding",
+                          stop_reason=str(exc))
+            return CodingResult("blocked", self.conversation_id, str(self.workspace), diagnostic=str(exc))
+        status = result.get("status", "blocked") if isinstance(result, dict) else "blocked"
+        write_session(self.workspace, task=payload, status=status, step="coding",
+                      stop_reason=result.get("diagnostic", "") if isinstance(result, dict) else "")
+        return CodingResult(status=status, conversation_id=self.conversation_id,
+                            workspace=str(self.workspace), candidate=result.get("candidate", ""),
+                            question=result.get("question", ""),
+                            diagnostic=result.get("diagnostic", ""))
+
+    async def cancel(self) -> None:
+        self._cancelled = True
+        state = load_session(self.workspace)
+        state.update({"status": "blocked", "stop_reason": "cancelled"})
+        _write(session_paths(self.workspace)["state"], state)
 
 
 def digest(value: str | bytes | Path) -> str:

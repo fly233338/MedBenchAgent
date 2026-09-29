@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://medbenchagent.local/schemas/annotation.v4.schema.json",
+  "title": "MedBenchAgent annotation JSONL record v4",
+  "type": "object",
+  "required": ["patient", "case", "study", "image", "provenance"],
+  "properties": {
+    "patient": {"$ref": "#/$defs/entityPatient"},
+    "case": {"$ref": "#/$defs/entityCase"},
+    "study": {"$ref": "#/$defs/entityStudy"},
+    "image": {"$ref": "#/$defs/entityImage"},
+    "provenance": {"$ref": "#/$defs/provenance"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "entityPatient": {"type": "object", "required": ["patient_id", "annotation"], "properties": {"patient_id": {"type": ["string", "null"]}, "annotation": {"type": "object"}}, "additionalProperties": false},
+    "entityCase": {"type": "object", "required": ["case_id", "annotation"], "properties": {"case_id": {"type": ["string", "null"]}, "annotation": {"type": "object"}}, "additionalProperties": false},
+    "entityStudy": {"type": "object", "required": ["study_id", "annotation"], "properties": {"study_id": {"type": ["string", "null"]}, "annotation": {"type": "object"}}, "additionalProperties": false},
+    "entityImage": {"type": "object", "required": ["image_id", "image_path", "modality", "anatomy", "annotation"], "properties": {"image_id": {"type": "string", "minLength": 1}, "image_path": {"type": "string", "minLength": 1}, "modality": {"type": ["string", "null"]}, "anatomy": {"type": ["string", "null"]}, "annotation": {"type": "object", "properties": {"findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}}, "additionalProperties": true}}, "additionalProperties": false},
+    "finding": {"type": "object", "required": ["finding_id", "status"], "properties": {"finding_id": {"type": "string", "minLength": 1}, "label": {}, "status": {"enum": ["known", "uncertain", "unknown", "missing"]}, "reference_standard": {"type": ["string", "null"]}, "bbox": {"type": ["array", "null"], "minItems": 4, "maxItems": 4, "items": {"type": "number"}}, "provenance": {"type": "object"}}, "additionalProperties": true},
+    "provenance": {"type": "object", "required": ["source_id", "source_version", "original_ids", "original_image_path", "record_ref", "plan_ref"], "properties": {"source_id": {"type": "string", "minLength": 1}, "source_version": {}, "original_ids": {"type": "object"}, "original_image_path": {"type": "string", "minLength": 1}, "record_ref": {"type": "string", "minLength": 1}, "plan_ref": {"type": "string", "minLength": 1}}, "additionalProperties": false}
+  }
+}

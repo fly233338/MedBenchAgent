@@ -109,6 +109,30 @@ def validate_record(record, line_number=1):
     return record
 
 
+def validate_v4_record(record, line_number=1):
+    """Validate the explicit finding contract used by new coding candidates."""
+    validate_record(record, line_number)
+    findings = record["image"]["annotation"].get("findings", [])
+    if not isinstance(findings, list):
+        raise AnnotationValidationError(f"Line {line_number}: image.annotation.findings must be an array")
+    seen = set()
+    for finding in findings:
+        if not isinstance(finding, dict) or not isinstance(finding.get("finding_id"), str):
+            raise AnnotationValidationError(f"Line {line_number}: finding_id is required")
+        if finding["finding_id"] in seen:
+            raise AnnotationValidationError(f"Line {line_number}: duplicate finding_id")
+        seen.add(finding["finding_id"])
+        if finding.get("status") not in {"known", "uncertain", "unknown", "missing"}:
+            raise AnnotationValidationError(f"Line {line_number}: invalid finding status")
+        bbox = finding.get("bbox")
+        if bbox is not None:
+            if len(bbox) != 4 or not all(isinstance(v, (int, float)) for v in bbox):
+                raise AnnotationValidationError(f"Line {line_number}: invalid finding bbox")
+            if not (0 <= bbox[0] < bbox[2] and 0 <= bbox[1] < bbox[3]):
+                raise AnnotationValidationError(f"Line {line_number}: invalid finding bbox geometry")
+    return record
+
+
 def iter_annotation_jsonl(annotation_path: str | Path):
     """Stream validated records using a disk-backed uniqueness index."""
     import sqlite3

@@ -52,7 +52,7 @@ max_failures = 3
 max_reworks = 3
 
 [data_processing]
-backend = "auto"
+backend = "local"
 image = "medbench-data:local"
 timeout_seconds = 600
 memory_limit = "1GB"

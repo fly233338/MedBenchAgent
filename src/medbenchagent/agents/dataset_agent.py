@@ -40,11 +40,13 @@ def _task(context: dict, workspace: Path) -> DatasetAgentTask:
     source = context["active_source"]
     session = load_session(workspace)
     conversation_id = session.get("conversation_id") or None
+    sources = context.get("sources", [])
+    objective = DATASET_WORKFLOW_PROMPT + "\n\nAll selected sources (none may be skipped):\n" + json.dumps(sources, ensure_ascii=False)
     return DatasetAgentTask(
         task_id=f"{context['run_id']}:{context['dataset_scope']}:{source['id']}:preparation",
         kind="preparation", source_root=context["source_root"],
         source_manifest=context["source_manifest"], workspace=str(workspace),
-        objective=DATASET_WORKFLOW_PROMPT, required_outputs=[
+        objective=objective, required_outputs=[
             "reports/source_profile.json", "reports/mapping.json",
             "reports/preparation_report.json", "candidate/complete.json",
         ], feedback="", attempt=session.get("attempt", 1), conversation_id=conversation_id,
@@ -68,6 +70,9 @@ def run_dataset_agent(context: dict):
         context.update(source_scope=source.id, active_source=source.model_dump(),
                        source_root=str(Path(source.root).resolve()), source_manifest=str(manifest))
     source = context["active_source"]
+    # The coding task receives the complete source set in its objective.  The
+    # active source remains the read-only mount used by the worker compatibility
+    # adapter; multi-source candidates are validated before publication.
     workspace = Path(context["run_directory"]) / "workers" / "openhands" / context["dataset_scope"] / source["id"]
     workspace.mkdir(parents=True, exist_ok=True)
     task = _task(context, workspace)
@@ -82,6 +87,10 @@ def run_dataset_agent(context: dict):
             break
         gate_error, payload = _candidate_gate(workspace)
         if not gate_error:
+            candidate_root = workspace / "outputs" / "candidate"
+            if not candidate_root.is_dir():
+                candidate_root = workspace / "outputs"
+            payload = {**(payload or {}), "candidate_path": str(candidate_root)}
             updates = {"preparation_conversation_id": outcome.conversation_id,
                        "preparation_workspace": str(workspace),
                        "preparation_status": "complete", "preparation_candidate": payload}
