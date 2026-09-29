@@ -109,6 +109,43 @@ def validate_record(record, line_number=1):
     return record
 
 
+def validate_annotation_v4(record, line_number=1):
+    """Validate the v4 envelope while preserving false/zero label values."""
+    from medbenchagent.data.preparation_models import LabelValue
+    if not isinstance(record, dict) or not {"patient", "case", "study", "image"} <= set(record):
+        raise AnnotationValidationError(f"Line {line_number}: invalid annotation v4 envelope")
+    image = record["image"]
+    if not isinstance(image, dict) or not isinstance(image.get("image_id"), str) or not image["image_id"]:
+        raise AnnotationValidationError(f"Line {line_number}: image_id is required")
+    if not isinstance(image.get("image_path"), str) or not image["image_path"]:
+        raise AnnotationValidationError(f"Line {line_number}: image_path is required")
+    findings = image.get("findings", [])
+    if not isinstance(findings, list):
+        raise AnnotationValidationError(f"Line {line_number}: findings must be an array")
+    seen = set()
+    for finding in findings:
+        if not isinstance(finding, dict) or not isinstance(finding.get("finding_id"), str):
+            raise AnnotationValidationError(f"Line {line_number}: finding_id is required")
+        if finding["finding_id"] in seen:
+            raise AnnotationValidationError(f"Line {line_number}: duplicate finding_id")
+        seen.add(finding["finding_id"])
+    def visit(value):
+        if isinstance(value, dict):
+            if {"value", "state", "scope"} <= value.keys():
+                LabelValue.model_validate(value)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+    visit(record)
+    try:
+        json.dumps(record, allow_nan=False)
+    except ValueError as exc:
+        raise AnnotationValidationError("Annotation contains non-finite values") from exc
+    return record
+
+
 def iter_annotation_jsonl(annotation_path: str | Path):
     """Stream validated records using a disk-backed uniqueness index."""
     import sqlite3

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://medbenchagent.local/schemas/annotation.v4.schema.json",
+  "type": "object",
+  "required": ["patient", "case", "study", "image"],
+  "additionalProperties": false,
+  "properties": {
+    "patient": {"$ref": "#/$defs/entity"},
+    "case": {"$ref": "#/$defs/entity"},
+    "study": {"$ref": "#/$defs/entity"},
+    "image": {"type": "object", "required": ["image_id", "image_path", "findings"], "properties": {"image_id": {"type": "string", "minLength": 1}, "image_path": {"type": "string", "minLength": 1}, "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}}, "additionalProperties": true}
+  },
+  "$defs": {
+    "entity": {"type": "object", "required": ["id", "annotation"], "properties": {"id": {"type": ["string", "null"]}, "annotation": {"type": "object"}}, "additionalProperties": true},
+    "finding": {"type": "object", "required": ["finding_id"], "properties": {"finding_id": {"type": "string", "minLength": 1}, "bbox": {"type": ["array", "null"], "minItems": 4, "maxItems": 4}, "annotation": {"type": "object"}}, "additionalProperties": true}
+  }
+}

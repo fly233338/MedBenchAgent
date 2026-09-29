@@ -34,6 +34,18 @@ def _parser() -> argparse.ArgumentParser:
     register.add_argument("--bundle", required=True)
     refresh = commands.add_parser("refresh-card", help="Refresh dataset metadata")
     refresh.add_argument("--dataset-id", required=True)
+    prepare = commands.add_parser("prepare", help="Start an independent data preparation session")
+    prepare.add_argument("--dataset-id", required=True)
+    prepare.add_argument("--workspace", type=Path, required=True)
+    prepare.add_argument("--sources", type=Path, required=True)
+    prepare.add_argument("--goal", default="")
+    prepare_resume = commands.add_parser("prepare-resume", help="Resume preparation until a boundary")
+    prepare_resume.add_argument("workspace", type=Path)
+    prepare_answer = commands.add_parser("prepare-answer", help="Answer a preparation question")
+    prepare_answer.add_argument("workspace", type=Path)
+    prepare_answer.add_argument("answer")
+    prepare_status = commands.add_parser("prepare-status", help="Inspect preparation state")
+    prepare_status.add_argument("workspace", type=Path)
     return parser
 
 
@@ -115,6 +127,23 @@ def _answer_intake(service: ConversationService) -> int:
 
 
 def run_command(args: argparse.Namespace) -> int:
+    if args.command in {"prepare", "prepare-resume", "prepare-answer", "prepare-status"}:
+        from medbenchagent.runtime.preparation_service import PreparationService
+        service = PreparationService()
+        if args.command == "prepare":
+            sources = json.loads(args.sources.read_text(encoding="utf-8"))
+            ref = service.create_or_resume({"dataset_id": args.dataset_id, "workspace": str(args.workspace),
+                                            "sources": sources, "goal": args.goal})
+            print(json.dumps(service.run_until_boundary(ref), ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "prepare-status":
+            print(json.dumps(service.inspect(str(args.workspace)), ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "prepare-answer":
+            print(json.dumps(service.answer(str(args.workspace), args.answer), ensure_ascii=False, indent=2))
+            return 0
+        print(json.dumps(service.run_until_boundary(str(args.workspace)), ensure_ascii=False, indent=2))
+        return 0
     if args.command == "register":
         from medbenchagent.data.dataset_catalog import register_dataset
 

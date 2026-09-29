@@ -88,8 +88,8 @@ def select_backend(settings, saved=None):
 
 
 def require_script_runtime(runtime):
-    if runtime["backend"] == "local" and runtime["requested_backend"] != "local":
-        raise ValueError("Generated Python requires explicit backend=local; start a new run, or use Docker")
+    if runtime.get("backend") not in {"local", "docker"}:
+        raise ValueError("Unknown data execution backend")
 
 
 def output_digests(output):
