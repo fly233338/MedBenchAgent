@@ -497,6 +497,30 @@ def compile_benchmark_graph(*, checkpointer=None):
                     output["context"].update({"dataset_entry": finalized["dataset_entry"],
                                                "annotation_path": finalized["annotation_path"],
                                                "dataset_access_manifest": finalized["access_manifest"]})
+                    dataset_versions = publish(
+                        output["context"], "Dataset",
+                        {"annotation": finalized["annotation_path"], "access": finalized["access_manifest"]},
+                        ("DataConfig",),
+                    )
+                    profile_versions = publish(
+                        output["context"], "DatasetProfile",
+                        {"path": finalized["access_manifest"].get("profile_path")}, ("Dataset",),
+                    )
+                    card_versions = publish(
+                        output["context"], "DatasetCard",
+                        {"path": finalized["card_path"]}, ("DatasetProfile",),
+                    )
+                    outcome["updates"].update({
+                        "dataset_entry": finalized["dataset_entry"],
+                        "annotation_path": finalized["annotation_path"],
+                        "dataset_access_manifest": finalized["access_manifest"],
+                        "artifact_versions": {
+                            **outcome["updates"].get("artifact_versions", {}),
+                            **dataset_versions.get("artifact_versions", {}),
+                            **profile_versions.get("artifact_versions", {}),
+                            **card_versions.get("artifact_versions", {}),
+                        },
+                    })
             entries = {**context.get("prepared_entries", {}), dataset_id: output["context"]["dataset_entry"]}
             outcome["updates"]["prepared_entries"] = entries
             published = dict(context, artifact_versions=outcome["updates"]["artifact_versions"])
