@@ -65,38 +65,59 @@ def run_dataset_agent(context: dict):
         if not sources:
             return {"status": "blocked", "summary": "Dataset has no configured source", "updates": {}}
         source = sources[0]
+        # Freeze manifests for every configured source up front.  The coding
+        # worker still receives one immutable mount for compatibility, while
+        # the task context records the complete source set and its manifests.
         manifest = Path(context["bundle_root"]) / "source_manifests" / source.id
-        inventory_source(source, manifest)
+        for configured in sources:
+            inventory_source(configured, Path(context["bundle_root"]) / "source_manifests" / configured.id)
         context.update(source_scope=source.id, active_source=source.model_dump(),
-                       source_root=str(Path(source.root).resolve()), source_manifest=str(manifest))
+                       source_root=str(Path(source.root).resolve()), source_manifest=str(manifest),
+                       source_manifests={item.id: str(Path(context["bundle_root"]) / "source_manifests" / item.id)
+                                        for item in sources})
     source = context["active_source"]
-    # The coding task receives the complete source set in its objective.  The
-    # active source remains the read-only mount used by the worker compatibility
-    # adapter; multi-source candidates are validated before publication.
-    workspace = Path(context["run_directory"]) / "workers" / "openhands" / context["dataset_scope"] / source["id"]
+    # All sources share one workspace and one conversation.  The worker is
+    # resumed for each immutable source mount so it can retain mapping and
+    # repair context while still producing a single dataset candidate.
+    workspace = Path(context["run_directory"]) / "workers" / "openhands" / context["dataset_scope"]
     workspace.mkdir(parents=True, exist_ok=True)
+    source_items = [Source.model_validate(item) for item in context.get("sources", [])]
+    if not source_items:
+        source_items = [Source.model_validate(source)]
     task = _task(context, workspace)
     feedback = ""
     outcome = None
-    for attempt in range(task.attempt, task.attempt + 4):
-        task = task.model_copy(update={"attempt": attempt, "feedback": feedback})
-        write_session(workspace, task=task.model_dump(), status="running", step="preparation",
-                      attempt=attempt)
-        outcome = dataset_runtime(context).run(task)
-        if outcome.status != "complete":
+    for source_item in source_items:
+        context.update(active_source=source_item.model_dump(), source_scope=source_item.id,
+                       source_root=str(Path(source_item.root).resolve()),
+                       source_manifest=context.get("source_manifests", {}).get(source_item.id,
+                           str(Path(context["bundle_root"]) / "source_manifests" / source_item.id)))
+        task = _task(context, workspace)
+        for attempt in range(task.attempt, task.attempt + 4):
+            task = task.model_copy(update={"attempt": attempt, "feedback": feedback})
+            write_session(workspace, task=task.model_dump(), status="running", step="preparation",
+                          attempt=attempt, feedback={"message": feedback} if feedback else None)
+            outcome = dataset_runtime(context).run(task)
+            if outcome.status != "complete":
+                break
+            gate_error, payload = _candidate_gate(workspace)
+            if not gate_error:
+                feedback = ""
+                break
+            feedback = gate_error
+        if outcome is None or outcome.status != "complete" or feedback:
             break
-        gate_error, payload = _candidate_gate(workspace)
-        if not gate_error:
-            candidate_root = workspace / "outputs" / "candidate"
-            if not candidate_root.is_dir():
-                candidate_root = workspace / "outputs"
-            payload = {**(payload or {}), "candidate_path": str(candidate_root)}
-            updates = {"preparation_conversation_id": outcome.conversation_id,
-                       "preparation_workspace": str(workspace),
-                       "preparation_status": "complete", "preparation_candidate": payload}
-            return {"status": "complete", "summary": "Dataset processing agent completed candidate preparation",
-                    "updates": updates}
-        feedback = gate_error
+    if outcome is not None and outcome.status == "complete" and not feedback:
+        candidate_root = workspace / "outputs" / "candidate"
+        if not candidate_root.is_dir():
+            candidate_root = workspace / "outputs"
+        payload = {**(payload or {}), "candidate_path": str(candidate_root),
+                   "source_ids": [item.id for item in source_items]}
+        updates = {"preparation_conversation_id": outcome.conversation_id,
+                   "preparation_workspace": str(workspace),
+                   "preparation_status": "complete", "preparation_candidate": payload}
+        return {"status": "complete", "summary": "Dataset processing agent completed candidate preparation",
+                "updates": updates}
     updates = {"preparation_conversation_id": outcome.conversation_id if outcome else "",
                "preparation_workspace": str(workspace),
                "preparation_status": outcome.status if outcome else "failed"}
