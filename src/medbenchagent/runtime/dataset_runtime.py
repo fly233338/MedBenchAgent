@@ -27,7 +27,7 @@ class DatasetAgentTask(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     task_id: str
-    kind: Literal["preparation", "source_inventory", "dataset_adapter"]
+    kind: Literal["preparation"]
     source_root: str
     source_manifest: str
     source_roots: dict[str, str] = Field(default_factory=dict)

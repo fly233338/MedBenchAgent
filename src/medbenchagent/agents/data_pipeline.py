@@ -46,14 +46,6 @@ from medbenchagent.agents.preparation import (
 )
 
 
-def compile_pipeline(*, checkpointer=None):
-    """Compatibility import for legacy source-inventory tests/callers.
-
-    The new preparation graph never invokes this stage scheduler.
-    """
-    from medbenchagent.agents.source_inventory_worker import compile_pipeline as legacy_compile
-    return legacy_compile(checkpointer=checkpointer)
-
 class SourceChoice(Contract):
     source_id: Text
 
