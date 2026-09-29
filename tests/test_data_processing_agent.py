@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import pytest
 from medbenchagent.agents import data_processing as preparation
-from medbenchagent.agents import data_pipeline as pipeline
+from medbenchagent.data import preparation_services as pipeline
 from medbenchagent.data import execution
 from medbenchagent.runtime.dependencies import publish
 

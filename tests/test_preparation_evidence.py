@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from medbenchagent.agents import data_pipeline as pipeline, data_processing
+from medbenchagent.data import preparation_services as pipeline
+from medbenchagent.agents import data_processing
 from medbenchagent.data.contracts import PreparationEvidence, Source
 from medbenchagent.data.operators import inspect_image_population
 from medbenchagent.data.preparation_evidence import semantic_evidence
