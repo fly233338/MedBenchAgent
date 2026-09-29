@@ -101,7 +101,7 @@ def test_supervisor_reuses_without_starting_data_processing(tmp_path, monkeypatc
     monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, paths=replace(cfg.paths,
                         dataset_catalog=tmp_path / "catalog.json", runs_root=tmp_path / "runs")))
     entry = prepared_dataset(tmp_path, "a", monkeypatch)
-    monkeypatch.setattr("medbenchagent.agents.data_pipeline.initialize", lambda *a: pytest.fail("Must reuse, not prepare"))
+    monkeypatch.setattr("medbenchagent.data.preparation_services.initialize", lambda *a: pytest.fail("Must reuse, not prepare"))
     actions = iter([("inspect_dataset_status", {"dataset_id": "a"}), ("prepare_data", {"dataset_id": "a"}), ("finish", {})])
     def model(*args):
         tool, arguments = next(actions)
@@ -157,7 +157,7 @@ def test_prepare_discovers_unconfigured_source_from_request(tmp_path, monkeypatc
 
 
 def test_preparation_tools_follow_existing_artifact_dependencies(tmp_path):
-    from medbenchagent.agents.data_pipeline import available_tools
+    from medbenchagent.data.preparation_services import available_tools
     from medbenchagent.runtime.dependencies import publish
     c = {"run_directory": str(tmp_path), "sources": [{"id": "one"}], "dataset_scope": "dataset"}
     assert "select_source" in available_tools(c)

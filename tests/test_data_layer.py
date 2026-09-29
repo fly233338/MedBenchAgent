@@ -340,7 +340,7 @@ def test_all_sources_required_and_atomic_ready_marker(tmp_path, monkeypatch):
     from medbenchagent import settings
     cfg = settings.get_settings()
     monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, paths=replace(cfg.paths, prepared_datasets_root=tmp_path / "prepared"), data_processing={**cfg.data_processing, "backend": "local"}))
-    from medbenchagent.agents.data_pipeline import initialize, save_harmonization
+    from medbenchagent.data.preparation_services import initialize, save_harmonization
 
     context = initialize(
         {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "op")},

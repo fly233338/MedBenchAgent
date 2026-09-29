@@ -35,12 +35,12 @@ from medbenchagent.data.dataset_card import (
 )
 
 
-from medbenchagent.agents.preparation import (
+from medbenchagent.data.candidate_services import (
     bound, execute_extraction, validate_preparation, prepare_annotation_import,
 )
 # Compatibility exports for callers that use the pipeline as the preparation
 # facade. The new preparation graph does not invoke these stage functions.
-from medbenchagent.agents.preparation import (
+from medbenchagent.data.candidate_services import (
     save_source_fingerprint, save_semantic_spec, save_dataset_adapter,  # noqa: F401
     save_execution_plan, inspect_population_capability,  # noqa: F401
 )

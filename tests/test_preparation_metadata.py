@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import pytest
-from medbenchagent.agents.data_pipeline import save_dataset_metadata
+from medbenchagent.data.preparation_services import save_dataset_metadata
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.dataset_card import PreparationMetadata
 from medbenchagent.data.sources import inventory_source
@@ -47,7 +47,7 @@ def test_unreferenced_preparation_description_is_rejected():
 
 
 def test_finish_requires_explicit_metadata_decision(tmp_path, monkeypatch):
-    from medbenchagent.agents.data_pipeline import finish, available_tools
+    from medbenchagent.data.preparation_services import finish, available_tools
     c = {"run_directory": str(tmp_path / "run"), "bundle_root": str(tmp_path / "bundle"),
          "sources": [{"id": "s"}], "normalized_sources": {"s": "normalized"}}
     publish(c, "source/s/NormalizedSource", {}, ())
