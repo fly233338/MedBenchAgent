@@ -16,7 +16,7 @@ SOURCE_KINDS = frozenset({"Source", "Inventory", "Annotation",
                           "ImageInventory", "ImagePlan", "NormalizedSource"})
 
 
-DATASET_KINDS = SOURCE_KINDS | frozenset({"Dataset", "DatasetProfile", "DatasetCard", "PlanningDraft", "Plan", "PlanningDelegation", "Materials", "Templates", "Generation", "GenerationCheck", "Harmonization", "SourceSelection", "Documentation"})
+DATASET_KINDS = SOURCE_KINDS | frozenset({"Dataset", "DatasetProfile", "DatasetCard", "PlanningDraft", "Plan", "PlanningDelegation", "Materials", "Templates", "Generation", "GenerationCheck", "Harmonization", "SourceSelection", "Documentation", "PreparationPlan", "PreparedDatasetValidation", "PreparedCandidates"})
 
 
 def artifact_key(context, kind):

@@ -76,7 +76,8 @@ def main(request_path: str, result_path: str) -> None:
 
     request = json.loads(Path(request_path).read_text(encoding="utf-8"))
     workspace = Path(request["workspace"]).resolve()
-    _write_session_state(workspace, request, status="running")
+    # PreparationService owns business session state; this process owns only
+    # SDK conversation persistence and its result receipt.
     key = os.getenv("MEDBENCH_LLM_API_KEY")
     if not key:
         raise RuntimeError("Coding worker requires the configured LLM API key")
@@ -168,7 +169,6 @@ MedBench validation controls acceptance. Repeated actions that produce no new in
         result = {"status": "failed", "conversation_id": request["conversation_id"],
                   "outputs": {}, "question": "",
                   "diagnostic": f"OpenHands conversation failed: {type(exc).__name__}: {exc}"}
-        _write_session_state(workspace, request, status="blocked", summary=result["diagnostic"])
         Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         raise
     diagnostic = replay_source_script(request, workspace) if request["kind"] == "source_inventory" else ""
@@ -179,8 +179,6 @@ MedBench validation controls acceptance. Repeated actions that produce no new in
               "conversation_id": request["conversation_id"], "outputs": produced,
               "question": "", "diagnostic": "" if complete else diagnostic or "Required worker outputs are missing",
               "state": "submitted" if complete else "validation_failed"}
-    _write_session_state(workspace, request,
-                         status=result["state"], summary=result["diagnostic"])
     Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
 
 

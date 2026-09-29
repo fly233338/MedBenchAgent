@@ -110,9 +110,9 @@ class OpenHandsDatasetRuntime:
             raise ValueError("Worker workspace and original source must be separate")
         for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
             (workspace / name).mkdir(parents=True, exist_ok=True)
-        from medbenchagent.runtime.preparation_session import write_session
-        write_session(workspace, task=task.model_dump(), status="running", step=task.workflow_step,
-                      attempt=task.attempt, source_digest=task.source_digest)
+        # The host PreparationService is the sole writer of business session
+        # state.  The worker only owns SDK conversation persistence and result
+        # receipts under the workspace.
         self._forward_events(workspace, task.construction_events_path)
         # Local workers read the frozen original source directly. Docker mounts
         # that same path read-only below; neither backend creates a source copy.
@@ -123,8 +123,7 @@ class OpenHandsDatasetRuntime:
                 raise ValueError("Worker input must stay under inputs/")
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
-        conversation_id = task.conversation_id or str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                                                  f"{task.task_id}:attempt:{task.attempt}"))
+        conversation_id = task.conversation_id or str(uuid.uuid4())
         request = task.model_dump(exclude={"source_manifest", "inputs"})
         # The frozen model identity is already OpenAI-compatible.  Do not add a
         # provider prefix here: local gateways expose the exact id returned by
