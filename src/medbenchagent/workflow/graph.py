@@ -464,12 +464,25 @@ def compile_benchmark_graph(*, checkpointer=None):
             # host before they are exposed to planning.
             if "dataset_entry" not in output["context"]:
                 from medbenchagent.data.finalization import finalize_prepared_dataset
+                from medbenchagent.runtime.construction import record_event
                 candidate = output["context"].get("preparation_candidate", {})
                 candidate_path = candidate.get("candidate_path") if isinstance(candidate, dict) else None
                 if candidate_path:
+                    event_path = output["context"].get("construction_events_path")
+                    event_base = {"run_id": output["context"].get("run_id"),
+                                  "agent": "DatasetProcessingAgent", "dataset_id": dataset_id,
+                                  "workspace": output["context"].get("preparation_workspace"),
+                                  "conversation_id": output["context"].get("preparation_conversation_id"),
+                                  "candidate_path": candidate_path}
+                    if event_path:
+                        record_event(event_path, "finalization_started", operation="finalize_prepared_dataset",
+                                     status="running", **event_base)
                     try:
                         finalized = finalize_prepared_dataset(candidate_path, output["context"])
                     except (ValueError, OSError) as exc:
+                        if event_path:
+                            record_event(event_path, "finalization_finished", operation="finalize_prepared_dataset",
+                                         status="blocked", diagnostic=str(exc), **event_base)
                         # Validation feedback is persisted for the same Coding
                         # Session; the next Supervisor turn performs continuation.
                         return {"status": "blocked", "summary": str(exc),
@@ -477,6 +490,10 @@ def compile_benchmark_graph(*, checkpointer=None):
                                             "preparation_status": "blocked",
                                             "validation_error": str(exc),
                                             "preparation_feedback": str(exc)}}
+                    if event_path:
+                        record_event(event_path, "finalization_finished", operation="finalize_prepared_dataset",
+                                     status="complete", dataset_entry=finalized.get("dataset_entry"),
+                                     validation_report=finalized.get("validation_report"), **event_base)
                     output["context"].update({"dataset_entry": finalized["dataset_entry"],
                                                "annotation_path": finalized["annotation_path"],
                                                "dataset_access_manifest": finalized["access_manifest"]})

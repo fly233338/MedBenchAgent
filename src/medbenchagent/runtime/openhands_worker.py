@@ -103,7 +103,8 @@ def main(request_path: str, result_path: str) -> None:
         if request.get("construction_events_path"):
             item = {"timestamp": datetime.now(timezone.utc).isoformat(),
                     "event_type": "coding_worker_event", "run_id": request["run_id"],
-                    "agent": "OpenHandsCodingWorker", "dataset_id": request["dataset_id"],
+                    "agent": request.get("agent", "DatasetProcessingAgent"), "component": "OpenHandsCodingWorker",
+                    "dataset_id": request["dataset_id"],
                     "source_id": request["source_id"], "phase": "CandidateDiscovery",
                     "attempt": request.get("attempt"), "conversation_id": request["conversation_id"],
                     "model": request.get("model"), "reasoning_effort": request.get("reasoning_effort") or None,

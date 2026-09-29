@@ -141,6 +141,7 @@ class OpenHandsDatasetRuntime:
                            conversation_id=conversation_id, base_url=task.base_url,
                            construction_events_path=str(workspace / "logs" / "coding_events.jsonl"))
         request["backend"] = runtime["backend"]
+        request["agent"] = "DatasetProcessingAgent"
         request_path = workspace / "state" / "coding_task.json"
         result_path = workspace / "state" / f"coding_result_{task.kind}.json"
         if request_path.is_file() and json.loads(request_path.read_text(encoding="utf-8")) == request:
