@@ -1,7 +1,7 @@
 """Initialization of a Coding Session preparation run.
 
 This module owns run-frozen Source, backend and bundle context. It deliberately
-does not expose the historical stage scheduler from ``agents.data_pipeline``.
+does not expose a stage scheduler.
 """
 
 from __future__ import annotations
