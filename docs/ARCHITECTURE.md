@@ -87,7 +87,7 @@ Spec 仍须用来源依据解释为何需要该操作。能力缺口不是运行
 核对，custom 转换语义依赖已记录依据，不声称任意 Python 的语义被形式化证明。schema/坏图仍按现有
 规则整图隔离；总体、来源引用、重复性或 mask 对应几何错误阻断提取，环境失败不能当作坏图。
 
-kind=annotation 由框架在 select_source 内自动执行 identity import、候选提取和同一验收，保留 manifest
+kind=annotation 由 DatasetProcessingAgent 在同一 Coding Session 内执行 identity import、候选提取和同一验收，保留 manifest
 的图像位置解析规则；只保证相对于输入 annotation 的完整性。需要重编码时以 raw 来源走显式 Spec。
 规范化继续执行图像 QA、整图隔离、像素去重、harmonization 和实体一致性规则。新 bundle 的 preparation/
 索引归档 Spec、Fingerprint、执行计划、Adapter、总体、引用和验证依据；ready/access 绑定索引，admission

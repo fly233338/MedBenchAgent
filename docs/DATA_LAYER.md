@@ -113,7 +113,7 @@ Only accepted candidates become Annotation. Assurance is `independently_reconcil
 arbitrary Python transformations or medical interpretations are independently proven. Canonical/image QA
 and entity invariant checks remain in trusted normalization/publication.
 
-`kind=annotation` executes a fixed identity import automatically in `select_source`, generating its
+`kind=annotation` executes a fixed identity import automatically in the DatasetProcessingAgent session, generating its
 structural Spec, candidates and validation using this same chain. Existing image manifests still locate
 images. This proves completeness only against the supplied annotation. Semantic recoding uses a raw source.
 
