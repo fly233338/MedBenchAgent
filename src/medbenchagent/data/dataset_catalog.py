@@ -93,8 +93,10 @@ def load_prepared_assets(entry):
     if not ready_path.is_file():
         raise DatasetCatalogError("Dataset bundle is not published; run prepare first")
     ready = json.loads(ready_path.read_text(encoding="utf-8"))
-    if ready.get("schema_version") != "dataset-bundle.v2":
+    if ready.get("schema_version") not in {"dataset-bundle.v2", "dataset-bundle.v3"}:
         raise DatasetCatalogError("Prepared version lacks current integrity contracts; prepare a new version")
+    if ready.get("schema_version") == "dataset-bundle.v3" and ready.get("annotation_schema") != "annotation.v4":
+        raise DatasetCatalogError("Dataset bundle v3 requires annotation.v4")
     access = ready["access"]
     if ready.get("preparation_schema") is not None:
         if ready["preparation_schema"] != "preparation-archive.v1" or not access.get("preparation_path") or not access.get("preparation_digest"):

@@ -68,7 +68,8 @@ def finalize_prepared_dataset(candidate, context):
     access.update(annotation_schema="annotation.v4",
                   annotation_path=str(bundle / "annotation.jsonl"),
                   image_manifest_path=str(bundle / "image_manifest.jsonl"))
-    atomic_write_json(bundle / "ready.json", {"schema_version": "dataset-bundle.v2", "access": access,
+    atomic_write_json(bundle / "ready.json", {"schema_version": "dataset-bundle.v3", "annotation_schema": "annotation.v4",
+                                               "access": access,
                                                "sources": sorted(context.get("sources", []), key=str)})
     build_card(context["dataset_id"], bundle)
     entry = register_dataset(context["dataset_id"], bundle,

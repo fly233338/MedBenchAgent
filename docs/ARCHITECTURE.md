@@ -100,7 +100,7 @@ PNG/JPEG 保留原字节；其他二维图像使用可表示原像素的 PNG 编
 不改变空间方向。多帧、真三维、金字塔及 WSI 不支持；缺 decoder 是运行能力错误，不批量当作坏图。
 仅物化 annotation 引用图像。来源目录不全量复制，已用文件摘要用于发现外部修改。
 
-发布 dataset-bundle.v2，包含 annotation.jsonl、四字段 image_manifest.jsonl、cache/Profile、来源与质量产物及 ready.json。
+发布 dataset-bundle.v2（旧准备版本）或 dataset-bundle.v3（Coding Session 新候选），包含 annotation.jsonl、四字段 image_manifest.jsonl、cache/Profile、来源与质量产物及 ready.json。v3 显式绑定 annotation.v4；旧 v2 只读兼容。
 DuckDB 关闭后记录摘要，admission 与缓存复用都核验；损坏/缺少绑定必须重新准备，不静默重建。
 asset_integrity.jsonl 保存最终保留图像的输出文件摘要，独立于原始 file_hash/pixel_hash；索引与冻结文档
 索引绑定在 ready/access。Finalization 按实际引用核验图像字节，资产完整性失败阻止发布而非剔除几题。
