@@ -14,6 +14,7 @@ from medbenchagent.data.validation import (
     validate_candidate_sidecars,
 )
 from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.data.sources import digest_file
 
 
 def finalize_prepared_dataset(candidate, context):
@@ -75,11 +76,29 @@ def finalize_prepared_dataset(candidate, context):
     shutil.copy2(candidate / "image_manifest.jsonl", temporary / "image_manifest.jsonl")
     if (candidate / "images").is_dir():
         shutil.copytree(candidate / "images", temporary / "images", dirs_exist_ok=True)
+    integrity_path = temporary / "asset_integrity.jsonl"
+    with (candidate / "image_manifest.jsonl").open(encoding="utf-8") as manifest, integrity_path.open("w", encoding="utf-8") as integrity:
+        for line_number, line in enumerate(manifest, 1):
+            item = json.loads(line)
+            relative = item.get("png_path") or item.get("image_path")
+            if not isinstance(relative, str) or Path(relative).is_absolute():
+                raise ValueError(f"Invalid image path at manifest line {line_number}")
+            asset = (temporary / relative).resolve()
+            if not asset.is_file() or not asset.is_relative_to(temporary):
+                raise ValueError(f"Published image is missing: {relative}")
+            integrity.write(json.dumps({"image_id": item.get("image_id"), "png_path": relative,
+                                        "file_digest": digest_file(asset)}, ensure_ascii=False) + "\n")
+    documentation = temporary / "documentation" / "index.json"
+    atomic_write_json(documentation, {"schema_version": "dataset-documentation.v1", "documents": []})
     profile, access = prepare_annotation_dataset(temporary / "annotation.jsonl", temporary / "cache",
                                                  scratch_root=report_dir / "profile")
     access.update(annotation_schema="annotation.v4",
                   annotation_path=str(temporary / "annotation.jsonl"),
-                  image_manifest_path=str(temporary / "image_manifest.jsonl"))
+                  image_manifest_path=str(temporary / "image_manifest.jsonl"),
+                  image_integrity_path=str(integrity_path),
+                  image_integrity_digest=digest_file(integrity_path),
+                  documentation_path=str(documentation),
+                  documentation_digest=digest_file(documentation))
     atomic_write_json(temporary / "ready.json", {"schema_version": "dataset-bundle.v3", "annotation_schema": "annotation.v4",
                                                "access": access,
                                                "sources": sorted(context.get("sources", []), key=str)})

@@ -9,6 +9,6 @@ records, run the supplied validator, repair errors, then process the complete po
 raw strings and distinguish missing, unknown, uncertain and negative values. Never guess medical
 semantics. Ask one concrete question when source evidence cannot resolve a semantic choice.
 
-Submit only after writing `output/annotation.jsonl`, `output/annotation_fields.json`,
-`output/image_manifest.jsonl`, `output/provenance.jsonl`, `notes/dataset_notes.md`, and
-`output/complete.json`. The host performs the final validation and publication.
+Submit only after writing `outputs/annotation.jsonl`, `outputs/annotation_fields.json`,
+`outputs/image_manifest.jsonl`, `outputs/provenance.jsonl`, `notes/dataset_notes.md`, and
+`outputs/complete.json`. The host performs the final validation and publication.
