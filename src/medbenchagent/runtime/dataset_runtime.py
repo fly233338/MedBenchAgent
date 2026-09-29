@@ -30,6 +30,7 @@ class DatasetAgentTask(BaseModel):
     kind: Literal["preparation", "source_inventory", "dataset_adapter"]
     source_root: str
     source_manifest: str
+    source_roots: dict[str, str] = Field(default_factory=dict)
     workspace: str
     objective: str
     required_outputs: list[str]
@@ -95,6 +96,7 @@ class OpenHandsDatasetRuntime:
         "pylibjpeg-openjpeg==2.5.0", "nibabel==5.3.2", "pynrrd==1.1.3",
         "SimpleITK==2.5.3",
     )
+    _active: dict[str, tuple[str, object]] = {}
 
     def __init__(self, runtime=None):
         self.runtime = runtime
@@ -156,6 +158,7 @@ class OpenHandsDatasetRuntime:
             try:
                 return self._run_local(task, workspace, request_path, result_path, conversation_id, key)
             finally:
+                self._active.pop(conversation_id, None)
                 forward_stop.set()
                 forwarder.join(timeout=2)
                 self._forward_events(workspace, task.construction_events_path)
@@ -203,6 +206,8 @@ class OpenHandsDatasetRuntime:
                    "--add-host", "host.docker.internal:host-gateway",
                    "-e", "MEDBENCH_LLM_API_KEY", "-w", "/workspace", "--mount",
                    _mount(source, "/workspace/source", readonly=True)]
+        for source_id, root in task.source_roots.items():
+            command.extend(["--mount", _mount(Path(root).resolve(), f"/workspace/sources/{source_id}", readonly=True)])
         for name in ("inputs", "work", "outputs", "output", "notes", "scripts", "tests", "state", "logs", "conversations"):
             command.extend(["--mount", _mount(workspace / name, f"/workspace/{name}",
                                               readonly=name == "inputs")])
@@ -221,6 +226,7 @@ class OpenHandsDatasetRuntime:
                         diagnostic="OpenHands container could not start: " +
                         (started.stderr.strip()[:300] or "see Docker daemon"),
                         error_category="environment_unavailable", retryable=True))
+            self._active[conversation_id] = ("docker", container_name)
             completed = subprocess.run(["docker", "wait", container_name], capture_output=True,
                                        text=True, timeout=task.timeout_seconds, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -229,6 +235,7 @@ class OpenHandsDatasetRuntime:
                 diagnostic=f"OpenHands worker unavailable: {type(exc).__name__}",
                 error_category="worker_execution_failed", retryable=True))
         finally:
+            self._active.pop(conversation_id, None)
             try:
                 with (workspace / "logs" / "stdout.log").open("a", encoding="utf-8") as stdout, \
                         (workspace / "logs" / "stderr.log").open("a", encoding="utf-8") as stderr:
@@ -290,6 +297,7 @@ class OpenHandsDatasetRuntime:
                     start_new_session=os.name != "nt",
                     creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
                 )
+                self._active[conversation_id] = ("local", process)
                 try:
                     process.wait(timeout=task.timeout_seconds)
                 except subprocess.TimeoutExpired:
@@ -319,6 +327,21 @@ class OpenHandsDatasetRuntime:
         result = DatasetAgentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
         return self._record_result(workspace, task,
                                    self._validate_outputs(task, result, workspace, conversation_id, "local"))
+
+    def cancel(self, conversation_id: str) -> None:
+        active = self._active.get(conversation_id)
+        if not active:
+            return
+        backend, handle = active
+        try:
+            if backend == "docker":
+                subprocess.run(["docker", "rm", "-f", str(handle)], capture_output=True, timeout=30, check=False)
+            elif os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(handle.pid), "/T", "/F"], capture_output=True, timeout=30, check=False)
+            else:
+                os.killpg(handle.pid, signal.SIGKILL)
+        finally:
+            self._active.pop(conversation_id, None)
 
     @staticmethod
     def _forward_events(workspace: Path, destination: str) -> None:

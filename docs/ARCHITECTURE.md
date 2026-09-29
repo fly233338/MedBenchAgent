@@ -24,6 +24,11 @@ dataset_readiness 和 outstanding_work 从当前有效 artifacts 推导；仅准
 
 ## 准备、Card 与 Catalog
 
+当前 Coding Session 主链使用 `runtime/preparation_task.py` 生成单次完整任务，候选统一写入
+workspace 的 `outputs/`，由 `data.finalization.finalize_prepared_dataset` 在临时版本目录完成
+v4 校验、Profile、Card 和 Catalog 原子发布。旧 `agents/*worker.py` 与 `data_pipeline.py`
+中的阶段函数仅作为确定性兼容底座，不再由 Coding Session 主链调度。
+
 ### Coding Session 数据准备边界
 
 数据准备的业务入口是一个可恢复的 Coding Session。Session 绑定单一 workspace、

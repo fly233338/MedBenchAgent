@@ -464,33 +464,19 @@ def compile_benchmark_graph(*, checkpointer=None):
             # host before they are exposed to planning.
             if "dataset_entry" not in output["context"]:
                 from medbenchagent.data.finalization import finalize_prepared_dataset
-                from medbenchagent.agents.dataset_agent import run_dataset_agent
                 candidate = output["context"].get("preparation_candidate", {})
                 candidate_path = candidate.get("candidate_path") if isinstance(candidate, dict) else None
                 if candidate_path:
-                    finalized = None
-                    validation_error = ""
-                    max_repairs = context.get("coding_worker_max_revisions", 3)
-                    for _ in range(max_repairs + 1):
-                        try:
-                            finalized = finalize_prepared_dataset(candidate_path, output["context"])
-                            break
-                        except (ValueError, OSError) as exc:
-                            validation_error = str(exc)
-                            retry_context = dict(output["context"], feedback=validation_error)
-                            retry = run_dataset_agent(retry_context)
-                            if retry.get("status") != "complete":
-                                return {"status": "blocked", "summary": validation_error,
-                                        "updates": {**outcome.get("updates", {}),
-                                                    "preparation_status": "blocked",
-                                                    "validation_error": validation_error}}
-                            output["context"].update(retry.get("updates", {}))
-                            candidate = output["context"].get("preparation_candidate", {})
-                            candidate_path = candidate.get("candidate_path", candidate_path)
-                    if finalized is None:
-                        return {"status": "blocked", "summary": validation_error,
+                    try:
+                        finalized = finalize_prepared_dataset(candidate_path, output["context"])
+                    except (ValueError, OSError) as exc:
+                        # Validation feedback is persisted for the same Coding
+                        # Session; the next Supervisor turn performs continuation.
+                        return {"status": "blocked", "summary": str(exc),
                                 "updates": {**outcome.get("updates", {}),
-                                            "preparation_status": "blocked"}}
+                                            "preparation_status": "blocked",
+                                            "validation_error": str(exc),
+                                            "preparation_feedback": str(exc)}}
                     output["context"].update({"dataset_entry": finalized["dataset_entry"],
                                                "annotation_path": finalized["annotation_path"],
                                                "dataset_access_manifest": finalized["access_manifest"]})

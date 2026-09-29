@@ -1,4 +1,8 @@
-"""One-shot source inventory delegation retained as a compatibility adapter."""
+"""Deprecated one-shot source inventory compatibility adapter.
+
+New preparation runs provide all sources to one Coding Session. This module is
+kept for old callers and migration tests only.
+"""
 
 from pathlib import Path
 

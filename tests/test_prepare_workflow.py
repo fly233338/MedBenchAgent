@@ -1,12 +1,48 @@
 from dataclasses import replace
+import json
 from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command
 from medbenchagent import settings
 from medbenchagent.workflow.graph import compile_benchmark_graph
 from medbenchagent.data.dataset_catalog import load_dataset_catalog, dataset_by_id, load_prepared
 from test_dataset_cards import prepared_dataset
+from medbenchagent.runtime.dataset_runtime import DatasetAgentResult
+
+
+@pytest.fixture(autouse=True)
+def fake_coding_session_runtime(monkeypatch):
+    """Keep graph tests deterministic while exercising the v4 candidate contract."""
+    class FakeRuntime:
+        def __init__(self, context):
+            self.context = context
+
+        def run(self, task):
+            root = Path(task.workspace) / "outputs"
+            root.mkdir(parents=True, exist_ok=True)
+            source = Path(task.source_root)
+            annotation = source / "annotation.jsonl"
+            manifest = source / "image_manifest.jsonl"
+            if not annotation.is_file() or not manifest.is_file():
+                return DatasetAgentResult(status="blocked", conversation_id=task.conversation_id,
+                                          diagnostic="fixture source is missing annotation outputs")
+            (root / "image_manifest.jsonl").write_bytes(manifest.read_bytes())
+            (root / "annotation_fields.json").write_text("{}", encoding="utf-8")
+            records = [json.loads(line) for line in annotation.read_text(encoding="utf-8").splitlines() if line]
+            provenance = "".join(json.dumps({"source_id": task.source_id, "source_version": None,
+                                               "original_ids": {}, "original_image_path": row["image"]["image_path"],
+                                               "record_ref": f"row:{i}", "plan_ref": "fixture"}) + "\n"
+                               for i, row in enumerate(records, 1))
+            for i, row in enumerate(records, 1):
+                row["provenance"] = json.loads(provenance.splitlines()[i - 1])
+            (root / "annotation.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+            (root / "provenance.jsonl").write_text(provenance, encoding="utf-8")
+            (root / "complete.json").write_text(json.dumps({"status": "submitted"}), encoding="utf-8")
+            outputs = {name: f"{root / name}" for name in task.required_outputs}
+            return DatasetAgentResult(status="complete", conversation_id=task.conversation_id,
+                                      outputs=outputs, state="submitted")
+
+    monkeypatch.setattr("medbenchagent.agents.dataset_agent.dataset_runtime", lambda context: FakeRuntime(context))
 
 
 @pytest.mark.parametrize("rebuild,interrupt_prepare", [(False, False), (True, False), (False, True)])
@@ -43,11 +79,9 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
     output = graph.invoke({"user_requirement": "Prepare these standard annotations", "prepare_dataset_id": "new"},
                           {"configurable": {"thread_id": "prepare"}, "recursion_limit": 100})
     if interrupt_prepare:
-        assert output["__interrupt__"]
-        monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, dataset_sources=()))
-        output = graph.invoke(Command(resume="Keep original source semantics"),
-                              {"configurable": {"thread_id": "prepare"}, "recursion_limit": 100})
-        assert len(list((tmp_path / "prepared/new").iterdir())) == 1
+        # Clarification is now owned by the Coding Session; this deterministic
+        # fixture submits a complete candidate in one turn.
+        assert output.get("__interrupt__") is None
     assert output["status"] == "complete"
     entry = dataset_by_id(load_dataset_catalog(), "new")
     card, access = load_prepared(entry)

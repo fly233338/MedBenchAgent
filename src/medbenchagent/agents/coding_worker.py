@@ -1,4 +1,9 @@
-"""Compatibility coding-worker facade used by source inventory and adapters."""
+"""Deprecated compatibility facade for legacy adapter tests.
+
+The preparation main path uses ``runtime.CodingSession`` and
+``OpenHandsDatasetRuntime``. This module remains only for deterministic
+adapter/source compatibility and is not imported by the main preparation graph.
+"""
 
 from __future__ import annotations
 

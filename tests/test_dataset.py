@@ -342,7 +342,7 @@ def test_annotation_jsonl_rejects_v1_and_invalid_json_and_schema_is_versioned(
         prepare_annotation_dataset(annotation_path, tmp_path / "cache")
 
     schema = json.loads(annotation_schema_path().read_text(encoding="utf-8"))
-    assert schema["title"].endswith("v3")
+    assert schema["title"].endswith("v4")
 
 
 def test_annotation_jsonl_allows_inconsistent_repeated_entity_annotations(

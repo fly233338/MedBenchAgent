@@ -9,7 +9,10 @@ from pathlib import Path
 from medbenchagent.data.dataset import prepare_annotation_dataset
 from medbenchagent.data.dataset_card import build_card
 from medbenchagent.data.dataset_catalog import register_dataset
-from medbenchagent.data.validation import iter_annotation_jsonl, validate_v4_record, validate_dataset_files
+from medbenchagent.data.validation import (
+    iter_annotation_jsonl, validate_v4_record, validate_dataset_files,
+    validate_candidate_sidecars,
+)
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 
@@ -39,14 +42,18 @@ def finalize_prepared_dataset(candidate, context):
             raise ValueError("Candidate annotation is empty")
         # Keep the existing streaming checks for image identity and duplicate paths.
         list(iter_annotation_jsonl(candidate / "annotation.jsonl"))
+        validate_candidate_sidecars(candidate)
         # Dimensions and population are checked against the candidate manifest before
         # anything is copied into the publication bundle.
         validate_dataset_files(candidate / "annotation.jsonl", candidate / "image_manifest.jsonl")
         with (candidate / "provenance.jsonl").open(encoding="utf-8") as handle:
+            allowed_sources = {item.get("id") for item in context.get("sources", []) if isinstance(item, dict)}
             for line_number, line in enumerate(handle, 1):
                 item = json.loads(line)
                 if not isinstance(item, dict) or not item.get("source_id"):
                     raise ValueError(f"Invalid provenance at line {line_number}")
+                if allowed_sources and item["source_id"] not in allowed_sources:
+                    raise ValueError(f"Provenance source is not selected: {item['source_id']}")
     except Exception as exc:
         atomic_write_json(report_dir / "report.json", {
             "schema_version": "prepared-validation.v1", "status": "failed", "error": str(exc)
@@ -54,29 +61,45 @@ def finalize_prepared_dataset(candidate, context):
         raise
 
     bundle = Path(context["bundle_root"]).resolve()
-    if bundle.exists() and any(bundle.iterdir()):
-        raise ValueError("Publication bundle is not empty; use a new dataset version")
-    bundle.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(candidate / "annotation.jsonl", bundle / "annotation.jsonl")
-    shutil.copy2(candidate / "annotation_fields.json", bundle / "annotation_fields.json")
-    shutil.copy2(candidate / "provenance.jsonl", bundle / "provenance.jsonl")
-    shutil.copy2(candidate / "image_manifest.jsonl", bundle / "image_manifest.jsonl")
+    if bundle.exists() and (bundle / "ready.json").is_file():
+        raise ValueError("Publication bundle is already complete; use a new dataset version")
+    temporary = bundle.with_name(bundle.name + ".publishing")
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    temporary.mkdir(parents=True, exist_ok=True)
+    if bundle.is_dir() and (bundle / "execution_runtime.json").is_file():
+        shutil.copy2(bundle / "execution_runtime.json", temporary / "execution_runtime.json")
+    shutil.copy2(candidate / "annotation.jsonl", temporary / "annotation.jsonl")
+    shutil.copy2(candidate / "annotation_fields.json", temporary / "annotation_fields.json")
+    shutil.copy2(candidate / "provenance.jsonl", temporary / "provenance.jsonl")
+    shutil.copy2(candidate / "image_manifest.jsonl", temporary / "image_manifest.jsonl")
     if (candidate / "images").is_dir():
-        shutil.copytree(candidate / "images", bundle / "images", dirs_exist_ok=True)
-    profile, access = prepare_annotation_dataset(bundle / "annotation.jsonl", bundle / "cache",
+        shutil.copytree(candidate / "images", temporary / "images", dirs_exist_ok=True)
+    profile, access = prepare_annotation_dataset(temporary / "annotation.jsonl", temporary / "cache",
                                                  scratch_root=report_dir / "profile")
     access.update(annotation_schema="annotation.v4",
-                  annotation_path=str(bundle / "annotation.jsonl"),
-                  image_manifest_path=str(bundle / "image_manifest.jsonl"))
-    atomic_write_json(bundle / "ready.json", {"schema_version": "dataset-bundle.v3", "annotation_schema": "annotation.v4",
+                  annotation_path=str(temporary / "annotation.jsonl"),
+                  image_manifest_path=str(temporary / "image_manifest.jsonl"))
+    atomic_write_json(temporary / "ready.json", {"schema_version": "dataset-bundle.v3", "annotation_schema": "annotation.v4",
                                                "access": access,
                                                "sources": sorted(context.get("sources", []), key=str)})
-    build_card(context["dataset_id"], bundle)
+    build_card(context["dataset_id"], temporary)
+    access = {key: (value.replace(str(temporary), str(bundle)) if isinstance(value, str) else value)
+              for key, value in access.items()}
+    atomic_write_json(temporary / "ready.json", {"schema_version": "dataset-bundle.v3", "annotation_schema": "annotation.v4",
+                                               "access": access,
+                                               "sources": sorted(context.get("sources", []), key=str)})
+    if bundle.exists():
+        shutil.rmtree(bundle)
+    temporary.replace(bundle)
     entry = register_dataset(context["dataset_id"], bundle,
                              catalog_path=context.get("registration_catalog_path"))
     report = {"schema_version": "prepared-validation.v1", "status": "complete", "records": count,
               "bundle": str(bundle), "dataset_entry": entry}
     atomic_write_json(report_dir / "report.json", report)
-    return {"status": "complete", "dataset_entry": entry, "annotation_path": str(bundle / "annotation.jsonl"),
+    access = {**access, "annotation_path": str(bundle / "annotation.jsonl"),
+              "image_manifest_path": str(bundle / "image_manifest.jsonl")}
+    return {"status": "complete", "dataset_id": context["dataset_id"], "dataset_entry": entry,
+            "annotation_path": str(bundle / "annotation.jsonl"),
             "card_path": entry["dataset_card_path"], "access_manifest": access,
             "validation_report": str(report_dir / "report.json")}

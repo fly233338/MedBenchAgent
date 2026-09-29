@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from medbenchagent.data.validation import AnnotationValidationError, validate_v4_record
+from medbenchagent.data.validation import AnnotationValidationError, validate_v4_record, validate_candidate_sidecars
 from medbenchagent.runtime.preparation_session import CodingSession
 
 
@@ -42,3 +42,16 @@ def test_v4_finding_contract():
         pass
     else:
         raise AssertionError("invalid finding status must be rejected")
+
+
+def test_candidate_sidecars_require_structured_provenance(tmp_path):
+    (tmp_path / "annotation_fields.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "provenance.jsonl").write_text('{"source_id":"src","record_ref":"row:1"}\n', encoding="utf-8")
+    validate_candidate_sidecars(tmp_path)
+    (tmp_path / "provenance.jsonl").write_text('{"record_ref":"row:1"}\n', encoding="utf-8")
+    try:
+        validate_candidate_sidecars(tmp_path)
+    except AnnotationValidationError:
+        pass
+    else:
+        raise AssertionError("provenance source_id is required")

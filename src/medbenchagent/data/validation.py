@@ -126,13 +126,37 @@ def validate_v4_record(record, line_number=1):
         seen.add(finding["finding_id"])
         if finding.get("status") not in {"known", "uncertain", "unknown", "missing"}:
             raise AnnotationValidationError(f"Line {line_number}: invalid finding status")
+        if finding["finding_id"].strip() != finding["finding_id"]:
+            raise AnnotationValidationError(f"Line {line_number}: finding_id must be trimmed")
         bbox = finding.get("bbox")
         if bbox is not None:
-            if len(bbox) != 4 or not all(isinstance(v, (int, float)) for v in bbox):
+            if (not isinstance(bbox, list) or len(bbox) != 4 or
+                    not all(type(v) in (int, float) and math.isfinite(v) for v in bbox)):
                 raise AnnotationValidationError(f"Line {line_number}: invalid finding bbox")
             if not (0 <= bbox[0] < bbox[2] and 0 <= bbox[1] < bbox[3]):
                 raise AnnotationValidationError(f"Line {line_number}: invalid finding bbox geometry")
+        if finding.get("status") == "missing" and bbox is not None:
+            raise AnnotationValidationError(f"Line {line_number}: missing finding cannot have a bbox")
     return record
+
+
+def validate_candidate_sidecars(candidate_path: str | Path) -> None:
+    """Validate the non-annotation files emitted by a Coding Session."""
+    candidate = Path(candidate_path)
+    fields = candidate / "annotation_fields.json"
+    if not fields.is_file() or not isinstance(json.loads(fields.read_text(encoding="utf-8")), dict):
+        raise AnnotationValidationError("annotation_fields.json must be a JSON object")
+    provenance = candidate / "provenance.jsonl"
+    if not provenance.is_file():
+        raise AnnotationValidationError("provenance.jsonl is required")
+    with provenance.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise AnnotationValidationError(f"Provenance line {line_number}: invalid JSON") from exc
+            if not isinstance(value, dict) or not value.get("source_id") or not value.get("record_ref"):
+                raise AnnotationValidationError(f"Provenance line {line_number}: source_id and record_ref are required")
 
 
 def iter_annotation_jsonl(annotation_path: str | Path):

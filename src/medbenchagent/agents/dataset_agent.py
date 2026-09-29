@@ -6,29 +6,18 @@ code, execution and repair; LangGraph only persists the session boundary.
 
 from __future__ import annotations
 
-import json
+import asyncio
 from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from medbenchagent.runtime.dataset_runtime import DatasetAgentTask, dataset_runtime
-from medbenchagent.runtime.preparation_session import load_session, write_session
-from medbenchagent.settings import get_settings
+from medbenchagent.runtime.dataset_runtime import dataset_runtime
+from medbenchagent.runtime.preparation_task import build_data_preparation_task
+from medbenchagent.runtime.preparation_session import CodingSession, load_session
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.sources import inventory_source
-
-
-DATASET_WORKFLOW_PROMPT = """You are the dataset processing coding agent. Work continuously in one OpenHands
-conversation until preparation is complete. Explore the complete read-only source, inspect tables/JSON/images,
-and write reports/source_profile.json. Determine identity, image, mask, finding, label and missingness mappings
-from source evidence only; write unresolved semantic questions to reports/questions.json. After decisions are known,
-write reports/mapping.json, then implement and run deterministic processing code under scripts/. Produce candidate
-annotation, image manifest, provenance and execution reports under candidate/. Run your own checks repeatedly until
-counts, identities, paths, masks, labels and provenance are consistent. Write reports/preparation_report.json and
-candidate/complete.json only after self-checks pass. Preserve raw strings, keep the source immutable, and never
-claim medical correctness or publication. If a user decision is required, stop with reports/questions.json.
-"""
+from medbenchagent.data.sources import verify_source
 
 
 class DatasetAgentState(TypedDict, total=False):
@@ -36,26 +25,8 @@ class DatasetAgentState(TypedDict, total=False):
     result: dict
 
 
-def _task(context: dict, workspace: Path) -> DatasetAgentTask:
-    source = context["active_source"]
-    session = load_session(workspace)
-    conversation_id = session.get("conversation_id") or None
-    sources = context.get("sources", [])
-    objective = DATASET_WORKFLOW_PROMPT + "\n\nAll selected sources (none may be skipped):\n" + json.dumps(sources, ensure_ascii=False)
-    return DatasetAgentTask(
-        task_id=f"{context['run_id']}:{context['dataset_scope']}:{source['id']}:preparation",
-        kind="preparation", source_root=context["source_root"],
-        source_manifest=context["source_manifest"], workspace=str(workspace),
-        objective=objective, required_outputs=[
-            "reports/source_profile.json", "reports/mapping.json",
-            "reports/preparation_report.json", "candidate/complete.json",
-        ], feedback="", attempt=session.get("attempt", 1), conversation_id=conversation_id,
-        max_iterations=context.get("coding_worker_max_iterations", 80),
-        timeout_seconds=context.get("coding_worker_timeout_seconds", 3600),
-        model=get_settings().llm.model, base_url=get_settings().llm.base_url,
-        reasoning_effort=get_settings().llm.reasoning_effort, run_id=context["run_id"],
-        dataset_id=context["dataset_scope"], source_id=source["id"], workflow_step="preparation",
-    )
+def _task(context: dict, workspace: Path):
+    return build_data_preparation_task(context, workspace, feedback=context.get("feedback", ""))
 
 
 def run_dataset_agent(context: dict):
@@ -76,78 +47,39 @@ def run_dataset_agent(context: dict):
                        source_manifests={item.id: str(Path(context["bundle_root"]) / "source_manifests" / item.id)
                                         for item in sources})
     source = context["active_source"]
-    # All sources share one workspace and one conversation.  The worker is
-    # resumed for each immutable source mount so it can retain mapping and
-    # repair context while still producing a single dataset candidate.
+    # All sources share one workspace and one conversation. The host submits
+    # one complete task instead of scheduling inventory/mapping/repair stages.
     workspace = Path(context["run_directory"]) / "workers" / "openhands" / context["dataset_scope"]
     workspace.mkdir(parents=True, exist_ok=True)
-    source_items = [Source.model_validate(item) for item in context.get("sources", [])]
-    if not source_items:
-        source_items = [Source.model_validate(source)]
     task = _task(context, workspace)
-    feedback = ""
-    outcome = None
-    for source_item in source_items:
-        context.update(active_source=source_item.model_dump(), source_scope=source_item.id,
-                       source_root=str(Path(source_item.root).resolve()),
-                       source_manifest=context.get("source_manifests", {}).get(source_item.id,
-                           str(Path(context["bundle_root"]) / "source_manifests" / source_item.id)))
-        task = _task(context, workspace)
-        for attempt in range(task.attempt, task.attempt + 4):
-            task = task.model_copy(update={"attempt": attempt, "feedback": feedback})
-            write_session(workspace, task=task.model_dump(), status="running", step="preparation",
-                          attempt=attempt, feedback={"message": feedback} if feedback else None)
-            outcome = dataset_runtime(context).run(task)
-            if outcome.status != "complete":
-                break
-            gate_error, payload = _candidate_gate(workspace)
-            if not gate_error:
-                feedback = ""
-                break
-            feedback = gate_error
-        if outcome is None or outcome.status != "complete" or feedback:
-            break
-    if outcome is not None and outcome.status == "complete" and not feedback:
-        candidate_root = workspace / "outputs" / "candidate"
-        if not candidate_root.is_dir():
-            candidate_root = workspace / "outputs"
-        payload = {**(payload or {}), "candidate_path": str(candidate_root),
-                   "source_ids": [item.id for item in source_items]}
-        updates = {"preparation_conversation_id": outcome.conversation_id,
+    for manifest in context.get("source_manifests", {}).values():
+        verify_source(manifest)
+    runtime = dataset_runtime(context)
+    def run_turn(payload):
+        result = runtime.run(task.model_copy(update={"conversation_id": payload["conversation_id"],
+                                                     "objective": payload["message"]})).model_dump()
+        result["status"] = {"complete": "submitted", "failed": "blocked"}.get(result["status"], result["status"])
+        return result
+    session = CodingSession(workspace, task.conversation_id, run_turn)
+    previous = load_session(workspace)
+    coding = asyncio.run(session.continue_with(task.objective) if previous.get("conversation_id")
+                         else session.run(task.objective))
+    if coding.status == "submitted":
+        candidate_root = workspace / "outputs"
+        payload = {"candidate_path": str(candidate_root), "source_ids": [item["id"] for item in context.get("sources", [])],
+                   "status": "submitted"}
+        updates = {"preparation_conversation_id": coding.conversation_id,
                    "preparation_workspace": str(workspace),
                    "preparation_status": "complete", "preparation_candidate": payload}
         return {"status": "complete", "summary": "Dataset processing agent completed candidate preparation",
                 "updates": updates}
-    updates = {"preparation_conversation_id": outcome.conversation_id if outcome else "",
+    updates = {"preparation_conversation_id": coding.conversation_id,
                "preparation_workspace": str(workspace),
-               "preparation_status": outcome.status if outcome else "failed"}
-    return {"status": outcome.status if outcome and outcome.status != "complete" else "failed",
-            "summary": (outcome.diagnostic or outcome.question if outcome else "") or feedback,
+               "preparation_status": coding.status}
+    business_status = coding.status if coding.status in {"needs_input", "blocked"} else "blocked"
+    return {"status": business_status,
+            "summary": coding.diagnostic or coding.question,
             "updates": updates}
-
-
-def _candidate_gate(workspace: Path) -> tuple[str, dict | None]:
-    """Minimal publication gate; detailed image/bundle checks remain downstream."""
-    required = [workspace / "outputs" / name for name in (
-        "reports/source_profile.json", "reports/mapping.json",
-        "reports/preparation_report.json", "candidate/complete.json")]
-    missing = [str(path.relative_to(workspace)) for path in required if not path.is_file()]
-    if missing:
-        error = {"status": "failed", "error": "missing_candidate_artifacts", "missing": missing}
-    else:
-        try:
-            payload = json.loads(required[-1].read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            error = {"status": "failed", "error": "invalid_completion_marker", "detail": str(exc)}
-        else:
-            if not isinstance(payload, dict) or payload.get("status") not in {"complete", "submitted"}:
-                error = {"status": "failed", "error": "invalid_completion_marker", "expected_status": "complete"}
-            else:
-                return "", payload
-    report = workspace / "outputs" / "reports" / "final_gate_error.json"
-    report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text(json.dumps(error, ensure_ascii=False, indent=2), encoding="utf-8")
-    return "Final candidate gate failed; read reports/final_gate_error.json and repair the workspace.", None
 
 
 def compile_dataset_agent(*, checkpointer=None):

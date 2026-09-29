@@ -1,4 +1,4 @@
-"""Adapter-code delegation after a semantic specification is frozen."""
+"""Deprecated adapter delegation retained for legacy execution-plan callers."""
 
 from pathlib import Path
 

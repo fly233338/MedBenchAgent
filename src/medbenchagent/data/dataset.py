@@ -39,7 +39,7 @@ FILE_REFERENCE_SUFFIXES = (
 
 
 def annotation_schema_path() -> Path:
-    return Path(__file__).parents[1] / "schemas" / "annotation.v3.schema.json"
+    return Path(__file__).parents[1] / "schemas" / "annotation.v4.schema.json"
 
 
 
