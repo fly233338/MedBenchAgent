@@ -187,14 +187,14 @@ def test_agent_progress_filter_keeps_live_and_saved_events(tmp_path):
             await pilot.pause()
             assert any("inspect_table" in str(line) for line in progress.lines)
             assert not any("prepare_data" in str(line) for line in progress.lines)
-            record_event(events, "tool_started", agent="DataProcessingAgent",
-                         operation="inspect_images", status="running")
+            record_event(events, "worker_started", agent="DatasetProcessingAgent",
+                         operation="coding_worker", status="running")
             screen._flush_progress()
-            assert any("inspect_images" in str(line) for line in progress.lines)
+            assert any("coding_worker" in str(line) for line in progress.lines)
             assert "DataProcessing" in str(screen.query_one("#active-agent").content)
             partial = json.dumps({"timestamp": "2026-01-01T00:00:00Z", "event_type": "tool_result",
-                                  "agent": "DataProcessingAgent", "operation": "inspect_images",
-                                  "status": "success", "summary": "Images inspected"}).encode()
+                                  "agent": "DatasetProcessingAgent", "operation": "worker_result",
+                                  "status": "success", "summary": "Candidate submitted"}).encode()
             with events.open("ab") as stream:
                 stream.write(partial)
             screen._flush_progress()

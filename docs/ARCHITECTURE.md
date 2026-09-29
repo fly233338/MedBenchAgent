@@ -68,7 +68,7 @@ ExecutionPlan 按 Source 选择 built_in 顺序算子或 generated_python Datase
 要求 fallback_reason。生成代码读取只读 Spec/输入说明，输出 {record, record_ref} annotation 与版本化
 结构化 provenance；不赋予 namespace、可信 provenance、质量结论或发布权限。CSV 保留字符串 ID；
 需要 generated_python 时，OpenHands CodingWorker 根据已冻结 Spec 编写和调试候选 adapter；
-MedBench 的 save_dataset_adapter、双次提取、来源核验、PreparationValidation 与归档继续控制验收。
+MedBench 的双次提取、来源核验、PreparationValidation 与归档继续控制验收；转换代码只作为 Coding Session workspace candidate。
 join 显式声明基数、空键与未匹配策略，group_findings 保留逐 finding 来源。现有 PreparationPlan 只保留为
 底层算子调用契约，不再进入 Agent 工具、状态或发布链；新主链直接执行 ExecutionPlan。
 

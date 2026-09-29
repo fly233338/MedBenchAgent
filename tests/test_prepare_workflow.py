@@ -66,8 +66,6 @@ def test_standalone_prepare_registers_complete_card_with_local_backend(tmp_path,
     monkeypatch.setattr("medbenchagent.data.dataset_card.complete_json", card_model)
     actions = iter([
         ("prepare_data", {"dataset_id": "new", "mode": "rebuild" if rebuild else "reuse_or_prepare"}),
-        ("select_source", {"source_id": "source"}), ("inspect_images", {}),
-        ("save_image_plan", {"overrides": {}}), ("normalize_images", {}),
         *([("ask_user", {"question": "Clarify source semantics"})] if interrupt_prepare else []),
         ("save_dataset_metadata", {"source_references": []}),
         ("save_harmonization", {"plan": {}}), ("finish", {}), ("finish", {})])
@@ -101,7 +99,7 @@ def test_supervisor_reuses_without_starting_data_processing(tmp_path, monkeypatc
     monkeypatch.setattr(settings, "_SETTINGS", replace(cfg, paths=replace(cfg.paths,
                         dataset_catalog=tmp_path / "catalog.json", runs_root=tmp_path / "runs")))
     entry = prepared_dataset(tmp_path, "a", monkeypatch)
-    monkeypatch.setattr("medbenchagent.data.preparation_services.initialize", lambda *a: pytest.fail("Must reuse, not prepare"))
+    monkeypatch.setattr("medbenchagent.runtime.preparation_context.initialize_preparation", lambda *a: pytest.fail("Must reuse, not prepare"))
     actions = iter([("inspect_dataset_status", {"dataset_id": "a"}), ("prepare_data", {"dataset_id": "a"}), ("finish", {})])
     def model(*args):
         tool, arguments = next(actions)
@@ -142,8 +140,6 @@ def test_prepare_discovers_unconfigured_source_from_request(tmp_path, monkeypatc
                         lambda *_a: {"description": "Dataset facts from Profile"})
     actions = iter([
         ("prepare_data", {"dataset_id": "new"}),
-        ("select_source", {"source_id": "original"}), ("inspect_images", {}),
-        ("save_image_plan", {"overrides": {}}), ("normalize_images", {}),
         ("save_dataset_metadata", {"source_references": []}),
         ("save_harmonization", {"plan": {}}), ("finish", {}), ("finish", {}),
     ])
@@ -154,22 +150,3 @@ def test_prepare_discovers_unconfigured_source_from_request(tmp_path, monkeypatc
         {"configurable": {"thread_id": "discover"}, "recursion_limit": 100})
     assert output["status"] == "complete"
     assert (Path(output["run_directory"]) / "discovery/sources/new/source_decision.json").is_file()
-
-
-def test_preparation_tools_follow_existing_artifact_dependencies(tmp_path):
-    from medbenchagent.data.preparation_services import available_tools
-    from medbenchagent.runtime.dependencies import publish
-    c = {"run_directory": str(tmp_path), "sources": [{"id": "one"}], "dataset_scope": "dataset"}
-    assert "select_source" in available_tools(c)
-    assert "inspect_images" not in available_tools(c)
-    c["source_scope"] = "one"
-    publish(c, "Source", {}, ())
-    assert "inspect_files" in available_tools(c)
-    publish(c, "Annotation", {}, ("Source",))
-    assert "inspect_images" in available_tools(c)
-    assert "normalize_images" not in available_tools(c)
-    publish(c, "ImageInventory", {}, ("Annotation",))
-    publish(c, "ImagePlan", {}, ("ImageInventory",))
-    assert "normalize_images" in available_tools(c)
-    publish(c, "Annotation", {"revision": 2}, ("Source",))
-    assert "normalize_images" not in available_tools(c)

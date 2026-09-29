@@ -33,7 +33,7 @@ PopulationDecision / PreparationValidation → Annotation → ImageInventory / I
   custom transformations require evidence and are explicitly outside that semantic proof.
 - Raw specs must declare image ID/path mappings. Every non-null emitted field needs a decision;
   absent patient/case/study IDs remain null. Namespace assignment belongs to trusted normalization.
-- `save_dataset_adapter(code)` saves Python and returns its artifact reference. It requires a Spec,
+- Coding Session generated adapters are stored in the workspace and referenced by the candidate. They require a Spec,
   not an unsupported-operator reason. `save_execution_plan(plan)` binds the current Spec, Fingerprint,
   implementation and runtime. Example built-in request:
 
