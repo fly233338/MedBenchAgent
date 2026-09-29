@@ -32,5 +32,5 @@ reranker_base_url = "http://127.0.0.1:8002/v1"
 question_template_count = 3
 
 # [data_processing]
-# backend = "auto"  # auto, docker, or local
+# backend = "local"  # auto, docker, or local
 # coding_worker_image = "medbench-openhands:local"

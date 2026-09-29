@@ -38,6 +38,15 @@ from medbenchagent.data.dataset_card import (
 from medbenchagent.agents.preparation import (
     bound, execute_extraction, validate_preparation, prepare_annotation_import,
 )
+from medbenchagent.agents.source_inventory_worker import compile_pipeline  # noqa: F401
+
+# Compatibility exports for callers that use the pipeline as the preparation
+# facade. The implementation lives in ``preparation`` so the coding-session
+# entrypoint and the deterministic evidence path share one contract.
+from medbenchagent.agents.preparation import (
+    save_source_fingerprint, save_semantic_spec, save_dataset_adapter,  # noqa: F401
+    save_execution_plan, inspect_population_capability,  # noqa: F401
+)
 
 
 class SourceChoice(Contract):

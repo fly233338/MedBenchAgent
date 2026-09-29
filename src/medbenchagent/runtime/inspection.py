@@ -166,7 +166,10 @@ def read_evidence(context, *, reference, pointer=None, offset=0, limit=20, text_
     else:
         page = {"value": value}
     text = json.dumps(page, ensure_ascii=False)
-    if len(text) > 3000 or text_offset:
+    # Text paging already bounds the payload to 4000 characters and callers
+    # rely on the stable ``text``/``next_offset`` shape. Only serialize large
+    # structured pages or explicit continuation requests.
+    if (len(text) > 3000 and not isinstance(value, str)) or text_offset:
         page = {"serialized_page": text[text_offset:text_offset + 2500],
                 "next_text_offset": text_offset + 2500 if text_offset + 2500 < len(text) else None}
     return result("success", json.dumps({"reference": reference, "kind": receipt["kind"], **page}, ensure_ascii=False))
