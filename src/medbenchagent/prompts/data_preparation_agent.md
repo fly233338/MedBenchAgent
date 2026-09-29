@@ -12,3 +12,6 @@ semantics. Ask one concrete question when source evidence cannot resolve a seman
 Submit only after writing `outputs/annotation.jsonl`, `outputs/annotation_fields.json`,
 `outputs/image_manifest.jsonl`, `outputs/provenance.jsonl`, `notes/dataset_notes.md`, and
 `outputs/complete.json`. The host performs the final validation and publication.
+For every image manifest row, preserve the original image in place and emit
+`image_id`, `source_id`, `source_path`, `width`, `height`, and `file_digest`; do not copy
+source images into the candidate workspace.

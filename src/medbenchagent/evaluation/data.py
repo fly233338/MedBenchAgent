@@ -78,9 +78,9 @@ def _manifest_tasks(manifest: dict[str, Any]) -> dict[str, TaskSpec]:
 
 
 
-def _load_image_manifest(path: Path) -> dict[str, ImageEntry]:
+def _load_image_manifest(path: Path, source_roots: dict[str, str] | None = None) -> dict[str, ImageEntry]:
     try:
-        return load_image_manifest(path)
+        return load_image_manifest(path, source_roots=source_roots)
     except ImageManifestError as exc:
         raise EvaluationDataError(str(exc)) from exc
 
@@ -119,6 +119,12 @@ def _validate_item(item: dict[str, Any], task: TaskSpec, image: ImageEntry) -> N
 
 
 def _validate_image(image: ImageEntry) -> None:
+    if image.source_id:
+        from medbenchagent.data.sources import digest_file
+        path = image.png_path
+        if not path.is_file() or (image.file_digest and digest_file(path) != image.file_digest):
+            raise EvaluationDataError(f"{image.image_id}: external image is missing or changed")
+        return
     errors = validate_image_asset(
         {"png_path": image.png_path.name, "width": image.width, "height": image.height},
         image.png_path.parent,
@@ -164,7 +170,7 @@ def load_benchmark(
     benchmark_info = manifest.get("benchmark_info")
     if not isinstance(benchmark_info, dict) or benchmark_info.get("language") not in {"en", "zh"}:
         raise EvaluationDataError("Benchmark manifest has an invalid benchmark_info language.")
-    images = _load_image_manifest(image_manifest_file)
+    images = _load_image_manifest(image_manifest_file, dataset.get("source_roots"))
 
     try:
         lines = benchmark_file.read_text(encoding="utf-8").splitlines()

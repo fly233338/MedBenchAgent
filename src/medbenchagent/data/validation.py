@@ -204,13 +204,13 @@ def load_annotation_jsonl(annotation_path: str | Path) -> list[dict[str, Any]]:
     return list(iter_annotation_jsonl(annotation_path))
 
 
-def validate_dataset_files(annotation_path, manifest_path):
+def validate_dataset_files(annotation_path, manifest_path, *, source_roots=None):
     """Join annotation and image dimensions on disk rather than loading the manifest."""
     from medbenchagent.data.image_assets import iter_image_manifest
     from medbenchagent.data.operators import connect
     with connect() as db:
         db.execute("CREATE TABLE manifest (id VARCHAR PRIMARY KEY, width BIGINT, height BIGINT, seen BOOLEAN DEFAULT false)")
-        for entry in iter_image_manifest(Path(manifest_path)):
+        for entry in iter_image_manifest(Path(manifest_path), source_roots=source_roots):
             db.execute("INSERT INTO manifest (id,width,height) VALUES (?,?,?)",
                        [entry.image_id, entry.width, entry.height])
         for row in iter_annotation_jsonl(annotation_path):

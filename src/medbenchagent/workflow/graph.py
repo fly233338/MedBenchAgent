@@ -409,7 +409,7 @@ def compile_benchmark_graph(*, checkpointer=None):
 
     def prepare_data(context, *, dataset_id, mode="reuse_or_prepare", feedback=""):
         """Reuse valid prepared data or prepare configured sources. Use rebuild only for an explicit user request."""
-        from medbenchagent.agents.data_pipeline import initialize
+        from medbenchagent.runtime.preparation_context import initialize_preparation
         from medbenchagent.agents.data_processing import compile_data_processing_agent
         if dataset_id not in preparation_pending(context):
             raise ValueError("Dataset is not an outstanding preparation target; update run intent first")
@@ -447,7 +447,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         else:
             child = {k: context[k] for k in COMMON if k in context}
             child["operation_directory"] = agent_operation(context, "DataProcessingAgent", dataset_id)
-            child = initialize(child, sources, dataset_id)
+            child = initialize_preparation(child, sources, dataset_id)
             child["preparation_mode"] = mode
         child["feedback"] = feedback
         inject_answers(context, child, "DataProcessingAgent", dataset_id)

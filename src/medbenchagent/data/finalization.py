@@ -46,7 +46,8 @@ def finalize_prepared_dataset(candidate, context):
         validate_candidate_sidecars(candidate)
         # Dimensions and population are checked against the candidate manifest before
         # anything is copied into the publication bundle.
-        validate_dataset_files(candidate / "annotation.jsonl", candidate / "image_manifest.jsonl")
+        source_roots = {item.get("id"): item.get("root") for item in context.get("sources", []) if isinstance(item, dict) and item.get("root")}
+        validate_dataset_files(candidate / "annotation.jsonl", candidate / "image_manifest.jsonl", source_roots=source_roots)
         with (candidate / "provenance.jsonl").open(encoding="utf-8") as handle:
             allowed_sources = {item.get("id") for item in context.get("sources", []) if isinstance(item, dict)}
             for line_number, line in enumerate(handle, 1):
@@ -74,20 +75,25 @@ def finalize_prepared_dataset(candidate, context):
     shutil.copy2(candidate / "annotation_fields.json", temporary / "annotation_fields.json")
     shutil.copy2(candidate / "provenance.jsonl", temporary / "provenance.jsonl")
     shutil.copy2(candidate / "image_manifest.jsonl", temporary / "image_manifest.jsonl")
-    if (candidate / "images").is_dir():
-        shutil.copytree(candidate / "images", temporary / "images", dirs_exist_ok=True)
+    source_roots = {item.get("id"): item.get("root") for item in context.get("sources", []) if isinstance(item, dict) and item.get("root")}
     integrity_path = temporary / "asset_integrity.jsonl"
     with (candidate / "image_manifest.jsonl").open(encoding="utf-8") as manifest, integrity_path.open("w", encoding="utf-8") as integrity:
         for line_number, line in enumerate(manifest, 1):
             item = json.loads(line)
-            relative = item.get("png_path") or item.get("image_path")
+            relative = item.get("source_path") or item.get("png_path") or item.get("image_path")
             if not isinstance(relative, str) or Path(relative).is_absolute():
                 raise ValueError(f"Invalid image path at manifest line {line_number}")
-            asset = (temporary / relative).resolve()
-            if not asset.is_file() or not asset.is_relative_to(temporary):
-                raise ValueError(f"Published image is missing: {relative}")
-            integrity.write(json.dumps({"image_id": item.get("image_id"), "png_path": relative,
-                                        "file_digest": digest_file(asset)}, ensure_ascii=False) + "\n")
+            if item.get("source_id"):
+                from medbenchagent.data.image_assets import resolve_source_image
+                asset = resolve_source_image(item["source_id"], relative, source_roots, item.get("file_digest"))
+                integrity.write(json.dumps({"image_id": item.get("image_id"), "source_id": item["source_id"],
+                                            "source_path": relative, "file_digest": digest_file(asset)}, ensure_ascii=False) + "\n")
+            else:
+                asset = (temporary / relative).resolve()
+                if not asset.is_file() or not asset.is_relative_to(temporary):
+                    raise ValueError(f"Published image is missing: {relative}")
+                integrity.write(json.dumps({"image_id": item.get("image_id"), "png_path": relative,
+                                            "file_digest": digest_file(asset)}, ensure_ascii=False) + "\n")
     documentation = temporary / "documentation" / "index.json"
     atomic_write_json(documentation, {"schema_version": "dataset-documentation.v1", "documents": []})
     profile, access = prepare_annotation_dataset(temporary / "annotation.jsonl", temporary / "cache",
@@ -98,7 +104,8 @@ def finalize_prepared_dataset(candidate, context):
                   image_integrity_path=str(integrity_path),
                   image_integrity_digest=digest_file(integrity_path),
                   documentation_path=str(documentation),
-                  documentation_digest=digest_file(documentation))
+                  documentation_digest=digest_file(documentation),
+                  source_roots=source_roots)
     atomic_write_json(temporary / "ready.json", {"schema_version": "dataset-bundle.v3", "annotation_schema": "annotation.v4",
                                                "access": access,
                                                "sources": sorted(context.get("sources", []), key=str)})
