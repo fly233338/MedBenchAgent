@@ -112,6 +112,8 @@ def validate_record(record, line_number=1):
 def validate_v4_record(record, line_number=1):
     """Validate the explicit finding contract used by new coding candidates."""
     validate_record(record, line_number)
+    if "provenance" not in record:
+        raise AnnotationValidationError(f"Line {line_number}: provenance is required by annotation.v4")
     findings = record["image"]["annotation"].get("findings", [])
     if not isinstance(findings, list):
         raise AnnotationValidationError(f"Line {line_number}: image.annotation.findings must be an array")

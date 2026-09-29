@@ -9,7 +9,7 @@ from pathlib import Path
 from medbenchagent.data.dataset import prepare_annotation_dataset
 from medbenchagent.data.dataset_card import build_card
 from medbenchagent.data.dataset_catalog import register_dataset
-from medbenchagent.data.validation import iter_annotation_jsonl, validate_v4_record
+from medbenchagent.data.validation import iter_annotation_jsonl, validate_v4_record, validate_dataset_files
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 
@@ -39,6 +39,14 @@ def finalize_prepared_dataset(candidate, context):
             raise ValueError("Candidate annotation is empty")
         # Keep the existing streaming checks for image identity and duplicate paths.
         list(iter_annotation_jsonl(candidate / "annotation.jsonl"))
+        # Dimensions and population are checked against the candidate manifest before
+        # anything is copied into the publication bundle.
+        validate_dataset_files(candidate / "annotation.jsonl", candidate / "image_manifest.jsonl")
+        with (candidate / "provenance.jsonl").open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, 1):
+                item = json.loads(line)
+                if not isinstance(item, dict) or not item.get("source_id"):
+                    raise ValueError(f"Invalid provenance at line {line_number}")
     except Exception as exc:
         atomic_write_json(report_dir / "report.json", {
             "schema_version": "prepared-validation.v1", "status": "failed", "error": str(exc)

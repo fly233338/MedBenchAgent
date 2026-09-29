@@ -66,6 +66,11 @@ class CodingSession:
 
     async def cancel(self) -> None:
         self._cancelled = True
+        cancel = getattr(self.runner, "cancel", None)
+        if cancel is not None:
+            value = cancel(self.conversation_id)
+            if asyncio.iscoroutine(value):
+                await value
         state = load_session(self.workspace)
         state.update({"status": "blocked", "stop_reason": "cancelled"})
         _write(session_paths(self.workspace)["state"], state)
