@@ -29,11 +29,14 @@ def publish_validated_candidate(candidate: ValidatedCandidateRef, *, dataset_id:
     if not ready.exists():
         staging = destination / f".{dataset_id}.{uuid4().hex}.staging"
         shutil.copytree(source, staging)
-        access = {name: str(staging / name) for name in REQUIRED}
-        access["bundle_root"] = str(staging)
+        access = {name: name for name in REQUIRED}
+        access["bundle_root"] = "."
         atomic_write_json(staging / "ready.json", {"schema_version": "dataset-bundle.v3", "access": access,
                                                      "validation": candidate.validation_ref.model_dump()})
         staging.replace(target)
+        ready_payload = json.loads((target / "ready.json").read_text(encoding="utf-8"))
+        ready_payload["access"] = {name: str(target / name) for name in REQUIRED} | {"bundle_root": str(target)}
+        atomic_write_json(target / "ready.json", ready_payload)
     payload = json.loads(ready.read_text(encoding="utf-8"))
     entry = {"dataset_id": dataset_id, "available": True, "bundle_root": str(target),
              "annotation_path": str(target / "annotation.jsonl"),

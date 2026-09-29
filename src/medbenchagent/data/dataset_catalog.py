@@ -52,7 +52,21 @@ def load_dataset_catalog(catalog_path=None):
     seen = set()
     required = {"dataset_id", "name", "description", "available", *PATH_FIELDS}
     for entry in catalog["datasets"]:
-        if not isinstance(entry, dict) or set(entry) != required:
+        if not isinstance(entry, dict):
+            raise DatasetCatalogError("Catalog entry must be an object")
+        if "bundle_root" in entry:
+            v3_required = {"dataset_id", "available", "bundle_root", "annotation_path",
+                           "image_manifest_path", "dataset_access_manifest"}
+            if not v3_required <= set(entry):
+                raise DatasetCatalogError("v3 catalog entry is incomplete")
+            identifier = validate_dataset_id(entry["dataset_id"])
+            if identifier in seen:
+                raise DatasetCatalogError(f"duplicate id: {identifier}")
+            seen.add(identifier)
+            if type(entry["available"]) is not bool:
+                raise DatasetCatalogError("invalid available flag")
+            continue
+        if set(entry) != required:
             raise DatasetCatalogError(f"Catalog entry must contain exactly {sorted(required)}")
         identifier = validate_dataset_id(entry["dataset_id"])
         if identifier in seen:
@@ -123,6 +137,17 @@ def validate_card_facts(card, dataset_id, paths, profile, access):
 
 
 def load_prepared(entry):
+    if "bundle_root" in entry:
+        ready = Path(entry["dataset_access_manifest"])
+        if not ready.is_file():
+            raise DatasetCatalogError(f"Dataset bundle is not published: {ready}")
+        payload = json.loads(ready.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != "dataset-bundle.v3":
+            raise DatasetCatalogError("Unsupported prepared bundle version")
+        annotation = Path(entry["annotation_path"])
+        if not annotation.is_file():
+            raise DatasetCatalogError("Registered v3 dataset lacks annotation.jsonl")
+        return None, payload.get("access", {})
     paths, profile, access = load_prepared_assets(entry)
     card_path = resolve_path(entry["dataset_card_path"])
     if not card_path.is_file():

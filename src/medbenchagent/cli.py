@@ -46,6 +46,12 @@ def _parser() -> argparse.ArgumentParser:
     prepare_answer.add_argument("answer")
     prepare_status = commands.add_parser("prepare-status", help="Inspect preparation state")
     prepare_status.add_argument("workspace", type=Path)
+    adapter = commands.add_parser("prepare-adapter", help="Run a frozen preparation adapter")
+    adapter.add_argument("--script", type=Path, required=True)
+    adapter.add_argument("--plan", type=Path, required=True)
+    adapter.add_argument("--sources", type=Path, required=True)
+    adapter.add_argument("--output", type=Path, required=True)
+    adapter.add_argument("--selection", type=Path)
     return parser
 
 
@@ -127,6 +133,11 @@ def _answer_intake(service: ConversationService) -> int:
 
 
 def run_command(args: argparse.Namespace) -> int:
+    if args.command == "prepare-adapter":
+        from medbenchagent.data.adapter_runner import run_adapter
+        print(json.dumps(run_adapter(script=args.script, plan=args.plan, sources=args.sources,
+                                     output=args.output, selection=args.selection), ensure_ascii=False, indent=2))
+        return 0
     if args.command in {"prepare", "prepare-resume", "prepare-answer", "prepare-status"}:
         from medbenchagent.runtime.preparation_service import PreparationService
         service = PreparationService()
