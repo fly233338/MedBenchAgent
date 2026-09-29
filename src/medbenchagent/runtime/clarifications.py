@@ -191,3 +191,26 @@ def resolve_clarification(context, *, issue_id, kind):
         else:
             updates[field] = str(target)
     return result("success", "Clarification resolved and routed to its origin", **updates)
+
+
+def parse_preparation_decision(question, answer, *, input_digest="", revision=1):
+    """Parse a preparation answer without treating uncertainty as approval."""
+    from medbenchagent.data.preparation_models import PreparationDecision
+    text = answer if isinstance(answer, str) else str(answer)
+    lowered = text.strip().casefold()
+    if lowered in {"不知道", "不确定", "随便", "unknown", "unsure"}:
+        raise ValueError("Preparation decision remains ambiguous")
+    options = question.get("options", []) if isinstance(question, dict) else []
+    option_id = None
+    for option in options:
+        identifier = option.get("id", "")
+        label = option.get("label", identifier)
+        if lowered == str(identifier).casefold() or lowered == str(label).casefold():
+            option_id = identifier
+            break
+    if option_id is None and options:
+        raise ValueError("Answer does not select one of the preparation options")
+    return PreparationDecision(question_id=question["question_id"], option_id=option_id,
+                               rule={"option_id": option_id} if option_id else {"text": text},
+                               answer_text=text, source_ids=question.get("source_ids", []),
+                               input_digest=input_digest, revision=revision)
