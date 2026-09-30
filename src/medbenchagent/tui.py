@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 from rich.markdown import Markdown
-from medbenchagent.tui_components import ExperimentIndex, Prompt
+from medbenchagent.tui_components import ExperimentIndex, Prompt, Splitter, CommandDialog
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -79,11 +79,11 @@ def _supports_block_glyphs() -> bool:
 
 def _brand() -> Text:
     glyphs = {
-        "M": ("█▄ ▄█", "█ ▀ █", "▀   ▀"),
+        "M": ("█▄█", "█▀█", "▀ ▀"),
         "E": ("█▀▀▀", "█▀▀ ", "▀▀▀▀"),
         "D": ("█▀▀▄", "█  █", "▀▀▀ "),
         "B": ("█▀▀▄", "█▀▀▄", "▀▀▀ "),
-        "N": ("█▄  █", "█ ▀▄█", "▀   ▀"),
+        "N": ("█▄ █", "█ ▀█", "▀  ▀"),
         "C": ("█▀▀▀", "█   ", "▀▀▀▀"),
         "H": ("█  █", "█▀▀█", "▀  ▀"),
         "A": ("▄▀▀▄", "█▀▀█", "▀  ▀"),
@@ -100,9 +100,11 @@ def _brand() -> Text:
         return title
     for row in range(3):
         for index, letter in enumerate("MEDBENCHAGENT"):
-            if index:
-                title.append(" ")
-            title.append(glyphs[letter][row], style=f"bold {colors[index]}")
+            glyph = glyphs[letter][row]
+            # C's open edge meets H's stem; E and N share a vertical boundary.
+            if index and "MEDBENCHAGENT"[index - 1:index + 1] in {"CH", "EN"}:
+                glyph = glyph[1:]
+            title.append(glyph, style=f"bold {colors[index]}")
         if row < 2:
             title.append("\n")
     return title
@@ -183,9 +185,9 @@ class RemoveExperimentScreen(ModalScreen[bool]):
 
 
 class ExperimentMenu(Screen):
-    COMMANDS = (("new", "Create an experiment"), ("open", "Open the selected experiment"),
+    COMMANDS = (("new", "Create an experiment"), 
                 ("remove", "Remove the selected experiment"),
-                ("quit", "Exit MedBenchAgent"))
+                ("quit", "Exit MedBenchAgent"), ("help", "Commands and keys"))
 
     def __init__(self) -> None:
         super().__init__()
@@ -207,7 +209,7 @@ class ExperimentMenu(Screen):
                     yield Input(placeholder="Search experiments", id="search")
                     yield Button("Open", id="open", variant="primary")
                 yield OptionList(id="menu-commands")
-                yield DataTable(id="experiments", cursor_type="row", zebra_stripes=True)
+                yield DataTable(id="experiments", cursor_type="row", zebra_stripes=False)
                 yield Static("", id="menu-message")
             with Horizontal(id="menu-pages"):
                 yield Button("Previous", id="previous-page")
@@ -262,6 +264,7 @@ class ExperimentMenu(Screen):
             query = ""
         matches = [record for record in self._entries if query in record["name"].casefold()]
         pages = max(1, (len(matches) + 99) // 100)
+        self.query_one("#menu-pages").display = pages > 1
         self._page = min(self._page, pages - 1)
         self.query_one("#page-label", Static).update(f"{self._page + 1} of {pages}")
         self.query_one("#previous-page", Button).disabled = self._page == 0
@@ -321,6 +324,9 @@ class ExperimentMenu(Screen):
         self._dispatch_command("/" + str(event.option_id))
 
     def _dispatch_command(self, value: str) -> None:
+        if value.strip() == "/help":
+            self.app.action_show_help()
+            return
         name = value[1:].strip().casefold()
         options = self.query_one("#menu-commands", OptionList)
         if name not in {item[0] for item in self.COMMANDS}:
@@ -332,8 +338,6 @@ class ExperimentMenu(Screen):
         options.display = False
         if name == "new":
             self.app.push_screen(CreateExperimentScreen())
-        elif name == "open":
-            self.action_open_selected()
         elif name == "remove":
             if self._removing:
                 self.query_one("#menu-message", Static).update("Removal is already in progress.")
@@ -424,7 +428,7 @@ class CreateExperimentScreen(Screen):
 
 
 class ConfigScreen(Screen):
-    COMMANDS = (("done", "Enter the conversation"), ("quit", "Return to the previous screen"))
+    COMMANDS = (("done", "Enter the conversation"), ("quit", "Return to the previous screen"), ("help", "Commands and keys"))
 
     def __init__(self, name: str, *, new: bool = False) -> None:
         super().__init__()
@@ -462,6 +466,9 @@ class ConfigScreen(Screen):
         self._dispatch_command("/" + str(event.option_id))
 
     def _dispatch_command(self, value: str) -> None:
+        if value.strip() == "/help":
+            self.app.action_show_help()
+            return
         name = value[1:].strip().casefold() if value.startswith("/") else ""
         options = self.query_one("#config-commands", OptionList)
         if name not in {item[0] for item in self.COMMANDS}:
@@ -569,7 +576,7 @@ class ConfigScreen(Screen):
 class ConversationScreen(Screen):
     COMMANDS = (("details", "Toggle run details"), ("resume", "Resume an unfinished run"),
                 ("config", "Edit future run settings"), ("queue", "Queue a request: /queue <text>"),
-                ("quit", "Return to experiments"))
+                ("quit", "Return to experiments"), ("help", "Commands and keys"))
 
     def __init__(self, name: str) -> None:
         super().__init__()
@@ -608,7 +615,7 @@ class ConversationScreen(Screen):
         self._status_text = "Ready"
         self._context_summary = "◉ n/a"
         self._sidebar_width: int | None = None
-        self._drag_start: tuple[int, int] | None = None
+        self._panel_weights = [0.25, 0.25, 0.5]
         self.stop_event = threading.Event()
         self.exit_requested = False
         self.back_requested = False
@@ -625,13 +632,18 @@ class ConversationScreen(Screen):
         
                 yield OptionList(id="session-commands")
                 yield Prompt(placeholder="Message", id="message", highlight_cursor_line=False)
-            yield Static("", id="side-resize-handle")
+            yield Splitter(axis="x", id="side-resize-handle")
             with Vertical(id="side-pane"):
-                yield DataTable(id="runs", cursor_type="none", zebra_stripes=True)
-                yield Static("Latest activity: waiting", id="active-agent")
-                yield DataTable(id="agent-status", cursor_type="none", zebra_stripes=True)
-                yield Select([("All agents", "*")], value="*", allow_blank=False, id="agent-filter")
-                yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
+                with Vertical(id="runs-panel"):
+                    yield DataTable(id="runs", cursor_type="none", zebra_stripes=True)
+                yield Splitter(axis="y", id="runs-divider")
+                with Vertical(id="agents-panel"):
+                    yield Static("Latest activity: waiting", id="active-agent")
+                    yield DataTable(id="agent-status", cursor_type="none", zebra_stripes=True)
+                yield Splitter(axis="y", id="events-divider")
+                with Vertical(id="events-panel"):
+                    yield Select([("All agents", "*")], value="*", allow_blank=False, id="agent-filter")
+                    yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
 
     def on_mount(self) -> None:
         self.query_one("#runs", DataTable).add_columns("Request", "Status", "Run")
@@ -1054,6 +1066,9 @@ class ConversationScreen(Screen):
                              self.query_one("#session-commands", OptionList))
 
     def _dispatch_command(self, value: str) -> None:
+        if value.strip() == "/help":
+            self.app.action_show_help()
+            return
         name, _, argument = value[1:].strip().partition(" ")
         name = name.casefold()
         options = self.query_one("#session-commands", OptionList)
@@ -1269,44 +1284,51 @@ class ConversationScreen(Screen):
         sidebar = self.query_one("#side-pane", Vertical)
         sidebar.display = not sidebar.display
         self.query_one("#side-resize-handle", Static).display = sidebar.display
-        if not sidebar.display and self._drag_start is not None:
-            self.query_one("#side-resize-handle", Static).capture_mouse(False)
-            self._drag_start = None
+        for splitter in self.query(Splitter):
+            splitter.release()
+        self.call_after_refresh(self._layout_panels)
 
     def _clamp_sidebar_width(self, width: int) -> int:
-        minimum = 30 if self.app.has_class("compact") else 32
-        maximum = max(minimum, self.size.width - 24 - 4)
-        return max(minimum, min(maximum, width))
+        return max(30, min(self.size.width - 28, width))
 
-    @on(events.MouseDown, "#side-resize-handle")
-    def start_sidebar_drag(self, event: events.MouseDown) -> None:
-        if event.button != 1:
-            return
-        handle = self.query_one("#side-resize-handle", Static)
-        self._drag_start = (event.screen_x, self.query_one("#side-pane", Vertical).outer_size.width)
-        handle.capture_mouse()
+    @on(Splitter.Adjust)
+    def resize_detail(self, event: Splitter.Adjust):
+        if event.splitter.axis == "x":
+            side = self.query_one("#side-pane")
+            self._sidebar_width = self._clamp_sidebar_width(42 if event.reset else side.outer_size.width - event.delta)
+            side.styles.width = self._sidebar_width
+        else:
+            panels = [self.query_one("#" + name + "-panel") for name in ("runs", "agents", "events")]
+            sizes = [panel.size.height for panel in panels]
+            index = 0 if event.splitter.id == "runs-divider" else 1
+            minima = [3, 4, 5]
+            pair = sizes[index] + sizes[index + 1]
+            target = round(pair * (0.5 if index == 0 else 1 / 3)) if event.reset else sizes[index] + event.delta
+            sizes[index] = max(minima[index], min(pair - minima[index + 1], target))
+            sizes[index + 1] = pair - sizes[index]
+            total = sum(sizes)
+            self._panel_weights = [size / total for size in sizes]
+            self._layout_panels()
         event.stop()
 
-    @on(events.MouseMove, "#side-resize-handle")
-    def drag_sidebar(self, event: events.MouseMove) -> None:
-        if self._drag_start is None:
+    def _layout_panels(self):
+        if not self.query("#side-pane"):
             return
-        start_x, start_width = self._drag_start
-        self._sidebar_width = self._clamp_sidebar_width(start_width + start_x - event.screen_x)
-        self.query_one("#side-pane", Vertical).styles.width = self._sidebar_width
-        event.stop()
-
-    @on(events.MouseUp, "#side-resize-handle")
-    def end_sidebar_drag(self, event: events.MouseUp) -> None:
-        if self._drag_start is not None:
-            self.query_one("#side-resize-handle", Static).capture_mouse(False)
-            self._drag_start = None
-            event.stop()
+        height = max(12, self.query_one("#side-pane").size.height - 2)
+        sizes = [max(low, int(height * weight)) for low, weight in zip((3, 4, 5), self._panel_weights)]
+        while sum(sizes) > height:
+            index = max(range(3), key=lambda i: sizes[i] - (3, 4, 5)[i])
+            sizes[index] -= 1
+        sizes[2] += height - sum(sizes)
+        for name, size in zip(("runs", "agents", "events"), sizes):
+            self.query_one("#" + name + "-panel").styles.height = size
 
     def on_resize(self, _event: events.Resize) -> None:
-        if self._sidebar_width is not None and self.is_mounted:
-            self._sidebar_width = self._clamp_sidebar_width(self._sidebar_width)
-            self.query_one("#side-pane", Vertical).styles.width = self._sidebar_width
+        if self.is_mounted and self.query("#side-pane"):
+            if self._sidebar_width is not None:
+                self._sidebar_width = self._clamp_sidebar_width(self._sidebar_width)
+                self.query_one("#side-pane").styles.width = self._sidebar_width
+            self.call_after_refresh(self._layout_panels)
 
     def on_unmount(self) -> None:
         self._progress_timer.stop()
@@ -1314,9 +1336,8 @@ class ConversationScreen(Screen):
         self._record_generation += 1
         self.workers.cancel_group(self, "event-read")
         self.workers.cancel_group(self, "record-read")
-        if self._drag_start is not None:
-            self.query_one("#side-resize-handle", Static).capture_mouse(False)
-            self._drag_start = None
+        for splitter in self.query(Splitter):
+            splitter.release()
 
     def action_edit_config(self) -> None:
         self.app.push_screen(ConfigScreen(self.experiment_name))
@@ -1344,7 +1365,8 @@ class ConversationScreen(Screen):
 
 class MBAApp(App):
     ENABLE_COMMAND_PALETTE = False
-    BINDINGS = [Binding("escape", "request_exit", "Exit")]
+    BINDINGS = [Binding("escape", "request_exit", "Exit"),
+                Binding("ctrl+p", "commands", "Commands", priority=True)]
     CSS = """
     App, Screen { background: #101319; color: #d9dce5; }
     Screen { layout: vertical; }
@@ -1353,36 +1375,30 @@ class MBAApp(App):
     Input { background: #1a2029; border: tall #323c4b; }
     Input:focus { border: tall #82aaff; }
     DataTable { background: #171c24; color: #d9dce5; }
-    OptionList { background: #202938; border: solid #4386f7; height: auto; max-height: 8; }
-
-    #menu-shell { width: 100%; height: 1fr; padding: 1 3 0 3; }
-    #menu-brand { height: auto; max-height: 4; }
+    OptionList { background: #1a1e25; border: none; height: auto; max-height: 8; border-left: thick #657c99; }
+    #menu-shell { width: 100%; height: auto; padding: 1 2; max-width: 100; max-height: 90%; }
+    #menu-brand { height: auto; max-height: 4; content-align: center middle; margin-bottom: 1; }
     #menu-subtitle { height: 2; color: #a5b3c9; }
-    #menu-panel { width: 100%; height: 1fr; background: #171c24; padding: 1 2; }
+    #menu-panel { width: 100%; height: auto; background: #101319; padding: 0; }
     #menu-title { height: 1; color: #a8c4ff; text-style: bold; }
     #menu-search-bar { width: 100%; height: 3; }
     #menu-message { height: 1; color: #9aa6b6; }
     #menu-hint { height: 1; color: #718095; }
-    #experiments { width: 100%; height: 1fr; min-height: 3; border: none; }
+    #experiments { width: 100%; height: auto; min-height: 3; border: none; max-height: 18; }
     #experiments:focus { border: none; }
     #search, #field-value { width: 1fr; }
-    #open { width: 12; }
-
+    #open { width: 12; height: 3; margin: 0; padding: 0; content-align: center middle; background: #34445f; color: #e5ecf5; }
     RemoveExperimentScreen { align: center middle; }
-    #remove-dialog { width: 68; max-width: 100%; height: auto; padding: 1 2;
-                     background: #171c24; border: solid #eb7d83; }
+    #remove-dialog { width: 68; max-width: 100%; height: auto; padding: 1 2; background: #171c24; border: solid #eb7d83; }
     #remove-title { height: 1; color: #eb7d83; text-style: bold; }
     #remove-name { height: 1; color: #d9dce5; text-style: bold; }
     #remove-message { height: auto; color: #9aa6b6; }
     #remove-actions { height: 3; }
-
     CreateExperimentScreen { align: center middle; }
-    #create-dialog { width: 62; max-width: 100%; height: auto; padding: 1 2;
-                     background: #171c24; border: solid #4386f7; }
+    #create-dialog { width: 62; max-width: 100%; height: auto; padding: 1 2; background: #171c24; border: solid #4386f7; }
     #create-title { height: 1; color: #82bdff; text-style: bold; }
     #new-name { height: 3; }
     #create-message { height: 2; color: #9aa6b6; }
-
     ConfigScreen { padding: 1 2 0 2; }
     #config-title { height: 1; color: #a8c4ff; text-style: bold; }
     #config-tree { height: 1fr; background: #171c24; border: none; }
@@ -1390,58 +1406,53 @@ class MBAApp(App):
     #config-message, #menu-message { height: auto; max-height: 3; overflow-y: auto; color: #9aa6b6; }
     ConfigScreen > Horizontal { height: 3; }
     #config-command { height: 3; }
-
     #session-title { height: 1; padding: 0 2; color: #a8c4ff; text-style: bold; }
     #session-status { height: auto; max-height: 4; overflow-y: auto; padding: 0 2; color: #9aa6b6; }
     #session-body { width: 100%; height: 1fr; }
     #chat-pane { width: 1fr; height: 1fr; min-width: 24; padding: 0 1 0 2; }
-    #side-resize-handle { width: 1; min-width: 1; height: 1fr;
-                          background: #34445f; pointer: w-resize; }
-    #side-pane { width: 52; height: 1fr; min-width: 32; background: #171c24; padding: 0 1; }
+    #side-resize-handle { width: 2; min-width: 2; height: 1fr; background: #101319; pointer: w-resize; color: #657c99; }
+    #side-pane { width: 42; height: 1fr; min-width: 32; background: #171c24; padding: 0 1; overflow-y: auto; }
     #conversation { width: 100%; height: 1fr; background: #101319; border: none; }
     .chat-row { width: 100%; height: auto; margin: 0 0 1 0; }
-    .chat-row.user { align: right top; }
+    .chat-row.user { align: left top; }
     .chat-row.assistant { align: left top; }
-    .chat-bubble { width: 75%; height: auto; min-height: 3; padding: 0 1;
-                   border: round #3a5964; background: #18252b; color: #d9dce5; }
-    .chat-bubble.user { width: 70%; border: round #3b5275; background: #1b2535; }
-    .compact .chat-bubble { width: 95%; }\n    .compact .chat-bubble.user { width: 95%; }\n    .chat-bubble.failed { border: round #eb7d83; color: #eb9ca1; }
+    .chat-bubble { width: 75%; height: auto; min-height: 1; padding: 0 1; border: none; background: #101319; color: #d9dce5; }
+    .chat-bubble.user { width: 70%; border: none; background: #1a1e25; padding: 1; border-left: thick #657c99; }
+    .compact .chat-bubble { width: 95%; }
+    .compact .chat-bubble.user { width: 95%; }
+    .chat-bubble.failed { border: round #eb7d83; color: #eb9ca1; border-left: thick #eb7d83; }
     .chat-bubble.thinking { width: auto; color: #a5b8c8; }
-    #question-card { height: auto; max-height: 10; display: none; margin: 1 0;
-                     padding: 0 1; border: round #e8ac70; background: #211d1a; }
+    #question-card { height: auto; max-height: 10; display: none; margin: 1 0; padding: 0 1; border: none; background: #211d1a; border-left: thick #e8ac70; }
     #question-title { height: 1; color: #e8ac70; text-style: bold; }
     #run-question { height: auto; color: #e9e0d6; }
     #question-hint { height: 1; color: #baa993; }
     #message { width: 100%; height: 3; }
-    #runs { width: 100%; height: 30%; min-height: 4; border: none; }
+    #runs { width: 100%; height: 1fr; min-height: 1; border: none; }
     #active-agent { height: auto; max-height: 2; padding: 0 1; color: #a8c4ff; }
-    #agent-status { width: 100%; height: 10; min-height: 5; border: none; }
+    #agent-status { width: 100%; height: 1fr; min-height: 1; border: none; }
     #agent-filter { width: 100%; height: 3; }
-    #progress { width: 100%; height: 1fr; min-height: 3; border-top: solid #323c4b; }
+    #progress { width: 100%; height: 1fr; min-height: 2; border-top: solid #323c4b; }
     .compact #chat-pane { padding: 0 1; }
     .compact #side-pane { width: 38; min-width: 30; }
     .compact .chat-bubble, .compact .chat-bubble.user { width: 95%; }
     .compact #session-title { padding: 0 1; }
     ExperimentMenu { align: center middle; }
-    #menu-shell { max-width: 100; height: 90%; padding: 1 2; }
-    #menu-brand { content-align: center middle; margin-bottom: 1; }
-    #menu-panel { background: #101319; padding: 0; }
     #menu-pages { height: 3; align: center middle; }
     #page-label { width: 1fr; content-align: center middle; color: #89919d; }
     Input, Prompt { background: #1a1e25; border: none; border-left: thick #657c99; padding: 1; }
     Input:focus, Prompt:focus { border: none; border-left: thick #a9c7f6; }
-    OptionList { background: #1a1e25; border: none; border-left: thick #657c99; }
-    #side-pane { width: 42; padding: 0 1; }
-    .chat-row.user { align: left top; }
-    .chat-bubble { width: 75%; min-height: 1; padding: 0 1;
-                                         border: none; background: #101319; }
-    .chat-bubble.user { width: 70%; padding: 1;
-                            border: none; border-left: thick #657c99; background: #1a1e25; }
-    .compact .chat-bubble { width: 95%; }\n    .compact .chat-bubble.user { width: 95%; }\n    .chat-bubble.failed { border-left: thick #eb7d83; }
-    #question-card { border: none; border-left: thick #e8ac70; }
-    #agent-status { height: 25%; min-height: 4; }
-    #runs { height: 25%; min-height: 3; }
-    #progress { min-height: 2; }
+    #open:hover, #open:focus { background: #496181; }
+    #experiments > .datatable--header { background: #1a1e25; color: #89919d; text-style: none; }
+    #experiments > .datatable--cursor { background: #34445f; color: #e5ecf5; }
+    .splitter.y { height: 1; width: 100%; pointer: s-resize; color: #657c99; }
+    .splitter:hover, .splitter:focus, .splitter.dragging { background: #34445f; color: #a9c7f6; }
+    #runs-panel { height: 1fr; min-height: 3; }
+    #agents-panel { height: 1fr; min-height: 4; }
+    #events-panel { height: 2fr; min-height: 5; }
+    CommandDialog { align: center middle; }
+    #command-dialog { width: 70; max-width: 95%; height: auto; max-height: 90%; overflow-y: auto; background: #1a1e25; padding: 1 2; }
+    #command-title { height: 1; color: #a9c7f6; }
+    #command-options { height: auto; max-height: 12; }
     """
 
     TITLE = "MBA"
@@ -1455,6 +1466,22 @@ class MBAApp(App):
 
     def on_mount(self) -> None:
         self.push_screen(ExperimentMenu())
+
+    def action_commands(self):
+        screen = self.screen
+        commands = getattr(screen, "COMMANDS", ())
+        if not commands:
+            return
+        focused = screen.focused
+        def selected(name):
+            if focused and focused.is_mounted:
+                focused.focus()
+            if name:
+                screen._dispatch_command("/" + name)
+        self.push_screen(CommandDialog(commands), selected)
+
+    def action_show_help(self):
+        self.push_screen(CommandDialog(getattr(self.screen, "COMMANDS", ()), help_only=True))
 
     def action_request_exit(self) -> None:
         active = [screen for screen in self.screen_stack
@@ -1483,7 +1510,5 @@ class MBAApp(App):
             self.push_screen(ConfigScreen(name, new=True))
         else:
             self.push_screen(ConversationScreen(name))
-
-
 
 
