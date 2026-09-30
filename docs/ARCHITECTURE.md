@@ -28,7 +28,7 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 ## 新运行布局
 
-新实验和 Run 使用版本化根目录 `experiments-v2/` 与 `.runtime-v2/`。现有旧目录由当前实现忽略。
+新实验和 Run 使用版本化根目录 `experiments-v2/` 与 `.runtime/`。现有旧目录由当前实现忽略。
 
 ```text
 <run>/

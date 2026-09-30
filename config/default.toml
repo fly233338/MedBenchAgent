@@ -7,7 +7,7 @@ default_sample_count = 1000
 dataset_catalog = "datasets/dataset_catalog.json"
 blueprint_template = "config/blueprint.json"
 materials_root = "materials"
-runs_root = ".runtime-v2"
+runs_root = ".runtime"
 prepared_datasets_root = "datasets/Prepared"
 
 [llm]

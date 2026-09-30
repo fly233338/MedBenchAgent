@@ -11,12 +11,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.text import Text
+from rich.markdown import Markdown
+from medbenchagent.tui_components import ExperimentIndex, Prompt
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, DataTable, Input, Label, OptionList, RichLog, Select, Static, Tree
+from textual.widgets import Button, DataTable, Input, Label, OptionList, RichLog, Select, Static, Tree, TextArea
 from textual.widgets.option_list import Option
 
 from medbenchagent.runtime import sessions
@@ -129,16 +131,23 @@ def _navigate_slash_list(event: events.Key, field: Input, options: OptionList) -
     event.stop()
 
 
+class HistoryView(VerticalScroll):
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        if new_value <= 1 and old_value > new_value:
+            self.screen.load_older_messages()
+
+
 class ChatMessage(Static):
     """One conversation bubble, optionally awaiting a persisted message ID."""
 
     def __init__(self, role: str, content: str, *, message_id: str | None = None) -> None:
-        super().__init__(Text(content), classes=f"chat-bubble {role}")
+        super().__init__(Markdown(content) if role == "assistant" else Text(content), classes=f"chat-bubble {role}")
         self.role = role
         self.full_text = content
         self.message_id = message_id
         self.chat_row: Horizontal | None = None
-        self.border_title = "YOU" if role == "user" else "MBA"
+        
 
     def show_text(self, content: str) -> None:
         self.update(Text(content))
@@ -183,22 +192,27 @@ class ExperimentMenu(Screen):
         self._entries: list[dict] = []
         self._visible_entries: list[tuple] = []
         self._scan_id = 0
+        self._page = 0
+        self._search_timer = None
         self._removing = False
         self._removal_message = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="menu-shell"):
             yield Static(_brand(), id="menu-brand")
-            yield Static("Choose a workspace or create a new one  /  experiments", id="menu-subtitle")
+            
             with Vertical(id="menu-panel"):
                 yield Static("RECENT EXPERIMENTS", id="menu-title")
                 with Horizontal(id="menu-search-bar"):
-                    yield Input(placeholder="Search experiments or type / for commands", id="search")
+                    yield Input(placeholder="Search experiments", id="search")
                     yield Button("Open", id="open", variant="primary")
                 yield OptionList(id="menu-commands")
                 yield DataTable(id="experiments", cursor_type="row", zebra_stripes=True)
                 yield Static("", id="menu-message")
-            yield Static("Type / for commands  ·  Enter opens a selected experiment", id="menu-hint")
+            with Horizontal(id="menu-pages"):
+                yield Button("Previous", id="previous-page")
+                yield Static("", id="page-label")
+                yield Button("Next", id="next-page")
 
     def on_mount(self) -> None:
         self.query_one("#experiments", DataTable).add_columns("EXPERIMENT", "RUNS", "STATUS")
@@ -218,16 +232,22 @@ class ExperimentMenu(Screen):
     @work(thread=True)
     def _load_experiments(self, scan_id: int) -> None:
         try:
-            entries = sessions.list_experiments(root=self.app.experiments_root)
+            entries = []
+            for batch in self.app.experiment_index.scan(self.app.experiments_root):
+                entries.extend(batch)
+                self.app.call_from_thread(self._loaded_experiments, scan_id, list(entries), "")
         except (ValueError, OSError) as exc:
             self.app.call_from_thread(self._loaded_experiments, scan_id, [], str(exc))
         else:
             self.app.call_from_thread(self._loaded_experiments, scan_id, entries, "")
 
     def _loaded_experiments(self, scan_id: int, entries: list[dict], error: str) -> None:
-        if scan_id != self._scan_id:
+        if not self.is_mounted or scan_id != self._scan_id:
             return
-        self._entries = entries
+        if not self.query("#experiments"):
+            self.call_after_refresh(self._loaded_experiments, scan_id, entries, error)
+            return
+        self._entries = sorted(entries, key=lambda item: item["created_at"], reverse=True)
         self._render_entries()
         if error:
             self.query_one("#menu-message", Static).update(Text(error))
@@ -241,17 +261,32 @@ class ExperimentMenu(Screen):
         if query.startswith("/"):
             query = ""
         matches = [record for record in self._entries if query in record["name"].casefold()]
-        rows = [(record["name"], len(record["runs"]),
-                 record["runs"][-1]["status"] if record["runs"] else "new") for record in matches]
+        pages = max(1, (len(matches) + 99) // 100)
+        self._page = min(self._page, pages - 1)
+        self.query_one("#page-label", Static).update(f"{self._page + 1} of {pages}")
+        self.query_one("#previous-page", Button).disabled = self._page == 0
+        self.query_one("#next-page", Button).disabled = self._page + 1 == pages
+        rows = [(r["name"], r["run_count"], r["status"])
+                for r in matches[self._page * 100:(self._page + 1) * 100]]
         if rows != self._visible_entries:
             selected = table.get_row_at(table.cursor_row)[0] if table.row_count else None
-            table.clear()
+            old = {row[0]: row for row in self._visible_entries}
+            names = [row[0] for row in rows]
+            for name in old.keys() - set(names):
+                table.remove_row(name)
+            columns = list(table.columns)
             for name, count, status in rows:
-                status_color = _STATUS_COLORS.get(status, "#aab9ca")
-                table.add_row(name, str(count), Text(status.upper(), style=status_color), key=name)
+                values = (name, str(count), Text(status.upper(), style=_STATUS_COLORS.get(status, "#aab9ca")))
+                if name not in old:
+                    table.add_row(*values, key=name)
+                elif old[name] != (name, count, status):
+                    for column, value in zip(columns, values):
+                        table.update_cell(name, column, value)
+            order = {name: index for index, name in enumerate(names)}
+            table.sort(columns[0], key=lambda name: order[str(name)])
             self._visible_entries = rows
-            if selected in [row[0] for row in rows]:
-                table.move_cursor(row=[row[0] for row in rows].index(selected))
+            if selected in names:
+                table.move_cursor(row=names.index(selected))
         if not matches:
             message = "No matching experiments. Type /new to create." if query else "No experiments yet. Type /new to create."
             self.query_one("#menu-message", Static).update(Text(message))
@@ -262,6 +297,15 @@ class ExperimentMenu(Screen):
     def filter_experiments(self) -> None:
         _update_slash_list(self.query_one("#menu-commands", OptionList),
                            self.query_one("#search", Input).value, self.COMMANDS)
+        self._page = 0
+        if self._search_timer:
+            self._search_timer.stop()
+        self._search_timer = self.set_timer(0.15, self._render_entries)
+
+    @on(Button.Pressed, "#previous-page")
+    @on(Button.Pressed, "#next-page")
+    def change_page(self, event: Button.Pressed) -> None:
+        self._page += 1 if event.button.id == "next-page" else -1
         self._render_entries()
 
     @on(Input.Submitted, "#search")
@@ -269,6 +313,7 @@ class ExperimentMenu(Screen):
         if event.value.startswith("/"):
             self._dispatch_command(event.value)
         else:
+            self._render_entries()
             self.action_open_selected()
 
     @on(OptionList.OptionSelected, "#menu-commands")
@@ -357,7 +402,7 @@ class CreateExperimentScreen(Screen):
         with Vertical(id="create-dialog"):
             yield Static("Create experiment", id="create-title")
             yield Input(placeholder="Experiment name", id="new-name")
-            yield Static("Lowercase letters, digits and hyphens. Type /quit to cancel.", id="create-message")
+            yield Static("a–z  0–9  hyphen", id="create-message")
 
     def on_mount(self) -> None:
         self.query_one("#new-name", Input).focus()
@@ -389,15 +434,15 @@ class ConfigScreen(Screen):
         self.selected_value: object = None
 
     def compose(self) -> ComposeResult:
-        yield Static(f"MBA / {self.experiment_name} / CONFIGURATION", id="config-title")
+        yield Static(f"{self.experiment_name}   Configuration", id="config-title")
         yield Tree("Configuration", id="config-tree")
-        yield Label("Edit values for future runs; dataset_sources is managed by preparation.", id="field-label")
+        yield Label("Future run settings", id="field-label")
         with Horizontal():
             yield Input(id="field-value", disabled=True)
             yield Button("Apply value", id="apply", disabled=True)
         yield Static("", id="config-message")
         yield OptionList(id="config-commands")
-        yield Input(placeholder="Type / for commands", id="config-command")
+        yield Input(placeholder="Command", id="config-command")
 
     def on_mount(self) -> None:
         self.query_one("#config-commands", OptionList).display = False
@@ -541,9 +586,9 @@ class ConversationScreen(Screen):
         self._optimistic_messages: list[ChatMessage] = []
         self._history_loaded = False
         self._thinking_row: Horizontal | None = None
-        self._reveal_timer = None
-        self._revealing: ChatMessage | None = None
-        self._reveal_position = 0
+        self._history_start = None
+        self._loading_history = False
+        self._agent_status_dirty = False
         self._progress_queue: queue.SimpleQueue[tuple[str | None, str]] = queue.SimpleQueue()
         self._progress_entries: deque[tuple[str | None, str, str]] = deque(maxlen=600)
         self._progress_run_id: str | None = None
@@ -551,6 +596,10 @@ class ConversationScreen(Screen):
         self._event_offset = 0
         self._event_partial = b""
         self._discard_event_line = False
+        self._event_generation = 0
+        self._event_reading = False
+        self._event_initial = False
+        self._record_generation = 0
         self._agents: list[str] = []
         self._agent_statuses: dict[tuple[str, str, str], dict[str, str]] = {}
         self._context_tokens: int | None = None
@@ -565,18 +614,17 @@ class ConversationScreen(Screen):
         self.back_requested = False
 
     def compose(self) -> ComposeResult:
-        path = sessions.experiment_path(self.experiment_name, self.app.experiments_root)
-        yield Static(f"{self.experiment_name}    {path}", id="session-title")
+        yield Static(self.experiment_name, id="session-title")
         yield Static("Ready", id="session-status")
         with Horizontal(id="session-body"):
             with Vertical(id="chat-pane"):
-                yield VerticalScroll(id="conversation")
+                yield HistoryView(id="conversation")
                 with VerticalScroll(id="question-card"):
-                    yield Static("? MBA needs your input", id="question-title")
+                    yield Static("Input required", id="question-title")
                     yield Static("", id="run-question")
-                    yield Static("Your answer will let MBA continue.", id="question-hint")
+        
                 yield OptionList(id="session-commands")
-                yield Input(placeholder="Describe a task or type / for commands", id="message")
+                yield Prompt(placeholder="Message", id="message", highlight_cursor_line=False)
             yield Static("", id="side-resize-handle")
             with Vertical(id="side-pane"):
                 yield DataTable(id="runs", cursor_type="none", zebra_stripes=True)
@@ -590,8 +638,8 @@ class ConversationScreen(Screen):
         self.query_one("#agent-status", DataTable).add_columns("Agent", "Scope", "Status", "Operation", "Detail")
         self.query_one("#session-commands", OptionList).display = False
         self._set_status("Loading experiment…")
-        self.query_one("#message", Input).focus()
-        self.set_interval(0.1, self._flush_progress)
+        self.query_one("#message", Prompt).focus()
+        self._progress_timer = self.set_interval(0.1, self._flush_progress)
         self._load_session()
 
     @work(thread=True)
@@ -623,22 +671,17 @@ class ConversationScreen(Screen):
         if self.is_mounted:
             self._set_status(f"Could not open experiment: {error}")
 
-    def refresh_record(self, record: dict | None = None) -> None:
+    def refresh_record(self, record: dict | None = None, *, after=None) -> None:
         self.record = record if record is not None else self.service.record()
+        if self._history_start is None:
+            self._history_start = max(0, len(self.record["messages"]) - 100)
+        questions = {(run["id"], run.get("pending_question")) for run in self.record["runs"]
+                     if run["status"] == "waiting_input" and not run.get("pending_answer")}
         def awaiting_answer(message: dict) -> bool:
-            return any(run["id"] == message.get("run_id")
-                       and run.get("pending_question") == message["text"]
-                       and not run.get("pending_answer") and run["status"] == "waiting_input"
-                       for run in self.record["runs"])
+            return (message.get("run_id"), message["text"]) in questions
 
-        new_messages = [message for message in self.record["messages"]
-                        if message["id"] not in self._displayed_messages and not awaiting_answer(message)]
-        latest_reply = next((message["id"] for message in reversed(new_messages)
-                             if message["role"] == "assistant" and not any(
-                                 run.get("pending_question") == message["text"]
-                                 and run["id"] == message.get("run_id") for run in self.record["runs"])), None)
         added_ids = []
-        for message in self.record["messages"]:
+        for message in self.record["messages"][self._history_start:]:
             if awaiting_answer(message):
                 continue
             if message["id"] not in self._displayed_messages:
@@ -649,14 +692,28 @@ class ConversationScreen(Screen):
                     self._optimistic_messages.remove(matched)
                     bubble = matched
                 else:
-                    bubble = self._write_message(message["role"], message["text"], message_id=message["id"],
-                                                 reveal=self._history_loaded and message["id"] == latest_reply)
+                    bubble = self._write_message(message["role"], message["text"], message_id=message["id"])
                 self._message_widgets[message["id"]] = bubble
                 self._displayed_messages.add(message["id"])
                 added_ids.append(message["id"])
         if added_ids:
             self.call_after_refresh(self._position_messages, added_ids)
         self.refresh_runs()
+        if after:
+            after()
+
+    def load_older_messages(self) -> None:
+        if not self._history_start or self._loading_history:
+            return
+        view = self.query_one("#conversation", VerticalScroll)
+        self._loading_history = True
+        previous_height, previous_y = view.virtual_size.height, view.scroll_y
+        self._history_start = max(0, self._history_start - 100)
+        self.refresh_record(self.record)
+        def restore():
+            view.scroll_to(y=previous_y + view.virtual_size.height - previous_height, animate=False)
+            self._loading_history = False
+        self.call_after_refresh(restore)
 
     def _position_messages(self, added_ids: list[str]) -> None:
         view = self.query_one("#conversation", VerticalScroll)
@@ -678,27 +735,25 @@ class ConversationScreen(Screen):
         if self.pending_question:
             container.display = True
             view.update(Text(self._run_question))
-            self.query_one("#message", Input).placeholder = "Answer this question or /queue another request"
+            self.query_one("#message", Prompt).placeholder = "Answer"
             return
         container.display = False
-        self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
+        self.query_one("#message", Prompt).placeholder = "Message"
 
     def _write_message(self, role: str, content: str, *, message_id: str | None = None,
                        reveal: bool = False, failed: bool = False) -> ChatMessage:
         role = "user" if role in {"user", "you"} else "assistant"
         view = self.query_one("#conversation", VerticalScroll)
         was_at_end = view.is_vertical_scroll_end
-        bubble = ChatMessage(role, "" if reveal else content, message_id=message_id)
+        bubble = ChatMessage(role, content, message_id=message_id)
         bubble.full_text = content
         if failed:
             bubble.add_class("failed")
         row = Horizontal(bubble, classes=f"chat-row {role}")
         bubble.chat_row = row
         view.mount(row)
-        if was_at_end:
-            view.scroll_end(animate=False)
-        if reveal:
-            self._start_reveal(bubble)
+        if was_at_end and not self._loading_history:
+            self.call_after_refresh(view.scroll_end, animate=False)
         return bubble
 
     def _show_optimistic(self, content: str) -> ChatMessage:
@@ -711,7 +766,7 @@ class ConversationScreen(Screen):
             self._optimistic_messages.remove(bubble)
             bubble.chat_row.remove()
         if restore_input:
-            field = self.query_one("#message", Input)
+            field = self.query_one("#message", Prompt)
             field.value = bubble.full_text
             field.focus()
 
@@ -727,28 +782,6 @@ class ConversationScreen(Screen):
         if self._thinking_row is not None:
             self._thinking_row.remove()
             self._thinking_row = None
-
-    def _start_reveal(self, bubble: ChatMessage) -> None:
-        if self._reveal_timer is not None:
-            self._reveal_timer.stop()
-        if self._revealing is not None:
-            self._revealing.show_text(self._revealing.full_text)
-        self._revealing = bubble
-        self._reveal_position = 0
-        self._reveal_timer = self.set_interval(0.025, self._reveal_step)
-
-    def _reveal_step(self) -> None:
-        bubble = self._revealing
-        if bubble is None:
-            return
-        self._reveal_position = min(len(bubble.full_text), self._reveal_position + 4)
-        bubble.show_text(bubble.full_text[:self._reveal_position])
-        if self.query_one("#conversation", VerticalScroll).is_vertical_scroll_end:
-            self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
-        if self._reveal_position == len(bubble.full_text):
-            self._reveal_timer.stop()
-            self._reveal_timer = None
-            self._revealing = None
 
     def _set_status(self, value: str) -> None:
         self._status_text = value
@@ -780,16 +813,11 @@ class ConversationScreen(Screen):
         self.query_one("#agent-filter", Select).set_options([("All agents", "*")])
         self.query_one("#agent-filter", Select).value = "*"
         self._render_agent_status()
-        lines = []
-        if self._event_path is not None:
-            try:
-                lines, self._event_offset = _recent_event_lines(self._event_path)
-            except OSError:
-                pass
-        for line in lines:
-            if len(line) <= _MAX_EVENT_LINE_BYTES:
-                self._read_construction_event(line, render=False)
+        self._event_generation += 1
+        self._event_reading = False
+        self._event_initial = True
         self._render_progress()
+        self._poll_construction_events()
 
     def _add_agent(self, agent: str) -> None:
         if agent in self._agents:
@@ -808,9 +836,10 @@ class ConversationScreen(Screen):
                                      "scope": "/".join(item for item in (dataset, source) if item),
                                      "status": status or "running", "operation": str(operation or "event"),
                                      "detail": detail}
-        self._render_agent_status()
+        self._agent_status_dirty = True
 
     def _render_agent_status(self) -> None:
+        self._agent_status_dirty = False
         table = self.query_one("#agent-status", DataTable)
         selected = self.query_one("#agent-filter", Select).value
         table.clear()
@@ -916,39 +945,68 @@ class ConversationScreen(Screen):
         self._render_status()
 
     def _poll_construction_events(self) -> None:
-        path = self._event_path
-        if path is None:
+        if self._event_path is None or self._event_reading:
             return
+        self._event_reading = True
         try:
-            with path.open("rb") as stream:
-                stream.seek(0, 2)
-                size = stream.tell()
-                if size < self._event_offset:
-                    self._event_offset = 0
-                    self._event_partial = b""
-                    self._discard_event_line = False
-                stream.seek(self._event_offset)
-                chunk = stream.read(65536)
+            if self._event_initial:
+                lines, self._event_offset = _recent_event_lines(self._event_path)
+                self._event_initial = False
+            else:
+                with self._event_path.open("rb") as stream:
+                    stream.seek(self._event_offset)
+                    data = self._event_partial + stream.read(65536)
+                    self._event_offset = stream.tell()
+                lines = data.split(b"\n")
+                self._event_partial = lines.pop()
+            for line in lines:
+                if len(line) <= _MAX_EVENT_LINE_BYTES:
+                    self._read_construction_event(line)
         except OSError:
+            pass
+        self._event_reading = False
+        if self._agent_status_dirty:
+            self._render_agent_status()
+
+    @work(thread=True, group="event-read")
+    def _read_event_batch(self, generation, path, offset, partial, discard, initial):
+        lines = []
+        try:
+            if initial:
+                lines, offset = _recent_event_lines(path)
+            else:
+                with path.open("rb") as stream:
+                    stream.seek(0, 2)
+                    if stream.tell() < offset:
+                        offset, partial, discard = 0, b"", False
+                    stream.seek(offset)
+                    chunk = stream.read(65536)
+                offset += len(chunk)
+                data = partial + chunk
+                if discard:
+                    end = data.find(b"\n")
+                    data = data[end + 1:] if end >= 0 else b""
+                    discard = end < 0
+                lines = data.split(b"\n")
+                partial = lines.pop()
+                if len(partial) > _MAX_EVENT_LINE_BYTES:
+                    partial, discard = b"", True
+        except OSError:
+            pass
+        self.app.call_from_thread(self._event_batch_loaded, generation, lines, offset, partial, discard)
+
+    def _event_batch_loaded(self, generation, lines, offset, partial, discard):
+        if not self.is_mounted or generation != self._event_generation:
             return
-        self._event_offset += len(chunk)
-        if not chunk:
-            return
-        data = self._event_partial + chunk
-        if self._discard_event_line:
-            end = data.find(b"\n")
-            if end < 0:
-                return
-            data = data[end + 1:]
-            self._discard_event_line = False
-        lines = data.split(b"\n")
-        self._event_partial = lines.pop()
-        if len(self._event_partial) > _MAX_EVENT_LINE_BYTES:
-            self._event_partial = b""
-            self._discard_event_line = True
-        for line in lines:
-            if len(line) <= _MAX_EVENT_LINE_BYTES:
-                self._read_construction_event(line)
+        self._event_reading = False
+        self._event_initial = False
+        self._event_offset, self._event_partial, self._discard_event_line = offset, partial, discard
+        with self.app.batch_update():
+            for line in lines:
+                if len(line) <= _MAX_EVENT_LINE_BYTES:
+                    self._read_construction_event(line)
+            if self._agent_status_dirty:
+                self._render_agent_status()
 
     def _flush_progress(self, limit: int = 100) -> None:
         count = 0
@@ -965,6 +1023,8 @@ class ConversationScreen(Screen):
                     self._append_progress(None, value)
             count += 1
         self._poll_construction_events()
+        if self._agent_status_dirty:
+            self._render_agent_status()
 
     def refresh_runs(self) -> None:
         table = self.query_one("#runs", DataTable)
@@ -980,17 +1040,17 @@ class ConversationScreen(Screen):
                     if table.get_cell_at((index, column)) != value:
                         table.update_cell_at((index, column), value)
 
-    @on(Input.Changed, "#message")
+    @on(TextArea.Changed, "#message")
     def filter_commands(self) -> None:
         _update_slash_list(self.query_one("#session-commands", OptionList),
-                           self.query_one("#message", Input).value, self.COMMANDS)
+                           self.query_one("#message", Prompt).value, self.COMMANDS)
 
     @on(OptionList.OptionSelected, "#session-commands")
     def select_command(self, event: OptionList.OptionSelected) -> None:
         self._dispatch_command("/" + str(event.option_id))
 
     def on_key(self, event: events.Key) -> None:
-        _navigate_slash_list(event, self.query_one("#message", Input),
+        _navigate_slash_list(event, self.query_one("#message", Prompt),
                              self.query_one("#session-commands", OptionList))
 
     def _dispatch_command(self, value: str) -> None:
@@ -1001,7 +1061,7 @@ class ConversationScreen(Screen):
         if self.service is None and name != "quit":
             self._set_status("Experiment is still loading")
             return
-        field = self.query_one("#message", Input)
+        field = self.query_one("#message", Prompt)
         field.value = ""
         if name == "details":
             self.action_toggle_details()
@@ -1021,8 +1081,8 @@ class ConversationScreen(Screen):
         else:
             self._set_status(f"Unknown command: /{name}")
 
-    @on(Input.Submitted, "#message")
-    def submit(self, event: Input.Submitted) -> None:
+    @on(Prompt.Submitted, "#message")
+    def submit(self, event: Prompt.Submitted) -> None:
         value = event.value.strip()
         if not value:
             return
@@ -1085,7 +1145,9 @@ class ConversationScreen(Screen):
     def _submitted(self, result) -> None:
         self.classifying = False
         self._hide_thinking()
-        self.refresh_record()
+        self.refresh_record(after=lambda: self._submission_ready(result))
+
+    def _submission_ready(self, result):
         self._render_question()
         if result.run_ids:
             self._set_status(f"Queued {len(result.run_ids)} run(s)")
@@ -1105,7 +1167,8 @@ class ConversationScreen(Screen):
         if self.service is None or self.running or self.pending_question or self.exit_requested or self.back_requested:
             return
         if refresh:
-            self.refresh_record()
+            self.refresh_record(after=lambda: self._start_next(refresh=False))
+            return
         unfinished = next((run for run in reversed(self.record["runs"])
                            if run["status"] in {"running", "interrupted", "waiting_input"}), None)
         if unfinished:
@@ -1163,7 +1226,7 @@ class ConversationScreen(Screen):
             self._run_question = question
             self._set_status("Answer the run question to continue")
             self._render_question()
-            self.query_one("#message", Input).focus()
+            self.query_one("#message", Prompt).focus()
         elif event.kind in {"finished", "error"}:
             if event.run_session_id != self._progress_run_id:
                 run = next((item for item in self.record["runs"] if item["id"] == event.run_session_id), None)
@@ -1176,7 +1239,7 @@ class ConversationScreen(Screen):
             if event.payload.get("recovery_hint"):
                 self._progress_queue.put((event.run_session_id, event.payload["recovery_hint"]))
             self._set_status(f"{event.payload.get('status')}: {event.payload.get('summary', '')}")
-            self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
+            self.query_one("#message", Prompt).placeholder = "Message"
             if not self.pending_question:
                 self.query_one("#question-card").display = False
 
@@ -1184,7 +1247,9 @@ class ConversationScreen(Screen):
         self._flush_progress()
         self._hide_thinking()
         self.running = False
-        self.refresh_record()
+        self.refresh_record(after=self._execution_record_loaded)
+
+    def _execution_record_loaded(self):
         if self._finish_navigation():
             return
         if not self.pending_question:
@@ -1244,6 +1309,11 @@ class ConversationScreen(Screen):
             self.query_one("#side-pane", Vertical).styles.width = self._sidebar_width
 
     def on_unmount(self) -> None:
+        self._progress_timer.stop()
+        self._event_generation += 1
+        self._record_generation += 1
+        self.workers.cancel_group(self, "event-read")
+        self.workers.cancel_group(self, "record-read")
         if self._drag_start is not None:
             self.query_one("#side-resize-handle", Static).capture_mouse(False)
             self._drag_start = None
@@ -1335,7 +1405,7 @@ class MBAApp(App):
     .chat-bubble { width: 75%; height: auto; min-height: 3; padding: 0 1;
                    border: round #3a5964; background: #18252b; color: #d9dce5; }
     .chat-bubble.user { width: 70%; border: round #3b5275; background: #1b2535; }
-    .chat-bubble.failed { border: round #eb7d83; color: #eb9ca1; }
+    .compact .chat-bubble { width: 95%; }\n    .compact .chat-bubble.user { width: 95%; }\n    .chat-bubble.failed { border: round #eb7d83; color: #eb9ca1; }
     .chat-bubble.thinking { width: auto; color: #a5b8c8; }
     #question-card { height: auto; max-height: 10; display: none; margin: 1 0;
                      padding: 0 1; border: round #e8ac70; background: #211d1a; }
@@ -1352,6 +1422,26 @@ class MBAApp(App):
     .compact #side-pane { width: 38; min-width: 30; }
     .compact .chat-bubble, .compact .chat-bubble.user { width: 95%; }
     .compact #session-title { padding: 0 1; }
+    ExperimentMenu { align: center middle; }
+    #menu-shell { max-width: 100; height: 90%; padding: 1 2; }
+    #menu-brand { content-align: center middle; margin-bottom: 1; }
+    #menu-panel { background: #101319; padding: 0; }
+    #menu-pages { height: 3; align: center middle; }
+    #page-label { width: 1fr; content-align: center middle; color: #89919d; }
+    Input, Prompt { background: #1a1e25; border: none; border-left: thick #657c99; padding: 1; }
+    Input:focus, Prompt:focus { border: none; border-left: thick #a9c7f6; }
+    OptionList { background: #1a1e25; border: none; border-left: thick #657c99; }
+    #side-pane { width: 42; padding: 0 1; }
+    .chat-row.user { align: left top; }
+    .chat-bubble { width: 75%; min-height: 1; padding: 0 1;
+                                         border: none; background: #101319; }
+    .chat-bubble.user { width: 70%; padding: 1;
+                            border: none; border-left: thick #657c99; background: #1a1e25; }
+    .compact .chat-bubble { width: 95%; }\n    .compact .chat-bubble.user { width: 95%; }\n    .chat-bubble.failed { border-left: thick #eb7d83; }
+    #question-card { border: none; border-left: thick #e8ac70; }
+    #agent-status { height: 25%; min-height: 4; }
+    #runs { height: 25%; min-height: 3; }
+    #progress { min-height: 2; }
     """
 
     TITLE = "MBA"
@@ -1361,6 +1451,7 @@ class MBAApp(App):
         super().__init__()
         self.experiments_root = experiments_root
         self.config_template = config_template
+        self.experiment_index = ExperimentIndex()
 
     def on_mount(self) -> None:
         self.push_screen(ExperimentMenu())
@@ -1392,4 +1483,7 @@ class MBAApp(App):
             self.push_screen(ConfigScreen(name, new=True))
         else:
             self.push_screen(ConversationScreen(name))
+
+
+
 

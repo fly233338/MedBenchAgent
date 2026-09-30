@@ -32,9 +32,9 @@ The TUI opens when no subcommand is supplied. Create an experiment, edit its con
 | `config/default.toml` | Shared defaults |
 | `--config PATH` | Template merged when creating an experiment |
 | `experiments-v2/<name>/config.toml` | Configuration for future runs |
-| `.runtime-v2/<run>/control/effective_config.json` | Frozen settings for a run |
+| `.runtime/<run>/control/effective_config.json` | Frozen settings for a run |
 
-New experiments and runs use the versioned `experiments-v2/` and `.runtime-v2/` roots. Existing `experiments/`, `benchmarks/` and `.runtime/` directories are left untouched and are outside the current runtime.
+New experiments and runs use the versioned `experiments-v2/` and `.runtime/` roots. Existing `experiments/`, `benchmarks/` and `.runtime/` directories are left untouched and are outside the current runtime.
 
 Relative paths resolve from the repository root. Keep credentials in environment variables; credentials are not written to configuration snapshots. Chat model discovery is required. Retrieval services are optional and their availability is recorded per run.
 
@@ -72,3 +72,4 @@ See [architecture](docs/ARCHITECTURE.md), [data contracts](docs/DATA_LAYER.md), 
 ## License
 
 [Apache License 2.0](LICENSE).
+

@@ -38,4 +38,4 @@ Bundle、Profile、Card 和 Catalog 都使用内容摘要绑定输入。新版�
 
 准备和构建使用 Run 冻结的配置、Catalog snapshot、Card 副本、事件日志和 operation ledger。产物依赖由 `runtime/dependencies.py` 校验；工具调用按参数和依赖幂等重放。
 
-新运行存储在 `.runtime-v2/<run>/control`、`inputs`、`agents` 和 `workers` 下。现有旧运行目录不属于当前运行时。
+新运行存储在 `.runtime/<run>/control`、`inputs`、`agents` 和 `workers` 下。现有旧运行目录不属于当前运行时。

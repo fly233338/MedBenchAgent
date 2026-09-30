@@ -24,7 +24,7 @@ htmlcov/
 benchmarks/
 .runtime/
 experiments/
-.runtime-v2/
+.runtime/
 experiments-v2/
 .langgraph_api/
 
