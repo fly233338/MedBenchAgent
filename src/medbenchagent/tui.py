@@ -79,16 +79,16 @@ def _supports_block_glyphs() -> bool:
 
 def _brand() -> Text:
     glyphs = {
-        "M": ("█▄█", "█▀█", "▀ ▀"),
-        "E": ("█▀▀▀", "█▀▀ ", "▀▀▀▀"),
-        "D": ("█▀▀▄", "█  █", "▀▀▀ "),
-        "B": ("█▀▀▄", "█▀▀▄", "▀▀▀ "),
-        "N": ("█▄ █", "█ ▀█", "▀  ▀"),
-        "C": ("█▀▀▀", "█   ", "▀▀▀▀"),
-        "H": ("█  █", "█▀▀█", "▀  ▀"),
-        "A": ("▄▀▀▄", "█▀▀█", "▀  ▀"),
-        "G": ("█▀▀▀", "█ ▀█", "▀▀▀▀"),
-        "T": ("▀█▀", " █ ", " ▀ "),
+        "M": ("█   █", "██ ██", "█ █ █", "█   █", "█   █"),
+        "E": ("█▀▀▀", "█   ", "█▀▀ ", "█   ", "▀▀▀▀"),
+        "D": ("█▀▀▄", "█  █", "█  █", "█  █", "▀▀▀ "),
+        "B": ("█▀▀▄", "█  █", "█▀▀▄", "█  █", "▀▀▀ "),
+        "N": ("█  █", "██ █", "█ ██", "█  █", "█  █"),
+        "C": ("▄▀▀▀", "█   ", "█   ", "█   ", "▀▄▄▄"),
+        "H": ("█  █", "█  █", "█▀▀█", "█  █", "█  █"),
+        "A": ("▄▀▀▄", "█  █", "█▀▀█", "█  █", "█  █"),
+        "G": ("▄▀▀▀", "█   ", "█ ▀█", "█  █", "▀▄▄▀"),
+        "T": ("▀█▀", " █ ", " █ ", " █ ", " █ "),
     }
     colors = ("#65e5d4", "#69dfdf", "#70d7eb", "#77cef6", "#80c3ff",
               "#8bb7ff", "#98aafe", "#a99cfa", "#b991f1", "#c789e7",
@@ -98,14 +98,23 @@ def _brand() -> Text:
         for letter, color in zip("MedBenchAgent", colors, strict=True):
             title.append(letter, style=f"bold {color}")
         return title
-    for row in range(3):
-        for index, letter in enumerate("MEDBENCHAGENT"):
-            glyph = glyphs[letter][row]
-            # C's open edge meets H's stem; E and N share a vertical boundary.
-            if index and "MEDBENCHAGENT"[index - 1:index + 1] in {"CH", "EN"}:
-                glyph = glyph[1:]
-            title.append(glyph, style=f"bold {colors[index]}")
-        if row < 2:
+    rows = [" ".join(glyphs[letter][row] for letter in "MEDBENCHAGENT") for row in range(5)]
+    column_colors = []
+    for index, letter in enumerate("MEDBENCHAGENT"):
+        column_colors.extend([colors[index]] * len(glyphs[letter][0]))
+        if index < 12:
+            column_colors.append(colors[index])
+    # A one-cell down/right shadow never overwrites a letter's foreground.
+    width = len(rows[0]) + 1
+    for y in range(6):
+        for x in range(width):
+            char = rows[y][x] if y < 5 and x < width - 1 else " "
+            shadow = y > 0 and x > 0 and rows[y - 1][x - 1] != " "
+            if char != " ":
+                title.append(char, style=f"bold {column_colors[x]}")
+            else:
+                title.append("░" if shadow else " ", style="#303845")
+        if y < 5:
             title.append("\n")
     return title
 
@@ -1287,6 +1296,10 @@ class ConversationScreen(Screen):
 
     def action_toggle_details(self) -> None:
         sidebar = self.query_one("#side-pane", Vertical)
+        if not sidebar.display and len(self._collapsed_panels) == 3:
+            self._collapsed_panels.clear()
+            for name in ("runs", "agents", "events"):
+                self.query_one(f"#{name}-toggle", Button).label = f"{name.upper()}  ▾"
         sidebar.display = not sidebar.display
         self.query_one("#side-resize-handle", Static).display = sidebar.display
         for splitter in self.query(Splitter):
@@ -1316,7 +1329,9 @@ class ConversationScreen(Screen):
             self._schedule_panel_layout()
         event.stop()
 
-    @on(Button.Pressed, "#runs-toggle, #agents-toggle, #events-toggle")
+    @on(Button.Pressed, "#runs-toggle")
+    @on(Button.Pressed, "#agents-toggle")
+    @on(Button.Pressed, "#events-toggle")
     def toggle_detail_panel(self, event: Button.Pressed) -> None:
         panel_id = event.button.id.removesuffix("-toggle")
         if panel_id in self._collapsed_panels:
@@ -1331,7 +1346,17 @@ class ConversationScreen(Screen):
         self._layout_scheduled = False
         if not self.query("#side-pane"):
             return
-        height = max(12, self.query_one("#side-pane").size.height - 2)
+        sidebar = self.query_one("#side-pane")
+        if len(self._collapsed_panels) == 3:
+            sidebar.display = False
+            self.query_one("#side-resize-handle").display = False
+            for splitter in self.query(Splitter):
+                splitter.release()
+            self.query_one("#message", Prompt).focus()
+            return
+        if not sidebar.display:
+            return
+        height = max(12, sidebar.size.height - 2)
         names = ("runs", "agents", "events")
         minima = (3, 4, 5)
         visible = [name not in self._collapsed_panels for name in names]
@@ -1407,7 +1432,7 @@ class MBAApp(App):
     DataTable { background: #171c24; color: #d9dce5; }
     OptionList { background: #1a1e25; border: none; height: auto; max-height: 8; border-left: thick #657c99; }
     #menu-shell { width: 100%; height: auto; padding: 1 2; max-width: 100; max-height: 90%; }
-    #menu-brand { height: auto; max-height: 4; content-align: center middle; margin-bottom: 1; }
+    #menu-brand { height: auto; max-height: 6; content-align: center middle; margin-bottom: 1; }
     #menu-subtitle { height: 2; color: #a5b3c9; }
     #menu-panel { width: 100%; height: auto; background: #101319; padding: 0; }
     #menu-title { height: 1; color: #a8c4ff; text-style: bold; }
@@ -1540,6 +1565,3 @@ class MBAApp(App):
             self.push_screen(ConfigScreen(name, new=True))
         else:
             self.push_screen(ConversationScreen(name))
-
-
-

@@ -263,7 +263,9 @@ def test_menu_colored_brand_and_confirmed_remove(tmp_path, monkeypatch):
     monkeypatch.setattr(tui, "_supports_block_glyphs", lambda: True)
     brand = _brand()
     lines = brand.plain.splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 6
+    assert len(set(map(len, lines))) == 1
+    assert "░" in brand.plain
     assert max(map(len, lines)) <= 72
     assert len({span.style for span in brand.spans}) > 3
     monkeypatch.setattr(tui, "_supports_block_glyphs", lambda: False)
@@ -355,4 +357,29 @@ def test_ctrl_c_copies_selected_input_without_exiting(tmp_path):
             assert app.clipboard == "copy this path"
             assert app.is_running
 
+    asyncio.run(check())
+
+
+def test_all_collapsed_detail_reopens(tmp_path):
+    sessions.create_experiment("pilot", root=tmp_path)
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            app.open_experiment("pilot")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            screen = app.screen
+            for name in ("agents", "events", "runs"):
+                screen.query_one(f"#{name}-toggle").press()
+                await pilot.pause()
+            assert not screen.query_one("#side-pane").display
+            assert not screen.query_one("#side-resize-handle").display
+            screen._layout_panels()
+            screen._dispatch_command("/details")
+            await pilot.pause()
+            assert screen.query_one("#side-pane").display
+            assert not screen._collapsed_panels
+            for name in ("runs", "agents", "events"):
+                assert all(child.display for child in screen.query_one(f"#{name}-panel").children)
     asyncio.run(check())
