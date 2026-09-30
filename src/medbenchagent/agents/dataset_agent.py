@@ -70,7 +70,7 @@ def run_dataset_agent(context: dict):
     source = context["active_source"]
     # All sources share one workspace and one conversation. The host submits
     # one complete task instead of scheduling inventory/mapping/repair stages.
-    workspace = Path(context["run_directory"]) / "workers" / "openhands" / context["dataset_scope"]
+    workspace = Path(context["run_directory"]) / "workers" / context["dataset_scope"]
     workspace.mkdir(parents=True, exist_ok=True)
     task = _task(context, workspace)
     _dataset_event(context, "session_started", operation="coding_session",

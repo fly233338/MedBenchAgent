@@ -111,7 +111,7 @@ class OpenHandsDatasetRuntime:
         source_root = Path(task.source_root).resolve()
         if workspace.is_relative_to(source_root) or source_root.is_relative_to(workspace):
             raise ValueError("Worker workspace and original source must be separate")
-        for name in ("inputs", "work", "outputs", "output", "notes", "scripts", "tests", "state", "logs", "conversations"):
+        for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
             (workspace / name).mkdir(parents=True, exist_ok=True)
         from medbenchagent.runtime.preparation_session import write_session
         write_session(workspace, task=task.model_dump(), status="running", step=task.workflow_step,
@@ -142,8 +142,8 @@ class OpenHandsDatasetRuntime:
                            construction_events_path=str(workspace / "logs" / "coding_events.jsonl"))
         request["backend"] = runtime["backend"]
         request["agent"] = "DatasetProcessingAgent"
-        request_path = workspace / "state" / "coding_task.json"
-        result_path = workspace / "state" / f"coding_result_{task.kind}.json"
+        request_path = workspace / "state" / "task.json"
+        result_path = workspace / "state" / "result.json"
         if request_path.is_file() and json.loads(request_path.read_text(encoding="utf-8")) == request:
             if result_path.is_file():
                 cached = DatasetAgentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
@@ -209,12 +209,12 @@ class OpenHandsDatasetRuntime:
                    _mount(source, "/workspace/source", readonly=True)]
         for source_id, root in task.source_roots.items():
             command.extend(["--mount", _mount(Path(root).resolve(), f"/workspace/sources/{source_id}", readonly=True)])
-        for name in ("inputs", "work", "outputs", "output", "notes", "scripts", "tests", "state", "logs", "conversations"):
+        for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
             command.extend(["--mount", _mount(workspace / name, f"/workspace/{name}",
                                               readonly=name == "inputs")])
         command.extend([image_id, "python", "/app/openhands_worker.py",
-                        "/workspace/state/coding_task.json",
-                        f"/workspace/state/coding_result_{task.kind}.json"])
+                        "/workspace/state/task.json",
+                        "/workspace/state/result.json"])
         try:
             existing = subprocess.run(["docker", "container", "inspect", container_name],
                                       capture_output=True, text=True, timeout=15, check=False)

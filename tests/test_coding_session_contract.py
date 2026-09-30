@@ -20,7 +20,7 @@ def test_coding_session_resume_and_cancel(tmp_path):
     assert first.status == second.status == "submitted"
     assert third.status == "blocked"
     assert [call["conversation_id"] for call in calls] == ["conversation-1", "conversation-1"]
-    assert json.loads((tmp_path / "state" / "session_state.json").read_text())["status"] == "blocked"
+    assert json.loads((tmp_path / "state" / "session.json").read_text())["status"] == "blocked"
 
 
 def test_v4_finding_contract():

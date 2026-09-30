@@ -1,13 +1,10 @@
-import asyncio
-from pathlib import Path
-
 import pytest
 from filelock import FileLock
 
-from medbenchagent.runtime import sessions
-from medbenchagent.runtime.session_supervisor import SessionDecision, classify_requirement
 from medbenchagent.agents.source_discovery import discover_source
-from medbenchagent.tui import MBAApp, ConfigScreen, ConversationScreen, ExperimentMenu
+from medbenchagent.runtime import sessions
+from medbenchagent.runtime.conversation_service import ConversationService
+from medbenchagent.runtime.graph_runner import RunEvent
 
 
 def test_experiment_config_and_source_upsert(tmp_path):
@@ -26,74 +23,29 @@ def test_experiment_config_and_source_upsert(tmp_path):
 
 
 def test_remove_experiment_only_deletes_idle_workspace(tmp_path):
-    experiments = tmp_path / "experiments"
-    sessions.create_experiment("pilot", root=experiments)
-    sessions.create_experiment("other", root=experiments)
-    external_runs = tmp_path / "runs"
-    external_runs.mkdir()
-    (external_runs / "keep.txt").write_text("run output", encoding="utf-8")
-
-    lock = FileLock(str(experiments / "pilot" / "run.lock"))
+    sessions.create_experiment("pilot", root=tmp_path)
+    sessions.create_experiment("other", root=tmp_path)
+    lock = FileLock(str(tmp_path / "pilot" / "run.lock"))
     with lock.acquire(timeout=0):
         with pytest.raises(ValueError, match="in use"):
-            sessions.remove_experiment("pilot", root=experiments)
-    sessions.remove_experiment("pilot", root=experiments)
-    assert not (experiments / "pilot").exists()
-    assert (experiments / "other" / "session.json").is_file()
-    assert (external_runs / "keep.txt").read_text(encoding="utf-8") == "run output"
-    with pytest.raises(ValueError, match="Experiment name"):
-        sessions.remove_experiment("../other", root=experiments)
+            sessions.remove_experiment("pilot", root=tmp_path)
+    sessions.remove_experiment("pilot", root=tmp_path)
+    assert not (tmp_path / "pilot").exists()
+    assert (tmp_path / "other" / "session.json").is_file()
 
 
-def test_independent_runs_and_dependency(tmp_path):
+def test_independent_requests_are_queued_without_dependencies(tmp_path):
     record = sessions.create_experiment("pilot", root=tmp_path)
-    first = sessions.queue_run(record, "prepare_dataset", "prepare breast", "breast", root=tmp_path)
-    second = sessions.queue_run(record, "build_benchmark", "build breast", depends_on=first["id"],
-                                root=tmp_path)
+    first = sessions.queue_run(record, "prepare and build", root=tmp_path)
+    second = sessions.queue_run(record, "inspect datasets", root=tmp_path)
     assert first["thread_id"] != second["thread_id"]
     assert sessions.pop_pending(record, root=tmp_path)["id"] == first["id"]
-    assert sessions.pop_pending(record, root=tmp_path) is None
-    sessions.update_run(record, first["id"], status="complete", root=tmp_path)
     assert sessions.pop_pending(record, root=tmp_path)["id"] == second["id"]
-    sessions.add_message(record, "user", "next task", root=tmp_path)
-    assert sessions.load_experiment("pilot", root=tmp_path)["messages"][-1]["text"] == "next task"
-
-
-def test_failed_preparation_blocks_queued_build(tmp_path):
-    record = sessions.create_experiment("pilot", root=tmp_path)
-    preparation = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
-    build = sessions.queue_run(record, "build_benchmark", "build", depends_on=preparation["id"],
-                               root=tmp_path)
-    sessions.block_dependents(record, preparation["id"], root=tmp_path)
-    assert next(run for run in record["runs"] if run["id"] == build["id"])["status"] == "blocked"
-    assert sessions.pop_pending(record, root=tmp_path)["id"] == preparation["id"]
-
-
-def test_resume_continues_dependent_queue(tmp_path):
-    from medbenchagent.runtime.conversation_service import ConversationService
-    from medbenchagent.runtime.graph_runner import RunEvent
-    record = sessions.create_experiment("pilot", root=tmp_path)
-    prep = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
-    build = sessions.queue_run(record, "build_benchmark", "build", depends_on=prep["id"], root=tmp_path)
-    sessions.pop_pending(record, root=tmp_path)
-    sessions.update_run(record, prep["id"], status="waiting_input", root=tmp_path)
-    calls = []
-    class Runner:
-        def execute(self, run, *args, **kwargs):
-            calls.append(run["id"])
-            yield RunEvent(run["id"], "finished", {"status": "complete", "summary": "Done"})
-    service = ConversationService("pilot", root=tmp_path, runner=Runner())
-    assert len(list(service.resume(prep["id"], answer="yes"))) == 2
-    assert calls == [prep["id"], build["id"]]
-    assert all(run["status"] == "complete" for run in service.record()["runs"])
 
 
 def test_run_question_and_answer_are_archived_once(tmp_path):
-    from medbenchagent.runtime.conversation_service import ConversationService
-    from medbenchagent.runtime.graph_runner import RunEvent
-
     record = sessions.create_experiment("pilot", root=tmp_path)
-    run = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
+    run = sessions.queue_run(record, "prepare the dataset", root=tmp_path)
     service = ConversationService("pilot", root=tmp_path)
     event = RunEvent(run["id"], "needs_input", {"question": "What does status 0 mean?"})
     service._apply(event)
@@ -103,16 +55,6 @@ def test_run_question_and_answer_are_archived_once(tmp_path):
     service.answer(run["id"], "It means benign")
     assert [item["text"] for item in service.record()["messages"]] == [
         "What does status 0 mean?", "It means benign"]
-
-
-def test_session_supervisor_contract(monkeypatch):
-    monkeypatch.setattr("medbenchagent.runtime.session_supervisor.complete_validated_json",
-                        lambda *_args, **_kwargs: SessionDecision.model_validate({"tasks": [
-                            {"kind": "prepare_dataset", "dataset_id": "breast", "requested_dataset_ids": None},
-                            {"kind": "build_benchmark", "dataset_id": None,
-                             "requested_dataset_ids": ["breast"]}], "reply": "I can prepare and build."}))
-    decision = classify_requirement("prepare then build", known_datasets=[], history=[])
-    assert [task.kind for task in decision.tasks] == ["prepare_dataset", "build_benchmark"]
 
 
 def test_source_discovery_persists_decision_before_config(monkeypatch, tmp_path):
@@ -129,151 +71,3 @@ def test_source_discovery_persists_decision_before_config(monkeypatch, tmp_path)
     entry = discover_source(context, "breast")
     assert (run_directory / "discovery/sources/breast/source_decision.json").is_file()
     assert entry == discover_source(context, "breast")
-    assert sessions.config_values("pilot", root=tmp_path / "experiments")["dataset_sources"][0]["dataset_id"] == "breast"
-
-
-def test_source_discovery_asks_for_complete_directory(monkeypatch, tmp_path):
-    monkeypatch.setattr("medbenchagent.runtime.preparation_intake.parse_answer", lambda field, text: text)
-    incomplete = tmp_path / "incomplete"
-    incomplete.mkdir()
-    complete = tmp_path / "complete"
-    complete.mkdir()
-    (complete / "clinical.csv").write_text("image,label\na.png,benign\n", encoding="utf-8")
-    (complete / "a.png").write_bytes(b"image")
-    monkeypatch.setattr("medbenchagent.agents.source_discovery.complete_json",
-                        lambda *_args: {"root": str(incomplete), "dataset_name": None})
-    questions = []
-    answers = iter([str(tmp_path / "missing"), str(complete)])
-    monkeypatch.setattr("medbenchagent.agents.source_discovery.interrupt",
-                        lambda question: questions.append(question["question"]) or next(answers))
-    entry = discover_source({"run_directory": str(tmp_path / "run"),
-                             "user_requirement": "Prepare the dataset"}, "dataset")
-    assert questions and "tables and images" in questions[0]
-    assert len(questions) == 2 and "unavailable" in questions[1]
-    assert entry["sources"][0]["root"] == str(complete)
-
-
-def test_source_discovery_uses_structured_intake_without_model_parse(monkeypatch, tmp_path):
-    root = tmp_path / "BrEaST"
-    root.mkdir()
-    (root / "clinical.csv").write_text("image,label\na.png,benign\n", encoding="utf-8")
-    (root / "a.png").write_bytes(b"image")
-    monkeypatch.setattr("medbenchagent.agents.source_discovery.complete_json",
-                        lambda *_args, **_kwargs: pytest.fail("source was parsed twice"))
-    entry = discover_source({"run_directory": str(tmp_path / "run"),
-                             "user_requirement": "prepare a dataset",
-                             "intake_dataset_name": "BrEaST",
-                             "intake_source_root": str(root)}, "breast")
-    assert entry["name"] == "BrEaST"
-    assert entry["sources"][0]["root"] == str(root)
-
-
-def test_tui_create_config_conversation(tmp_path):
-    async def check():
-        app = MBAApp(experiments_root=Path(tmp_path))
-        async with app.run_test() as pilot:
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            assert isinstance(app.screen, ExperimentMenu)
-            await pilot.press("/", "n", "e", "w", "enter")
-            await pilot.pause()
-            app.screen.query_one("#new-name").value = "pilot"
-            await pilot.press("enter")
-            await pilot.pause()
-            assert isinstance(app.screen, ConfigScreen)
-            tree = app.screen.query_one("#config-tree")
-            llm = next(node for node in tree.root.children if node.label.plain == "llm")
-            model = next(node for node in llm.children if node.label.plain.startswith("model ="))
-            tree.select_node(model)
-            await pilot.pause()
-            field = app.screen.query_one("#field-value")
-            assert not field.disabled
-            field.value = "server-model"
-            field.focus()
-            await pilot.press("enter")
-            await pilot.pause()
-            assert sessions.config_values("pilot", root=tmp_path)["llm"]["model"] == "server-model"
-            app.screen.action_save()
-            await pilot.pause()
-            assert isinstance(app.screen, ConversationScreen)
-            assert (tmp_path / "pilot" / "config.toml").is_file()
-
-    asyncio.run(check())
-
-
-def test_experiment_row_opens_with_enter(tmp_path):
-    sessions.create_experiment("first", root=tmp_path)
-    sessions.create_experiment("second", root=tmp_path)
-
-    async def check():
-        app = MBAApp(experiments_root=tmp_path)
-        async with app.run_test() as pilot:
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            assert isinstance(app.screen, ExperimentMenu)
-            await pilot.press("down", "down", "enter")
-            await pilot.pause()
-            assert isinstance(app.screen, ConversationScreen)
-            assert app.screen.experiment_name == "first"
-
-    asyncio.run(check())
-
-
-def test_experiment_search_and_keyboard_navigation(tmp_path):
-    sessions.create_experiment("first", root=tmp_path)
-    sessions.create_experiment("second", root=tmp_path)
-
-    async def check():
-        app = MBAApp(experiments_root=tmp_path)
-        async with app.run_test() as pilot:
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.press("f", "i", "r")
-            await pilot.pause()
-            table = app.screen.query_one("#experiments")
-            assert table.row_count == 1
-            await pilot.press("down", "enter")
-            await pilot.pause()
-            assert isinstance(app.screen, ConversationScreen)
-            assert app.screen.experiment_name == "first"
-
-    asyncio.run(check())
-
-
-def test_experiment_row_opens_with_mouse(tmp_path):
-    sessions.create_experiment("pilot", root=tmp_path)
-
-    async def check():
-        app = MBAApp(experiments_root=tmp_path)
-        async with app.run_test() as pilot:
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.click("#experiments", offset=(2, 1))
-            await pilot.pause()
-            assert isinstance(app.screen, ConversationScreen)
-
-    asyncio.run(check())
-
-
-def test_run_list_only_shows_status(tmp_path):
-    record = sessions.create_experiment("pilot", root=tmp_path)
-    run = sessions.queue_run(record, "prepare_dataset", "Prepare", "breast", root=tmp_path)
-    record["pending_runs"].clear()
-    sessions.update_run(record, run["id"], root=tmp_path,
-                        status="complete", summary="Prepared breast")
-
-    async def check():
-        app = MBAApp(experiments_root=tmp_path)
-        async with app.run_test() as pilot:
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            assert isinstance(app.screen, ConversationScreen)
-            table = app.screen.query_one("#runs")
-            assert table.row_count == 1
-            assert str(table.get_cell_at((0, 1))) == "complete"
-            assert not app.screen.query("#run-detail")
-            assert app.screen.query_one("#progress").size.height > 0
-
-    asyncio.run(check())

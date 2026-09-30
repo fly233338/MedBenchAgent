@@ -173,10 +173,10 @@ def test_missing_prepared_requests_separate_preparation_and_replays(tmp_path, mo
         monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json",
                             lambda *a: {"dataset_ids": None})
     outcome = select_datasets(c)
-    assert outcome["status"] == "blocked" and "Request dataset preparation" in outcome["summary"]
+    assert outcome["status"] == "success" and outcome["updates"]["preparation_required"] == ["raw"]
     monkeypatch.setattr("medbenchagent.planning.dataset_selection.complete_json",
                         lambda *a: pytest.fail("Replay uses frozen candidates"))
-    assert select_datasets(c)["status"] == "blocked"
+    assert select_datasets(c)["status"] == "success"
 
 
 def test_missing_source_path_blocks_without_asking_user(tmp_path, monkeypatch):
@@ -186,5 +186,5 @@ def test_missing_source_path_blocks_without_asking_user(tmp_path, monkeypatch):
                         "description": "Population", "sources": [{"id": "source", "root": str(tmp_path / "missing"), "kind": "raw"}]},)))
     c["requested_dataset_ids"] = ["raw"]
     outcome = select_datasets(c)
-    assert outcome["status"] == "blocked" and "Request dataset preparation" in outcome["summary"]
+    assert outcome["status"] == "success" and outcome["updates"]["preparation_required"] == ["raw"]
     assert "global_issue" not in outcome["updates"]

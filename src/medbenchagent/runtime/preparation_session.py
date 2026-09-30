@@ -95,8 +95,7 @@ def _write(path: Path, value: Any) -> None:
 
 def session_paths(workspace: Path) -> dict[str, Path]:
     state = workspace / "state"
-    return {"state": state / "session_state.json", "task": state / "active_task.json",
-            "feedback": state / "last_feedback.json"}
+    return {"state": state / "session.json"}
 
 
 def load_session(workspace: Path) -> dict[str, Any]:

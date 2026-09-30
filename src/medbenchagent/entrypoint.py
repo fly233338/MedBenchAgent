@@ -23,7 +23,7 @@ def main() -> None:
     try:
         status = run_command(args)
     except (KeyboardInterrupt, EOFError):
-        print("\nInterrupted. Use resume or resume-intake for saved work.", file=sys.stderr)
+        print("\nInterrupted. Use resume for saved work.", file=sys.stderr)
         status = 130
     except (ValueError, OSError) as exc:
         print(f"Error: {exc}\nCheck the experiment/configuration and command arguments (--help).", file=sys.stderr)

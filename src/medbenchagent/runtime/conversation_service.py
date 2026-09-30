@@ -1,42 +1,22 @@
-"""Persistent conversation and serial run orchestration shared by CLI and TUI."""
+"""Persistent conversations and serial independent workflow runs."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from copy import deepcopy
 from pathlib import Path
 from typing import Callable, Iterator
-from uuid import uuid4
 
 from filelock import FileLock, Timeout
 
-from medbenchagent.data.dataset_catalog import load_dataset_catalog
 from medbenchagent.runtime import sessions
 from medbenchagent.runtime.graph_runner import GraphRunner, RunEvent
-from medbenchagent.runtime.preparation_intake import parse_answer, resolve_intake
-from medbenchagent.runtime.session_supervisor import SessionDecision, classify_requirement
-from medbenchagent.settings import active_settings, load_settings
+from medbenchagent.settings import load_settings
 
 
 @dataclass(frozen=True)
 class Submission:
     reply: str
     run_ids: tuple[str, ...]
-    question: dict | None = None
-
-
-def _preparation_reply(tasks: list, questions: list[dict]) -> str:
-    if questions:
-        return "I can prepare the dataset after the requested details are confirmed."
-    preparation = tasks[0]
-    reply = (f"Dataset {preparation.dataset_name} (ID: {preparation.dataset_id}) is confirmed"
-             f" for preparation")
-    if preparation.source_root:
-        reply += f" from {preparation.source_root}"
-    reply += "."
-    if len(tasks) > 1:
-        reply += " A benchmark build will be queued after preparation."
-    return reply
 
 
 class ConversationService:
@@ -54,138 +34,15 @@ class ConversationService:
         with self.session_lock:
             return sessions.load_experiment(self.name, root=self.root)
 
-    def pending_intake(self) -> dict | None:
-        record = self.record()
-        return next((item for item in record["submissions"] if item["status"] == "awaiting_input"), None)
-
-    def _accept(self, record: dict, submission: dict, tasks: list) -> Submission:
-        sessions.add_message(record, "user", submission["text"], root=self.root, save=False)
-        if submission.get("initial_reply"):
-            sessions.add_message(record, "assistant", submission["initial_reply"], root=self.root, save=False)
-        for question in submission.get("questions", []):
-            if question["answer"] is not None:
-                sessions.add_message(record, "assistant", question["prompt"], root=self.root, save=False)
-                sessions.add_message(record, "user", question["answer"], root=self.root, save=False)
-        sessions.add_message(record, "assistant", submission["reply"], root=self.root, save=False)
-        dependency = None
-        run_ids = []
-        for task in tasks:
-            run = sessions.queue_run(record, task.kind, submission["text"], task.dataset_id,
-                                     task.requested_dataset_ids, dependency, root=self.root, save=False,
-                                     dataset_name=task.dataset_name, source_root=task.source_root,
-                                     rebuild=task.rebuild)
-            dependency = run["id"]
-            run_ids.append(run["id"])
-        submission["status"] = "accepted"
-        if submission.get("questions"):
-            submission["question_batch_status"] = "completed"
-        submission["run_ids"] = run_ids
-        sessions.save_experiment(record, root=self.root)
-        return Submission(submission["reply"], tuple(run_ids))
-
     def submit(self, text: str) -> Submission:
         if not text.strip():
             raise ValueError("Enter a request")
-        with self.submit_lock:
-            with self.session_lock:
-                record = sessions.load_experiment(self.name, root=self.root)
-                if any(item["status"] == "awaiting_input" for item in record["submissions"]):
-                    raise ValueError("Answer or cancel the pending preparation questions first")
-                history = list(record["messages"])
-                submission = {"id": str(uuid4()), "text": text, "status": "processing",
-                              "reply": "", "questions": [], "current": 0, "run_ids": [], "error": ""}
-                record["submissions"].append(submission)
-                sessions.save_experiment(record, root=self.root)
-            try:
-                settings = load_settings(sessions.config_path(self.name, root=self.root))
-                with active_settings(settings):
-                    catalog = load_dataset_catalog()
-                    known = [{"dataset_id": item["dataset_id"], "name": item["name"]} for item in catalog]
-                    known.extend({"dataset_id": item["dataset_id"], "name": item["name"]}
-                                 for item in settings.dataset_sources)
-                    decision = classify_requirement(text, known_datasets=known, history=history)
-                    tasks, questions = resolve_intake(decision, catalog, settings.dataset_sources)
-            except Exception as exc:
-                with self.session_lock:
-                    record = sessions.load_experiment(self.name, root=self.root)
-                    failed = next(item for item in record["submissions"] if item["id"] == submission["id"])
-                    failed.update(status="failed", error=str(exc))
-                    sessions.save_experiment(record, root=self.root)
-                raise
-            with self.session_lock:
-                record = sessions.load_experiment(self.name, root=self.root)
-                current = next(item for item in record["submissions"] if item["id"] == submission["id"])
-                preparation = bool(decision.tasks and decision.tasks[0].kind == "prepare_dataset")
-                current["reply"] = _preparation_reply(tasks, questions) if preparation else decision.reply
-                if questions:
-                    current.update(status="awaiting_input", decision=decision.model_dump(),
-                                   questions=questions, question_batch_status="pending",
-                                   initial_reply=current["reply"])
-                    current["questions"][0]["status"] = "current"
-                    sessions.save_experiment(record, root=self.root)
-                    return Submission(current["reply"], (), questions[0])
-                return self._accept(record, current, tasks)
-
-    def answer_intake(self, text: str) -> Submission:
-        if not text.strip():
-            raise ValueError("Clarification answer cannot be empty")
-        with self.submit_lock:
-            with self.session_lock:
-                record = sessions.load_experiment(self.name, root=self.root)
-                current = next((item for item in record["submissions"] if item["status"] == "awaiting_input"), None)
-                if current is None:
-                    raise ValueError("No preparation question is pending")
-                submission_id = current["id"]
-                field = current["questions"][current["current"]]["field"]
-                decision = deepcopy(current["decision"])
-            try:
-                settings = load_settings(sessions.config_path(self.name, root=self.root))
-                with active_settings(settings):
-                    value = parse_answer(field, text)
-                    if field == "source_root" and not Path(value).expanduser().resolve().is_dir():
-                        raise ValueError(f"Raw directory is unavailable: {value}")
-                    if field == "dataset_id" and not value.strip():
-                        raise ValueError("Dataset ID cannot be empty")
-                    decision["tasks"][0][field] = value
-                    tasks, questions = resolve_intake(SessionDecision.model_validate(decision),
-                                                      load_dataset_catalog(), settings.dataset_sources)
-                    invalid = next((q for q in questions if q["field"] == field), None)
-                    if invalid:
-                        raise ValueError(invalid["prompt"])
-            except Exception as exc:
-                with self.session_lock:
-                    record = sessions.load_experiment(self.name, root=self.root)
-                    current = next(item for item in record["submissions"] if item["id"] == submission_id)
-                    current["error"] = str(exc)
-                    sessions.save_experiment(record, root=self.root)
-                raise
-            with self.session_lock:
-                record = sessions.load_experiment(self.name, root=self.root)
-                current = next(item for item in record["submissions"] if item["id"] == submission_id)
-                question = current["questions"][current["current"]]
-                question.update(answer=text, status="answered")
-                current["question_batch_status"] = "current"
-                current["decision"] = decision
-                current["current"] += 1
-                current["error"] = ""
-                # Recompute the remainder: resolving a name/ID can make an old source question unnecessary.
-                current["questions"] = current["questions"][:current["current"]] + questions
-                if questions:
-                    current["questions"][current["current"]]["status"] = "current"
-                    sessions.save_experiment(record, root=self.root)
-                    return Submission(current["reply"], (), current["questions"][current["current"]])
-                current["reply"] = _preparation_reply(tasks, [])
-                return self._accept(record, current, tasks)
-
-    def cancel_intake(self) -> None:
         with self.submit_lock, self.session_lock:
             record = sessions.load_experiment(self.name, root=self.root)
-            current = next((item for item in record["submissions"] if item["status"] == "awaiting_input"), None)
-            if current is None:
-                raise ValueError("No preparation question is pending")
-            current["status"] = "cancelled"
-            current["question_batch_status"] = "cancelled"
+            run = sessions.queue_run(record, text.strip(), root=self.root, save=False)
+            sessions.add_message(record, "user", text.strip(), run_id=run["id"], root=self.root, save=False)
             sessions.save_experiment(record, root=self.root)
+            return Submission("", (run["id"],))
 
     def answer(self, run_id: str, text: str) -> None:
         if not text.strip():
@@ -204,40 +61,23 @@ class ConversationService:
             sessions.save_experiment(record, root=self.root)
 
     def reconcile(self) -> dict:
-        """Repair stale running entries after a process exit; an active owner keeps its lock."""
-        record = None
-        try:
-            with self.submit_lock.acquire(timeout=0):
-                with self.session_lock:
-                    record = sessions.load_experiment(self.name, root=self.root)
-                    stale = [item for item in record["submissions"] if item["status"] == "processing"]
-                    for item in stale:
-                        item.update(status="failed", error="Submission was interrupted; submit it again")
-                    if stale:
-                        sessions.save_experiment(record, root=self.root)
-        except Timeout:
-            record = self.record()
-        if not any(run["status"] == "running" for run in record["runs"]):
-            return record
+        """Repair stale running entries after a process exit."""
         try:
             with self.run_lock.acquire(timeout=0):
                 with self.session_lock:
                     record = sessions.load_experiment(self.name, root=self.root)
-                    stale_runs = [run for run in record["runs"] if run["status"] == "running"]
+                    stale_runs = [item for item in record["runs"] if item["status"] == "running"]
+                    if not stale_runs:
+                        return record
                     inspected = self.runner.inspect_many(stale_runs)
-                    for run in record["runs"]:
-                        if run["status"] != "running":
-                            continue
+                    for run in stale_runs:
                         changes = inspected[run["id"]]
                         if run.get("summary") and changes.get("status") == "interrupted":
                             changes.pop("summary", None)
                         updated = sessions.update_run(record, run["id"], root=self.root, **changes)
                         if updated["status"] in {"complete", "blocked", "failed"}:
-                            reply = f"{updated['kind']}: {updated['status']}. {updated.get('summary', '')}"
-                            sessions.add_message(record, "assistant", reply, run_id=run["id"],
-                                                 root=self.root)
-                            if updated["status"] in {"blocked", "failed"}:
-                                sessions.block_dependents(record, run["id"], root=self.root)
+                            reply = f"Run {updated['status']}. {updated.get('summary', '')}".strip()
+                            sessions.add_message(record, "assistant", reply, run_id=run["id"], root=self.root)
                     return record
         except Timeout:
             return self.record()
@@ -276,8 +116,7 @@ class ConversationService:
                         self._apply(event)
                         yield event
                         if event.kind == "needs_input" or (
-                            event.kind == "error" and event.payload.get("status") == "interrupted"
-                        ):
+                                event.kind == "error" and event.payload.get("status") == "interrupted"):
                             stopped = True
                     if stopped:
                         return
@@ -301,7 +140,6 @@ class ConversationService:
                                              stop_requested=stop_requested):
                 self._apply(event)
                 yield event
-        # Release the run lock before scheduling dependent or independent queued work.
         yield from self.drive(stop_requested=stop_requested)
 
     def _apply(self, event: RunEvent) -> None:
@@ -311,8 +149,8 @@ class ConversationService:
             record = sessions.load_experiment(self.name, root=self.root)
             run = next(item for item in record["runs"] if item["id"] == event.run_session_id)
             changes = {key: value for key, value in event.payload.items() if value is not None
-                       if key in {"run_id", "run_directory", "runs_root", "effective_config_path",
-                                  "catalog_snapshot_path", "source_decision_path", "selected_assets",
+                       if key in {"run_id", "run_directory", "runs_root", "construction_events_path",
+                                  "effective_config_path", "catalog_snapshot_path", "selected_assets",
                                   "summary", "status"}}
             if event.kind == "needs_input":
                 changes["status"] = "waiting_input"
@@ -322,16 +160,12 @@ class ConversationService:
             if event.kind == "needs_input":
                 question = event.payload["question"]
                 if run.get("pending_question") != question or run.get("pending_answer"):
-                    sessions.add_message(record, "assistant", question, run_id=run["id"],
-                                         root=self.root, save=False)
+                    sessions.add_message(record, "assistant", question, run_id=run["id"], root=self.root, save=False)
                 run["pending_question"] = question
                 run["pending_answer"] = None
             if event.kind in {"finished", "error"}:
                 run["pending_question"] = None
                 run["pending_answer"] = None
-                reply = f"{run['kind']}: {run['status']}. {run.get('summary', '')}"
-                sessions.add_message(record, "assistant", reply, run_id=run["id"],
-                                     root=self.root, save=False)
-                if run["status"] in {"blocked", "failed"}:
-                    sessions.block_dependents(record, run["id"], root=self.root)
+                reply = f"Run {run['status']}. {run.get('summary', '')}".strip()
+                sessions.add_message(record, "assistant", reply, run_id=run["id"], root=self.root, save=False)
             sessions.save_experiment(record, root=self.root)

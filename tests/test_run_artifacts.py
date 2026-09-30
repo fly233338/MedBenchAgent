@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from medbenchagent.runtime.run_artifacts import initialize_run, verify_catalog_snapshot
+from medbenchagent.runtime.operation_log import append as append_operation, read as read_operation
 from medbenchagent.settings import get_settings
 from test_dataset_cards import prepared_dataset
 
@@ -14,6 +15,9 @@ def test_initialize_run_prepares_uuid_directory_and_event_file(tmp_path: Path) -
 
     assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", run["run_id"])
     assert Path(run["construction_events_path"]).is_file()
+    assert Path(run["construction_events_path"]).parent.name == "control"
+    assert (Path(run["run_directory"]) / "inputs").is_dir()
+    assert (Path(run["run_directory"]) / "control").is_dir()
     assert Path(run["run_directory"]).is_dir()
     assert "working_blueprint_path" not in run
     event = json.loads(Path(run["construction_events_path"]).read_text(encoding="utf-8"))
@@ -41,6 +45,14 @@ def test_run_freezes_blueprint_materials_and_catalog(tmp_path):
     template.write_text("changed", encoding="utf-8")
     assert Path(paths["blueprint_template"]).read_text(encoding="utf-8") == '{"concepts": {}}'
     assert (Path(paths["materials_root"]) / "source.pdf").read_bytes() == b"reference content"
+
+
+def test_operation_ledger_replays_exact_receipts(tmp_path):
+    path = tmp_path / "run" / "control" / "operations.jsonl"
+    value = {"id": "agents/SupervisorAgent:1:abc", "tool": "end",
+             "arguments": {}, "dependencies": {}, "result": {"status": "complete"}}
+    append_operation(path, value)
+    assert read_operation(path, value["id"]) == value
 
 
 def test_run_freezes_candidate_card_bytes_at_start(tmp_path, monkeypatch):

@@ -83,7 +83,7 @@ def test_required_field_clarification_resumes_without_model_routing(tmp_path, mo
                           checkpointer=MemorySaver())
     c = {"run_id": "test", "run_directory": str(tmp_path), "operation_directory": str(tmp_path / "ops"),
          "construction_events_path": str(tmp_path / "events"), "user_requirement": "Build",
-         "run_intent": {"intent": "build_benchmark", "prepare_dataset_ids": []}}
+         "prepared_entries": {}}
     config = {"configurable": {"thread_id": "required"}}
     first = graph.invoke({"context": c}, config)
     assert first["__interrupt__"]
@@ -172,8 +172,7 @@ def test_specify_defaults_only_absent_count(tmp_path, monkeypatch, value, expect
 def test_missing_language_gates_repeated_specify_until_answer(tmp_path, monkeypatch):
     from medbenchagent.workflow.graph import specify, available_stages
     monkeypatch.setattr(benchmark_info, "complete_json", lambda *a: grounded({"clinical_scope": "Disease", "language": None}))
-    c = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "op"), "user_requirement": "Build",
-         "run_intent": {"intent": "build_benchmark", "prepare_dataset_ids": []}}
+    c = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "op"), "user_requirement": "Build"}
     c.update(specify(c)["updates"])
     assert c["brief_missing_fields"] == ["language"]
     tools = available_stages(c)

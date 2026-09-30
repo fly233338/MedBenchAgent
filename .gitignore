@@ -24,6 +24,8 @@ htmlcov/
 benchmarks/
 .runtime/
 experiments/
+.runtime-v2/
+experiments-v2/
 .langgraph_api/
 
 # IDE and OS files

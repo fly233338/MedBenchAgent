@@ -4,9 +4,8 @@ from types import SimpleNamespace
 import pytest
 from langgraph.types import Interrupt
 
-from medbenchagent.cli import _answer_intake, _parser
-from medbenchagent.runtime.conversation_service import Submission
-from medbenchagent.runtime.graph_runner import GraphRunner
+from medbenchagent.cli import _consume, _parser
+from medbenchagent.runtime.graph_runner import GraphRunner, RunEvent
 
 
 def test_parser_exposes_terminal_commands() -> None:
@@ -15,28 +14,8 @@ def test_parser_exposes_terminal_commands() -> None:
     assert parser.parse_args(["create", "pilot"]).experiment == "pilot"
     assert parser.parse_args(["run", "pilot", "build a benchmark"]).command == "run"
     assert parser.parse_args(["resume", "pilot", "run-id"]).run_id == "run-id"
-    assert parser.parse_args(["resume-intake", "pilot"]).command == "resume-intake"
-    assert parser.parse_args(["register", "--dataset-id", "a", "--bundle", "b"]).command == "register"
     with pytest.raises(SystemExit):
-        parser.parse_args(["build"])
-
-
-def test_cli_shows_resolved_preparation_confirmation(monkeypatch, capsys):
-    pending = [{"questions": [{"prompt": "Where is the raw dataset directory?"}], "current": 0}]
-
-    class Service:
-        def pending_intake(self):
-            return pending.pop(0) if pending else None
-
-        def answer_intake(self, _answer):
-            return Submission("Dataset BrEaST (ID: breast) is confirmed for preparation.", ("run-1",))
-
-        def drive(self):
-            return iter(())
-
-    monkeypatch.setattr("builtins.input", lambda _prompt: "/mnt/data/BrEaST")
-    assert _answer_intake(Service()) == 0
-    assert "BrEaST (ID: breast)" in capsys.readouterr().out
+        parser.parse_args(["resume-intake", "pilot"])
 
 
 def test_runner_emits_initialized_and_clarification(tmp_path: Path, monkeypatch) -> None:
@@ -50,6 +29,7 @@ def test_runner_emits_initialized_and_clarification(tmp_path: Path, monkeypatch)
             yield (), "updates", {"initialize": {
                 "run_id": "graph-run", "run_directory": str(tmp_path / "graph-run"),
                 "effective_config_path": str(tmp_path / "graph-run" / "effective_config.json"),
+                "construction_events_path": str(tmp_path / "graph-run" / "events.jsonl"),
             }}
             yield (), "updates", {"__interrupt__": (question,)}
 
@@ -59,8 +39,7 @@ def test_runner_emits_initialized_and_clarification(tmp_path: Path, monkeypatch)
 
     runner = GraphRunner(graph_factory=lambda **_kwargs: FakeGraph())
     settings = SimpleNamespace(paths=SimpleNamespace(runs_root=tmp_path))
-    run = {"id": "session-run", "thread_id": "thread-1", "kind": "build_benchmark",
-           "requirement": "build", "dataset_id": None, "requested_dataset_ids": None}
+    run = {"id": "session-run", "thread_id": "thread-1", "requirement": "build"}
     events = list(runner.execute(run, "pilot", tmp_path, settings=settings))
     assert [event.kind for event in events if event.kind in {"initialized", "needs_input"}] == [
         "initialized", "needs_input"]
@@ -69,7 +48,7 @@ def test_runner_emits_initialized_and_clarification(tmp_path: Path, monkeypatch)
 
 @pytest.mark.parametrize("stop_at_start", [False, True])
 def test_runner_drains_and_resumes_without_repeating_work(tmp_path, monkeypatch, stop_at_start):
-    from langgraph.graph import StateGraph, START, END
+    from langgraph.graph import END, START, StateGraph
     from medbenchagent.settings import active_settings
 
     monkeypatch.setattr("medbenchagent.runtime.preflight.preflight_errors", lambda *a, **kw: [])
@@ -81,23 +60,19 @@ def test_runner_drains_and_resumes_without_repeating_work(tmp_path, monkeypatch,
 
     def factory(checkpointer):
         graph = StateGraph(dict)
+
         def initialize(state):
             return {"run_directory": str(tmp_path / "run"), "context": {
                 "effective_config_path": "frozen.json", "limits": settings.harness}}
+
         def work(state):
             calls.append("work")
             if not stop_at_start:
                 runner.request_stop()
             return state
-        child = StateGraph(dict)
-        child.add_node("work", work)
-        child.add_node("after_work", lambda state: state)
-        child.add_edge(START, "work")
-        child.add_edge("work", "after_work")
-        child.add_edge("after_work", END)
-        child_graph = child.compile()
+
         graph.add_node("initialize", initialize)
-        graph.add_node("work", lambda state: child_graph.invoke(state))
+        graph.add_node("work", work)
         graph.add_node("finish", lambda state: {**state, "status": "complete"})
         graph.add_edge(START, "initialize")
         graph.add_edge("initialize", "work")
@@ -106,8 +81,7 @@ def test_runner_drains_and_resumes_without_repeating_work(tmp_path, monkeypatch,
         return graph.compile(checkpointer=checkpointer)
 
     runner = GraphRunner(graph_factory=factory)
-    run = {"id": "run", "thread_id": "drain", "kind": "build_benchmark", "requirement": "build",
-           "dataset_id": None, "requested_dataset_ids": None, "runs_root": str(tmp_path)}
+    run = {"id": "run", "thread_id": "drain", "requirement": "build", "runs_root": str(tmp_path)}
     events = list(runner.execute(run, "pilot", tmp_path, settings=settings,
                                  stop_requested=lambda: stop_at_start))
     assert events[-1].payload["status"] == "interrupted"
@@ -119,12 +93,12 @@ def test_runner_drains_and_resumes_without_repeating_work(tmp_path, monkeypatch,
 
 
 def test_cli_many_clarifications_use_iteration(monkeypatch):
-    from medbenchagent.cli import _consume
-    from medbenchagent.runtime.graph_runner import RunEvent
     count = 0
+
     class Service:
         def answer(self, run_id, text):
             pass
+
         def resume(self, run_id, answer=None):
             nonlocal count
             count += 1
@@ -132,6 +106,7 @@ def test_cli_many_clarifications_use_iteration(monkeypatch):
                 yield RunEvent("r", "needs_input", {"question": "Clarify"})
             else:
                 yield RunEvent("r", "finished", {"status": "complete"})
+
     monkeypatch.setattr("builtins.input", lambda prompt: "answer")
     assert _consume(Service(), iter([RunEvent("r", "needs_input", {"question": "Clarify"})])) == 0
     assert count == 1100

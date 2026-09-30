@@ -40,22 +40,27 @@ def test_supervisor_replaces_fixed_role_chain():
     assert set(graph.nodes) == {"__start__", "initialize", "supervisor", "__end__"}
 
 
-def test_intent_gates_preparation_and_benchmark_stages(tmp_path, monkeypatch):
-    from medbenchagent.workflow.graph import set_intent, available_stages
-    from medbenchagent.runtime.dependencies import publish
-    monkeypatch.setattr("medbenchagent.data.dataset_catalog.load_dataset_catalog", lambda: [{"dataset_id": "new"}])
-    context = {"run_directory": str(tmp_path)}
-    assert available_stages(context) == {"set_intent", "ask_user", "list_datasets", "inspect_dataset_status"}
-    context.update(set_intent(context, intent="prepare_dataset", prepare_dataset_ids=["new"])["updates"])
-    assert "prepare_data" in available_stages(context)
-    assert "specify" not in available_stages(context)
-    publish(context, "dataset/new/Dataset", {}, ())
+def test_supervisor_exposes_preparation_and_construction_tools(tmp_path):
+    from medbenchagent.workflow.graph import available_stages
+    context = {"run_directory": str(tmp_path), "user_requirement": "prepare and build"}
+    tools = available_stages(context)
+    assert {"prepare_data", "specify", "end", "ask_user"} <= tools
     context["prepared_entries"] = {"new": {}}
     assert "finish" in available_stages(context)
-    build_context = {"run_directory": str(tmp_path)}
-    build_context.update(set_intent(build_context, intent="build_benchmark", prepare_dataset_ids=[])["updates"])
-    assert "specify" in available_stages(build_context)
-    assert "prepare_data" not in available_stages(build_context)
+
+
+def test_end_completes_out_of_scope_request(tmp_path, harness_model):
+    actions = iter([{"tool": "end", "arguments": {}, "reason": "Outside scope"}])
+    harness_model(lambda *args: next(actions))
+    from medbenchagent.runtime.harness import compile_agent
+    graph = compile_agent("SupervisorAgent", "Supervisor", {"end": lambda _context: result(
+        "complete", "This request is outside MedBenchAgent's scope")}, lambda _context: {},
+                         lambda _context: result("blocked", "finish unavailable"),
+                         available_tools=lambda _context: {"end"})
+    output = graph.invoke({"context": {"run_id": "end", "run_directory": str(tmp_path),
+                                        "operation_directory": str(tmp_path / "agents"),
+                                        "construction_events_path": str(tmp_path / "events")}})
+    assert output["result"]["status"] == "complete"
 
 
 def test_harness_selects_tools_and_finishes_without_confirmation(tmp_path, monkeypatch, harness_model):
@@ -216,8 +221,7 @@ def test_pending_ids_and_execution_guards_follow_invalidations(tmp_path):
     from medbenchagent.workflow.graph import pending_datasets, require_pending, available_stages
     c = {"run_directory": str(tmp_path), "selected_dataset_ids": ["a", "b", "zero"],
          "allocation_path": str(tmp_path / "allocation.json"), "brief_ready": True,
-         "brief_requirement": "Build", "user_requirement": "Build",
-         "run_intent": {"intent": "build_benchmark", "prepare_dataset_ids": []}}
+         "brief_requirement": "Build", "user_requirement": "Build"}
     publish(c, "Requirement", {"revision": 1}, ())
     publish(c, "DatasetSelection", {}, ("Requirement",))
     publish(c, "dataset/a/Plan", {}, ("Requirement",))

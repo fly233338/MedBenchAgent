@@ -55,23 +55,6 @@ class DelegationArguments(NoArguments):
     delegation: Delegation = Field(default_factory=Delegation)
 
 
-class RunIntent(NoArguments):
-    intent: Literal["prepare_dataset", "build_benchmark"]
-    prepare_dataset_ids: list[DatasetId] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_targets(self):
-        if len(self.prepare_dataset_ids) != len(set(self.prepare_dataset_ids)):
-            raise ValueError("Preparation targets must be unique")
-        if self.intent == "prepare_dataset" and not self.prepare_dataset_ids:
-            raise ValueError("Preparation intent requires dataset IDs; clarify missing IDs")
-        if self.intent == "build_benchmark" and self.prepare_dataset_ids:
-            raise ValueError("Preparation and building require separate runs")
-        return self
-
-
-
-
 class PrepareDataArguments(FeedbackArguments):
     dataset_id: DatasetId
     mode: Literal["reuse_or_prepare", "rebuild"] = "reuse_or_prepare"

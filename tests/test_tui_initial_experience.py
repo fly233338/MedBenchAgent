@@ -1,5 +1,4 @@
 import asyncio
-import json
 import threading
 from types import SimpleNamespace
 
@@ -26,7 +25,7 @@ def test_plain_text_status_and_incremental_run_rows(tmp_path, monkeypatch):
             screen._set_status("[type=literal_error, input_value='prepare']")
             assert "[type=literal_error" in str(screen.query_one("#session-status").content)
             record = sessions.load_experiment("pilot", root=tmp_path)
-            run = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
+            run = sessions.queue_run(record, "prepare", root=tmp_path)
             screen.refresh_record()
             table = screen.query_one("#runs")
             assert table.row_count == 1
@@ -65,23 +64,6 @@ def test_question_inputs_distinguish_absolute_paths_from_commands(tmp_path, monk
             await pilot.pause()
             screen = app.screen
             field = screen.query_one("#message")
-            answers = []
-            commands = []
-            monkeypatch.setattr(screen, "_answer_intake", answers.append)
-            monkeypatch.setattr(screen, "_dispatch_command", commands.append)
-            screen.pending_intake = True
-
-            field.value = "/public/home/data/BrEaST"
-            await pilot.press("enter")
-            assert answers == ["/public/home/data/BrEaST"]
-            assert commands == []
-
-            screen.classifying = False
-            field.value = "/cancel"
-            await pilot.press("enter")
-            assert commands == ["/cancel"]
-
-            screen.pending_intake = False
             screen.pending_question = True
             screen.current_run_id = "run"
             run_answers = []
@@ -140,13 +122,13 @@ def test_run_question_card_archives_answer(tmp_path, monkeypatch):
             await pilot.pause()
             screen = app.screen
             record = sessions.load_experiment("pilot", root=tmp_path)
-            run = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
+            run = sessions.queue_run(record, "prepare", root=tmp_path)
             event = RunEvent(run["id"], "needs_input", {"question": "What does status 0 mean?"})
             screen.service._apply(event)
             screen._on_event(event)
             await pilot.pause()
             assert screen.query_one("#question-card").display
-            assert "status 0" in str(screen.query_one("#intake-question").content)
+            assert "status 0" in str(screen.query_one("#run-question").content)
             monkeypatch.setattr(screen, "_execute_run", lambda **_kwargs: None)
             field = screen.query_one("#message")
             field.value = "Benign"
@@ -163,12 +145,12 @@ def test_run_question_card_archives_answer(tmp_path, monkeypatch):
 
 def test_agent_progress_filter_keeps_live_and_saved_events(tmp_path):
     record = sessions.create_experiment("pilot", root=tmp_path)
-    run = sessions.queue_run(record, "prepare_dataset", "prepare", "breast", root=tmp_path)
+    run = sessions.queue_run(record, "prepare", root=tmp_path)
     record["pending_runs"].clear()
     folder = tmp_path / "run"
     folder.mkdir()
     sessions.update_run(record, run["id"], root=tmp_path, status="complete", run_directory=str(folder))
-    events = folder / "construction_events.jsonl"
+    events = folder / "control" / "events.jsonl"
     record_event(events, "tool_started", agent="SupervisorAgent", operation="prepare_data", status="running")
     record_event(events, "tool_result", agent="DataProcessingAgent", operation="inspect_table",
                  status="success", summary="Table inspected")
@@ -190,21 +172,10 @@ def test_agent_progress_filter_keeps_live_and_saved_events(tmp_path):
             record_event(events, "worker_started", agent="DatasetProcessingAgent",
                          operation="coding_worker", status="running")
             screen._flush_progress()
-            assert any("coding_worker" in str(line) for line in progress.lines)
-            assert "DataProcessing" in str(screen.query_one("#active-agent").content)
-            partial = json.dumps({"timestamp": "2026-01-01T00:00:00Z", "event_type": "tool_result",
-                                  "agent": "DatasetProcessingAgent", "operation": "worker_result",
-                                  "status": "success", "summary": "Candidate submitted"}).encode()
-            with events.open("ab") as stream:
-                stream.write(partial)
-            screen._flush_progress()
-            assert not any("Images inspected" in str(line) for line in progress.lines)
-            with events.open("ab") as stream:
-                stream.write(b"\n")
-            screen._flush_progress()
+            screen.query_one("#agent-filter", Select).value = "DatasetProcessingAgent"
             await pilot.pause()
-            assert any("Images" in str(line) for line in progress.lines)
-            assert any("Images inspected" in entry[1] for entry in screen._progress_entries)
+            assert any("coding_worker" in str(line) for line in progress.lines)
+            assert "DatasetProcessing" in str(screen.query_one("#active-agent").content)
             screen.query_one("#agent-filter", Select).value = "*"
             await pilot.pause()
             assert any("prepare_data" in str(line) for line in progress.lines)

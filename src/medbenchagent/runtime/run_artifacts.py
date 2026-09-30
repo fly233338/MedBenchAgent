@@ -46,7 +46,9 @@ def initialize_run(
     run_directory = Path(runs_root) if runs_root is not None else active_settings.paths.runs_root
     run_directory = run_directory / version_directory_name(identifier)
     run_directory.mkdir(parents=True, exist_ok=False)
-    events_path = run_directory / "construction_events.jsonl"
+    control = run_directory / "control"
+    control.mkdir(parents=True, exist_ok=True)
+    events_path = control / "events.jsonl"
     events_path.touch(exist_ok=False)
     record_event(
         events_path,
@@ -56,7 +58,7 @@ def initialize_run(
         component="orchestrator",
         status="started",
     )
-    effective_config_path = run_directory / "effective_config.json"
+    effective_config_path = control / "effective_config.json"
     snapshot = active_settings.snapshot(graph_overrides)
     if execution_runtime is not None:
         snapshot["execution_runtime"] = execution_runtime

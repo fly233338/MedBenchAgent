@@ -30,7 +30,7 @@ def _write_session_state(workspace: Path, request: dict, *, status: str, summary
              "required_outputs": request.get("required_outputs", [])}
     state_dir = workspace / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "session_state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    (state_dir / "session.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def replay_source_script(request: dict, workspace: Path) -> str:
@@ -123,7 +123,7 @@ def main(request_path: str, result_path: str) -> None:
 You are the long-lived MedBench preparation agent. Complete exploration, evidence capture, mapping,
 adapter implementation, execution, reconciliation, and repair in this same conversation. Use the workspace
 as durable memory and keep verified facts, inferences, user decisions, unresolved questions, validator feedback,
-and artifact paths separate. Read session_state.json and workspace reports before acting and do not repeat
+and artifact paths separate. Read state/session.json and workspace reports before acting and do not repeat
 inspections whose fingerprint is unchanged. Keep large results in files and pass bounded excerpts only. Ask one concrete question
 when source evidence cannot prove a semantic choice. Never claim publication or medical correctness; deterministic
 MedBench validation controls acceptance. Repeated actions that produce no new information must stop with a blocker.

@@ -379,9 +379,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         if isinstance(override.get("llm"), dict):
             override["llm"].pop("trace_name", None)
         _merge(values, override)
-    # Redirect the old default saved in existing experiment TOMLs.
-    if str(values["paths"]["runs_root"]).replace("\\", "/").rstrip("/") == "benchmarks/runs":
-        values["paths"]["runs_root"] = ".runtime"
     env_keys: list[str] = []
     overrides = {target: (name, os.environ[name]) for name, target in _ENVIRONMENT_OVERRIDES.items()
                  if os.getenv(name)}

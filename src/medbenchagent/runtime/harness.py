@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -15,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from medbenchagent.runtime.construction import event_context, record_event
 from medbenchagent.runtime.llm import StructuredOutputError, complete_validated_json
-from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.runtime.operation_log import append as append_operation, path_for as operation_log_path, read as read_operation
 from medbenchagent.runtime.tool_contracts import AskUserArguments, NoArguments
 from medbenchagent.runtime.clarifications import (new_issue, answer_payload, record_answer,
                                                   resolve_semantic_answer, validate_ask_user)
@@ -224,11 +225,13 @@ def compile_agent(
                 "result": result("blocked", "Repeated action exceeded the rework budget"),
                 "step": step,
             }
-        operation = Path(context["operation_directory"]) / name / f"{step}.json"
+        run_directory = Path(context.get("run_directory", context["operation_directory"])).resolve()
+        scope_path = Path(context["operation_directory"]).resolve()
+        try:
+            scope = str(scope_path.relative_to(run_directory)).replace("\\", "/")
+        except ValueError:
+            scope = scope_path.name
         dependencies = dict(context.get("artifact_versions", {}))
-        record_event(context["construction_events_path"], "tool_started",
-                     run_id=context["run_id"], agent=name, dataset_id=context.get("dataset_scope"),
-                     source_id=context.get("source_scope"), operation=tool_name, status="running")
         try:
             arguments = schemas[tool_name].model_validate(arguments).model_dump()
             parameter_error = None
@@ -237,6 +240,12 @@ def compile_agent(
                 {"field": ".".join(map(str, error["loc"])), "message": error["msg"]}
                 for error in exc.errors(include_url=False, include_input=False)
             ]
+        operation_signature = json.dumps([tool_name, arguments, dependencies], sort_keys=True, ensure_ascii=False)
+        operation_id = f"{scope}:{step}:{hashlib.sha256(operation_signature.encode()).hexdigest()[:12]}"
+        operation = Path(context["operation_directory"]) / "operations" / f"{step}.json"
+        record_event(context["construction_events_path"], "tool_started",
+                     run_id=context["run_id"], agent=name, dataset_id=context.get("dataset_scope"),
+                     source_id=context.get("source_scope"), operation=tool_name, status="running")
         if parameter_error is not None:
             outcome = result("failed", "Invalid tool arguments")
             outcome["errors"] = parameter_error
@@ -244,134 +253,133 @@ def compile_agent(
             outcome = result("failed", "Tool is not ready for the current state")
         elif context.get("global_issue") and tool_name not in {"ask_user", "resolve_clarification", "list_evidence", "read_evidence"}:
             outcome = result("failed", "Resolve the pending clarification before continuing")
-        elif operation.is_file():
-            saved = json.loads(operation.read_text(encoding="utf-8"))
-            if (
-                saved["tool"] != tool_name
-                or saved["arguments"] != arguments
-                or saved["dependencies"] != dependencies
-            ):
-                raise ValueError(
-                    "Operation arguments or dependencies changed; start a new operation"
-                )
-            outcome = saved["result"]
-        elif tool_name == "ask_user":
-            issue = None
-            try:
-                question = arguments["question"]
-                reference = arguments["reference"] or "clarification"
-                issue = context.get("global_issue") if name == "SupervisorAgent" else context.get("issues", {}).get(arguments["issue_id"]) if arguments["issue_id"] else None
-                if issue and name != "SupervisorAgent" and issue["role"] != name:
-                    raise ValueError("Cannot answer another agent's issue")
-                if issue and arguments["issue_id"] != issue["issue_id"]:
-                    outcome = result("failed", "ask_user must reference the pending issue_id")
-                    issue = None
-                    invalid_issue = True
-                else:
-                    invalid_issue = bool(arguments["issue_id"] and not issue)
-                issue = issue or new_issue(name, context, reference, question, subject_scope=arguments["subject_scope"],
-                                           source_ids=arguments["source_ids"], image_ids=arguments["image_ids"])
-                decision_key = issue["issue_id"]
-                issue = context.get("issues", {}).get(decision_key, issue)
-                decisions = dict(context.get("decisions", {}))
-                if invalid_issue:
-                    outcome = result("failed", "ask_user must reference the pending issue_id, or omit it for a new question")
-                elif issue["status"] == "resolved":
-                    outcome = result("success", "Question already resolved", global_issue=None,
-                                     decisions={**decisions, decision_key: issue["answer_reference"]}, clarification=issue)
-                elif arguments["scope"] == "global" and name != "SupervisorAgent":
-                    outcome = result(
-                        "needs_input",
-                        question,
-                        unresolved_questions=[question],
-                        global_issue=issue,
-                        issues={**context.get("issues", {}), decision_key: issue},
-                    )
-                else:
-                    answer = answer_payload(context, issue)["text"] if issue.get("answer_reference") else None
-                    followup = issue["status"] == "answered" and question != issue["question"]
-                    if followup:
-                        answer = None
-                    if answer is None:
-                        answer = interrupt(
-                            {
-                                "kind": "clarification",
-                                "role": name,
-                                "question": question if followup else issue["question"],
-                                "reference": issue["reference"],
-                                "issue_id": decision_key,
-                            }
-                        )
-                    if not isinstance(answer, str) or not answer.strip():
-                        outcome = result("failed", "A natural-language answer is required")
-                    else:
-                        if answer is not None and (followup or not issue.get("answer_reference")):
-                            issue = record_answer(context, issue, answer, question=question if followup else None)
-                        if followup:
-                            issue = {**issue, "question": question}
-                        semantic_error = None
-                        if name != "SupervisorAgent":
-                            try:
-                                with event_context(construction_events_path=context["construction_events_path"], run_id=context["run_id"],
-                                                   agent=name, dataset_id=context.get("dataset_scope"), source_id=context.get("source_scope"), operation="resolve_display"):
-                                    issue = resolve_semantic_answer(context, issue)
-                                decisions[decision_key] = issue["answer_reference"]
-                            except ValueError as exc:
-                                semantic_error = str(exc)
-                        updates = {
-                            "decisions": decisions,
-                            "clarification": issue,
-                            "issues": {**context.get("issues", {}), decision_key: issue},
-                            "global_issue": issue if name == "SupervisorAgent" else None,
-                        }
-                        if name == "SupervisorAgent" and issue.get("purpose") == "benchmark_fields":
-                            from medbenchagent.runtime.clarifications import resolve_clarification
-                            completion = resolve_clarification(
-                                {**context, **updates, "operation_directory": str(operation.with_suffix(""))},
-                                issue_id=decision_key, kind="requirement_change",
-                            )
-                            updates.update(completion["updates"])
-                        outcome = result(
-                            "failed" if semantic_error else "success",
-                            "User clarification received" if not semantic_error else semantic_error,
-                            **updates,
-                        )
-            except ValueError as exc:
-                saved_issue = {"issues": {**context.get("issues", {}), issue["issue_id"]: issue}} if issue and issue.get("answer_reference") else {}
-                outcome = result("failed", str(exc), **saved_issue)
-
         else:
-            tool_context = dict(context, operation_directory=str(operation.with_suffix("")))
-            with event_context(
-                construction_events_path=context["construction_events_path"],
-                run_id=context["run_id"],
-                agent=name,
-                dataset_id=context.get("dataset_scope"),
-                source_id=context.get("source_scope"),
-                operation=tool_name,
-            ):
-                try:
-                    function = finish if tool_name == "finish" else tools[tool_name]
-                    tool = StructuredTool.from_function(
-                        func=lambda **kwargs: function(tool_context, **schemas[tool_name].model_validate(kwargs).model_dump()),
-                        name=tool_name,
-                        description=catalog[tool_name]["description"],
-                        args_schema=schemas[tool_name],
+            saved = read_operation(operation_log_path(run_directory), operation_id)
+            if saved is not None:
+                if (
+                    saved["tool"] != tool_name
+                    or saved["arguments"] != arguments
+                    or saved["dependencies"] != dependencies
+                ):
+                    raise ValueError(
+                        "Operation arguments or dependencies changed; start a new operation"
                     )
-                    outcome = tool.invoke(arguments)
+                outcome = saved["result"]
+            elif tool_name == "ask_user":
+                issue = None
+                try:
+                    question = arguments["question"]
+                    reference = arguments["reference"] or "clarification"
+                    issue = context.get("global_issue") if name == "SupervisorAgent" else context.get("issues", {}).get(arguments["issue_id"]) if arguments["issue_id"] else None
+                    if issue and name != "SupervisorAgent" and issue["role"] != name:
+                        raise ValueError("Cannot answer another agent's issue")
+                    if issue and arguments["issue_id"] != issue["issue_id"]:
+                        outcome = result("failed", "ask_user must reference the pending issue_id")
+                        issue = None
+                        invalid_issue = True
+                    else:
+                        invalid_issue = bool(arguments["issue_id"] and not issue)
+                    issue = issue or new_issue(name, context, reference, question, subject_scope=arguments["subject_scope"],
+                                               source_ids=arguments["source_ids"], image_ids=arguments["image_ids"])
+                    decision_key = issue["issue_id"]
+                    issue = context.get("issues", {}).get(decision_key, issue)
+                    decisions = dict(context.get("decisions", {}))
+                    if invalid_issue:
+                        outcome = result("failed", "ask_user must reference the pending issue_id, or omit it for a new question")
+                    elif issue["status"] == "resolved":
+                        outcome = result("success", "Question already resolved", global_issue=None,
+                                         decisions={**decisions, decision_key: issue["answer_reference"]}, clarification=issue)
+                    elif arguments["scope"] == "global" and name != "SupervisorAgent":
+                        outcome = result(
+                            "needs_input",
+                            question,
+                            unresolved_questions=[question],
+                            global_issue=issue,
+                            issues={**context.get("issues", {}), decision_key: issue},
+                        )
+                    else:
+                        answer = answer_payload(context, issue)["text"] if issue.get("answer_reference") else None
+                        followup = issue["status"] == "answered" and question != issue["question"]
+                        if followup:
+                            answer = None
+                        if answer is None:
+                            answer = interrupt(
+                                {
+                                    "kind": "clarification",
+                                    "role": name,
+                                    "question": question if followup else issue["question"],
+                                    "reference": issue["reference"],
+                                    "issue_id": decision_key,
+                                }
+                            )
+                        if not isinstance(answer, str) or not answer.strip():
+                            outcome = result("failed", "A natural-language answer is required")
+                        else:
+                            if answer is not None and (followup or not issue.get("answer_reference")):
+                                issue = record_answer(context, issue, answer, question=question if followup else None)
+                            if followup:
+                                issue = {**issue, "question": question}
+                            semantic_error = None
+                            if name != "SupervisorAgent":
+                                try:
+                                    with event_context(construction_events_path=context["construction_events_path"], run_id=context["run_id"],
+                                                       agent=name, dataset_id=context.get("dataset_scope"), source_id=context.get("source_scope"), operation="resolve_display"):
+                                        issue = resolve_semantic_answer(context, issue)
+                                    decisions[decision_key] = issue["answer_reference"]
+                                except ValueError as exc:
+                                    semantic_error = str(exc)
+                            updates = {
+                                "decisions": decisions,
+                                "clarification": issue,
+                                "issues": {**context.get("issues", {}), decision_key: issue},
+                                "global_issue": issue if name == "SupervisorAgent" else None,
+                            }
+                            if name == "SupervisorAgent" and issue.get("purpose") == "benchmark_fields":
+                                from medbenchagent.runtime.clarifications import resolve_clarification
+                                completion = resolve_clarification(
+                                    {**context, **updates, "operation_directory": str(operation.with_suffix(""))},
+                                    issue_id=decision_key, kind="requirement_change",
+                                )
+                                updates.update(completion["updates"])
+                            outcome = result(
+                                "failed" if semantic_error else "success",
+                                "User clarification received" if not semantic_error else semantic_error,
+                                **updates,
+                            )
                 except ValueError as exc:
-                    outcome = result("failed", f"{type(exc).__name__}: {exc}")
+                    saved_issue = {"issues": {**context.get("issues", {}), issue["issue_id"]: issue}} if issue and issue.get("answer_reference") else {}
+                    outcome = result("failed", str(exc), **saved_issue)
+
+            else:
+                tool_context = dict(context, operation_directory=str(operation.with_suffix("")))
+                with event_context(
+                    construction_events_path=context["construction_events_path"],
+                    run_id=context["run_id"],
+                    agent=name,
+                    dataset_id=context.get("dataset_scope"),
+                    source_id=context.get("source_scope"),
+                    operation=tool_name,
+                ):
+                    try:
+                        function = finish if tool_name == "finish" else tools[tool_name]
+                        tool = StructuredTool.from_function(
+                            func=lambda **kwargs: function(tool_context, **schemas[tool_name].model_validate(kwargs).model_dump()),
+                            name=tool_name,
+                            description=catalog[tool_name]["description"],
+                            args_schema=schemas[tool_name],
+                        )
+                        outcome = tool.invoke(arguments)
+                    except ValueError as exc:
+                        outcome = result("failed", f"{type(exc).__name__}: {exc}")
         context.update(outcome.get("updates", {}))
-        if not operation.is_file():
-            atomic_write_json(
-                operation,
-                {
-                    "tool": tool_name,
-                    "arguments": arguments,
-                    "dependencies": dependencies,
-                    "result": outcome,
-                },
-            )
+        if read_operation(operation_log_path(run_directory), operation_id) is None:
+            append_operation(operation_log_path(run_directory), {
+                "id": operation_id,
+                "tool": tool_name,
+                "arguments": arguments,
+                "dependencies": dependencies,
+                "result": outcome,
+            })
             record_event(
                 context["construction_events_path"],
                 "tool_result",

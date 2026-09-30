@@ -82,6 +82,7 @@ def _metadata(values: dict) -> dict:
     return {
         "run_id": values.get("run_id"),
         "run_directory": values.get("run_directory"),
+        "construction_events_path": context.get("construction_events_path"),
         "effective_config_path": context.get("effective_config_path"),
         "catalog_snapshot_path": context.get("task_catalog_snapshot_path"),
         "source_decision_path": context.get("source_decision_path"),
@@ -204,16 +205,6 @@ class GraphRunner:
                 if not previous.values:
                     raise ValueError("Unknown resume identifier")
                 context = previous.values.get("context", {})
-                if context.get("prepare_dataset_id") != run["dataset_id"]:
-                    raise ValueError("Resume with the original dataset ID")
-                for run_key, context_key in (("dataset_name", "intake_dataset_name"),
-                                             ("source_root", "intake_source_root"),
-                                             ("rebuild", "requested_rebuild")):
-                    if run_key in run and context.get(context_key) != run[run_key]:
-                        raise ValueError(f"Resume with the original {run_key}")
-                if (run.get("requested_dataset_ids") is not None and
-                        context.get("requested_dataset_ids") != run["requested_dataset_ids"]):
-                    raise ValueError("Resume preserves the original dataset selection")
                 known_directory = previous.values.get("run_directory") or known_directory
                 snapshot_path = context.get("effective_config_path")
                 if not snapshot_path:
@@ -236,7 +227,7 @@ class GraphRunner:
                         })
                         return
                     verify_resume(context)
-                errors = preflight_errors(settings, build=run["kind"] == "build_benchmark")
+                errors = preflight_errors(settings)
                 if errors:
                     yield RunEvent(identifier, "error", {
                         "status": "blocked", "summary": "Local preflight failed: " + "; ".join(errors),
@@ -276,12 +267,6 @@ class GraphRunner:
                         raise ValueError("A new run cannot accept a clarification answer")
                     next_input = {
                         "user_requirement": run["requirement"],
-                        "prepare_dataset_id": run["dataset_id"],
-                        "intake_dataset_name": run.get("dataset_name"),
-                        "intake_source_root": run.get("source_root"),
-                        "requested_rebuild": run.get("rebuild", False),
-                        "requested_dataset_ids": run["requested_dataset_ids"],
-                        "entry_intent": run["kind"],
                         "experiment_name": experiment_name,
                         "experiments_root": str(experiments_root),
                     }
@@ -320,6 +305,7 @@ class GraphRunner:
                                         "run_id": initialized.get("run_id"),
                                         "run_directory": known_directory,
                                         "runs_root": str(settings.paths.runs_root),
+                                        "construction_events_path": initialized.get("construction_events_path"),
                                         "effective_config_path": initialized.get("effective_config_path"),
                                         "catalog_snapshot_path": initialized.get("task_catalog_snapshot_path"),
                                     })

@@ -90,7 +90,7 @@ def test_complete_build(tmp_path, monkeypatch, harness_model, dataset_count, ask
     monkeypatch.setattr("medbenchagent.generation.templates.complete_json", templates)
     graph = compile_benchmark_graph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "integration"}, "recursion_limit": 300}
-    output = graph.invoke({"user_requirement": "Mammography: use datasets " + ", ".join(identifiers), "entry_intent": "build_benchmark"}, config)
+    output = graph.invoke({"user_requirement": "Mammography: use datasets " + ", ".join(identifiers)}, config)
     if ask_global or revise:
         assert output["__interrupt__"]
         output = graph.invoke(Command(resume="Use one Chinese question" if revise else "Confirmed goal"), config)

@@ -27,8 +27,6 @@ def _parser() -> argparse.ArgumentParser:
     resume = commands.add_parser("resume", help="Resume a session run by its ID")
     resume.add_argument("experiment")
     resume.add_argument("run_id")
-    intake = commands.add_parser("resume-intake", help="Answer pending preparation questions")
-    intake.add_argument("experiment")
     register = commands.add_parser("register", help="Register a prepared Dataset Bundle")
     register.add_argument("--dataset-id", required=True)
     register.add_argument("--bundle", required=True)
@@ -90,30 +88,6 @@ def _consume(service: ConversationService, events: Iterable[RunEvent]) -> int:
             status = 1
 
 
-def _answer_intake(service: ConversationService) -> int:
-    from medbenchagent.runtime.llm import ModelUnavailable
-
-    while pending := service.pending_intake():
-        question = pending["questions"][pending["current"]]
-        print(f"Question {pending['current'] + 1} of {len(pending['questions'])}: {question['prompt']}")
-        try:
-            answer = input("Your response: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nAnswers saved; use resume-intake later.", file=sys.stderr)
-            return 130
-        try:
-            result = service.answer_intake(answer)
-        except (ValueError, ModelUnavailable) as exc:
-            print(f"Invalid answer: {exc}", file=sys.stderr)
-            continue
-        if result.run_ids:
-            if result.reply:
-                print(result.reply)
-            for run_id in result.run_ids:
-                print(f"Queued run: {run_id}")
-    return _consume(service, service.drive())
-
-
 def run_command(args: argparse.Namespace) -> int:
     if args.command == "register":
         from medbenchagent.data.dataset_catalog import register_dataset
@@ -135,17 +109,9 @@ def run_command(args: argparse.Namespace) -> int:
     service.reconcile()
     if args.command == "run":
         submission = service.submit(args.request)
-        if submission.reply:
-            print(submission.reply)
-        if submission.question:
-            return _answer_intake(service)
         for run_id in submission.run_ids:
             print(f"Queued run: {run_id}")
         return _consume(service, service.drive())
-    if args.command == "resume-intake":
-        if service.pending_intake() is None:
-            raise ValueError("No preparation question is pending")
-        return _answer_intake(service)
     if args.command == "resume":
         return _consume(service, service.resume(args.run_id))
     raise ValueError(f"Unknown command: {args.command}")

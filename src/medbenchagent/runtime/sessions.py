@@ -17,7 +17,7 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_settings
 
 
-EXPERIMENTS_ROOT = PROJECT_ROOT / "experiments"
+EXPERIMENTS_ROOT = PROJECT_ROOT / "experiments-v2"
 _NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
@@ -55,8 +55,8 @@ def create_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT, template: Pat
         config.unlink()
         folder.rmdir()
         raise
-    record = {"schema_version": "mba-session.v2", "name": name, "created_at": _now(),
-              "messages": [], "runs": [], "pending_runs": [], "submissions": []}
+    record = {"schema_version": "mba-session.v3", "name": name, "created_at": _now(),
+              "messages": [], "runs": [], "pending_runs": []}
     atomic_write_json(folder / "session.json", record)
     return record
 
@@ -67,11 +67,8 @@ def load_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT) -> dict:
     if not path.is_file():
         raise ValueError(f"Unknown experiment: {name}")
     record = json.loads(path.read_text(encoding="utf-8"))
-    if record.get("schema_version") not in {"mba-session.v1", "mba-session.v2"} or record.get("name") != name:
+    if record.get("schema_version") != "mba-session.v3" or record.get("name") != name:
         raise ValueError(f"Invalid experiment session: {name}")
-    if record["schema_version"] == "mba-session.v1":
-        record["schema_version"] = "mba-session.v2"
-        record["submissions"] = []
     return record
 
 
@@ -115,19 +112,13 @@ def add_message(record: dict, role: str, text: str, *, run_id: str | None = None
     return message
 
 
-def queue_run(record: dict, kind: str, requirement: str, dataset_id: str | None = None,
-              requested_dataset_ids: list[str] | None = None, depends_on: str | None = None,
-              *, root: Path = EXPERIMENTS_ROOT, save: bool = True,
-              dataset_name: str | None = None, source_root: str | None = None,
-              rebuild: bool = False) -> dict:
-    if kind not in {"prepare_dataset", "build_benchmark"}:
-        raise ValueError("Unknown run kind")
-    run = {"id": str(uuid4()), "thread_id": str(uuid4()), "kind": kind,
-           "requirement": requirement, "dataset_id": dataset_id,
-           "requested_dataset_ids": requested_dataset_ids, "depends_on": depends_on, "status": "queued",
-           "dataset_name": dataset_name, "source_root": source_root, "rebuild": rebuild,
-           "run_id": None, "run_directory": None, "effective_config_path": None,
-           "catalog_snapshot_path": None, "summary": "", "created_at": _now()}
+def queue_run(record: dict, requirement: str, *, root: Path = EXPERIMENTS_ROOT,
+              save: bool = True) -> dict:
+    run = {"id": str(uuid4()), "thread_id": str(uuid4()), "requirement": requirement,
+           "status": "queued", "run_id": None, "run_directory": None,
+           "runs_root": None, "construction_events_path": None,
+           "effective_config_path": None, "catalog_snapshot_path": None,
+           "summary": "", "created_at": _now()}
     record["runs"].append(run)
     record["pending_runs"].append(run["id"])
     if save:
@@ -145,23 +136,10 @@ def update_run(record: dict, session_run_id: str, *, root: Path = EXPERIMENTS_RO
 def pop_pending(record: dict, *, root: Path = EXPERIMENTS_ROOT) -> dict | None:
     for identifier in list(record["pending_runs"]):
         run = next(run for run in record["runs"] if run["id"] == identifier)
-        dependency = next((item for item in record["runs"] if item["id"] == run["depends_on"]), None)
-        if dependency and dependency["status"] != "complete":
-            continue
         record["pending_runs"].remove(identifier)
         save_experiment(record, root=root)
         return run
     return None
-
-
-def block_dependents(record: dict, run_id: str, *, root: Path = EXPERIMENTS_ROOT) -> None:
-    for run in record["runs"]:
-        if run["depends_on"] == run_id and run["status"] == "queued":
-            run["status"] = "blocked"
-            run["summary"] = "Prerequisite preparation did not complete; submit a new build request after repair"
-            if run["id"] in record["pending_runs"]:
-                record["pending_runs"].remove(run["id"])
-    save_experiment(record, root=root)
 
 
 def config_path(name: str, *, root: Path = EXPERIMENTS_ROOT) -> Path:

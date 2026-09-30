@@ -524,7 +524,6 @@ class ConfigScreen(Screen):
 class ConversationScreen(Screen):
     COMMANDS = (("details", "Toggle run details"), ("resume", "Resume an unfinished run"),
                 ("config", "Edit future run settings"), ("queue", "Queue a request: /queue <text>"),
-                ("cancel", "Cancel pending preparation questions"),
                 ("quit", "Return to experiments"))
 
     def __init__(self, name: str) -> None:
@@ -536,18 +535,15 @@ class ConversationScreen(Screen):
         self.classifying = False
         self.pending_question = False
         self._run_question = ""
-        self.pending_intake = False
         self.current_run_id: str | None = None
         self._displayed_messages: set[str] = set()
         self._message_widgets: dict[str, ChatMessage] = {}
-        self._displayed_failures: set[str] = set()
         self._optimistic_messages: list[ChatMessage] = []
         self._history_loaded = False
         self._thinking_row: Horizontal | None = None
         self._reveal_timer = None
         self._revealing: ChatMessage | None = None
         self._reveal_position = 0
-        self._pending_answer_bubble: ChatMessage | None = None
         self._progress_queue: queue.SimpleQueue[tuple[str | None, str]] = queue.SimpleQueue()
         self._progress_entries: deque[tuple[str | None, str, str]] = deque(maxlen=600)
         self._progress_run_id: str | None = None
@@ -556,6 +552,7 @@ class ConversationScreen(Screen):
         self._event_partial = b""
         self._discard_event_line = False
         self._agents: list[str] = []
+        self._agent_statuses: dict[tuple[str, str, str], dict[str, str]] = {}
         self._context_tokens: int | None = None
         self._context_window: int | None = None
         self._context_model: str = ""
@@ -576,7 +573,7 @@ class ConversationScreen(Screen):
                 yield VerticalScroll(id="conversation")
                 with VerticalScroll(id="question-card"):
                     yield Static("? MBA needs your input", id="question-title")
-                    yield Static("", id="intake-question")
+                    yield Static("", id="run-question")
                     yield Static("Your answer will let MBA continue.", id="question-hint")
                 yield OptionList(id="session-commands")
                 yield Input(placeholder="Describe a task or type / for commands", id="message")
@@ -584,11 +581,13 @@ class ConversationScreen(Screen):
             with Vertical(id="side-pane"):
                 yield DataTable(id="runs", cursor_type="none", zebra_stripes=True)
                 yield Static("Latest activity: waiting", id="active-agent")
+                yield DataTable(id="agent-status", cursor_type="none", zebra_stripes=True)
                 yield Select([("All agents", "*")], value="*", allow_blank=False, id="agent-filter")
                 yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
 
     def on_mount(self) -> None:
-        self.query_one("#runs", DataTable).add_columns("Type", "Status", "Run")
+        self.query_one("#runs", DataTable).add_columns("Request", "Status", "Run")
+        self.query_one("#agent-status", DataTable).add_columns("Agent", "Scope", "Status", "Operation", "Detail")
         self.query_one("#session-commands", OptionList).display = False
         self._set_status("Loading experiment…")
         self.query_one("#message", Input).focus()
@@ -616,7 +615,7 @@ class ConversationScreen(Screen):
         if recent:
             self._follow_run(recent["id"], recent["run_directory"])
         self._history_loaded = True
-        self._render_intake()
+        self._render_question()
         self._set_status("Ready")
         self._start_next(refresh=False)
 
@@ -655,17 +654,6 @@ class ConversationScreen(Screen):
                 self._message_widgets[message["id"]] = bubble
                 self._displayed_messages.add(message["id"])
                 added_ids.append(message["id"])
-        for submission in self.record["submissions"]:
-            if submission["status"] == "failed" and submission["id"] not in self._displayed_failures:
-                matched = next((item for item in self._optimistic_messages
-                                if item.role == "user" and item.full_text == submission["text"]), None)
-                if matched:
-                    self._optimistic_messages.remove(matched)
-                    matched.add_class("failed")
-                    matched.show_text(f"{submission['text']}\nError: {submission['error']}")
-                else:
-                    self._write_message("user", f"{submission['text']}\nError: {submission['error']}", failed=True)
-                self._displayed_failures.add(submission["id"])
         if added_ids:
             self.call_after_refresh(self._position_messages, added_ids)
         self.refresh_runs()
@@ -684,26 +672,16 @@ class ConversationScreen(Screen):
             elif previous is None and view.children and row is not view.children[0]:
                 view.move_child(row, before=view.children[0])
 
-    def _render_intake(self) -> None:
-        intake = next((item for item in self.record["submissions"]
-                       if item["status"] == "awaiting_input"), None)
-        self.pending_intake = intake is not None
-        view = self.query_one("#intake-question", Static)
+    def _render_question(self) -> None:
+        view = self.query_one("#run-question", Static)
         container = self.query_one("#question-card")
-        if intake is None:
-            if self.pending_question:
-                container.display = True
-                view.update(Text(self._run_question))
-                self.query_one("#message", Input).placeholder = "Answer this question or /queue another request"
-                return
-            container.display = False
-            self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
+        if self.pending_question:
+            container.display = True
+            view.update(Text(self._run_question))
+            self.query_one("#message", Input).placeholder = "Answer this question or /queue another request"
             return
-        question = intake["questions"][intake["current"]]
-        container.display = True
-        view.update(Text(f"{intake['reply']}\nQuestion {intake['current'] + 1} of {len(intake['questions'])}: "
-                         f"{question['prompt']}\n{intake.get('error', '')}"))
-        self.query_one("#message", Input).placeholder = "Answer this question or type /cancel"
+        container.display = False
+        self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
 
     def _write_message(self, role: str, content: str, *, message_id: str | None = None,
                        reveal: bool = False, failed: bool = False) -> ChatMessage:
@@ -793,13 +771,15 @@ class ConversationScreen(Screen):
         self._set_status(f"Running {runtime_name} · {run_id[:8]}" if runtime_name else f"Running {run_id[:8]}")
         self._progress_entries.clear()
         self._agents.clear()
-        self._event_path = Path(run_directory) / "construction_events.jsonl" if run_directory else None
+        self._agent_statuses.clear()
+        self._event_path = Path(run_directory) / "control" / "events.jsonl" if run_directory else None
         self._event_offset = 0
         self._event_partial = b""
         self._discard_event_line = False
         self.query_one("#active-agent", Static).update("Latest activity: waiting")
         self.query_one("#agent-filter", Select).set_options([("All agents", "*")])
         self.query_one("#agent-filter", Select).value = "*"
+        self._render_agent_status()
         lines = []
         if self._event_path is not None:
             try:
@@ -820,6 +800,26 @@ class ConversationScreen(Screen):
         selector.set_options([("All agents", "*"),
                               *((name.removesuffix("Agent"), name) for name in self._agents)])
         selector.value = selected if selected in {"*", *self._agents} else "*"
+
+    def _update_agent_status(self, agent: str, dataset: str, source: str,
+                             status: str, operation: str, detail: str) -> None:
+        key = (agent, dataset, source)
+        self._agent_statuses[key] = {"agent": agent.removesuffix("Agent"),
+                                     "scope": "/".join(item for item in (dataset, source) if item),
+                                     "status": status or "running", "operation": str(operation or "event"),
+                                     "detail": detail}
+        self._render_agent_status()
+
+    def _render_agent_status(self) -> None:
+        table = self.query_one("#agent-status", DataTable)
+        selected = self.query_one("#agent-filter", Select).value
+        table.clear()
+        for key, item in self._agent_statuses.items():
+            if selected not in {"*", key[0]}:
+                continue
+            table.add_row(item["agent"], item["scope"],
+                          Text(item["status"], style=_STATUS_COLORS.get(item["status"], "#aab9ca")),
+                          item["operation"], item["detail"][:180], key="|".join(key))
 
     def _append_progress(self, agent: str | None, value: str, status: str = "", *, render: bool = True) -> None:
         if not value:
@@ -843,6 +843,7 @@ class ConversationScreen(Screen):
     @on(Select.Changed, "#agent-filter")
     def agent_filter_changed(self, _event: Select.Changed) -> None:
         self._render_progress()
+        self._render_agent_status()
 
     def _read_construction_event(self, line: bytes, *, render: bool = True) -> None:
         try:
@@ -855,7 +856,8 @@ class ConversationScreen(Screen):
         kind = event.get("event_type")
         if not isinstance(agent, str) or kind not in {
             "agent_step_started", "tool_started", "tool_result", "llm_call", "llm_validation_error",
-            "coding_worker_event"
+            "coding_worker_event", "agent_started", "agent_finished", "worker_started", "worker_result",
+            "finalization_started", "finalization_finished", "candidate_submitted"
         }:
             return
         operation = event.get("operation", "")
@@ -863,6 +865,8 @@ class ConversationScreen(Screen):
         label = agent.removesuffix("Agent")
         timestamp = event.get("timestamp", "")
         time = timestamp[11:19] if isinstance(timestamp, str) else ""
+        dataset = str(event.get("dataset_id") or "")
+        source = str(event.get("source_id") or "")
         if kind == "coding_worker_event":
             operation = str(event.get("operation") or "event")
             detail = f"OpenHands · {operation.removesuffix('Event')}"
@@ -876,6 +880,11 @@ class ConversationScreen(Screen):
         elif kind == "llm_validation_error":
             detail = f"{operation} · invalid model output; repairing"
             status = "failed"
+        elif kind in {"agent_started", "worker_started", "finalization_started"}:
+            detail = f"{operation} · started"
+            status = status or "running"
+        elif kind in {"agent_finished", "worker_result", "finalization_finished", "candidate_submitted"}:
+            detail = f"{operation} · {status}: {str(event.get('summary') or event.get('diagnostic') or '')[:240]}"
         else:
             latency = event.get("latency_ms")
             duration = f" ({latency / 1000:.1f}s)" if isinstance(latency, (int, float)) else ""
@@ -889,10 +898,11 @@ class ConversationScreen(Screen):
                 self._context_model = event["model"]
             self._update_context_indicator()
         self._add_agent(agent)
+        self._update_agent_status(agent, dataset, source, str(status), str(operation), detail)
         self._append_progress(agent, f"{time}  {label}: {detail}", status, render=render)
-        if kind in {"agent_step_started", "tool_started", "coding_worker_event"}:
+        if kind in {"agent_step_started", "tool_started", "coding_worker_event", "agent_started", "worker_started", "finalization_started"}:
             self.query_one("#active-agent", Static).update(f"Working: {label} · {operation}")
-        elif kind in {"tool_result", "llm_call"}:
+        elif kind in {"tool_result", "llm_call", "agent_finished", "worker_result", "finalization_finished", "candidate_submitted"}:
             self.query_one("#active-agent", Static).update(f"Latest: {label} · {operation}")
 
     def _update_context_indicator(self) -> None:
@@ -961,7 +971,7 @@ class ConversationScreen(Screen):
         if table.row_count > len(self.record["runs"]):
             table.clear()
         for index, run in enumerate(self.record["runs"]):
-            values = (run["kind"], Text(run["status"], style=_STATUS_COLORS.get(run["status"], "#aab9ca")),
+            values = (run["requirement"][:48], Text(run["status"], style=_STATUS_COLORS.get(run["status"], "#aab9ca")),
                       run["id"][:8])
             if index >= table.row_count:
                 table.add_row(*values, key=run["id"])
@@ -999,19 +1009,6 @@ class ConversationScreen(Screen):
             self.action_resume_run()
         elif name == "config":
             self.action_edit_config()
-        elif name == "cancel":
-            if self.classifying:
-                self._set_status("Wait for the current answer to be checked")
-                return
-            try:
-                self.service.cancel_intake()
-                for bubble in list(self._optimistic_messages):
-                    self._remove_optimistic(bubble)
-                self.refresh_record()
-                self._render_intake()
-                self._set_status("Preparation questions cancelled")
-            except ValueError as exc:
-                self._set_status(str(exc))
         elif name == "queue":
             if argument.strip():
                 self._queue_task(argument.strip())
@@ -1033,7 +1030,7 @@ class ConversationScreen(Screen):
         if command in {name for name, _ in self.COMMANDS}:
             self._dispatch_command(value)
             return
-        if value.startswith("/") and not (self.pending_intake or self.pending_question):
+        if value.startswith("/") and not self.pending_question:
             self._set_status(f"Unknown command: /{command}")
             return
         if self.service is None:
@@ -1046,12 +1043,6 @@ class ConversationScreen(Screen):
             self._set_status("Wait for the current request to finish")
             return
         event.input.value = ""
-        if self.pending_intake:
-            self._pending_answer_bubble = self._show_optimistic(value)
-            self.classifying = True
-            self._show_thinking()
-            self._answer_intake(value)
-            return
         if self.pending_question and self.current_run_id:
             bubble = self._show_optimistic(value)
             try:
@@ -1075,32 +1066,13 @@ class ConversationScreen(Screen):
             self._set_status("Stopping; resume the saved run before submitting more work.")
             return
         if self.classifying:
-            self._set_status("Wait for the current request to be classified.")
+            self._set_status("Wait for the current request to be submitted.")
             return
         self.classifying = True
         self._show_optimistic(value)
         self._show_thinking()
         self._set_status("Interpreting request…")
         self._submit_task(value)
-
-    @work(thread=True)
-    def _answer_intake(self, value: str) -> None:
-        try:
-            result = self.service.answer_intake(value)
-            self.app.call_from_thread(self._submitted, result)
-        except Exception as exc:
-            self.app.call_from_thread(self._intake_failed, str(exc))
-
-    def _intake_failed(self, message: str) -> None:
-        self.classifying = False
-        self._hide_thinking()
-        if self._pending_answer_bubble is not None:
-            self._remove_optimistic(self._pending_answer_bubble, restore_input=True)
-            self._pending_answer_bubble = None
-        self.refresh_record()
-        self._render_intake()
-        self._set_status(message)
-        self._finish_navigation()
 
     @work(thread=True)
     def _submit_task(self, value: str) -> None:
@@ -1112,13 +1084,10 @@ class ConversationScreen(Screen):
 
     def _submitted(self, result) -> None:
         self.classifying = False
-        self._pending_answer_bubble = None
         self._hide_thinking()
         self.refresh_record()
-        self._render_intake()
-        if result.question:
-            self._set_status("Answer the preparation question to continue")
-        elif result.run_ids:
+        self._render_question()
+        if result.run_ids:
             self._set_status(f"Queued {len(result.run_ids)} run(s)")
         else:
             self._set_status("Ready")
@@ -1193,7 +1162,7 @@ class ConversationScreen(Screen):
             question = event.payload["question"]
             self._run_question = question
             self._set_status("Answer the run question to continue")
-            self._render_intake()
+            self._render_question()
             self.query_one("#message", Input).focus()
         elif event.kind in {"finished", "error"}:
             if event.run_session_id != self._progress_run_id:
@@ -1208,7 +1177,7 @@ class ConversationScreen(Screen):
                 self._progress_queue.put((event.run_session_id, event.payload["recovery_hint"]))
             self._set_status(f"{event.payload.get('status')}: {event.payload.get('summary', '')}")
             self.query_one("#message", Input).placeholder = "Describe a task or type / for commands"
-            if not self.pending_intake:
+            if not self.pending_question:
                 self.query_one("#question-card").display = False
 
     def _execution_ended(self) -> None:
@@ -1240,7 +1209,7 @@ class ConversationScreen(Screen):
             self._drag_start = None
 
     def _clamp_sidebar_width(self, width: int) -> int:
-        minimum = 18 if self.app.has_class("compact") else 26
+        minimum = 30 if self.app.has_class("compact") else 32
         maximum = max(minimum, self.size.width - 24 - 4)
         return max(minimum, min(maximum, width))
 
@@ -1358,7 +1327,7 @@ class MBAApp(App):
     #chat-pane { width: 1fr; height: 1fr; min-width: 24; padding: 0 1 0 2; }
     #side-resize-handle { width: 1; min-width: 1; height: 1fr;
                           background: #34445f; pointer: w-resize; }
-    #side-pane { width: 36; height: 1fr; min-width: 26; background: #171c24; padding: 0 1; }
+    #side-pane { width: 52; height: 1fr; min-width: 32; background: #171c24; padding: 0 1; }
     #conversation { width: 100%; height: 1fr; background: #101319; border: none; }
     .chat-row { width: 100%; height: auto; margin: 0 0 1 0; }
     .chat-row.user { align: right top; }
@@ -1371,15 +1340,16 @@ class MBAApp(App):
     #question-card { height: auto; max-height: 10; display: none; margin: 1 0;
                      padding: 0 1; border: round #e8ac70; background: #211d1a; }
     #question-title { height: 1; color: #e8ac70; text-style: bold; }
-    #intake-question { height: auto; color: #e9e0d6; }
+    #run-question { height: auto; color: #e9e0d6; }
     #question-hint { height: 1; color: #baa993; }
     #message { width: 100%; height: 3; }
     #runs { width: 100%; height: 30%; min-height: 4; border: none; }
     #active-agent { height: auto; max-height: 2; padding: 0 1; color: #a8c4ff; }
+    #agent-status { width: 100%; height: 10; min-height: 5; border: none; }
     #agent-filter { width: 100%; height: 3; }
     #progress { width: 100%; height: 1fr; min-height: 3; border-top: solid #323c4b; }
     .compact #chat-pane { padding: 0 1; }
-    .compact #side-pane { width: 26; min-width: 18; }
+    .compact #side-pane { width: 38; min-width: 30; }
     .compact .chat-bubble, .compact .chat-bubble.user { width: 95%; }
     .compact #session-title { padding: 0 1; }
     """

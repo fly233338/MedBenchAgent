@@ -126,14 +126,18 @@ def _candidate_snapshot(context, path):
 
 
 def _missing_prepared(context, snapshot, folder):
-    """Report missing prepared data without changing this build run into preparation."""
+    """Expose configured raw sources so the Supervisor can prepare them in this run."""
     known_sources = {entry["dataset_id"] for entry in snapshot["configured_sources"]}
     missing = snapshot["preparation_required"] or sorted(known_sources - {
         entry["dataset_id"] for entry in snapshot["catalog_entries"]})
-    return result("blocked", "No matching prepared dataset. Request dataset preparation in this "
-                  "experiment, then start a new build run. "
+    if not missing:
+        return result("blocked", "No prepared dataset matches the request",
+                      candidate_snapshot_path=str(folder / "dataset_candidates.json"),
+                      artifact_versions=context["artifact_versions"])
+    return result("success", "Preparation is required before dataset selection can continue: "
                   + json.dumps({"unprepared_sources": missing,
                                 "excluded": snapshot["excluded_candidates"]}, ensure_ascii=False),
+                  preparation_required=missing,
                   candidate_snapshot_path=str(folder / "dataset_candidates.json"),
                   artifact_versions=context["artifact_versions"])
 
