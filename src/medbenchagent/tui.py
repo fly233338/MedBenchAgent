@@ -616,6 +616,8 @@ class ConversationScreen(Screen):
         self._context_summary = "◉ n/a"
         self._sidebar_width: int | None = None
         self._panel_weights = [0.25, 0.25, 0.5]
+        self._collapsed_panels: set[str] = set()
+        self._layout_scheduled = False
         self.stop_event = threading.Event()
         self.exit_requested = False
         self.back_requested = False
@@ -635,13 +637,16 @@ class ConversationScreen(Screen):
             yield Splitter(axis="x", id="side-resize-handle")
             with Vertical(id="side-pane"):
                 with Vertical(id="runs-panel"):
+                    yield Button("RUNS  ▾", id="runs-toggle")
                     yield DataTable(id="runs", cursor_type="none", zebra_stripes=True)
                 yield Splitter(axis="y", id="runs-divider")
                 with Vertical(id="agents-panel"):
+                    yield Button("AGENTS  ▾", id="agents-toggle")
                     yield Static("Latest activity: waiting", id="active-agent")
                     yield DataTable(id="agent-status", cursor_type="none", zebra_stripes=True)
                 yield Splitter(axis="y", id="events-divider")
                 with Vertical(id="events-panel"):
+                    yield Button("EVENTS  ▾", id="events-toggle")
                     yield Select([("All agents", "*")], value="*", allow_blank=False, id="agent-filter")
                     yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
 
@@ -1286,7 +1291,7 @@ class ConversationScreen(Screen):
         self.query_one("#side-resize-handle", Static).display = sidebar.display
         for splitter in self.query(Splitter):
             splitter.release()
-        self.call_after_refresh(self._layout_panels)
+        self._schedule_panel_layout()
 
     def _clamp_sidebar_width(self, width: int) -> int:
         return max(30, min(self.size.width - 28, width))
@@ -1308,27 +1313,52 @@ class ConversationScreen(Screen):
             sizes[index + 1] = pair - sizes[index]
             total = sum(sizes)
             self._panel_weights = [size / total for size in sizes]
-            self._layout_panels()
+            self._schedule_panel_layout()
         event.stop()
 
+    @on(Button.Pressed, "#runs-toggle, #agents-toggle, #events-toggle")
+    def toggle_detail_panel(self, event: Button.Pressed) -> None:
+        panel_id = event.button.id.removesuffix("-toggle")
+        if panel_id in self._collapsed_panels:
+            self._collapsed_panels.remove(panel_id)
+            event.button.label = f"{panel_id.upper()}  ▾"
+        else:
+            self._collapsed_panels.add(panel_id)
+            event.button.label = f"{panel_id.upper()}  ▸"
+        self._schedule_panel_layout()
+
     def _layout_panels(self):
+        self._layout_scheduled = False
         if not self.query("#side-pane"):
             return
         height = max(12, self.query_one("#side-pane").size.height - 2)
-        sizes = [max(low, int(height * weight)) for low, weight in zip((3, 4, 5), self._panel_weights)]
+        names = ("runs", "agents", "events")
+        minima = (3, 4, 5)
+        visible = [name not in self._collapsed_panels for name in names]
+        sizes = [0 if not show else max(low, int(height * weight))
+                 for low, weight, show in zip(minima, self._panel_weights, visible)]
         while sum(sizes) > height:
-            index = max(range(3), key=lambda i: sizes[i] - (3, 4, 5)[i])
+            index = max((i for i in range(3) if sizes[i]), key=lambda i: sizes[i] - minima[i])
             sizes[index] -= 1
-        sizes[2] += height - sum(sizes)
-        for name, size in zip(("runs", "agents", "events"), sizes):
-            self.query_one("#" + name + "-panel").styles.height = size
+        if sum(sizes) < height:
+            sizes[next(i for i in (2, 1, 0) if visible[i])] += height - sum(sizes)
+        for name, size, show in zip(names, sizes, visible):
+            panel = self.query_one("#" + name + "-panel")
+            panel.styles.height = max(1, size)
+            for child in panel.children:
+                child.display = show or child.id == f"{name}-toggle"
+
+    def _schedule_panel_layout(self) -> None:
+        if not self._layout_scheduled:
+            self._layout_scheduled = True
+            self.call_after_refresh(self._layout_panels)
 
     def on_resize(self, _event: events.Resize) -> None:
         if self.is_mounted and self.query("#side-pane"):
             if self._sidebar_width is not None:
                 self._sidebar_width = self._clamp_sidebar_width(self._sidebar_width)
                 self.query_one("#side-pane").styles.width = self._sidebar_width
-            self.call_after_refresh(self._layout_panels)
+            self._schedule_panel_layout()
 
     def on_unmount(self) -> None:
         self._progress_timer.stop()
@@ -1510,5 +1540,6 @@ class MBAApp(App):
             self.push_screen(ConfigScreen(name, new=True))
         else:
             self.push_screen(ConversationScreen(name))
+
 
 
