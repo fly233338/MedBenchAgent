@@ -17,6 +17,49 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.data.sources import digest_file
 
 
+def finalize_v5_prepared_dataset(candidate, context):
+    """Publish a canonical v5 preparation bundle without touching legacy paths."""
+    from medbenchagent.data.case_query import CaseQuery
+    from medbenchagent.data.v5_validation import validate_v5_candidate, write_v5_report
+
+    candidate = Path(candidate).resolve()
+    report = validate_v5_candidate(candidate, source_root=context.get("source_root"))
+    write_v5_report(candidate, report)
+    if report["systemic_failure"] or not report["accepted_cases"]:
+        raise ValueError("v5 candidate cannot be published")
+    bundle = Path(context["bundle_root"]).resolve()
+    if (bundle / "ready.json").is_file():
+        raise ValueError("Publication bundle is already complete; use a new dataset version")
+    temporary = bundle.with_name(bundle.name + ".publishing")
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    temporary.mkdir(parents=True, exist_ok=True)
+    for name in ("annotation.jsonl", "asset_manifest.jsonl", "provenance.jsonl", "preparation_report.json"):
+        shutil.copy2(candidate / name, temporary / name)
+    query = CaseQuery(temporary / "annotation.jsonl", temporary / "asset_manifest.jsonl")
+    profile = query.profile().model_dump()
+    atomic_write_json(temporary / "dataset_profile.json", profile)
+    access = {
+        "schema_version": "annotation.v5",
+        "annotation_path": str(temporary / "annotation.jsonl"),
+        "asset_manifest_path": str(temporary / "asset_manifest.jsonl"),
+        "profile_path": str(temporary / "dataset_profile.json"),
+        "annotation_digest": digest_file(temporary / "annotation.jsonl"),
+        "asset_manifest_digest": digest_file(temporary / "asset_manifest.jsonl"),
+        "profile_digest": digest_file(temporary / "dataset_profile.json"),
+    }
+    atomic_write_json(temporary / "ready.json", {"schema_version": "dataset-bundle.v4", "annotation_schema": "annotation.v5", "access": access})
+    if bundle.exists():
+        shutil.rmtree(bundle)
+    temporary.replace(bundle)
+    return {"status": "complete", "bundle": str(bundle), "access_manifest": {
+        **access,
+        "annotation_path": str(bundle / "annotation.jsonl"),
+        "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
+        "profile_path": str(bundle / "dataset_profile.json"),
+    }, "report": report}
+
+
 def finalize_prepared_dataset(candidate, context):
     """Validate, materialize, index, card and register a submitted candidate.
 
