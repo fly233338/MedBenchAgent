@@ -12,6 +12,10 @@ def verify_cache(access):
 
 def verify_prepared_indexes(access):
     verify_cache(access)
+    if access.get("schema_version") == "annotation.v5":
+        from medbenchagent.data.v5_catalog import verify_v5_bundle
+        verify_v5_bundle(Path(access["annotation_path"]).parent)
+        return
     from medbenchagent.data.preparation import verify_preparation_archive
     verify_preparation_archive(access)
     for name in ("image_integrity", "documentation"):
