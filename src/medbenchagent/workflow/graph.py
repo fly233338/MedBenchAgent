@@ -1,6 +1,7 @@
 """Supervisor orchestration with explicit dataset-local child state and global allocation."""
 
 import json
+import re
 from pathlib import Path
 from typing import Any, TypedDict
 from langchain_core.messages import convert_to_messages
@@ -266,10 +267,24 @@ def require_pending(context, stage, dataset_id):
         raise ValueError(f"Dataset {dataset_id} is not pending {stage}")
 
 
+def _construction_started(context: SupervisorContext) -> bool:
+    versions = context.get("artifact_versions", {})
+    return any(key in versions for key in ("Requirement", "DatasetSelection", "Allocation", "Delivery"))
+
+
+def _rebuild_requested(context: SupervisorContext) -> bool:
+    """Require an explicit user request before discarding a prepared version."""
+    texts = [context.get("user_requirement", ""), *context.get("user_inputs", [])]
+    pattern = re.compile(r"(?:\brebuild\b|\bforce(?:d)?\s+rebuild\b|\bredo\b|重新(?:构建|准备|生成)|强制重做)", re.IGNORECASE)
+    return any(isinstance(text, str) and pattern.search(text) for text in texts)
+
+
 def available_stages(context: SupervisorContext):
     if context.get("global_issue"):
         return {"resolve_clarification", "ask_user"} if context["global_issue"]["status"] == "answered" else {"ask_user"}
-    tools = {"ask_user", "list_datasets", "inspect_dataset_status", "prepare_data", "end"}
+    tools = {"ask_user", "list_datasets", "inspect_dataset_status", "prepare_data"}
+    if not _construction_started(context):
+        tools.add("end")
     if context.get("prepared_entries") and "Requirement" not in context.get("artifact_versions", {}):
         tools.add("finish")
     if context.get("brief_requirement") != context.get("user_requirement") or "brief_requirement" not in context:
@@ -365,12 +380,20 @@ def compile_benchmark_graph(*, checkpointer=None):
             requests.pop(dataset_id, None)
             outcome["updates"]["dataset_templates"] = {**context.get("dataset_templates", {}), dataset_id: outcome["updates"].pop("templates_path")}
         outcome["updates"]["template_revision_requests"] = requests
+        child.update(outcome.get("updates", {}))
+        state_path = Path(child["operation_directory"]) / "state.json"
+        save_context(state_path, child, "templates", dataset_id)
+        states = {key: dict(value) for key, value in context.get("child_states", {}).items()}
+        states.setdefault(dataset_id, {})["templates"] = str(state_path)
+        outcome["updates"]["child_states"] = states
         return outcome
 
     def prepare_data(context, *, dataset_id, mode="reuse_or_prepare", feedback=""):
         """Reuse valid prepared data or prepare configured sources. Use rebuild only for an explicit user request."""
         from medbenchagent.runtime.preparation_context import initialize_preparation
         from medbenchagent.agents.data_processing import compile_data_processing_agent
+        if mode == "rebuild" and not _rebuild_requested(context):
+            return result("failed", "Rebuild requires an explicit user request; use reuse_or_prepare or ask the user.")
         operation = Path(context["operation_directory"])
         if mode == "reuse_or_prepare" and (operation / "reused_dataset.json").is_file():
             outcome = reuse_prepared(context, dataset_id)
@@ -535,9 +558,14 @@ def compile_benchmark_graph(*, checkpointer=None):
         child["templates_path"] = context["dataset_templates"][dataset_id]
         outcome = run_generation(child, generation)
         child.update(outcome["updates"])
+        state_path = Path(child["operation_directory"]) / "state.json"
+        save_context(state_path, child, "generation", dataset_id)
+        states = {key: dict(value) for key, value in context.get("child_states", {}).items()}
+        states.setdefault(dataset_id, {})["generation"] = str(state_path)
         generations = {**context.get("dataset_generations", {}), dataset_id: {
             "raw_output_path": child["raw_output_path"], "working_blueprint_path": child["working_blueprint_path"]}}
-        return result("success", "Dataset generated", dataset_generations=generations, artifact_versions=child["artifact_versions"])
+        return result("success", "Dataset generated", dataset_generations=generations,
+                      artifact_versions=child["artifact_versions"], child_states=states)
 
     def finalize(context):
         """Delegate global finalization only after all positive-allocation Generations are complete."""
@@ -570,6 +598,8 @@ def compile_benchmark_graph(*, checkpointer=None):
         return result("complete", f"Benchmark delivered; shortfall {delivery['total_shortfall']}", **delivery)
 
     def end(context):
+        if _construction_started(context):
+            return result("blocked", "This benchmark request has started construction and cannot be ended as out of scope.")
         return result("complete", "This request is outside MedBenchAgent's scope")
 
     supervisor = compile_agent("SupervisorAgent",

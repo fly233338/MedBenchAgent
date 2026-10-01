@@ -41,12 +41,17 @@ def test_supervisor_replaces_fixed_role_chain():
 
 
 def test_supervisor_exposes_preparation_and_construction_tools(tmp_path):
-    from medbenchagent.workflow.graph import available_stages
+    from medbenchagent.workflow.graph import available_stages, _rebuild_requested
     context = {"run_directory": str(tmp_path), "user_requirement": "prepare and build"}
     tools = available_stages(context)
     assert {"prepare_data", "specify", "end", "ask_user"} <= tools
     context["prepared_entries"] = {"new": {}}
     assert "finish" in available_stages(context)
+    context["artifact_versions"] = {"Requirement": "v1"}
+    assert "end" not in available_stages(context)
+    assert _rebuild_requested({"user_requirement": "rebuild the dataset"})
+    assert _rebuild_requested({"user_requirement": "重新构建数据集"})
+    assert not _rebuild_requested({"user_requirement": "reuse the prepared dataset"})
 
 
 def test_end_completes_out_of_scope_request(tmp_path, harness_model):

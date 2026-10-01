@@ -26,14 +26,8 @@ dependencies = [
     "pydantic>=2.0.0",
     "pillow>=10.0.0",
     "python-dotenv>=1.0.0",
-    "qwen-vl-utils>=0.0.8",
-    "sacrebleu>=2.4.0",
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
     "textual>=6.0.0",
     "tomlkit>=0.13.0",
-    "tqdm>=4.66.0",
-    "transformers>=4.51.0",
     "xlrd==2.0.2",
 ]
 
@@ -45,8 +39,6 @@ data-processing = [
 
 [project.scripts]
 medbenchagent = "medbenchagent.entrypoint:main"
-medbench-eval = "medbenchagent.evaluation.eval:main"
-medbench-infer = "medbenchagent.evaluation.inference:main"
 
 [build-system]
 requires = ["hatchling>=1.27.0"]

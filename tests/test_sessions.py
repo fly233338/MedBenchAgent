@@ -71,3 +71,31 @@ def test_source_discovery_persists_decision_before_config(monkeypatch, tmp_path)
     entry = discover_source(context, "breast")
     assert (run_directory / "discovery/sources/breast/source_decision.json").is_file()
     assert entry == discover_source(context, "breast")
+
+
+def test_source_discovery_records_path_answer_as_issue(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from medbenchagent.runtime.dependencies import publish
+
+    root = tmp_path / "raw"
+    root.mkdir()
+    (root / "labels.csv").write_text("image,label\nimage.png,benign\n", encoding="utf-8")
+    (root / "image.png").write_bytes(b"image")
+    context = {
+        "run_id": "run",
+        "run_directory": str(tmp_path / "run"),
+        "operation_directory": str(tmp_path / "run" / "op"),
+        "construction_events_path": str(tmp_path / "run" / "events.jsonl"),
+        "user_requirement": "Prepare a dataset",
+    }
+    publish(context, "Requirement", {"text": "Prepare a dataset"}, ())
+    monkeypatch.setattr("medbenchagent.agents.source_discovery.complete_json",
+                        lambda *_args, **_kwargs: {"root": None, "dataset_name": "raw"})
+    monkeypatch.setattr("medbenchagent.agents.source_discovery.interrupt", lambda payload: str(root))
+    monkeypatch.setattr("medbenchagent.agents.source_discovery.complete_validated_json",
+                        lambda *_args, **_kwargs: SimpleNamespace(value=str(root)))
+    discover_source(context, "raw")
+    issues = list(context["issues"].values())
+    assert len(issues) == 1
+    assert issues[0]["reference"] == "source_root"
+    assert issues[0]["status"] == "answered"

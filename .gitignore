@@ -49,5 +49,8 @@ config/local.toml
 # Local experiment scripts
 scripts/
 
+# Evaluation is provisioned separately on the model-serving host.
+/evaluation/
+
 # Evaluation outputs; keep the checked-in report summarizer.
 results/*

@@ -15,6 +15,7 @@ from medbenchagent.runtime.llm import complete_json
 from medbenchagent.runtime.llm import complete_validated_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.sessions import upsert_dataset_source
+from medbenchagent.runtime.clarifications import new_issue, record_answer
 
 
 _TABLE_SUFFIXES = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl"}
@@ -106,8 +107,19 @@ def discover_source(context: dict, dataset_id: str) -> dict:
         question = f"Where is the raw directory for {dataset_id}?"
         while True:
             if not root_text:
+                issue_context = {**context, "dataset_scope": dataset_id,
+                                 "agent_role": "DataProcessingAgent"}
+                issue = next((item for item in context.get("issues", {}).values()
+                              if item.get("role") == "DataProcessingAgent"
+                              and item.get("dataset_id") == dataset_id
+                              and item.get("reference") == "source_root"
+                              and item.get("question") == question), None)
+                issue = issue or new_issue("DataProcessingAgent", issue_context, "source_root", question)
+                context.setdefault("issues", {})[issue["issue_id"]] = issue
                 answer = interrupt({"kind": "clarification", "role": "DataProcessingAgent",
-                                    "question": question})
+                                    "question": question, "issue_id": issue["issue_id"]})
+                answered = record_answer(issue_context, issue, answer)
+                context["issues"][issue["issue_id"]] = answered
                 try:
                     root_text = parse_answer("source_root", answer)
                 except ValueError as exc:

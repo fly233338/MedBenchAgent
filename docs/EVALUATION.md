@@ -1,9 +1,14 @@
-# Model inference and evaluation
+# Model inference and evaluation overlay
+
+Evaluation is provisioned separately on the model-serving host. The main
+`medbenchagent` package no longer includes or maintains the evaluator; place the
+ignored repository-root `evaluation/` overlay beside the checkout before running
+these commands.
 
 The evaluation loader accepts `benchmark-manifest.v2` and one dataset image manifest. It does not accept
 the construction pipeline's `benchmark-manifest.v4`. Multi-dataset evaluation is not implemented.
 
-The evaluation package runs generated benchmark artifacts against local Medical
+The evaluation overlay runs generated benchmark artifacts against local Medical
 VLM checkpoints. Use the audited JSONL when available. The loader requires the
 matching `benchmark_manifest.json` and the normalized dataset's
 `image_manifest.jsonl`; it validates their task and image contracts and resolves every image by
@@ -39,8 +44,8 @@ FlashAttention-2 is unavailable.
 From the repository root, verify the source modules directly:
 
 ```bash
-PYTHONPATH=src python -m medbenchagent.evaluation.inference --help
-PYTHONPATH=src python -m medbenchagent.evaluation.eval --help
+PYTHONPATH=src:. python -m evaluation.inference --help
+PYTHONPATH=src:. python -m evaluation.eval --help
 ```
 
 Supported adapter keys are:
@@ -135,10 +140,10 @@ For a single model/dataset combination, run one process per GPU with the current
 Conda environment's Python:
 
 ```bash
-PYTHONPATH=src python -m torch.distributed.run \
+PYTHONPATH=src:. python -m torch.distributed.run \
   --standalone \
   --nproc-per-node 4 \
-  --module medbenchagent.evaluation.inference \
+  --module evaluation.inference \
   --adapter qwen2_5_vl_7b_instruct \
   --model-path /path/to/Qwen2.5-VL-7B-Instruct \
   --benchmark /path/to/benchmark.jsonl \
@@ -148,7 +153,7 @@ PYTHONPATH=src python -m torch.distributed.run \
   --output results/qwen2_5_vl_7b_instruct.json \
   --batch-size 4
 
-PYTHONPATH=src python -m medbenchagent.evaluation.eval \
+PYTHONPATH=src:. python -m evaluation.eval \
   --input results/qwen2_5_vl_7b_instruct.json \
   --output results/qwen2_5_vl_7b_instruct.report.json
 ```
@@ -174,7 +179,7 @@ the model does not need to be run again. Recompute the report directly from the
 stored `raw_prediction` values:
 
 ```bash
-PYTHONPATH=src python -m medbenchagent.evaluation.eval \
+PYTHONPATH=src:. python -m evaluation.eval \
   --input results/breastgpt_8b.json \
   --output results/breastgpt_8b.reparsed.report.json \
   --reparse
@@ -188,7 +193,7 @@ To recover bbox predictions from an existing inference file, reparse its stored 
 responses with the recorded coordinate space:
 
 ```bash
-PYTHONPATH=src python -m medbenchagent.evaluation.eval \
+PYTHONPATH=src:. python -m evaluation.eval \
   --input results/qwen3_vl_8b_instruct.json \
   --output results/qwen3_vl_8b_instruct.reparsed.report.json \
   --reparse-bbox
@@ -241,7 +246,7 @@ primary metric. Free-text tasks record `macro_f1: null`; bbox sections omit macr
 entirely. Category and summary macro-F1 values average the available letter-task
 macro-F1 values and are `null` when no letter task is present.
 
-Model integrations live under `medbenchagent.evaluation.models`. Add one model
+Model integrations live under `evaluation.models`. Add one model
 module implementing `ModelAdapter.generate`, then add its explicit name and
 factory to the registry in that package. Adapters own checkpoint loading, chat
 templates, batch preprocessing, decoding, and any model-specific coordinate
