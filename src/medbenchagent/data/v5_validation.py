@@ -20,12 +20,14 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
     if not provenance.is_file():
         raise ValueError("provenance.jsonl is required")
     provenance_failures = []
+    provenance_count = 0
     with provenance.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             try:
                 item = json.loads(line)
                 if not isinstance(item, dict) or not item.get("source_id") or not item.get("record_ref"):
                     raise ValueError("source_id and record_ref are required")
+                provenance_count += 1
             except Exception as exc:
                 provenance_failures.append({"line": line_number, "kind": "provenance_failure", "error": str(exc)})
     assets = {item.asset_id: item for item in iter_asset_manifest(manifest, source_root=source_root)}
@@ -47,12 +49,13 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
     return {
         "schema_version": "preparation-report.v5",
         "status": "failed" if failures and not cases else "complete",
+        "input_units": len(cases) + len(failures),
         "input_cases": len(cases) + len(failures),
         "accepted_cases": len(cases),
         "quarantined_cases": len(failures),
         "failures": [*failures, *provenance_failures],
         "assets": len(assets),
-        "systemic_failure": bool(provenance_failures) and not cases,
+        "systemic_failure": (bool(provenance_failures) and not cases) or provenance_count == 0,
     }
 
 

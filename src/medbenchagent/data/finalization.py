@@ -72,6 +72,16 @@ def finalize_v5_prepared_dataset(candidate, context):
     if bundle.exists():
         shutil.rmtree(bundle)
     temporary.replace(bundle)
+    ready_path = bundle / "ready.json"
+    ready = json.loads(ready_path.read_text(encoding="utf-8"))
+    ready["access"].update({
+        "annotation_path": str(bundle / "annotation.jsonl"),
+        "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
+        "profile_path": str(bundle / "dataset_profile.json"),
+        "dataset_card_path": str(bundle / "dataset_card.json"),
+        "duckdb_path": str(bundle / "cache" / "annotation-cache.v5" / "1" / "dataset.duckdb"),
+    })
+    ready_path.write_text(json.dumps(ready, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     entry = {"dataset_id": dataset_id, "name": dataset_id, "description": card["description"], "available": True,
              "annotation_path": str(bundle / "annotation.jsonl"), "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
              "profile_path": str(bundle / "dataset_profile.json"), "dataset_card_path": str(bundle / "dataset_card.json")}

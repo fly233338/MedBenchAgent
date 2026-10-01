@@ -1,6 +1,7 @@
 from medbenchagent.data.asset_manifest import digest_path
 from medbenchagent.data.finalization import finalize_v5_prepared_dataset
 from medbenchagent.data.v5_models import AssetEntry, CaseRecord, Evidence
+from medbenchagent.data.v5_catalog import verify_v5_bundle
 
 
 def test_finalize_v5_bundle(tmp_path):
@@ -19,3 +20,4 @@ def test_finalize_v5_bundle(tmp_path):
     assert result["status"] == "complete"
     assert (tmp_path / "bundle" / "ready.json").is_file()
     assert result["report"]["accepted_cases"] == 1
+    assert verify_v5_bundle(tmp_path / "bundle")["card"]["schema_version"] == "dataset-card.v3"
