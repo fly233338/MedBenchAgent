@@ -16,6 +16,11 @@ def test_finalize_v5_bundle(tmp_path):
     (candidate / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
     (candidate / "annotation.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
     (candidate / "provenance.jsonl").write_text('{"source_id":"s1","record_ref":"record:1"}\n', encoding="utf-8")
+    (candidate / "conversion_config.json").write_text('{}', encoding="utf-8")
+    (candidate / "grouping_policy.json").write_text('{}', encoding="utf-8")
+    (candidate / "mapping.json").write_text('{}', encoding="utf-8")
+    (candidate / "conversion_version").write_text("v5\n", encoding="utf-8")
+    (candidate / "complete.json").write_text('{"complete":true}', encoding="utf-8")
     result = finalize_v5_prepared_dataset(candidate, {"bundle_root": str(tmp_path / "bundle")})
     assert result["status"] == "complete"
     assert (tmp_path / "bundle" / "ready.json").is_file()

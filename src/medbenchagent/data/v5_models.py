@@ -66,6 +66,7 @@ class EvidenceProfile(V5Model):
     name: str
     cases: int = 0
     types: dict[str, int] = Field(default_factory=dict)
+    value_types: dict[str, int] = Field(default_factory=dict)
     units: dict[str, int] = Field(default_factory=dict)
     has_time: int = 0
     has_ref: int = 0
@@ -75,6 +76,7 @@ class AssetProfile(V5Model):
     kinds: dict[str, int] = Field(default_factory=dict)
     formats: dict[str, int] = Field(default_factory=dict)
     assets_per_case: dict[int, int] = Field(default_factory=dict)
+    volume_properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class DatasetProfile(V5Model):

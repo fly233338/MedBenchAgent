@@ -31,11 +31,14 @@ def run_v2_pipeline(*, dataset: dict[str, Any], axis_analysis: AxisAnalysis | di
     )}) for leaf in parsed_leaves]
     allocation = allocate_task_leaves(parsed_leaves, requested_count)
     active = [leaf for leaf in parsed_leaves if allocation.get(leaf.leaf_id, 0) > 0]
-    items = generate_task_items(case_list, active, dataset.get("dataset_id", "dataset"))
+    items = generate_task_items(case_list, active, dataset.get("dataset_id", "dataset"), allocation=allocation)
     audit = audit_task_items(case_list, items, active)
-    manifest = build_manifest(dataset, nodes.values(), parsed_leaves, allocation, item_count=audit["accepted"])
+    manifest = build_manifest(dataset, nodes.values(), parsed_leaves, allocation,
+                              item_count=audit["accepted"], generated_items=audit["accepted_items"])
+    shortfall = {leaf.leaf_id: allocation.get(leaf.leaf_id, 0) - sum(item.get("task_id") == leaf.leaf_id for item in audit["accepted_items"])
+                 for leaf in parsed_leaves if allocation.get(leaf.leaf_id, 0) > 0}
     return {"axis_analysis": analysis.model_dump(), "nodes": {key: node.model_dump() for key, node in nodes.items()},
             "leaves": {leaf.leaf_id: leaf.model_dump() for leaf in parsed_leaves}, "allocation": allocation,
             "items": audit["accepted_items"], "audit": {key: value for key, value in audit.items() if key not in {"accepted_items", "rejected_items"}},
-            "manifest": manifest}
+            "shortfall": {key: value for key, value in shortfall.items() if value > 0}, "manifest": manifest}
 

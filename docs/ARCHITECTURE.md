@@ -64,7 +64,7 @@ image-centric 产物不属于 v2 数据处理运行时。
 
 ## Benchmark 构建
 
-`specify` 生成带证据的 Requirement。`select_datasets` 冻结候选 Card 和名称解析输入。每个数据集由 TaskPlanningAgent 生成并验证任务树，模板审核后由 AllocationAgent 进行全局分配。GenerationAgent 只生成有确定答案依据的问题，FinalizationAgent 负责完整性、审计、短缺统计和原子发布。
+`specify` 生成带证据的 Requirement。`select_datasets` 冻结候选 Card 和名称解析输入。每个 annotation.v5 数据集由 TaskPlanningAgent 完成 Axis Analysis、Task Node、Task Leaf 和 Resolver 编译，再由 v2 allocation/generation pipeline 生成并审计 `benchmark-manifest.v2`。Generation 只生成有确定答案依据的问题，Delivery 记录完整性、审计和短缺统计。
 
 ## 恢复与界面
 

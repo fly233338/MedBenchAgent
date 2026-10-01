@@ -253,6 +253,8 @@ def pending_datasets(context):
         feedback = context.get("template_revision_requests", {}).get(dataset)
         if not _current(context, f"dataset/{dataset}/Plan") or (feedback and feedback["plan_version"] == context["artifact_versions"].get(f"dataset/{dataset}/Plan")):
             pending["pending_plan_dataset_ids"].append(dataset)
+        elif context.get("dataset_assets", {}).get(dataset, {}).get("access", {}).get("schema_version") == "annotation.v5":
+            continue
         elif not _current(context, f"dataset/{dataset}/Templates"):
             pending["pending_templates_dataset_ids"].append(dataset)
     if not _current(context, "Allocation"):
@@ -294,6 +296,14 @@ def available_stages(context: SupervisorContext):
         return tools
     if not _current(context, "DatasetSelection"):
         return tools | {"select_datasets"}
+    v5_selected = [d for d in context.get("selected_dataset_ids", [])
+                   if context.get("dataset_assets", {}).get(d, {}).get("access", {}).get("schema_version") == "annotation.v5"]
+    if v5_selected:
+        if pending_datasets(context)["pending_plan_dataset_ids"]:
+            return tools | {"plan"}
+        if _current(context, "Delivery"):
+            return tools | {"finish"}
+        return tools | {"run_v2"}
     if any("planning" in state for state in context.get("child_states", {}).values()):
         tools.add("run_v2")
     pending = pending_datasets(context)
@@ -379,8 +389,12 @@ def compile_benchmark_graph(*, checkpointer=None):
         child["operation_directory"] = agent_operation(context, "TaskSpacePipelineAgent", dataset_id)
         output = run_task_space_pipeline(child)
         atomic_write_json(Path(child["operation_directory"]) / "result.json", output)
+        result_path = Path(child["operation_directory"]) / "result.json"
+        versions = publish(context, "Delivery", {"task_space_output": str(result_path)}, ("Plan", "Dataset"))
         return result("success", output["summary"], dataset_id=dataset_id,
-                      v2_pipeline_path=str(Path(child["operation_directory"]) / "result.json"))
+                      v2_pipeline_path=str(result_path), delivery_path=str(result_path),
+                      delivery_counts={"accepted": output["audit"]["accepted"], "shortfall": output.get("shortfall", {})},
+                      **versions)
 
     def prepare_templates(context, *, dataset_id):
         """Review templates immediately after this Dataset's Plan; return task defects to Planning."""
@@ -604,6 +618,12 @@ def compile_benchmark_graph(*, checkpointer=None):
         return {**output["result"], "status": "success" if output["result"]["status"] in {"complete", "needs_input"} else output["result"]["status"], "updates": updates}
 
     def finish(context):
+        if context.get("delivery_path") and any(
+            context.get("dataset_assets", {}).get(d, {}).get("access", {}).get("schema_version") == "annotation.v5"
+            for d in context.get("selected_dataset_ids", [])
+        ):
+            return result("complete", f"Task Space benchmark delivered; shortfall {context.get('delivery_counts', {}).get('shortfall', {})}",
+                          delivery_path=context["delivery_path"], delivery_counts=context.get("delivery_counts", {}))
         if context.get("prepared_entries") and "Requirement" not in context.get("artifact_versions", {}):
             if preparation_pending(context):
                 raise ValueError("Prepare and register the dataset first")

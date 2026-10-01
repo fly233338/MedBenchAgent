@@ -26,3 +26,21 @@ def test_v2_generation_uses_resolver_and_hides_reference_from_inputs():
     assert items[0]["input_evidence_ids"] == ["image-ev"]
     assert items[0]["reference_evidence_ids"] == ["report-ev"]
 
+
+def test_v2_generation_honors_allocation_and_case_order():
+    leaf = {
+        "leaf_id": "l", "name": "label", "node_id": "n", "question": "What is shown?",
+        "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+        "target": "finding", "answer": "Read label", "output_spec": "label",
+        "task_paradigm": "VQA", "capability_category": "Recognition",
+        "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+                     "steps": [{"op": "read", "selector": {"role": "label", "name": "label", "evidence_type": "value"}}],
+                     "output_spec": "label", "result_step": "step_0"},
+    }
+    cases = [{"case_id": "b", "evidence": [{"id": "i", "type": "asset", "name": "image", "value": "b"},
+                                                {"id": "l", "type": "value", "name": "label", "value": "yes"}]},
+             {"case_id": "a", "evidence": [{"id": "i", "type": "asset", "name": "image", "value": "a"},
+                                                {"id": "l", "type": "value", "name": "label", "value": "yes"}]}]
+    items = generate_task_items(cases, [leaf], "d", allocation={"l": 1})
+    assert len(items) == 1 and items[0]["case_id"] == "a"
+

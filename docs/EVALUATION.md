@@ -5,14 +5,14 @@ Evaluation is provisioned separately on the model-serving host. The main
 ignored repository-root `evaluation/` overlay beside the checkout before running
 these commands.
 
-The evaluation loader accepts `benchmark-manifest.v2` and one dataset image manifest. It does not accept
-the construction pipeline's `benchmark-manifest.v4`. Multi-dataset evaluation is not implemented.
+The evaluation loader accepts `benchmark-manifest.v2` and the v5 `asset_manifest.jsonl`. Legacy
+image-manifest and v4 construction artifacts are outside the supported workflow.
 
 The evaluation overlay runs generated benchmark artifacts against local Medical
 VLM checkpoints. Use the audited JSONL when available. The loader requires the
-matching `benchmark_manifest.json` and the normalized dataset's
-`image_manifest.jsonl`; it validates their task and image contracts and resolves every image by
-`image_id`. The opaque source `image_path` stored in benchmark items is never
+matching `benchmark_manifest.json` and the registered dataset's
+`asset_manifest.jsonl`; it validates task and asset contracts and resolves every asset by
+`asset_id`. Source paths stored in manifests are never
 used for inference.
 
 Run evaluation in a separate Conda environment rather than the project's locked

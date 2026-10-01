@@ -118,9 +118,9 @@ class DatasetQuery:
                 ],
             }
 
-    def sample(self, offset=0, limit=5, source_id=None):
+    def sample(self, offset=0, limit=5, source_id=None, *, case_id=None, evidence_name=None, asset_kind=None):
         if self._v5_query is not None:
-            return self._v5_query.sample(offset, limit)
+            return self._v5_query.sample(offset, limit, case_id=case_id, evidence_name=evidence_name, asset_kind=asset_kind)
         if offset < 0 or not 1 <= limit <= 50:
             raise ValueError("Invalid sample page")
         with self._connect() as db:

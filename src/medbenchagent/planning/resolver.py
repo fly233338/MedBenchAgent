@@ -106,6 +106,7 @@ def _scalar(value: Any) -> float:
 def resolve(case: dict[str, Any], resolver_spec: ResolverSpec | dict[str, Any]) -> ResolvedTaskItem | NotApplicable:
     spec = ResolverSpec.parse(resolver_spec)
     values: dict[str, Any] = {}
+    value_refs: dict[str, set[str]] = {}
     input_ids = [item["id"] for selector in spec.inputs for item in _evidence(case, selector)]
     if not input_ids:
         return NotApplicable(reason="missing_input_evidence")
@@ -116,6 +117,7 @@ def resolve(case: dict[str, Any], resolver_spec: ResolverSpec | dict[str, Any]) 
             if not rows:
                 return NotApplicable(reason=f"missing_{step.op}_evidence")
             values[key] = rows if isinstance(step, CollectStep) else rows[0]
+            value_refs[key] = {row["id"] for row in rows}
         elif isinstance(step, SelectStep):
             source = values.get(step.input)
             if not isinstance(source, list) or not source:
@@ -126,14 +128,22 @@ def resolve(case: dict[str, Any], resolver_spec: ResolverSpec | dict[str, Any]) 
             if selected is None:
                 return NotApplicable(reason="select_no_match")
             values[key] = selected
+            value_refs[key] = {selected["id"]} if isinstance(selected, dict) and "id" in selected else set(value_refs.get(step.input, set()))
         elif isinstance(step, CompareStep):
             left, right = values.get(step.left), values.get(step.right)
             if left is None or right is None:
                 return NotApplicable(reason="compare_input_missing")
             lv, rv = left.get("value", left), right.get("value", right)
-            values[key] = {"equal": lv == rv, "less": lv < rv, "greater": lv > rv, "difference": _scalar(lv) - _scalar(rv)}[step.mode]
+            try:
+                values[key] = {"equal": lv == rv, "less": lv < rv, "greater": lv > rv, "difference": _scalar(lv) - _scalar(rv)}[step.mode]
+            except (TypeError, ValueError):
+                return NotApplicable(reason="compare_invalid_values")
+            value_refs[key] = value_refs.get(step.left, set()) | value_refs.get(step.right, set())
         elif isinstance(step, ComputeStep):
-            numbers = [_scalar(values[name].get("value", values[name])) for name in step.inputs]
+            try:
+                numbers = [_scalar(values[name].get("value", values[name])) for name in step.inputs]
+            except (KeyError, TypeError, ValueError):
+                return NotApplicable(reason="compute_invalid_values")
             if step.operation == "sum":
                 result = sum(numbers)
             elif step.operation == "mean":
@@ -141,21 +151,25 @@ def resolve(case: dict[str, Any], resolver_spec: ResolverSpec | dict[str, Any]) 
             elif step.operation == "difference":
                 result = numbers[0] - numbers[1]
             elif step.operation == "ratio":
+                if numbers[1] == 0:
+                    return NotApplicable(reason="compute_division_by_zero")
                 result = numbers[0] / numbers[1]
             else:
                 result = len(numbers)
             values[key] = result
+            value_refs[key] = set().union(*(value_refs.get(name, set()) for name in step.inputs))
         elif isinstance(step, LocateStep):
             source = values.get(step.input)
             values[key] = source.get("value", source) if source is not None else None
+            value_refs[key] = set(value_refs.get(step.input, set()))
         if values.get(key) is None:
             return NotApplicable(reason=f"{step.op}_not_applicable")
     reference = values.get(spec.result_step)
     if reference is None:
         return NotApplicable(reason="result_missing")
-    ref_ids = []
+    ref_ids = sorted(value_refs.get(spec.result_step, set()))
     if isinstance(reference, dict) and "id" in reference:
-        ref_ids = [reference["id"]]
+        ref_ids = sorted(set(ref_ids) | {reference["id"]})
     if set(input_ids) & set(ref_ids):
         return NotApplicable(reason="input_reference_leakage")
     return ResolvedTaskItem(input_evidence_ids=input_ids, reference=reference, reference_evidence_ids=ref_ids)

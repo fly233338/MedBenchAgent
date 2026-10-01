@@ -84,7 +84,14 @@ def save_task_leaf(context, *, leaf):
     validated = validate_candidate_leaf(parsed, {key: TaskNode.model_validate(value) for key, value in nodes.items()})
     from medbenchagent.data.query import DatasetQuery
     query = DatasetQuery(context["dataset_access_manifest"])
-    sample = query.sample(limit=50)["values"]
+    sample = []
+    offset = 0
+    while True:
+        page = query.sample(offset=offset, limit=512)
+        sample.extend(page["values"])
+        if page.get("complete", True):
+            break
+        offset = page["next_offset"]
     spec = ResolverSpec.parse(validated.resolver)
     eligible = 0
     for case in sample:
@@ -144,11 +151,18 @@ def build_nodes(context):
     for row in evidence_rows:
         for kind, count in row.get("types", {}).items():
             evidence[kind] = evidence.get(kind, 0) + count
+        evidence["numeric"] = evidence.get("numeric", 0) + row.get("value_types", {}).get("number", 0)
+        if "index" in row.get("name", "").casefold() or "slice" in row.get("name", "").casefold():
+            evidence["index"] = evidence.get("index", 0) + row.get("types", {}).get("value", 0)
     assets = profile.get("assets", {})
+    per_case = {int(key): value for key, value in assets.get("assets_per_case", {}).items()}
+    related_cases = sum(value for size, value in per_case.items() if size >= 2)
+    relations = {"related": sum(row.get("has_ref", 0) for row in evidence_rows),
+                 "paired": related_cases, "comparable": related_cases}
     node_context = {"evidence": evidence, "assets": {
         "volume_assets": assets.get("kinds", {}).get("volume", 0),
-        "related_image_cases": sum(count for size, count in assets.get("assets_per_case", {}).items() if int(size) >= 2),
-    }, "relations": {"related": sum(row.get("has_ref", 0) for row in evidence_rows)}}
+        "related_image_cases": related_cases,
+    }, "relations": relations}
     nodes = build_task_nodes(analysis, node_context)
     path = Path(context["operation_directory"]) / "task_nodes.json"
     atomic_write_json(path, {key: value.model_dump() for key, value in nodes.items()})
@@ -862,6 +876,39 @@ def _review_result(context, tree, draft_path):
 
 def finish(context):
     """Publish the reviewed dataset-local Plan with exact capacities, including unsupported datasets."""
+    if context.get("dataset_access_manifest", {}).get("schema_version") == "annotation.v5":
+        axis_path = context.get("axis_analysis_path")
+        nodes_path = context.get("task_nodes_path")
+        leaves_path = context.get("task_leaves_path")
+        if not all(path and Path(path).is_file() for path in (axis_path, nodes_path, leaves_path)):
+            raise ValueError("v5 Task Space requires Axis Analysis, Task Nodes and Task Leaves")
+        from medbenchagent.planning.task_discovery import compile_task_space_plan
+        from medbenchagent.data.v5_index import V5DatasetQuery
+        axis = AxisAnalysis.model_validate(_read(axis_path))
+        nodes = _read(nodes_path)
+        leaves = [TaskLeaf.model_validate(value) for value in _read(leaves_path).values()]
+        query = V5DatasetQuery(context["dataset_access_manifest"])
+        profile = _read(context["dataset_access_manifest"]["profile_path"])
+        evidence = {kind: sum(row.get("types", {}).get(kind, 0) for row in profile.get("evidence", []))
+                    for kind in ("value", "text", "asset", "region")}
+        evidence["numeric"] = sum(row.get("value_types", {}).get("number", 0) for row in profile.get("evidence", []))
+        evidence["index"] = sum(row.get("types", {}).get("value", 0) for row in profile.get("evidence", [])
+                                 if "index" in row.get("name", "").casefold() or "slice" in row.get("name", "").casefold())
+        asset_profile = profile.get("assets", {})
+        per_case = {int(key): value for key, value in asset_profile.get("assets_per_case", {}).items()}
+        node_context = {"evidence": evidence, "assets": {
+                            "volume_assets": asset_profile.get("kinds", {}).get("volume", 0),
+                            "related_image_cases": sum(value for size, value in per_case.items() if size >= 2)},
+                        "relations": query.node_context(next(iter(nodes.values())))["relations"] if nodes else {}}
+        plan = compile_task_space_plan(dataset={"dataset_id": context.get("selected_dataset_id", "dataset")},
+                                       axis_analysis=axis, node_context=node_context, leaves=leaves,
+                                       revision=int(context["dataset_access_manifest"].get("revision", 0)))
+        path = Path(context["operation_directory"]) / "task_space_plan.json"
+        atomic_write_json(path, plan.model_dump())
+        versions = publish(context, "Plan", {"task_space_plan": str(path)}, ("Requirement", "Dataset"))
+        return result("complete", "Task Space plan published", working_blueprint_path=str(path),
+                      task_space_plan_path=str(path), task_leaves_path=str(leaves_path), readiness={"planning": True},
+                      artifacts={"task_space_plan": str(path)}, affected_node_ids=list(plan.nodes), **versions)
     tree = _tree(context)
     _concept_evidence(context, tree)
     _validate_scope_evidence(context, tree)
@@ -949,9 +996,12 @@ def available_tools(context):
         require(context, "Dataset")
     except ValueError:
         return available
-    available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal", "inspect_field_by_source", "sample_records", "inspect_field_pair", "inspect_array", "inspect_protocol_capacity", "read_dataset_document", "list_dataset_documents"}
     if context.get("dataset_access_manifest", {}).get("schema_version") == "annotation.v5":
         available |= {"analyze_axes", "read_axis_analysis", "build_nodes", "read_task_node", "node_context", "save_task_leaf"}
+        if context.get("task_leaves_path") and Path(context["task_leaves_path"]).is_file():
+            available.add("finish")
+        return available
+    available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal", "inspect_field_by_source", "sample_records", "inspect_field_pair", "inspect_array", "inspect_protocol_capacity", "read_dataset_document", "list_dataset_documents"}
     try:
         require(context, "Materials")
     except ValueError:
@@ -1004,7 +1054,7 @@ def compile_task_planning_agent(*, checkpointer=None):
     )
     return compile_agent(
         "TaskPlanningAgent",
-        "Build a two-level Medical Concept -> executable Leaf plan. The dataset is already assigned and prepared. "
+        "Build a two-level Medical Concept -> executable Leaf plan for legacy datasets. For annotation.v5, build a Task Space plan instead: analyze the fixed axes, build constrained Nodes, inspect bounded Node context, discover Task Leaves, compile deterministic Resolvers, and finish the task-space plan. Do not use the historical Concept/Protocol path for v5. The dataset is already assigned and prepared. "
         "Preserve initialized Materials. Select references only when needed or deliberately revising them; "
         "without RAG, initialization already supplies empty Materials. "
         "Modality scope needs one in/not_in condition and modality_bindings covering each requested modality. "

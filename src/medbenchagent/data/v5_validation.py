@@ -19,6 +19,10 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
     provenance = candidate / "provenance.jsonl"
     if not provenance.is_file():
         raise ValueError("provenance.jsonl is required")
+    required_receipts = ("conversion_config.json", "grouping_policy.json", "mapping.json", "conversion_version", "complete.json")
+    missing_receipts = [name for name in required_receipts if not (candidate / name).is_file()]
+    if missing_receipts:
+        raise ValueError("v5 candidate is missing required outputs: " + ", ".join(missing_receipts))
     provenance_failures = []
     provenance_count = 0
     with provenance.open(encoding="utf-8") as handle:
@@ -46,6 +50,8 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
                 failures.append({"line": line_number, "kind": "hard_case_failure", "error": str(exc)})
     if not cases and not failures:
         raise ValueError("annotation.jsonl is empty")
+    if provenance_count != len(cases):
+        provenance_failures.append({"kind": "provenance_failure", "error": "provenance count does not match accepted cases"})
     return {
         "schema_version": "preparation-report.v5",
         "status": "failed" if failures and not cases else "complete",
@@ -55,7 +61,7 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
         "quarantined_cases": len(failures),
         "failures": [*failures, *provenance_failures],
         "assets": len(assets),
-        "systemic_failure": (bool(provenance_failures) and not cases) or provenance_count == 0,
+        "systemic_failure": bool(provenance_failures) or provenance_count == 0,
     }
 
 

@@ -61,7 +61,7 @@ def prepare_v5_dataset(annotation_path, manifest_path, cache_root, *, revision="
 
 def _profile(cases, assets):
     from collections import Counter, defaultdict
-    evidence = defaultdict(lambda: {"cases": 0, "types": Counter(), "units": Counter(), "has_time": 0, "has_ref": 0})
+    evidence = defaultdict(lambda: {"cases": 0, "types": Counter(), "value_types": Counter(), "units": Counter(), "has_time": 0, "has_ref": 0})
     for case in cases:
         names = set()
         for item in case.evidence:
@@ -71,12 +71,14 @@ def _profile(cases, assets):
             row = evidence[item.name]
             row["cases"] += 1
             row["types"][item.type] += 1
+            value = item.value
+            row["value_types"]["boolean" if isinstance(value, bool) else "number" if isinstance(value, (int, float)) else "string" if isinstance(value, str) else "array" if isinstance(value, list) else "object"] += 1
             row["has_time"] += item.time is not None
             row["has_ref"] += bool(item.ref)
             if item.unit is not None:
                 row["units"][item.unit] += 1
     per_case = Counter(sum(item.type == "asset" for item in case.evidence) for case in cases)
-    return {"schema_version": "dataset-profile.v5", "case_count": len(cases), "patient_count": len({c.patient_id for c in cases if c.patient_id is not None}), "cases_per_patient": dict(Counter(c.patient_id for c in cases if c.patient_id is not None)), "evidence": [{"name": name, **row, "types": dict(row["types"]), "units": dict(row["units"])} for name, row in sorted(evidence.items())], "assets": {"kinds": dict(Counter(a.kind for a in assets.values())), "formats": dict(Counter(a.format for a in assets.values())), "assets_per_case": dict(per_case)}}
+    return {"schema_version": "dataset-profile.v5", "case_count": len(cases), "patient_count": len({c.patient_id for c in cases if c.patient_id is not None}), "cases_per_patient": dict(Counter(c.patient_id for c in cases if c.patient_id is not None)), "evidence": [{"name": name, **row, "types": dict(row["types"]), "value_types": dict(row["value_types"]), "units": dict(row["units"])} for name, row in sorted(evidence.items())], "assets": {"kinds": dict(Counter(a.kind for a in assets.values())), "formats": dict(Counter(a.format for a in assets.values())), "assets_per_case": dict(per_case), "volume_properties": {a.asset_id: a.metadata for a in assets.values() if a.kind == "volume"}}}
 
 
 class V5DatasetQuery:
@@ -93,10 +95,21 @@ class V5DatasetQuery:
             rows = db.execute("SELECT case_id,record FROM cases WHERE case_id IN (SELECT unnest(?))", [case_ids]).fetchall()
         return {case_id: json.loads(record) for case_id, record in rows}
 
-    def sample(self, offset=0, limit=5):
+    def sample(self, offset=0, limit=5, *, case_id=None, evidence_name=None, asset_kind=None):
+        filters, args = [], []
+        if case_id is not None:
+            filters.append("case_id=?")
+            args.append(case_id)
+        if evidence_name is not None:
+            filters.append("case_id IN (SELECT case_id FROM evidence WHERE name=?)")
+            args.append(evidence_name)
+        if asset_kind is not None:
+            filters.append("case_id IN (SELECT ca.case_id FROM case_assets ca JOIN assets a ON a.asset_id=ca.asset_id WHERE a.kind=?)")
+            args.append(asset_kind)
+        where = " WHERE " + " AND ".join(filters) if filters else ""
         with self._db() as db:
-            total = db.execute("SELECT count(*) FROM cases").fetchone()[0]
-            rows = db.execute("SELECT record FROM cases ORDER BY case_id LIMIT ? OFFSET ?", [limit, offset]).fetchall()
+            total = db.execute("SELECT count(*) FROM cases" + where, args).fetchone()[0]
+            rows = db.execute("SELECT record FROM cases" + where + " ORDER BY case_id LIMIT ? OFFSET ?", [*args, limit, offset]).fetchall()
         return {"dataset_version": self.access["revision"], "total": total, "values": [json.loads(row[0]) for row in rows], "complete": offset + len(rows) >= total, "next_offset": offset + len(rows) if offset + len(rows) < total else None}
 
     def evidence(self, name=None, evidence_type=None):
@@ -140,6 +153,8 @@ class V5DatasetQuery:
             "node": node.model_dump() if hasattr(node, "model_dump") else node,
             "evidence": names,
             "evidence_type_counts": evidence_types,
-            "relations": {"related": sum(1 for case in samples for item in case.get("evidence", []) if item.get("ref"))},
+            "relations": {"related": sum(1 for case in samples for item in case.get("evidence", []) if item.get("ref")),
+                          "paired": sum(1 for case in samples if sum(item.get("type") == "asset" for item in case.get("evidence", [])) >= 2),
+                          "comparable": sum(1 for case in samples if sum(item.get("ref") for item in case.get("evidence", [])) >= 2)},
             "representative_cases": samples,
         }

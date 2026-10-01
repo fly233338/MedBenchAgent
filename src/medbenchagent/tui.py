@@ -1304,6 +1304,8 @@ class ConversationScreen(Screen):
         self.query_one("#side-resize-handle", Static).display = sidebar.display
         for splitter in self.query(Splitter):
             splitter.release()
+        if sidebar.display and not self._collapsed_panels:
+            self._layout_panels()
         self._schedule_panel_layout()
 
     def _clamp_sidebar_width(self, width: int) -> int:

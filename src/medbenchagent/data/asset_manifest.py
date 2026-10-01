@@ -95,6 +95,6 @@ def group_dicom_series(root: str | Path, *, source_id: str = "source") -> list[A
             kind="volume" if len(paths) > 1 else "image", format="dicom_series" if len(paths) > 1 else "dicom",
             source_path=relative, file_digest=digest_path(directory),
             metadata={"study_uid": study, "series_uid": series,
-                      "members": [str(path) for path in paths]} if len(paths) > 1 else {},
+                      "members": [path.relative_to(root).as_posix() for path in paths]} if len(paths) > 1 else {},
         ))
     return entries

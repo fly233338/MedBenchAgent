@@ -22,15 +22,22 @@ def _input_assets(case: dict[str, Any], evidence_ids: list[str]) -> list[str]:
             if item.get("id") in wanted and item.get("type") == "asset"]
 
 
-def generate_task_items(cases: Iterable[dict[str, Any]], leaves: Iterable[TaskLeaf | dict[str, Any]], dataset_id: str) -> list[dict[str, Any]]:
+def generate_task_items(cases: Iterable[dict[str, Any]], leaves: Iterable[TaskLeaf | dict[str, Any]], dataset_id: str,
+                        allocation: dict[str, int] | None = None) -> list[dict[str, Any]]:
     """Instantiate eligible Cases exactly once per Leaf using its compiled Resolver."""
     parsed = [TaskLeaf.model_validate(leaf) for leaf in leaves]
     items = []
-    for case in cases:
+    limits = allocation or {leaf.leaf_id: None for leaf in parsed}
+    counts = {leaf.leaf_id: 0 for leaf in parsed}
+    ordered_cases = sorted(cases, key=lambda value: str(value.get("case_id", "")))
+    for case in ordered_cases:
         case_id = case.get("case_id")
         if not isinstance(case_id, str) or not case_id:
             continue
         for leaf in parsed:
+            limit = limits.get(leaf.leaf_id)
+            if limit is not None and counts[leaf.leaf_id] >= limit:
+                continue
             resolved = resolve(case, ResolverSpec.parse(leaf.resolver))
             if isinstance(resolved, NotApplicable):
                 continue
@@ -50,6 +57,7 @@ def generate_task_items(cases: Iterable[dict[str, Any]], leaves: Iterable[TaskLe
                 "reference_evidence_ids": resolved.reference_evidence_ids,
             }
             items.append(item)
+            counts[leaf.leaf_id] += 1
     return items
 
 

@@ -25,21 +25,21 @@ class AssetAdapter:
     kind: str
     formats: frozenset[str]
 
-    def inspect(self, asset_spec: AssetEntry) -> dict[str, Any]:
+    def inspect(self, asset_spec: AssetEntry, *, source_root: str | Path | None = None) -> dict[str, Any]:
         raise NotImplementedError
 
-    def validate(self, asset_spec: AssetEntry) -> list[str]:
+    def validate(self, asset_spec: AssetEntry, *, source_root: str | Path | None = None) -> list[str]:
         try:
-            self.inspect(asset_spec)
+            self.inspect(asset_spec, source_root=source_root)
         except Exception as exc:
             return [str(exc)]
         return []
 
-    def load(self, asset_spec: AssetEntry) -> LoadedAsset:
+    def load(self, asset_spec: AssetEntry, *, source_root: str | Path | None = None) -> LoadedAsset:
         raise NotImplementedError
 
-    def present(self, asset_spec: AssetEntry, presentation_spec: PresentationSpec) -> LoadedAsset:
-        loaded = self.load(asset_spec)
+    def present(self, asset_spec: AssetEntry, presentation_spec: PresentationSpec, *, source_root: str | Path | None = None) -> LoadedAsset:
+        loaded = self.load(asset_spec, source_root=source_root)
         if presentation_spec.mode == "native":
             return loaded
         data = np.asarray(loaded.data)
@@ -48,6 +48,12 @@ class AssetAdapter:
         axis = presentation_spec.axis if presentation_spec.axis is not None else 0
         indices = presentation_spec.indices or [data.shape[axis] // 2]
         slices = [np.take(data, index, axis=axis) for index in indices]
+        if presentation_spec.window is not None:
+            low, high = presentation_spec.window
+            if low >= high:
+                raise AssetAdapterError("Presentation window requires low < high")
+            data = np.clip((data.astype(float) - low) / (high - low), 0, 1) * 255
+            data = data.astype(np.uint8)
         if presentation_spec.mode == "slices":
             return LoadedAsset(np.stack(slices), {**loaded.metadata, "presentation": presentation_spec.model_dump()})
         return LoadedAsset(np.concatenate(slices, axis=1), {**loaded.metadata, "presentation": presentation_spec.model_dump()})
@@ -59,11 +65,11 @@ class AssetAdapter:
                              sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(payload).hexdigest()
 
-    def present_to_path(self, asset_spec: AssetEntry, presentation_spec: PresentationSpec, output: str | Path) -> dict:
+    def present_to_path(self, asset_spec: AssetEntry, presentation_spec: PresentationSpec, output: str | Path, *, source_root: str | Path | None = None) -> dict:
         from medbenchagent.data.sources import digest_file
         output = Path(output)
         output.parent.mkdir(parents=True, exist_ok=True)
-        loaded = self.present(asset_spec, presentation_spec)
+        loaded = self.present(asset_spec, presentation_spec, source_root=source_root)
         data = loaded.data
         try:
             from PIL import Image
@@ -82,32 +88,32 @@ class ImageAdapter(AssetAdapter):
     kind = "image"
     formats = frozenset({"png", "jpeg", "jpg", "dicom"})
 
-    def inspect(self, asset_spec: AssetEntry) -> dict[str, Any]:
+    def inspect(self, asset_spec: AssetEntry, *, source_root=None) -> dict[str, Any]:
         from PIL import Image
-        path = Path(asset_spec.source_path)
+        path = _asset_path(asset_spec, source_root)
         with Image.open(path) as image:
             return {"kind": "image", "format": image.format, "width": image.width, "height": image.height}
 
-    def load(self, asset_spec: AssetEntry) -> LoadedAsset:
+    def load(self, asset_spec: AssetEntry, *, source_root=None) -> LoadedAsset:
         from PIL import Image
-        with Image.open(asset_spec.source_path) as image:
+        with Image.open(_asset_path(asset_spec, source_root)) as image:
             image.load()
-            return LoadedAsset(image.copy(), self.inspect(asset_spec))
+            return LoadedAsset(image.copy(), self.inspect(asset_spec, source_root=source_root))
 
 
 class DicomImageAdapter(AssetAdapter):
     kind = "image"
     formats = frozenset({"dicom"})
 
-    def inspect(self, asset_spec: AssetEntry) -> dict[str, Any]:
-        return self.load(asset_spec).metadata
+    def inspect(self, asset_spec: AssetEntry, *, source_root=None) -> dict[str, Any]:
+        return self.load(asset_spec, source_root=source_root).metadata
 
-    def load(self, asset_spec: AssetEntry) -> LoadedAsset:
+    def load(self, asset_spec: AssetEntry, *, source_root=None) -> LoadedAsset:
         try:
             import pydicom
         except ImportError as exc:
             raise AssetAdapterError("pydicom is required for DICOM assets") from exc
-        dataset = pydicom.dcmread(asset_spec.source_path)
+        dataset = pydicom.dcmread(str(_asset_path(asset_spec, source_root)))
         if not hasattr(dataset, "PixelData"):
             raise AssetAdapterError("DICOM has no Pixel Data")
         if int(getattr(dataset, "NumberOfFrames", 1)) != 1:
@@ -126,12 +132,12 @@ class NiftiVolumeAdapter(AssetAdapter):
     kind = "volume"
     formats = frozenset({"nifti"})
 
-    def load(self, asset_spec: AssetEntry) -> LoadedAsset:
+    def load(self, asset_spec: AssetEntry, *, source_root=None) -> LoadedAsset:
         try:
             import nibabel as nib
         except ImportError as exc:
             raise AssetAdapterError("nibabel is required for NIfTI assets") from exc
-        image = nib.load(asset_spec.source_path)
+        image = nib.load(str(_asset_path(asset_spec, source_root)))
         data = np.asanyarray(image.dataobj)
         if data.ndim < 3:
             raise AssetAdapterError("NIfTI asset is not a volume")
@@ -140,22 +146,26 @@ class NiftiVolumeAdapter(AssetAdapter):
                                   "axis_order": list(range(data.ndim)), "slice_count": int(data.shape[2]),
                                   "frame_count": int(data.shape[3]) if data.ndim > 3 else 1})
 
-    def inspect(self, asset_spec: AssetEntry) -> dict[str, Any]:
-        return self.load(asset_spec).metadata
+    def inspect(self, asset_spec: AssetEntry, *, source_root=None) -> dict[str, Any]:
+        return self.load(asset_spec, source_root=source_root).metadata
 
 
 class DicomSeriesAdapter(AssetAdapter):
     kind = "volume"
     formats = frozenset({"dicom_series"})
 
-    def load(self, asset_spec: AssetEntry) -> LoadedAsset:
+    def load(self, asset_spec: AssetEntry, *, source_root=None) -> LoadedAsset:
         try:
             import pydicom
         except ImportError as exc:
             raise AssetAdapterError("pydicom is required for DICOM assets") from exc
-        root = Path(asset_spec.source_path)
+        root = _asset_path(asset_spec, source_root)
         members = asset_spec.metadata.get("members")
-        files = [Path(item) for item in members] if members else sorted(p for p in root.rglob("*") if p.is_file())
+        if members:
+            base = Path(source_root).resolve() if source_root is not None else Path.cwd()
+            files = [(base / item).resolve() for item in members]
+        else:
+            files = sorted(p for p in root.rglob("*") if p.is_file())
         datasets = [pydicom.dcmread(str(path)) for path in files]
         if not datasets or any(not hasattr(ds, "PixelData") for ds in datasets):
             raise AssetAdapterError("DICOM Series has missing Pixel Data")
@@ -199,8 +209,8 @@ class DicomSeriesAdapter(AssetAdapter):
                                     "slice_count": len(datasets), "frame_count": 1,
                                     "series_uid": next(iter(uids))})
 
-    def inspect(self, asset_spec: AssetEntry) -> dict[str, Any]:
-        return self.load(asset_spec).metadata
+    def inspect(self, asset_spec: AssetEntry, *, source_root=None) -> dict[str, Any]:
+        return self.load(asset_spec, source_root=source_root).metadata
 
 
 ADAPTERS = (DicomImageAdapter(), ImageAdapter(), NiftiVolumeAdapter(), DicomSeriesAdapter())
@@ -211,3 +221,19 @@ def adapter_for(asset: AssetEntry) -> AssetAdapter:
         if adapter.kind == asset.kind and asset.format.lower() in adapter.formats:
             return adapter
     raise AssetAdapterError(f"No adapter for {asset.kind}/{asset.format}")
+
+
+def record_presentation(path: str | Path, record: dict[str, Any]) -> None:
+    """Append a deterministic presentation record to a JSONL manifest."""
+    import json
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _asset_path(asset: AssetEntry, source_root: str | Path | None) -> Path:
+    path = Path(asset.source_path)
+    if path.is_absolute():
+        raise AssetAdapterError("Asset source_path must be source-relative")
+    return (Path(source_root).resolve() / path).resolve() if source_root is not None else path
