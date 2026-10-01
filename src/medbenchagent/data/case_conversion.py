@@ -35,8 +35,13 @@ def build_case_records(rows: Iterable[dict[str, Any]], assets: Iterable[AssetEnt
                 raise ValueError(f"Missing Asset for source path: {row.get('source_path')}")
             evidence.append(Evidence(id=f"asset-{index + 1}", type="asset", name=row.get("view", "asset"), value=asset.asset_id))
             for name, value in row.get("evidence", {}).items():
-                kind = "text" if isinstance(value, str) else "value"
-                evidence.append(Evidence(id=f"e{index + 1}-{name}", type=kind, name=name, value=value))
+                if isinstance(value, dict) and value.get("type") in {"value", "text", "region"}:
+                    kind, raw_value = value["type"], value.get("value")
+                    refs, unit, time = value.get("ref", []), value.get("unit"), value.get("time")
+                else:
+                    kind, raw_value, refs, unit, time = ("text" if isinstance(value, str) else "value"), value, [], None, None
+                evidence.append(Evidence(id=f"e{index + 1}-{name}", type=kind, name=name,
+                                         value=raw_value, ref=refs, unit=unit, time=time))
         case = CaseRecord(case_id=case_id, patient_id=patient_id, evidence=evidence)
         output.append(validate_case(case, asset_map))
     return output

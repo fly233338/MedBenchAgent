@@ -14,7 +14,7 @@ def test_finalize_v5_bundle(tmp_path):
                       evidence=[Evidence(id="a", type="asset", name="image", value="a1")])
     (candidate / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
     (candidate / "annotation.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
-    (candidate / "provenance.jsonl").write_text("{}\n", encoding="utf-8")
+    (candidate / "provenance.jsonl").write_text('{"source_id":"s1","record_ref":"record:1"}\n', encoding="utf-8")
     result = finalize_v5_prepared_dataset(candidate, {"bundle_root": str(tmp_path / "bundle")})
     assert result["status"] == "complete"
     assert (tmp_path / "bundle" / "ready.json").is_file()

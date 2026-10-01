@@ -52,6 +52,13 @@ class AssetAdapter:
             return LoadedAsset(np.stack(slices), {**loaded.metadata, "presentation": presentation_spec.model_dump()})
         return LoadedAsset(np.concatenate(slices, axis=1), {**loaded.metadata, "presentation": presentation_spec.model_dump()})
 
+    def presentation_digest(self, asset_spec: AssetEntry, presentation_spec: PresentationSpec) -> str:
+        import hashlib
+        import json
+        payload = json.dumps({"asset": asset_spec.file_digest, "spec": presentation_spec.model_dump()},
+                             sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(payload).hexdigest()
+
 
 class ImageAdapter(AssetAdapter):
     kind = "image"
@@ -68,6 +75,33 @@ class ImageAdapter(AssetAdapter):
         with Image.open(asset_spec.source_path) as image:
             image.load()
             return LoadedAsset(image.copy(), self.inspect(asset_spec))
+
+
+class DicomImageAdapter(AssetAdapter):
+    kind = "image"
+    formats = frozenset({"dicom"})
+
+    def inspect(self, asset_spec: AssetEntry) -> dict[str, Any]:
+        return self.load(asset_spec).metadata
+
+    def load(self, asset_spec: AssetEntry) -> LoadedAsset:
+        try:
+            import pydicom
+        except ImportError as exc:
+            raise AssetAdapterError("pydicom is required for DICOM assets") from exc
+        dataset = pydicom.dcmread(asset_spec.source_path)
+        if not hasattr(dataset, "PixelData"):
+            raise AssetAdapterError("DICOM has no Pixel Data")
+        if int(getattr(dataset, "NumberOfFrames", 1)) != 1:
+            raise AssetAdapterError("Multiframe DICOM requires a volume adapter")
+        if str(getattr(dataset, "PhotometricInterpretation", "")) not in {"MONOCHROME1", "MONOCHROME2"}:
+            raise AssetAdapterError("Unsupported DICOM photometric interpretation")
+        pixels = dataset.pixel_array
+        if str(getattr(dataset, "PhotometricInterpretation", "")) == "MONOCHROME1":
+            pixels = np.max(pixels) - pixels
+        return LoadedAsset(pixels, {"rows": int(dataset.Rows), "columns": int(dataset.Columns),
+                                    "series_uid": str(getattr(dataset, "SeriesInstanceUID", "")),
+                                    "sop_uid": str(getattr(dataset, "SOPInstanceUID", ""))})
 
 
 class NiftiVolumeAdapter(AssetAdapter):
@@ -128,7 +162,7 @@ class DicomSeriesAdapter(AssetAdapter):
         return self.load(asset_spec).metadata
 
 
-ADAPTERS = (ImageAdapter(), NiftiVolumeAdapter(), DicomSeriesAdapter())
+ADAPTERS = (DicomImageAdapter(), ImageAdapter(), NiftiVolumeAdapter(), DicomSeriesAdapter())
 
 
 def adapter_for(asset: AssetEntry) -> AssetAdapter:

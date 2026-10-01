@@ -16,6 +16,18 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
     manifest = candidate / "asset_manifest.jsonl"
     if not annotation.is_file() or not manifest.is_file():
         raise ValueError("annotation.jsonl and asset_manifest.jsonl are required")
+    provenance = candidate / "provenance.jsonl"
+    if not provenance.is_file():
+        raise ValueError("provenance.jsonl is required")
+    provenance_failures = []
+    with provenance.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            try:
+                item = json.loads(line)
+                if not isinstance(item, dict) or not item.get("source_id") or not item.get("record_ref"):
+                    raise ValueError("source_id and record_ref are required")
+            except Exception as exc:
+                provenance_failures.append({"line": line_number, "kind": "provenance_failure", "error": str(exc)})
     assets = {item.asset_id: item for item in iter_asset_manifest(manifest, source_root=source_root)}
     cases = []
     failures = []
@@ -38,9 +50,9 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
         "input_cases": len(cases) + len(failures),
         "accepted_cases": len(cases),
         "quarantined_cases": len(failures),
-        "failures": failures,
+        "failures": [*failures, *provenance_failures],
         "assets": len(assets),
-        "systemic_failure": False,
+        "systemic_failure": bool(provenance_failures) and not cases,
     }
 
 
