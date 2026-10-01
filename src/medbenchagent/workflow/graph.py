@@ -491,7 +491,7 @@ def compile_benchmark_graph(*, checkpointer=None):
                         output["context"], "DatasetProfile",
                         {"path": finalized["access_manifest"].get("profile_path")}, ("Dataset",),
                     )
-                    card_versions = publish(
+                    card_versions = {} if finalized.get("annotation_schema") == "annotation.v5" else publish(
                         output["context"], "DatasetCard",
                         {"path": finalized["card_path"]}, ("DatasetProfile",),
                     )

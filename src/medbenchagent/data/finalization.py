@@ -67,6 +67,19 @@ def finalize_prepared_dataset(candidate, context):
     publication attempt, which makes retries and recovery idempotent.
     """
     candidate = Path(candidate).resolve()
+    if (candidate / "asset_manifest.jsonl").is_file():
+        result = finalize_v5_prepared_dataset(candidate, context)
+        dataset_id = context.get("dataset_id") or context.get("dataset_scope")
+        access = result["access_manifest"]
+        entry = {"dataset_id": dataset_id, "name": dataset_id or "dataset",
+                 "description": "annotation.v5 dataset", "available": True,
+                 "annotation_path": access["annotation_path"],
+                 "asset_manifest_path": access["asset_manifest_path"],
+                 "profile_path": access["profile_path"]}
+        return {"status": "complete", "dataset_id": dataset_id, "dataset_entry": entry,
+                "annotation_path": access["annotation_path"], "access_manifest": access,
+                "validation_report": str(Path(result["bundle"]) / "preparation_report.json"),
+                "card_path": None, "annotation_schema": "annotation.v5"}
     required = ("annotation.jsonl", "annotation_fields.json", "image_manifest.jsonl", "provenance.jsonl")
     missing = [name for name in required if not (candidate / name).is_file()]
     report_dir = Path(context.get("operation_directory", candidate)) / "validation"
