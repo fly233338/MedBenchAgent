@@ -27,12 +27,20 @@ def _page(rows, total, offset, limit, revision):
 class DatasetQuery:
     def __init__(self, access):
         self.access = access
+        self._case_query = None
+        if access.get("schema_version") == "annotation.v5" or access.get("annotation_schema") == "annotation.v5":
+            from medbenchagent.data.case_query import CaseQuery
+            self._case_query = CaseQuery(access["annotation_path"], access["asset_manifest_path"])
 
     def _connect(self):
         return duckdb.connect(self.access["duckdb_path"], read_only=True)
 
     def records(self, image_ids):
         """Fetch only a bounded batch of referenced canonical records."""
+        if self._case_query is not None:
+            if len(image_ids) > 512 or any(not isinstance(key, str) for key in image_ids):
+                raise ValueError("Record lookup requires at most 512 string Case IDs")
+            return {case.case_id: case.model_dump() for case in self._case_query.cases if case.case_id in image_ids}
         if len(image_ids) > 512 or any(not isinstance(key, str) for key in image_ids):
             raise ValueError("Record lookup requires at most 512 string image IDs")
         if not image_ids:
@@ -42,6 +50,13 @@ class DatasetQuery:
         return {key: json.loads(payload) for key, payload in rows}
 
     def values(self, field, offset=0, limit=20, source_id=None):
+        if self._case_query is not None:
+            values = []
+            for case in self._case_query.cases:
+                values.extend(e.value for e in case.evidence if e.name == field and e.value not in (None, "", [], {}))
+            encoded = Counter(json.dumps(value, ensure_ascii=False, sort_keys=True) for value in values)
+            rows = [{"value": json.loads(value), "count": count} for value, count in sorted(encoded.items())]
+            return _page(rows[offset:offset + limit], len(rows), offset, limit, "annotation.v5")
         if offset < 0 or not 1 <= limit <= 1000:
             raise ValueError("Invalid query page")
         with self._connect() as db:
@@ -100,6 +115,9 @@ class DatasetQuery:
             }
 
     def sample(self, offset=0, limit=5, source_id=None):
+        if self._case_query is not None:
+            cases = self._case_query.cases[offset:offset + limit]
+            return _page([case.model_dump() for case in cases], len(self._case_query.cases), offset, limit, "annotation.v5")
         if offset < 0 or not 1 <= limit <= 50:
             raise ValueError("Invalid sample page")
         with self._connect() as db:

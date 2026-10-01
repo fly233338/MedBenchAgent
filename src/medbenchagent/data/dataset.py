@@ -39,6 +39,8 @@ FILE_REFERENCE_SUFFIXES = (
 
 
 def annotation_schema_path() -> Path:
+    # Kept as a diagnostic helper for callers that inspect the historical dataset
+    # index; new preparation tasks resolve annotation.v5 explicitly.
     return Path(__file__).parents[1] / "schemas" / "annotation.v4.schema.json"
 
 
@@ -94,6 +96,34 @@ def build_dataset_profile(records):
 
 
 def prepare_annotation_dataset(annotation_path, cache_root, *, revision="1", refresh=False, scratch_root=None):
+    annotation_path = Path(annotation_path)
+    if annotation_path.is_file():
+        with annotation_path.open(encoding="utf-8") as handle:
+            first = next((line for line in handle if line.strip()), "")
+        if first:
+            try:
+                from medbenchagent.data.v5_models import CaseRecord
+                CaseRecord.model_validate_json(first)
+            except Exception:
+                pass
+            else:
+                from medbenchagent.data.case_query import CaseQuery
+                from medbenchagent.data.sources import digest_file
+                manifest = annotation_path.parent / "asset_manifest.jsonl"
+                query = CaseQuery(annotation_path, manifest)
+                profile = query.profile().model_dump()
+                profile_path = annotation_path.parent / "dataset_profile.json"
+                profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                return profile, {
+                    "schema_version": "annotation.v5",
+                    "annotation_path": str(annotation_path.resolve()),
+                    "asset_manifest_path": str(manifest.resolve()),
+                    "profile_path": str(profile_path.resolve()),
+                    "annotation_digest": digest_file(annotation_path),
+                    "asset_manifest_digest": digest_file(manifest),
+                    "profile_digest": digest_file(profile_path),
+                    "revision": revision,
+                }
     from medbenchagent.data.index import prepare_dataset
     return prepare_dataset(annotation_path, cache_root, revision=revision, refresh=refresh,
                            scratch_root=scratch_root)
