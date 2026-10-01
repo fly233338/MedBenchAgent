@@ -35,6 +35,11 @@ def finalize_v5_prepared_dataset(candidate, context):
     temporary.mkdir(parents=True, exist_ok=True)
     for name in ("annotation.jsonl", "asset_manifest.jsonl", "provenance.jsonl", "preparation_report.json", "quarantine.jsonl", "optional_evidence_dropped.jsonl"):
         shutil.copy2(candidate / name, temporary / name)
+    atomic_write_json(temporary / "conversion_config.json", {"schema_version": "conversion-config.v5", "converter_version": "v5"})
+    atomic_write_json(temporary / "grouping_policy.json", {"schema_version": "grouping-policy.v5", "priority": ["study_or_exam", "documented_case", "documented_composite", "record_or_asset_bundle"], "patient_id_never_merges": True})
+    atomic_write_json(temporary / "mapping.json", {"schema_version": "mapping.v5", "evidence_types": ["value", "text", "asset", "region"]})
+    (temporary / "conversion_version").write_text("v5\n", encoding="utf-8")
+    (temporary / "presentation_manifest.jsonl").write_text("", encoding="utf-8")
     from medbenchagent.data.dataset import prepare_annotation_dataset
     profile, indexed_access = prepare_annotation_dataset(temporary / "annotation.jsonl", temporary / "cache", revision="1")
     atomic_write_json(temporary / "dataset_profile.json", profile)
@@ -59,6 +64,7 @@ def finalize_v5_prepared_dataset(candidate, context):
         "asset_manifest_digest": digest_file(temporary / "asset_manifest.jsonl"),
         "profile_digest": digest_file(temporary / "dataset_profile.json"),
         "dataset_card_path": str(temporary / "dataset_card.json"),
+        "presentation_manifest_path": str(temporary / "presentation_manifest.jsonl"),
         "duckdb_path": indexed_access["duckdb_path"],
         "duckdb_digest": indexed_access["duckdb_digest"],
     }

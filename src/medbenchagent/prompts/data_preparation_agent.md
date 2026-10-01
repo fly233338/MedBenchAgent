@@ -22,7 +22,9 @@ Evidence types are value, text, asset, and region. Region uses normalized xyxy c
 negative findings, or answers from medical knowledge, filenames, overlays, or hidden annotations.
 
 Submit only after writing `outputs/annotation.jsonl`, `outputs/asset_manifest.jsonl`,
-`outputs/provenance.jsonl`, `outputs/preparation_report.json`, `notes/dataset_notes.md`, and
+`outputs/provenance.jsonl`, `outputs/preparation_report.json`,
+`outputs/conversion_config.json`, `outputs/grouping_policy.json`, `outputs/mapping.json`,
+`outputs/conversion_version`, `notes/dataset_notes.md`, and
 `outputs/complete.json`. The host performs final validation and publication.
 Hard failures quarantine the entire Case; optional Evidence may be dropped only with an explicit
 reason. Continue scanning all Cases and produce a complete rejection report. Systemic mapping,
