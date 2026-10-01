@@ -60,3 +60,24 @@ def test_task_paradigm_rejects_incompatible_output():
         assert "incompatible" in str(exc)
     else:
         raise AssertionError("incompatible TaskLeaf was accepted")
+
+
+def test_v5_planner_axis_and_node_tools_persist_bounded_artifacts(tmp_path, monkeypatch):
+    from medbenchagent.agents import task_planning
+
+    context = {
+        "operation_directory": str(tmp_path),
+        "dataset_access_manifest": {"schema_version": "annotation.v5", "revision": "7"},
+    }
+    monkeypatch.setattr(task_planning, "require", lambda *_args: None)
+    monkeypatch.setattr(task_planning, "_profile", lambda _context: {
+        "schema_version": "dataset-profile.v5",
+        "assets": {"kinds": {"image": 1}, "assets_per_case": {1: 1}},
+        "evidence": [{"name": "label", "types": {"value": 1}, "has_ref": 0}],
+    })
+    analysis = _analysis(input_structure=["single-image"], operation=["recognize"], clinical_target=["finding"]).model_copy(update={"dataset_revision": "7"}).model_dump()
+    saved = task_planning.analyze_axes(context, analysis=analysis)
+    context.update(saved["updates"])
+    built = task_planning.build_nodes(context)
+    assert built["updates"]["task_nodes_path"]
+    assert built["updates"]["task_nodes"]

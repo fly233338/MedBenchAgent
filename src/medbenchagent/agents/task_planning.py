@@ -37,9 +37,86 @@ from medbenchagent.planning.scope import ScopeResolution, conditions_for, valida
 from medbenchagent.planning.tree import SemanticBasis
 from medbenchagent.runtime.tool_contracts import NoArguments
 from pydantic import Field
+from medbenchagent.planning.node_builder import build_task_nodes
+from medbenchagent.planning.task_space import AxisAnalysis
 
 TEXT_DOCUMENT_FORMATS = {"", ".txt", ".md", ".rst", ".json", ".yaml", ".yml", ".csv", ".tsv", ".html", ".xml"}
 DOCUMENT_FORMATS = TEXT_DOCUMENT_FORMATS | {".pdf", ".doc", ".docx", ".xls", ".xlsx"}
+
+
+class AxisAnalysisArguments(NoArguments):
+    analysis: dict
+
+
+class TaskNodeArguments(NoArguments):
+    node_id: str | None = None
+
+
+def _v5_profile(context):
+    profile = _profile(context)
+    if profile.get("schema_version") != "dataset-profile.v5":
+        raise ValueError("Task Discovery v2 requires dataset-profile.v5")
+    return profile
+
+
+def analyze_axes(context, *, analysis):
+    """Validate and persist the structured Axis Analysis for an annotation.v5 Dataset."""
+    require(context, "Dataset")
+    profile = _v5_profile(context)
+    revision = str(context["dataset_access_manifest"].get("revision", ""))
+    parsed = AxisAnalysis.model_validate({**analysis, "dataset_revision": analysis.get("dataset_revision", revision)})
+    if parsed.dataset_revision != revision:
+        raise ValueError("Axis Analysis revision does not match the Dataset revision")
+    path = Path(context["operation_directory"]) / "axis_analysis.json"
+    atomic_write_json(path, parsed.model_dump())
+    return result("success", "Axis Analysis saved", axis_analysis_path=str(path),
+                   axis_analysis=parsed.model_dump(), profile_schema=profile["schema_version"])
+
+
+def read_axis_analysis(context):
+    """Read the validated Axis Analysis without exposing unbounded Dataset contents."""
+    path = context.get("axis_analysis_path")
+    if not path or not Path(path).is_file():
+        raise ValueError("Axis Analysis is not available")
+    return result("success", json.dumps(_read(path), ensure_ascii=False))
+
+
+def build_nodes(context):
+    """Build constrained Task Nodes from the persisted Axis Analysis and v5 profile facts."""
+    require(context, "Dataset")
+    profile = _v5_profile(context)
+    analysis_path = context.get("axis_analysis_path")
+    if not analysis_path:
+        raise ValueError("Run analyze_axes before build_nodes")
+    analysis = AxisAnalysis.model_validate(_read(analysis_path))
+    evidence_rows = profile.get("evidence", [])
+    evidence = {}
+    for row in evidence_rows:
+        for kind, count in row.get("types", {}).items():
+            evidence[kind] = evidence.get(kind, 0) + count
+    assets = profile.get("assets", {})
+    node_context = {"evidence": evidence, "assets": {
+        "volume_assets": assets.get("kinds", {}).get("volume", 0),
+        "related_image_cases": sum(count for size, count in assets.get("assets_per_case", {}).items() if int(size) >= 2),
+    }, "relations": {"related": sum(row.get("has_ref", 0) for row in evidence_rows)}}
+    nodes = build_task_nodes(analysis, node_context)
+    path = Path(context["operation_directory"]) / "task_nodes.json"
+    atomic_write_json(path, {key: value.model_dump() for key, value in nodes.items()})
+    return result("success", json.dumps({"total": len(nodes), "nodes": list(nodes.values())}, default=lambda x: x.model_dump()),
+                  task_nodes_path=str(path), task_nodes={key: value.model_dump() for key, value in nodes.items()})
+
+
+def read_task_node(context, *, node_id=None):
+    """Read one constrained Task Node or the bounded Node inventory."""
+    path = context.get("task_nodes_path")
+    if not path or not Path(path).is_file():
+        raise ValueError("Task Nodes are not available")
+    nodes = _read(path)
+    if node_id is not None:
+        if node_id not in nodes:
+            raise ValueError("Unknown Task Node")
+        return result("success", json.dumps(nodes[node_id], ensure_ascii=False))
+    return result("success", json.dumps({"total": len(nodes), "nodes": nodes}, ensure_ascii=False))
 
 
 def list_dataset_documents(context, *, offset=0, limit=20, query=""):
@@ -823,6 +900,8 @@ def available_tools(context):
     except ValueError:
         return available
     available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal", "inspect_field_by_source", "sample_records", "inspect_field_pair", "inspect_array", "inspect_protocol_capacity", "read_dataset_document", "list_dataset_documents"}
+    if context.get("dataset_access_manifest", {}).get("schema_version") == "annotation.v5":
+        available |= {"analyze_axes", "read_axis_analysis", "build_nodes", "read_task_node"}
     try:
         require(context, "Materials")
     except ValueError:
@@ -847,6 +926,10 @@ def compile_task_planning_agent(*, checkpointer=None):
     from medbenchagent.data.query_contracts import SingleField, Sample, Pair, Array, Capacity
     functions = (
         resolve_sample_scope,
+        analyze_axes,
+        read_axis_analysis,
+        build_nodes,
+        read_task_node,
         list_fields,
         read_fields,
         read_field_values,
@@ -900,6 +983,8 @@ def compile_task_planning_agent(*, checkpointer=None):
         finish,
         args_schemas={
             "resolve_sample_scope": ScopeArguments,
+            "analyze_axes": AxisAnalysisArguments,
+            "read_task_node": TaskNodeArguments,
             "read_dataset_document": DocumentArguments,
             "list_dataset_documents": PageArguments,
             "list_fields": PageArguments,
