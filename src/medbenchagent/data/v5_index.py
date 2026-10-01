@@ -76,7 +76,7 @@ def _profile(cases, assets):
             if item.unit is not None:
                 row["units"][item.unit] += 1
     per_case = Counter(sum(item.type == "asset" for item in case.evidence) for case in cases)
-    return {"schema_version": "dataset-profile.v5", "case_count": len(cases), "patient_count": len({c.patient_id for c in cases if c.patient_id is not None}), "cases_per_patient": dict(Counter(c.patient_id for c in cases if c.patient_id is not None)), "evidence": {name: {**row, "types": dict(row["types"]), "units": dict(row["units"])} for name, row in sorted(evidence.items())}, "assets": {"kinds": dict(Counter(a.kind for a in assets.values())), "formats": dict(Counter(a.format for a in assets.values())), "assets_per_case": dict(per_case)}}
+    return {"schema_version": "dataset-profile.v5", "case_count": len(cases), "patient_count": len({c.patient_id for c in cases if c.patient_id is not None}), "cases_per_patient": dict(Counter(c.patient_id for c in cases if c.patient_id is not None)), "evidence": [{"name": name, **row, "types": dict(row["types"]), "units": dict(row["units"])} for name, row in sorted(evidence.items())], "assets": {"kinds": dict(Counter(a.kind for a in assets.values())), "formats": dict(Counter(a.format for a in assets.values())), "assets_per_case": dict(per_case)}}
 
 
 class V5DatasetQuery:
@@ -122,3 +122,24 @@ class V5DatasetQuery:
         clause = " WHERE " + " AND ".join(where) if where else ""
         with self._db() as db:
             return [dict(asset_id=row[0], kind=row[1], format=row[2], source_path=row[3], file_digest=row[4], metadata=json.loads(row[5])) for row in db.execute("SELECT asset_id,kind,format,source_path,file_digest,metadata FROM assets" + clause, args).fetchall()]
+
+    def node_context(self, node, *, sample_limit=5, evidence_limit=100):
+        """Return bounded, node-scoped facts for Task Leaf discovery."""
+        names = []
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT name,type,count(*),count(DISTINCT case_id) FROM evidence GROUP BY name,type ORDER BY name,type LIMIT ?",
+                [evidence_limit],
+            ).fetchall()
+            names = [{"name": n, "type": t, "count": c, "cases": cases} for n, t, c, cases in rows]
+        samples = self.sample(limit=sample_limit)["values"]
+        evidence_types = {row["type"]: sum(item["count"] for item in names if item["type"] == row["type"]) for row in names}
+        return {
+            "dataset_version": self.access["revision"],
+            "node_id": node.node_id if hasattr(node, "node_id") else node.get("node_id"),
+            "node": node.model_dump() if hasattr(node, "model_dump") else node,
+            "evidence": names,
+            "evidence_type_counts": evidence_types,
+            "relations": {"related": sum(1 for case in samples for item in case.get("evidence", []) if item.get("ref"))},
+            "representative_cases": samples,
+        }

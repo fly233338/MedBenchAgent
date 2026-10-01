@@ -50,6 +50,11 @@ class DatasetQuery:
             rows = db.execute("SELECT image_id,record FROM images WHERE image_id IN (SELECT unnest(?))", [image_ids]).fetchall()
         return {key: json.loads(payload) for key, payload in rows}
 
+    def node_context(self, node, *, sample_limit=5, evidence_limit=100):
+        if self._v5_query is None:
+            raise ValueError("Task Node context requires annotation.v5")
+        return self._v5_query.node_context(node, sample_limit=sample_limit, evidence_limit=evidence_limit)
+
     def values(self, field, offset=0, limit=20, source_id=None):
         if self._v5_query is not None:
             values = [row["value"] for row in self._v5_query.evidence(name=field) if row["value"] not in (None, "", [], {})]
