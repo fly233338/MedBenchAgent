@@ -67,3 +67,34 @@ def write_asset_manifest(path: str | Path, entries: Iterable[AssetEntry]) -> Non
     with path.open("w", encoding="utf-8") as handle:
         for entry in entries:
             handle.write(entry.model_dump_json(exclude_none=True) + "\n")
+
+
+def group_dicom_series(root: str | Path, *, source_id: str = "source") -> list[AssetEntry]:
+    """Group readable DICOM files by StudyInstanceUID/SeriesInstanceUID."""
+    try:
+        import pydicom
+    except ImportError as exc:
+        raise RuntimeError("pydicom is required for DICOM grouping") from exc
+    root = Path(root).resolve()
+    groups: dict[tuple[str, str], list[Path]] = {}
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        try:
+            ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=False)
+        except Exception:
+            continue
+        study = str(getattr(ds, "StudyInstanceUID", ""))
+        series = str(getattr(ds, "SeriesInstanceUID", ""))
+        if study and series:
+            groups.setdefault((study, series), []).append(path)
+    entries = []
+    for (study, series), paths in sorted(groups.items()):
+        relative = Path(paths[0]).parent.relative_to(root).as_posix() or "."
+        directory = root / relative
+        entries.append(AssetEntry(
+            asset_id=stable_id(source_id, study, series, prefix="asset"),
+            kind="volume" if len(paths) > 1 else "image", format="dicom_series" if len(paths) > 1 else "dicom",
+            source_path=relative, file_digest=digest_path(directory),
+            metadata={"study_uid": study, "series_uid": series,
+                      "members": [str(path) for path in paths]} if len(paths) > 1 else {},
+        ))
+    return entries

@@ -133,7 +133,8 @@ class DicomSeriesAdapter(AssetAdapter):
         except ImportError as exc:
             raise AssetAdapterError("pydicom is required for DICOM assets") from exc
         root = Path(asset_spec.source_path)
-        files = sorted(p for p in root.rglob("*") if p.is_file())
+        members = asset_spec.metadata.get("members")
+        files = [Path(item) for item in members] if members else sorted(p for p in root.rglob("*") if p.is_file())
         datasets = [pydicom.dcmread(str(path)) for path in files]
         if not datasets or any(not hasattr(ds, "PixelData") for ds in datasets):
             raise AssetAdapterError("DICOM Series has missing Pixel Data")
