@@ -59,6 +59,24 @@ class AssetAdapter:
                              sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(payload).hexdigest()
 
+    def present_to_path(self, asset_spec: AssetEntry, presentation_spec: PresentationSpec, output: str | Path) -> dict:
+        from medbenchagent.data.sources import digest_file
+        output = Path(output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        loaded = self.present(asset_spec, presentation_spec)
+        data = loaded.data
+        try:
+            from PIL import Image
+            image = data if isinstance(data, Image.Image) else Image.fromarray(np.asarray(data))
+            image.save(output, format="PNG", compress_level=9)
+        except Exception as exc:
+            raise AssetAdapterError(f"Cannot persist presentation: {exc}") from exc
+        return {"asset_id": asset_spec.asset_id, "presentation_id": self.presentation_digest(asset_spec, presentation_spec),
+                "mode": presentation_spec.mode, "axis": presentation_spec.axis, "indices": presentation_spec.indices,
+                "window": presentation_spec.window, "resize": presentation_spec.resize, "crop": presentation_spec.crop,
+                "adapter_version": "v5", "input_digest": asset_spec.file_digest, "output_digest": digest_file(output),
+                "path": output.as_posix()}
+
 
 class ImageAdapter(AssetAdapter):
     kind = "image"
@@ -117,7 +135,10 @@ class NiftiVolumeAdapter(AssetAdapter):
         data = np.asanyarray(image.dataobj)
         if data.ndim < 3:
             raise AssetAdapterError("NIfTI asset is not a volume")
-        return LoadedAsset(data, {"shape": list(image.shape), "dtype": str(data.dtype), "affine": image.affine.tolist()})
+        return LoadedAsset(data, {"shape": list(image.shape), "dtype": str(data.dtype), "spacing": list(image.header.get_zooms()),
+                                  "origin": [0.0, 0.0, 0.0], "direction": None, "affine": image.affine.tolist(),
+                                  "axis_order": list(range(data.ndim)), "slice_count": int(data.shape[2]),
+                                  "frame_count": int(data.shape[3]) if data.ndim > 3 else 1})
 
     def inspect(self, asset_spec: AssetEntry) -> dict[str, Any]:
         return self.load(asset_spec).metadata
@@ -141,6 +162,13 @@ class DicomSeriesAdapter(AssetAdapter):
         uids = {str(getattr(ds, "SeriesInstanceUID", "")) for ds in datasets}
         if len(uids) != 1:
             raise AssetAdapterError("DICOM Series contains multiple SeriesInstanceUID values")
+        studies = {str(getattr(ds, "StudyInstanceUID", "")) for ds in datasets}
+        patients = {str(getattr(ds, "PatientID", "")) for ds in datasets}
+        if len(studies) != 1 or len(patients) > 1:
+            raise AssetAdapterError("DICOM Series contains mixed StudyInstanceUID or PatientID values")
+        orientations = {tuple(float(x) for x in getattr(ds, "ImageOrientationPatient", [])) for ds in datasets}
+        if len(orientations) > 1:
+            raise AssetAdapterError("DICOM Series has inconsistent orientation")
         def key(ds):
             position = getattr(ds, "ImagePositionPatient", None)
             geometry = tuple(float(x) for x in position) if position is not None else ()
@@ -153,10 +181,22 @@ class DicomSeriesAdapter(AssetAdapter):
         shapes = {tuple(array.shape) for array in arrays}
         if len(shapes) != 1:
             raise AssetAdapterError("DICOM Series has inconsistent geometry")
+        positions = [getattr(ds, "ImagePositionPatient", None) for ds in datasets]
+        if all(position is not None for position in positions) and len(positions) > 2:
+            distances = [float(positions[i + 1][2]) - float(positions[i][2]) for i in range(len(positions) - 1)]
+            if any(abs(distance) < 1e-9 for distance in distances):
+                raise AssetAdapterError("DICOM Series contains duplicate slice positions")
+            step = distances[0]
+            if any(abs(distance - step) > max(abs(step) * 0.05, 1e-6) for distance in distances[1:]):
+                raise AssetAdapterError("DICOM Series has a missing or irregular slice gap")
         volume = np.stack(arrays)
         first = datasets[0]
         return LoadedAsset(volume, {"shape": list(volume.shape), "dtype": str(volume.dtype),
                                     "spacing": list(getattr(first, "PixelSpacing", [])),
+                                    "origin": list(getattr(first, "ImagePositionPatient", [])),
+                                    "direction": list(getattr(first, "ImageOrientationPatient", [])),
+                                    "affine": None, "axis_order": [0, 1, 2],
+                                    "slice_count": len(datasets), "frame_count": 1,
                                     "series_uid": next(iter(uids))})
 
     def inspect(self, asset_spec: AssetEntry) -> dict[str, Any]:

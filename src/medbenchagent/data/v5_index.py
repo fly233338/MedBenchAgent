@@ -1,0 +1,124 @@
+"""DuckDB index for annotation.v5 Case/Evidence/Asset bundles."""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+import duckdb
+
+from medbenchagent.data.asset_manifest import iter_asset_manifest
+from medbenchagent.data.sources import digest_file
+from medbenchagent.data.v5_models import CaseRecord, validate_case
+
+
+def prepare_v5_dataset(annotation_path, manifest_path, cache_root, *, revision="1", refresh=False):
+    annotation = Path(annotation_path).resolve()
+    manifest = Path(manifest_path).resolve()
+    cache = Path(cache_root) / "annotation-cache.v5" / revision
+    if refresh and cache.exists():
+        shutil.rmtree(cache)
+    cache.mkdir(parents=True, exist_ok=True)
+    db_path = cache / "dataset.duckdb"
+    profile_path = cache / "dataset_profile.json"
+    access_path = cache / "dataset_access_manifest.json"
+    if access_path.is_file():
+        access = json.loads(access_path.read_text(encoding="utf-8"))
+        if access.get("annotation_digest") == digest_file(annotation) and access.get("asset_manifest_digest") == digest_file(manifest):
+            return json.loads(profile_path.read_text(encoding="utf-8")), access
+    assets = {entry.asset_id: entry for entry in iter_asset_manifest(manifest)}
+    cases = []
+    with annotation.open(encoding="utf-8") as source:
+        for line in source:
+            case = CaseRecord.model_validate_json(line)
+            cases.append(validate_case(case, assets))
+    temporary = cache / "building.duckdb"
+    temporary.unlink(missing_ok=True)
+    with duckdb.connect(str(temporary)) as db:
+        db.execute("CREATE TABLE cases (case_id VARCHAR PRIMARY KEY, patient_id VARCHAR, record JSON)")
+        db.execute("CREATE TABLE assets (asset_id VARCHAR PRIMARY KEY, kind VARCHAR, format VARCHAR, source_path VARCHAR, file_digest VARCHAR, metadata JSON)")
+        db.execute("CREATE TABLE evidence (case_id VARCHAR, evidence_id VARCHAR, type VARCHAR, name VARCHAR, value JSON, time DOUBLE, unit VARCHAR, PRIMARY KEY(case_id,evidence_id))")
+        db.execute("CREATE TABLE case_assets (case_id VARCHAR, asset_id VARCHAR, evidence_id VARCHAR, PRIMARY KEY(case_id,asset_id,evidence_id))")
+        db.execute("CREATE TABLE evidence_refs (case_id VARCHAR, evidence_id VARCHAR, ref_id VARCHAR, PRIMARY KEY(case_id,evidence_id,ref_id))")
+        for asset in assets.values():
+            db.execute("INSERT INTO assets VALUES (?,?,?,?,?,?)", [asset.asset_id, asset.kind, asset.format, asset.source_path, asset.file_digest, json.dumps(asset.metadata)])
+        for case in cases:
+            db.execute("INSERT INTO cases VALUES (?,?,?)", [case.case_id, case.patient_id, case.model_dump_json()])
+            for evidence in case.evidence:
+                db.execute("INSERT INTO evidence VALUES (?,?,?,?,?,?,?)", [case.case_id, evidence.id, evidence.type, evidence.name, json.dumps(evidence.value), evidence.time, evidence.unit])
+                for ref in evidence.ref:
+                    db.execute("INSERT INTO evidence_refs VALUES (?,?,?)", [case.case_id, evidence.id, ref])
+                if evidence.type == "asset":
+                    db.execute("INSERT INTO case_assets VALUES (?,?,?)", [case.case_id, evidence.value, evidence.id])
+    temporary.replace(db_path)
+    profile = _profile(cases, assets)
+    profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    access = {"schema_version": "annotation.v5", "revision": revision, "annotation_path": str(annotation), "asset_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(annotation), "asset_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path)}
+    access_path.write_text(json.dumps(access, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return profile, access
+
+
+def _profile(cases, assets):
+    from collections import Counter, defaultdict
+    evidence = defaultdict(lambda: {"cases": 0, "types": Counter(), "units": Counter(), "has_time": 0, "has_ref": 0})
+    for case in cases:
+        names = set()
+        for item in case.evidence:
+            if item.name in names:
+                continue
+            names.add(item.name)
+            row = evidence[item.name]
+            row["cases"] += 1
+            row["types"][item.type] += 1
+            row["has_time"] += item.time is not None
+            row["has_ref"] += bool(item.ref)
+            if item.unit is not None:
+                row["units"][item.unit] += 1
+    per_case = Counter(sum(item.type == "asset" for item in case.evidence) for case in cases)
+    return {"schema_version": "dataset-profile.v5", "case_count": len(cases), "patient_count": len({c.patient_id for c in cases if c.patient_id is not None}), "cases_per_patient": dict(Counter(c.patient_id for c in cases if c.patient_id is not None)), "evidence": {name: {**row, "types": dict(row["types"]), "units": dict(row["units"])} for name, row in sorted(evidence.items())}, "assets": {"kinds": dict(Counter(a.kind for a in assets.values())), "formats": dict(Counter(a.format for a in assets.values())), "assets_per_case": dict(per_case)}}
+
+
+class V5DatasetQuery:
+    def __init__(self, access):
+        self.access = access
+
+    def _db(self):
+        return duckdb.connect(self.access["duckdb_path"], read_only=True)
+
+    def records(self, case_ids):
+        if len(case_ids) > 512:
+            raise ValueError("At most 512 Case IDs can be requested")
+        with self._db() as db:
+            rows = db.execute("SELECT case_id,record FROM cases WHERE case_id IN (SELECT unnest(?))", [case_ids]).fetchall()
+        return {case_id: json.loads(record) for case_id, record in rows}
+
+    def sample(self, offset=0, limit=5):
+        with self._db() as db:
+            total = db.execute("SELECT count(*) FROM cases").fetchone()[0]
+            rows = db.execute("SELECT record FROM cases ORDER BY case_id LIMIT ? OFFSET ?", [limit, offset]).fetchall()
+        return {"dataset_version": self.access["revision"], "total": total, "values": [json.loads(row[0]) for row in rows], "complete": offset + len(rows) >= total, "next_offset": offset + len(rows) if offset + len(rows) < total else None}
+
+    def evidence(self, name=None, evidence_type=None):
+        where, args = [], []
+        if name is not None:
+            where.append("name=?")
+            args.append(name)
+        if evidence_type is not None:
+            where.append("type=?")
+            args.append(evidence_type)
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        with self._db() as db:
+            return [dict(case_id=row[0], evidence_id=row[1], type=row[2], name=row[3], value=json.loads(row[4]), time=row[5], unit=row[6]) for row in db.execute("SELECT case_id,evidence_id,type,name,value,time,unit FROM evidence" + clause, args).fetchall()]
+
+    def assets(self, kind=None, format_name=None):
+        where, args = [], []
+        if kind is not None:
+            where.append("kind=?")
+            args.append(kind)
+        if format_name is not None:
+            where.append("format=?")
+            args.append(format_name)
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        with self._db() as db:
+            return [dict(asset_id=row[0], kind=row[1], format=row[2], source_path=row[3], file_digest=row[4], metadata=json.loads(row[5])) for row in db.execute("SELECT asset_id,kind,format,source_path,file_digest,metadata FROM assets" + clause, args).fetchall()]

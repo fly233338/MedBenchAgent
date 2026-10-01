@@ -107,23 +107,9 @@ def prepare_annotation_dataset(annotation_path, cache_root, *, revision="1", ref
             except Exception:
                 pass
             else:
-                from medbenchagent.data.case_query import CaseQuery
-                from medbenchagent.data.sources import digest_file
+                from medbenchagent.data.v5_index import prepare_v5_dataset
                 manifest = annotation_path.parent / "asset_manifest.jsonl"
-                query = CaseQuery(annotation_path, manifest)
-                profile = query.profile().model_dump()
-                profile_path = annotation_path.parent / "dataset_profile.json"
-                profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-                return profile, {
-                    "schema_version": "annotation.v5",
-                    "annotation_path": str(annotation_path.resolve()),
-                    "asset_manifest_path": str(manifest.resolve()),
-                    "profile_path": str(profile_path.resolve()),
-                    "annotation_digest": digest_file(annotation_path),
-                    "asset_manifest_digest": digest_file(manifest),
-                    "profile_digest": digest_file(profile_path),
-                    "revision": revision,
-                }
+                return prepare_v5_dataset(annotation_path, manifest, cache_root, revision=revision, refresh=refresh)
     from medbenchagent.data.index import prepare_dataset
     return prepare_dataset(annotation_path, cache_root, revision=revision, refresh=refresh,
                            scratch_root=scratch_root)

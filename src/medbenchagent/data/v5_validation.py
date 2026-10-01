@@ -57,6 +57,10 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
 
 
 def write_v5_report(candidate: str | Path, report: dict) -> Path:
-    path = Path(candidate) / "preparation_report.json"
+    candidate = Path(candidate)
+    path = candidate / "preparation_report.json"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    quarantined = [item for item in report.get("failures", []) if item.get("kind") == "hard_case_failure"]
+    (candidate / "quarantine.jsonl").write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in quarantined), encoding="utf-8")
+    (candidate / "optional_evidence_dropped.jsonl").write_text("", encoding="utf-8")
     return path

@@ -1,0 +1,22 @@
+from medbenchagent.data.asset_manifest import digest_path
+from medbenchagent.data.dataset import prepare_annotation_dataset
+from medbenchagent.data.v5_models import AssetEntry, CaseRecord, Evidence
+from medbenchagent.data.query import DatasetQuery
+
+
+def test_v5_duckdb_index_and_query(tmp_path):
+    source = tmp_path / "image.png"
+    source.write_bytes(b"image")
+    asset = AssetEntry(asset_id="a1", kind="image", format="png", source_path="image.png", file_digest=digest_path(source))
+    case = CaseRecord(case_id="case-1", patient_id="patient-1", evidence=[
+        Evidence(id="asset", type="asset", name="view", value="a1"),
+        Evidence(id="label", type="value", name="class", value="positive", ref=["asset"]),
+    ])
+    (tmp_path / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
+    (tmp_path / "annotation.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
+    profile, access = prepare_annotation_dataset(tmp_path / "annotation.jsonl", tmp_path / "cache")
+    assert profile["case_count"] == 1
+    query = DatasetQuery(access)
+    assert query.records(["case-1"])["case-1"]["case_id"] == "case-1"
+    assert query.values("class")["values"][0]["value"] == "positive"
+    assert query.sample()["total"] == 1

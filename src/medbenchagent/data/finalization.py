@@ -19,7 +19,6 @@ from medbenchagent.data.sources import digest_file
 
 def finalize_v5_prepared_dataset(candidate, context):
     """Publish a canonical v5 preparation bundle without touching legacy paths."""
-    from medbenchagent.data.case_query import CaseQuery
     from medbenchagent.data.v5_validation import validate_v5_candidate, write_v5_report
 
     candidate = Path(candidate).resolve()
@@ -34,11 +33,23 @@ def finalize_v5_prepared_dataset(candidate, context):
     if temporary.exists():
         shutil.rmtree(temporary)
     temporary.mkdir(parents=True, exist_ok=True)
-    for name in ("annotation.jsonl", "asset_manifest.jsonl", "provenance.jsonl", "preparation_report.json"):
+    for name in ("annotation.jsonl", "asset_manifest.jsonl", "provenance.jsonl", "preparation_report.json", "quarantine.jsonl", "optional_evidence_dropped.jsonl"):
         shutil.copy2(candidate / name, temporary / name)
-    query = CaseQuery(temporary / "annotation.jsonl", temporary / "asset_manifest.jsonl")
-    profile = query.profile().model_dump()
+    from medbenchagent.data.dataset import prepare_annotation_dataset
+    profile, indexed_access = prepare_annotation_dataset(temporary / "annotation.jsonl", temporary / "cache", revision="1")
     atomic_write_json(temporary / "dataset_profile.json", profile)
+    dataset_id = context.get("dataset_id") or context.get("dataset_scope") or "dataset"
+    card = {
+        "schema_version": "dataset-card.v3", "dataset_id": dataset_id,
+        "name": dataset_id, "description": "annotation.v5 dataset",
+        "annotation_digest": digest_file(temporary / "annotation.jsonl"),
+        "asset_manifest_digest": digest_file(temporary / "asset_manifest.jsonl"),
+        "profile_digest": digest_file(temporary / "dataset_profile.json"),
+        "case_count": profile["case_count"], "patient_count": profile["patient_count"],
+        "evidence_profile": profile["evidence"], "asset_profile": profile["assets"],
+        "summary": {"case_count": profile["case_count"], "patient_count": profile["patient_count"]},
+    }
+    atomic_write_json(temporary / "dataset_card.json", card)
     access = {
         "schema_version": "annotation.v5",
         "annotation_path": str(temporary / "annotation.jsonl"),
@@ -47,17 +58,37 @@ def finalize_v5_prepared_dataset(candidate, context):
         "annotation_digest": digest_file(temporary / "annotation.jsonl"),
         "asset_manifest_digest": digest_file(temporary / "asset_manifest.jsonl"),
         "profile_digest": digest_file(temporary / "dataset_profile.json"),
+        "dataset_card_path": str(temporary / "dataset_card.json"),
+        "duckdb_path": indexed_access["duckdb_path"],
+        "duckdb_digest": indexed_access["duckdb_digest"],
     }
     atomic_write_json(temporary / "ready.json", {"schema_version": "dataset-bundle.v4", "annotation_schema": "annotation.v5", "access": access})
     if bundle.exists():
         shutil.rmtree(bundle)
     temporary.replace(bundle)
-    return {"status": "complete", "bundle": str(bundle), "access_manifest": {
+    entry = {"dataset_id": dataset_id, "name": dataset_id, "description": card["description"], "available": True,
+             "annotation_path": str(bundle / "annotation.jsonl"), "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
+             "profile_path": str(bundle / "dataset_profile.json"), "dataset_card_path": str(bundle / "dataset_card.json")}
+    catalog_path = context.get("registration_catalog_path")
+    if catalog_path:
+        target = Path(catalog_path)
+        catalog = {"schema_version": "dataset-catalog.v5", "datasets": []}
+        if target.is_file():
+            try:
+                existing = json.loads(target.read_text(encoding="utf-8"))
+                if existing.get("schema_version") == "dataset-catalog.v5":
+                    catalog = existing
+            except json.JSONDecodeError:
+                pass
+        catalog["datasets"] = [item for item in catalog["datasets"] if item.get("dataset_id") != dataset_id] + [entry]
+        atomic_write_json(target, catalog)
+    return {"status": "complete", "bundle": str(bundle), "dataset_entry": entry, "access_manifest": {
         **access,
         "annotation_path": str(bundle / "annotation.jsonl"),
         "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
         "profile_path": str(bundle / "dataset_profile.json"),
-    }, "report": report}
+        "dataset_card_path": str(bundle / "dataset_card.json"),
+    }, "report": report, "card_path": str(bundle / "dataset_card.json")}
 
 
 def finalize_prepared_dataset(candidate, context):
@@ -71,15 +102,14 @@ def finalize_prepared_dataset(candidate, context):
         result = finalize_v5_prepared_dataset(candidate, context)
         dataset_id = context.get("dataset_id") or context.get("dataset_scope")
         access = result["access_manifest"]
-        entry = {"dataset_id": dataset_id, "name": dataset_id or "dataset",
+        entry = result.get("dataset_entry") or {"dataset_id": dataset_id, "name": dataset_id or "dataset",
                  "description": "annotation.v5 dataset", "available": True,
-                 "annotation_path": access["annotation_path"],
-                 "asset_manifest_path": access["asset_manifest_path"],
+                 "annotation_path": access["annotation_path"], "asset_manifest_path": access["asset_manifest_path"],
                  "profile_path": access["profile_path"]}
         return {"status": "complete", "dataset_id": dataset_id, "dataset_entry": entry,
                 "annotation_path": access["annotation_path"], "access_manifest": access,
                 "validation_report": str(Path(result["bundle"]) / "preparation_report.json"),
-                "card_path": None, "annotation_schema": "annotation.v5"}
+                "card_path": result.get("card_path"), "annotation_schema": "annotation.v5"}
     required = ("annotation.jsonl", "annotation_fields.json", "image_manifest.jsonl", "provenance.jsonl")
     missing = [name for name in required if not (candidate / name).is_file()]
     report_dir = Path(context.get("operation_directory", candidate)) / "validation"
