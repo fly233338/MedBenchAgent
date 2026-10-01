@@ -10,6 +10,7 @@ from medbenchagent.agents.generation import compile_generation_agent, run_genera
 from medbenchagent.agents.finalization import compile_finalization_agent, restore_delivery
 from medbenchagent.agents.templates import prepare_templates as run_templates
 from medbenchagent.agents.task_planning import compile_task_planning_agent, apply_template_feedback
+from medbenchagent.agents.v2_pipeline import run_task_space_pipeline
 from medbenchagent.agents.allocation import compile_allocation_agent
 from medbenchagent.planning.dataset_selection import select_datasets as run_selection
 from medbenchagent.planning.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
@@ -293,6 +294,8 @@ def available_stages(context: SupervisorContext):
         return tools
     if not _current(context, "DatasetSelection"):
         return tools | {"select_datasets"}
+    if any("planning" in state for state in context.get("child_states", {}).values()):
+        tools.add("run_v2")
     pending = pending_datasets(context)
     if pending["pending_plan_dataset_ids"] or pending["pending_templates_dataset_ids"]:
         if pending["pending_plan_dataset_ids"]:
@@ -366,6 +369,18 @@ def compile_benchmark_graph(*, checkpointer=None):
             outcome["updates"]["template_revision_requests"] = requests
             outcome["updates"]["dataset_task_plans"] = {**context.get("dataset_task_plans", {}), dataset_id: output["context"]["working_blueprint_path"]}
         return outcome
+
+    def run_v2(context, *, dataset_id):
+        """Execute a completed v2 Task Space for one prepared Dataset."""
+        saved = context.get("child_states", {}).get(dataset_id, {}).get("planning")
+        if not saved:
+            raise ValueError("Run v2 planning tools before executing the Task Space pipeline")
+        child = load_context(saved, "planning", dataset_id)
+        child["operation_directory"] = agent_operation(context, "TaskSpacePipelineAgent", dataset_id)
+        output = run_task_space_pipeline(child)
+        atomic_write_json(Path(child["operation_directory"]) / "result.json", output)
+        return result("success", output["summary"], dataset_id=dataset_id,
+                      v2_pipeline_path=str(Path(child["operation_directory"]) / "result.json"))
 
     def prepare_templates(context, *, dataset_id):
         """Review templates immediately after this Dataset's Plan; return task defects to Planning."""
@@ -606,12 +621,12 @@ def compile_benchmark_graph(*, checkpointer=None):
         SUPERVISOR_INSTRUCTIONS,
         {"end": end, "resolve_clarification": resolve_clarification, "specify": specify, "select_datasets": select_datasets,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
-         "prepare_data": prepare_data, "plan": plan, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
+         "prepare_data": prepare_data, "plan": plan, "run_v2": run_v2, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
         describe, finish, available_tools=available_stages, automatic_action=required_field_action,
         read_tools=frozenset({"list_datasets", "inspect_dataset_status"}),
         args_schemas={"resolve_clarification": ResolveClarificationArguments, "prepare_data": PrepareDataArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
-                      "plan": PlanningArguments, "allocate": DelegationArguments,
+                      "plan": PlanningArguments, "run_v2": DatasetStatusArguments, "allocate": DelegationArguments,
                       "generate": DatasetStatusArguments, "prepare_templates": DatasetStatusArguments})
 
     def initialize(state):
