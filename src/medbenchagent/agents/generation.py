@@ -20,6 +20,7 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.generation.graph import compile_generation_subgraph
 from medbenchagent.settings import get_settings
 from medbenchagent.runtime.dependencies import publish, require
+from medbenchagent.generation.v2 import generate_task_items, write_task_items
 
 
 def _generation_request_node(state: GenerationAgentState) -> dict[str, Any]:
@@ -94,3 +95,30 @@ def run_generation(context, graph):
             {"raw": output["raw_output_path"], "blueprint": str(blueprint_file)},
         ),
     )
+
+
+def run_v2_generation(context, *, leaf_path=None, output_path=None, page_size=50):
+    """Generate annotation.v5 benchmark items from compiled Task Leaves without legacy Protocols."""
+    require(context, "Dataset")
+    access = context["dataset_access_manifest"]
+    if access.get("schema_version") != "annotation.v5":
+        raise ValueError("v2 generation requires annotation.v5")
+    leaf_path = leaf_path or context.get("task_leaves_path")
+    if not leaf_path:
+        raise ValueError("Compiled Task Leaves are required")
+    leaves = json.loads(Path(leaf_path).read_text(encoding="utf-8"))
+    from medbenchagent.data.v5_index import V5DatasetQuery
+    query = V5DatasetQuery(access)
+    cases = []
+    offset = 0
+    while True:
+        page = query.sample(offset=offset, limit=page_size)
+        cases.extend(page["values"])
+        if page["complete"]:
+            break
+        offset = page["next_offset"]
+    items = generate_task_items(cases, leaves.values(), context.get("selected_dataset_id", "dataset"))
+    destination = output_path or str(Path(context["operation_directory"]) / "benchmark_items.v2.jsonl")
+    write_task_items(destination, items)
+    return result("success", f"Generated {len(items)} v2 benchmark items", raw_output_path=destination,
+                  item_count=len(items), task_counts={leaf_id: sum(item["task_id"] == leaf_id for item in items) for leaf_id in leaves})
