@@ -1340,6 +1340,12 @@ class ConversationScreen(Screen):
         else:
             self._collapsed_panels.add(panel_id)
             event.button.label = f"{panel_id.upper()}  ▸"
+            if len(self._collapsed_panels) == 3:
+                # Apply the collapsed state synchronously so repeated button
+                # presses and the /details command observe the same sidebar
+                # visibility before the scheduled layout refresh.
+                self.query_one("#side-pane").display = False
+                self.query_one("#side-resize-handle").display = False
         self._schedule_panel_layout()
 
     def _layout_panels(self):
