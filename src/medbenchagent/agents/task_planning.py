@@ -38,7 +38,9 @@ from medbenchagent.planning.tree import SemanticBasis
 from medbenchagent.runtime.tool_contracts import NoArguments
 from pydantic import Field
 from medbenchagent.planning.node_builder import build_task_nodes
-from medbenchagent.planning.task_space import AxisAnalysis
+from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
+from medbenchagent.planning.task_discovery import validate_candidate_leaf
+from medbenchagent.planning.task_space import AxisAnalysis, TaskLeaf, TaskNode
 
 TEXT_DOCUMENT_FORMATS = {"", ".txt", ".md", ".rst", ".json", ".yaml", ".yml", ".csv", ".tsv", ".html", ".xml"}
 DOCUMENT_FORMATS = TEXT_DOCUMENT_FORMATS | {".pdf", ".doc", ".docx", ".xls", ".xlsx"}
@@ -50,6 +52,54 @@ class AxisAnalysisArguments(NoArguments):
 
 class TaskNodeArguments(NoArguments):
     node_id: str | None = None
+
+
+class TaskLeafArguments(NoArguments):
+    leaf: dict
+
+
+def _task_nodes(context):
+    path = context.get("task_nodes_path")
+    if not path or not Path(path).is_file():
+        raise ValueError("Task Nodes are not available")
+    return _read(path)
+
+
+def node_context(context, *, node_id):
+    """Fetch bounded Evidence Profile, relations and representative Cases for one v5 Task Node."""
+    require(context, "Dataset")
+    nodes = _task_nodes(context)
+    if node_id not in nodes:
+        raise ValueError("Unknown Task Node")
+    from medbenchagent.data.query import DatasetQuery
+    value = DatasetQuery(context["dataset_access_manifest"]).node_context(nodes[node_id], sample_limit=5, evidence_limit=100)
+    return result("success", json.dumps(value, ensure_ascii=False))
+
+
+def save_task_leaf(context, *, leaf):
+    """Compile and persist one Candidate Task Leaf against a constrained v5 Node."""
+    require(context, "Dataset")
+    nodes = _task_nodes(context)
+    parsed = TaskLeaf.model_validate(leaf)
+    validated = validate_candidate_leaf(parsed, {key: TaskNode.model_validate(value) for key, value in nodes.items()})
+    from medbenchagent.data.query import DatasetQuery
+    query = DatasetQuery(context["dataset_access_manifest"])
+    sample = query.sample(limit=50)["values"]
+    spec = ResolverSpec.parse(validated.resolver)
+    eligible = 0
+    for case in sample:
+        resolved = resolve(case, spec)
+        if not isinstance(resolved, NotApplicable):
+            eligible += 1
+    if eligible == 0:
+        raise ValueError("Task Leaf has no eligible representative cases")
+    saved = dict(validated.model_dump(), eligible_count=eligible)
+    path = Path(context["operation_directory"]) / "task_leaves.json"
+    leaves = _read(path) if path.is_file() else {}
+    leaves[validated.leaf_id] = saved
+    atomic_write_json(path, leaves)
+    return result("success", "Task Leaf saved", task_leaves_path=str(path), task_leaves=leaves,
+                  affected_node_ids=[validated.node_id, validated.leaf_id])
 
 
 def _v5_profile(context):
@@ -901,7 +951,7 @@ def available_tools(context):
         return available
     available |= {"list_fields", "read_fields", "read_field_values", "read_node", "read_proposal", "inspect_field_by_source", "sample_records", "inspect_field_pair", "inspect_array", "inspect_protocol_capacity", "read_dataset_document", "list_dataset_documents"}
     if context.get("dataset_access_manifest", {}).get("schema_version") == "annotation.v5":
-        available |= {"analyze_axes", "read_axis_analysis", "build_nodes", "read_task_node"}
+        available |= {"analyze_axes", "read_axis_analysis", "build_nodes", "read_task_node", "node_context", "save_task_leaf"}
     try:
         require(context, "Materials")
     except ValueError:
@@ -930,6 +980,8 @@ def compile_task_planning_agent(*, checkpointer=None):
         read_axis_analysis,
         build_nodes,
         read_task_node,
+        node_context,
+        save_task_leaf,
         list_fields,
         read_fields,
         read_field_values,
@@ -985,6 +1037,8 @@ def compile_task_planning_agent(*, checkpointer=None):
             "resolve_sample_scope": ScopeArguments,
             "analyze_axes": AxisAnalysisArguments,
             "read_task_node": TaskNodeArguments,
+            "node_context": TaskNodeArguments,
+            "save_task_leaf": TaskLeafArguments,
             "read_dataset_document": DocumentArguments,
             "list_dataset_documents": PageArguments,
             "list_fields": PageArguments,

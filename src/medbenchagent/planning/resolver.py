@@ -73,7 +73,7 @@ ResolverStep = Union[ReadStep, CollectStep, SelectStep, CompareStep, ComputeStep
 
 
 class ResolverSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid")
     inputs: list[EvidenceSelector] = Field(min_length=1)
     steps: list[ResolverStep] = Field(min_length=1)
     output_spec: OutputSpec

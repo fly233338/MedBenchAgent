@@ -118,7 +118,7 @@ class EvidenceSelector(BaseModel):
 
 
 class TaskLeaf(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid")
     leaf_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     node_id: str = Field(min_length=1)
