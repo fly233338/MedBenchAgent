@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -112,9 +112,10 @@ class TaskNode(BaseModel):
 class EvidenceSelector(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     name: str | None = None
-    evidence_type: str | None = None
+    evidence_type: Literal['value', 'text', 'asset', 'region'] | None = None
     relation: str | None = None
     role: str = Field(min_length=1)
+    unit: str | None = None
 
 
 class TaskLeaf(BaseModel):
@@ -132,6 +133,7 @@ class TaskLeaf(BaseModel):
     capability_category: str = Field(min_length=1)
     evidence: list[EvidenceBasis] = Field(default_factory=list)
     eligible_count: int | None = Field(default=None, ge=0)
+    question_templates: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_paradigm_output(self):

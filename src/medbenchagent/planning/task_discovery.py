@@ -20,12 +20,10 @@ def validate_candidate_leaf(leaf: TaskLeaf, nodes: dict[str, TaskNode], *, resol
     if leaf.capability_category != node.capability_category:
         raise ValueError("Task Leaf capability category differs from its Task Node")
     spec = ResolverSpec.parse(leaf.resolver)
-    declared = {(s.name, s.evidence_type, s.relation) for s in leaf.input}
-    resolved = {(s.name, s.evidence_type, s.relation) for s in spec.inputs}
-    if not declared <= resolved:
-        raise ValueError("Task Leaf input selectors must be included in its Resolver inputs")
-    if leaf.question.strip().casefold() == leaf.target.strip().casefold():
-        raise ValueError("Task Leaf question must express a question distinct from its target")
+    if leaf.input != spec.inputs or leaf.output_spec != spec.output_spec:
+        raise ValueError("Task Leaf input and OutputSpec must exactly match Resolver")
+    if leaf.task_paradigm.value == "Report Generation" and any(s.evidence_type != "asset" for s in leaf.input):
+        raise ValueError("Report Generation accepts only assets as input")
     if resolver_context is not None:
         missing = [selector.role for selector in leaf.input if selector.name and selector.name not in resolver_context.get("evidence_names", set())]
         if missing:
@@ -41,8 +39,8 @@ def compile_task_space_plan(
     accepted: dict[str, TaskLeaf] = {}
     identities: set[tuple[str, str, str, str]] = set()
     for leaf in leaves:
-        validate_candidate_leaf(leaf, nodes, resolver_context={"evidence_names": {row.get("name") for row in node_context.get("evidence", [])}})
-        identity = (leaf.node_id, leaf.target.strip().casefold(), leaf.answer.strip().casefold(), leaf.output_spec.value)
+        validate_candidate_leaf(leaf, nodes, resolver_context={"evidence_names": node_context.get("evidence_names", [])})
+        identity = leaf_identity(leaf)
         if identity in identities:
             raise ValueError("Duplicate Task Leaf semantics")
         identities.add(identity)
@@ -51,6 +49,12 @@ def compile_task_space_plan(
         accepted[leaf.leaf_id] = leaf
         nodes[leaf.node_id] = nodes[leaf.node_id].model_copy(update={"leaf_ids": [*nodes[leaf.node_id].leaf_ids, leaf.leaf_id]})
     return TaskSpacePlan(dataset=dataset, axis_analysis=axis_analysis, nodes=nodes, leaves=accepted, revision=revision)
+
+
+def leaf_identity(leaf):
+    import json
+    spec = ResolverSpec.parse(leaf.resolver).model_dump(mode="json")
+    return (leaf.node_id, leaf.target.strip().casefold(), json.dumps(spec, sort_keys=True), leaf.task_paradigm.value)
 
 
 def node_statistics(nodes: dict[str, TaskNode]) -> dict[str, Any]:

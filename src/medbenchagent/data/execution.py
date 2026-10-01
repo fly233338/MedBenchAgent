@@ -100,11 +100,11 @@ def output_digests(output):
 
 def verify_output_digests(output, expected):
     from medbenchagent.data.sources import digest_file
-    from medbenchagent.data.validation import source_image_path
+    from medbenchagent.data.validation import source_path
     if not expected:
         raise ValueError("Prepared operation has no output binding")
     for name, digest in expected.items():
-        if digest_file(source_image_path(output, name)) != digest:
+        if digest_file(source_path(output, name)) != digest:
             raise ValueError("Prepared operation output changed or is incomplete; use a new operation")
 
 

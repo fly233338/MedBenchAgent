@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 from medbenchagent.data.contracts import Source
-from medbenchagent.data.validation import source_image_path
+from medbenchagent.data.validation import source_path
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 
@@ -76,7 +76,7 @@ def inventory_source(source: Source, destination):
             directories.sort()
             for name in sorted(files):
                 path = Path(directory) / name
-                resolved = source_image_path(root, path.relative_to(root))
+                resolved = source_path(root, path.relative_to(root))
                 stat = resolved.stat()
                 output.write(
                     json.dumps(
@@ -100,7 +100,7 @@ def track_files(manifest, paths):
     with sqlite3.connect(manifest / "used.sqlite") as db:
         for relative in paths:
             key = Path(relative).as_posix()
-            digest = digest_file(source_image_path(source.root, relative))
+            digest = digest_file(source_path(source.root, relative))
             saved = db.execute("SELECT digest FROM used WHERE path=?", [key]).fetchone()
             if saved and saved[0] != digest:
                 raise ValueError(f"Source changed: {key}; rebuild dependent artifacts")
@@ -115,7 +115,7 @@ def verify_source(manifest):
     with (manifest / "files.jsonl").open(encoding="utf-8") as handle:
         for line in handle:
             item = json.loads(line)
-            path = source_image_path(root, item["path"])
+            path = source_path(root, item["path"])
             stat = path.stat()
             if stat.st_size != item["size"] or stat.st_mtime_ns != item["mtime_ns"]:
                 raise ValueError(f"Source changed: {item['path']}; start a new input version")
@@ -124,34 +124,5 @@ def verify_source(manifest):
         raise ValueError("Source file population changed")
     with sqlite3.connect(manifest / "used.sqlite") as db:
         for relative, digest in db.execute("SELECT path,digest FROM used ORDER BY path"):
-            if digest_file(source_image_path(root, relative)) != digest:
+            if digest_file(source_path(root, relative)) != digest:
                 raise ValueError(f"Source content changed: {relative}")
-
-
-def attach_provenance(record, source, locator, plan_ref):
-    original = {
-        entity: record[entity][entity + "_id"] for entity in ("patient", "case", "study", "image")
-    }
-    for entity, value in original.items():
-        if isinstance(value, str) and value.startswith("["):
-            try:
-                components = json.loads(value)
-            except json.JSONDecodeError:
-                continue
-            if (
-                isinstance(components, list)
-                and len(components) == 4
-                and components[:3] == [source.id, source.version, entity]
-            ):
-                original[entity] = components[3]
-    record["provenance"] = {
-        "source_id": source.id,
-        "source_version": source.version,
-        "original_ids": original,
-        "original_image_path": record["image"]["image_path"],
-        "record_ref": locator,
-        "plan_ref": plan_ref,
-    }
-    for entity, value in original.items():
-        record[entity][entity + "_id"] = namespace_id(source, entity, value)
-    return record

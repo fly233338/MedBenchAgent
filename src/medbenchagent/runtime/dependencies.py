@@ -10,13 +10,42 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 CONTRACT_VERSION = "agent-runtime.v21"
 
-SOURCE_KINDS = frozenset({"Source", "Inventory", "Annotation",
-                          "SourceFingerprint", "SemanticPreparationSpec", "DatasetAdapter", "ExecutionPlan",
-                          "CandidateExtraction", "PopulationDecision", "PreparationValidation",
-                          "ImageInventory", "ImagePlan", "NormalizedSource"})
+SOURCE_KINDS = frozenset(
+    {
+        "Source",
+        "Inventory",
+        "Annotation",
+        "SourceFingerprint",
+        "SemanticPreparationSpec",
+        "DatasetAdapter",
+        "ExecutionPlan",
+        "CandidateExtraction",
+        "PopulationDecision",
+        "PreparationValidation",
+        "ImageInventory",
+        "ImagePlan",
+        "NormalizedSource",
+    }
+)
 
 
-DATASET_KINDS = SOURCE_KINDS | frozenset({"Dataset", "DatasetProfile", "DatasetCard", "PlanningDraft", "Plan", "PlanningDelegation", "Materials", "Templates", "Generation", "GenerationCheck", "Harmonization", "SourceSelection", "Documentation"})
+DATASET_KINDS = SOURCE_KINDS | frozenset(
+    {
+        "Dataset",
+        "DatasetProfile",
+        "DatasetCard",
+        "PlanningDraft",
+        "Plan",
+        "PlanningDelegation",
+        "Materials",
+        "Templates",
+        "Generation",
+        "GenerationCheck",
+        "Harmonization",
+        "SourceSelection",
+        "Documentation",
+    }
+)
 
 
 def artifact_key(context, kind):
@@ -25,12 +54,18 @@ def artifact_key(context, kind):
     scope = context.get("source_scope")
     key = f"source/{scope}/{kind}" if scope and kind in SOURCE_KINDS else kind
     dataset = context.get("dataset_scope")
-    return f"dataset/{dataset}/{key}" if dataset and (kind in DATASET_KINDS or kind.startswith("source/")) else key
+    return (
+        f"dataset/{dataset}/{key}"
+        if dataset and (kind in DATASET_KINDS or kind.startswith("source/"))
+        else key
+    )
 
 
 def reference_digests(references):
     from medbenchagent.data.sources import digest_file
+
     digests = {}
+
     # Prepared access manifests already bind the full annotation contents. Reuse that
     # digest instead of scanning a large annotation again for every publication.
     def known(value):
@@ -39,17 +74,23 @@ def reference_digests(references):
                 digests[str(Path(value["annotation_path"]).resolve())] = value["annotation_digest"]
             for child in value.values():
                 known(child)
+
     known(references)
+
     def visit(value, key=""):
         if isinstance(value, dict):
             for name, child in value.items():
                 visit(child, name)
-        elif isinstance(value, str) and (key.endswith("_path") or key in {"path", "blueprint", "raw", "audited", "report", "annotation"}):
+        elif isinstance(value, str) and (
+            key.endswith("_path")
+            or key in {"path", "blueprint", "raw", "audited", "report", "annotation"}
+        ):
             path = Path(value)
             if path.is_file() and path.suffix in {".json", ".jsonl", ".py", ".toml"}:
                 canonical = str(path.resolve())
                 if canonical not in digests:
                     digests[canonical] = digest_file(path)
+
     visit(references)
     return digests
 
@@ -99,8 +140,12 @@ def publish(context, kind, references, dependencies=None):
     current = dict(context.get("artifact_versions", {}))
     deps = {key: current[key] for key in kinds}
     index = read_index(context)
-    identity = {"kind": kind, "references": references, "dependencies": deps,
-                "content_digests": reference_digests(references)}
+    identity = {
+        "kind": kind,
+        "references": references,
+        "dependencies": deps,
+        "content_digests": reference_digests(references),
+    }
     existing = next(
         (
             key
@@ -147,18 +192,23 @@ def verify_resume(context):
     if frozen.get("execution_runtime") != context.get("execution_runtime"):
         raise ValueError("Frozen execution runtime changed; start a new run")
     from medbenchagent.runtime.run_artifacts import verify_catalog_snapshot
+
     catalog_snapshot = context.get("task_catalog_snapshot_path")
     catalog_digest = context.get("task_catalog_snapshot_digest")
     if not catalog_snapshot or not catalog_digest:
         raise ValueError("Frozen task catalog is unavailable; this run cannot resume")
     verify_catalog_snapshot(catalog_snapshot, catalog_digest)
     from medbenchagent.data.sources import verify_source
+
     for source in Path(context["run_directory"]).rglob("source_manifests/*/source.json"):
         verify_source(source.parent)
     from medbenchagent.data.dataset_catalog import load_prepared
     from medbenchagent.settings import run_settings
+
     entries = dict(context.get("prepared_entries", {}))
-    entries.update({key: asset["entry"] for key, asset in context.get("dataset_assets", {}).items()})
+    entries.update(
+        {key: asset["entry"] for key, asset in context.get("dataset_assets", {}).items()}
+    )
     if entries:
         with run_settings(context["effective_config_path"]):
             for entry in entries.values():
@@ -184,60 +234,21 @@ def initialize_dependencies(context, settings):
             "temperature": context["question_temperature"],
             "model": settings.llm.model,
         },
-        "GenerationConfig": {key: context.get(key) for key in ("seed", "max_tasks_per_image", "max_total_tasks_per_image")},
+        "GenerationConfig": {
+            key: context.get(key)
+            for key in ("seed", "max_tasks_per_image", "max_total_tasks_per_image")
+        },
         "FinalizationConfig": {"seed": context["seed"], "policy": "final-task.v1"},
     }
     for kind, value in configs.items():
         path = Path(context["run_directory"]) / "control" / "config" / f"{kind}.json"
         atomic_write_json(path, value)
         publish(context, kind, {"path": str(path)}, ())
-    atomic_write_json(Path(context["run_directory"]) / "control" / "execution_runtime.json",
-                      context["execution_runtime"])
+    atomic_write_json(
+        Path(context["run_directory"]) / "control" / "execution_runtime.json",
+        context["execution_runtime"],
+    )
     atomic_write_json(
         Path(context["run_directory"]) / "control" / "contract.json",
         {"contract": CONTRACT_VERSION, "code": code_identity()},
     )
-
-
-def snapshot_dataset(annotation, destination, *, dataset_id="imported"):
-    """Import standard PNG/JPEG inputs through the same quality and publication engine.
-
-    This fixed local copy path executes no generated code. Raw conversion stays in Docker.
-    """
-    from medbenchagent.data.bundle import normalize_source, publish_bundle
-    from medbenchagent.data.contracts import Source, HarmonizationPlan
-    from medbenchagent.data.sources import (
-        inventory_source, track_files, verify_source, compare_outputs, remove_work_directory,
-    )
-    from medbenchagent.data.image_assets import iter_image_manifest
-
-    annotation, destination = Path(annotation).resolve(), Path(destination).resolve()
-    source = Source(id=dataset_id, kind="annotation", root=str(annotation.parent), annotation=annotation.name)
-    source_manifest = destination / "source_manifests" / dataset_id
-    if (destination / "ready.json").exists():
-        verify_source(source_manifest)
-        return destination / "annotation.jsonl"
-    if destination.is_relative_to(annotation.parent):
-        raise ValueError("Dataset output must not be beneath the source root")
-    inventory_source(source, source_manifest)
-    from medbenchagent.data.image_conversion import detect_format
-    for entry in iter_image_manifest(annotation.parent / "image_manifest.jsonl"):
-        if not entry.png_path.is_file():
-            continue  # Missing files are reported by normalization as local quarantine.
-        detected = detect_format(entry.png_path)
-        if detected is not None and detected not in {"raster:png", "raster:jpeg"}:
-            raise ValueError("Standard imports require PNG/JPEG; use prepare_data for raw conversion")
-    track_files(source_manifest, [annotation.name, "image_manifest.jsonl"])
-    track_files(source_manifest, (e.relative_png_path for e in iter_image_manifest(annotation.parent / "image_manifest.jsonl")
-                                  if e.png_path.is_file()))
-    folder = destination / "sources" / dataset_id
-    normalize_source(source.root, annotation, source, folder)
-    repeat = destination / "repeat"
-    normalize_source(source.root, annotation, source, repeat)
-    compare_outputs(folder, repeat)
-    remove_work_directory(repeat, destination)
-    verify_source(source_manifest)
-    publish_bundle(destination, {dataset_id: folder}, HarmonizationPlan(),
-                   verify_inputs=lambda: verify_source(source_manifest))
-    verify_source(source_manifest)
-    return destination / "annotation.jsonl"

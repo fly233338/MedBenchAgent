@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 from medbenchagent.data.sources import digest_file
-from medbenchagent.data.validation import source_image_path
+from medbenchagent.data.validation import source_path
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 TEXT_FORMATS = {"", ".txt", ".md", ".rst", ".json", ".yaml", ".yml", ".csv", ".tsv", ".html", ".xml"}
@@ -24,7 +24,7 @@ def freeze_document(bundle, source_id, root, path):
     bundle = Path(bundle)
     if (bundle / "ready.json").exists():
         raise ValueError("Published documentation is immutable")
-    original = source_image_path(root, path)
+    original = source_path(root, path)
     suffix = original.suffix.lower()
     if suffix not in TEXT_FORMATS | {".pdf"}:
         raise ValueError("Only UTF-8 text and text-extractable PDF documentation are supported")
@@ -69,7 +69,7 @@ def read_document(bundle, source_id, path, *, page=1, offset=0, limit=6000):
     if item is None:
         raise ValueError("Document was not frozen for this prepared version")
     for key, expected in (("file_path", "file_digest"), ("text_path", "text_digest")):
-        target = source_image_path(bundle, item[key])
+        target = source_path(bundle, item[key])
         if digest_file(target) != item[expected]:
             raise ValueError("Frozen documentation changed; prepare a new version")
     pages = json.loads((Path(bundle) / item["text_path"]).read_text(encoding="utf-8"))["pages"]

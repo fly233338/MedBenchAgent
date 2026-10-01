@@ -65,11 +65,9 @@ def _profile(cases, assets):
     for case in cases:
         names = set()
         for item in case.evidence:
-            if item.name in names:
-                continue
-            names.add(item.name)
             row = evidence[item.name]
-            row["cases"] += 1
+            row["cases"] += item.name not in names
+            names.add(item.name)
             row["types"][item.type] += 1
             value = item.value
             row["value_types"]["boolean" if isinstance(value, bool) else "number" if isinstance(value, (int, float)) else "string" if isinstance(value, str) else "array" if isinstance(value, list) else "object"] += 1
@@ -136,25 +134,43 @@ class V5DatasetQuery:
         with self._db() as db:
             return [dict(asset_id=row[0], kind=row[1], format=row[2], source_path=row[3], file_digest=row[4], metadata=json.loads(row[5])) for row in db.execute("SELECT asset_id,kind,format,source_path,file_digest,metadata FROM assets" + clause, args).fetchall()]
 
+    def iter_cases(self):
+        offset = 0
+        while True:
+            page = self.sample(offset=offset, limit=512)
+            yield from page["values"]
+            if page["complete"]:
+                break
+            offset = page["next_offset"]
+
+    def facts(self):
+        from medbenchagent.data.task_facts import case_facts, merge_facts
+        assets = {row["asset_id"]: row for row in self.assets()}
+        return merge_facts(case_facts(case, assets) for case in self.iter_cases())
+
     def node_context(self, node, *, sample_limit=5, evidence_limit=100):
-        """Return bounded, node-scoped facts for Task Leaf discovery."""
-        names = []
+        from medbenchagent.data.task_facts import case_facts
+        from medbenchagent.planning.node_builder import NodeConstraintRegistry
+        from medbenchagent.planning.task_space import TaskNode
+        node = TaskNode.model_validate(node)
+        assets = {row["asset_id"]: row for row in self.assets()}
+        samples, count = [], 0
+        names = set()
+        for case in self.iter_cases():
+            if NodeConstraintRegistry.check(node, case_facts(case, assets))[0]:
+                count += 1
+                names.update(row["name"] for row in case["evidence"])
+                if len(samples) < sample_limit:
+                    samples.append(case)
+        profile = json.loads(Path(self.access["profile_path"]).read_text(encoding="utf-8"))
+        return {"dataset_version": self.access["revision"], "node_id": node.node_id,
+                "node": node.model_dump(), "evidence": [row for row in profile["evidence"] if row["name"] in names][:evidence_limit],
+                "capacity_hint": count, "relations": self.facts()["relations"],
+                "representative_cases": samples}
+
+    def values(self, field, offset=0, limit=20, source_id=None):
         with self._db() as db:
-            rows = db.execute(
-                "SELECT name,type,count(*),count(DISTINCT case_id) FROM evidence GROUP BY name,type ORDER BY name,type LIMIT ?",
-                [evidence_limit],
-            ).fetchall()
-            names = [{"name": n, "type": t, "count": c, "cases": cases} for n, t, c, cases in rows]
-        samples = self.sample(limit=sample_limit)["values"]
-        evidence_types = {row["type"]: sum(item["count"] for item in names if item["type"] == row["type"]) for row in names}
-        return {
-            "dataset_version": self.access["revision"],
-            "node_id": node.node_id if hasattr(node, "node_id") else node.get("node_id"),
-            "node": node.model_dump() if hasattr(node, "model_dump") else node,
-            "evidence": names,
-            "evidence_type_counts": evidence_types,
-            "relations": {"related": sum(1 for case in samples for item in case.get("evidence", []) if item.get("ref")),
-                          "paired": sum(1 for case in samples if sum(item.get("type") == "asset" for item in case.get("evidence", [])) >= 2),
-                          "comparable": sum(1 for case in samples if sum(item.get("ref") for item in case.get("evidence", [])) >= 2)},
-            "representative_cases": samples,
-        }
+            total = db.execute("SELECT count(DISTINCT value) FROM evidence WHERE name=?", [field]).fetchone()[0]
+            rows = db.execute("SELECT value,count(*) FROM evidence WHERE name=? GROUP BY value ORDER BY value LIMIT ? OFFSET ?", [field, limit, offset]).fetchall()
+        return {"values": [{"value": json.loads(v), "count": n} for v, n in rows], "total": total,
+                "dataset_version": self.access["revision"], "complete": offset + len(rows) >= total}

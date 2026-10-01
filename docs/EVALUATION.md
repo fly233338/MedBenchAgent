@@ -6,7 +6,7 @@ ignored repository-root `evaluation/` overlay beside the checkout before running
 these commands.
 
 The evaluation loader accepts `benchmark-manifest.v2` and the v5 `asset_manifest.jsonl`. Legacy
-image-manifest and v4 construction artifacts are outside the supported workflow.
+legacy construction artifacts are outside the supported workflow.
 
 The evaluation overlay runs generated benchmark artifacts against local Medical
 VLM checkpoints. Use the audited JSONL when available. The loader requires the
@@ -148,8 +148,8 @@ PYTHONPATH=src:. python -m torch.distributed.run \
   --model-path /path/to/Qwen2.5-VL-7B-Instruct \
   --benchmark /path/to/benchmark.jsonl \
   --benchmark-manifest /path/to/benchmark_manifest.json \
-  --image-manifest /path/to/image_manifest.jsonl \
-  --task-types letter bbox free_text \
+  --asset-manifest /path/to/asset_manifest.jsonl \
+  --output-specs label labels number text bbox index \
   --output results/qwen2_5_vl_7b_instruct.json \
   --batch-size 4
 
@@ -167,14 +167,14 @@ greedy, with
 defaults of 512 new tokens, SDPA, and 0.5 correctness thresholds for both BLEU
 and bbox IoU. Existing inference outputs and temporary parts are protected
 unless `--overwrite` is supplied; interrupted jobs do not resume. `--task-types`
-is required, accepts one or more unique values from `letter`, `bbox`, and `free_text`,
+is required, accepts one or more unique values from `label`, `bbox`, and `text`,
 and filters samples before model loading. Every requested type must be present in the
 benchmark. The selected order is recorded in inference metadata.
 Each inference item also records the effective model `coordinate_size` used by the bbox
 parser. This field is optional in the backward-compatible `medbench-inference.v1`
 schema, so older files remain readable.
 
-If an existing inference JSON contains BreastGPT letter outputs such as `（A）`,
+If an existing inference JSON contains BreastGPT label outputs such as `（A）`,
 the model does not need to be run again. Recompute the report directly from the
 stored `raw_prediction` values:
 
@@ -222,11 +222,11 @@ checkpoint therefore requires a GPU that can hold the complete model plus runtim
 memory; multi-GPU tensor parallelism and quantization are outside this evaluator.
 
 The evaluator recomputes item scores and checks the recorded result. One report file
-is a response-format-keyed object whose selected `letter`, `bbox`, and `free_text`
+is a response-format-keyed object whose selected `label`, `bbox`, and `text`
 values are complete `medbench-evaluation.v2` reports. Each section independently
 contains `metadata`, `summary`, `metric_groups`, `categories`, `tasks`, and `items`.
 It reports accuracy, semantic-option macro-F1, SacreBLEU, and mean IoU according to each
-question type's manifest metric. For letter and free-text sections, `metric_groups` keeps
+question type's manifest metric. For label and text sections, `metric_groups` keeps
 the existing two hierarchical display values. For bbox sections it instead exposes the
 native `acc_at_iou` and `miou` names: each question type first contributes its threshold
 accuracy and mean IoU to an equal-weight mean within its parent task, then the parent-task
