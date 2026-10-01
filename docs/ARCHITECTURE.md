@@ -53,6 +53,11 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 ## 数据准备
 
+数据准备的 canonical 产物使用 `annotation.v5`、`asset_manifest.jsonl` 和
+`preparation_report.json`。Case grouping、Evidence ref 和 Asset 完整性由宿主确定性校验；
+OpenHands Coding Session 只负责在 Worker workspace 中探索来源和编写可重复转换器。旧的
+image-centric 产物不属于 v2 数据处理运行时。
+
 原始来源以只读方式访问。OpenHands Coding Session 在 Worker workspace 中探索来源、编写适配器并提交候选；宿主重新核验来源、locator、总体、annotation 和图像资产，再注册 Dataset、Profile、Card 和 Catalog。
 
 有效的已登记数据默认复用。`prepare_data` 只有在用户明确要求时才使用 `rebuild`。数据源决议和准备候选绑定当前 Run，成功后才进入 benchmark 选择。

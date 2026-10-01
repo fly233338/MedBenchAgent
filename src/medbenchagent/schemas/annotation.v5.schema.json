@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://medbenchagent.local/schemas/annotation.v5.schema.json",
+  "title": "MedBenchAgent annotation.v5",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["case_id", "patient_id", "evidence"],
+  "properties": {
+    "case_id": {"type": "string", "minLength": 1},
+    "patient_id": {"type": ["string", "null"]},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "name", "value", "ref"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"enum": ["value", "text", "asset", "region"]},
+        "name": {"type": "string", "minLength": 1},
+        "value": {},
+        "time": {"type": ["number", "null"]},
+        "unit": {"type": ["string", "null"]},
+        "ref": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

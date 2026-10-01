@@ -10,10 +10,11 @@ OpenHands Coding Session 只能在 Worker workspace 中写候选文件。宿主�
 
 ## Dataset Bundle
 
-已发布 Bundle 提供：
+已发布 Bundle 提供（annotation.v5）：
 
-- `annotation.jsonl`：canonical annotation 记录；
-- `image_manifest.jsonl`：图像 ID、来源和可访问路径；
+- `annotation.jsonl`：以 Case/Evidence 为核心的 canonical 记录；
+- `asset_manifest.jsonl`：image/volume Asset、来源和完整性摘要；
+- `preparation_report.json`：完整输入、接收、隔离和失败账本；
 - Profile：字段、结构、覆盖率、值分布和容量索引；
 - Card：数据集范围、模态、字段角色和来源证据；
 - preparation metadata：执行计划、来源摘要、验证回执和 provenance。
@@ -24,9 +25,9 @@ Bundle、Profile、Card 和 Catalog 都使用内容摘要绑定输入。新版�
 
 固定算子和 generated Python adapter 使用相同的输入、输出和 provenance 契约。Adapter 输出候选 annotation 与 provenance；它不发布 namespace、可信 provenance、Catalog 或完成标记。
 
-总体检查器生成完整 image ID/path manifest。框架逐项对账候选记录，验证 source locator、finding 关联、mask 几何、重复身份和缺失图像。坏记录按整图隔离，数量账本区分保留、隔离和重复移除。
+总体检查器生成完整 Case/Asset population。框架逐项对账候选记录，验证 source locator、Evidence ref、Asset digest、重复身份和缺失资产。影响医学语义完整性的错误按整 Case 隔离，数量账本区分接收、隔离和可选 Evidence 丢弃。
 
-图像处理保留原始来源引用。PNG/JPEG 可以直接复用；其他格式由明确 reader 转换。显示窗口、维度和像素元数据作为独立决策保存。
+Asset 处理保留原始来源引用。PNG/JPEG、单文件 DICOM、DICOM Series 和 NIfTI 通过统一 Asset Adapter 读取。Native Asset 与确定性的 Presentation 分离，显示窗口、维度和像素元数据作为独立决策保存。
 
 ## Harmonization 与查询
 

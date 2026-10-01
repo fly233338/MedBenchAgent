@@ -20,8 +20,8 @@ def build_data_preparation_task(context: dict, workspace: Path, *, feedback: str
     session = load_session(workspace)
     prompt = (Path(__file__).parents[1] / "prompts" / "data_preparation_agent.md").read_text(encoding="utf-8")
     task_context = {"sources": sources, "source_manifests": context.get("source_manifests", {}),
-                    "schema": str(Path(__file__).parents[1] / "schemas" / "annotation.v4.schema.json"),
-                    "workspace": str(workspace), "validator": "medbenchagent.data.validation",
+                    "schema": str(Path(__file__).parents[1] / "schemas" / "annotation.v5.schema.json"),
+                    "workspace": str(workspace), "validator": "medbenchagent.data.v5_validation",
                     "feedback": feedback}
     objective = prompt + "\n\nFrozen task context:\n" + json.dumps(task_context, ensure_ascii=False)
     if feedback:
@@ -34,7 +34,7 @@ def build_data_preparation_task(context: dict, workspace: Path, *, feedback: str
         source_manifest=context.get("source_manifests", {}).get(primary["id"], context["source_manifest"]),
         source_roots={item["id"]: item["root"] for item in sources},
         workspace=str(workspace), objective=objective,
-        required_outputs=["annotation.jsonl", "annotation_fields.json", "image_manifest.jsonl", "provenance.jsonl", "complete.json"],
+        required_outputs=["annotation.jsonl", "asset_manifest.jsonl", "provenance.jsonl", "preparation_report.json", "complete.json"],
         feedback=feedback, attempt=session.get("attempt", 1), conversation_id=conversation_id,
         max_iterations=context.get("coding_worker_max_iterations", 80), timeout_seconds=context.get("coding_worker_timeout_seconds", 3600),
         model=get_settings().llm.model, base_url=get_settings().llm.base_url,
