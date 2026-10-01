@@ -47,10 +47,12 @@ def load_dataset_catalog(catalog_path=None):
         catalog = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise DatasetCatalogError(f"Cannot read dataset catalog: {path}") from exc
-    if not isinstance(catalog, dict) or set(catalog) != {"datasets"} or not isinstance(catalog["datasets"], list):
+    if not isinstance(catalog, dict) or not isinstance(catalog.get("datasets"), list):
         raise DatasetCatalogError("Catalog requires one datasets array")
     seen = set()
-    required = {"dataset_id", "name", "description", "available", *PATH_FIELDS}
+    v5 = catalog.get("schema_version") == "dataset-catalog.v5"
+    path_fields = ("annotation_path", "asset_manifest_path", "profile_path", "dataset_card_path") if v5 else PATH_FIELDS
+    required = {"dataset_id", "name", "description", "available", *path_fields}
     for entry in catalog["datasets"]:
         if not isinstance(entry, dict) or set(entry) != required:
             raise DatasetCatalogError(f"Catalog entry must contain exactly {sorted(required)}")
@@ -85,6 +87,14 @@ def dataset_by_id(datasets, dataset_id):
 
 def load_prepared_assets(entry):
     """Validate the data/cache independently of the Card, including during v1 migration."""
+    if "asset_manifest_path" in entry:
+        from medbenchagent.data.v5_catalog import verify_v5_bundle
+        annotation = resolve_path(entry["annotation_path"])
+        bundle = annotation.parent
+        verified = verify_v5_bundle(bundle)
+        ready = verified["ready"]
+        profile = json.loads(Path(ready["access"]["profile_path"]).read_text(encoding="utf-8"))
+        return {key: resolve_path(entry[key]) for key in ("annotation_path", "asset_manifest_path", "profile_path", "dataset_card_path")}, profile, ready["access"]
     paths = {key: resolve_path(entry[key]) for key in PATH_FIELDS if key != "dataset_card_path"}
     for key, path in paths.items():
         if not path.is_file():
@@ -126,6 +136,8 @@ def validate_card_facts(card, dataset_id, paths, profile, access):
 
 def load_prepared(entry):
     paths, profile, access = load_prepared_assets(entry)
+    if access.get("schema_version") == "annotation.v5":
+        return json.loads(Path(paths["dataset_card_path"]).read_text(encoding="utf-8")), access
     card_path = resolve_path(entry["dataset_card_path"])
     if not card_path.is_file():
         raise DatasetCatalogError(f"{entry['dataset_id']} lacks dataset_card_path; run refresh-card --dataset-id {entry['dataset_id']}")
@@ -139,6 +151,23 @@ def register_dataset(dataset_id, bundle, *, catalog_path=None):
     validate_dataset_id(dataset_id)
     bundle = Path(bundle).resolve()
     ready = json.loads((bundle / "ready.json").read_text(encoding="utf-8"))
+    if ready.get("annotation_schema") == "annotation.v5":
+        card = json.loads((bundle / "dataset_card.json").read_text(encoding="utf-8"))
+        entry = {"dataset_id": dataset_id, "name": card["name"], "description": card["description"], "available": True,
+                 "annotation_path": str(bundle / "annotation.jsonl"), "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
+                 "profile_path": str(bundle / "dataset_profile.json"), "dataset_card_path": str(bundle / "dataset_card.json")}
+        target = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
+        value = {"schema_version": "dataset-catalog.v5", "datasets": []}
+        if target.is_file():
+            try:
+                old = json.loads(target.read_text(encoding="utf-8"))
+                if old.get("schema_version") == "dataset-catalog.v5":
+                    value = old
+            except json.JSONDecodeError:
+                pass
+        value["datasets"] = [item for item in value["datasets"] if item.get("dataset_id") != dataset_id] + [entry]
+        atomic_write_json(target, value)
+        return entry
     card_path = bundle / "dataset_card.json"
     card = read_card(card_path)
     entry = {"dataset_id": dataset_id, "name": card.name, "description": card.semantics.description,
