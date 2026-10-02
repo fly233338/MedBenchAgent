@@ -112,14 +112,23 @@ def _inventory(root: Path) -> dict:
 
 def _answer_text(value) -> str:
     if isinstance(value, str):
-        text = value.strip()
-        return explicit_source_path(text) or text
+        return value.strip()
     if isinstance(value, dict):
         for key in ("root", "path", "answer", "text", "value"):
             if value.get(key):
-                text = str(value[key]).strip()
-                return explicit_source_path(text) or text
+                return str(value[key]).strip()
     return ""
+
+
+def _extract_proposal(text: str) -> RootProposal:
+    """Use the same structured extraction contract for requests and answers."""
+    return complete_validated_json(
+        "Extract the raw dataset directory and optional dataset name from the user's text. "
+        "Return JSON matching the schema with root and dataset_name; use null when absent "
+        "and never invent a path.",
+        text,
+        RootProposal,
+    )
 
 
 def discover_source(context: dict, dataset_id: str) -> dict:
@@ -134,20 +143,16 @@ def discover_source(context: dict, dataset_id: str) -> dict:
     if proposal_path.is_file():
         proposal = RootProposal.model_validate_json(proposal_path.read_text(encoding="utf-8"))
     else:
-        explicit = explicit_source_path(request_text(context))
-        proposal = (RootProposal(root=explicit, dataset_name=Path(explicit).name)
-                    if explicit else complete_validated_json(
-                        "Extract the raw dataset directory and optional dataset name from the request. "
-                        "Return JSON with root and dataset_name; use null when absent and never invent a path.",
-                        request_text(context), RootProposal,
-                    ))
+        proposal = _extract_proposal(request_text(context))
         atomic_write_json(proposal_path, proposal.model_dump())
 
-    root_text = _answer_text(proposal.root) if proposal.root else None
+    root_text = proposal.root
     while not root_text:
         answer = interrupt({"kind": "clarification", "role": "DataProcessingAgent",
                             "question": f"Where is the raw directory for {dataset_id}?"})
-        root_text = _answer_text(answer)
+        answer_text = _answer_text(answer)
+        proposal = _extract_proposal(answer_text)
+        root_text = proposal.root
     root = Path(root_text).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"Raw dataset directory is unavailable: {root}")
