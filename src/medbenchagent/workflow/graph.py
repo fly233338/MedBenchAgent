@@ -6,12 +6,11 @@ from pathlib import Path
 from typing import Any, TypedDict
 from langchain_core.messages import convert_to_messages
 from langgraph.graph import StateGraph, START, END
-from medbenchagent.agents.generation import compile_generation_agent, run_generation
-from medbenchagent.agents.finalization import compile_finalization_agent, restore_delivery
+from medbenchagent.agents.generation import run_generation
+from medbenchagent.agents.finalization import restore_delivery
 from medbenchagent.agents.templates import prepare_templates as run_templates
 from medbenchagent.agents.task_planning import compile_task_planning_agent, apply_template_feedback
 from medbenchagent.agents.v2_pipeline import run_task_space_pipeline
-from medbenchagent.agents.allocation import compile_allocation_agent
 from medbenchagent.planning.dataset_selection import select_datasets as run_selection
 from medbenchagent.planning.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
 from medbenchagent.runtime.contexts import SupervisorContext
@@ -350,9 +349,8 @@ Finite generation exhaustion reports shortfall; do not start an automatic refill
 
 def compile_benchmark_graph(*, checkpointer=None):
     planning = compile_task_planning_agent()
-    generation = compile_generation_agent()
-    allocation = compile_allocation_agent()
-    finalization = compile_finalization_agent()
+    generation = None
+    finalization = None
 
     def select_datasets(context):
         """Select only datasets prepared when this build run began."""
@@ -390,11 +388,14 @@ def compile_benchmark_graph(*, checkpointer=None):
         output = run_task_space_pipeline(child)
         atomic_write_json(Path(child["operation_directory"]) / "result.json", output)
         result_path = Path(child["operation_directory"]) / "result.json"
-        versions = publish(context, "Delivery", {"task_space_output": str(result_path)}, ("Plan", "Dataset"))
-        return result("success", output["summary"], dataset_id=dataset_id,
-                      v2_pipeline_path=str(result_path), delivery_path=str(result_path),
-                      delivery_counts={"accepted": output["audit"]["accepted"], "shortfall": output.get("shortfall", {})},
-                      **versions)
+        results = {**context.get("v2_pipeline_results", {}), dataset_id: str(result_path)}
+        counts = {**context.get("v2_pipeline_counts", {}), dataset_id: {"accepted": output["audit"]["accepted"], "shortfall": output.get("shortfall", {})}}
+        updates = {"v2_pipeline_results": results, "v2_pipeline_counts": counts,
+                   "v2_pipeline_path": str(result_path), "delivery_counts": counts}
+        if set(results) >= set(context.get("selected_dataset_ids", [])):
+            versions = publish(context, "Delivery", {"task_space_outputs": results}, ())
+            updates.update(versions, delivery_path=str(result_path))
+        return result("success", output["summary"], dataset_id=dataset_id, **updates)
 
     def prepare_templates(context, *, dataset_id):
         """Review templates immediately after this Dataset's Plan; return task defects to Planning."""
@@ -545,27 +546,8 @@ def compile_benchmark_graph(*, checkpointer=None):
         return outcome
 
     def allocate(context, *, delegation=None):
-        """Delegate global Concept-first allocation after every selected dataset plan is complete."""
-        saved = context.get("allocation_state_path")
-        child = load_context(saved, "allocation") if saved else {}
-        child.update({k: context[k] for k in (*COMMON, "selected_dataset_ids", "dataset_task_plans") if k in context})
-        child["operation_directory"] = agent_operation(context, "AllocationAgent")
-        inject_answers(context, child, "AllocationAgent")
-        child["delegation"] = canonical_delegation(context)
-        child["diagnostic_notes"] = (delegation or {}).get("revision_notes", "")
-        child["allocation_dataset_cards"] = {d: context["dataset_assets"][d]["card_summary"] for d in context["selected_dataset_ids"]}
-        publish(child, "AllocationDelegation", child["delegation"], ("Requirement",))
-        from medbenchagent.agents.allocation import _plans
-        if not any(leaf["eligible_count"] for p in _plans(child).values() for leaf in p["tasks"].values()):
-            return result("blocked", "All selected datasets completed planning without eligible tasks")
-        output = allocation.invoke({"context": child})
-        state_path = Path(child["operation_directory"]) / "state.json"
-        save_context(state_path, output["context"], "allocation")
-        updates = {k: output["context"][k] for k in ("artifact_versions", "allocation_path", "global_issue") if k in output["context"]}
-        updates["last_agent_result"] = output["result"]
-        updates["allocation_state_path"] = str(state_path)
-        updates["issues"] = {**context.get("issues", {}), **output["context"].get("issues", {})}
-        return {**output["result"], "status": "success" if output["result"]["status"] in {"complete", "needs_input"} else output["result"]["status"], "updates": updates}
+        """Legacy allocation is unavailable; v5 uses the deterministic Task Space pipeline."""
+        raise ValueError("Use run_v2 for annotation.v5 datasets")
 
     def generate(context, *, dataset_id):
         """Generate one dataset's positive allocation using its own Protocols and annotation."""

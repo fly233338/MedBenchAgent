@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from medbenchagent.data.contracts import Contract, Text
 from medbenchagent.data.dataset_catalog import dataset_by_id, load_prepared, load_dataset_catalog, resolve_path
-from medbenchagent.data.dataset_card import card_summary
+from medbenchagent.data.v5_catalog import card_summary
 from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.llm import complete_json
 from medbenchagent.runtime.dependencies import publish, require

@@ -40,6 +40,5 @@ def build_manifest(dataset: dict[str, Any], nodes: Iterable[TaskNode | dict], le
         "allocation": allocation,
         "item_count": item_count,
         "generated_count": item_count,
-        "metrics": {},
     }
 

@@ -15,6 +15,22 @@ def read_v5_card(path: str | Path) -> dict:
     return value
 
 
+def card_summary(card: dict) -> dict:
+    """Return the bounded, model-visible summary for a validated v5 Card."""
+    if not isinstance(card, dict) or card.get("schema_version") != "dataset-card.v3":
+        raise ValueError("Dataset Card requires dataset-card.v3")
+    summary = card.get("summary", {})
+    return {
+        "dataset_id": card.get("dataset_id"),
+        "name": card.get("name"),
+        "description": card.get("description", ""),
+        "case_count": card.get("case_count", summary.get("case_count", 0)),
+        "patient_count": card.get("patient_count", summary.get("patient_count", 0)),
+        "summary": summary,
+        "semantics": card.get("semantics", {}),
+    }
+
+
 def verify_v5_bundle(bundle: str | Path) -> dict:
     bundle = Path(bundle).resolve()
     ready = json.loads((bundle / "ready.json").read_text(encoding="utf-8"))

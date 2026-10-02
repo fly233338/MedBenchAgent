@@ -47,13 +47,25 @@ class AssetAdapter:
             raise AssetAdapterError("slice presentation requires a volume")
         axis = presentation_spec.axis if presentation_spec.axis is not None else 0
         indices = presentation_spec.indices or [data.shape[axis] // 2]
-        slices = [np.take(data, index, axis=axis) for index in indices]
         if presentation_spec.window is not None:
             low, high = presentation_spec.window
             if low >= high:
                 raise AssetAdapterError("Presentation window requires low < high")
             data = np.clip((data.astype(float) - low) / (high - low), 0, 1) * 255
             data = data.astype(np.uint8)
+        if presentation_spec.crop is not None:
+            if len(presentation_spec.crop) != 4:
+                raise AssetAdapterError("Presentation crop requires normalized xyxy coordinates")
+            y0, x0, y1, x1 = presentation_spec.crop
+            if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
+                raise AssetAdapterError("Presentation crop must be normalized xyxy")
+            h, w = data.shape[-2:]
+            data = data[..., int(y0*h):int(y1*h), int(x0*w):int(x1*w)]
+        slices = [np.take(data, index, axis=axis) for index in indices]
+        if presentation_spec.resize is not None:
+            from PIL import Image
+            width, height = presentation_spec.resize
+            slices = [np.asarray(Image.fromarray(slice).resize((width, height))) for slice in slices]
         if presentation_spec.mode == "slices":
             return LoadedAsset(np.stack(slices), {**loaded.metadata, "presentation": presentation_spec.model_dump()})
         return LoadedAsset(np.concatenate(slices, axis=1), {**loaded.metadata, "presentation": presentation_spec.model_dump()})

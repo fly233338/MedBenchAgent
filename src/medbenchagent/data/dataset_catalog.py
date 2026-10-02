@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import re
 from medbenchagent import settings
-from medbenchagent.data.v5_catalog import verify_v5_bundle
+from medbenchagent.data.v5_catalog import read_v5_card, verify_v5_bundle
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 DATASET_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -55,7 +55,11 @@ def load_prepared(entry):
     bundle = resolve_path(entry["annotation_path"]).parent
     verified = verify_v5_bundle(bundle)
     access = verified["ready"]["access"]
-    return verified["card"], access
+    frozen_card_path = resolve_path(entry.get("dataset_card_path", access["dataset_card_path"]))
+    card = verified["card"] if frozen_card_path == resolve_path(access["dataset_card_path"]) else read_v5_card(frozen_card_path)
+    if card.get("annotation_digest") != access["annotation_digest"] or card.get("asset_manifest_digest") != access["asset_manifest_digest"]:
+        raise DatasetCatalogError("Frozen Dataset Card does not match annotation.v5 bundle")
+    return card, access
 
 
 def register_dataset(dataset_id, bundle, *, catalog_path=None):

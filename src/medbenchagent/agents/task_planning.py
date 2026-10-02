@@ -4,15 +4,12 @@ from pathlib import Path
 import json
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.tool_contracts import NoArguments
+from medbenchagent.runtime.dependencies import require, publish
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.planning.task_space import AxisAnalysis, TaskLeaf, TaskNode
 from medbenchagent.planning.node_builder import build_task_nodes
 from medbenchagent.planning.task_discovery import validate_candidate_leaf
 from medbenchagent.planning.resolver import resolve, ResolverSpec, NotApplicable
-
-
-def require(*args, **kwargs):
-    return {}
 
 
 class AxisAnalysisArguments(NoArguments):
@@ -40,10 +37,12 @@ def _profile(context):
 
 
 def analyze_axes(context, *, analysis):
+    require(context, "Dataset", "PlanningConfig")
     parsed = AxisAnalysis.model_validate(analysis)
     path = Path(context["operation_directory"]) / "axis_analysis.json"
     atomic_write_json(path, parsed.model_dump())
-    return result("success", "Axis Analysis saved", axis_analysis_path=str(path))
+    versions = publish(context, "PlanningDraft", {"axis_analysis": str(path)}, ("Dataset", "PlanningConfig")) if context.get("run_directory") else {}
+    return result("success", "Axis Analysis saved", axis_analysis_path=str(path), **versions)
 
 
 def build_nodes(context):
@@ -139,6 +138,19 @@ def save_task_leaf(context, *, leaf):
     return result("success", "Task Leaf saved", task_leaves_path=str(path), task_leaves=leaves)
 
 
+def finish_task_space(context):
+    """Publish the validated v2 Task Space artifact after all required inputs exist."""
+    require(context, "Dataset", "PlanningConfig")
+    for key in ("axis_analysis_path", "task_nodes_path", "task_leaves_path"):
+        if not context.get(key) or not Path(context[key]).is_file():
+            raise ValueError(f"{key} is required before publishing the Task Space")
+    path = Path(context["operation_directory"]) / "task_space_plan.json"
+    atomic_write_json(path, {"schema_version": "task-space-plan.v1", "axis_analysis": _read(context["axis_analysis_path"]),
+                             "nodes": _read(context["task_nodes_path"]), "leaves": _read(context["task_leaves_path"])})
+    versions = publish(context, "Plan", {"blueprint": str(path)}, ("Dataset", "PlanningConfig"))
+    return result("complete", "Task Space plan published", working_blueprint_path=str(path), **versions)
+
+
 def compile_task_planning_agent(*, checkpointer=None):
     funcs = (
         analyze_axes,
@@ -156,7 +168,7 @@ def compile_task_planning_agent(*, checkpointer=None):
             "task_nodes": c.get("task_nodes_path"),
             "task_leaves": c.get("task_leaves_path"),
         },
-        lambda c: result("complete", "Task Space plan ready"),
+        finish_task_space,
         args_schemas={
             "analyze_axes": AxisAnalysisArguments,
             "read_task_node": TaskNodeArguments,
