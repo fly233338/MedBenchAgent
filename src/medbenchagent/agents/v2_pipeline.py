@@ -29,6 +29,7 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
         plan=plan,
         cases=cases,
         requested_count=requested_count or context.get("benchmark_info", {}).get("sample_count", 1),
+        seed=context.get("seed", 0),
     )
     paths = {}
     for name, payload in (

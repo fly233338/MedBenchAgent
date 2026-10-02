@@ -70,7 +70,7 @@ Supervisor 先解析数据准备请求：请求中包含可读的原始目录时
 
 `specify` 生成带字段级来源证据的 Requirement，并保留开放式意图和用户提到的数据集名称。`discover_datasets` 扫描并校验 Catalog 与 Prepared 根目录，冻结候选 Card；它不替用户做选择。`select_datasets` 只绑定冻结候选 ID。随后代码生成并校验 `DatasetAccessReceipt`，模型不会决定路径、revision 或 digest。
 
-每个 annotation.v5 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按顺序筛选三个固定 Axis 的 Axis Value；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task，随后确定 Task Paradigm。Capability Category 是由 Operation 一对一派生的横向标签，不再有额外的模型分类阶段。完整计划使用 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 保存；只有每个可执行 Scenario 都有通过审核且有容量的 Leaf Task 后才发布 Plan。Generation 只生成有确定答案依据的 Benchmark Item，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
+每个 annotation.v5 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按顺序筛选三个固定 Axis 的 Axis Value；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 是由 Operation 一对一派生的横向标签，不再有额外的模型分类阶段。完整计划使用 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 保存；只有每个可执行 Scenario 都有通过审核且有容量的 Leaf Task 后才发布 Plan。Generation 使用冻结 seed 在模板中可复现地抽取问题，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
 
 ## 恢复与界面
 

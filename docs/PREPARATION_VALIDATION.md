@@ -7,6 +7,9 @@
 - 记录完整来源清单、文件摘要、表头、图像数量和总体覆盖范围。
 - 每条 annotation、finding、mask 和图像路径都绑定 source-relative locator。
 - 用户决议和医学语义解释保存引用、作用范围和影响的字段。
+- 字段处置区分 Case 医学证据、分组/来源/资产元数据和排除的运营/行政噪声；年龄等医学上下文
+  可以保留在 `cases.jsonl`，设备序列号、UID、软件版本等无任务价值字段应按来源证据排除，
+  并在 `mapping.json` 与 `notes/mapping.md` 中记录理由。
 
 ## 候选与执行
 
@@ -19,6 +22,8 @@
 - 验证来源路径、记录 ID、finding 关系、字段映射、mask 几何和图像 manifest。
 - 统计保留记录、整图隔离和等价重复；Profile、Card 和 Catalog 绑定最终 Bundle。
 - 仅接受通过完整验证的候选；不确定的总体选择进入明确的用户审核。
+- 数据准备不决定 benchmark 题目；Task Planning 将完整 Evidence Catalog 作为事实清单，
+  再按输入结构和医学语义判断是否支持 Axis。
 
 ## 恢复
 

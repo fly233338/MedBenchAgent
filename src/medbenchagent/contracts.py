@@ -22,6 +22,8 @@ class BenchmarkItem(TypedDict):
     image_id: str
     image_path: str
     question: str
+    template_index: NotRequired[int]
+    template_count: NotRequired[int]
     options: list[str] | None
     answer: str | list[float]
 

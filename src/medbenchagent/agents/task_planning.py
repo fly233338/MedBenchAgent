@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from medbenchagent.data.task_facts import build_dataset_facts, case_facts
 from medbenchagent.planning.node_builder import build_task_scenarios
@@ -62,7 +62,7 @@ class LeafTaskDraft(BaseModel):
     leaf_task_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     scenario_id: str = Field(min_length=1)
-    question_template: str = Field(min_length=1)
+    question_templates: list[str] = Field(min_length=1)
     input: list[EvidenceSelector] = Field(min_length=1)
     target: str = Field(min_length=1)
     reference_rule: str = Field(min_length=1)
@@ -71,6 +71,26 @@ class LeafTaskDraft(BaseModel):
     task_paradigm: TaskParadigm
     capability_category: CapabilityCategory
     evidence: list[EvidenceBasis] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_template(cls, value):
+        value = dict(value)
+        if not value.get("question_templates"):
+            legacy_question = value.get("question_template", value.get("question"))
+            if legacy_question:
+                value["question_templates"] = [legacy_question]
+        value.pop("question_template", None)
+        value.pop("question", None)
+        return value
+
+    @model_validator(mode="after")
+    def validate_templates(self):
+        if any(not template.strip() for template in self.question_templates):
+            raise ValueError("question_templates must be non-empty")
+        if len(set(self.question_templates)) != len(self.question_templates):
+            raise ValueError("question_templates must be unique")
+        return self
 
 
 class LeafTaskArguments(NoArguments):
@@ -100,6 +120,13 @@ def _plan_path(context: dict[str, Any]) -> Path:
 
 def _evidence_dir(context: dict[str, Any]) -> Path:
     return Path(context["operation_directory"]) / "evidence"
+
+
+def _configured_template_count(context: dict[str, Any]) -> int | None:
+    value = context.get("question_template_count")
+    if value is None:
+        return None
+    return int(value)
 
 
 def _load_plan(context: dict[str, Any]) -> TaskPlanState:
@@ -223,6 +250,26 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
         "task_nodes": {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()},
         "task_leaves": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
     }
+
+
+def _assert_derived_artifact_consistency(context: dict[str, Any], plan: TaskPlanState) -> None:
+    """Ensure published plan views are exact projections of one canonical plan."""
+
+    directory = Path(context["operation_directory"])
+    scenarios_path = directory / "task_scenarios.json"
+    leaves_path = directory / "leaf_tasks.json"
+    if not scenarios_path.is_file() or not leaves_path.is_file():
+        raise ValueError("Task Plan derived artifacts are missing")
+    expected_scenarios = {
+        key: value.model_dump(mode="json") for key, value in plan.scenarios.items()
+    }
+    expected_leaves = {
+        key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()
+    }
+    if _read(scenarios_path) != expected_scenarios:
+        raise ValueError("task_scenarios.json is inconsistent with task_plan.json")
+    if _read(leaves_path) != expected_leaves:
+        raise ValueError("leaf_tasks.json is inconsistent with task_plan.json")
 
 
 _write_derived_artifacts = _write_artifacts
@@ -441,6 +488,7 @@ def read_planning_context(context: dict[str, Any]) -> dict[str, Any]:
         "axis_decisions": list(plan.axis_decisions),
         "scenario_count": len(plan.scenarios),
         "leaf_task_count": len(plan.leaf_tasks),
+        "question_template_count": _configured_template_count(context),
     }, ensure_ascii=False))
 
 
@@ -533,6 +581,7 @@ def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = 
     context_value = V5DatasetQuery(_access(context)).node_context(plan.scenarios[scenario_id])
     context_value["leaf_task_ids"] = plan.scenarios[scenario_id].leaf_task_ids
     context_value["plan_phase"] = plan.phase
+    context_value["question_template_count"] = _configured_template_count(context)
     return result("success", json.dumps(context_value, ensure_ascii=False))
 
 
@@ -544,6 +593,12 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
     parsed = LeafTask.model_validate(draft.model_dump(mode="json"))
     if parsed.scenario_id != plan.current_scenario_id:
         raise ValueError("Leaf Task must belong to the active Scenario")
+    expected_templates = _configured_template_count(context)
+    if expected_templates is not None and len(parsed.question_templates) != expected_templates:
+        raise ValueError(
+            f"Leaf Task requires exactly {expected_templates} question_templates; "
+            f"received {len(parsed.question_templates)}"
+        )
     scenario = plan.scenarios[parsed.scenario_id]
     if parsed.capability_category != scenario.capability_category:
         raise ValueError("Leaf Task Category must match its Scenario")
@@ -603,7 +658,7 @@ def save_task_leaf(context: dict[str, Any], *, leaf: dict[str, Any]) -> dict[str
         "leaf_task_id": parsed.leaf_id,
         "name": parsed.name,
         "scenario_id": parsed.scenario_id,
-        "question_template": parsed.question_template,
+        "question_templates": parsed.question_templates,
         "input": [selector.model_dump(mode="json") for selector in parsed.input],
         "target": parsed.target,
         "reference_rule": parsed.reference_rule,
@@ -625,21 +680,57 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview) 
         raise ValueError("Review must belong to the active Scenario")
     scenario = plan.scenarios[review.scenario_id]
     expected = set(scenario.leaf_task_ids)
-    if set(review.checked_leaf_task_ids) != expected or not expected:
+    checked = set(review.checked_leaf_task_ids)
+    discarded = {item.leaf_task_id for item in review.discarded_leaf_tasks}
+    if checked != expected or not expected:
         raise ValueError("Scenario review must cover every saved Leaf Task")
+    if not discarded <= expected:
+        raise ValueError("Scenario review can discard only saved Leaf Tasks")
+    remaining = expected - discarded
+    evidence_names = set(_facts(context, plan).get("evidence_names", []))
+    evidence_names.update(
+        selector.name
+        for leaf_id in remaining
+        for selector in plan.leaf_tasks[leaf_id].input
+        if selector.name and selector.evidence_type == "asset"
+    )
+    expected_templates = _configured_template_count(context)
+    for leaf_id in remaining:
+        leaf = plan.leaf_tasks[leaf_id]
+        if expected_templates is not None and len(leaf.question_templates) != expected_templates:
+            raise ValueError(
+                f"Leaf Task {leaf_id} requires exactly {expected_templates} question_templates"
+            )
+        validate_candidate_leaf(
+            leaf,
+            plan.scenarios,
+            resolver_context={"evidence_names": evidence_names},
+        )
     if review.status == "approved":
-        if any((plan.leaf_tasks[key].eligible_count or 0) <= 0 for key in expected):
+        if not remaining:
+            raise ValueError("Cannot approve a Scenario after discarding every Leaf Task")
+        if any((plan.leaf_tasks[key].eligible_count or 0) <= 0 for key in remaining):
             raise ValueError("Cannot approve a Scenario with a zero-capacity Leaf Task")
-        plan.scenarios[review.scenario_id] = scenario.model_copy(update={"status": "completed"})
-        plan.reviews[review.scenario_id] = review
+        status = "completed"
+    else:
+        status = "active"
+    for leaf_id in discarded:
+        plan.leaf_tasks.pop(leaf_id, None)
+    normalized_review = review.model_copy(update={"checked_leaf_task_ids": sorted(remaining)})
+    plan.scenarios[review.scenario_id] = scenario.model_copy(
+        update={"status": status, "leaf_task_ids": sorted(remaining)}
+    )
+    plan.reviews[review.scenario_id] = normalized_review
+    if review.status == "approved":
         plan.completed_scenario_ids = sorted(set(plan.completed_scenario_ids) | {review.scenario_id})
         plan.pending_scenario_ids = [key for key in plan.pending_scenario_ids if key != review.scenario_id]
         plan.current_scenario_id = None
         if not plan.pending_scenario_ids:
             plan.phase = "complete"
     else:
-        plan.scenarios[review.scenario_id] = scenario.model_copy(update={"status": "active"})
-        plan.reviews[review.scenario_id] = review
+        plan.completed_scenario_ids = [
+            key for key in plan.completed_scenario_ids if key != review.scenario_id
+        ]
     plan.revision += 1
     updates = _write_artifacts(context, plan)
     return result(
@@ -655,11 +746,13 @@ def review_current_node(context: dict[str, Any], *, review: dict[str, Any]) -> d
     parsed = dict(review)
     scenario_id = parsed.pop("scenario_id", parsed.pop("node_id", None))
     checked = parsed.pop("checked_leaf_task_ids", parsed.pop("checked_leaf_ids", []))
+    discarded = parsed.pop("discarded_leaf_tasks", [])
     return review_current_scenario(
         context,
         review=ScenarioReview(
             scenario_id=scenario_id,
             checked_leaf_task_ids=checked,
+            discarded_leaf_tasks=discarded,
             status=parsed.get("status", "rejected"),
             issues=parsed.get("issues", []),
         ),
@@ -675,10 +768,11 @@ def classify_task_nodes(context: dict[str, Any], *, assignments: list[dict[str, 
 
 
 def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
-    require(context, "Dataset", "PlanningConfig")
+    require(context, "Dataset", "PlanningConfig", "TemplateConfig")
     plan = _load_plan(context)
     if plan.phase != "complete" or plan.pending_scenario_ids or plan.current_scenario_id:
         raise ValueError("Task Plan still has pending Scenarios")
+    expected_templates = _configured_template_count(context)
     for scenario_id, scenario in plan.scenarios.items():
         if scenario.exclusion_reason:
             continue
@@ -687,10 +781,19 @@ def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
         review = plan.reviews.get(scenario_id)
         if review is None or review.status != "approved":
             raise ValueError(f"Scenario lacks an approved review: {scenario_id}")
+        if expected_templates is not None:
+            for leaf_id in scenario.leaf_task_ids:
+                actual = len(plan.leaf_tasks[leaf_id].question_templates)
+                if actual != expected_templates:
+                    raise ValueError(
+                        f"Leaf Task {leaf_id} has {actual} templates; "
+                        f"expected {expected_templates}"
+                    )
     updates = _write_artifacts(context, plan)
+    _assert_derived_artifact_consistency(context, plan)
     versions = publish(
         context, "Plan", {"task_plan": updates["task_plan_path"]},
-        ("Dataset", "PlanningConfig"),
+        ("Dataset", "PlanningConfig", "TemplateConfig"),
     ) if context.get("run_directory") else {}
     return result(
         "complete",
@@ -736,7 +839,7 @@ def compile_task_planning_agent(*, checkpointer=None):
     )
     return compile_agent(
         "TaskPlanningAgent",
-        "Build one resumable annotation.v5 Task Plan using six levels: Task Axis, Axis Value, Task Scenario, Leaf Task, Task Paradigm and Benchmark Item. Every decision must be one outer ToolAction object with exactly tool, arguments, and reason; never return assessments or evidence directly. Use tool=read_axis_evidence with arguments={axis: ...} to inspect evidence, or tool=analyze_axis with arguments={axis: ..., assessments: ...}. Axis definitions are fixed; assess every registered value exactly once, in order input_structure, operation, clinical_target. Before each axis decision, call read_axis_evidence and use its allowed_values and evidence_catalog. Catalog cases means Case coverage, types means per-name evidence-type counts, and units means observed unit counts; use these structural facts as evidence without turning them into medical conclusions. For analyze_axis, use only the current v2 contract: each assessment has value, supported, evidence_basis (a non-empty list of objects with reference and detail), and reason. Cover every allowed value exactly once. Never emit dimension, finding, evidence_refs, or any other fields. Code constructs Scenarios and assigns Capability Category from Operation using the registered six-category mapping. In the Leaves phase inspect one current Scenario, propose concrete evidence-backed Leaf Tasks with a valid Resolver and Task Paradigm, then review that Scenario. Resolver inputs must use catalog evidence names explicitly and may use asset, text, value, or region evidence; every input requires name and a unique role. Do not use a generic selector with only evidence_type, and do not put relation on resolver.inputs. Keep leaf.input exactly equal to resolver.inputs. Resolver steps are indexed by position as step_0, step_1, step_2; result_step must use one of those IDs, never read, collect, or a semantic name. Region values are bbox arrays [x1,y1,x2,y2], so do not emit region area or pixel-area number tasks: current supported region tasks are bbox output with Visual Grounding or count via compute. Compute operations are only sum, mean, difference, ratio, and count. Top-level resolver.inputs are model-visible inputs; use region/value only there when the model truly needs them, otherwise keep them as reference evidence in resolver steps to preserve input_reference_leakage protection. Never invent Axis Values, use reference evidence as model input, or expose chain-of-thought. Read only the evidence slice required by the current phase. Example outer action: {\"tool\":\"read_axis_evidence\",\"arguments\":{\"axis\":\"input_structure\"},\"reason\":\"Inspect the current axis evidence.\"}. Example analyze_axis arguments: {\"tool\":\"analyze_axis\",\"arguments\":{\"axis\":\"input_structure\",\"assessments\":[{\"value\":\"single-image\",\"supported\":true,\"evidence_basis\":[{\"reference\":\"evidence_catalog:ultrasound_image\",\"detail\":\"256 Cases; types.asset=256\"}],\"reason\":\"A primary image is present for every Case.\"}]},\"reason\":\"Save the complete axis assessment.\"} (include all allowed values).",
+        'Build one resumable annotation.v5 Task Plan using six levels: Task Axis, Axis Value, Task Scenario, Leaf Task, Task Paradigm and Benchmark Item. Every decision must be one outer ToolAction object with exactly tool, arguments, and reason; never return assessments or evidence directly. Use tool=read_axis_evidence with arguments={axis: ...} to inspect evidence, or tool=analyze_axis with arguments={axis: ..., assessments: ...}. Axis definitions are fixed; assess every registered value exactly once, in order input_structure, operation, clinical_target. Before each axis decision, call read_axis_evidence and use its allowed_values and evidence_catalog. The Evidence Catalog and annotation_mapping are complete facts, not a candidate task list. Field presence alone never proves that an Axis is supported. Before assessing support, distinguish image/region evidence, image-grounded finding/attribute/assessment/diagnosis labels, patient or clinical context, device/acquisition/administrative metadata, and calibration-only pixel/voxel spacing. The default benchmark is image-only: age, sex, race, pregnancy, symptoms, history, medication and risk factors may remain in Case data but do not support a visual task by their presence; device, protocol, UID and date fields are not visual targets; pixel/voxel spacing is calibration reference only. Diagnosis, BIRADS and Classification may be resolver references but must not be model-visible text inputs. Quantify only image-observable or deterministically image-computable measurements. Explain in each Axis reason why medically relevant context is or is not suitable for the current visual task. Catalog cases means Case coverage, types means per-name evidence-type counts, and units means observed unit counts; use these structural facts without turning them into medical conclusions. For analyze_axis, use only the current v2 contract: each assessment has value, supported, evidence_basis (a non-empty list of objects with reference and detail), and reason. Cover every allowed value exactly once. Never emit dimension, finding, evidence_refs, or any other fields. Code constructs Scenarios and assigns Capability Category from Operation using the registered six-category mapping. In the Leaves phase inspect one current Scenario, propose concrete evidence-backed Leaf Tasks with a valid Resolver and Task Paradigm, then review that Scenario. Each Leaf Task must provide exactly the configured question_template_count distinct question_templates. Keep every template semantically equivalent: same target, Resolver, OutputSpec, language and medical scope; do not add answer clues or new medical assumptions. Review every template for clarity, ambiguity, duplication and semantic drift. Resolver inputs must use catalog evidence names explicitly and may use asset, text, value, or region evidence; every input requires name and a unique role. Do not use a generic selector with only evidence_type, and do not put relation on resolver.inputs. Keep leaf.input exactly equal to resolver.inputs. Resolver steps are indexed by position as step_0, step_1, step_2; result_step must use one of those IDs, never read, collect, or a semantic name. Region values are bbox arrays [x1,y1,x2,y2], so do not emit region area or pixel-area number tasks: current supported region tasks are bbox output with Visual Grounding or count via compute. Compute operations are only sum, mean, difference, ratio, and count. Top-level resolver.inputs are model-visible inputs; use region/value only there when the model truly needs them, otherwise keep them as reference evidence in resolver steps to preserve input_reference_leakage protection. Never invent Axis Values, use reference evidence as model input, or expose chain-of-thought. During Scenario Review, inspect every saved Leaf; when a Leaf is medically or semantically invalid, put it in discarded_leaf_tasks with a concrete reason in the same review call. The tool will remove those IDs atomically; never approve an empty Scenario. Read only the evidence slice required by the current phase. Example outer action: {"tool":"read_axis_evidence","arguments":{"axis":"input_structure"},"reason":"Inspect the current axis evidence."}. Example analyze_axis arguments: {"tool":"analyze_axis","arguments":{"axis":"input_structure","assessments":[{"value":"single-image","supported":true,"evidence_basis":[{"reference":"evidence_catalog:ultrasound_image","detail":"256 Cases; types.asset=256"}],"reason":"A primary image is present for every Case."}]},"reason":"Save the complete axis assessment."} (include all allowed values).',
         {tool.__name__: tool for tool in tools},
         lambda c: {
             "task_plan": str(_plan_path(c)),

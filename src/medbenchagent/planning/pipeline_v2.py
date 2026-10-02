@@ -51,6 +51,7 @@ def run_v2_pipeline(
     leaves: Iterable[LeafTask | dict[str, Any]] = (),
     cases: Iterable[dict[str, Any]],
     requested_count: int,
+    seed: int = 0,
     nodes: Iterable[TaskScenario | dict[str, Any]] | None = None,
     plan: TaskPlanState | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -90,7 +91,13 @@ def run_v2_pipeline(
     ]
     allocation = allocate_task_leaves(parsed_leaves, requested_count)
     active = [leaf for leaf in parsed_leaves if allocation.get(leaf.leaf_id, 0) > 0]
-    items = generate_task_items(case_list, active, dataset.get("dataset_id", "dataset"), allocation=allocation)
+    items = generate_task_items(
+        case_list,
+        active,
+        dataset.get("dataset_id", "dataset"),
+        allocation=allocation,
+        seed=seed,
+    )
     audit = audit_task_items(case_list, items, active)
     manifest = build_manifest(dataset, scenarios.values(), parsed_leaves, allocation,
                               item_count=audit["accepted"], generated_items=audit["accepted_items"])

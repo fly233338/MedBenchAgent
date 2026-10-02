@@ -74,6 +74,15 @@ def test_explicit_toml_then_environment_override_and_empty_value(tmp_path: Path,
     assert settings.local_config_path == local.resolve()
 
 
+@pytest.mark.parametrize("count", [1, 2, 6])
+def test_question_template_count_requires_three_to_five(tmp_path: Path, count: int) -> None:
+    local = tmp_path / "local.toml"
+    local.write_text(f"[generation]\nquestion_template_count = {count}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="question_template_count must be between 3 and 5"):
+        load_settings(local)
+
+
 def test_cli_config_path_selects_file_over_environment_and_snapshots_remote_rag(tmp_path, monkeypatch):
     from medbenchagent.settings import active_settings, get_settings, run_settings
 

@@ -298,6 +298,13 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     workspace_mode = values["data_processing"]["source_workspace_mode"]
     if workspace_mode not in {"readonly_mount", "copy"}:
         raise ValueError("data_processing.source_workspace_mode must be readonly_mount or copy")
+    question_template_count = _integer(
+        generation["question_template_count"],
+        "generation.question_template_count",
+        minimum=1,
+    )
+    if not 3 <= question_template_count <= 5:
+        raise ValueError("generation.question_template_count must be between 3 and 5")
     return AppSettings(
         benchmark=BenchmarkSettings(default_sample_count=_integer(values["benchmark"]["default_sample_count"],
                                                                   "benchmark.default_sample_count", minimum=1)),
@@ -345,11 +352,7 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                                        if generation.get("max_total_tasks_per_image") is not None else None),
             question_temperature=_number(generation["question_temperature"], "generation.question_temperature", minimum=0, maximum=2),
             fetch_batch_size=_integer(generation["fetch_batch_size"], "generation.fetch_batch_size", minimum=1),
-            question_template_count=_integer(
-                generation["question_template_count"],
-                "generation.question_template_count",
-                minimum=1,
-            ),
+            question_template_count=question_template_count,
         ),
         dataset_profile=DatasetProfileSettings(
             max_top_values=_integer(profile["max_top_values"], "dataset_profile.max_top_values", minimum=1),

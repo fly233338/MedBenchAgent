@@ -8,7 +8,12 @@ def run_v2_generation(context, *, leaf_path=None, output_path=None, page_size=51
     from medbenchagent.data.v5_index import V5DatasetQuery
     access = context["dataset_access_manifest"]
     leaves = json.loads(Path(leaf_path or context.get("leaf_tasks_path") or context["task_leaves_path"]).read_text(encoding="utf-8"))
-    items = generate_task_items(list(V5DatasetQuery(access).iter_cases()), leaves.values(), context.get("selected_dataset_id", "dataset"))
+    items = generate_task_items(
+        list(V5DatasetQuery(access).iter_cases()),
+        leaves.values(),
+        context.get("selected_dataset_id", "dataset"),
+        seed=context.get("seed", 0),
+    )
     destination = output_path or str(Path(context["operation_directory"]) / "benchmark_items.v2.jsonl")
     write_task_items(destination, items)
     return result("success", f"Generated {len(items)} v2 benchmark items", raw_output_path=destination, item_count=len(items))

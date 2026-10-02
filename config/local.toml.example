@@ -29,6 +29,7 @@ reranker_base_url = "http://127.0.0.1:8002/v1"
 # reranker_model = "Qwen/Qwen3-Reranker-0.6B"
 
 [generation]
+# Number of semantically equivalent question templates per Leaf Task (3-5).
 question_template_count = 3
 
 # [data_processing]

@@ -39,6 +39,7 @@ max_tasks_per_image = 20
 # max_total_tasks_per_image = 1
 question_temperature = 0.7
 fetch_batch_size = 128
+# Number of semantically equivalent question templates per Leaf Task (3-5).
 question_template_count = 3
 
 [dataset_profile]

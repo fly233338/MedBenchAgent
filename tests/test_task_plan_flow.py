@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -117,3 +118,93 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     monkeypatch.setattr(task_planning, "require", lambda *_args: None)
     finished = task_planning.finish_task_space(context)
     assert finished["status"] == "complete"
+
+
+def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    context["question_template_count"] = 3
+    for axis, values in (("input_structure", ["single-image"]), ("operation", ["describe"]), ("clinical_target", ["finding"])):
+        task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
+        context.update(task_planning._write_derived_artifacts(context, task_planning._load_plan(context)))
+
+    class Query:
+        def __init__(self, _access):
+            pass
+
+        def iter_cases(self):
+            return iter([{"case_id": "c1", "evidence": [
+                {"id": "asset", "type": "asset", "name": "image", "value": "a1", "ref": []},
+                {"id": "report", "type": "text", "name": "report", "value": "Clear", "ref": ["asset"]},
+            ]}])
+
+    monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", Query)
+    plan = task_planning._load_plan(context)
+    scenario_id = plan.pending_node_ids[0]
+    plan.current_scenario_id = scenario_id
+    task_planning._write_derived_artifacts(context, plan)
+
+    def leaf(leaf_id, target):
+        return {
+            "leaf_task_id": leaf_id,
+            "name": target,
+            "scenario_id": scenario_id,
+            "question_templates": [
+                f"Describe {target}.",
+                f"What describes {target}?",
+                f"Identify {target}.",
+            ],
+            "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+            "target": target,
+            "reference_rule": "paired report",
+            "resolver": {
+                "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+                "steps": [
+                    {"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}},
+                    {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}},
+                ],
+                "output_spec": "text",
+                "result_step": "step_1",
+            },
+            "output_spec": "text",
+            "task_paradigm": "Report Generation",
+            "capability_category": "Generation",
+        }
+
+    for value in (leaf("good", "finding"), leaf("bad", "context")):
+        saved = task_planning.save_leaf_task(context, leaf=value)
+        context.update(saved["updates"])
+
+    reviewed = task_planning.review_current_scenario(
+        context,
+        review={
+            "scenario_id": scenario_id,
+            "checked_leaf_task_ids": ["good", "bad"],
+            "discarded_leaf_tasks": [{"leaf_task_id": "bad", "reason": "Not suitable for this visual task."}],
+            "status": "approved",
+        },
+    )
+    context.update(reviewed["updates"])
+    plan = task_planning._load_plan(context)
+
+    assert set(plan.leaf_tasks) == {"good"}
+    assert plan.scenarios[scenario_id].leaf_task_ids == ["good"]
+    assert plan.reviews[scenario_id].checked_leaf_task_ids == ["good"]
+    assert plan.reviews[scenario_id].discarded_leaf_tasks[0].leaf_task_id == "bad"
+
+
+def test_derived_plan_views_must_match_canonical_plan(tmp_path):
+    context = _context(tmp_path)
+    for axis, values in (("input_structure", ["single-image"]), ("operation", ["describe"]), ("clinical_target", ["finding"])):
+        task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
+    plan = task_planning._load_plan(context)
+    task_planning._write_derived_artifacts(context, plan)
+    task_planning._assert_derived_artifact_consistency(context, plan)
+
+    path = Path(context["operation_directory"]) / "task_scenarios.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    scenario_id = next(iter(payload))
+    payload[scenario_id]["status"] = "completed"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="task_scenarios.json is inconsistent"):
+        task_planning._assert_derived_artifact_consistency(context, plan)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -24,16 +25,30 @@ def _input_assets(case: dict[str, Any], evidence_ids: list[str]) -> list[str]:
     ]
 
 
+def _template_cycle(seed: int, dataset_id: str, leaf_id: str, count: int) -> list[int]:
+    payload = json.dumps([seed, dataset_id, leaf_id], separators=(",", ":"), ensure_ascii=False)
+    digest = hashlib.sha256(payload.encode("utf-8")).digest()
+    rng = random.Random(int.from_bytes(digest[:8], "big"))
+    cycle = list(range(count))
+    rng.shuffle(cycle)
+    return cycle
+
+
 def generate_task_items(
     cases: Iterable[dict[str, Any]],
     leaves: Iterable[LeafTask | dict[str, Any]],
     dataset_id: str,
     allocation: dict[str, int] | None = None,
+    seed: int = 0,
 ) -> list[dict[str, Any]]:
     parsed = [LeafTask.model_validate(leaf) for leaf in leaves]
     items = []
     limits = allocation or {leaf.leaf_id: None for leaf in parsed}
     counts = {leaf.leaf_id: 0 for leaf in parsed}
+    cycles = {
+        leaf.leaf_id: _template_cycle(seed, dataset_id, leaf.leaf_id, len(leaf.question_templates))
+        for leaf in parsed
+    }
     ordered_cases = sorted(cases, key=lambda value: str(value.get("case_id", "")))
     for case in ordered_cases:
         case_id = case.get("case_id")
@@ -49,6 +64,7 @@ def generate_task_items(
             answer = resolved.reference
             if leaf.output_spec == OutputSpec.TEXT and isinstance(answer, dict):
                 answer = answer.get("value")
+            template_index = cycles[leaf.leaf_id][counts[leaf.leaf_id] % len(cycles[leaf.leaf_id])]
             items.append({
                 "item_id": _identity(dataset_id, leaf.leaf_id, case_id),
                 "id": _identity(dataset_id, leaf.leaf_id, case_id),
@@ -62,7 +78,9 @@ def generate_task_items(
                 "task_paradigm": leaf.task_paradigm.value,
                 "input_assets": _input_assets(case, resolved.input_evidence_ids),
                 "input_evidence_ids": resolved.input_evidence_ids,
-                "question": leaf.question_template,
+                "question": leaf.question_templates[template_index],
+                "template_index": template_index,
+                "template_count": len(leaf.question_templates),
                 "output_spec": leaf.output_spec.value,
                 "answer": answer,
                 "reference_evidence_ids": resolved.reference_evidence_ids,

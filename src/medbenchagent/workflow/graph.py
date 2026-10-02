@@ -49,6 +49,7 @@ class BenchmarkInputState(TypedDict, total=False):
     max_tasks_per_image: int
     max_total_tasks_per_image: int | None
     question_temperature: float
+    question_template_count: int
     requested_dataset_ids: list[str]
     experiment_name: str
     experiments_root: str
@@ -173,6 +174,7 @@ def specify(context: SupervisorContext):
 
 COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path", "artifact_versions",
           "limits", "user_requirement", "benchmark_info", "seed", "max_tasks_per_image", "question_temperature",
+          "question_template_count",
           "registration_catalog_path", "sample_scope", "max_total_tasks_per_image", "allocation_preferences",
           "execution_runtime")
 
@@ -742,7 +744,7 @@ def compile_benchmark_graph(*, checkpointer=None):
 
         settings = resolve_run_services(settings)
         execution_runtime = select_backend(settings.data_processing)
-        defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature")}
+        defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature", "question_template_count")}
         run = initialize_run(settings=settings, graph_overrides=overrides,
                              execution_runtime=execution_runtime)
         context = dict(run, **(defaults | overrides), user_requirement=requirement,

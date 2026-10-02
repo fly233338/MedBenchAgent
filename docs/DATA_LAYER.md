@@ -4,7 +4,7 @@
 
 ## 来源与准备
 
-每个逻辑数据集由一个或多个 `Source` 组成。Source 保存稳定 ID、根目录、类型和可选 annotation 文件。准备阶段记录来源清单、文件摘要、总体数量、字段语义、适配器和执行回执。
+每个逻辑数据集由一个或多个 `Source` 组成。Source 保存稳定 ID、根目录、类型和可选 annotation 文件。准备阶段记录来源清单、文件摘要、总体数量、字段语义、适配器和执行回执。字段映射区分进入 `cases.jsonl` 的医学证据、仅用于分组/来源/资产复现的元数据，以及因无任务价值而排除的设备或行政噪声。年龄、性别、症状和病史等医学上下文可以保留在 Case 中；设备序列号、软件版本、主机名、UID 和无关时间戳默认不作为 Case Evidence。
 
 OpenHands Coding Session 只能在 Worker workspace 中写候选文件。宿主验证来源 locator、记录身份、图像路径、finding 关系、缺失值和完整总体后，才发布 Dataset、Profile、Card 和 Catalog 条目。
 
@@ -34,6 +34,8 @@ Asset 处理保留原始来源引用。PNG/JPEG、单文件 DICOM、DICOM Series
 多来源字段通过显式 harmonization plan 合并、保留或排除。值映射、缺失状态、数组边界和来源空间都保留在计划和 provenance 中。
 
 `DatasetQuery` 绑定一个 access manifest 和 cache revision，提供字段值、来源覆盖、记录采样、数组长度、配对和协议容量查询。查询返回准确总数和分页结果，供规划 Agent 使用。
+
+Evidence Catalog 是完整数据事实清单，不是任务候选清单。Task Planning 需要区分图像可观察证据、患者/临床上下文、设备/行政元数据和仅用于校准的 spacing 等字段；字段存在本身不能支持一个 Axis 或 Leaf Task。
 
 规划阶段不会把 access manifest 和全部 Case 内容直接交给模型。宿主先生成
 `DatasetAccessReceipt`，再生成 Dataset Overview、Evidence Catalog、Relation

@@ -179,7 +179,7 @@ class LeafTask(BaseModel):
     leaf_task_id: str | None = None
     name: str = Field(min_length=1)
     scenario_id: str | None = None
-    question_template: str | None = None
+    question_templates: list[str] = Field(min_length=1)
     input: list[EvidenceSelector] = Field(min_length=1)
     target: str = Field(min_length=1)
     reference_rule: str | None = None
@@ -201,14 +201,23 @@ class LeafTask(BaseModel):
         value = dict(value)
         value.setdefault("leaf_task_id", value.get("leaf_id"))
         value.setdefault("scenario_id", value.get("node_id"))
-        value.setdefault("question_template", value.get("question"))
+        if not value.get("question_templates"):
+            legacy_question = value.get("question_template", value.get("question"))
+            if legacy_question:
+                value["question_templates"] = [legacy_question]
+        value.pop("question_template", None)
+        value.pop("question", None)
         value.setdefault("reference_rule", value.get("answer"))
         return value
 
     @model_validator(mode="after")
     def validate_contract(self):
-        if not self.leaf_task_id or not self.scenario_id or not self.question_template:
-            raise ValueError("LeafTask requires leaf_task_id, scenario_id and question_template")
+        if not self.leaf_task_id or not self.scenario_id or not self.question_templates:
+            raise ValueError("LeafTask requires leaf_task_id, scenario_id and question_templates")
+        if any(not template.strip() for template in self.question_templates):
+            raise ValueError("LeafTask question_templates must be non-empty")
+        if len(set(self.question_templates)) != len(self.question_templates):
+            raise ValueError("LeafTask question_templates must be unique")
         if not self.reference_rule:
             raise ValueError("LeafTask requires reference_rule")
         allowed = {
@@ -230,15 +239,37 @@ class LeafTask(BaseModel):
 
     @property
     def question(self) -> str:
-        return self.question_template
+        return self.question_templates[0]
+
+    @property
+    def question_template(self) -> str:
+        """Compatibility view for callers that still expect one template."""
+        return self.question_templates[0]
+
+
+class LeafTaskDiscard(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    leaf_task_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
 
 
 class ScenarioReview(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     scenario_id: str = Field(min_length=1)
     checked_leaf_task_ids: list[str] = Field(default_factory=list)
+    discarded_leaf_tasks: list[LeafTaskDiscard] = Field(default_factory=list)
     status: Literal["approved", "rejected"]
     issues: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_leaf_ids(self):
+        checked = self.checked_leaf_task_ids
+        discarded = [item.leaf_task_id for item in self.discarded_leaf_tasks]
+        if len(checked) != len(set(checked)):
+            raise ValueError("Scenario review checked_leaf_task_ids must be unique")
+        if len(discarded) != len(set(discarded)):
+            raise ValueError("Scenario review discarded_leaf_tasks must be unique")
+        return self
 
 
 class BenchmarkItem(BaseModel):
@@ -252,6 +283,8 @@ class BenchmarkItem(BaseModel):
     task_paradigm: TaskParadigm
     output_spec: OutputSpec
     question: str = Field(min_length=1)
+    template_index: int = Field(default=0, ge=0)
+    template_count: int = Field(default=1, ge=1)
     answer: Any
     input_assets: list[str] = Field(default_factory=list)
     input_evidence_ids: list[str] = Field(default_factory=list)

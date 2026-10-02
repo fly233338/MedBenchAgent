@@ -11,6 +11,27 @@ contract. Preserve raw strings and distinguish missing, unknown, uncertain and n
 Never guess medical semantics. Ask one concrete question when source evidence cannot resolve a
 semantic choice.
 
+Before writing the converter, classify every source field and record the disposition in
+`outputs/mapping.json` and `outputs/notes/mapping.md`:
+
+- **Case medical evidence** enters `cases.jsonl` as raw value, text, asset or region evidence when
+  source documentation supports its meaning. Patient age, sex, symptoms and history are medically
+  meaningful and may be retained even when the default image benchmark will not use them as model
+  inputs.
+- **Grouping/provenance/asset metadata** is retained only where needed to establish Case identity,
+  source locators, asset membership or reproducibility. Do not expose such fields as Case Evidence
+  merely because they appear in the source.
+- **Operational or administrative noise** is excluded from Case Evidence when it has no documented
+  clinical or requested acquisition meaning. Examples include device serial numbers, host names,
+  software versions, accession/UID fields and unrelated timestamps. If a documented acquisition
+  parameter could support an explicitly requested acquisition/protocol benchmark, retain it with a
+  precise source-backed meaning instead of dropping it by name.
+
+Each excluded field needs a source-backed reason. Do not use a hard-coded field-name list or infer
+that a field is irrelevant from its name alone. Preserve the complete exclusion decision in the
+mapping notes so later Task Planning can distinguish retained medical context from fields that were
+never task evidence.
+
 Case grouping priority is source-native imaging study/exam identifier, documented Case ID,
 documented composite key, then one source record or independent asset bundle per Case. Patient ID
 must never merge Cases. For DICOM, StudyInstanceUID is the Case, SeriesInstanceUID is a Case Asset,
