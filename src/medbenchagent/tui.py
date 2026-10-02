@@ -6,13 +6,14 @@ import queue
 import json
 import sys
 import threading
+import tomlkit
 from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.text import Text
 from rich.markdown import Markdown
-from medbenchagent.tui_components import ExperimentIndex, Prompt, Splitter, CommandDialog
+from medbenchagent.tui_components import ExperimentIndex, Prompt, CommandDialog
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -22,6 +23,7 @@ from textual.widgets import Button, DataTable, Input, Label, OptionList, RichLog
 from textual.widgets.option_list import Option
 
 from medbenchagent.runtime import sessions
+from medbenchagent.settings import DEFAULT_CONFIG_PATH
 
 if TYPE_CHECKING:
     from medbenchagent.runtime.conversation_service import ConversationService
@@ -426,12 +428,6 @@ class CreateExperimentScreen(Screen):
         if name == "/quit":
             self.app.pop_screen()
             return
-        try:
-            sessions.create_experiment(name, root=self.app.experiments_root,
-                                       template=self.app.config_template)
-        except (ValueError, OSError) as exc:
-            self.query_one("#create-message", Static).update(Text(str(exc)))
-            return
         self.app.pop_screen()
         self.app.open_experiment(name, configure=True)
 
@@ -443,6 +439,7 @@ class ConfigScreen(Screen):
         super().__init__()
         self.experiment_name = name
         self.new = new
+        self._pending_changes: dict[tuple[str, ...], object] = {}
         self.selected: tuple[str, ...] | None = None
         self.selected_value: object = None
 
@@ -509,7 +506,18 @@ class ConfigScreen(Screen):
         remember(tree.root)
         had_tree = bool(tree.root.children)
         tree.root.remove_children()
-        values = sessions.config_values(self.experiment_name, root=self.app.experiments_root)
+        if self.new:
+            values = tomlkit.parse(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")).unwrap()
+            for path, value in self._pending_changes.items():
+                target = values
+                for key in path[:-1]:
+                    target = target.setdefault(key, {})
+                if value is None:
+                    target.pop(path[-1], None)
+                else:
+                    target[path[-1]] = value
+        else:
+            values = sessions.config_values(self.experiment_name, root=self.app.experiments_root)
         values.setdefault("generation", {}).setdefault("max_total_tasks_per_image", None)
 
         def add(parent, data: dict, path: tuple[str, ...] = ()) -> None:
@@ -565,8 +573,11 @@ class ConfigScreen(Screen):
                 value = float(raw)
             else:
                 value = raw
-            sessions.update_config_value(self.experiment_name, self.selected, value,
-                                         root=self.app.experiments_root)
+            if self.new:
+                self._pending_changes[self.selected] = value
+            else:
+                sessions.update_config_value(self.experiment_name, self.selected, value,
+                                             root=self.app.experiments_root)
         except (ValueError, TypeError, KeyError, OSError) as exc:
             self.query_one("#config-message", Static).update(Text(str(exc)))
             return
@@ -574,6 +585,16 @@ class ConfigScreen(Screen):
         self.refresh_tree()
 
     def action_save(self) -> None:
+        if self.new:
+            try:
+                sessions.create_experiment(self.experiment_name, root=self.app.experiments_root,
+                                           template=self.app.config_template)
+                for path, value in self._pending_changes.items():
+                    sessions.update_config_value(self.experiment_name, path, value,
+                                                 root=self.app.experiments_root)
+            except (ValueError, OSError, TypeError) as exc:
+                self.query_one("#config-message", Static).update(Text(str(exc)))
+                return
         self.app.pop_screen()
         if self.new:
             self.app.push_screen(ConversationScreen(self.experiment_name))
@@ -644,17 +665,14 @@ class ConversationScreen(Screen):
         
                 yield OptionList(id="session-commands")
                 yield Prompt(placeholder="Message", id="message", highlight_cursor_line=False)
-            yield Splitter(axis="x", id="side-resize-handle")
             with Vertical(id="side-pane"):
                 with Vertical(id="runs-panel"):
                     yield Button("RUNS  ▾", id="runs-toggle")
                     yield DataTable(id="runs", cursor_type="none", zebra_stripes=True)
-                yield Splitter(axis="y", id="runs-divider")
                 with Vertical(id="agents-panel"):
                     yield Button("AGENTS  ▾", id="agents-toggle")
                     yield Static("Latest activity: waiting", id="active-agent")
                     yield DataTable(id="agent-status", cursor_type="none", zebra_stripes=True)
-                yield Splitter(axis="y", id="events-divider")
                 with Vertical(id="events-panel"):
                     yield Button("EVENTS  ▾", id="events-toggle")
                     yield Select([("All agents", "*")], value="*", allow_blank=False, id="agent-filter")
@@ -1311,35 +1329,9 @@ class ConversationScreen(Screen):
             for name in ("runs", "agents", "events"):
                 self.query_one(f"#{name}-toggle", Button).label = f"{name.upper()}  ▾"
         sidebar.display = not sidebar.display
-        self.query_one("#side-resize-handle", Static).display = sidebar.display
-        for splitter in self.query(Splitter):
-            splitter.release()
         if sidebar.display and not self._collapsed_panels:
             self._layout_panels()
         self._schedule_panel_layout()
-
-    def _clamp_sidebar_width(self, width: int) -> int:
-        return max(30, min(self.size.width - 28, width))
-
-    @on(Splitter.Adjust)
-    def resize_detail(self, event: Splitter.Adjust):
-        if event.splitter.axis == "x":
-            side = self.query_one("#side-pane")
-            self._sidebar_width = self._clamp_sidebar_width(42 if event.reset else side.outer_size.width - event.delta)
-            side.styles.width = self._sidebar_width
-        else:
-            panels = [self.query_one("#" + name + "-panel") for name in ("runs", "agents", "events")]
-            sizes = [panel.size.height for panel in panels]
-            index = 0 if event.splitter.id == "runs-divider" else 1
-            minima = [3, 4, 5]
-            pair = sizes[index] + sizes[index + 1]
-            target = round(pair * (0.5 if index == 0 else 1 / 3)) if event.reset else sizes[index] + event.delta
-            sizes[index] = max(minima[index], min(pair - minima[index + 1], target))
-            sizes[index + 1] = pair - sizes[index]
-            total = sum(sizes)
-            self._panel_weights = [size / total for size in sizes]
-            self._schedule_panel_layout()
-        event.stop()
 
     @on(Button.Pressed, "#runs-toggle")
     @on(Button.Pressed, "#agents-toggle")
@@ -1389,9 +1381,6 @@ class ConversationScreen(Screen):
 
     def on_resize(self, _event: events.Resize) -> None:
         if self.is_mounted and self.query("#side-pane"):
-            if self._sidebar_width is not None:
-                self._sidebar_width = self._clamp_sidebar_width(self._sidebar_width)
-                self.query_one("#side-pane").styles.width = self._sidebar_width
             self._schedule_panel_layout()
 
     def on_unmount(self) -> None:
@@ -1400,8 +1389,6 @@ class ConversationScreen(Screen):
         self._record_generation += 1
         self.workers.cancel_group(self, "event-read")
         self.workers.cancel_group(self, "record-read")
-        for splitter in self.query(Splitter):
-            splitter.release()
 
     def action_edit_config(self) -> None:
         self.app.push_screen(ConfigScreen(self.experiment_name))
@@ -1475,7 +1462,6 @@ class MBAApp(App):
     #session-status { height: auto; max-height: 4; overflow-y: auto; padding: 0 2; color: #9aa6b6; }
     #session-body { width: 100%; height: 1fr; }
     #chat-pane { width: 1fr; height: 1fr; min-width: 24; padding: 0 1 0 2; }
-    #side-resize-handle { width: 1; min-width: 1; height: 1fr; background: transparent; pointer: w-resize; color: transparent; }
     #side-pane { width: 42; height: 1fr; min-width: 32; background: #171c24; padding: 0 1; overflow-y: auto; border: round #39414d; }
     #conversation { width: 100%; height: 1fr; background: #101319; border: none; }
     .chat-row { width: 100%; height: auto; margin: 0 0 1 0; }
@@ -1509,8 +1495,6 @@ class MBAApp(App):
     #open:hover, #open:focus { background: #496181; }
     #experiments > .datatable--header { background: #1a1e25; color: #89919d; text-style: none; }
     #experiments > .datatable--cursor { background: #34445f; color: #e5ecf5; }
-    .splitter.y { height: 1; width: 100%; pointer: s-resize; background: transparent; color: transparent; }
-    .splitter:hover, .splitter:focus, .splitter.dragging { background: #536174; color: transparent; }
     #collapsed-dock { height: auto; min-height: 1; width: 100%; align: right bottom; }
     .dock-toggle { display: none; width: 1fr; min-width: 1; height: 1; padding: 0; margin: 0 0 0 1; background: #252c36; color: #aebbd0; }
     #runs-panel { height: 1fr; min-height: 3; }

@@ -189,7 +189,7 @@ def test_agent_progress_filter_keeps_live_and_saved_events(tmp_path):
     asyncio.run(check())
 
 
-def test_sidebar_drag_and_toggle(tmp_path):
+def test_sidebar_fixed_width_and_toggle(tmp_path):
     sessions.create_experiment("pilot", root=tmp_path)
 
     async def check():
@@ -200,26 +200,14 @@ def test_sidebar_drag_and_toggle(tmp_path):
             await pilot.pause()
             screen = app.screen
             side = screen.query_one("#side-pane")
-            original = side.outer_size.width
-            await pilot.mouse_down("#side-resize-handle")
-            await pilot.hover("#chat-pane", offset=(5, 5))
-            await pilot.pause()
-            assert side.outer_size.width > original
-            assert screen.query_one("#chat-pane").size.width >= 24
-            expanded = side.outer_size.width
-            await pilot.hover("#side-pane", offset=(expanded - 1, 1))
-            await pilot.pause()
-            assert 18 <= side.outer_size.width < expanded
-            await pilot.mouse_up("#side-pane", offset=(1, 1))
+            assert not screen.query("Splitter")
             await pilot.resize_terminal(70, 24)
             await pilot.pause()
             assert screen.query_one("#chat-pane").size.width >= 24
             screen.action_toggle_details()
             assert not side.display
-            assert not screen.query_one("#side-resize-handle").display
             screen.action_toggle_details()
             assert side.display
-            assert screen.query_one("#side-resize-handle").display
 
     asyncio.run(check())
 
@@ -375,7 +363,6 @@ def test_all_collapsed_detail_reopens(tmp_path):
                 await pilot.pause()
             screen._layout_panels()
             assert screen.query_one("#side-pane").display
-            assert screen.query_one("#side-resize-handle").display
             assert all(screen.query_one(f"#{name}-dock-toggle").display for name in ("runs", "agents", "events"))
             screen.query_one("#runs-dock-toggle").press()
             await pilot.pause()
