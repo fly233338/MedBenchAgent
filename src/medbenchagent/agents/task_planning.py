@@ -75,6 +75,11 @@ def build_nodes(context):
             ),
         },
     }
+    node_context_path = Path(context["operation_directory"]) / "node_context.json"
+    node_context = {"evidence": {row["name"]: row for row in profile.get("evidence", [])},
+                    "evidence_profile": profile.get("evidence", []),
+                    "assets": facts["assets"], "relations": facts["relations"]}
+    atomic_write_json(node_context_path, node_context)
     exclusions = {}
     nodes = build_task_nodes(analysis, facts, exclusions=exclusions)
     path = Path(context["operation_directory"]) / "task_nodes.json"
@@ -84,6 +89,7 @@ def build_nodes(context):
         "Task Nodes saved",
         task_nodes_path=str(path),
         task_nodes={k: v.model_dump() for k, v in nodes.items()},
+        node_context_path=str(node_context_path), node_context=node_context,
         exclusions=exclusions,
     )
 
@@ -112,8 +118,13 @@ def node_context(context, *, node_id):
 
 def save_task_leaf(context, *, leaf):
     parsed = TaskLeaf.model_validate(leaf)
+    profile = _profile(context)
+    evidence_names = {row["name"] for row in profile.get("evidence", [])}
+    evidence_names.update(selector.name for selector in parsed.input
+                          if selector.name and selector.evidence_type == "asset")
     validate_candidate_leaf(
-        parsed, {k: TaskNode.model_validate(v) for k, v in _nodes(context).items()}
+        parsed, {k: TaskNode.model_validate(v) for k, v in _nodes(context).items()},
+        resolver_context={"evidence_names": evidence_names},
     )
     from medbenchagent.data.query import DatasetQuery
 
@@ -145,8 +156,13 @@ def finish_task_space(context):
         if not context.get(key) or not Path(context[key]).is_file():
             raise ValueError(f"{key} is required before publishing the Task Space")
     path = Path(context["operation_directory"]) / "task_space_plan.json"
-    atomic_write_json(path, {"schema_version": "task-space-plan.v1", "axis_analysis": _read(context["axis_analysis_path"]),
-                             "nodes": _read(context["task_nodes_path"]), "leaves": _read(context["task_leaves_path"])})
+    atomic_write_json(path, {"schema_version": "task-space-plan.v1",
+                             "dataset": {"dataset_id": context.get("dataset_scope")},
+                             "scope": {"dataset_id": context.get("dataset_scope")},
+                             "revision": _read(context["axis_analysis_path"]).get("dataset_revision", "1"),
+                             "axis_analysis": _read(context["axis_analysis_path"]),
+                             "nodes": _read(context["task_nodes_path"]),
+                             "leaves": _read(context["task_leaves_path"]), "review": {}})
     versions = publish(context, "Plan", {"blueprint": str(path)}, ("Dataset", "PlanningConfig"))
     return result("complete", "Task Space plan published", working_blueprint_path=str(path), **versions)
 
@@ -162,7 +178,7 @@ def compile_task_planning_agent(*, checkpointer=None):
     )
     return compile_agent(
         "TaskPlanningAgent",
-        "Build the annotation.v5 Task Space using fixed axes, constrained nodes and validated leaves.",
+        "Build the annotation.v5 Task Space. First analyze only the fixed Input Structure, Operation and Clinical Target axes; then inspect each feasible Node and discover only evidence-backed Leaves. Never invent labels, propagate Case-level evidence, choose metrics, or use reference evidence as model input.",
         {f.__name__: f for f in funcs},
         lambda c: {
             "task_nodes": c.get("task_nodes_path"),

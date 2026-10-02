@@ -195,9 +195,11 @@ def _validate_extraction(result, existing, user_inputs):
 def write_working_blueprint(
     benchmark_info: dict[str, Any], output_path: str | Path, template_path: Path | None = None
 ) -> str:
-    """Copy the immutable blueprint template and replace only its benchmark-info section."""
-    blueprint = json.loads((template_path or get_settings().paths.blueprint_template).read_text(encoding="utf-8"))
-    blueprint["benchmark_info"] = benchmark_info
+    """Write a v2 benchmark brief; legacy concepts remain only as an input snapshot."""
+    template = template_path or get_settings().paths.blueprint_template
+    blueprint = json.loads(template.read_text(encoding="utf-8")) if template.is_file() else {}
+    blueprint = {"schema_version": "benchmark-brief.v2", "benchmark_info": benchmark_info,
+                 "concepts": blueprint.get("concepts", {})}
     destination = Path(output_path)
     if destination.suffix != ".json":
         destination = destination / "blueprint.json"

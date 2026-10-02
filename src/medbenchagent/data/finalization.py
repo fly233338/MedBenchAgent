@@ -11,7 +11,11 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 def finalize_v5_prepared_dataset(candidate, context):
     candidate = Path(candidate).resolve()
-    report = validate_v5_candidate(candidate, source_root=context.get("source_root"))
+    report = validate_v5_candidate(
+        candidate,
+        source_root=context.get("source_root"),
+        source_roots=context.get("source_roots"),
+    )
     write_v5_report(candidate, report)
     if report["systemic_failure"] or not report["accepted_cases"]:
         raise ValueError("v5 candidate cannot be published")
@@ -35,11 +39,19 @@ def finalize_v5_prepared_dataset(candidate, context):
     )
     for name in names:
         shutil.copy2(candidate / name, temporary / name)
+    for relative in ("scripts/prepare.py", "notes/inventory.md", "notes/mapping.md", "notes/dataset_notes.md"):
+        source = candidate / relative
+        if source.is_file():
+            target = temporary / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
     profile, access = prepare_v5_dataset(
         temporary / "annotation.jsonl",
         temporary / "asset_manifest.jsonl",
         temporary / "cache",
         revision="1",
+        source_root=context.get("source_root"),
+        source_roots=context.get("source_roots"),
     )
     atomic_write_json(temporary / "dataset_profile.json", profile)
     dataset_id = context.get("dataset_id") or context.get("dataset_scope") or "dataset"

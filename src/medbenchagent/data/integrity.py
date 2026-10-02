@@ -16,10 +16,4 @@ def verify_prepared_indexes(access):
         from medbenchagent.data.v5_catalog import verify_v5_bundle
         verify_v5_bundle(Path(access["annotation_path"]).parent)
         return
-    from medbenchagent.data.preparation import verify_preparation_archive
-    verify_preparation_archive(access)
-    for name in ("image_integrity", "documentation"):
-        path = access.get(name + "_path")
-        expected = access.get(name + "_digest")
-        if not path or not expected or not Path(path).is_file() or digest_file(path) != expected:
-            raise ValueError(f"Prepared {name} index changed or is missing; prepare a new version")
+    raise ValueError("Only annotation.v5 prepared bundles are supported; re-prepare this dataset")

@@ -57,6 +57,7 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
                     coding_worker_max_iterations=get_settings().data_processing["coding_worker_max_iterations"],
                     coding_worker_timeout_seconds=get_settings().data_processing["coding_worker_timeout_seconds"],
                     bundle_root=str(bundle), normalized_sources={}, source_scope=None,
-                    source_manifests={source.id: str(bundle / "source_manifests" / source.id) for source in sources})
+                     source_roots={source.id: source.root for source in sources},
+                     source_manifests={source.id: str(bundle / "source_manifests" / source.id) for source in sources})
     publish(prepared, "SourceSelection", {"sources": prepared["sources"]}, ())
     return prepared

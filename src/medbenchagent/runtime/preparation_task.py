@@ -34,7 +34,7 @@ def build_data_preparation_task(context: dict, workspace: Path, *, feedback: str
         source_manifest=context.get("source_manifests", {}).get(primary["id"], context["source_manifest"]),
         source_roots={item["id"]: item["root"] for item in sources},
         workspace=str(workspace), objective=objective,
-        required_outputs=["annotation.jsonl", "asset_manifest.jsonl", "provenance.jsonl", "preparation_report.json", "conversion_config.json", "grouping_policy.json", "mapping.json", "conversion_version", "complete.json"],
+         required_outputs=["annotation.jsonl", "asset_manifest.jsonl", "provenance.jsonl", "preparation_report.json", "conversion_config.json", "grouping_policy.json", "mapping.json", "conversion_version", "complete.json", "scripts/prepare.py", "notes/inventory.md", "notes/mapping.md", "notes/dataset_notes.md"],
         feedback=feedback, attempt=session.get("attempt", 1), conversation_id=conversation_id,
         max_iterations=context.get("coding_worker_max_iterations", 80), timeout_seconds=context.get("coding_worker_timeout_seconds", 3600),
         model=get_settings().llm.model, base_url=get_settings().llm.base_url,

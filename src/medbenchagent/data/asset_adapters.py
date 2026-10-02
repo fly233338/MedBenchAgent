@@ -45,8 +45,14 @@ class AssetAdapter:
         data = np.asarray(loaded.data)
         if data.ndim < 3:
             raise AssetAdapterError("slice presentation requires a volume")
+        if data.ndim > 3:
+            raise AssetAdapterError("4D volume requires an explicit frame extraction before presentation")
         axis = presentation_spec.axis if presentation_spec.axis is not None else 0
+        if axis < 0 or axis >= data.ndim:
+            raise AssetAdapterError(f"Presentation axis is outside volume dimensions: {axis}")
         indices = presentation_spec.indices or [data.shape[axis] // 2]
+        if any(index < 0 or index >= data.shape[axis] for index in indices):
+            raise AssetAdapterError("Presentation slice index is outside the volume")
         if presentation_spec.window is not None:
             low, high = presentation_spec.window
             if low >= high:
@@ -65,7 +71,7 @@ class AssetAdapter:
         if presentation_spec.resize is not None:
             from PIL import Image
             width, height = presentation_spec.resize
-            slices = [np.asarray(Image.fromarray(slice).resize((width, height))) for slice in slices]
+            slices = [np.asarray(Image.fromarray(slice).resize((width, height), Image.Resampling.NEAREST)) for slice in slices]
         if presentation_spec.mode == "slices":
             return LoadedAsset(np.stack(slices), {**loaded.metadata, "presentation": presentation_spec.model_dump()})
         return LoadedAsset(np.concatenate(slices, axis=1), {**loaded.metadata, "presentation": presentation_spec.model_dump()})
@@ -163,6 +169,41 @@ class NiftiVolumeAdapter(AssetAdapter):
         return self.load(asset_spec, source_root=source_root).metadata
 
 
+class NrrdVolumeAdapter(AssetAdapter):
+    kind = "volume"
+    formats = frozenset({"nrrd", "itk"})
+
+    def load(self, asset_spec: AssetEntry, *, source_root=None) -> LoadedAsset:
+        path = _asset_path(asset_spec, source_root)
+        try:
+            import nrrd
+            data, header = nrrd.read(str(path))
+            array = np.asarray(data)
+            metadata = {"shape": list(array.shape), "dtype": str(array.dtype),
+                        "spacing": list(header.get("spacings", [])),
+                        "origin": header.get("space origin"), "direction": header.get("space directions"),
+                        "axis_order": list(range(array.ndim)), "slice_count": int(array.shape[0])}
+            if array.ndim < 3:
+                raise AssetAdapterError("NRRD asset is not a volume")
+            return LoadedAsset(array, metadata)
+        except ImportError:
+            try:
+                import SimpleITK as sitk
+            except ImportError as exc:
+                raise AssetAdapterError("Install pynrrd or SimpleITK for NRRD/ITK assets") from exc
+            image = sitk.ReadImage(str(path))
+            array = np.asarray(sitk.GetArrayFromImage(image))
+            if array.ndim < 3:
+                raise AssetAdapterError("ITK asset is not a volume")
+            return LoadedAsset(array, {"shape": list(array.shape), "dtype": str(array.dtype),
+                                       "spacing": list(image.GetSpacing()), "origin": list(image.GetOrigin()),
+                                       "direction": list(image.GetDirection()),
+                                       "axis_order": list(range(array.ndim)), "slice_count": int(array.shape[0])})
+
+    def inspect(self, asset_spec: AssetEntry, *, source_root=None) -> dict[str, Any]:
+        return self.load(asset_spec, source_root=source_root).metadata
+
+
 class DicomSeriesAdapter(AssetAdapter):
     kind = "volume"
     formats = frozenset({"dicom_series"})
@@ -179,7 +220,10 @@ class DicomSeriesAdapter(AssetAdapter):
             files = [(base / item).resolve() for item in members]
         else:
             files = sorted(p for p in root.rglob("*") if p.is_file())
-        datasets = [pydicom.dcmread(str(path)) for path in files]
+        try:
+            datasets = [pydicom.dcmread(str(path)) for path in files]
+        except Exception as exc:
+            raise AssetAdapterError(f"DICOM Series cannot be decoded: {exc}") from exc
         if not datasets or any(not hasattr(ds, "PixelData") for ds in datasets):
             raise AssetAdapterError("DICOM Series has missing Pixel Data")
         uids = {str(getattr(ds, "SeriesInstanceUID", "")) for ds in datasets}
@@ -207,7 +251,15 @@ class DicomSeriesAdapter(AssetAdapter):
             raise AssetAdapterError("DICOM Series contains duplicate SOPInstanceUID values")
         arrays = []
         for ds in datasets:
-            pixels = ds.pixel_array.astype(np.float32)
+            if int(getattr(ds, "NumberOfFrames", 1)) != 1:
+                raise AssetAdapterError("Multiframe DICOM must be represented as a separate volume Asset")
+            if str(getattr(ds, "PhotometricInterpretation", "")) not in {"MONOCHROME1", "MONOCHROME2"}:
+                raise AssetAdapterError("Unsupported DICOM Series photometric interpretation")
+            try:
+                pixels = ds.pixel_array.astype(np.float32)
+            except Exception as exc:
+                transfer = getattr(getattr(ds, "file_meta", None), "TransferSyntaxUID", "unknown")
+                raise AssetAdapterError(f"DICOM pixel decoder unavailable for transfer syntax {transfer}: {exc}") from exc
             pixels = pixels * float(getattr(ds, "RescaleSlope", 1.0)) + float(getattr(ds, "RescaleIntercept", 0.0))
             if str(getattr(ds, "PhotometricInterpretation", "")) == "MONOCHROME1":
                 pixels = np.max(pixels) - pixels
@@ -237,7 +289,7 @@ class DicomSeriesAdapter(AssetAdapter):
         return self.load(asset_spec, source_root=source_root).metadata
 
 
-ADAPTERS = (DicomImageAdapter(), ImageAdapter(), NiftiVolumeAdapter(), DicomSeriesAdapter())
+ADAPTERS = (DicomImageAdapter(), ImageAdapter(), NiftiVolumeAdapter(), NrrdVolumeAdapter(), DicomSeriesAdapter())
 
 
 def adapter_for(asset: AssetEntry) -> AssetAdapter:

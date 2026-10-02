@@ -445,7 +445,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         configured = configured_source(dataset_id)
         discovered = context.get("discovered_sources", {}).get(dataset_id)
         if configured is None and discovered is None and status["available"] is None:
-            from medbenchagent.agents.source_discovery import discover_source
+            from medbenchagent.runtime.source_discovery import discover_source
             discovered = discover_source(context, dataset_id)
         if discovered is None and status["source_errors"]:
             return result("blocked", "; ".join(status["source_errors"]))

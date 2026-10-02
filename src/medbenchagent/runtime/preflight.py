@@ -46,8 +46,8 @@ def preflight_errors(settings, *, build=False):
         else:
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(value, dict) or not isinstance(value.get("concepts"), dict) or not value["concepts"]:
-                    errors.append("Blueprint template requires nonempty concepts")
+                if not isinstance(value, dict):
+                    errors.append("Blueprint template must be a JSON object")
             except (ValueError, OSError) as exc:
                 errors.append(f"Cannot read Blueprint template: {exc}")
     return errors

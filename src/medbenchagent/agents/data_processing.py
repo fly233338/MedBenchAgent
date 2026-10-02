@@ -74,8 +74,8 @@ def read_text(context, *, path, offset=0, source_id=None, page=1):
             "candidate_path",
             "preparation_validation_path",
             "inventory_path",
-            "image_inventory_path",
-            "image_plan_path",
+            "asset_manifest_path",
+            "presentation_plan_path",
             "validation_path",
         )
     }
@@ -127,57 +127,25 @@ def inspect_join(context, **arguments):
 
 
 def save_image_plan(context, *, overrides):
-    """Choose image encodings; default to unchanged PNG/JPEG or lossless PNG representation."""
-    require(context, "ImageInventory")
-    from medbenchagent.data.image_inventory import inventory_entries
-    details = inventory_entries(context["image_inventory_path"])
+    """Record a v5 presentation plan against the Asset manifest."""
+    manifest_path = context.get("asset_manifest_path")
+    if not manifest_path:
+        raise ValueError("Presentation plans require a v5 asset_manifest.jsonl")
+    from medbenchagent.data.asset_manifest import iter_asset_manifest
+    from medbenchagent.data.v5_models import PresentationSpec
+    asset_ids = {entry.asset_id for entry in iter_asset_manifest(manifest_path)}
     policies = {
         key: (value.model_dump() if hasattr(value, "model_dump") else value)
         for key, value in overrides.items()
     }
-    unmatched = set(policies)
-    for key, info in details:
-        if "error" in info:
-            continue
-        unmatched.discard(key)
-        policy = policies.get(key, {"encoding": "preserve"})
-        if key not in policies and not info["preserve_supported"] and info.get("window"):
-            policy = {"encoding": "window", "low": info["window"][0], "high": info["window"][1],
-                      "invert": info["invert"], "decision_reference": ""}
-        if info["copy"]:
-            if policy["encoding"] != "preserve":
-                raise ValueError("PNG/JPEG must be copied unchanged")
-            continue
-        if policy["encoding"] == "preserve":
-            if not info["preserve_supported"]:
-                raise ValueError(f"{key}: choose a source-supported window or ask_user")
-        else:
-            low, high = policy["low"], policy["high"]
-            if low is None or high is None or low >= high:
-                raise ValueError("Window requires low < high")
-            supported = info["window"] == [low, high] and info["invert"] == policy["invert"]
-            if not supported:
-                issue = context.get("issues", {}).get(policy.get("decision_reference"), {})
-                if (issue.get("status") != "resolved" or issue.get("kind") != "semantic"
-                        or issue.get("role") != "DataProcessingAgent"
-                        or issue.get("dataset_id") != context.get("dataset_scope")
-                        or issue.get("source_ids") != [context.get("source_scope")]
-                        or key not in issue.get("image_ids", [])):
-                    raise ValueError(f"{key}: display policy requires an answered user decision for this image/source")
-                # Already parsed decisions are checked without another model call.
-                from medbenchagent.runtime.dependencies import require as current_artifacts
-                current = current_artifacts(context, *issue["input_versions"])
-                if any(current[k]["id"] != v for k, v in issue["input_versions"].items()):
-                    raise ValueError("Display decision is stale; ask again")
-                selected = {k: policy[k] for k in ("encoding", "low", "high", "invert")}
-                if issue.get("display_policies", {}).get(key) != selected:
-                    raise ValueError("Display parameters differ from the resolved user decision")
-    if unmatched:
-        raise ValueError("Image plan contains unreferenced or invalid images")
-    path = Path(context["operation_directory"]) / "image_plan.json"
+    unknown = set(policies) - asset_ids
+    if unknown:
+        raise ValueError(f"Presentation plan references unknown assets: {sorted(unknown)}")
+    for asset_id, policy in policies.items():
+        PresentationSpec.model_validate(policy)
+    path = Path(context["operation_directory"]) / "presentation_plan.json"
     atomic_write_json(path, policies)
-    versions = publish(context, "ImagePlan", {"path": str(path)}, ("ImageInventory",))
-    return result("success", "Image encoding plan recorded", image_plan_path=str(path), **versions)
+    return result("success", "Presentation plan recorded", presentation_plan_path=str(path))
 
 
 def compile_data_processing_agent(*, checkpointer=None):

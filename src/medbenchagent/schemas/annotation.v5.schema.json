@@ -14,7 +14,7 @@
     "evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "type", "name", "value", "ref"],
+      "required": ["id", "type", "name", "value"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "type": {"enum": ["value", "text", "asset", "region"]},
@@ -22,8 +22,15 @@
         "value": {},
         "time": {"type": ["number", "null"]},
         "unit": {"type": ["string", "null"]},
-        "ref": {"type": "array", "items": {"type": "string"}}
-      }
+        "ref": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+      },
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "text"}}}, "then": {"properties": {"value": {"type": "string"}}}},
+        {"if": {"properties": {"type": {"const": "asset"}}}, "then": {"properties": {"value": {"type": "string", "minLength": 1}}}},
+        {"if": {"properties": {"type": {"const": "region"}}}, "then": {"properties": {"value": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number", "minimum": 0, "maximum": 1}}}}},
+        {"if": {"properties": {"type": {"const": "value"}}}, "then": {"not": {"required": ["unit"], "properties": {"unit": {"type": "null"}}}}},
+        {"if": {"required": ["unit"]}, "then": {"properties": {"type": {"const": "value"}}}}
+      ]
     }
   }
 }

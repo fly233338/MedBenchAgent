@@ -13,7 +13,8 @@ from medbenchagent.data.sources import digest_file
 from medbenchagent.data.v5_models import CaseRecord, validate_case
 
 
-def prepare_v5_dataset(annotation_path, manifest_path, cache_root, *, revision="1", refresh=False):
+def prepare_v5_dataset(annotation_path, manifest_path, cache_root, *, revision="1", refresh=False,
+                       source_root=None, source_roots=None):
     annotation = Path(annotation_path).resolve()
     manifest = Path(manifest_path).resolve()
     cache = Path(cache_root) / "annotation-cache.v5" / revision
@@ -27,7 +28,9 @@ def prepare_v5_dataset(annotation_path, manifest_path, cache_root, *, revision="
         access = json.loads(access_path.read_text(encoding="utf-8"))
         if access.get("annotation_digest") == digest_file(annotation) and access.get("asset_manifest_digest") == digest_file(manifest):
             return json.loads(profile_path.read_text(encoding="utf-8")), access
-    assets = {entry.asset_id: entry for entry in iter_asset_manifest(manifest)}
+    assets = {entry.asset_id: entry for entry in iter_asset_manifest(
+        manifest, source_root=source_root, source_roots=source_roots
+    )}
     cases = []
     with annotation.open(encoding="utf-8") as source:
         for line in source:

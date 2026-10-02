@@ -23,7 +23,7 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
         if not path or not Path(path).is_file():
             raise ValueError(f"{label} artifact is required")
     axis = json.loads(Path(axis_path).read_text(encoding="utf-8"))
-    nodes = json.loads(Path(nodes_path).read_text(encoding="utf-8"))
+    json.loads(Path(nodes_path).read_text(encoding="utf-8"))
     leaves = json.loads(Path(leaves_path).read_text(encoding="utf-8"))
     from medbenchagent.data.v5_index import V5DatasetQuery
     query = V5DatasetQuery(access)
@@ -35,18 +35,23 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
             break
         offset = page["next_offset"]
     # Reconstruct deterministic constraint facts from the published v5 profile.
+    # Evidence names must remain available here; type-only aggregate keys make
+    # valid Leaf selectors fail during the final pipeline validation.
     profile = json.loads(Path(access["profile_path"]).read_text(encoding="utf-8"))
-    node_context = {"evidence": {}, "relations": {}, "assets": {}}
-    for node in nodes.values():
-        for key in node.get("evidence_stats", {}):
-            node_context["evidence"][key] = node["evidence_stats"][key]
+    node_context = {"evidence": {}, "evidence_profile": profile.get("evidence", []),
+                    "relations": {}, "assets": {}}
+    for row in profile.get("evidence", []):
+        node_context["evidence"][row["name"]] = row
     assets = profile.get("assets", {})
     per_case = {int(key): value for key, value in assets.get("assets_per_case", {}).items()}
     related = sum(value for size, value in per_case.items() if size >= 2)
     node_context["assets"] = {"volume_assets": assets.get("kinds", {}).get("volume", 0),
                                "related_image_cases": related}
-    node_context["relations"] = {"related": sum(row.get("has_ref", 0) for row in profile.get("evidence", [])),
-                                  "paired": related, "comparable": related}
+    node_context["relations"] = {
+        "related": sum(row.get("has_ref", 0) for row in profile.get("evidence", [])),
+        "paired": related, "paired_study": related, "comparable": related,
+        "paired_text": sum(row.get("types", {}).get("text", 0) for row in profile.get("evidence", [])),
+    }
     output = run_v2_pipeline(dataset={"dataset_id": context.get("selected_dataset_id", "dataset")}, axis_analysis=axis,
                              node_context=node_context, leaves=leaves.values(), cases=cases,
                              requested_count=requested_count or context.get("benchmark_info", {}).get("sample_count", 1))

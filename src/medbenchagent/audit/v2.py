@@ -17,8 +17,10 @@ def _answer_matches(spec: OutputSpec, expected: Any, actual: Any) -> bool:
     if spec == OutputSpec.BBOX:
         return isinstance(actual, list) and len(actual) == 4 and actual == expected
     if spec == OutputSpec.INDEX:
-        return isinstance(actual, (int, str)) and actual == expected
-    if spec in {OutputSpec.LABEL, OutputSpec.TEXT}:
+        return type(actual) is int and actual >= 0 and actual == expected
+    if spec == OutputSpec.LABEL:
+        return type(actual) in (str, int, bool) and actual == expected
+    if spec == OutputSpec.TEXT:
         return isinstance(actual, str) and actual == expected
     return False
 

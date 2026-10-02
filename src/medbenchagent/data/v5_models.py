@@ -35,8 +35,10 @@ class Evidence(V5Model):
                     not 0 <= self.value[0] < self.value[2] <= 1 or
                     not 0 <= self.value[1] < self.value[3] <= 1):
                 raise ValueError("region Evidence requires normalized xyxy coordinates")
-        if self.type != "value" and self.unit is not None:
+        if self.unit is not None and (self.type != "value" or not self.unit.strip()):
             raise ValueError("unit is only valid for value Evidence")
+        if any(not isinstance(ref, str) or not ref for ref in self.ref):
+            raise ValueError("Evidence refs must be nonempty strings")
         return self
 
 

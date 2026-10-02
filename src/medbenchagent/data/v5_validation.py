@@ -9,7 +9,8 @@ from medbenchagent.data.asset_manifest import iter_asset_manifest
 from medbenchagent.data.v5_models import CaseRecord, validate_case
 
 
-def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | None = None) -> dict:
+def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | None = None,
+                          source_roots: dict[str, str | Path] | None = None) -> dict:
     """Validate every Case and return a complete acceptance/quarantine report."""
     candidate = Path(candidate)
     annotation = candidate / "annotation.jsonl"
@@ -25,16 +26,33 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
         raise ValueError("v5 candidate is missing required outputs: " + ", ".join(missing_receipts))
     provenance_failures = []
     provenance_count = 0
+    provenance_cases: set[str] = set()
     with provenance.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             try:
                 item = json.loads(line)
                 if not isinstance(item, dict) or not item.get("source_id") or not item.get("record_ref"):
                     raise ValueError("source_id and record_ref are required")
+                if item.get("case_id"):
+                    provenance_cases.add(str(item["case_id"]))
+                roots = source_roots or ({"source": source_root} if source_root is not None else {})
+                root = roots.get(str(item["source_id"]))
+                for locator in item.get("locators", []):
+                    if not isinstance(locator, dict) or not locator.get("path"):
+                        raise ValueError("provenance locators require a path")
+                    if root is not None:
+                        path = Path(locator["path"])
+                        resolved = (Path(root).resolve() / path).resolve()
+                        if path.is_absolute() or not resolved.is_relative_to(Path(root).resolve()):
+                            raise ValueError("provenance locator escapes source root")
+                        if not resolved.is_file():
+                            raise ValueError(f"provenance locator is missing: {locator['path']}")
                 provenance_count += 1
             except Exception as exc:
                 provenance_failures.append({"line": line_number, "kind": "provenance_failure", "error": str(exc)})
-    assets = {item.asset_id: item for item in iter_asset_manifest(manifest, source_root=source_root)}
+    assets = {item.asset_id: item for item in iter_asset_manifest(
+        manifest, source_root=source_root, source_roots=source_roots
+    )}
     cases = []
     failures = []
     seen_cases = set()
@@ -50,8 +68,11 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
                 failures.append({"line": line_number, "kind": "hard_case_failure", "error": str(exc)})
     if not cases and not failures:
         raise ValueError("annotation.jsonl is empty")
-    if provenance_count != len(cases):
-        provenance_failures.append({"kind": "provenance_failure", "error": "provenance count does not match accepted cases"})
+    if provenance_cases:
+        missing_cases = sorted({case.case_id for case in cases} - provenance_cases)
+        if missing_cases:
+            provenance_failures.append({"kind": "provenance_failure",
+                                        "error": f"accepted cases missing provenance: {missing_cases[:10]}"})
     return {
         "schema_version": "preparation-report.v5",
         "status": "failed" if failures and not cases else "complete",

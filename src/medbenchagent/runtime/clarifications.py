@@ -65,11 +65,13 @@ def new_issue(role, context, reference, question, *, subject_scope=None, source_
     if images:
         if role != "DataProcessingAgent" or scope != "source" or sources != [context.get("source_scope")]:
             raise ValueError("Display clarification requires the active single source")
-        from medbenchagent.data.image_inventory import inventory_entries
-        found = {key for key, _ in inventory_entries(context["image_inventory_path"]) if key in images}
+        manifest_path = context.get("asset_manifest_path")
+        if not manifest_path:
+            raise ValueError("Display clarification requires a v5 asset_manifest.jsonl")
+        from medbenchagent.data.asset_manifest import iter_asset_manifest
+        found = {entry.asset_id for entry in iter_asset_manifest(manifest_path) if entry.asset_id in images}
         if found != set(images):
             raise ValueError("Display clarification references unknown images")
-        kinds.append("ImageInventory")
     if reference == "population_selection":
         if role != "DataProcessingAgent" or scope != "source":
             raise ValueError("Population review belongs to one preparation source")

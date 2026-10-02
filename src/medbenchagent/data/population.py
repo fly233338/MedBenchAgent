@@ -2,7 +2,28 @@
 
 import json
 from pathlib import Path
-from medbenchagent.data.operators import connect
+
+
+def connect(*, scratch=None):
+    """Return an isolated in-memory DuckDB connection for population checks."""
+    import duckdb
+    return duckdb.connect(":memory:")
+
+
+def _pointer(value, path):
+    current = value
+    for part in path.lstrip("/").split("/"):
+        current = current[part.replace("~1", "/").replace("~0", "~")]
+    return current
+
+
+def _json_objects(root, path, collection):
+    payload = json.loads(Path(root, path).read_text(encoding="utf-8"))
+    current = _pointer(payload, collection) if collection else payload
+    if not isinstance(current, list):
+        raise ValueError("JSON population collection must be an array")
+    for index, item in enumerate(current):
+        yield {"kind": "json", "path": path, "row": index + 1}, item
 
 
 def identity(root, identifier, path):
@@ -47,19 +68,18 @@ def verify_population(root, expected_path, annotation, source_id):
 
 def inspect_json_population(root, source_id, population, output):
     from medbenchagent.data.contracts import JsonPopulation
-    from medbenchagent.data.locators import json_objects, pointer
     spec = JsonPopulation.model_validate(population)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     count, included = 0, 0
     with connect(scratch=output / "scratch") as db, (output / "population.jsonl").open("w", encoding="utf-8") as handle:
         db.execute("CREATE TABLE identities (id VARCHAR PRIMARY KEY, path VARCHAR UNIQUE)")
-        for locator, item in json_objects(root, spec.path, spec.collection):
+        for locator, item in _json_objects(root, spec.path, spec.collection):
             count += 1
             if not isinstance(item, dict):
                 raise ValueError("Population collection entries must be objects")
             def field(name):
-                return pointer(item, name) if name.startswith("/") else item[name]
+                return _pointer(item, name) if name.startswith("/") else item[name]
             try:
                 if spec.field:
                     raw = field(spec.field)
@@ -76,7 +96,7 @@ def inspect_json_population(root, source_id, population, output):
                 raise ValueError("Population identities and paths must be one-to-one")
             db.execute("INSERT INTO identities VALUES (?,?)", [key, path])
             handle.write(json.dumps({"source_id": source_id, "image_id": key, "image_path": path,
-                                     "locator": locator.model_dump()}, ensure_ascii=False) + "\n")
+                                     "locator": locator}, ensure_ascii=False) + "\n")
             included += 1
     if not included:
         raise ValueError("Population has no images")

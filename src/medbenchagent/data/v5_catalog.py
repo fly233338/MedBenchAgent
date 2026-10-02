@@ -33,9 +33,12 @@ def card_summary(card: dict) -> dict:
 
 def verify_v5_bundle(bundle: str | Path) -> dict:
     bundle = Path(bundle).resolve()
-    ready = json.loads((bundle / "ready.json").read_text(encoding="utf-8"))
+    ready_path = bundle / "ready.json"
+    if not ready_path.is_file():
+        raise ValueError("Dataset bundle is not annotation.v5; re-prepare the dataset")
+    ready = json.loads(ready_path.read_text(encoding="utf-8"))
     if ready.get("annotation_schema") != "annotation.v5" or ready.get("schema_version") != "dataset-bundle.v4":
-        raise ValueError("Bundle is not annotation.v5")
+        raise ValueError("Dataset bundle is not annotation.v5; re-prepare the dataset")
     access = ready["access"]
     for key in ("annotation_path", "asset_manifest_path", "profile_path", "dataset_card_path"):
         if not Path(access[key]).is_file():

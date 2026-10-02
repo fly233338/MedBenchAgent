@@ -65,6 +65,7 @@ def run_dataset_agent(context: dict):
                            source_manifest=str(Path(context["bundle_root"]) / "source_manifests" / configured.id))
         context.update(source_scope=source.id, active_source=source.model_dump(),
                        source_root=str(Path(source.root).resolve()), source_manifest=str(manifest),
+                       source_roots={item.id: item.root for item in sources},
                        source_manifests={item.id: str(Path(context["bundle_root"]) / "source_manifests" / item.id)
                                         for item in sources})
     source = context["active_source"]
