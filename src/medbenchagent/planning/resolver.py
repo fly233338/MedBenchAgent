@@ -85,8 +85,11 @@ class ResolverSpec(BaseModel):
         if len(roles) != len(self.inputs):
             raise ValueError("Input roles must be unique")
         for selector in self.inputs:
-            if selector.relation is not None or selector.evidence_type not in {"asset", "text"} or not selector.name:
-                raise ValueError("Inputs require explicit asset/text names and cannot depend on reference relations")
+            if selector.relation is not None or selector.evidence_type not in {"asset", "text", "value", "region"} or not selector.name:
+                raise ValueError(
+                    "Resolver inputs require explicit asset/text/value/region names "
+                    "and cannot depend on reference relations"
+                )
         seen = set()
         for index, step in enumerate(self.steps):
             dependencies = ([step.input] if isinstance(step, (SelectStep, LocateStep)) else

@@ -50,6 +50,54 @@ def test_resolver_separates_input_asset_from_reference_text():
     assert result.reference_evidence_ids == ["report"]
 
 
+def test_resolver_accepts_named_region_and_value_inputs():
+    case = {"case_id": "c1", "evidence": [
+        {"id": "image", "type": "asset", "name": "image", "value": "a1", "ref": []},
+        {"id": "region", "type": "region", "name": "lesion_region", "value": [0, 0, 1, 1], "ref": []},
+        {"id": "size", "type": "value", "name": "pixel_size", "value": 2.0, "ref": []},
+    ]}
+    spec = ResolverSpec(
+        inputs=[
+            {"role": "image", "name": "image", "evidence_type": "asset"},
+        ],
+        steps=[
+            {"op": "collect", "selector": {"role": "region", "name": "lesion_region", "evidence_type": "region"}},
+            {"op": "compute", "inputs": ["step_0"], "operation": "count"},
+        ],
+        output_spec=OutputSpec.NUMBER,
+            result_step="step_1",
+    )
+    result = resolve(case, spec)
+    assert result.reference == 1
+
+    # Structured value/region selectors are also valid when explicitly named as inputs.
+    for evidence_type, name in (("region", "lesion_region"), ("value", "pixel_size")):
+        ResolverSpec(
+            inputs=[{"role": "item", "name": name, "evidence_type": evidence_type}],
+            steps=[{"op": "collect", "selector": {"role": "item", "name": name, "evidence_type": evidence_type}}],
+            output_spec=OutputSpec.NUMBER,
+            result_step="step_0",
+        )
+
+
+def test_resolver_rejects_unnamed_or_relation_inputs():
+    base = {
+        "steps": [{"op": "collect", "selector": {"role": "x", "evidence_type": "region"}}],
+        "output_spec": OutputSpec.NUMBER,
+        "result_step": "step_0",
+    }
+    for selector in (
+        {"role": "x", "evidence_type": "region"},
+        {"role": "x", "name": "region", "evidence_type": "region", "relation": "image"},
+    ):
+        try:
+            ResolverSpec(inputs=[selector], **base)
+        except ValueError as exc:
+            assert "explicit asset/text/value/region names" in str(exc)
+        else:
+            raise AssertionError("invalid Resolver input was accepted")
+
+
 def test_task_paradigm_rejects_incompatible_output():
     try:
         from medbenchagent.planning.task_space import TaskLeaf
