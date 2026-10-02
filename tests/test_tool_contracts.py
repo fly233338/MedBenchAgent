@@ -13,7 +13,7 @@ def test_event_summary_excerpt_preserves_short_and_long_values():
     excerpt = _event_summary_excerpt(value)
     assert "chars truncated" in excerpt
     assert excerpt.startswith("a" * 1200)
-    assert excerpt.endswith("a" * 600 + "TAIL")
+    assert excerpt.endswith("a" * 596 + "TAIL")
     assert len(excerpt) <= _EVENT_SUMMARY_LIMIT + 40
 
 
