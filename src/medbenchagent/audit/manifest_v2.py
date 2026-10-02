@@ -23,6 +23,7 @@ def build_manifest(dataset: dict[str, Any], nodes: Iterable[TaskNode | dict], le
         task_records[leaf_id] = {
             "node_id": leaf.node_id,
             "capability_category": leaf.capability_category,
+            "capability_dimension_ids": parsed_nodes[leaf.node_id].capability_dimension_ids,
             "task_paradigm": leaf.task_paradigm.value,
             "output_spec": leaf.output_spec.value,
             "allocated_count": allocation.get(leaf_id, 0),

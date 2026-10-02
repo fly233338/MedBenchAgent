@@ -51,7 +51,7 @@ def generate_task_items(cases: Iterable[dict[str, Any]], leaves: Iterable[TaskLe
                 "case_id": case_id,
                 "input_assets": _input_assets(case, resolved.input_evidence_ids),
                 "input_evidence_ids": resolved.input_evidence_ids,
-                "question": leaf.question,
+                "question": leaf.question_template or leaf.question,
                 "output_spec": leaf.output_spec.value,
                 "answer": answer,
                 "reference_evidence_ids": resolved.reference_evidence_ids,

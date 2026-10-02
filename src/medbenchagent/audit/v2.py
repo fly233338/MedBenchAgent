@@ -55,12 +55,23 @@ def audit_task_items(cases: Iterable[dict[str, Any]], items: Iterable[dict[str, 
         else:
             accepted.append(item)
     by_capability = defaultdict(lambda: {"generated": 0, "accepted": 0, "rejected": 0})
+    by_dimension = defaultdict(lambda: {"generated": 0, "accepted": 0, "rejected": 0})
     for leaf_id, leaf in leaf_map.items():
+        generated_count = sum(item.get("task_id") == leaf_id for item in items)
+        accepted_count = sum(item.get("task_id") == leaf_id for item in accepted)
+        rejected_count = generated_count - accepted_count
         group = by_capability[leaf.capability_category]
-        group["generated"] += sum(item.get("task_id") == leaf_id for item in items)
-        group["accepted"] += sum(item.get("task_id") == leaf_id for item in accepted)
-        group["rejected"] += sum(item.get("task_id") == leaf_id for item in items) - group["accepted"]
+        group["generated"] += generated_count
+        group["accepted"] += accepted_count
+        group["rejected"] += rejected_count
+        dimensions = getattr(leaf, "capability_dimension_ids", [])
+        for dimension in dimensions:
+            group = by_dimension[dimension]
+            group["generated"] += generated_count
+            group["accepted"] += accepted_count
+            group["rejected"] += rejected_count
     return {"schema_version": "audit-report.v2", "generated": len(items),
             "accepted": len(accepted), "rejected": len(rejected), "reason_counts": dict(reasons),
-            "capability_categories": dict(by_capability), "accepted_items": accepted, "rejected_items": rejected}
+            "capability_categories": dict(by_capability), "capability_dimensions": dict(by_dimension),
+            "accepted_items": accepted, "rejected_items": rejected}
 

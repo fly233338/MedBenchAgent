@@ -12,7 +12,6 @@ from medbenchagent.runtime.tool_contracts import AllocationPreference
 
 from medbenchagent.runtime.llm import complete_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
-from medbenchagent.settings import get_settings
 
 REQUIRED_FIELDS = ("clinical_scope", "language", "sample_count")
 OPTIONAL_FIELDS = ("diseases", "modalities", "evaluation_focus", "dataset_mentions", "intent_notes")
@@ -219,13 +218,10 @@ def _validate_extraction(result, existing, user_inputs):
 def write_working_blueprint(
     benchmark_info: dict[str, Any], output_path: str | Path, template_path: Path | None = None
 ) -> str:
-    """Write a v2 benchmark brief; legacy concepts remain only as an input snapshot."""
-    template = template_path or get_settings().paths.blueprint_template
-    blueprint = json.loads(template.read_text(encoding="utf-8")) if template.is_file() else {}
-    blueprint = {"schema_version": "benchmark-brief.v2", "benchmark_info": benchmark_info,
-                 "concepts": blueprint.get("concepts", {})}
+    """Write the user benchmark brief; the registered Blueprint stays separate."""
+    blueprint = {"schema_version": "benchmark-brief", "benchmark_info": benchmark_info}
     destination = Path(output_path)
     if destination.suffix != ".json":
-        destination = destination / "blueprint.json"
+        destination = destination / "benchmark_brief.json"
     atomic_write_json(destination, blueprint)
     return str(destination)

@@ -1,5 +1,7 @@
 """Structural task facts derived only from explicit Case relations."""
-from collections import Counter
+
+from collections import Counter, defaultdict
+from typing import Any, Iterable
 
 
 def case_facts(case, assets):
@@ -32,3 +34,71 @@ def merge_facts(facts):
             result[key].update(value[key])
         result["evidence_names"].update(value["evidence_names"])
     return {key: sorted(value) if isinstance(value, set) else dict(value) for key, value in result.items()}
+
+
+def select_representative_case(cases: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    """Select one stable, bounded Case for model-visible planning context."""
+    values = [case for case in cases if isinstance(case.get("case_id"), str) and case["case_id"]]
+    if not values:
+        return None
+
+    def score(case):
+        evidence = case.get("evidence", [])
+        return (-len({row.get("name") for row in evidence}), -len(evidence), str(case["case_id"]))
+
+    return min(values, key=score)
+
+
+def build_dataset_facts(
+    cases: Iterable[dict[str, Any]],
+    assets: dict[str, dict[str, Any]],
+    *,
+    profile: dict[str, Any] | None = None,
+    revision: str | None = None,
+) -> dict[str, Any]:
+    """Build the single deterministic fact view shared by planning and execution."""
+    case_list = list(cases)
+    facts = [case_facts(case, assets) for case in case_list]
+    merged = merge_facts(facts)
+    evidence_catalog: dict[str, dict[str, Any]] = {}
+    if profile:
+        evidence_catalog = {row["name"]: row for row in profile.get("evidence", []) if row.get("name")}
+    if not evidence_catalog:
+        by_name: dict[str, dict[str, Any]] = defaultdict(lambda: {"cases": 0, "types": Counter(), "units": Counter()})
+        for case in case_list:
+            names = set()
+            for row in case.get("evidence", []):
+                name = row.get("name")
+                if not name:
+                    continue
+                names.add(name)
+                by_name[name]["types"][row.get("type")] += 1
+                if row.get("unit"):
+                    by_name[name]["units"][row["unit"]] += 1
+            for name in names:
+                by_name[name]["cases"] += 1
+        evidence_catalog = {
+            name: {"name": name, "cases": data["cases"],
+                   "types": dict(data["types"]), "units": dict(data["units"])}
+            for name, data in by_name.items()
+        }
+    patient_ids = {case.get("patient_id") for case in case_list if case.get("patient_id")}
+    result = {
+        "schema_version": "dataset-facts",
+        "revision": revision,
+        "case_count": len(case_list),
+        "patient_count": len(patient_ids) if patient_ids else len(case_list),
+        "evidence_catalog": evidence_catalog,
+        "annotation_mapping": [
+            {"role": f"evidence_{index}", "name": name, "evidence_type": evidence_type}
+            for index, (name, row) in enumerate(sorted(evidence_catalog.items()))
+            for evidence_type in sorted(row.get("types", {}))
+            if evidence_type in {"value", "text", "asset", "region"}
+        ],
+        "evidence": merged["evidence"],
+        "evidence_names": merged["evidence_names"],
+        "assets": merged["assets"],
+        "relations": merged["relations"],
+        "representative_case": select_representative_case(case_list),
+    }
+    return result

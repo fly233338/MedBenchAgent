@@ -158,7 +158,7 @@ def specify(context: SupervisorContext):
         issue.update(purpose="benchmark_fields", missing_fields=missing)
         updates.update(global_issue=issue, issues={**context.get("issues", {}), issue["issue_id"]: issue})
         return result("success", "Brief needs clarification: " + ", ".join(missing), **updates)
-    path = Path(context["operation_directory"]) / "blueprint.json"
+    path = Path(context["operation_directory"]) / "benchmark_brief.json"
     write_working_blueprint(info, path)
     publish(context, "GenerationConfig", {"seed": context.get("seed", get_settings().generation.seed),
             "max_tasks_per_image": context.get("max_tasks_per_image", get_settings().generation.max_tasks_per_image),
@@ -424,6 +424,15 @@ def compile_benchmark_graph(*, checkpointer=None):
         child = child_context(context, dataset_id, "planning")
         child["delegation"] = canonical_delegation(context, dataset_id)
         child["diagnostic_notes"] = (delegation or {}).get("revision_notes", "")
+        # Task Planning is a resumable data-driven loop. Give it a budget
+        # proportional to the Node space instead of the generic 60-call
+        # supervisor budget; every mutation is checkpointed in task_space_plan.
+        base_limits = context.get("limits", {})
+        child["limits"] = {
+            **base_limits,
+            "max_calls": max(base_limits.get("max_calls", 60), 1200),
+            "max_seconds": max(base_limits.get("max_seconds", 3600), 14400),
+        }
         publish(child, "PlanningDelegation", child["delegation"], ("Requirement",))
         feedback = context.get("template_revision_requests", {}).get(dataset_id)
         if feedback:
@@ -433,6 +442,14 @@ def compile_benchmark_graph(*, checkpointer=None):
             child.update(correction["updates"])
         output = planning.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "planning", output)
+        # A long planning loop may hit the per-invocation harness budget after
+        # checkpointing a valid partial draft. Keep it resumable instead of
+        # treating a budget boundary as a semantic failure.
+        draft = output.get("context", {}).get("task_space_plan", {})
+        if output["result"]["status"] == "blocked" and draft.get("phase") not in {"complete", "blocked"}:
+            outcome["status"] = "success"
+            outcome["summary"] = "Task Plan progress saved; planning can resume from the current Node"
+            outcome["updates"]["planning_incomplete"] = True
         if output["result"]["status"] == "complete":
             requests = dict(context.get("template_revision_requests", {}))
             requests.pop(dataset_id, None)
