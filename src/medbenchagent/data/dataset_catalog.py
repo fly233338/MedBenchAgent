@@ -20,6 +20,16 @@ def validate_dataset_id(value):
     return value
 
 
+def normalize_dataset_id(value: str) -> str:
+    """Derive a safe dynamic ID from a user-facing dataset name or directory."""
+    if not isinstance(value, str):
+        raise DatasetCatalogError("dataset name must be a string")
+    normalized = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
+    if not normalized:
+        raise DatasetCatalogError("dataset name cannot produce a safe id")
+    return validate_dataset_id(normalized)
+
+
 def resolve_path(value):
     path = Path(value).expanduser()
     return path.resolve() if path.is_absolute() else (settings.PROJECT_ROOT / path).resolve()

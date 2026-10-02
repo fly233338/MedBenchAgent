@@ -17,6 +17,7 @@ from medbenchagent.runtime.contexts import SupervisorContext
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.tool_contracts import PrepareDataArguments, DatasetId, DelegationArguments, PageArguments, NoArguments
 from medbenchagent.data.readiness import list_datasets, inspect_dataset_status, dataset_status, configured_source, reuse_prepared
+from medbenchagent.runtime.source_discovery import dynamic_dataset_id, explicit_source_error, request_text
 from medbenchagent.runtime.run_artifacts import initialize_run, atomic_write_json
 from medbenchagent.settings import get_settings, run_settings
 from medbenchagent.runtime.contexts import load_context, save_context, ROLES
@@ -159,6 +160,32 @@ def required_field_action(context):
             and context.get("brief_requirement") != context["user_requirement"]):
         return {"tool": "specify", "arguments": {}, "reason": "Re-extract completed benchmark requirement"}
     return None
+
+
+def raw_preparation_action(context):
+    """Route an explicit raw directory to preparation before Supervisor model choice."""
+    if context.get("global_issue"):
+        return None
+    requirement = request_text(context)
+    dataset_id = dynamic_dataset_id(requirement)
+    if not dataset_id or dataset_id in context.get("prepared_entries", {}):
+        return None
+    if error := explicit_source_error(requirement, run_directory=context.get("run_directory")):
+        return {"tool": "ask_user", "arguments": {
+                    "question": error + ". Please provide a readable raw dataset directory.",
+                    "reference": "raw_source"},
+                "reason": "The explicit raw dataset directory needs correction"}
+    saved = context.get("child_states", {}).get(dataset_id, {}).get("preparation")
+    operation = Path(context.get("run_directory", "")) / "agents" / "DataProcessingAgent" / dataset_id
+    if saved or (operation / "preparation.json").is_file():
+        return None
+    return {"tool": "prepare_data", "arguments": {"dataset_id": dataset_id,
+            "mode": "reuse_or_prepare"}, "reason": "Prepare the explicit raw dataset directory"}
+
+
+def automatic_supervisor_action(context):
+    """Apply deterministic routing before asking the Supervisor model to choose."""
+    return required_field_action(context) or raw_preparation_action(context)
 
 
 def canonical_delegation(context, dataset=None):
@@ -329,6 +356,8 @@ When the user supplies a raw dataset path, treat the directory format, file inve
 and dataset contents as facts for DataProcessingAgent to inspect. Do not ask the user for those details
 before delegating prepare_data. Ask only when the path is missing/unreadable or the preparation worker
 cannot resolve a remaining semantic choice from the source evidence.
+If an explicit raw path is present, the host may automatically route prepare_data before this decision;
+when choosing manually, use the normalized directory name as dataset_id and delegate prepare_data first.
 
 Decisions:
 Use outstanding_work, current artifact readiness and available tools to choose the next useful action.
@@ -628,7 +657,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         {"end": end, "resolve_clarification": resolve_clarification, "specify": specify, "select_datasets": select_datasets,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
          "prepare_data": prepare_data, "plan": plan, "run_v2": run_v2, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
-        describe, finish, available_tools=available_stages, automatic_action=required_field_action,
+        describe, finish, available_tools=available_stages, automatic_action=automatic_supervisor_action,
         read_tools=frozenset({"list_datasets", "inspect_dataset_status"}),
         args_schemas={"resolve_clarification": ResolveClarificationArguments, "prepare_data": PrepareDataArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
