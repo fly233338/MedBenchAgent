@@ -442,6 +442,14 @@ Interaction:
 - Ask only for information that changes the next safe action. Use existing answers and evidence before asking again."""
 
 
+def _supervisor_instructions(context: dict[str, Any]) -> str:
+    """Load the experiment-frozen Supervisor prompt from BIR."""
+    if context.get("bir_path"):
+        from medbenchagent.planning.bir import BIRStore
+        return BIRStore(context["bir_path"]).registry().prompt("supervisor")
+    return SUPERVISOR_INSTRUCTIONS
+
+
 def compile_benchmark_graph(*, checkpointer=None):
     planning = compile_task_planning_agent()
     generation = None
@@ -753,7 +761,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         return result("complete", "This request is outside MedBenchAgent's scope")
 
     supervisor = compile_agent("SupervisorAgent",
-        SUPERVISOR_INSTRUCTIONS,
+        _supervisor_instructions,
         {"end": end, "resolve_clarification": resolve_clarification, "specify": specify,
          "discover_datasets": discover_datasets, "select_datasets": select_datasets,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
