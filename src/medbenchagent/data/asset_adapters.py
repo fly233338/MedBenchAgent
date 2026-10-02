@@ -132,7 +132,8 @@ class DicomImageAdapter(AssetAdapter):
             raise AssetAdapterError("Multiframe DICOM requires a volume adapter")
         if str(getattr(dataset, "PhotometricInterpretation", "")) not in {"MONOCHROME1", "MONOCHROME2"}:
             raise AssetAdapterError("Unsupported DICOM photometric interpretation")
-        pixels = dataset.pixel_array
+        pixels = dataset.pixel_array.astype(np.float32)
+        pixels = pixels * float(getattr(dataset, "RescaleSlope", 1.0)) + float(getattr(dataset, "RescaleIntercept", 0.0))
         if str(getattr(dataset, "PhotometricInterpretation", "")) == "MONOCHROME1":
             pixels = np.max(pixels) - pixels
         return LoadedAsset(pixels, {"rows": int(dataset.Rows), "columns": int(dataset.Columns),
@@ -191,21 +192,32 @@ class DicomSeriesAdapter(AssetAdapter):
         orientations = {tuple(float(x) for x in getattr(ds, "ImageOrientationPatient", [])) for ds in datasets}
         if len(orientations) > 1:
             raise AssetAdapterError("DICOM Series has inconsistent orientation")
+        orientation = next(iter(orientations), ())
+        normal = np.cross(np.asarray(orientation[:3], dtype=float), np.asarray(orientation[3:], dtype=float))
+        if np.linalg.norm(normal) == 0:
+            raise AssetAdapterError("DICOM Series has invalid orientation")
+        normal = normal / np.linalg.norm(normal)
         def key(ds):
             position = getattr(ds, "ImagePositionPatient", None)
-            geometry = tuple(float(x) for x in position) if position is not None else ()
-            return (geometry, int(getattr(ds, "InstanceNumber", 0)), str(getattr(ds, "SOPInstanceUID", "")))
+            projection = float(np.dot(normal, np.asarray(position, dtype=float))) if position is not None else float("inf")
+            return (projection, int(getattr(ds, "InstanceNumber", 0)), str(getattr(ds, "SOPInstanceUID", "")))
         datasets.sort(key=key)
         seen = [str(getattr(ds, "SOPInstanceUID", "")) for ds in datasets]
         if len(seen) != len(set(seen)):
             raise AssetAdapterError("DICOM Series contains duplicate SOPInstanceUID values")
-        arrays = [ds.pixel_array for ds in datasets]
+        arrays = []
+        for ds in datasets:
+            pixels = ds.pixel_array.astype(np.float32)
+            pixels = pixels * float(getattr(ds, "RescaleSlope", 1.0)) + float(getattr(ds, "RescaleIntercept", 0.0))
+            if str(getattr(ds, "PhotometricInterpretation", "")) == "MONOCHROME1":
+                pixels = np.max(pixels) - pixels
+            arrays.append(pixels)
         shapes = {tuple(array.shape) for array in arrays}
         if len(shapes) != 1:
             raise AssetAdapterError("DICOM Series has inconsistent geometry")
         positions = [getattr(ds, "ImagePositionPatient", None) for ds in datasets]
         if all(position is not None for position in positions) and len(positions) > 2:
-            distances = [float(positions[i + 1][2]) - float(positions[i][2]) for i in range(len(positions) - 1)]
+            distances = [float(np.dot(normal, np.asarray(positions[i + 1], dtype=float) - np.asarray(positions[i], dtype=float))) for i in range(len(positions) - 1)]
             if any(abs(distance) < 1e-9 for distance in distances):
                 raise AssetAdapterError("DICOM Series contains duplicate slice positions")
             step = distances[0]
