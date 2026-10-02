@@ -30,8 +30,8 @@ def test_case_query_profiles(tmp_path):
         Evidence(id="a", type="asset", name="view", value="a1"),
         Evidence(id="t", type="text", name="report", value="clear", ref=["a"]),
     ])
-    (tmp_path / "annotation.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
-    query = CaseQuery(tmp_path / "annotation.jsonl", tmp_path / "asset_manifest.jsonl")
+    (tmp_path / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
+    query = CaseQuery(tmp_path / "cases.jsonl", tmp_path / "asset_manifest.jsonl")
     assert query.case_count() == 1
     assert query.patient_count() == 1
     assert query.asset_profile()["assets_per_case"] == {1: 1}

@@ -40,11 +40,11 @@ def verify_v5_bundle(bundle: str | Path) -> dict:
     if ready.get("annotation_schema") != "annotation.v5" or ready.get("schema_version") != "dataset-bundle.v4":
         raise ValueError("Dataset bundle is not annotation.v5; re-prepare the dataset")
     access = ready["access"]
-    for key in ("annotation_path", "asset_manifest_path", "profile_path", "dataset_card_path"):
+    for key in ("cases_path", "asset_manifest_path", "profile_path", "dataset_card_path"):
         if not Path(access[key]).is_file():
             raise ValueError(f"Missing v5 bundle artifact: {key}")
     checks = {
-        "annotation_digest": access["annotation_path"],
+        "annotation_digest": access["cases_path"],
         "asset_manifest_digest": access["asset_manifest_path"],
         "profile_digest": access["profile_path"],
     }

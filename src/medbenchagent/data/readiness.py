@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from medbenchagent.data.dataset_catalog import load_dataset_catalog, load_prepared, resolve_path
+from medbenchagent.data.dataset_catalog import load_dataset_catalog, load_prepared, prepared_bundle_entry, resolve_path
 from medbenchagent.runtime.dependencies import publish
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
@@ -52,6 +52,11 @@ def list_datasets(context, *, offset=0, limit=20, query=""):
 
 def dataset_status(context, dataset_id):
     entry = next((item for item in catalog_entries(context) if item["dataset_id"] == dataset_id), None)
+    if entry is None:
+        try:
+            entry = prepared_bundle_entry(dataset_id)
+        except (ValueError, OSError, KeyError):
+            entry = None
     source = configured_source(dataset_id)
     errors = source_errors(source)
     status = {"dataset_id": dataset_id, "prepared": False, "available": entry["available"] if entry else None,
@@ -84,7 +89,9 @@ def reuse_prepared(context, dataset_id):
         if entry["dataset_id"] != dataset_id:
             raise ValueError("Reused dataset identity changed")
     else:
-        entry = next(item for item in catalog_entries(context) if item["dataset_id"] == dataset_id)
+        entry = next((item for item in catalog_entries(context) if item["dataset_id"] == dataset_id), None)
+        if entry is None:
+            entry = prepared_bundle_entry(dataset_id)
         if not entry["available"]:
             raise ValueError("Cannot reuse a disabled dataset")
         load_prepared(entry)
@@ -96,7 +103,7 @@ def reuse_prepared(context, dataset_id):
         atomic_write_json(path, entry)
     _, access = load_prepared(entry)
     child = dict(context, dataset_scope=dataset_id)
-    publish(child, "Dataset", {"annotation": entry["annotation_path"], "access": access}, ("DataConfig",))
+    publish(child, "Dataset", {"cases": entry["cases_path"], "access": access}, ("DataConfig",))
     publish(child, "DatasetProfile", {"path": entry["profile_path"]}, ("Dataset",))
     publish(child, "DatasetCard", {"path": entry["dataset_card_path"]}, ("DatasetProfile",))
     entries = {**context.get("prepared_entries", {}), dataset_id: entry}

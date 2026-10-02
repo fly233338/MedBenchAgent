@@ -9,12 +9,12 @@ def annotation_schema_path():
 
 
 def prepare_annotation_dataset(
-    annotation_path, cache_root, *, revision="1", refresh=False, scratch_root=None
+    cases_path, cache_root, *, revision="1", refresh=False, scratch_root=None
 ):
-    annotation = Path(annotation_path)
+    cases = Path(cases_path)
     return prepare_v5_dataset(
-        annotation,
-        annotation.parent / "asset_manifest.jsonl",
+        cases,
+        cases.parent / "asset_manifest.jsonl",
         cache_root,
         revision=revision,
         refresh=refresh,

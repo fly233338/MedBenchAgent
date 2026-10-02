@@ -157,7 +157,7 @@ def discover_source(context: dict, dataset_id: str) -> dict:
         raise ValueError(f"Raw dataset directory is empty: {root}")
     atomic_write_json(folder / "source_inventory.json", inventory)
 
-    annotation = root / "annotation.jsonl"
+    annotation = root / "cases.jsonl"
     source = Source(id="original", root=str(root), kind="annotation" if annotation.is_file() else "raw")
     entry = {"dataset_id": dataset_id, "name": proposal.dataset_name or root.name,
              "description": "", "sources": [source.model_dump(exclude_none=True)]}

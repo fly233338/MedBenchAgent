@@ -13,8 +13,8 @@ def test_v5_duckdb_index_and_query(tmp_path):
         Evidence(id="label", type="value", name="class", value="positive", ref=["asset"]),
     ])
     (tmp_path / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
-    (tmp_path / "annotation.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
-    profile, access = prepare_annotation_dataset(tmp_path / "annotation.jsonl", tmp_path / "cache")
+    (tmp_path / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
+    profile, access = prepare_annotation_dataset(tmp_path / "cases.jsonl", tmp_path / "cache")
     assert profile["case_count"] == 1
     query = DatasetQuery(access)
     assert query.records(["case-1"])["case-1"]["case_id"] == "case-1"

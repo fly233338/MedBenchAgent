@@ -13,9 +13,9 @@ from medbenchagent.data.sources import digest_file
 from medbenchagent.data.v5_models import CaseRecord, validate_case
 
 
-def prepare_v5_dataset(annotation_path, manifest_path, cache_root, *, revision="1", refresh=False,
+def prepare_v5_dataset(cases_path, manifest_path, cache_root, *, revision="1", refresh=False,
                        source_root=None, source_roots=None):
-    annotation = Path(annotation_path).resolve()
+    cases_file = Path(cases_path).resolve()
     manifest = Path(manifest_path).resolve()
     cache = Path(cache_root) / "annotation-cache.v5" / revision
     if refresh and cache.exists():
@@ -26,13 +26,13 @@ def prepare_v5_dataset(annotation_path, manifest_path, cache_root, *, revision="
     access_path = cache / "dataset_access_manifest.json"
     if access_path.is_file():
         access = json.loads(access_path.read_text(encoding="utf-8"))
-        if access.get("annotation_digest") == digest_file(annotation) and access.get("asset_manifest_digest") == digest_file(manifest):
+        if access.get("annotation_digest") == digest_file(cases_file) and access.get("asset_manifest_digest") == digest_file(manifest):
             return json.loads(profile_path.read_text(encoding="utf-8")), access
     assets = {entry.asset_id: entry for entry in iter_asset_manifest(
         manifest, source_root=source_root, source_roots=source_roots
     )}
     cases = []
-    with annotation.open(encoding="utf-8") as source:
+    with cases_file.open(encoding="utf-8") as source:
         for line in source:
             case = CaseRecord.model_validate_json(line)
             cases.append(validate_case(case, assets))
@@ -57,7 +57,7 @@ def prepare_v5_dataset(annotation_path, manifest_path, cache_root, *, revision="
     temporary.replace(db_path)
     profile = _profile(cases, assets)
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    access = {"schema_version": "annotation.v5", "revision": revision, "annotation_path": str(annotation), "asset_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(annotation), "asset_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path)}
+    access = {"schema_version": "annotation.v5", "revision": revision, "cases_path": str(cases_file), "asset_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(cases_file), "asset_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path)}
     access_path.write_text(json.dumps(access, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return profile, access
 

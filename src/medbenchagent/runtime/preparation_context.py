@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from uuid import uuid4
 
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.dataset_catalog import validate_dataset_id
 from medbenchagent.data.execution import data_dependency_identity, docker_image_id, select_backend
 from medbenchagent.data.sources import inventory_source
 from medbenchagent.runtime.dependencies import publish
-from medbenchagent.runtime.run_artifacts import atomic_write_json, version_directory_name
+from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_settings
 
 
@@ -27,7 +26,7 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
     runtime = context.get("execution_runtime") or select_backend(get_settings().data_processing)
     marker = Path(context["operation_directory"]) / "preparation.json"
     def configured_bundle() -> Path:
-        return get_settings().paths.prepared_datasets_root / dataset_id / version_directory_name(uuid4())
+        return get_settings().paths.prepared_datasets_root / dataset_id
 
     def overlaps_source(path: Path) -> bool:
         resolved = path.resolve()

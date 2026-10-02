@@ -35,6 +35,34 @@ def resolve_path(value):
     return path.resolve() if path.is_absolute() else (settings.PROJECT_ROOT / path).resolve()
 
 
+def prepared_bundle_entry(dataset_id, *, prepared_root=None):
+    """Build an entry for one valid direct Prepared/<dataset_id> bundle."""
+    validate_dataset_id(dataset_id)
+    root = Path(prepared_root or settings.get_settings().paths.prepared_datasets_root).resolve()
+    bundle = root / dataset_id
+    ready = bundle / "ready.json"
+    if not ready.is_file():
+        raise DatasetCatalogError(f"Prepared bundle is unavailable: {bundle}")
+    document = json.loads(ready.read_text(encoding="utf-8"))
+    access = document.get("access", {})
+    cases = Path(access.get("cases_path", ""))
+    if cases.parent.resolve() != bundle or not cases.is_file():
+        raise DatasetCatalogError("Prepared bundle cases_path must point to its direct bundle")
+    card = read_v5_card(access.get("dataset_card_path", bundle / "dataset_card.json"))
+    if card.get("dataset_id") != dataset_id:
+        raise DatasetCatalogError("Prepared bundle Card dataset_id does not match its directory")
+    return {
+        "dataset_id": dataset_id,
+        "name": card["name"],
+        "description": card["description"],
+        "available": True,
+        "cases_path": str(cases),
+        "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
+        "profile_path": str(bundle / "dataset_profile.json"),
+        "dataset_card_path": str(bundle / "dataset_card.json"),
+    }
+
+
 def load_dataset_catalog(catalog_path=None):
     path = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
     if not path.exists():
@@ -62,7 +90,7 @@ def dataset_by_id(datasets, dataset_id):
 
 
 def load_prepared(entry):
-    bundle = resolve_path(entry["annotation_path"]).parent
+    bundle = resolve_path(entry["cases_path"]).parent
     verified = verify_v5_bundle(bundle)
     access = verified["ready"]["access"]
     frozen_card_path = resolve_path(entry.get("dataset_card_path", access["dataset_card_path"]))
@@ -81,7 +109,7 @@ def register_dataset(dataset_id, bundle, *, catalog_path=None):
         "name": card["name"],
         "description": card["description"],
         "available": True,
-        "annotation_path": str(bundle / "annotation.jsonl"),
+        "cases_path": str(bundle / "cases.jsonl"),
         "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
         "profile_path": str(bundle / "dataset_profile.json"),
         "dataset_card_path": str(bundle / "dataset_card.json"),

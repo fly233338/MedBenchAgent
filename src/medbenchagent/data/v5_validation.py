@@ -13,10 +13,10 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
                           source_roots: dict[str, str | Path] | None = None) -> dict:
     """Validate every Case and return a complete acceptance/quarantine report."""
     candidate = Path(candidate)
-    annotation = candidate / "annotation.jsonl"
+    cases_path = candidate / "cases.jsonl"
     manifest = candidate / "asset_manifest.jsonl"
-    if not annotation.is_file() or not manifest.is_file():
-        raise ValueError("annotation.jsonl and asset_manifest.jsonl are required")
+    if not cases_path.is_file() or not manifest.is_file():
+        raise ValueError("cases.jsonl and asset_manifest.jsonl are required")
     provenance = candidate / "provenance.jsonl"
     if not provenance.is_file():
         raise ValueError("provenance.jsonl is required")
@@ -56,7 +56,7 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
     cases = []
     failures = []
     seen_cases = set()
-    with annotation.open(encoding="utf-8") as handle:
+    with cases_path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             try:
                 case = CaseRecord.model_validate_json(line)
@@ -67,7 +67,7 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
             except Exception as exc:
                 failures.append({"line": line_number, "kind": "hard_case_failure", "error": str(exc)})
     if not cases and not failures:
-        raise ValueError("annotation.jsonl is empty")
+        raise ValueError("cases.jsonl is empty")
     if provenance_cases:
         missing_cases = sorted({case.case_id for case in cases} - provenance_cases)
         if missing_cases:

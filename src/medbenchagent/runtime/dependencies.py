@@ -70,8 +70,8 @@ def reference_digests(references):
     # digest instead of scanning a large annotation again for every publication.
     def known(value):
         if isinstance(value, dict):
-            if "annotation_path" in value and "annotation_digest" in value:
-                digests[str(Path(value["annotation_path"]).resolve())] = value["annotation_digest"]
+            if "cases_path" in value and "annotation_digest" in value:
+                digests[str(Path(value["cases_path"]).resolve())] = value["annotation_digest"]
             for child in value.values():
                 known(child)
 
@@ -83,7 +83,7 @@ def reference_digests(references):
                 visit(child, name)
         elif isinstance(value, str) and (
             key.endswith("_path")
-            or key in {"path", "blueprint", "raw", "audited", "report", "annotation"}
+            or key in {"path", "blueprint", "raw", "audited", "report", "cases"}
         ):
             path = Path(value)
             if path.is_file() and path.suffix in {".json", ".jsonl", ".py", ".toml"}:

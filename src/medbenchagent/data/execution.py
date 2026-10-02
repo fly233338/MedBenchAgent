@@ -129,7 +129,7 @@ def _local_run(command, *, cwd, env, timeout):
         raise ValueError((stdout + "\n" + stderr)[-5000:] + hint)
 
 
-def run(context, output, *, script=None, request=None, annotation=None, specification=None, inputs=None, provenance=None):
+def run(context, output, *, script=None, request=None, cases=None, specification=None, inputs=None, provenance=None):
     """Execute a fixed operation or generated script with an immutable completion receipt."""
     from medbenchagent.data.sources import verify_source, digest_file
 
@@ -163,8 +163,8 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
     receipts.mkdir(parents=True, exist_ok=True)
     receipt = receipts / f"{output.name}-{kind}.complete.json"
     identity = {"runtime": data_runtime, "script": digest_file(script) if script else None,
-                "request": request, "annotation": annotation,
-                "annotation_digest": digest_file(annotation) if annotation else None,
+                "request": request, "cases": cases,
+                "cases_digest": digest_file(cases) if cases else None,
                 "specification": digest_file(specification) if specification else None,
                 "inputs": digest_file(inputs) if inputs else None,
                 "provenance": digest_file(provenance) if provenance else None,
@@ -174,7 +174,7 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
         if saved_receipt["identity"] != identity:
             raise ValueError("Prepared operation dependencies changed; use a new operation directory")
         verify_output_digests(output, saved_receipt["outputs"])
-        if (output / ("result.json" if request else "annotation.jsonl")).is_file():
+        if (output / ("result.json" if request else "cases.jsonl")).is_file():
             return json.loads((output / "result.json").read_text(encoding="utf-8")) if request else None
     elif any(output.iterdir()):
         incomplete = Path(context.get("operation_directory", output.parent)) / "incomplete"
@@ -194,7 +194,7 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
     if runtime["backend"] == "local":
         environment.update(PYTHONPATH=project, MEDBENCH_SOURCE_ROOT=source,
                            MEDBENCH_WORK_DIR=str(output), MEDBENCH_DATA_SCRATCH=str(scratch),
-                           MEDBENCH_ANNOTATION_PATH=str(Path(annotation).resolve()) if annotation else "")
+                           MEDBENCH_CASES_PATH=str(Path(cases).resolve()) if cases else "")
         for name, path in (("SPEC", specification), ("INPUTS", inputs), ("PROVENANCE", provenance)):
             if path:
                 environment[f"MEDBENCH_{name}_PATH"] = str(Path(path).resolve())
@@ -208,7 +208,7 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
                    "--pids-limit=128", "--cap-drop=ALL", "--security-opt=no-new-privileges",
                    "--tmpfs", "/tmp:rw,size=256m", "--workdir", "/work"]
         environment.update(PYTHONPATH="/project", MEDBENCH_SOURCE_ROOT="/source", MEDBENCH_WORK_DIR="/work",
-                           MEDBENCH_DATA_SCRATCH="/scratch", MEDBENCH_ANNOTATION_PATH="/annotation/annotation.jsonl" if annotation else "")
+                           MEDBENCH_DATA_SCRATCH="/scratch", MEDBENCH_CASES_PATH="/cases/cases.jsonl" if cases else "")
         for key, value in environment.items():
             command += ["--env", f"{key}={value}"]
         mounts = [(source, "/source", True), (project, "/project", True),
@@ -217,8 +217,8 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
             if path:
                 command += ["--env", f"MEDBENCH_{name.upper()}_PATH=/{name}.json"]
                 mounts.append((str(Path(path).resolve()), f"/{name}.json", True))
-        if annotation:
-            mounts.append((str(Path(annotation).resolve()), "/annotation/annotation.jsonl", True))
+        if cases:
+            mounts.append((str(Path(cases).resolve()), "/cases/cases.jsonl", True))
         mounts.append((str(Path(script).resolve()) if script else str(request_path), "/script.py" if script else "/request.json", True))
         for host, target, readonly in mounts:
             command += ["--mount", f"type=bind,source={host},target={target}" + (",readonly" if readonly else "")]
@@ -235,7 +235,7 @@ def run(context, output, *, script=None, request=None, annotation=None, specific
             raise ValueError((completed.stdout + "\n" + completed.stderr)[-5000:])
     if context.get("source_manifest"):
         verify_source(context["source_manifest"])
-    expected = output / ("result.json" if request else "annotation.jsonl")
+    expected = output / ("result.json" if request else "cases.jsonl")
     if not expected.is_file():
         raise ValueError(f"Preparation did not produce {expected.name}")
     atomic_write_json(receipt, {"identity": identity, "outputs": output_digests(output)})

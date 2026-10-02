@@ -194,7 +194,7 @@ def child_context(context, dataset_id, role):
     child.update({k: context[k] for k in COMMON if k in context})
     asset = context["dataset_assets"][dataset_id]
     child.update(agent_role=ROLES[role], dataset_scope=dataset_id, selected_dataset_id=dataset_id,
-                 annotation_path=asset["access"]["annotation_path"], dataset_entry=asset["entry"],
+                 cases_path=asset["access"]["cases_path"], dataset_entry=asset["entry"],
                  dataset_access_manifest=asset["access"], dataset_card_summary=asset["card_summary"],
                  operation_directory=agent_operation(
                      context, {"planning": "TaskPlanningAgent", "templates": "TaskPlanningAgent",
@@ -525,12 +525,17 @@ def compile_benchmark_graph(*, checkpointer=None):
                         record_event(event_path, "finalization_finished", operation="finalize_prepared_dataset",
                                      status="complete", dataset_entry=finalized.get("dataset_entry"),
                                      validation_report=finalized.get("validation_report"), **event_base)
-                    output["context"].update({"dataset_entry": finalized["dataset_entry"],
-                                               "annotation_path": finalized["annotation_path"],
+                    from medbenchagent.data.dataset_catalog import register_dataset
+                    registered_entry = register_dataset(
+                        dataset_id, finalized["bundle"], catalog_path=context["registration_catalog_path"]
+                    )
+                    finalized["dataset_entry"] = registered_entry
+                    output["context"].update({"dataset_entry": registered_entry,
+                                               "cases_path": finalized["cases_path"],
                                                "dataset_access_manifest": finalized["access_manifest"]})
                     dataset_versions = publish(
                         output["context"], "Dataset",
-                        {"annotation": finalized["annotation_path"], "access": finalized["access_manifest"]},
+                        {"cases": finalized["cases_path"], "access": finalized["access_manifest"]},
                         ("DataConfig",),
                     )
                     profile_versions = publish(
@@ -543,7 +548,7 @@ def compile_benchmark_graph(*, checkpointer=None):
                     )
                     outcome["updates"].update({
                         "dataset_entry": finalized["dataset_entry"],
-                        "annotation_path": finalized["annotation_path"],
+                        "cases_path": finalized["cases_path"],
                         "dataset_access_manifest": finalized["access_manifest"],
                         "artifact_versions": {
                             **outcome["updates"].get("artifact_versions", {}),

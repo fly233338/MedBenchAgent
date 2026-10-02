@@ -193,7 +193,7 @@ def select_datasets(context):
         asset = {"entry": candidate["entry"], "access": access, "card_summary": card_summary(card)}
         assets[identifier] = asset
         child = dict(context, dataset_scope=identifier)
-        for kind, references in (("Dataset", {"annotation": asset["entry"]["annotation_path"], "access": access}),
+        for kind, references in (("Dataset", {"cases": asset["entry"]["cases_path"], "access": access}),
                                  ("DatasetProfile", {"path": asset["entry"]["profile_path"]}),
                                  ("DatasetCard", {"path": asset["entry"]["dataset_card_path"]})):
             deps = ("DataConfig",) if kind == "Dataset" else ("Dataset",) if kind == "DatasetProfile" else ("DatasetProfile",)

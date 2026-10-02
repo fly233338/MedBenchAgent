@@ -12,14 +12,14 @@ OpenHands Coding Session 只能在 Worker workspace 中写候选文件。宿主�
 
 已发布 Bundle 提供（annotation.v5）：
 
-- `annotation.jsonl`：以 Case/Evidence 为核心的 canonical 记录；
+- `cases.jsonl`：以 Case/Evidence 为核心的 canonical 记录；
 - `asset_manifest.jsonl`：image/volume Asset、来源和完整性摘要；
 - `preparation_report.json`：完整输入、接收、隔离和失败账本；
 - Profile：字段、结构、覆盖率、值分布和容量索引；
 - Card：数据集范围、模态、字段角色和来源证据；
 - preparation metadata：执行计划、来源摘要、验证回执和 provenance。
 
-Bundle、Profile、Card 和 Catalog 都使用内容摘要绑定输入。新版本写入新的目录，已登记版本保持可复用。
+Bundle、Profile、Card 和 Catalog 都使用内容摘要绑定输入。每个数据集固定发布到 `Prepared/<dataset_id>/`，有效 Bundle 直接复用，只有显式 rebuild 才会替换。
 
 ## 执行与验证
 

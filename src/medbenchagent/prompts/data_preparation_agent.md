@@ -21,7 +21,7 @@ Evidence types are value, text, asset, and region. Region uses normalized xyxy c
 `ref` only when the source explicitly establishes the relationship. Do not infer labels, relations,
 negative findings, or answers from medical knowledge, filenames, overlays, or hidden annotations.
 
-Submit only after writing `outputs/annotation.jsonl`, `outputs/asset_manifest.jsonl`,
+Submit only after writing `outputs/cases.jsonl`, `outputs/asset_manifest.jsonl`,
 `outputs/provenance.jsonl`, `outputs/preparation_report.json`,
 `outputs/conversion_config.json`, `outputs/grouping_policy.json`, `outputs/mapping.json`,
 `outputs/conversion_version`, `outputs/notes/dataset_notes.md`, and

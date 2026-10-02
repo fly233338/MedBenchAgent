@@ -25,7 +25,7 @@ def finalize_v5_prepared_dataset(candidate, context):
         shutil.rmtree(temporary)
     temporary.mkdir(parents=True)
     names = (
-        "annotation.jsonl",
+        "cases.jsonl",
         "asset_manifest.jsonl",
         "provenance.jsonl",
         "preparation_report.json",
@@ -46,7 +46,7 @@ def finalize_v5_prepared_dataset(candidate, context):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
     profile, access = prepare_v5_dataset(
-        temporary / "annotation.jsonl",
+        temporary / "cases.jsonl",
         temporary / "asset_manifest.jsonl",
         temporary / "cache",
         revision="1",
@@ -60,7 +60,7 @@ def finalize_v5_prepared_dataset(candidate, context):
         "dataset_id": dataset_id,
         "name": dataset_id,
         "description": "annotation.v5 dataset",
-        "annotation_digest": digest_file(temporary / "annotation.jsonl"),
+        "annotation_digest": digest_file(temporary / "cases.jsonl"),
         "asset_manifest_digest": digest_file(temporary / "asset_manifest.jsonl"),
         "profile_digest": digest_file(temporary / "dataset_profile.json"),
         "case_count": profile["case_count"],
@@ -72,11 +72,12 @@ def finalize_v5_prepared_dataset(candidate, context):
     (temporary / "presentation_manifest.jsonl").write_text("", encoding="utf-8")
     access = {
         **access,
-        "annotation_path": str(temporary / "annotation.jsonl"),
+        "cases_path": str(temporary / "cases.jsonl"),
         "asset_manifest_path": str(temporary / "asset_manifest.jsonl"),
         "profile_path": str(temporary / "dataset_profile.json"),
         "dataset_card_path": str(temporary / "dataset_card.json"),
         "presentation_manifest_path": str(temporary / "presentation_manifest.jsonl"),
+        "duckdb_path": str(temporary / "cache" / "annotation-cache.v5" / "1" / "dataset.duckdb"),
     }
     atomic_write_json(
         temporary / "ready.json",
@@ -92,7 +93,7 @@ def finalize_v5_prepared_dataset(candidate, context):
     ready = json.loads((bundle / "ready.json").read_text(encoding="utf-8"))
     ready["access"].update(
         {
-            "annotation_path": str(bundle / "annotation.jsonl"),
+            "cases_path": str(bundle / "cases.jsonl"),
             "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
             "profile_path": str(bundle / "dataset_profile.json"),
             "dataset_card_path": str(bundle / "dataset_card.json"),
@@ -103,13 +104,14 @@ def finalize_v5_prepared_dataset(candidate, context):
     return {
         "status": "complete",
         "bundle": str(bundle),
-        "annotation_path": str(bundle / "annotation.jsonl"),
+        "cases_path": str(bundle / "cases.jsonl"),
         "access_manifest": {
             **access,
-            "annotation_path": str(bundle / "annotation.jsonl"),
+            "cases_path": str(bundle / "cases.jsonl"),
             "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
             "profile_path": str(bundle / "dataset_profile.json"),
             "dataset_card_path": str(bundle / "dataset_card.json"),
+            "duckdb_path": str(bundle / "cache" / "annotation-cache.v5" / "1" / "dataset.duckdb"),
         },
         "report": report,
         "card_path": str(bundle / "dataset_card.json"),
@@ -118,7 +120,7 @@ def finalize_v5_prepared_dataset(candidate, context):
             "name": dataset_id,
             "description": "annotation.v5 dataset",
             "available": True,
-            "annotation_path": str(bundle / "annotation.jsonl"),
+            "cases_path": str(bundle / "cases.jsonl"),
             "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
             "profile_path": str(bundle / "dataset_profile.json"),
             "dataset_card_path": str(bundle / "dataset_card.json"),

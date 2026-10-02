@@ -12,8 +12,8 @@
 # [[dataset_sources.sources]]
 # id = "original"
 # root = "D:/Data/example"
-# kind = "raw" # use annotation for existing canonical annotation.jsonl
-# annotation = "annotation.jsonl"
+# kind = "raw" # use annotation for existing canonical cases.jsonl
+# annotation = "cases.jsonl"
 
 [benchmark]
 default_sample_count = 1000 # Used only when the user did not supply a count; language is asked.

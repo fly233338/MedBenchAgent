@@ -115,13 +115,13 @@ def convert_v4_record(record: dict[str, Any], asset: AssetEntry, *, source_id: s
     return validate_case(case, {asset.asset_id: asset})
 
 
-def convert_v4_jsonl(annotation_path: str | Path, assets: Iterable[AssetEntry], output_path: str | Path,
+def convert_v4_jsonl(cases_path: str | Path, assets: Iterable[AssetEntry], output_path: str | Path,
                      *, source_id: str = "source", converter_version: str = "v5") -> int:
     """Convert an annotation.v4 JSONL file deterministically and return Case count."""
     by_id = {asset.asset_id: asset for asset in assets}
     by_path = {asset.source_path: asset for asset in assets}
     count = 0
-    with Path(annotation_path).open(encoding="utf-8") as source, Path(output_path).open("w", encoding="utf-8") as target:
+    with Path(cases_path).open(encoding="utf-8") as source, Path(output_path).open("w", encoding="utf-8") as target:
         for line_number, line in enumerate(source, 1):
             record = json.loads(line)
             image = record.get("image", {})

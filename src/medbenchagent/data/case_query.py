@@ -9,10 +9,10 @@ from medbenchagent.data.v5_models import AssetProfile, CaseRecord, DatasetProfil
 
 
 class CaseQuery:
-    def __init__(self, annotation_path, asset_manifest_path):
+    def __init__(self, cases_path, asset_manifest_path):
         self.assets = {item.asset_id: item for item in self._assets(asset_manifest_path)}
         self.cases = []
-        with Path(annotation_path).open(encoding="utf-8") as handle:
+        with Path(cases_path).open(encoding="utf-8") as handle:
             for line in handle:
                 case = CaseRecord.model_validate_json(line)
                 self.cases.append(validate_case(case, self.assets))

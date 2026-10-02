@@ -18,7 +18,7 @@ class Source(Contract):
     version: Text | None = None
     kind: Literal["raw", "annotation"] = "raw"
     root: Text
-    annotation: str = "annotation.jsonl"
+    annotation: str = "cases.jsonl"
 
 
 class Read(Contract):
@@ -468,7 +468,7 @@ class DataProcessingResult(Contract):
     dataset_id: Name
     dataset_entry: dict[str, object] | None = None
     card_path: str | None = None
-    annotation_path: str | None = None
+    cases_path: str | None = None
     access_manifest: dict[str, object] | None = None
     validation_report: str | None = None
 
