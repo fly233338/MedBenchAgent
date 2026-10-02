@@ -2,9 +2,19 @@ import json
 
 import pytest
 
-from medbenchagent.runtime.harness import compile_agent, result
+from medbenchagent.runtime.harness import _EVENT_SUMMARY_LIMIT, _event_summary_excerpt, compile_agent, result
 from medbenchagent.runtime.clarifications import resolve_subject, validate_ask_user
 from medbenchagent.runtime.tool_contracts import AskUserArguments, NoArguments
+
+
+def test_event_summary_excerpt_preserves_short_and_long_values():
+    assert _event_summary_excerpt("short") == "short"
+    value = "a" * (_EVENT_SUMMARY_LIMIT + 500) + "TAIL"
+    excerpt = _event_summary_excerpt(value)
+    assert "chars truncated" in excerpt
+    assert excerpt.startswith("a" * 1200)
+    assert excerpt.endswith("a" * 600 + "TAIL")
+    assert len(excerpt) <= _EVENT_SUMMARY_LIMIT + 40
 
 
 class ProfileArguments(NoArguments):

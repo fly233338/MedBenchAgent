@@ -22,6 +22,19 @@ from medbenchagent.runtime.clarifications import (new_issue, answer_payload, rec
                                                   resolve_semantic_answer, validate_ask_user)
 
 
+_EVENT_SUMMARY_LIMIT = 1800
+
+
+def _event_summary_excerpt(value: str) -> str:
+    """Bound construction event summaries while preserving useful context."""
+    if len(value) <= _EVENT_SUMMARY_LIMIT:
+        return value
+    head = 1200
+    tail = _EVENT_SUMMARY_LIMIT - head
+    omitted = len(value) - head - tail
+    return f"{value[:head]}\n...[{omitted} chars truncated]...\n{value[-tail:]}"
+
+
 class AgentState(TypedDict, total=False):
     context: dict[str, Any]
     action: dict[str, Any]
@@ -406,7 +419,7 @@ def compile_agent(
                 operation=tool_name,
                 status=outcome["status"],
                 reason=action["reason"],
-                summary=outcome["summary"],
+                summary=_event_summary_excerpt(str(outcome["summary"])),
             )
         observations = [
             *state.get("observations", []),
