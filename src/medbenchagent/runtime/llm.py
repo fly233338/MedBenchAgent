@@ -11,7 +11,7 @@ from langsmith.wrappers import wrap_openai
 from openai import APIError, APITimeoutError, OpenAI
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from medbenchagent.runtime.construction import record_llm_call
+from medbenchagent.runtime.construction import record_llm_call, record_llm_validation_error
 from medbenchagent.runtime.model_services import resolve_model_service
 from medbenchagent.settings import get_llm_api_key, get_settings
 
@@ -111,12 +111,15 @@ def complete_validated_json(
             if isinstance(exc, APITimeoutError):
                 raise ModelUnavailable("LLM request timed out after the configured limit; no immediate retry was attempted.") from exc
             raise ModelUnavailable(f"LLM request failed: {type(exc).__name__}.") from exc
+        phase = "json_decode_error"
         try:
             data = json.loads(raw)
             if not isinstance(data, dict):
                 raise ValueError("Expected a JSON object")
+            phase = "tool_action_validation_error" if schema.__name__ == "ToolAction" else "schema_validation_error"
             parsed = schema.model_validate(data)
             if validate is not None:
+                phase = "axis_validation_error" if "assessments" in data.get("arguments", {}) else "business_validation_error"
                 validate(parsed)
         except (ValueError, ValidationError) as exc:
             if isinstance(exc, ValidationError):
@@ -124,15 +127,20 @@ def complete_validated_json(
                           for item in exc.errors()[:5]]
                 feedback = "; ".join(errors)
             else:
+                errors = [str(exc)]
                 feedback = str(exc)
-            feedback = feedback[:600]
+            diagnostic = [f"phase={phase}", f"schema={schema.__name__}", *errors]
             if "assessments" in feedback or "dimension" in feedback or "evidence_refs" in feedback:
-                feedback += (
+                axis_hint = (
                     " Axis v2 requires each assessment to contain only value, supported, "
                     "evidence_basis (objects with reference and detail), and reason; "
                     "cover every allowed value exactly once."
                 )
-            record_llm_call(status="failure", started=started, error_type="validation_error")
+                feedback += axis_hint
+                diagnostic.append(axis_hint.strip())
+            feedback = feedback[:600]
+            record_llm_validation_error(errors=diagnostic, model_output=str(raw)[:6000])
+            record_llm_call(status="failure", started=started, error_type=phase)
             if attempt == 2 or (raw, feedback) == previous:
                 raise StructuredOutputError(f"LLM structured response failed validation: {feedback}") from exc
             previous = raw, feedback

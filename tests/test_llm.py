@@ -70,6 +70,23 @@ def test_validated_json_stops_repeated_error(monkeypatch):
     assert len(requests) == 2
 
 
+def test_validation_failure_records_phase_schema_and_output(monkeypatch):
+    diagnostics = []
+    monkeypatch.setattr(llm, "record_llm_validation_error",
+                        lambda **values: diagnostics.append(values))
+
+    def create(**kwargs):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"kind":"wrong"}'))])
+
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    with pytest.raises(llm.StructuredOutputError):
+        llm.complete_validated_json("system", "user", _Decision)
+    assert diagnostics
+    assert "schema=_Decision" in diagnostics[0]["errors"]
+    assert diagnostics[0]["model_output"] == '{"kind":"wrong"}'
+
+
 def test_validated_json_streams_single_successful_call(monkeypatch):
     requests = []
 
