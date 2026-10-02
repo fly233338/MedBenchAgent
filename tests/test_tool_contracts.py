@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from medbenchagent.runtime.harness import _EVENT_SUMMARY_LIMIT, _event_summary_excerpt, compile_agent, result
+from medbenchagent.runtime.harness import (
+    ToolAction,
+    _EVENT_SUMMARY_LIMIT,
+    _event_summary_excerpt,
+    compile_agent,
+    result,
+)
 from medbenchagent.runtime.clarifications import resolve_subject, validate_ask_user
 from medbenchagent.runtime.tool_contracts import AskUserArguments, NoArguments
 
@@ -15,6 +21,13 @@ def test_event_summary_excerpt_preserves_short_and_long_values():
     assert excerpt.startswith("a" * 1200)
     assert excerpt.endswith("a" * 596 + "TAIL")
     assert len(excerpt) <= _EVENT_SUMMARY_LIMIT + 40
+
+
+def test_tool_action_schema_describes_outer_reason_contract():
+    properties = ToolAction.model_json_schema()["properties"]
+    assert "registered tool" in properties["tool"]["description"]
+    assert "selected tool" in properties["arguments"]["description"]
+    assert "outer ToolAction" in properties["reason"]["description"]
 
 
 class ProfileArguments(NoArguments):
