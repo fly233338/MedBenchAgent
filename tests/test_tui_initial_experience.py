@@ -373,13 +373,14 @@ def test_all_collapsed_detail_reopens(tmp_path):
             for name in ("agents", "events", "runs"):
                 screen.query_one(f"#{name}-toggle").press()
                 await pilot.pause()
-            assert not screen.query_one("#side-pane").display
-            assert not screen.query_one("#side-resize-handle").display
             screen._layout_panels()
-            screen._dispatch_command("/details")
-            await pilot.pause()
             assert screen.query_one("#side-pane").display
-            assert not screen._collapsed_panels
-            for name in ("runs", "agents", "events"):
-                assert all(child.display for child in screen.query_one(f"#{name}-panel").children)
+            assert screen.query_one("#side-resize-handle").display
+            assert all(screen.query_one(f"#{name}-dock-toggle").display for name in ("runs", "agents", "events"))
+            screen.query_one("#runs-dock-toggle").press()
+            await pilot.pause()
+            screen._layout_panels()
+            assert screen.query_one("#side-pane").display
+            assert "runs" not in screen._collapsed_panels
+            assert screen.query_one("#runs-dock-toggle").display is False
     asyncio.run(check())

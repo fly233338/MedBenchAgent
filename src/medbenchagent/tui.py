@@ -621,6 +621,7 @@ class ConversationScreen(Screen):
         self._context_tokens: int | None = None
         self._context_window: int | None = None
         self._context_model: str = ""
+        self._context_agent: str = ""
         self._status_text = "Ready"
         self._context_summary = "◉ n/a"
         self._sidebar_width: int | None = None
@@ -658,6 +659,10 @@ class ConversationScreen(Screen):
                     yield Button("EVENTS  ▾", id="events-toggle")
                     yield Select([("All agents", "*")], value="*", allow_blank=False, id="agent-filter")
                     yield RichLog(id="progress", wrap=True, highlight=True, min_width=1, max_lines=600)
+                with Horizontal(id="collapsed-dock"):
+                    yield Button("RUNS ▸", id="runs-dock-toggle", classes="dock-toggle")
+                    yield Button("AGENTS ▸", id="agents-dock-toggle", classes="dock-toggle")
+                    yield Button("EVENTS ▸", id="events-dock-toggle", classes="dock-toggle")
 
     def on_mount(self) -> None:
         self.query_one("#runs", DataTable).add_columns("Request", "Status", "Run")
@@ -814,8 +819,9 @@ class ConversationScreen(Screen):
         self._render_status()
 
     def _render_status(self) -> None:
+        agent = f" · {self._context_agent}" if self._context_agent else ""
         self.query_one("#session-status", Static).update(
-            Text(f"{self._status_text} · Context {self._context_summary}")
+            Text(f"{self._status_text} · Context{agent} {self._context_summary}")
         )
 
     def _follow_run(self, run_id: str, run_directory: str | None) -> None:
@@ -825,6 +831,7 @@ class ConversationScreen(Screen):
         self._context_tokens = None
         self._context_window = None
         self._context_model = ""
+        self._context_agent = ""
         self._context_summary = "◉ n/a"
         runtime_name = Path(run_directory).name if run_directory else ""
         self._set_status(f"Running {runtime_name} · {run_id[:8]}" if runtime_name else f"Running {run_id[:8]}")
@@ -922,6 +929,9 @@ class ConversationScreen(Screen):
         time = timestamp[11:19] if isinstance(timestamp, str) else ""
         dataset = str(event.get("dataset_id") or "")
         source = str(event.get("source_id") or "")
+        if agent:
+            self._context_agent = agent.removesuffix("Agent")
+            self._render_status()
         if kind == "coding_worker_event":
             operation = str(event.get("operation") or "event")
             detail = f"OpenHands · {operation.removesuffix('Event')}"
@@ -1334,20 +1344,15 @@ class ConversationScreen(Screen):
     @on(Button.Pressed, "#runs-toggle")
     @on(Button.Pressed, "#agents-toggle")
     @on(Button.Pressed, "#events-toggle")
+    @on(Button.Pressed, ".dock-toggle")
     def toggle_detail_panel(self, event: Button.Pressed) -> None:
-        panel_id = event.button.id.removesuffix("-toggle")
+        panel_id = event.button.id.removesuffix("-dock-toggle").removesuffix("-toggle")
         if panel_id in self._collapsed_panels:
             self._collapsed_panels.remove(panel_id)
             event.button.label = f"{panel_id.upper()}  ▾"
         else:
             self._collapsed_panels.add(panel_id)
             event.button.label = f"{panel_id.upper()}  ▸"
-            if len(self._collapsed_panels) == 3:
-                # Apply the collapsed state synchronously so repeated button
-                # presses and the /details command observe the same sidebar
-                # visibility before the scheduled layout refresh.
-                self.query_one("#side-pane").display = False
-                self.query_one("#side-resize-handle").display = False
         self._schedule_panel_layout()
 
     def _layout_panels(self):
@@ -1355,31 +1360,27 @@ class ConversationScreen(Screen):
         if not self.query("#side-pane"):
             return
         sidebar = self.query_one("#side-pane")
-        if len(self._collapsed_panels) == 3:
-            sidebar.display = False
-            self.query_one("#side-resize-handle").display = False
-            for splitter in self.query(Splitter):
-                splitter.release()
-            self.query_one("#message", Prompt).focus()
-            return
         if not sidebar.display:
             return
         height = max(12, sidebar.size.height - 2)
         names = ("runs", "agents", "events")
         minima = (3, 4, 5)
         visible = [name not in self._collapsed_panels for name in names]
-        sizes = [0 if not show else max(low, int(height * weight))
-                 for low, weight, show in zip(minima, self._panel_weights, visible)]
+        visible_count = sum(visible)
+        sizes = [0 if not show else max(low, height // visible_count)
+                 for low, show in zip(minima, visible)] if visible_count else [0, 0, 0]
         while sum(sizes) > height:
             index = max((i for i in range(3) if sizes[i]), key=lambda i: sizes[i] - minima[i])
             sizes[index] -= 1
-        if sum(sizes) < height:
+        if sum(sizes) < height and visible_count:
             sizes[next(i for i in (2, 1, 0) if visible[i])] += height - sum(sizes)
         for name, size, show in zip(names, sizes, visible):
             panel = self.query_one("#" + name + "-panel")
-            panel.styles.height = max(1, size)
+            panel.styles.height = max(1, size) if show else 1
             for child in panel.children:
-                child.display = show or child.id == f"{name}-toggle"
+                child.display = show
+            dock_button = self.query_one(f"#{name}-dock-toggle")
+            dock_button.display = not show
 
     def _schedule_panel_layout(self) -> None:
         if not self._layout_scheduled:
@@ -1468,13 +1469,14 @@ class MBAApp(App):
     #field-label { height: 1; color: #9aa6b6; }
     #config-message, #menu-message { height: auto; max-height: 3; overflow-y: auto; color: #9aa6b6; }
     ConfigScreen > Horizontal { height: 3; }
+    ConfigScreen #apply { height: 3; min-height: 3; margin: 0; padding: 0; }
     #config-command { height: 3; }
     #session-title { height: 1; padding: 0 2; color: #a8c4ff; text-style: bold; }
     #session-status { height: auto; max-height: 4; overflow-y: auto; padding: 0 2; color: #9aa6b6; }
     #session-body { width: 100%; height: 1fr; }
     #chat-pane { width: 1fr; height: 1fr; min-width: 24; padding: 0 1 0 2; }
-    #side-resize-handle { width: 2; min-width: 2; height: 1fr; background: #101319; pointer: w-resize; color: #657c99; }
-    #side-pane { width: 42; height: 1fr; min-width: 32; background: #171c24; padding: 0 1; overflow-y: auto; }
+    #side-resize-handle { width: 1; min-width: 1; height: 1fr; background: transparent; pointer: w-resize; color: transparent; }
+    #side-pane { width: 42; height: 1fr; min-width: 32; background: #171c24; padding: 0 1; overflow-y: auto; border: round #39414d; }
     #conversation { width: 100%; height: 1fr; background: #101319; border: none; }
     .chat-row { width: 100%; height: auto; margin: 0 0 1 0; }
     .chat-row.user { align: left top; }
@@ -1507,8 +1509,10 @@ class MBAApp(App):
     #open:hover, #open:focus { background: #496181; }
     #experiments > .datatable--header { background: #1a1e25; color: #89919d; text-style: none; }
     #experiments > .datatable--cursor { background: #34445f; color: #e5ecf5; }
-    .splitter.y { height: 1; width: 100%; pointer: s-resize; color: #657c99; }
-    .splitter:hover, .splitter:focus, .splitter.dragging { background: #34445f; color: #a9c7f6; }
+    .splitter.y { height: 1; width: 100%; pointer: s-resize; background: transparent; color: transparent; }
+    .splitter:hover, .splitter:focus, .splitter.dragging { background: #536174; color: transparent; }
+    #collapsed-dock { height: auto; min-height: 1; width: 100%; align: right bottom; }
+    .dock-toggle { display: none; width: 1fr; min-width: 1; height: 1; padding: 0; margin: 0 0 0 1; background: #252c36; color: #aebbd0; }
     #runs-panel { height: 1fr; min-height: 3; }
     #agents-panel { height: 1fr; min-height: 4; }
     #events-panel { height: 2fr; min-height: 5; }
