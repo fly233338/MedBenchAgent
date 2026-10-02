@@ -15,7 +15,7 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_settings
 
 REQUIRED_FIELDS = ("clinical_scope", "language", "sample_count")
-OPTIONAL_FIELDS = ("diseases", "modalities", "evaluation_focus")
+OPTIONAL_FIELDS = ("diseases", "modalities", "evaluation_focus", "dataset_mentions", "intent_notes")
 
 
 class ExtractedBrief(BaseModel):
@@ -24,6 +24,8 @@ class ExtractedBrief(BaseModel):
     diseases: list[str] = Field(default_factory=list)
     modalities: list[str] = Field(default_factory=list)
     evaluation_focus: str | None = None
+    dataset_mentions: list[str] = Field(default_factory=list)
+    intent_notes: list[str] = Field(default_factory=list)
     language: str | None = None
     # Explicit invalid values must survive extraction so the user can correct them.
     sample_count: Any = None
@@ -32,18 +34,24 @@ class ExtractedBrief(BaseModel):
     evidence: list[dict[str, Any]]
     max_total_tasks_per_image: int | None = Field(default=None, gt=0)
 
-EXTRACTION_PROMPT = """Extract a medical VLM benchmark request into one JSON object.
+EXTRACTION_PROMPT = """Act as the benchmark-intake analyst. Extract the user's intended medical VLM benchmark
+from the complete request and clarification history into one JSON object. Preserve the user's intent even when it
+is broad, comparative, multi-dataset, or expressed with unfamiliar task wording. Do not force an intent into a disease
+or modality when the user did not say that.
+
 Return these keys and no wrapper object:
 {
   "clinical_scope": "English description of only the benchmark aspects explicitly stated by the user, or null. A broad scope or explicitly requested dataset population is valid; do not demand a single disease.",
   "diseases": ["Explicitly requested disease names in English; empty if unspecified"],
   "modalities": ["Explicitly requested imaging modalities in English; empty if unspecified"],
   "evaluation_focus": "Only explicitly requested task priorities and exclusions, or null",
+  "dataset_mentions": ["Dataset names or IDs explicitly named by the user; empty if unspecified"],
+  "intent_notes": ["Short English summaries of explicit constraints that do not fit the fixed fields"],
   "language": "en, zh, or null",
   "sample_count": "positive integer or null",
   "sample_scope": [{"id":"scope-1", "kind":"modality or population", "description":"Explicit sample inclusion/exclusion requirement", "quote":"Exact original user wording", "modalities": ["Standard modality names covered by this scope; empty for population"], "operator":"in or not_in", "logic":"any for alternatives, all only for explicit simultaneous multi-sequence requirements"}],
   "allocation_preferences": [{"id":"preference-1", "description":"Only an explicit weighting or exclusion preference", "quote":"Exact user wording"}],
-  "evidence": [{"field":"clinical_scope", "value":"The extracted value (one item for list fields)", "quote":"Exact original user wording"}],
+  "evidence": [{"field":"clinical_scope", "quote":"Exact original user wording", "input_index":0}],
   "max_total_tasks_per_image": "Explicit positive integer total across all task types, or null"
 }
 
@@ -54,14 +62,17 @@ positive integer. Use null only when the user did not provide or imply a value.
 If the user explicitly supplied an invalid sample count, preserve that value (or its original text),
 never replace it with null. Later user corrections override earlier requests.
 Omit any unspecified aspect instead of inferring or inventing it.
-Every detail must be traceable to the user's wording. If the user
-did not mention a task focus, do not add one.
+Every nonempty explicit field must have at least one evidence entry. Evidence quotes must be copied verbatim from
+the numbered user inputs; never quote an assistant question. `input_index` is zero-based and must identify the input
+containing the quote. Evidence is a source pointer, not a normalized-value equality check. If a value is inferred from
+a clarification or configuration default, do not fabricate a quote for it.
 sample_scope must cover EVERY explicit modality and population restriction. Distinguish
 testing disease knowledge from selecting only cases with that disease. The former is
 evaluation_focus, not a positive-case filter. Do not invent restrictions. Use an empty
-list when none were requested. Quote the user's original language, without translation.
-Every explicit nonempty field and list item, including invalid explicit values and
-max_total_tasks_per_image, requires evidence with its field, extracted value and exact user quote.
+list when none were requested. Quote the user's original language, without translation. Keep `dataset_mentions` as
+user-facing names; do not resolve them to catalog IDs in this step.
+Every explicit nonempty field, including invalid explicit values and max_total_tasks_per_image, requires evidence with
+its field and exact user quote.
 Unspecified values require no evidence. Do not quote assistant clarification questions as user evidence.
 Always return sample_scope, even when empty. Group alternatives such as CT or MRI in ONE
 modality scope listing both modalities; resolve them with one in condition, not intersecting filters.
@@ -104,7 +115,7 @@ def merge_info(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, An
     merged = {k: v for k, v in existing.items() if k in REQUIRED_FIELDS + OPTIONAL_FIELDS}
     for field in REQUIRED_FIELDS + OPTIONAL_FIELDS:
         value = update.get(field)
-        if field in ("diseases", "modalities") and value is not None:
+        if field in ("diseases", "modalities", "dataset_mentions", "intent_notes") and value is not None:
             if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
                 raise ValueError(f"{field} must be a list of nonempty strings")
             value = list(dict.fromkeys(v.strip() for v in value))
@@ -118,7 +129,7 @@ def merge_info(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, An
             merged[field] = value
         elif field == "evaluation_focus" and field in update:
             merged[field] = None
-    for field in ("diseases", "modalities"):
+    for field in ("diseases", "modalities", "dataset_mentions", "intent_notes"):
         merged.setdefault(field, [])
     merged.setdefault("evaluation_focus", None)
     parsed_count = parse_sample_count(merged.get("sample_count"))
@@ -134,7 +145,7 @@ def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = N
     result = complete_json(
         EXTRACTION_PROMPT,
         f"Current values: {json.dumps(existing or {})}\n\nUser requirement:\n{requirement}"
-        f"\n\nQuote evidence only from these user inputs: {json.dumps(user_inputs, ensure_ascii=False)}",
+        f"\n\nQuote evidence only from these numbered user inputs: {json.dumps({i: text for i, text in enumerate(user_inputs)}, ensure_ascii=False)}",
         ExtractedBrief,
         lambda parsed: _validate_extraction(parsed.model_dump(exclude_unset=True), existing, user_inputs),
     )
@@ -169,17 +180,30 @@ def _validate_extraction(result, existing, user_inputs):
     evidence = result.get("evidence")
     if not isinstance(evidence, list):
         raise ValueError("Extraction requires evidence for explicit values")
-    expected = [(field, value) for field in (*REQUIRED_FIELDS, *OPTIONAL_FIELDS, "max_total_tasks_per_image")
-                for value in (info.get(field) if field in {"diseases", "modalities"} else [info.get(field)])
-                if value is not None and value != ""]
+    expected = [(field, info.get(field)) for field in (*REQUIRED_FIELDS, *OPTIONAL_FIELDS, "max_total_tasks_per_image")
+                if info.get(field) not in (None, "", [])]
+    allowed_fields = set(REQUIRED_FIELDS + OPTIONAL_FIELDS +
+                         ("sample_scope", "allocation_preferences", "max_total_tasks_per_image"))
     for item in evidence:
-        if (not isinstance(item, dict) or set(item) != {"field", "value", "quote"}
-                or not isinstance(item["quote"], str) or not item["quote"].strip()
-                or not any(item["quote"] in text for text in user_inputs)
-                or (item["field"], item["value"]) not in expected):
-            raise ValueError("Extraction evidence must reference an explicit value and exact user quote")
-    if any(not any(e["field"] == field and e["value"] == value for e in evidence) for field, value in expected):
-        raise ValueError("Extraction evidence must cover every explicit value")
+        if not isinstance(item, dict) or not isinstance(item.get("field"), str):
+            raise ValueError("Extraction evidence must identify a field")
+        if item["field"] not in allowed_fields:
+            raise ValueError("Extraction evidence references an unknown field")
+        quote = item.get("quote")
+        index = item.get("input_index")
+        if not isinstance(quote, str) or not quote.strip():
+            raise ValueError("Extraction evidence requires a nonempty exact quote")
+        if index is not None and (type(index) is not int or index < 0 or index >= len(user_inputs)):
+            raise ValueError("Extraction evidence input_index is out of range")
+        haystack = user_inputs[index] if index is not None else "\n".join(user_inputs)
+        if quote not in haystack:
+            raise ValueError("Extraction evidence quote must occur in the referenced user input")
+    explicit_fields = {field for field, value in expected if field != "sample_count"}
+    if result.get("sample_count") is not None:
+        explicit_fields.add("sample_count")
+    covered = {item["field"] for item in evidence if isinstance(item, dict)}
+    if missing := sorted(explicit_fields - covered):
+        raise ValueError("Extraction evidence is missing explicit fields: " + ", ".join(missing))
     preferences = result.get("allocation_preferences", [])
     if not isinstance(preferences, list):
         raise ValueError("allocation_preferences must be a list")

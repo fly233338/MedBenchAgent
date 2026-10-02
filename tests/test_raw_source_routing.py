@@ -67,6 +67,8 @@ def test_supervisor_remains_first_decision_for_explicit_path(tmp_path):
     assert {"ask_user", "prepare_data"} <= available_stages(context)
     assert "DataProcessingAgent" in SUPERVISOR_INSTRUCTIONS
     assert "Do not ask" in SUPERVISOR_INSTRUCTIONS
+    assert "discover_datasets" in SUPERVISOR_INSTRUCTIONS
+    assert "请" not in SUPERVISOR_INSTRUCTIONS
 
 
 def test_source_discovery_still_reports_unusable_path(tmp_path):
@@ -76,3 +78,16 @@ def test_source_discovery_still_reports_unusable_path(tmp_path):
     error = source_discovery.explicit_source_error(f"Prepare {root}")
     assert error is not None
     assert "empty" in error
+
+
+def test_supervisor_requires_candidate_discovery_before_selection(tmp_path):
+    control = tmp_path / "control"
+    control.mkdir()
+    (control / "artifacts.json").write_text('{"versions": {}}', encoding="utf-8")
+    context = {"brief_ready": True, "artifact_versions": {}, "user_requirement": "Build a benchmark",
+               "run_directory": str(tmp_path)}
+
+    stages = available_stages(context)
+
+    assert "discover_datasets" in stages
+    assert "select_datasets" not in stages

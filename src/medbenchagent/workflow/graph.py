@@ -11,11 +11,14 @@ from medbenchagent.agents.finalization import restore_delivery
 from medbenchagent.agents.templates import prepare_templates as run_templates
 from medbenchagent.agents.task_planning import compile_task_planning_agent, apply_template_feedback
 from medbenchagent.agents.v2_pipeline import run_task_space_pipeline
+from medbenchagent.planning.dataset_selection import discover_dataset_candidates as run_discovery
 from medbenchagent.planning.dataset_selection import select_datasets as run_selection
 from medbenchagent.planning.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
 from medbenchagent.runtime.contexts import SupervisorContext
 from medbenchagent.runtime.harness import compile_agent, result
-from medbenchagent.runtime.tool_contracts import PrepareDataArguments, DatasetId, DelegationArguments, PageArguments, NoArguments
+from medbenchagent.runtime.llm import StructuredOutputError
+from medbenchagent.runtime.tool_contracts import PrepareDataArguments, DatasetId, DelegationArguments, PageArguments, NoArguments, NonEmpty
+from pydantic import Field
 from medbenchagent.data.readiness import list_datasets, inspect_dataset_status, dataset_status, configured_source, reuse_prepared
 from medbenchagent.runtime.run_artifacts import initialize_run, atomic_write_json
 from medbenchagent.settings import get_settings, run_settings
@@ -31,6 +34,12 @@ class DatasetStatusArguments(NoArguments):
 
 class PlanningArguments(DelegationArguments):
     dataset_id: DatasetId
+
+
+class DatasetSelectionArguments(NoArguments):
+    dataset_ids: list[DatasetId] = Field(min_length=1)
+    selection_reason: dict[str, NonEmpty] = Field(min_length=1)
+    selection_issue_id: str = ""
 
 
 class BenchmarkInputState(TypedDict, total=False):
@@ -54,6 +63,11 @@ class BenchmarkState(BenchmarkInputState, total=False):
     construction_events_path: str
     benchmark_info: dict
     selected_dataset_ids: list[str]
+    dataset_candidates: list[dict]
+    candidate_order: list[str]
+    preparation_candidates: list[str]
+    candidate_snapshot_path: str
+    selection_path: str
     dataset_task_plans: dict
     raw_source_paths: dict
     delivery_path: str
@@ -78,6 +92,11 @@ class BenchmarkOutputState(TypedDict, total=False):
     construction_events_path: str
     benchmark_info: dict
     selected_dataset_ids: list[str]
+    dataset_candidates: list[dict]
+    candidate_order: list[str]
+    preparation_candidates: list[str]
+    candidate_snapshot_path: str
+    selection_path: str
     dataset_task_plans: dict
     raw_source_paths: dict
     delivery_path: str
@@ -102,7 +121,17 @@ def specify(context: SupervisorContext):
     if context.get("brief_requirement") == context["user_requirement"]:
         raise ValueError("This requirement has already been extracted; clarify missing fields first")
     user_inputs = context.get("user_inputs", [context["user_requirement"]])
-    info = extract_benchmark_info(context["user_requirement"], user_inputs=user_inputs)
+    try:
+        info = extract_benchmark_info(context["user_requirement"], user_inputs=user_inputs)
+    except StructuredOutputError as exc:
+        issue = new_issue("SupervisorAgent", context, context["user_requirement"],
+                          "I could not reliably extract the benchmark requirements from your last message. "
+                          "Please restate the benchmark scope, requested output language, and any dataset names "
+                          "or sample constraints in one concise sentence.")
+        issue.update(purpose="benchmark_fields", missing_fields=["extraction"], diagnostic=str(exc))
+        updates = {"brief_ready": False, "brief_missing_fields": ["extraction"], "global_issue": issue,
+                   "issues": {**context.get("issues", {}), issue["issue_id"]: issue}}
+        return result("success", "Benchmark brief needs a clearer requirement", **updates)
     evidence = info.pop("evidence")
     preferences = info.pop("allocation_preferences")
     sample_scope = info.pop("sample_scope", [])
@@ -121,9 +150,9 @@ def specify(context: SupervisorContext):
                "brief_ready": not missing, "brief_missing_fields": missing,
                "brief_requirement": context["user_requirement"], "sample_count_source": source}
     if missing:
-        questions = {"clinical_scope": "请说明要评测的医学范围或数据集范围。",
-                     "language": "请指定 benchmark 输出语言：英文（en）或中文（zh）。",
-                     "sample_count": "请指定正整数题量。"}
+        questions = {"clinical_scope": "Please describe the medical scope or population that the benchmark should evaluate.",
+                     "language": "Which language should the generated benchmark use? Reply with English (en) or Chinese (zh).",
+                     "sample_count": "Please provide a positive integer for the requested sample count."}
         question = "\n".join(questions[field] for field in missing)
         issue = new_issue("SupervisorAgent", context, context["user_requirement"], question)
         issue.update(purpose="benchmark_fields", missing_fields=missing)
@@ -154,6 +183,9 @@ def required_field_action(context):
     if issue and issue.get("purpose") == "benchmark_fields":
         return {"tool": "ask_user", "arguments": {"question": issue["question"], "issue_id": issue["issue_id"]},
                 "reason": "Complete required benchmark fields"}
+    if issue and issue.get("purpose") == "dataset_selection" and issue.get("status") == "pending":
+        return {"tool": "ask_user", "arguments": {"question": issue["question"], "issue_id": issue["issue_id"]},
+                "reason": "Collect the user's dataset selection"}
     clarification = context.get("clarification") or {}
     if (clarification.get("purpose") == "benchmark_fields"
             and context.get("brief_requirement") != context["user_requirement"]):
@@ -226,7 +258,8 @@ def describe(context: SupervisorContext):
     details = {key: context.get(key) for key in (
         "user_requirement", "benchmark_info", "brief_ready", "brief_missing_fields", "sample_count_source", "selected_dataset_ids",
         "dataset_task_plans", "dataset_templates", "template_revision_requests", "dataset_generations", "delivery_counts", "allocation_path", "prepared_entries",
-        "artifact_versions", "global_issue", "last_agent_result", "requested_dataset_ids")}
+        "artifact_versions", "global_issue", "last_agent_result", "requested_dataset_ids",
+        "dataset_candidates", "candidate_order", "preparation_candidates", "candidate_snapshot_path")}
     ids = set(context.get("selected_dataset_ids", [])) | set(context.get("prepared_entries", {}))
     details["dataset_readiness"] = {d: {kind: _current(context, f"dataset/{d}/{kind}")
                                       for kind in ("Dataset", "Plan", "Templates", "Generation")} for d in sorted(ids)}
@@ -288,8 +321,11 @@ def _rebuild_requested(context: SupervisorContext) -> bool:
 
 def available_stages(context: SupervisorContext):
     if context.get("global_issue"):
-        return {"resolve_clarification", "ask_user"} if context["global_issue"]["status"] == "answered" else {"ask_user"}
-    tools = {"ask_user", "list_datasets", "inspect_dataset_status", "prepare_data"}
+        issue = context["global_issue"]
+        if issue.get("purpose") == "dataset_selection" and issue.get("status") == "answered":
+            return {"ask_user", "read_evidence", "prepare_data", "discover_datasets", "select_datasets"}
+        return {"resolve_clarification", "ask_user", "read_evidence"} if issue["status"] == "answered" else {"ask_user"}
+    tools = {"ask_user", "list_datasets", "inspect_dataset_status", "prepare_data", "discover_datasets"}
     if not _construction_started(context):
         tools.add("end")
     if context.get("prepared_entries") and "Requirement" not in context.get("artifact_versions", {}):
@@ -298,6 +334,8 @@ def available_stages(context: SupervisorContext):
         tools.add("specify")
     if not context.get("brief_ready"):
         return tools
+    if not _current(context, "DatasetCandidates"):
+        return tools | {"discover_datasets"}
     if not _current(context, "DatasetSelection"):
         return tools | {"select_datasets"}
     v5_selected = [d for d in context.get("selected_dataset_ids", [])
@@ -324,43 +362,46 @@ def available_stages(context: SupervisorContext):
     return tools | ({"finish"} if _current(context, "Delivery") else {"finalize"})
 
 
-SUPERVISOR_INSTRUCTIONS = """Coordinate the user's work with MedBenchAgent.
+SUPERVISOR_INSTRUCTIONS = """You coordinate a resumable medical VLM dataset-preparation and benchmark-construction run.
 
-Use the available tools and current artifacts to decide whether the request needs source preparation,
-benchmark construction, both, or a concise answer. Inspect configured datasets before preparing or selecting data.
-Use reuse_or_prepare for ordinary preparation and rebuild only when the request explicitly asks for a rebuild.
-If the request is outside medical dataset preparation or benchmark construction, use end immediately.
-You are the first semantic parser for data-preparation requests. Decide from the complete user request
-whether data preparation is needed, whether a raw directory path was supplied, and which dataset ID should
-be used. If preparation is requested and a raw path is present, normalize the directory name to a lowercase
-hyphenated dataset_id (for example, BrEaST becomes breast) and call prepare_data with mode
-reuse_or_prepare. The source path is part of the original request and will be frozen by the host for the
-DataProcessingAgent; do not ask the user to repeat it.
-If preparation is requested but no raw path is present and no configured or registered source can satisfy
-the request, call ask_user with one focused question asking only for the raw directory path. Do not ask
-the user to describe file formats, manifests, image counts, or dataset contents; DataProcessingAgent must
-inspect those facts after prepare_data is delegated. If the path is present but unreadable, ask only for a
-readable replacement path. Do not call prepare_data merely to discover a missing path.
+Mission and boundaries:
+- Stay within raw dataset preparation, prepared-dataset selection, benchmark planning, generation, and delivery.
+- Use the current state and tool results as facts. Never invent dataset metadata, labels, paths, or readiness.
+- Keep semantic interpretation in the model; let tools enforce IDs, schemas, digests, dependencies, and side effects.
+- For unrelated requests, call end without creating construction artifacts.
 
-Decisions:
-Use outstanding_work, current artifact readiness and available tools to choose the next useful action.
-A saved path alone does not prove readiness. Preserve completed valid work and never omit explicitly requested datasets.
-Construction requires a brief, selection, each local Plan and Templates, global Allocation, positive-quota Generation,
-and global Finalization. Resolve template task defects in Planning. Code supplies delegation objectives; revision_notes
-are diagnostic only. A child's complete means its local work completed, not that the benchmark was delivered.
-needs_input requires the existing clarification; blocked/failed is not an unsupported task or permission to skip a dataset.
-Re-delegate only with changed inputs or a concrete correction, never to reset a failed budget.
+Intake and preparation:
+- Read the complete user request and clarification history before choosing an action.
+- Call specify when the benchmark brief is missing or stale. It extracts explicit intent and preserves source evidence.
+- If preparation is requested, use a readable raw path from the request or configured source. Normalize a path-derived ID
+  only when needed and call prepare_data with reuse_or_prepare; use rebuild only for an explicit rebuild request.
+- Ask one focused English question for a missing or unreadable raw path. Do not ask the user to describe files that the
+  DataProcessingAgent can inspect itself.
 
-Clarification and recovery:
-Use global_issue and its exact issue_id. Reuse existing answers rather than asking again.
-Missing benchmark fields are handled automatically. For other answered issues, resolve_clarification classifies semantic
-explanations versus an explicit change/completion of requirements. Only the latter updates the brief.
-If ambiguous, ask a focused follow-up with the same issue_id. Do not ask routine confirmations or invent missing semantics.
+Candidate discovery and selection:
+- After the brief is ready, call discover_datasets once. It freezes validated Prepared candidates and returns bounded
+  Card summaries; it never chooses or publishes a dataset selection.
+- If the user explicitly named one or more available candidates, map the names to frozen IDs and call select_datasets.
+- If no dataset was explicitly named, use the benchmark intent and Card summaries to identify a high-recall relevant set,
+  then ask the user in English to choose one or more candidates. Include stable numbers, dataset IDs, names, scope,
+  modality, and case count. Pass purpose=dataset_selection, the candidate snapshot path, and allowed IDs to ask_user.
+- A selection answer may use names, numbers, IDs, or natural language. Read the answer evidence when needed, map it to
+  frozen IDs, and call select_datasets with one or more IDs and a reason for each. The tool is the final authority.
+- If the answer is ambiguous, ask a concise English follow-up with the same issue_id. Never select an ID outside the snapshot.
+- If a requested dataset is not prepared but has a configured source, prepare it before rediscovering candidates. If no
+  source exists, ask for the raw directory or let the user choose another candidate.
 
-Completion:
-Preparation can finish after the requested dataset has been registered. Construction finishes only after validated
-delivery publication. Unsupported plans and zero allocations are legitimate outcomes; execution failures are not.
-Finite generation exhaustion reports shortfall; do not start an automatic refill loop."""
+Handoff and construction:
+- Do not call plan, run_v2, allocation, generation, or finalization before DatasetSelection is published.
+- Delegate planning using the canonical Requirement and selected dataset references. Do not paraphrase or discard scope.
+- Preserve completed valid work. A child completion is local progress; the run is complete only after validated delivery.
+- Resolve existing issues by their exact issue_id. Do not repeat an unchanged failed action or start an automatic refill loop.
+- Unsupported plans and zero allocations are valid outcomes; execution failures require diagnosis or user input.
+
+Interaction:
+- All Supervisor-generated questions must be in English, even when the user's input is Chinese. The benchmark output
+  language is a separate requirement and may be English or Chinese according to the brief.
+- Ask only for information that changes the next safe action. Use existing answers and evidence before asking again."""
 
 
 def compile_benchmark_graph(*, checkpointer=None):
@@ -368,9 +409,14 @@ def compile_benchmark_graph(*, checkpointer=None):
     generation = None
     finalization = None
 
-    def select_datasets(context):
-        """Select only datasets prepared when this build run began."""
-        return run_selection(context)
+    def discover_datasets(context):
+        """Freeze and expose validated Prepared candidates for Supervisor review."""
+        return run_discovery(context)
+
+    def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_id=""):
+        """Bind one or more user/Supervisor-selected candidates from the frozen snapshot."""
+        return run_selection(context, dataset_ids=dataset_ids, selection_reason=selection_reason,
+                             selection_issue_id=selection_issue_id)
 
     def plan(context, *, dataset_id, delegation=None):
         """Plan tasks for exactly one selected prepared dataset; no quotas are assigned here."""
@@ -642,13 +688,15 @@ def compile_benchmark_graph(*, checkpointer=None):
 
     supervisor = compile_agent("SupervisorAgent",
         SUPERVISOR_INSTRUCTIONS,
-        {"end": end, "resolve_clarification": resolve_clarification, "specify": specify, "select_datasets": select_datasets,
+        {"end": end, "resolve_clarification": resolve_clarification, "specify": specify,
+         "discover_datasets": discover_datasets, "select_datasets": select_datasets,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
          "prepare_data": prepare_data, "plan": plan, "run_v2": run_v2, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
         describe, finish, available_tools=available_stages, automatic_action=automatic_supervisor_action,
-        read_tools=frozenset({"list_datasets", "inspect_dataset_status"}),
+        read_tools=frozenset({"list_datasets", "inspect_dataset_status", "discover_datasets"}),
         args_schemas={"resolve_clarification": ResolveClarificationArguments, "prepare_data": PrepareDataArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
+                      "select_datasets": DatasetSelectionArguments,
                       "plan": PlanningArguments, "run_v2": DatasetStatusArguments, "allocate": DelegationArguments,
                       "generate": DatasetStatusArguments, "prepare_templates": DatasetStatusArguments})
 

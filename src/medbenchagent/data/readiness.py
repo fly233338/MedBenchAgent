@@ -21,6 +21,22 @@ def catalog_entries(context):
     return list(by_id.values())
 
 
+def prepared_directory_entries(context):
+    """Discover direct Prepared bundles without mutating the Catalog."""
+    root = Path(get_settings().paths.prepared_datasets_root)
+    if not root.is_dir():
+        return [], {}
+    entries, errors = [], {}
+    for folder in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda item: item.name):
+        try:
+            entry = prepared_bundle_entry(folder.name, prepared_root=root)
+            load_prepared(entry)
+            entries.append(entry)
+        except (ValueError, OSError, KeyError) as exc:
+            errors[folder.name] = str(exc)
+    return entries, errors
+
+
 def configured_source(dataset_id):
     return next((item for item in get_settings().dataset_sources if item["dataset_id"] == dataset_id), None)
 
@@ -39,9 +55,14 @@ def source_errors(source):
 
 
 def list_datasets(context, *, offset=0, limit=20, query=""):
-    """Page registered datasets and configured raw sources; listing does not validate or select data."""
+    """Page validated prepared datasets and configured raw sources; listing never selects data."""
+    prepared, prepared_errors = prepared_directory_entries(context)
     entries = {item["dataset_id"]: {key: item[key] for key in ("dataset_id", "name", "description", "available")}
-               for item in catalog_entries(context)}
+               for item in [*catalog_entries(context), *prepared]}
+    for dataset_id, diagnostic in prepared_errors.items():
+        entries.setdefault(dataset_id, {"dataset_id": dataset_id, "name": dataset_id, "description": ""})
+        entries[dataset_id]["available"] = False
+        entries[dataset_id]["issues"] = [diagnostic]
     for item in get_settings().dataset_sources:
         entries.setdefault(item["dataset_id"], {key: item[key] for key in ("dataset_id", "name", "description")})
         entries[item["dataset_id"]]["configured_sources"] = True

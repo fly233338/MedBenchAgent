@@ -13,7 +13,7 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 5. 全局分配样本并生成问题；
 6. 由 `FinalizationAgent` 验证并发布 delivery。
 
-缺少用户事实时，当前 Agent 通过 `ask_user` 中断；回答写入同一 Run 的 checkpoint 后继续。与系统无关的请求使用 Supervisor 的 `end` 工具结束。
+缺少用户事实时，当前 Agent 通过 `ask_user` 中断；回答写入同一 Run 的 checkpoint 后继续。数据集选择也使用同一机制：先冻结候选，再用英文问题让用户选择，回答后由 Supervisor 映射到候选 ID 并由代码校验绑定。与系统无关的请求使用 Supervisor 的 `end` 工具结束。
 
 ## 模块边界
 
@@ -66,7 +66,7 @@ Supervisor 先解析数据准备请求：请求中包含可读的原始目录时
 
 ## Benchmark 构建
 
-`specify` 生成带证据的 Requirement。`select_datasets` 冻结候选 Card 和名称解析输入。每个 annotation.v5 数据集由 TaskPlanningAgent 完成 Axis Analysis、Task Node、Task Leaf 和 Resolver 编译，再由 v2 allocation/generation pipeline 生成并审计 `benchmark-manifest.v2`。Generation 只生成有确定答案依据的问题，Delivery 记录完整性、审计和短缺统计。
+`specify` 生成带字段级来源证据的 Requirement，并保留开放式意图和用户提到的数据集名称。`discover_datasets` 扫描并校验 Catalog 与 Prepared 根目录，冻结候选 Card；它不替用户做选择。用户未指定数据集时，Supervisor 根据 brief 和 Card 摘要筛出相关候选并通过英文 `ask_user` 请求选择一个或多个数据集；`select_datasets` 只绑定冻结候选 ID。每个 annotation.v5 数据集由 TaskPlanningAgent 完成 Axis Analysis、Task Node、Task Leaf 和 Resolver 编译，再由 v2 allocation/generation pipeline 生成并审计 `benchmark-manifest.v2`。Generation 只生成有确定答案依据的问题，Delivery 记录完整性、审计和短缺统计。
 
 ## 恢复与界面
 

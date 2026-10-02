@@ -249,11 +249,19 @@ def compile_agent(
         if parameter_error is not None:
             outcome = result("failed", "Invalid tool arguments")
             outcome["errors"] = parameter_error
-        elif available_tools is not None and tool_name not in available_tools(context) | {"list_evidence", "read_evidence"}:
-            outcome = result("failed", "Tool is not ready for the current state")
-        elif context.get("global_issue") and tool_name not in {"ask_user", "resolve_clarification", "list_evidence", "read_evidence"}:
-            outcome = result("failed", "Resolve the pending clarification before continuing")
         else:
+            enabled = available_tools(context) | {"list_evidence", "read_evidence"} if available_tools is not None else None
+            pending = context.get("global_issue")
+            allowed = {"ask_user", "resolve_clarification", "list_evidence", "read_evidence"}
+            if pending and pending.get("purpose") == "dataset_selection" and pending.get("status") == "answered":
+                allowed.update({"prepare_data", "discover_datasets", "select_datasets"})
+            if enabled is not None and tool_name not in enabled:
+                outcome = result("failed", "Tool is not ready for the current state")
+            elif pending and tool_name not in allowed:
+                outcome = result("failed", "Resolve the pending clarification before continuing")
+            else:
+                outcome = None
+        if outcome is None:
             saved = read_operation(operation_log_path(run_directory), operation_id)
             if saved is not None:
                 if (
@@ -281,6 +289,14 @@ def compile_agent(
                         invalid_issue = bool(arguments["issue_id"] and not issue)
                     issue = issue or new_issue(name, context, reference, question, subject_scope=arguments["subject_scope"],
                                                source_ids=arguments["source_ids"], image_ids=arguments["image_ids"])
+                    if name == "SupervisorAgent" and not issue.get("purpose"):
+                        metadata = {
+                            key: arguments[key]
+                            for key in ("purpose", "candidate_snapshot_path", "allowed_dataset_ids")
+                            if arguments.get(key)
+                        }
+                        if metadata:
+                            issue = {**issue, **metadata}
                     decision_key = issue["issue_id"]
                     issue = context.get("issues", {}).get(decision_key, issue)
                     decisions = dict(context.get("decisions", {}))

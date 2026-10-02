@@ -17,6 +17,9 @@ class NoArguments(BaseModel):
 class AskUserArguments(NoArguments):
     question: NonEmpty
     reference: str = ""
+    purpose: str = ""
+    candidate_snapshot_path: str = ""
+    allowed_dataset_ids: list[NonEmpty] = Field(default_factory=list)
     scope: Literal["local", "global"] = "local"
     issue_id: str = ""
     subject_scope: Literal["dataset", "source", "multi_source"] | None = Field(

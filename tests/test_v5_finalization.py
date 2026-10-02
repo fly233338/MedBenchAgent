@@ -5,6 +5,7 @@ from medbenchagent.data.v5_catalog import verify_v5_bundle
 from medbenchagent.data.dataset_catalog import prepared_bundle_entry, register_dataset, load_prepared
 from medbenchagent.data.contracts import Source
 from medbenchagent.runtime import preparation_context
+from medbenchagent.data import readiness
 
 
 def test_finalize_v5_bundle(tmp_path):
@@ -60,6 +61,39 @@ def test_direct_prepared_bundle_is_catalog_reusable(tmp_path):
     assert registered["cases_path"] == entry["cases_path"]
     assert card["dataset_id"] == "breast"
     assert access["cases_path"] == entry["cases_path"]
+
+
+def test_prepared_directory_inventory_returns_valid_bundles_and_diagnostics(tmp_path, monkeypatch):
+    prepared = tmp_path / "Prepared"
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "image.png").write_bytes(b"image")
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    asset_path = candidate / "image.png"
+    asset_path.write_bytes(b"image")
+    asset = AssetEntry(asset_id="a1", kind="image", format="png", source_path="image.png",
+                       file_digest=digest_path(asset_path), width=4, height=4)
+    case = CaseRecord(case_id="c1", patient_id=None,
+                      evidence=[Evidence(id="a", type="asset", name="image", value="a1")])
+    (candidate / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
+    (candidate / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
+    (candidate / "provenance.jsonl").write_text('{"source_id":"s1","record_ref":"record:1"}\n', encoding="utf-8")
+    for name, value in (("conversion_config.json", "{}"), ("grouping_policy.json", "{}"),
+                        ("mapping.json", "{}"), ("complete.json", '{"complete":true}')):
+        (candidate / name).write_text(value, encoding="utf-8")
+    (candidate / "conversion_version").write_text("v5\n", encoding="utf-8")
+    finalize_v5_prepared_dataset(candidate, {"bundle_root": str(prepared / "breast"), "dataset_id": "breast"})
+    (prepared / "broken").mkdir(parents=True)
+    monkeypatch.setattr(readiness, "get_settings", lambda: type("Settings", (), {
+        "paths": type("Paths", (), {"prepared_datasets_root": prepared})(),
+        "dataset_sources": [],
+    })())
+
+    entries, errors = readiness.prepared_directory_entries({})
+
+    assert [entry["dataset_id"] for entry in entries] == ["breast"]
+    assert "broken" in errors
 
 
 def test_preparation_context_uses_direct_dataset_bundle(tmp_path, monkeypatch):
