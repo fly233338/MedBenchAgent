@@ -325,6 +325,10 @@ Use the available tools and current artifacts to decide whether the request need
 benchmark construction, both, or a concise answer. Inspect configured datasets before preparing or selecting data.
 Use reuse_or_prepare for ordinary preparation and rebuild only when the request explicitly asks for a rebuild.
 If the request is outside medical dataset preparation or benchmark construction, use end immediately.
+When the user supplies a raw dataset path, treat the directory format, file inventory, manifest presence,
+and dataset contents as facts for DataProcessingAgent to inspect. Do not ask the user for those details
+before delegating prepare_data. Ask only when the path is missing/unreadable or the preparation worker
+cannot resolve a remaining semantic choice from the source evidence.
 
 Decisions:
 Use outstanding_work, current artifact readiness and available tools to choose the next useful action.
