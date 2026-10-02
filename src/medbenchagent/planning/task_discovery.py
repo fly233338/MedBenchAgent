@@ -7,7 +7,7 @@ from collections import Counter
 from typing import Any, Iterable
 
 from medbenchagent.planning.node_builder import build_task_scenarios
-from medbenchagent.planning.resolver import ResolverSpec
+from medbenchagent.planning.resolver import ResolverSpec, validate_resolver_policy
 from medbenchagent.planning.task_space import (
     AxisAnalysis,
     LeafTask,
@@ -21,6 +21,7 @@ def validate_candidate_leaf(
     scenarios: dict[str, TaskScenario],
     *,
     resolver_context: dict[str, Any] | None = None,
+    registry=None,
 ) -> LeafTask:
     scenario = scenarios.get(leaf.scenario_id)
     if scenario is None:
@@ -30,9 +31,22 @@ def validate_candidate_leaf(
     if leaf.capability_category != scenario.capability_category:
         raise ValueError("Leaf Task Category differs from its Task Scenario")
     spec = ResolverSpec.parse(leaf.resolver)
+    registry = registry or (resolver_context or {}).get("registry")
+    if registry is not None:
+        validate_resolver_policy(spec, registry.resolver_policy)
     if leaf.input != spec.inputs or leaf.output_spec != spec.output_spec:
         raise ValueError("Leaf Task input and OutputSpec must exactly match Resolver")
-    if leaf.task_paradigm.value == "Report Generation" and any(
+    contracts = (resolver_context or {}).get("registry").task_contracts if (resolver_context or {}).get("registry") else None
+    if contracts:
+        allowed = set(contracts.get("paradigm_output_specs", {}).get(leaf.task_paradigm.value, []))
+        if leaf.output_spec.value not in allowed:
+            raise ValueError("OutputSpec is incompatible with TaskParadigm")
+        if leaf.task_paradigm.value == "Report Generation" and any(
+            selector.evidence_type not in set(contracts.get("report_generation_input_types", ["asset"]))
+            for selector in leaf.input
+        ):
+            raise ValueError("Report Generation accepts only Registry-approved input types")
+    elif leaf.task_paradigm.value == "Report Generation" and any(
         selector.evidence_type != "asset" for selector in leaf.input
     ):
         raise ValueError("Report Generation accepts only assets as input")
@@ -57,7 +71,7 @@ def leaf_identity(leaf: LeafTask):
     )
 
 
-def validate_task_tree(plan: TaskPlanState, *, require_reviews: bool = True) -> TaskPlanState:
+def validate_task_tree(plan: TaskPlanState, *, require_reviews: bool = True, registry=None) -> TaskPlanState:
     if not plan.axis_decisions:
         raise ValueError("Task Plan requires completed Axis decisions")
     active = {key: value for key, value in plan.scenarios.items() if not value.exclusion_reason}
@@ -68,6 +82,7 @@ def validate_task_tree(plan: TaskPlanState, *, require_reviews: bool = True) -> 
             leaf,
             plan.scenarios,
             resolver_context={"evidence_names": set()},
+            registry=registry,
         )
         if leaf_id != leaf.leaf_id:
             raise ValueError(f"Leaf map key does not match leaf_task_id: {leaf_id}")
@@ -105,8 +120,9 @@ def compile_task_space_plan(
     node_context: dict[str, Any],
     leaves: Iterable[LeafTask] = (),
     revision: int = 0,
+    registry=None,
 ) -> TaskPlanState:
-    scenarios = build_task_scenarios(axis_analysis, node_context)
+    scenarios = build_task_scenarios(axis_analysis, node_context, registry=registry)
     accepted: dict[str, LeafTask] = {}
     identities: set[tuple[str, str, str, str]] = set()
     for leaf in leaves:
@@ -114,6 +130,7 @@ def compile_task_space_plan(
             leaf,
             scenarios,
             resolver_context={"evidence_names": node_context.get("evidence_names", [])},
+            registry=registry,
         )
         identity = leaf_identity(leaf)
         if identity in identities:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -22,14 +23,16 @@ class TaskAxis(StrEnum):
     CLINICAL_TARGET = "clinical_target"
 
 
+def _default_registry():
+    from medbenchagent.planning.bir import RegistrySnapshot
+    return RegistrySnapshot.from_directory(Path(__file__).resolve().parents[3] / "config" / "bir_template" / "registry")
+
+
+# Compatibility views for in-process callers.  The source of truth is the
+# experiment Registry; these values are derived from the checked-in template.
+_DEFAULT_REGISTRY = _default_registry()
 AXIS_VALUES: dict[TaskAxis, tuple[str, ...]] = {
-    TaskAxis.INPUT_STRUCTURE: (
-        "single-image", "multi-image", "multi-view", "volume", "image-text", "paired-study",
-    ),
-    TaskAxis.OPERATION: ("recognize", "localize", "quantify", "compare", "align", "describe"),
-    TaskAxis.CLINICAL_TARGET: (
-        "acquisition", "anatomy", "finding", "attribute", "measurement", "assessment", "diagnosis", "quality",
-    ),
+    TaskAxis(axis): _DEFAULT_REGISTRY.axis_values(axis) for axis in _DEFAULT_REGISTRY.axis_order
 }
 
 
@@ -43,12 +46,8 @@ class CapabilityCategory(StrEnum):
 
 
 CAPABILITY_BY_OPERATION: dict[str, CapabilityCategory] = {
-    "recognize": CapabilityCategory.RECOGNITION,
-    "localize": CapabilityCategory.LOCALIZATION,
-    "quantify": CapabilityCategory.QUANTIFICATION,
-    "compare": CapabilityCategory.COMPARISON,
-    "align": CapabilityCategory.INTEGRATION,
-    "describe": CapabilityCategory.GENERATION,
+    operation: CapabilityCategory(category)
+    for operation, category in _DEFAULT_REGISTRY.capability_by_operation.items()
 }
 OPERATION_FAMILY_BY_OPERATION = CAPABILITY_BY_OPERATION
 
@@ -99,10 +98,9 @@ class AxisDecisionSet(BaseModel):
 
     @model_validator(mode="after")
     def validate_registry(self):
-        allowed = set(AXIS_VALUES[self.axis])
         actual = [item.value for item in self.values]
-        if set(actual) != allowed or len(actual) != len(set(actual)):
-            raise ValueError(f"Axis decision must cover registry exactly for {self.axis}")
+        if len(actual) != len(set(actual)):
+            raise ValueError(f"Axis decision contains duplicate values for {self.axis}")
         return self
 
 
@@ -120,10 +118,9 @@ class AxisAnalysis(BaseModel):
             (TaskAxis.OPERATION, self.operation),
             (TaskAxis.CLINICAL_TARGET, self.clinical_target),
         ):
-            allowed = set(AXIS_VALUES[axis])
             actual = [item.value for item in values]
-            if set(actual) != allowed or len(actual) != len(set(actual)):
-                raise ValueError(f"Axis analysis must cover registry exactly for {axis}")
+            if len(actual) != len(set(actual)):
+                raise ValueError(f"Axis analysis contains duplicate values for {axis}")
         return self
 
 
@@ -148,15 +145,9 @@ class TaskScenario(BaseModel):
 
     @model_validator(mode="after")
     def validate_values(self):
-        if self.input_structure not in AXIS_VALUES[TaskAxis.INPUT_STRUCTURE]:
-            raise ValueError("Unknown input structure")
-        if self.operation not in AXIS_VALUES[TaskAxis.OPERATION]:
-            raise ValueError("Unknown operation")
-        if self.clinical_target not in AXIS_VALUES[TaskAxis.CLINICAL_TARGET]:
-            raise ValueError("Unknown clinical target")
-        expected = CAPABILITY_BY_OPERATION[self.operation]
-        if self.capability_category != expected:
-            raise ValueError("Capability Category must follow the Operation mapping")
+        if not all(isinstance(value, str) and value for value in
+                   (self.input_structure, self.operation, self.clinical_target)):
+            raise ValueError("Scenario Axis values must be non-empty strings")
         if self.exclusion_reason and self.status == "pending":
             self.status = "excluded"
         if self.status == "excluded" and not self.exclusion_reason:
@@ -220,12 +211,10 @@ class LeafTask(BaseModel):
             raise ValueError("LeafTask question_templates must be unique")
         if not self.reference_rule:
             raise ValueError("LeafTask requires reference_rule")
-        allowed = {
-            TaskParadigm.VQA: {OutputSpec.LABEL, OutputSpec.LABELS, OutputSpec.NUMBER, OutputSpec.TEXT},
-            TaskParadigm.VISUAL_GROUNDING: {OutputSpec.BBOX, OutputSpec.INDEX},
-            TaskParadigm.REPORT_GENERATION: {OutputSpec.TEXT},
-        }
-        if self.output_spec not in allowed[self.task_paradigm]:
+        allowed = set(_DEFAULT_REGISTRY.task_contracts.get("paradigm_output_specs", {}).get(
+            self.task_paradigm.value, []
+        ))
+        if allowed and self.output_spec.value not in allowed:
             raise ValueError("OutputSpec is incompatible with TaskParadigm")
         return self
 

@@ -151,12 +151,16 @@ class ConversationService:
             changes = {key: value for key, value in event.payload.items() if value is not None
                        if key in {"run_id", "run_directory", "runs_root", "construction_events_path",
                                   "effective_config_path", "catalog_snapshot_path", "selected_assets",
-                                  "summary", "status"}}
+                                   "bir_path", "bir_revision", "bir_manifest_digest",
+                                   "bir_template_revision", "bir_summary_ref", "summary", "status"}}
             if event.kind == "needs_input":
                 changes["status"] = "waiting_input"
             elif event.kind == "error":
                 changes["status"] = event.payload.get("status", "failed")
             run.update(changes)
+            for key in ("bir_path", "bir_revision", "bir_manifest_digest", "bir_template_revision"):
+                if key in changes and changes[key] is not None:
+                    record[key] = changes[key]
             if event.kind == "needs_input":
                 question = event.payload["question"]
                 if run.get("pending_question") != question or run.get("pending_answer"):

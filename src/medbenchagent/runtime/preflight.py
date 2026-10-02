@@ -1,6 +1,5 @@
 """Shared local capability checks, independent of the CLI entry point."""
 
-import json
 from urllib.parse import urlparse
 
 from medbenchagent.data.dataset_catalog import load_dataset_catalog
@@ -40,14 +39,13 @@ def preflight_errors(settings, *, build=False):
     except (ValueError, OSError) as exc:
         errors.append(str(exc))
     if build:
-        path = settings.paths.blueprint_template
-        if not path.is_file():
-            errors.append(f"Blueprint template does not exist: {path}")
+        path = settings.paths.bir_template
+        if not path.is_dir():
+            errors.append(f"BIR template does not exist: {path}")
         else:
             try:
-                value = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(value, dict):
-                    errors.append("Blueprint template must be a JSON object")
+                from medbenchagent.planning.bir import BIRStore
+                BIRStore.load_template(path)
             except (ValueError, OSError) as exc:
-                errors.append(f"Cannot read Blueprint template: {exc}")
+                errors.append(f"Cannot read BIR template: {exc}")
     return errors

@@ -13,6 +13,7 @@ from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.planning.bir import BIRStore
 
 
 class Selection(Contract):
@@ -168,6 +169,47 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
         ):
             deps = ("DataConfig",) if kind == "Dataset" else ("Dataset",) if kind == "DatasetProfile" else ("DatasetProfile",)
             context.update(publish(child, kind, references, deps))
+    if context.get("bir_path"):
+        store = BIRStore(context["bir_path"])
+        manifest = json.loads((store.root / "manifest.json").read_text(encoding="utf-8"))
+        changes = {"benchmark_info.json": store.load("benchmark_info.json")}
+        for identifier in selection.selected_dataset_ids:
+            asset = assets[identifier]
+            entry = snapshot["candidates"][identifier]["entry"]
+            access = asset["access"]
+            receipt = {
+                "schema_version": "dataset-access.v2",
+                "source_schema_version": access.get("schema_version", "annotation.v5"),
+                "dataset_id": identifier,
+                "revision": str(access.get("revision", "1")),
+                "cases_path": access.get("cases_path", entry["cases_path"]),
+                "asset_manifest_path": access.get("asset_manifest_path", entry.get("asset_manifest_path", "")),
+                "profile_path": access.get("profile_path", entry.get("profile_path", "")),
+                "duckdb_path": access.get("duckdb_path", ""),
+                "annotation_digest": access.get("annotation_digest", ""),
+                "asset_manifest_digest": access.get("asset_manifest_digest", ""),
+                "profile_digest": access.get("profile_digest", ""),
+                "duckdb_digest": access.get("duckdb_digest", ""),
+                "case_count": int(access.get("case_count", 0)),
+                "patient_count": int(access.get("patient_count", 0)),
+                "patient_identity": access.get("patient_identity", "unknown"),
+                "dataset_card_path": entry.get("dataset_card_path"),
+                "dataset_card_digest": snapshot["candidates"][identifier].get("card_digest"),
+            }
+            changes[f"datasets/{identifier}/selection.json"] = {
+                "schema_version": "dataset-selection.v1",
+                "dataset_id": identifier,
+                "selected": True,
+                "selection_reason": selection.selection_reason,
+                "candidate_snapshot_digest": digest_file(snapshot_path),
+                "dataset_card_digest": snapshot["candidates"][identifier].get("card_digest"),
+                "entry": entry,
+            }
+            changes[f"datasets/{identifier}/access.json"] = receipt
+        commit = store.transaction({key: value for key, value in changes.items() if key != "benchmark_info.json"},
+                                   run_id=context.get("run_id", "unknown"), actor="dataset_selection",
+                                   expected_revision=int(context.get("bir_revision", manifest["revision"])))
+        context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
     issue_updates = _selection_issue_updates(context, selection_issue_id)
     versions = publish(context, "DatasetSelection", {"path": str(path)},
                        ("Requirement", "DatasetCandidates",
@@ -176,6 +218,7 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
         "success",
         "Dataset selection published",
         selected_dataset_ids=selection.selected_dataset_ids,
+        bir_revision=context.get("bir_revision"), bir_manifest_digest=context.get("bir_manifest_digest"),
         dataset_assets=assets,
         selection_path=str(path),
         candidate_snapshot_path=str(snapshot_path),

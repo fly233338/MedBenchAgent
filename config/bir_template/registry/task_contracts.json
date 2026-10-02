@@ -1,0 +1,9 @@
+{
+  "schema_version": "bir-registry-contracts.v1",
+  "paradigm_output_specs": {
+    "VQA": ["label", "labels", "number", "text"],
+    "Visual Grounding": ["bbox", "index"],
+    "Report Generation": ["text"]
+  },
+  "report_generation_input_types": ["asset"]
+}

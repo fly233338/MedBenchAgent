@@ -1,4 +1,4 @@
-"""Stable run-directory initialization and Blueprint snapshot helpers."""
+"""Stable run-directory initialization and BIR reference helpers."""
 
 from __future__ import annotations
 
@@ -36,6 +36,8 @@ def initialize_run(
     runs_root: str | Path | None = None,
     *,
     settings: AppSettings | None = None,
+    bir_path: str | Path | None = None,
+    experiment_name: str | None = None,
     graph_overrides: dict[str, object] | None = None,
     execution_runtime: dict[str, object] | None = None,
 ) -> dict[str, str]:
@@ -62,13 +64,24 @@ def initialize_run(
     snapshot = active_settings.snapshot(graph_overrides)
     if execution_runtime is not None:
         snapshot["execution_runtime"] = execution_runtime
+    if bir_path is not None:
+        from medbenchagent.planning.bir import BIRStore, digest_file
+        bir = BIRStore(bir_path)
+        report = bir.validate(scope="full")
+        if not report.valid:
+            raise ValueError("Invalid experiment BIR: " + "; ".join(report.errors))
+        manifest = json.loads((Path(bir_path) / "manifest.json").read_text(encoding="utf-8"))
+        snapshot["bir"] = {
+            "path": str(Path(bir_path).resolve()),
+            "experiment_name": experiment_name,
+            "revision": manifest["revision"],
+            "template_revision": manifest.get("template_revision"),
+            "manifest_digest": digest_file(Path(bir_path) / "manifest.json") if (Path(bir_path) / "manifest.json").is_file() else None,
+        }
     inputs = run_directory / "inputs"
     inputs.mkdir(parents=True)
-    source = active_settings.paths.blueprint_template
-    if source.is_file():
-        target = inputs / source.name
-        shutil.copyfile(source, target)
-        snapshot["settings"]["paths"]["blueprint_template"] = str(target)
+    # BIR is experiment-scoped canonical state.  Run inputs retain only the
+    # frozen catalog and Cards; initialize() injects the experiment BIR path.
     # Materials remain external read-only inputs.  Freeze the configured path
     # in the run snapshot; selection records file digests later.
     snapshot["settings"]["paths"]["materials_root"] = str(active_settings.paths.materials_root)
@@ -98,6 +111,10 @@ def initialize_run(
         "effective_config_path": str(effective_config_path),
         "task_catalog_snapshot_path": str(catalog_snapshot_path),
         "task_catalog_snapshot_digest": digest_file(catalog_snapshot_path),
+        "bir_path": str(Path(bir_path).resolve()) if bir_path is not None else None,
+        "bir_revision": snapshot.get("bir", {}).get("revision") if bir_path is not None else None,
+        "bir_template_revision": snapshot.get("bir", {}).get("template_revision") if bir_path is not None else None,
+        "bir_manifest_digest": snapshot.get("bir", {}).get("manifest_digest") if bir_path is not None else None,
     }
 
 

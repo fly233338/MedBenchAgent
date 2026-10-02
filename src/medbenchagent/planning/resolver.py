@@ -120,6 +120,26 @@ class ResolverSpec(BaseModel):
         return cls.model_validate(value)
 
 
+def validate_resolver_policy(spec: ResolverSpec | dict[str, Any], policy: dict[str, Any]) -> ResolverSpec:
+    """Apply the experiment Registry policy after structural parsing."""
+    parsed = ResolverSpec.parse(spec)
+    allowed_steps = set(policy.get("step_operations", []))
+    allowed_compute = set(policy.get("compute_operations", []))
+    allowed_compare = set(policy.get("compare_modes", []))
+    allowed_types = set(policy.get("input_evidence_types", []))
+    for selector in parsed.inputs:
+        if selector.evidence_type not in allowed_types:
+            raise ValueError(f"Resolver input evidence type is disabled by the Registry: {selector.evidence_type}")
+    for step in parsed.steps:
+        if step.op not in allowed_steps:
+            raise ValueError(f"Resolver operation is disabled by the Registry: {step.op}")
+        if isinstance(step, ComputeStep) and step.operation not in allowed_compute:
+            raise ValueError(f"Resolver compute operation is disabled by the Registry: {step.operation}")
+        if isinstance(step, CompareStep) and step.mode not in allowed_compare:
+            raise ValueError(f"Resolver compare mode is disabled by the Registry: {step.mode}")
+    return parsed
+
+
 def _evidence(case: dict[str, Any], selector: EvidenceSelector, roles=None) -> list[dict[str, Any]]:
     rows = []
     for item in case.get("evidence", []):

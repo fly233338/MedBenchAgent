@@ -138,11 +138,12 @@ def merge_info(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, An
 
 
 def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = None,
-                           *, user_inputs: list[str] | None = None) -> dict[str, Any]:
+                           *, user_inputs: list[str] | None = None,
+                           prompt: str | None = None) -> dict[str, Any]:
     """Extract only the explicitly requested benchmark-level intent."""
     user_inputs = user_inputs if user_inputs is not None else [requirement]
     result = complete_json(
-        EXTRACTION_PROMPT,
+        prompt or EXTRACTION_PROMPT,
         f"Current values: {json.dumps(existing or {})}\n\nUser requirement:\n{requirement}"
         f"\n\nQuote evidence only from these numbered user inputs: {json.dumps({i: text for i, text in enumerate(user_inputs)}, ensure_ascii=False)}",
         ExtractedBrief,

@@ -1,0 +1,44 @@
+{
+  "schema_version": "bir-registry-axes.v1",
+  "axis_order": ["input_structure", "operation", "clinical_target"],
+  "axes": [
+    {
+      "id": "input_structure",
+      "description": "Structure of the model-visible input.",
+      "values": [
+        {"id": "single-image", "description": "One primary image."},
+        {"id": "multi-image", "description": "Multiple primary images in one case."},
+        {"id": "multi-view", "description": "Related views of the same finding or study."},
+        {"id": "volume", "description": "A volumetric image input."},
+        {"id": "image-text", "description": "An image paired with text evidence."},
+        {"id": "paired-study", "description": "Two explicitly linked studies."}
+      ]
+    },
+    {
+      "id": "operation",
+      "description": "The primary model operation.",
+      "values": [
+        {"id": "recognize", "description": "Recognize findings or attributes."},
+        {"id": "localize", "description": "Ground a finding spatially."},
+        {"id": "quantify", "description": "Measure, count or estimate a number."},
+        {"id": "compare", "description": "Compare linked evidence."},
+        {"id": "align", "description": "Integrate related evidence."},
+        {"id": "describe", "description": "Describe or generate a report."}
+      ]
+    },
+    {
+      "id": "clinical_target",
+      "description": "The clinical object of the task.",
+      "values": [
+        {"id": "acquisition", "description": "Acquisition or protocol."},
+        {"id": "anatomy", "description": "Anatomy."},
+        {"id": "finding", "description": "A finding."},
+        {"id": "attribute", "description": "A finding attribute."},
+        {"id": "measurement", "description": "A measurement."},
+        {"id": "assessment", "description": "An assessment."},
+        {"id": "diagnosis", "description": "A diagnosis."},
+        {"id": "quality", "description": "Image or study quality."}
+      ]
+    }
+  ]
+}

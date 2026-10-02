@@ -31,7 +31,7 @@ _ENVIRONMENT_OVERRIDES = {
 @dataclass(frozen=True)
 class PathSettings:
     dataset_catalog: Path
-    blueprint_template: Path
+    bir_template: Path
     materials_root: Path
     runs_root: Path
     prepared_datasets_root: Path

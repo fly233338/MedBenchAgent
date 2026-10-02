@@ -17,7 +17,7 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_settings
 
 
-EXPERIMENTS_ROOT = PROJECT_ROOT / "experiments-v2"
+EXPERIMENTS_ROOT = PROJECT_ROOT / "experiments"
 _NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
@@ -50,12 +50,16 @@ def create_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT, template: Pat
     config = folder / "config.toml"
     config.write_text(tomlkit.dumps(document), encoding="utf-8")
     try:
-        load_settings(config)
+        settings = load_settings(config)
+        from medbenchagent.planning.bir import BIRStore
+        bir = BIRStore.initialize(folder / "BIR", settings.paths.bir_template, name)
     except Exception:
-        config.unlink()
-        folder.rmdir()
+        shutil.rmtree(folder, ignore_errors=True)
         raise
+    manifest = json.loads((folder / "BIR" / "manifest.json").read_text(encoding="utf-8"))
     record = {"schema_version": "mba-session.v3", "name": name, "created_at": _now(),
+              "bir_path": str(folder / "BIR"), "bir_revision": manifest["revision"],
+              "bir_manifest_digest": bir.digest("manifest.json"),
               "messages": [], "runs": [], "pending_runs": []}
     atomic_write_json(folder / "session.json", record)
     return record
@@ -93,6 +97,9 @@ def remove_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT) -> None:
         with ExitStack() as stack:
             for filename in ("submit.lock", "run.lock", "session.json.lock"):
                 stack.enter_context(FileLock(str(folder / filename)).acquire(timeout=0))
+            bir_lock = folder / "BIR" / ".bir.lock"
+            if bir_lock.parent.is_dir():
+                stack.enter_context(FileLock(str(bir_lock)).acquire(timeout=0))
             load_experiment(name, root=root)
     except Timeout as exc:
         raise ValueError(f"Experiment is in use: {name}") from exc
@@ -114,11 +121,25 @@ def add_message(record: dict, role: str, text: str, *, run_id: str | None = None
 
 def queue_run(record: dict, requirement: str, *, root: Path = EXPERIMENTS_ROOT,
               save: bool = True) -> dict:
+    bir_revision = record.get("bir_revision")
+    bir_manifest_digest = record.get("bir_manifest_digest")
+    bir_path = record.get("bir_path")
+    if bir_path and Path(bir_path).is_dir():
+        try:
+            from medbenchagent.planning.bir import BIRStore, digest_file
+            store = BIRStore(bir_path)
+            manifest = json.loads((Path(bir_path) / "manifest.json").read_text(encoding="utf-8"))
+            bir_revision = manifest.get("revision", bir_revision)
+            bir_manifest_digest = digest_file(store.manifest_path)
+        except (OSError, ValueError):
+            pass
     run = {"id": str(uuid4()), "thread_id": str(uuid4()), "requirement": requirement,
            "status": "queued", "run_id": None, "run_directory": None,
            "runs_root": None, "construction_events_path": None,
            "effective_config_path": None, "catalog_snapshot_path": None,
-           "summary": "", "created_at": _now()}
+           "bir_path": bir_path, "bir_revision": bir_revision,
+           "bir_manifest_digest": bir_manifest_digest,
+           "bir_summary_ref": None, "summary": "", "created_at": _now()}
     record["runs"].append(run)
     record["pending_runs"].append(run["id"])
     if save:

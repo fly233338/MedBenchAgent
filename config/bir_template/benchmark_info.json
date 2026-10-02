@@ -1,0 +1,19 @@
+{
+  "schema_version": "benchmark-info.v1",
+  "revision": 0,
+  "status": "empty",
+  "clinical_scope": null,
+  "diseases": [],
+  "modalities": [],
+  "evaluation_focus": null,
+  "dataset_mentions": [],
+  "intent_notes": [],
+  "language": null,
+  "sample_count": null,
+  "sample_scope": [],
+  "allocation_preferences": [],
+  "evidence": [],
+  "missing_fields": [],
+  "source_runs": [],
+  "change_log": []
+}

@@ -71,7 +71,7 @@ def result(status: str, summary: str, **updates: Any) -> dict[str, Any]:
 
 def compile_agent(
     name: str,
-    instructions: str,
+    instructions: str | Callable[[dict[str, Any]], str],
     tools: dict[str, Tool],
     describe: Callable[[dict[str, Any]], dict[str, Any]],
     finish: Tool,
@@ -177,8 +177,9 @@ def compile_agent(
             operation="decide",
         ):
             try:
+                resolved_instructions = instructions(context) if callable(instructions) else instructions
                 action = complete_validated_json(
-                    instructions
+                    resolved_instructions
                     + '\nReturn exactly one outer ToolAction, for example '
                     '{"tool":"tool_name","arguments":{"param":"value"},'
                     '"reason":"Why this tool is being called."}. '

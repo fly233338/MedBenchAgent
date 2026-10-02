@@ -12,6 +12,7 @@ from medbenchagent.data.task_facts import build_dataset_facts, case_facts
 from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.access import DatasetAccessReceipt
 from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
+from medbenchagent.planning.bir import BIRStore, RegistrySnapshot
 from medbenchagent.planning.task_discovery import leaf_identity, validate_candidate_leaf
 from medbenchagent.planning.task_space import (
     AXIS_VALUES,
@@ -109,16 +110,30 @@ def _access(context: dict[str, Any]) -> dict[str, Any]:
     return context.get("dataset_access_manifest", {})
 
 
+def _bir(context: dict[str, Any]) -> BIRStore | None:
+    path = context.get("bir_path")
+    return BIRStore(path) if path else None
+
+
+def _registry(context: dict[str, Any]) -> RegistrySnapshot | None:
+    store = _bir(context)
+    return store.registry() if store else None
+
+
 def _profile(context: dict[str, Any]) -> dict[str, Any]:
     return _read(_access(context)["profile_path"])
 
 
 def _plan_path(context: dict[str, Any]) -> Path:
+    if context.get("bir_path") and context.get("dataset_scope"):
+        return Path(context["bir_path"]) / "datasets" / context["dataset_scope"] / "planning" / "task_plan.json"
     return Path(context.get("task_plan_path") or context.get("task_space_plan_path")
                 or Path(context["operation_directory"]) / "task_plan.json")
 
 
 def _evidence_dir(context: dict[str, Any]) -> Path:
+    if context.get("bir_path") and context.get("dataset_scope"):
+        return Path(context["bir_path"]) / "datasets" / context["dataset_scope"] / "evidence"
     return Path(context["operation_directory"]) / "evidence"
 
 
@@ -189,31 +204,63 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
         "relations": facts.get("relations", {}),
         "assets": facts.get("assets", {}),
     }
-    samples_path = directory / "case_samples.jsonl"
+    samples_path = directory / "case_samples.json"
     sample = facts.get("representative_case")
-    if sample:
-        samples_path.write_text(json.dumps(sample, ensure_ascii=False) + "\n", encoding="utf-8")
-    else:
-        samples_path.write_text("", encoding="utf-8")
-    paths = {
-        "access": _write_json(directory.parent / "access.json", receipt),
-        "overview": _write_json(directory / "overview.json", overview),
-        "catalog": _write_json(directory / "catalog.json", catalog),
-        "relations": _write_json(directory / "relations.json", relations),
-        "case_samples": str(samples_path),
-    }
-    from medbenchagent.data.sources import digest_file
-    paths["digests"] = {
-        key: digest_file(value) for key, value in paths.items()
-        if key != "case_samples" and Path(value).is_file()
-    }
+    samples = {"schema_version": "case-samples.v1", "cases": [sample] if sample else []}
     manifest = {
         "schema_version": "planning-evidence.v2",
         "dataset_id": receipt["dataset_id"],
         "revision": receipt["revision"],
-        "artifacts": paths,
+        "artifacts": {},
     }
-    paths["manifest"] = _write_json(directory / "manifest.json", manifest)
+    bir = _bir(context)
+    if bir:
+        dataset_id = receipt["dataset_id"]
+        root = Path(bir.root) / "datasets" / dataset_id
+        canonical = {
+            f"datasets/{dataset_id}/access.json": receipt,
+            f"datasets/{dataset_id}/evidence/overview.json": overview,
+            f"datasets/{dataset_id}/evidence/catalog.json": catalog,
+            f"datasets/{dataset_id}/evidence/relations.json": relations,
+            f"datasets/{dataset_id}/evidence/case_samples.json": samples,
+        }
+        manifest["artifacts"] = {
+            key.split("/")[-1].replace(".json", ""): str(root / Path(*key.split("/")[2:]))
+            for key in canonical if key.endswith(".json") and "manifest" not in key
+        }
+        canonical[f"datasets/{dataset_id}/evidence/manifest.json"] = manifest
+        current = int(json.loads((bir.root / "manifest.json").read_text(encoding="utf-8"))["revision"])
+        commit = bir.transaction(canonical, run_id=context.get("run_id", "unknown"), actor="task_planning",
+                                 expected_revision=int(context.get("bir_revision", current)))
+        context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
+        # Materialize the compatibility evidence view beside the Agent state.
+        derived = {
+            "access": bir.materialize(f"datasets/{dataset_id}/access.json", directory.parent / "access.json"),
+            "overview": bir.materialize(f"datasets/{dataset_id}/evidence/overview.json", directory / "overview.json"),
+            "catalog": bir.materialize(f"datasets/{dataset_id}/evidence/catalog.json", directory / "catalog.json"),
+            "relations": bir.materialize(f"datasets/{dataset_id}/evidence/relations.json", directory / "relations.json"),
+            "case_samples": bir.materialize(f"datasets/{dataset_id}/evidence/case_samples.json", samples_path),
+            "manifest": bir.materialize(f"datasets/{dataset_id}/evidence/manifest.json", directory / "manifest.json"),
+        }
+        paths = {key: str(bir.root / Path(*relative.split("/"))) for key, relative in {
+            "access": f"datasets/{dataset_id}/access.json",
+            "overview": f"datasets/{dataset_id}/evidence/overview.json",
+            "catalog": f"datasets/{dataset_id}/evidence/catalog.json",
+            "relations": f"datasets/{dataset_id}/evidence/relations.json",
+            "case_samples": f"datasets/{dataset_id}/evidence/case_samples.json",
+            "manifest": f"datasets/{dataset_id}/evidence/manifest.json",
+        }.items()}
+        paths["derived"] = derived
+    else:
+        paths = {
+            "access": _write_json(directory.parent / "access.json", receipt),
+            "overview": _write_json(directory / "overview.json", overview),
+            "catalog": _write_json(directory / "catalog.json", catalog),
+            "relations": _write_json(directory / "relations.json", relations),
+            "case_samples": _write_json(samples_path, samples),
+        }
+        manifest["artifacts"] = paths
+        paths["manifest"] = _write_json(directory / "manifest.json", manifest)
     return paths
 
 
@@ -221,13 +268,42 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
     directory = Path(context["operation_directory"])
     directory.mkdir(parents=True, exist_ok=True)
     plan_path = _plan_path(context)
-    _write_json(plan_path, plan.model_dump(mode="json"))
+    plan_value = plan.model_dump(mode="json")
     axis_path = directory / "axis_decisions.json"
     scenarios_path = directory / "task_scenarios.json"
     leaves_path = directory / "leaf_tasks.json"
-    _write_json(axis_path, {key: [item.model_dump(mode="json") for item in value] for key, value in plan.axis_decisions.items()})
-    _write_json(scenarios_path, {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()})
-    _write_json(leaves_path, {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()})
+    axis_value = {key: [item.model_dump(mode="json") for item in value] for key, value in plan.axis_decisions.items()}
+    scenarios_value = {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()}
+    leaves_value = {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()}
+    reviews_value = {key: value.model_dump(mode="json") for key, value in plan.reviews.items()}
+    bir = _bir(context)
+    if bir:
+        dataset_id = context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))
+        prefix = f"datasets/{dataset_id}/planning/"
+        changes = {
+            prefix + "task_plan.json": plan_value,
+            prefix + "axis_decisions.json": axis_value,
+            prefix + "scenarios.json": scenarios_value,
+            prefix + "leaf_tasks.json": leaves_value,
+            prefix + "reviews.json": reviews_value,
+        }
+        changed = {}
+        for relative, value in changes.items():
+            path = bir.root / Path(*_safe_parts(relative))
+            if not path.is_file() or json.loads(path.read_text(encoding="utf-8")) != value:
+                changed[relative] = value
+        if changed:
+            current = int(json.loads((bir.root / "manifest.json").read_text(encoding="utf-8"))["revision"])
+            commit = bir.transaction(changed, run_id=context.get("run_id", "unknown"), actor="task_planning",
+                                     expected_revision=int(context.get("bir_revision", current)),
+                                     dependencies={"registry": bir.registry().digest, "access": _access(context).get("revision", "")})
+            context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
+        bir.materialize(prefix + "task_plan.json", plan_path)
+    else:
+        _write_json(plan_path, plan_value)
+    _write_json(axis_path, axis_value)
+    _write_json(scenarios_path, scenarios_value)
+    _write_json(leaves_path, leaves_value)
     legacy_view = plan.model_dump(mode="json")
     legacy_view.update({
         "pending_node_ids": plan.pending_scenario_ids,
@@ -243,13 +319,20 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
         "axis_decisions_path": str(axis_path),
         "task_scenarios_path": str(scenarios_path),
         "leaf_tasks_path": str(leaves_path),
+        "reviews_path": str((Path(context.get("bir_path")) / "datasets" / context.get("dataset_scope", "dataset") / "planning" / "reviews.json") if context.get("bir_path") else directory / "reviews.json"),
         "task_nodes_path": str(scenarios_path),
         "task_scenarios": {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()},
         "leaf_tasks": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
+        "bir_summary_ref": ({"revision": context.get("bir_revision"), "dataset_id": context.get("dataset_scope"),
+                              "task_plan": str(plan_path)} if context.get("bir_path") else None),
         # Transitional in-process views; new persisted artifacts use the names above.
         "task_nodes": {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()},
         "task_leaves": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
     }
+
+
+def _safe_parts(relative: str) -> tuple[str, ...]:
+    return tuple(part for part in relative.replace("\\", "/").split("/") if part)
 
 
 def _assert_derived_artifact_consistency(context: dict[str, Any], plan: TaskPlanState) -> None:
@@ -400,7 +483,7 @@ def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanSt
         clinical_target=plan.axis_decisions[TaskAxis.CLINICAL_TARGET.value],
         dataset_revision=str(facts.get("revision") or access.get("revision") or "1"),
     )
-    scenarios = build_task_scenarios(analysis, node_context)
+    scenarios = build_task_scenarios(analysis, node_context, registry=_registry(context))
     active = sorted(key for key, value in scenarios.items() if not value.exclusion_reason)
     if not active:
         raise ValueError("Axis analysis produced no executable Task Scenario")
@@ -421,7 +504,8 @@ def analyze_axis(context: dict[str, Any], *, axis: TaskAxis, assessments: list[A
     if axis != expected:
         raise ValueError(f"Expected Axis {expected}, received {axis}")
     assessments = [AxisValueDecision.model_validate(value) for value in assessments]
-    allowed = set(AXIS_VALUES[axis])
+    registry = _registry(context)
+    allowed = set(registry.axis_values(axis.value) if registry else AXIS_VALUES[axis])
     actual = [value.value for value in assessments]
     if set(actual) != allowed or len(actual) != len(set(actual)):
         raise ValueError(f"Axis analysis must cover registry exactly for {axis}")
@@ -544,7 +628,7 @@ def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, 
         "schema_version": "axis-evidence.v2",
         "axis": axis.value,
         "revision": facts.get("revision"),
-        "allowed_values": list(AXIS_VALUES[axis]),
+        "allowed_values": list((_registry(context).axis_values(axis.value) if _registry(context) else AXIS_VALUES[axis])),
         "dataset_overview": {
             "case_count": facts.get("case_count", 0),
             "patient_count": facts.get("patient_count", 0),
@@ -607,7 +691,7 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         selector.name for selector in parsed.input
         if selector.name and selector.evidence_type == "asset"
     )
-    validate_candidate_leaf(parsed, plan.scenarios, resolver_context={"evidence_names": evidence_names})
+    validate_candidate_leaf(parsed, plan.scenarios, resolver_context={"evidence_names": evidence_names, "registry": _registry(context)})
     identity = leaf_identity(parsed)
     if any(key != parsed.leaf_id and leaf_identity(value) == identity for key, value in plan.leaf_tasks.items()):
         raise ValueError("Duplicate Leaf Task semantics")
@@ -704,7 +788,7 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview) 
         validate_candidate_leaf(
             leaf,
             plan.scenarios,
-            resolver_context={"evidence_names": evidence_names},
+            resolver_context={"evidence_names": evidence_names, "registry": _registry(context)},
         )
     if review.status == "approved":
         if not remaining:
@@ -826,6 +910,16 @@ def _available_tools(context: dict[str, Any]) -> set[str]:
 finish_task_space = finish_task_plan
 
 
+def _planning_instructions(context: dict[str, Any]) -> str:
+    """Load the frozen task-planning prompt from the experiment BIR."""
+    # The external prompt covers patient or clinical context, device/acquisition/administrative metadata, question_template_count
+    # and discarded_leaf_tasks review semantics; this source keeps no long prompt.
+    store = _bir(context)
+    if store:
+        return store.registry().prompt("task_planning")
+    return ("Build one resumable annotation.v5 Task Plan. Assess every registered Axis value, "
+            "construct evidence-backed Scenarios and Leaf Tasks, and let code validate contracts.")
+
 def compile_task_planning_agent(*, checkpointer=None):
     tools = (
         read_planning_context,
@@ -839,7 +933,7 @@ def compile_task_planning_agent(*, checkpointer=None):
     )
     return compile_agent(
         "TaskPlanningAgent",
-        'Build one resumable annotation.v5 Task Plan using six levels: Task Axis, Axis Value, Task Scenario, Leaf Task, Task Paradigm and Benchmark Item. Every decision must be one outer ToolAction object with exactly tool, arguments, and reason; never return assessments or evidence directly. Use tool=read_axis_evidence with arguments={axis: ...} to inspect evidence, or tool=analyze_axis with arguments={axis: ..., assessments: ...}. Axis definitions are fixed; assess every registered value exactly once, in order input_structure, operation, clinical_target. Before each axis decision, call read_axis_evidence and use its allowed_values and evidence_catalog. The Evidence Catalog and annotation_mapping are complete facts, not a candidate task list. Field presence alone never proves that an Axis is supported. Before assessing support, distinguish image/region evidence, image-grounded finding/attribute/assessment/diagnosis labels, patient or clinical context, device/acquisition/administrative metadata, and calibration-only pixel/voxel spacing. The default benchmark is image-only: age, sex, race, pregnancy, symptoms, history, medication and risk factors may remain in Case data but do not support a visual task by their presence; device, protocol, UID and date fields are not visual targets; pixel/voxel spacing is calibration reference only. Diagnosis, BIRADS and Classification may be resolver references but must not be model-visible text inputs. Quantify only image-observable or deterministically image-computable measurements. Explain in each Axis reason why medically relevant context is or is not suitable for the current visual task. Catalog cases means Case coverage, types means per-name evidence-type counts, and units means observed unit counts; use these structural facts without turning them into medical conclusions. For analyze_axis, use only the current v2 contract: each assessment has value, supported, evidence_basis (a non-empty list of objects with reference and detail), and reason. Cover every allowed value exactly once. Never emit dimension, finding, evidence_refs, or any other fields. Code constructs Scenarios and assigns Capability Category from Operation using the registered six-category mapping. In the Leaves phase inspect one current Scenario, propose concrete evidence-backed Leaf Tasks with a valid Resolver and Task Paradigm, then review that Scenario. Each Leaf Task must provide exactly the configured question_template_count distinct question_templates. Keep every template semantically equivalent: same target, Resolver, OutputSpec, language and medical scope; do not add answer clues or new medical assumptions. Review every template for clarity, ambiguity, duplication and semantic drift. Resolver inputs must use catalog evidence names explicitly and may use asset, text, value, or region evidence; every input requires name and a unique role. Do not use a generic selector with only evidence_type, and do not put relation on resolver.inputs. Keep leaf.input exactly equal to resolver.inputs. Resolver steps are indexed by position as step_0, step_1, step_2; result_step must use one of those IDs, never read, collect, or a semantic name. Region values are bbox arrays [x1,y1,x2,y2], so do not emit region area or pixel-area number tasks: current supported region tasks are bbox output with Visual Grounding or count via compute. Compute operations are only sum, mean, difference, ratio, and count. Top-level resolver.inputs are model-visible inputs; use region/value only there when the model truly needs them, otherwise keep them as reference evidence in resolver steps to preserve input_reference_leakage protection. Never invent Axis Values, use reference evidence as model input, or expose chain-of-thought. During Scenario Review, inspect every saved Leaf; when a Leaf is medically or semantically invalid, put it in discarded_leaf_tasks with a concrete reason in the same review call. The tool will remove those IDs atomically; never approve an empty Scenario. Read only the evidence slice required by the current phase. Example outer action: {"tool":"read_axis_evidence","arguments":{"axis":"input_structure"},"reason":"Inspect the current axis evidence."}. Example analyze_axis arguments: {"tool":"analyze_axis","arguments":{"axis":"input_structure","assessments":[{"value":"single-image","supported":true,"evidence_basis":[{"reference":"evidence_catalog:ultrasound_image","detail":"256 Cases; types.asset=256"}],"reason":"A primary image is present for every Case."}]},"reason":"Save the complete axis assessment."} (include all allowed values).',
+        _planning_instructions,
         {tool.__name__: tool for tool in tools},
         lambda c: {
             "task_plan": str(_plan_path(c)),

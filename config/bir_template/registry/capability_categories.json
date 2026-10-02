@@ -1,0 +1,19 @@
+{
+  "schema_version": "bir-registry-capabilities.v1",
+  "categories": [
+    {"id": "Recognition", "description": "Recognition of findings, anatomy and assessment attributes.", "examples": ["finding recognition", "anatomy recognition"]},
+    {"id": "Localization", "description": "Spatial grounding of findings or regions.", "examples": ["bounding box", "spatial grounding"]},
+    {"id": "Quantification", "description": "Measurement, counting and numeric estimation.", "examples": ["measurement", "count"]},
+    {"id": "Comparison", "description": "Comparison across views, time points or studies.", "examples": ["multi-view comparison", "temporal comparison"]},
+    {"id": "Integration", "description": "Integration across images, text and related evidence.", "examples": ["multi-image integration", "image-text integration"]},
+    {"id": "Generation", "description": "Description and report generation from visual evidence.", "examples": ["description", "report generation"]}
+  ],
+  "operation_to_category": {
+    "recognize": "Recognition",
+    "localize": "Localization",
+    "quantify": "Quantification",
+    "compare": "Comparison",
+    "align": "Integration",
+    "describe": "Generation"
+  }
+}

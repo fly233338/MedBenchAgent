@@ -9,6 +9,11 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 class SupervisorContext(TypedDict, total=False):
     run_directory: str
     operation_directory: str
+    bir_path: str
+    bir_revision: int
+    bir_manifest_digest: str
+    bir_template_revision: str
+    bir_summary_ref: dict[str, Any]
     artifact_versions: dict[str, str]
     child_states: dict[str, dict[str, str]]
     issues: dict[str, dict]

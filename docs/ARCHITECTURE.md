@@ -28,7 +28,7 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 ## 新运行布局
 
-新实验和 Run 使用版本化根目录 `experiments-v2/` 与 `.runtime/`。现有旧目录由当前实现忽略。
+新实验使用 `experiments/<experiment>/BIR/` 保存实验级 canonical 中间状态，Run 使用 `.runtime/` 保存 checkpoint、派生视图和结果引用。
 
 ```text
 <run>/
@@ -39,7 +39,6 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
     events.jsonl
     operations.jsonl
   inputs/
-    blueprint.json
     catalog_snapshot.json
     candidate_cards/
   agents/<agent>/<scope>/
@@ -70,7 +69,7 @@ Supervisor 先解析数据准备请求：请求中包含可读的原始目录时
 
 `specify` 生成带字段级来源证据的 Requirement，并保留开放式意图和用户提到的数据集名称。`discover_datasets` 扫描并校验 Catalog 与 Prepared 根目录，冻结候选 Card；它不替用户做选择。`select_datasets` 只绑定冻结候选 ID。随后代码生成并校验 `DatasetAccessReceipt`，模型不会决定路径、revision 或 digest。
 
-每个 annotation.v5 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按顺序筛选三个固定 Axis 的 Axis Value；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 是由 Operation 一对一派生的横向标签，不再有额外的模型分类阶段。完整计划使用 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 保存；只有每个可执行 Scenario 都有通过审核且有容量的 Leaf Task 后才发布 Plan。Generation 使用冻结 seed 在模板中可复现地抽取问题，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
+每个 annotation.v5 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。完整计划的 canonical 文件位于 BIR 的 `datasets/<id>/planning/`；Run 目录中的 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 是派生视图。Generation 使用冻结 seed 在模板中可复现地抽取问题，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
 
 ## 恢复与界面
 

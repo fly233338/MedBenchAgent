@@ -51,4 +51,8 @@ index、时间或医学语义。
 
 准备和构建使用 Run 冻结的配置、Catalog snapshot、Card 副本、事件日志和 operation ledger。产物依赖由 `runtime/dependencies.py` 校验；工具调用按参数和依赖幂等重放。
 
+实验级 BIR 位于 `experiments/<experiment>/BIR/`，保存 Dataset Selection、冻结的
+`DatasetAccessReceipt` 和规划 Evidence 的 canonical 引用。Run 只保存 BIR 路径、revision
+和摘要；Evidence、规划和交付阶段通过 BIRStore 读取并以 revision/digest 校验写回。
+
 新运行存储在 `.runtime/<run>/control`、`inputs`、`agents` 和 `workers` 下。现有旧运行目录不属于当前运行时。

@@ -57,6 +57,10 @@ class BenchmarkInputState(TypedDict, total=False):
 
 class BenchmarkState(BenchmarkInputState, total=False):
     context: dict[str, Any]
+    bir_path: str
+    bir_revision: int
+    bir_manifest_digest: str
+    bir_template_revision: str
     result: dict[str, Any]
     run_id: str
     run_directory: str
@@ -88,6 +92,10 @@ class BenchmarkState(BenchmarkInputState, total=False):
 
 class BenchmarkOutputState(TypedDict, total=False):
     run_id: str
+    bir_path: str
+    bir_revision: int
+    bir_manifest_digest: str
+    bir_template_revision: str
     run_directory: str
     working_blueprint_path: str
     construction_events_path: str
@@ -123,7 +131,11 @@ def specify(context: SupervisorContext):
         raise ValueError("This requirement has already been extracted; clarify missing fields first")
     user_inputs = context.get("user_inputs", [context["user_requirement"]])
     try:
-        info = extract_benchmark_info(context["user_requirement"], user_inputs=user_inputs)
+        intake_prompt = None
+        if context.get("bir_path"):
+            from medbenchagent.planning.bir import BIRStore
+            intake_prompt = BIRStore(context["bir_path"]).registry().prompt("benchmark_intake")
+        info = extract_benchmark_info(context["user_requirement"], user_inputs=user_inputs, prompt=intake_prompt)
     except StructuredOutputError as exc:
         issue = new_issue("SupervisorAgent", context, context["user_requirement"],
                           "I could not reliably extract the benchmark requirements from your last message. "
@@ -150,6 +162,25 @@ def specify(context: SupervisorContext):
                "max_total_tasks_per_image": total_limit if total_limit is not None else context.get("configured_total_tasks_per_image"),
                "brief_ready": not missing, "brief_missing_fields": missing,
                "brief_requirement": context["user_requirement"], "sample_count_source": source}
+    bir_path = context.get("bir_path")
+    if bir_path:
+        from medbenchagent.planning.bir import BIRStore
+        store = BIRStore(bir_path)
+        current = store.load("benchmark_info.json")
+        revision = int(current.get("revision", 0)) + 1
+        merged = dict(current)
+        merged.update(info)
+        merged.update({"schema_version": "benchmark-info.v1", "revision": revision,
+                       "sample_scope": sample_scope, "allocation_preferences": preferences,
+                       "evidence": evidence, "missing_fields": missing_fields(info),
+                       "source_runs": [*current.get("source_runs", []), context.get("run_id", "unknown")],
+                       "change_log": [*current.get("change_log", []),
+                                      {"run_id": context.get("run_id", "unknown"), "fields": sorted(info)}][-50:]})
+        manifest = json.loads((store.root / "manifest.json").read_text(encoding="utf-8"))
+        commit = store.update("benchmark_info.json", merged, run_id=context.get("run_id", "unknown"),
+                              actor="specify", expected_revision=int(context.get("bir_revision", manifest["revision"])))
+        updates.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest,
+                       bir_summary_ref={"revision": commit.revision, "path": "benchmark_info.json"})
     if missing:
         questions = {"clinical_scope": "Please describe the medical scope or population that the benchmark should evaluate.",
                      "language": "Which language should the generated benchmark use? Reply with English (en) or Chinese (zh).",
@@ -175,6 +206,7 @@ def specify(context: SupervisorContext):
 COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path", "artifact_versions",
           "limits", "user_requirement", "benchmark_info", "seed", "max_tasks_per_image", "question_temperature",
           "question_template_count",
+          "bir_path", "bir_revision", "bir_manifest_digest", "bir_template_revision",
           "registration_catalog_path", "sample_scope", "max_total_tasks_per_image", "allocation_preferences",
           "execution_runtime")
 
@@ -245,6 +277,9 @@ def child_result(context, dataset_id, role, output):
     states.setdefault(dataset_id, {})[role] = str(path)
     updates = {"child_states": states, "artifact_versions": child.get("artifact_versions", context["artifact_versions"]),
                "last_agent_result": output["result"]}
+    for key in ("bir_path", "bir_revision", "bir_manifest_digest", "bir_template_revision", "bir_summary_ref"):
+        if key in child:
+            updates[key] = child[key]
     updates["issues"] = {**context.get("issues", {}), **child.get("issues", {})}
     pending = child.get("global_issue")
     if pending and updates["issues"].get(pending["issue_id"], {}).get("status") != "resolved":
@@ -661,7 +696,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         for key, leaf in blueprint["tasks"].items():
             leaf["sample_count"] = counts[key]
         blueprint["allocation"] = {"allocated_count": sum(counts.values()), "counts": counts}
-        path = Path(child["operation_directory"]) / "request_blueprint.json"
+        path = Path(child["operation_directory"]) / "request_plan.json"
         atomic_write_json(path, blueprint)
         child["working_blueprint_path"] = str(path)
         child["templates_path"] = context["dataset_templates"][dataset_id]
@@ -745,8 +780,13 @@ def compile_benchmark_graph(*, checkpointer=None):
         settings = resolve_run_services(settings)
         execution_runtime = select_backend(settings.data_processing)
         defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature", "question_template_count")}
+        from medbenchagent.runtime.sessions import EXPERIMENTS_ROOT, experiment_path
+        experiment_name = state.get("experiment_name")
+        experiments_root = Path(state.get("experiments_root") or EXPERIMENTS_ROOT)
+        bir_path = experiment_path(experiment_name, experiments_root) / "BIR" if experiment_name else None
         run = initialize_run(settings=settings, graph_overrides=overrides,
-                             execution_runtime=execution_runtime)
+                             execution_runtime=execution_runtime, bir_path=bir_path,
+                             experiment_name=experiment_name)
         context = dict(run, **(defaults | overrides), user_requirement=requirement,
                        execution_runtime=execution_runtime,
                        operation_directory=str(Path(run["run_directory"]) / "agents" /

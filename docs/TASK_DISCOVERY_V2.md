@@ -16,10 +16,11 @@ DatasetSelection
   -> Benchmark Items
 ~~~
 
-## Six fixed levels
+## Registry-backed levels
 
-1. **Task Axis** — human-defined registry; the model selects values. The
-   current axes are input_structure, operation, and clinical_target.
+1. **Task Axis** — the experiment-frozen BIR Registry defines order and values;
+   the model selects values. The default axes are input_structure, operation,
+   and clinical_target.
 2. **Axis Value** — the model marks every registered value as supported or
    unsupported and cites bounded evidence.
 3. **Task Scenario** — code forms the cross-product of supported values, checks
@@ -48,7 +49,7 @@ equivalence. Generation uses a seeded shuffle cycle and records the selected
 ## Capability Category
 
 Capability Category is a horizontal reporting label, not a hierarchy level.
-Code maps Operation to exactly one label:
+The frozen BIR Registry maps each Operation to exactly one label:
 
 | Operation | Capability Category |
 | --- | --- |

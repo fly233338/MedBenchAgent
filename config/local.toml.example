@@ -1,5 +1,5 @@
 # Copy to config/local.toml and pass --config config/local.toml before the CLI command.
-# This seeds NEW experiments only; existing v2 experiments use experiments-v2/<name>/config.toml.
+# This seeds NEW experiments only; experiment BIR state lives under experiments/<name>/BIR.
 # Relative data paths resolve from the repository root. Nonempty supported environment
 # variables override TOML for new runs; resume uses frozen settings. Keep credentials in .env
 # or process environment variables (see .env.example).

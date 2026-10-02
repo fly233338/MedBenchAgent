@@ -6,52 +6,75 @@ from itertools import product
 from typing import Any
 
 from medbenchagent.planning.task_space import (
-    CAPABILITY_BY_OPERATION,
     AxisAnalysis,
+    CapabilityCategory,
     EvidenceSelector,
     TaskAxis,
     TaskScenario,
     stable_scenario_id,
 )
+from medbenchagent.planning.bir import RegistrySnapshot
 
 
 class ScenarioConstraintRegistry:
     """Structural feasibility checks; this class performs no medical inference."""
 
+    def __init__(self, registry: RegistrySnapshot | None = None):
+        if registry is None:
+            from pathlib import Path
+            registry = RegistrySnapshot.from_directory(
+                Path(__file__).resolve().parents[3] / "config" / "bir_template" / "registry"
+            )
+        self.registry = registry
+
     @staticmethod
-    def check(scenario: TaskScenario, context: dict[str, Any]) -> tuple[bool, str | None]:
-        evidence = context.get("evidence", {})
-        assets = context.get("assets", {})
-        relations = context.get("relations", {})
-        primary_images = assets.get("primary_image_assets")
-        if primary_images is None:
-            primary_images = assets.get("image_assets", 0)
-        if primary_images < 1 and any(name not in {"text", "numeric"} for name in evidence):
-            primary_images = 1
-        if scenario.input_structure == "single-image" and primary_images < 1:
-            return False, "single-image requires a primary image asset"
-        if scenario.input_structure == "multi-image" and assets.get("multi_image_cases", 0) < 1:
-            return False, "multi-image requires at least two primary image assets in a Case"
-        if scenario.input_structure == "multi-view" and assets.get("related_image_cases", 0) <= 0:
-            return False, "multi-view requires related image assets"
-        if scenario.input_structure == "volume" and assets.get("volume_assets", 0) <= 0:
-            return False, "volume requires a volume asset"
-        if scenario.input_structure == "image-text" and not relations.get("paired_text", 0):
-            return False, "image-text requires an explicit image/text relation"
-        if scenario.input_structure == "paired-study" and not relations.get("paired_study", 0):
-            return False, "paired-study requires two linked study objects"
-        if scenario.operation == "localize" and not (evidence.get("region", 0) or evidence.get("index", 0)):
-            return False, "localize requires explicit region or index evidence"
-        if scenario.operation == "quantify" and not (evidence.get("numeric", 0) or context.get("computable_numeric")):
-            return False, "quantify requires numeric or computable evidence"
-        if scenario.operation == "compare" and relations.get("comparable", 0) < 2:
-            return False, "compare requires two linked comparable evidence items"
-        if scenario.operation == "align" and relations.get("related_image_groups", relations.get("related", 0)) < 1:
-            return False, "align requires explicit related evidence objects"
-        if scenario.operation == "describe" and not (
-            evidence.get("text", 0) or relations.get("paired_text", 0) or context.get("structured_reference")
+    def _value(context: dict[str, Any], path: str):
+        value: Any = context
+        for part in path.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(part)
+        return value
+
+    @classmethod
+    def _predicate(cls, context: dict[str, Any], predicate: dict[str, Any]) -> bool:
+        value = cls._value(context, predicate.get("path", ""))
+        if "eq" in predicate:
+            return value == predicate["eq"]
+        if "gte" in predicate:
+            try:
+                return value is not None and value >= predicate["gte"]
+            except TypeError:
+                return False
+        if "gt" in predicate:
+            try:
+                return value is not None and value > predicate["gt"]
+            except TypeError:
+                return False
+        if "exists" in predicate:
+            return (value is not None) is bool(predicate["exists"])
+        return False
+
+    def check(self, scenario: TaskScenario, context: dict[str, Any]) -> tuple[bool, str | None]:
+        context = dict(context)
+        assets = dict(context.get("assets", {}))
+        if "primary_image_assets" not in assets:
+            assets["primary_image_assets"] = assets.get("image_assets", 0)
+        if assets.get("primary_image_assets", 0) < 1 and any(
+            name not in {"text", "numeric"} for name in context.get("evidence", {})
         ):
-            return False, "describe requires a structured reference"
+            assets["primary_image_assets"] = 1
+        context["assets"] = assets
+        for rule in self.registry.scenario_constraints.get("rules", []):
+            when = rule.get("when", {})
+            if any(getattr(scenario, axis, None) != expected for axis, expected in when.items()):
+                continue
+            required = rule.get("requires", [])
+            if required and not all(self._predicate(context, item) for item in required):
+                return False, rule.get("message", rule.get("id", "constraint failed"))
+            alternatives = rule.get("requires_any", [])
+            if alternatives and not any(self._predicate(context, item) for item in alternatives):
+                return False, rule.get("message", rule.get("id", "constraint failed"))
         return True, None
 
 
@@ -65,6 +88,8 @@ def build_task_scenarios(
     registry: ScenarioConstraintRegistry | None = None,
     exclusions: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, TaskScenario]:
+    if isinstance(registry, RegistrySnapshot):
+        registry = ScenarioConstraintRegistry(registry)
     registry = registry or ScenarioConstraintRegistry()
     supported = {
         TaskAxis.INPUT_STRUCTURE: [
@@ -77,6 +102,10 @@ def build_task_scenarios(
             item.value for item in axis_analysis.clinical_target if item.supported
         ],
     }
+    for axis in (TaskAxis.INPUT_STRUCTURE, TaskAxis.OPERATION, TaskAxis.CLINICAL_TARGET):
+        allowed = set(registry.registry.axis_values(axis.value))
+        if not set(supported[axis]) <= allowed:
+            raise ValueError(f"Axis analysis contains values outside the BIR Registry: {axis.value}")
     scenarios: dict[str, TaskScenario] = {}
     for input_structure, operation, clinical_target in product(
         supported[TaskAxis.INPUT_STRUCTURE],
@@ -92,7 +121,7 @@ def build_task_scenarios(
             input_structure=input_structure,
             operation=operation,
             clinical_target=clinical_target,
-            capability_category=CAPABILITY_BY_OPERATION[operation],
+            capability_category=CapabilityCategory(registry.registry.capability_by_operation[operation]),
             annotation_mapping=mapping,
             evidence_stats=context.get("evidence", {}),
         )
