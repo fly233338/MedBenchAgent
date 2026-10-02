@@ -112,11 +112,13 @@ def _inventory(root: Path) -> dict:
 
 def _answer_text(value) -> str:
     if isinstance(value, str):
-        return value.strip()
+        text = value.strip()
+        return explicit_source_path(text) or text
     if isinstance(value, dict):
         for key in ("root", "path", "answer", "text", "value"):
             if value.get(key):
-                return str(value[key]).strip()
+                text = str(value[key]).strip()
+                return explicit_source_path(text) or text
     return ""
 
 
@@ -141,7 +143,7 @@ def discover_source(context: dict, dataset_id: str) -> dict:
                     ))
         atomic_write_json(proposal_path, proposal.model_dump())
 
-    root_text = proposal.root
+    root_text = _answer_text(proposal.root) if proposal.root else None
     while not root_text:
         answer = interrupt({"kind": "clarification", "role": "DataProcessingAgent",
                             "question": f"Where is the raw directory for {dataset_id}?"})
