@@ -15,5 +15,5 @@ def test_allocation_is_capacity_bounded_and_manifest_has_no_metric():
     assert allocation["a"] <= 1 and allocation["b"] <= 4
     manifest = build_manifest({"dataset_id": "d"}, [{"node_id": "n", "input_structure": "single-image", "operation": "recognize", "clinical_target": "finding", "capability_category": "Recognition"}], leaves, allocation, item_count=3)
     assert manifest["schema_version"] == "benchmark-manifest.v2"
-    assert manifest["metrics"] == {}
+    assert "metrics" not in manifest
     assert manifest["tasks"]["a"]["output_spec"] == "label"
