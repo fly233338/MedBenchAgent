@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from medbenchagent.data.task_facts import build_dataset_facts, case_facts
 from medbenchagent.planning.node_builder import build_task_scenarios
@@ -42,6 +42,11 @@ class AxisArguments(NoArguments):
             "evidence_basis[{reference,detail}], and reason."
         ),
     )
+
+    @field_validator("axis", mode="before")
+    @classmethod
+    def parse_axis(cls, value):
+        return TaskAxis(value)
 
 
 class AxisAnalysisArguments(NoArguments):
@@ -461,6 +466,11 @@ class EvidenceCatalogArguments(NoArguments):
 
 class AxisEvidenceArguments(NoArguments):
     axis: TaskAxis
+
+    @field_validator("axis", mode="before")
+    @classmethod
+    def parse_axis(cls, value):
+        return TaskAxis(value)
 
 
 def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=None) -> dict[str, Any]:

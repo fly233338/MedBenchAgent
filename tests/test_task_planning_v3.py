@@ -1,4 +1,6 @@
-from medbenchagent.agents.task_planning import AxisArguments
+import pytest
+
+from medbenchagent.agents.task_planning import AxisArguments, AxisEvidenceArguments
 from medbenchagent.data.task_facts import build_dataset_facts
 from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.task_space import (
@@ -37,6 +39,20 @@ def test_axis_tool_schema_is_nested_and_strict():
     assert item["type"] == "object"
     assert set(item["required"]) == {"value", "supported", "evidence_basis", "reason"}
     assert item["additionalProperties"] is False
+
+
+def test_axis_tool_arguments_parse_json_enum_values():
+    assessment = {
+        "value": "single-image",
+        "supported": True,
+        "evidence_basis": [{"reference": "catalog:image", "detail": "observed"}],
+        "reason": "observed",
+    }
+    parsed = AxisArguments.model_validate({"axis": "input_structure", "assessments": [assessment]})
+    assert parsed.axis is TaskAxis.INPUT_STRUCTURE
+    assert AxisEvidenceArguments.model_validate({"axis": "input_structure"}).axis is TaskAxis.INPUT_STRUCTURE
+    with pytest.raises(ValueError):
+        AxisEvidenceArguments.model_validate({"axis": "unknown"})
 
 
 def test_breast_like_facts_do_not_count_masks_as_multi_image_or_age_as_index():
