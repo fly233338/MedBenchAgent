@@ -325,8 +325,10 @@ class GraphRunner:
                             observations = execute.get("observations", []) if isinstance(execute, dict) else []
                             if observations:
                                 item = observations[-1]
+                                milestone = item.get("milestone")
+                                suffix = f" [{milestone.get('kind')}]" if isinstance(milestone, dict) and milestone.get("kind") else ""
                                 yield RunEvent(identifier, "progress", {
-                                    "text": f"[tool] {item.get('tool')}: {item.get('status')} — {item.get('summary')}",
+                                    "text": f"[tool] {item.get('tool')}: {item.get('status')}{suffix} — {item.get('summary')}",
                                 })
                             if not namespace:
                                 interrupted = interrupted or _interrupt(payload)

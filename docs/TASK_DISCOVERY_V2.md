@@ -1,46 +1,63 @@
-# Task Discovery
+# Task Planning
 
-Task Planning uses annotation.v5 Cases, Evidence and Assets as its only data
-source. The registered `config/blueprint.json` Blueprint supplies capability
-dimensions after the Task Tree has been reviewed.
+Task Planning uses an immutable DatasetAccessReceipt and staged
+annotation.v5 evidence artifacts. The model receives only the evidence slice
+needed for its current decision.
 
-```text
-Dataset Profile + representative Case
-  → Dataset Facts
-  → analyze_axis(input_structure)
-  → analyze_axis(operation)
-  → analyze_axis(clinical_target)
-  → deterministic Task Nodes
-  → ordered current Node
-  → evidence-backed Task Leaves
-  → Node review
-  → complete Task Tree
-  → Blueprint capability assignments
-  → Resolver / capacity / generation / audit
-```
+~~~text
+DatasetSelection
+  -> DatasetAccessReceipt
+  -> DatasetOverview + EvidenceCatalog + RelationSummary + CaseSamples
+  -> Axis Value decisions
+  -> deterministic Task Scenarios
+  -> current Scenario evidence
+  -> Leaf Tasks + Task Paradigm
+  -> Scenario review
+  -> Benchmark Items
+~~~
 
-The Task Planning Agent keeps one resumable `task_space_plan.json` draft. The
-draft contains the Axis decisions, Nodes, Leaves, Node reviews, current Node
-pointer and capability assignments. Derived axis/node/leaf files are views for
-inspection; they are not independent sources of truth.
+## Six fixed levels
 
-The three axes are fixed. The model calls `analyze_axis` exactly once for each
-axis in the order shown above. Code validates registry coverage, evidence
-references, deterministic Node IDs and structural feasibility. Excluded
-combinations remain recorded but do not require Leaves.
+1. **Task Axis** — human-defined registry; the model selects values. The
+   current axes are input_structure, operation, and clinical_target.
+2. **Axis Value** — the model marks every registered value as supported or
+   unsupported and cites bounded evidence.
+3. **Task Scenario** — code forms the cross-product of supported values, checks
+   structural feasibility and records exclusions.
+4. **Leaf Task** — the model proposes a concrete target such as
+   pleural-effusion presence; code validates selectors, Resolver and capacity.
+5. **Task Paradigm** — selected at Leaf Task time and checked against OutputSpec.
+6. **Benchmark Item** — code instantiates a Leaf Task for one concrete Case.
 
-Each executable Node must receive at least one Leaf. A Leaf has one canonical
-`question_template`, explicit input selectors, a typed Resolver, target,
-OutputSpec and TaskParadigm. Resolver resolution, input/reference separation
-and positive Case capacity are deterministic checks. After all Leaves for a
-Node are saved, the model submits one review covering every Leaf. A rejected
-review returns the current Node to design; an approved review advances the
-ordered pointer.
+A plan is resumable and stores only stage references, decisions, scenarios,
+leaf tasks, reviews and revisions. Large dataset facts are kept in separate
+evidence artifacts and paged through read tools.
 
-The final plan cannot publish while any executable Node is pending, lacks a
-positive-capacity Leaf, lacks a complete review or lacks a registered Blueprint
-capability assignment. Capability assignments may contain multiple dimensions.
-TaskParadigm and OutputSpec remain separate reporting dimensions.
+## Capability Category
 
-The Resolver is shared by capacity counting, generation and audit. Reference
-Evidence is used to reconstruct answers and is never included in model input.
+Capability Category is a horizontal reporting label, not a hierarchy level.
+Code maps Operation to exactly one label:
+
+| Operation | Capability Category |
+| --- | --- |
+| recognize | Recognition |
+| localize | Localization |
+| quantify | Quantification |
+| compare | Comparison |
+| align | Integration |
+| describe | Generation |
+
+The six categories cover recognition, localization, quantification, comparison,
+multi-image or image-text integration, and description/report generation. The
+category is inherited by Scenario, Leaf Task and Benchmark Item.
+
+## Contracts and recovery
+
+Axis tool arguments use nested Pydantic models, including AxisValueDecision
+and evidence basis objects. Leaf and review arguments are typed as well. A
+tool failure that did not advance the persisted plan remains blocked;
+Supervisor does not relabel it as progress or automatically repeat it.
+
+Reference Evidence is used by the deterministic Resolver to reconstruct an
+answer and is never included in model input. Every evidence artifact is bound
+to the selected dataset revision and access digests.

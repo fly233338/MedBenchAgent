@@ -415,6 +415,7 @@ def compile_agent(
                 "status": outcome["status"],
                 "summary": outcome["summary"][:800],
                 "reference": str(operation),
+                "milestone": outcome.get("milestone"),
             },
         ][-6:]
         return {

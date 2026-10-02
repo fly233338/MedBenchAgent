@@ -166,7 +166,8 @@ class V5DatasetQuery:
                 if len(samples) < sample_limit:
                     samples.append(case)
         profile = json.loads(Path(self.access["profile_path"]).read_text(encoding="utf-8"))
-        return {"dataset_version": self.access["revision"], "node_id": node.node_id,
+        return {"dataset_version": self.access["revision"], "scenario_id": node.node_id,
+                "node_id": node.node_id, "scenario": node.model_dump(),
                 "node": node.model_dump(), "evidence": [row for row in profile["evidence"] if row["name"] in names][:evidence_limit],
                 "capacity_hint": count, "relations": self.facts()["relations"],
                 "representative_cases": samples}

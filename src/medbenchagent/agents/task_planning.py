@@ -1,9 +1,4 @@
-"""Task Planning Agent for annotation.v5 datasets.
-
-The agent owns one resumable Task Plan draft.  The model supplies semantic
-judgements; deterministic code owns ordering, contracts, capacity and final
-completeness.
-"""
+"""Resumable, evidence-staged Task Planning Agent."""
 
 from __future__ import annotations
 
@@ -11,22 +6,26 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from medbenchagent.data.task_facts import build_dataset_facts, case_facts
-from medbenchagent.planning.blueprint import blueprint_dimension_ids, load_blueprint
-from medbenchagent.planning.node_builder import build_task_nodes
+from medbenchagent.planning.node_builder import build_task_scenarios
+from medbenchagent.planning.access import DatasetAccessReceipt
 from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
-from medbenchagent.planning.task_discovery import leaf_identity, validate_candidate_leaf, validate_task_tree
+from medbenchagent.planning.task_discovery import leaf_identity, validate_candidate_leaf
 from medbenchagent.planning.task_space import (
     AXIS_VALUES,
     AxisAnalysis,
-    AxisAssessment,
-    NodeReview,
+    AxisValueDecision,
+    CapabilityCategory,
+    EvidenceBasis,
+    EvidenceSelector,
+    LeafTask,
+    ScenarioReview,
     TaskAxis,
-    TaskLeaf,
-    TaskNode,
-    TaskSpacePlan,
+    TaskPlanState,
+    TaskParadigm,
+    OutputSpec,
 )
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.harness import compile_agent, result
@@ -35,165 +34,239 @@ from medbenchagent.runtime.tool_contracts import NoArguments
 
 
 class AxisArguments(NoArguments):
-    axis: str
-    assessments: list[dict[str, Any]] = Field(min_length=1)
+    axis: TaskAxis
+    assessments: list[AxisValueDecision] = Field(min_length=1)
 
 
 class AxisAnalysisArguments(NoArguments):
-    """Compatibility input for callers that still provide a complete analysis."""
-
     analysis: dict[str, Any]
 
 
-class TaskNodeArguments(NoArguments):
-    node_id: str | None = None
+class ScenarioArguments(NoArguments):
+    scenario_id: str | None = None
 
 
-class TaskLeafArguments(NoArguments):
-    leaf: dict[str, Any]
+class LeafTaskDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    leaf_task_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    scenario_id: str = Field(min_length=1)
+    question_template: str = Field(min_length=1)
+    input: list[EvidenceSelector] = Field(min_length=1)
+    target: str = Field(min_length=1)
+    reference_rule: str = Field(min_length=1)
+    resolver: ResolverSpec
+    output_spec: OutputSpec
+    task_paradigm: TaskParadigm
+    capability_category: CapabilityCategory
+    evidence: list[EvidenceBasis] = Field(default_factory=list)
 
 
-class NodeReviewArguments(NoArguments):
-    review: dict[str, Any]
+class LeafTaskArguments(NoArguments):
+    leaf: LeafTaskDraft
 
 
-class CapabilityAssignmentArguments(NoArguments):
-    assignments: list[dict[str, Any]] = Field(min_length=1)
+class ScenarioReviewArguments(NoArguments):
+    review: ScenarioReview
 
 
 def _read(path: str | Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _access(context: dict[str, Any]) -> dict[str, Any]:
+    return context.get("dataset_access_manifest", {})
+
+
 def _profile(context: dict[str, Any]) -> dict[str, Any]:
-    return _read(context["dataset_access_manifest"]["profile_path"])
+    return _read(_access(context)["profile_path"])
 
 
 def _plan_path(context: dict[str, Any]) -> Path:
-    return Path(context.get("task_space_plan_path") or Path(context["operation_directory"]) / "task_space_plan.json")
+    return Path(context.get("task_plan_path") or context.get("task_space_plan_path")
+                or Path(context["operation_directory"]) / "task_plan.json")
 
 
-def _blueprint_path(context: dict[str, Any]) -> Path | None:
-    explicit = context.get("blueprint_path")
-    if explicit:
-        return Path(explicit)
-    try:
-        from medbenchagent.settings import get_settings
-        path = get_settings().paths.blueprint_template
-        return Path(path)
-    except (AttributeError, RuntimeError, ValueError):
-        return None
+def _evidence_dir(context: dict[str, Any]) -> Path:
+    return Path(context["operation_directory"]) / "evidence"
 
 
-def _load_blueprint_for_context(context: dict[str, Any]) -> dict[str, Any]:
-    path = _blueprint_path(context)
-    return load_blueprint(path) if path else {"name": "Blueprint", "revision": "local", "capability_dimensions": [], "task_concepts": []}
-
-
-def _load_plan(context: dict[str, Any]) -> TaskSpacePlan:
+def _load_plan(context: dict[str, Any]) -> TaskPlanState:
     path = _plan_path(context)
     if path.is_file():
-        return TaskSpacePlan.model_validate(_read(path))
-    return TaskSpacePlan(
-        dataset={"dataset_id": context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))},
-        dataset_facts=context.get("dataset_facts", {}),
-        blueprint=context.get("blueprint", {}),
+        return TaskPlanState.model_validate(_read(path))
+    return TaskPlanState(
+        dataset={"dataset_id": context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))}
     )
 
 
-def _write_derived_artifacts(context: dict[str, Any], plan: TaskSpacePlan) -> dict[str, Any]:
+def _write_json(path: Path, value: Any) -> str:
+    atomic_write_json(path, value)
+    return str(path)
+
+
+def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) -> dict[str, str]:
+    directory = _evidence_dir(context)
+    directory.mkdir(parents=True, exist_ok=True)
+    access = _access(context)
+    receipt = DatasetAccessReceipt.model_validate({
+        "schema_version": "dataset-access.v2",
+        "dataset_id": context.get("dataset_scope", context.get("selected_dataset_id")),
+        "revision": access.get("revision"),
+        "cases_path": access.get("cases_path"),
+        "asset_manifest_path": access.get("asset_manifest_path"),
+        "profile_path": access.get("profile_path"),
+        "duckdb_path": access.get("duckdb_path"),
+        "annotation_digest": access.get("annotation_digest"),
+        "asset_manifest_digest": access.get("asset_manifest_digest"),
+        "profile_digest": access.get("profile_digest"),
+        "duckdb_digest": access.get("duckdb_digest"),
+        "case_count": facts.get("case_count", 0),
+        "patient_count": facts.get("patient_count", 0),
+        "patient_identity": facts.get("patient_identity", "unknown"),
+    }).model_dump(mode="json")
+    overview = {
+        "schema_version": "dataset-overview.v2",
+        "dataset_id": receipt["dataset_id"],
+        "revision": receipt["revision"],
+        "case_count": facts.get("case_count", 0),
+        "patient_count": facts.get("patient_count", 0),
+        "patient_identity": facts.get("patient_identity", "unknown"),
+        "assets": facts.get("assets", {}),
+        "relations": facts.get("relations", {}),
+        "evidence_counts": facts.get("evidence", {}),
+    }
+    catalog = {
+        "schema_version": "evidence-catalog.v2",
+        "dataset_id": receipt["dataset_id"],
+        "revision": receipt["revision"],
+        "entries": list(facts.get("evidence_catalog", {}).values()),
+        "names": facts.get("evidence_names", []),
+        "annotation_mapping": facts.get("annotation_mapping", []),
+    }
+    relations = {
+        "schema_version": "relation-summary.v2",
+        "dataset_id": receipt["dataset_id"],
+        "revision": receipt["revision"],
+        "relations": facts.get("relations", {}),
+        "assets": facts.get("assets", {}),
+    }
+    samples_path = directory / "case_samples.jsonl"
+    sample = facts.get("representative_case")
+    if sample:
+        samples_path.write_text(json.dumps(sample, ensure_ascii=False) + "\n", encoding="utf-8")
+    else:
+        samples_path.write_text("", encoding="utf-8")
+    paths = {
+        "access": _write_json(directory.parent / "access.json", receipt),
+        "overview": _write_json(directory / "overview.json", overview),
+        "catalog": _write_json(directory / "catalog.json", catalog),
+        "relations": _write_json(directory / "relations.json", relations),
+        "case_samples": str(samples_path),
+    }
+    from medbenchagent.data.sources import digest_file
+    paths["digests"] = {
+        key: digest_file(value) for key, value in paths.items()
+        if key != "case_samples" and Path(value).is_file()
+    }
+    manifest = {
+        "schema_version": "planning-evidence.v2",
+        "dataset_id": receipt["dataset_id"],
+        "revision": receipt["revision"],
+        "artifacts": paths,
+    }
+    paths["manifest"] = _write_json(directory / "manifest.json", manifest)
+    return paths
+
+
+def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
     directory = Path(context["operation_directory"])
     directory.mkdir(parents=True, exist_ok=True)
     plan_path = _plan_path(context)
-    atomic_write_json(plan_path, plan.model_dump(mode="json"))
-    axis_path = directory / "axis_analysis.json"
-    nodes_path = directory / "task_nodes.json"
-    leaves_path = directory / "task_leaves.json"
-    if plan.axis_analysis is not None:
-        atomic_write_json(axis_path, plan.axis_analysis.model_dump(mode="json"))
-    atomic_write_json(nodes_path, {key: value.model_dump(mode="json") for key, value in plan.nodes.items()})
-    atomic_write_json(leaves_path, {key: value.model_dump(mode="json") for key, value in plan.leaves.items()})
+    _write_json(plan_path, plan.model_dump(mode="json"))
+    axis_path = directory / "axis_decisions.json"
+    scenarios_path = directory / "task_scenarios.json"
+    leaves_path = directory / "leaf_tasks.json"
+    _write_json(axis_path, {key: [item.model_dump(mode="json") for item in value] for key, value in plan.axis_decisions.items()})
+    _write_json(scenarios_path, {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()})
+    _write_json(leaves_path, {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()})
+    legacy_view = plan.model_dump(mode="json")
+    legacy_view.update({
+        "pending_node_ids": plan.pending_scenario_ids,
+        "current_node_id": plan.current_scenario_id,
+        "nodes": {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()},
+        "leaves": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
+    })
     return {
+        "task_plan_path": str(plan_path),
         "task_space_plan_path": str(plan_path),
-        "task_space_plan": plan.model_dump(mode="json"),
-        "axis_analysis_path": str(axis_path) if plan.axis_analysis is not None else context.get("axis_analysis_path"),
-        "task_nodes_path": str(nodes_path),
-        "task_leaves_path": str(leaves_path),
-        "task_nodes": {key: value.model_dump(mode="json") for key, value in plan.nodes.items()},
-        "task_leaves": {key: value.model_dump(mode="json") for key, value in plan.leaves.items()},
-        "dataset_facts": plan.dataset_facts,
-        "blueprint": plan.blueprint,
+        "task_plan": plan.model_dump(mode="json"),
+        "task_space_plan": legacy_view,
+        "axis_decisions_path": str(axis_path),
+        "task_scenarios_path": str(scenarios_path),
+        "leaf_tasks_path": str(leaves_path),
+        "task_nodes_path": str(scenarios_path),
+        "task_scenarios": {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()},
+        "leaf_tasks": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
+        # Transitional in-process views; new persisted artifacts use the names above.
+        "task_nodes": {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()},
+        "task_leaves": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
     }
 
 
-def _fact_context(context: dict[str, Any]) -> dict[str, Any]:
-    facts = dict(context.get("dataset_facts", {}))
-    if facts.get("evidence") and facts.get("assets"):
-        return facts
-    profile = _profile(context)
-    evidence: dict[str, int] = {}
-    for row in profile.get("evidence", []):
-        for kind, count in row.get("types", {}).items():
-            evidence[kind] = evidence.get(kind, 0) + count
-        evidence["numeric"] = evidence.get("numeric", 0) + row.get("value_types", {}).get("number", 0)
-    assets = profile.get("assets", {})
-    per_case = {int(key): value for key, value in assets.get("assets_per_case", {}).items()}
-    related = sum(value for size, value in per_case.items() if size >= 2)
-    return {
-        "schema_version": "dataset-facts",
-        "revision": context.get("dataset_access_manifest", {}).get("revision"),
-        "case_count": profile.get("case_count", 0),
-        "patient_count": profile.get("patient_count", 0),
-        "evidence_catalog": {row["name"]: row for row in profile.get("evidence", []) if row.get("name")},
-        "evidence_names": [row["name"] for row in profile.get("evidence", []) if row.get("name")],
-        "annotation_mapping": [
-            {"role": f"evidence_{index}", "name": row["name"], "evidence_type": evidence_type}
-            for index, row in enumerate(profile.get("evidence", []))
-            for evidence_type in sorted(row.get("types", {}))
-            if row.get("name") and evidence_type in {"value", "text", "asset", "region"}
-        ],
-        "evidence": evidence,
-        "assets": {
-            "volume_assets": assets.get("kinds", {}).get("volume", 0),
-            "image_assets": assets.get("kinds", {}).get("image", 0),
-            "related_image_cases": related,
-            "multi_image_cases": related,
-        },
-        "relations": {
-            "related": sum(row.get("has_ref", 0) for row in profile.get("evidence", [])),
-            "paired": related,
-            "paired_study": related,
-            "paired_text": sum(row.get("types", {}).get("text", 0) for row in profile.get("evidence", [])),
-        },
-    }
+_write_derived_artifacts = _write_artifacts
 
 
 def _initialize_planning_context(context: dict[str, Any]) -> dict[str, Any]:
-    """Create the one canonical draft before the model's first decision."""
     context = dict(context)
-    if context.get("task_space_plan_path") and Path(context["task_space_plan_path"]).is_file():
+    if _plan_path(context).is_file():
         plan = _load_plan(context)
-        context.update(_write_derived_artifacts(context, plan))
+        context.update(_write_artifacts(context, plan))
         return context
-    access = context.get("dataset_access_manifest", {})
+    access = _access(context)
     if access.get("schema_version") != "annotation.v5" or not access.get("cases_path"):
+        plan = TaskPlanState(
+            dataset={"dataset_id": context.get("dataset_scope", "dataset")},
+            phase="blocked",
+            review={"reason": "Dataset Access manifest is unavailable"},
+        )
+        context.update(_write_artifacts(context, plan))
         return context
+
+    from medbenchagent.data.integrity import verify_prepared_indexes
     from medbenchagent.data.v5_index import V5DatasetQuery
 
-    query = V5DatasetQuery(access)
-    cases = list(query.iter_cases())
-    assets = {row["asset_id"]: row for row in query.assets()}
-    facts = build_dataset_facts(cases, assets, profile=_profile(context), revision=access.get("revision"))
-    blueprint = _load_blueprint_for_context(context)
-    plan = TaskSpacePlan(
-        dataset={"dataset_id": context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))},
-        dataset_facts=facts,
-        blueprint=blueprint,
+    try:
+        verify_prepared_indexes(access)
+        query = V5DatasetQuery(access)
+        cases = list(query.iter_cases())
+        assets = {row["asset_id"]: row for row in query.assets()}
+        facts = build_dataset_facts(cases, assets, profile=_profile(context), revision=access.get("revision"))
+    except (OSError, ValueError, KeyError) as exc:
+        plan = TaskPlanState(
+            dataset={"dataset_id": context.get("dataset_scope", "dataset")},
+            phase="blocked",
+            review={"reason": f"Dataset Access verification failed: {exc}"},
+        )
+        context.update(_write_artifacts(context, plan))
+        return context
+
+    evidence_paths = _write_evidence_artifacts(context, facts)
+    plan = TaskPlanState(
+        dataset={"dataset_id": context.get("dataset_scope", "dataset")},
+        access_path=evidence_paths["access"],
+        evidence_manifest_path=evidence_paths["manifest"],
         phase="axes" if facts.get("case_count", 0) and facts.get("evidence_names") else "blocked",
         review={} if facts.get("case_count", 0) and facts.get("evidence_names") else {"reason": "Dataset has no Case or Evidence"},
     )
-    context.update(_write_derived_artifacts(context, plan))
-    context["planning_context"] = facts
+    context.update(_write_artifacts(context, plan))
+    context["dataset_facts"] = facts
+    context["planning_context"] = {
+        "evidence_manifest_path": evidence_paths["manifest"],
+        "overview_path": evidence_paths["overview"],
+        "catalog_path": evidence_paths["catalog"],
+        "relations_path": evidence_paths["relations"],
+    }
     return context
 
 
@@ -201,8 +274,55 @@ def _axis_order() -> tuple[TaskAxis, ...]:
     return (TaskAxis.INPUT_STRUCTURE, TaskAxis.OPERATION, TaskAxis.CLINICAL_TARGET)
 
 
-def _advance_nodes(context: dict[str, Any], plan: TaskSpacePlan) -> TaskSpacePlan:
-    facts = dict(plan.dataset_facts)
+def _facts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
+    facts = context.get("dataset_facts")
+    if facts:
+        return facts
+    legacy_facts = getattr(plan, "dataset_facts", None)
+    if legacy_facts:
+        return legacy_facts
+    manifest = plan.evidence_manifest_path
+    if manifest:
+        paths = _read(manifest).get("artifacts", {})
+        return _read(paths["overview"]) | {"evidence_catalog": _read(paths["catalog"]).get("entries", [])}
+    try:
+        profile = _profile(context)
+    except (KeyError, OSError, ValueError):
+        return {}
+    evidence_catalog = {row["name"]: row for row in profile.get("evidence", []) if row.get("name")}
+    evidence = {}
+    for row in evidence_catalog.values():
+        for kind, count in row.get("types", {}).items():
+            evidence[kind] = evidence.get(kind, 0) + count
+        evidence["numeric"] = evidence.get("numeric", 0) + row.get("value_types", {}).get("number", 0)
+    assets = profile.get("assets", {})
+    return {
+        "schema_version": "dataset-facts.v2",
+        "revision": _access(context).get("revision"),
+        "case_count": profile.get("case_count", 0),
+        "patient_count": profile.get("patient_count", 0),
+        "patient_identity": "present" if profile.get("patient_count", 0) else "absent",
+        "evidence_catalog": evidence_catalog,
+        "evidence_names": list(evidence_catalog),
+        "evidence": evidence,
+        "assets": {
+            "image_assets": assets.get("kinds", {}).get("image", 0),
+            "primary_image_assets": assets.get("kinds", {}).get("image", 0),
+            "volume_assets": assets.get("kinds", {}).get("volume", 0),
+            "multi_image_cases": 0,
+            "related_image_cases": 0,
+        },
+        "relations": {
+            "paired_text": 0,
+            "paired_study": 0,
+            "comparable": 0,
+            "related_image_groups": 0,
+        },
+    }
+
+
+def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanState:
+    facts = _facts(context, plan)
     node_context = {
         "evidence": facts.get("evidence", {}),
         "assets": facts.get("assets", {}),
@@ -210,305 +330,406 @@ def _advance_nodes(context: dict[str, Any], plan: TaskSpacePlan) -> TaskSpacePla
         "evidence_names": facts.get("evidence_names", []),
         "annotation_mapping": facts.get("annotation_mapping", []),
     }
-    access = context.get("dataset_access_manifest", {})
+    access = _access(context)
     if access.get("schema_version") == "annotation.v5" and access.get("cases_path"):
         from medbenchagent.data.v5_index import V5DatasetQuery
         query = V5DatasetQuery(access)
         assets = {row["asset_id"]: row for row in query.assets()}
         node_context["case_facts"] = [case_facts(case, assets) for case in query.iter_cases()]
-    nodes = build_task_nodes(plan.axis_analysis, node_context)
-    active = sorted(key for key, node in nodes.items() if not node.exclusion_reason)
+    analysis = AxisAnalysis(
+        input_structure=plan.axis_decisions[TaskAxis.INPUT_STRUCTURE.value],
+        operation=plan.axis_decisions[TaskAxis.OPERATION.value],
+        clinical_target=plan.axis_decisions[TaskAxis.CLINICAL_TARGET.value],
+        dataset_revision=str(facts.get("revision") or access.get("revision") or "1"),
+    )
+    scenarios = build_task_scenarios(analysis, node_context)
+    active = sorted(key for key, value in scenarios.items() if not value.exclusion_reason)
     if not active:
-        raise ValueError("Axis analysis produced no executable Task Node")
-    plan.nodes = nodes
+        raise ValueError("Axis analysis produced no executable Task Scenario")
+    plan.scenarios = scenarios
     plan.phase = "leaves"
-    plan.pending_node_ids = active
-    plan.completed_node_ids = []
-    plan.current_node_id = None
+    plan.pending_scenario_ids = active
+    plan.completed_scenario_ids = []
+    plan.current_scenario_id = None
     return plan
 
 
-def analyze_axis(context: dict[str, Any], *, axis: str, assessments: list[dict[str, Any]]) -> dict[str, Any]:
+def analyze_axis(context: dict[str, Any], *, axis: TaskAxis, assessments: list[AxisValueDecision]) -> dict[str, Any]:
+    axis = TaskAxis(axis)
     plan = _load_plan(context)
     if plan.phase != "axes":
         raise ValueError(f"Axis analysis is not available in phase {plan.phase}")
-    try:
-        parsed_axis = TaskAxis(axis)
-    except ValueError as exc:
-        raise ValueError(f"Unknown Task Axis: {axis}") from exc
-    expected = _axis_order()[len(plan.axis_assessments)]
-    if parsed_axis != expected:
-        raise ValueError(f"Expected Axis {expected}, received {parsed_axis}")
-    parsed = [AxisAssessment.model_validate(value) for value in assessments]
-    allowed = set(AXIS_VALUES[parsed_axis])
-    actual = [value.value for value in parsed]
+    expected = _axis_order()[len(plan.axis_decisions)]
+    if axis != expected:
+        raise ValueError(f"Expected Axis {expected}, received {axis}")
+    assessments = [AxisValueDecision.model_validate(value) for value in assessments]
+    allowed = set(AXIS_VALUES[axis])
+    actual = [value.value for value in assessments]
     if set(actual) != allowed or len(actual) != len(set(actual)):
-        raise ValueError(f"Axis analysis must cover registry exactly for {parsed_axis}")
-    plan.axis_assessments[parsed_axis.value] = parsed
-    if len(plan.axis_assessments) == 3:
-        plan.axis_analysis = AxisAnalysis(
-            input_structure=plan.axis_assessments[TaskAxis.INPUT_STRUCTURE.value],
-            operation=plan.axis_assessments[TaskAxis.OPERATION.value],
-            clinical_target=plan.axis_assessments[TaskAxis.CLINICAL_TARGET.value],
-            dataset_revision=str(plan.dataset_facts.get("revision") or context.get("dataset_access_manifest", {}).get("revision", "1")),
-        )
+        raise ValueError(f"Axis analysis must cover registry exactly for {axis}")
+    plan.axis_decisions[axis.value] = assessments
+    plan.revision += 1
+    if len(plan.axis_decisions) == len(_axis_order()):
         plan.next_axis = None
-        plan = _advance_nodes(context, plan)
+        plan = _build_scenarios(context, plan)
+        summary = (
+            f"Axis {axis.value} saved; built {len(plan.scenarios)} Task Scenarios "
+            f"({len(plan.pending_scenario_ids)} executable)"
+        )
     else:
-        plan.next_axis = _axis_order()[len(plan.axis_assessments)]
-    updates = _write_derived_artifacts(context, plan)
-    return result("success", f"Axis {parsed_axis} saved", **updates)
+        plan.next_axis = _axis_order()[len(plan.axis_decisions)]
+        summary = (
+            f"Axis {axis.value} saved; supported values: "
+            + ", ".join(value.value for value in assessments if value.supported)
+        )
+    updates = _write_artifacts(context, plan)
+    return result("success", summary, milestone={"kind": "axis", "axis": axis.value}, **updates)
 
 
 def analyze_axes(context: dict[str, Any], *, analysis: dict[str, Any]) -> dict[str, Any]:
-    """Compatibility wrapper that imports a complete legacy analysis."""
-    require(context, "Dataset", "PlanningConfig")
+    """Import a complete AxisAnalysis for deterministic/in-process callers."""
     parsed = AxisAnalysis.model_validate(analysis)
     plan = _load_plan(context)
-    plan.axis_analysis = parsed
-    plan.axis_assessments = {
+    plan.axis_decisions = {
         TaskAxis.INPUT_STRUCTURE.value: parsed.input_structure,
         TaskAxis.OPERATION.value: parsed.operation,
         TaskAxis.CLINICAL_TARGET.value: parsed.clinical_target,
     }
-    plan.dataset_facts = {**plan.dataset_facts, **_fact_context(context)}
+    plan.next_axis = None
     plan.phase = "axes"
-    plan = _advance_nodes(context, plan)
-    versions = publish(context, "PlanningDraft", {"task_space_plan": str(_plan_path(context))}, ("Dataset", "PlanningConfig")) if context.get("run_directory") else {}
-    return result("success", "Axis Analysis saved", **_write_derived_artifacts(context, plan), **versions)
+    plan.revision += 1
+    plan = _build_scenarios(context, plan)
+    return result("success", "Axis decisions saved", **_write_artifacts(context, plan))
 
 
 def build_nodes(context: dict[str, Any]) -> dict[str, Any]:
-    """Compatibility wrapper; normal planning builds Nodes after the third Axis."""
+    """Compatibility wrapper; new plans build Task Scenarios after Axis decisions."""
     plan = _load_plan(context)
-    if plan.axis_analysis is None:
+    if not plan.axis_decisions:
         path = context.get("axis_analysis_path")
         if not path:
-            raise ValueError("Axis Analysis is required before building Nodes")
-        plan.axis_analysis = AxisAnalysis.model_validate(_read(path))
-    facts = _fact_context(context)
-    plan.dataset_facts = {**plan.dataset_facts, **facts}
-    plan = _advance_nodes(context, plan)
-    return result("success", "Task Nodes saved", **_write_derived_artifacts(context, plan), exclusions={
-        key: {"node": node.model_dump(mode="json"), "reason": node.exclusion_reason}
-        for key, node in plan.nodes.items() if node.exclusion_reason
-    })
+            raise ValueError("Axis decisions are required before building Scenarios")
+        parsed = AxisAnalysis.model_validate(_read(path))
+        plan.axis_decisions = {
+            TaskAxis.INPUT_STRUCTURE.value: parsed.input_structure,
+            TaskAxis.OPERATION.value: parsed.operation,
+            TaskAxis.CLINICAL_TARGET.value: parsed.clinical_target,
+        }
+    plan.phase = "axes"
+    plan = _build_scenarios(context, plan)
+    return result("success", "Task Scenarios saved", **_write_artifacts(context, plan))
 
 
 def read_planning_context(context: dict[str, Any]) -> dict[str, Any]:
     plan = _load_plan(context)
-    return result("success", json.dumps({"facts": plan.dataset_facts, "blueprint": plan.blueprint}, ensure_ascii=False))
+    return result("success", json.dumps({
+        "schema_version": "planning-index.v2",
+        "phase": plan.phase,
+        "next_axis": plan.next_axis,
+        "evidence_manifest_path": plan.evidence_manifest_path,
+        "axis_decisions": list(plan.axis_decisions),
+        "scenario_count": len(plan.scenarios),
+        "leaf_task_count": len(plan.leaf_tasks),
+    }, ensure_ascii=False))
 
 
-def read_axis_analysis(context: dict[str, Any]) -> dict[str, Any]:
+def read_dataset_overview(context: dict[str, Any]) -> dict[str, Any]:
     plan = _load_plan(context)
-    return result("success", json.dumps(plan.axis_analysis.model_dump(mode="json") if plan.axis_analysis else plan.axis_assessments, ensure_ascii=False))
+    if not plan.evidence_manifest_path:
+        raise ValueError("Planning evidence manifest is unavailable")
+    paths = _read(plan.evidence_manifest_path)["artifacts"]
+    overview = _read(paths["overview"])
+    return result(
+        "success",
+        f"Access verified for {overview.get('dataset_id')} revision {overview.get('revision')} with {overview.get('case_count', 0)} Cases",
+        milestone={"kind": "access", "dataset_id": overview.get("dataset_id"), "revision": overview.get("revision")},
+        overview=json.dumps(overview, ensure_ascii=False),
+    )
 
 
-def read_task_node(context: dict[str, Any], *, node_id: str | None = None) -> dict[str, Any]:
+class EvidenceCatalogArguments(NoArguments):
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=50)
+    names: list[str] = Field(default_factory=list)
+
+
+class AxisEvidenceArguments(NoArguments):
+    axis: TaskAxis
+
+
+def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=None) -> dict[str, Any]:
     plan = _load_plan(context)
-    if node_id is None:
-        node_id = plan.current_node_id or (plan.pending_node_ids[0] if plan.pending_node_ids else None)
-    value = plan.nodes.get(node_id) if node_id else plan.nodes
-    return result("success", json.dumps(value.model_dump(mode="json") if isinstance(value, TaskNode) else value, ensure_ascii=False))
+    paths = _read(plan.evidence_manifest_path)["artifacts"]
+    entries = _read(paths["catalog"]).get("entries", [])
+    if names:
+        entries = [row for row in entries if row.get("name") in set(names)]
+    page = entries[offset:offset + limit]
+    return result("success", json.dumps({
+        "revision": _read(paths["catalog"]).get("revision"),
+        "entries": page,
+        "total": len(entries),
+        "next_offset": offset + limit if offset + limit < len(entries) else None,
+    }, ensure_ascii=False))
 
 
-def read_current_node_context(context: dict[str, Any]) -> dict[str, Any]:
+def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, Any]:
     plan = _load_plan(context)
-    if plan.phase != "leaves":
-        raise ValueError(f"Node design is not available in phase {plan.phase}")
-    if plan.current_node_id is None:
-        if not plan.pending_node_ids:
-            plan.phase = "capabilities"
-            _write_derived_artifacts(context, plan)
-            raise ValueError("All Nodes are complete; classify their Blueprint capabilities")
-        plan.current_node_id = plan.pending_node_ids[0]
-        node = plan.nodes[plan.current_node_id]
-        plan.nodes[plan.current_node_id] = node.model_copy(update={"status": "active"})
-        _write_derived_artifacts(context, plan)
+    facts = _facts(context, plan)
+    evidence = {
+        "schema_version": "axis-evidence.v2",
+        "axis": axis.value,
+        "revision": facts.get("revision"),
+        "allowed_values": list(AXIS_VALUES[axis]),
+        "dataset_overview": {
+            "case_count": facts.get("case_count", 0),
+            "patient_count": facts.get("patient_count", 0),
+            "patient_identity": facts.get("patient_identity", "unknown"),
+            "assets": facts.get("assets", {}),
+            "relations": facts.get("relations", {}),
+            "evidence": facts.get("evidence", {}),
+        },
+        "evidence_catalog": list(facts.get("evidence_catalog", {}).values())
+        if isinstance(facts.get("evidence_catalog"), dict) else facts.get("evidence_catalog", []),
+    }
+    axis_dir = Path(context["operation_directory"]) / "axis_evidence"
+    path = axis_dir / f"{axis.value}.json"
+    _write_json(path, evidence)
+    return result("success", json.dumps(evidence, ensure_ascii=False), evidence_path=str(path))
+
+
+def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = None) -> dict[str, Any]:
+    plan = _load_plan(context)
+    scenario_id = scenario_id or plan.current_scenario_id or (plan.pending_scenario_ids[0] if plan.pending_scenario_ids else None)
+    if not scenario_id or scenario_id not in plan.scenarios:
+        raise ValueError("No pending Task Scenario is available")
+    if plan.current_scenario_id != scenario_id:
+        scenario = plan.scenarios[scenario_id]
+        plan.current_scenario_id = scenario_id
+        plan.scenarios[scenario_id] = scenario.model_copy(update={"status": "active"})
+        _write_artifacts(context, plan)
     from medbenchagent.data.v5_index import V5DatasetQuery
-
-    node = plan.nodes[plan.current_node_id]
-    context_value = V5DatasetQuery(context["dataset_access_manifest"]).node_context(node)
-    context_value["task_leaf_ids"] = node.leaf_ids
+    context_value = V5DatasetQuery(_access(context)).node_context(plan.scenarios[scenario_id])
+    context_value["leaf_task_ids"] = plan.scenarios[scenario_id].leaf_task_ids
     context_value["plan_phase"] = plan.phase
     return result("success", json.dumps(context_value, ensure_ascii=False))
 
 
-def node_context(context: dict[str, Any], *, node_id: str) -> dict[str, Any]:
-    """Compatibility reader for a specific Node."""
+def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str, Any]:
     plan = _load_plan(context)
-    node = plan.nodes.get(node_id)
-    if node is None:
-        raise ValueError(f"Unknown Task Node: {node_id}")
-    from medbenchagent.data.v5_index import V5DatasetQuery
-    return result("success", json.dumps(V5DatasetQuery(context["dataset_access_manifest"]).node_context(node), ensure_ascii=False))
-
-
-def save_task_leaf(context: dict[str, Any], *, leaf: dict[str, Any]) -> dict[str, Any]:
-    plan = _load_plan(context)
-    if plan.phase != "leaves":
-        raise ValueError("Task Leaf design is not available in the current planning phase")
-    if plan.current_node_id is None:
-        if not plan.pending_node_ids:
-            raise ValueError("No pending Task Node is available")
-        plan.current_node_id = plan.pending_node_ids[0]
-        node = plan.nodes[plan.current_node_id]
-        plan.nodes[plan.current_node_id] = node.model_copy(update={"status": "active"})
-    parsed = TaskLeaf.model_validate(leaf)
-    if parsed.node_id != plan.current_node_id:
-        raise ValueError("Leaf must belong to the current active Node")
-    evidence_names = set(plan.dataset_facts.get("evidence_names", []))
+    if plan.phase != "leaves" or not plan.current_scenario_id:
+        raise ValueError("An active Task Scenario is required before saving a Leaf Task")
+    parsed = LeafTask.model_validate(leaf.model_dump(mode="json"))
+    if parsed.scenario_id != plan.current_scenario_id:
+        raise ValueError("Leaf Task must belong to the active Scenario")
+    scenario = plan.scenarios[parsed.scenario_id]
+    if parsed.capability_category != scenario.capability_category:
+        raise ValueError("Leaf Task Category must match its Scenario")
+    evidence_names = set(_facts(context, plan).get("evidence_names", []))
     evidence_names.update(
         selector.name for selector in parsed.input
         if selector.name and selector.evidence_type == "asset"
     )
-    validate_candidate_leaf(parsed, plan.nodes, resolver_context={"evidence_names": evidence_names})
+    validate_candidate_leaf(parsed, plan.scenarios, resolver_context={"evidence_names": evidence_names})
     identity = leaf_identity(parsed)
-    existing = plan.leaves.get(parsed.leaf_id)
-    if existing is not None and leaf_identity(existing) != identity:
-        old_node = plan.nodes[existing.node_id]
-        plan.nodes[existing.node_id] = old_node.model_copy(update={
-            "leaf_ids": [value for value in old_node.leaf_ids if value != existing.leaf_id]
-        })
-    if any(key != parsed.leaf_id and leaf_identity(value) == identity for key, value in plan.leaves.items()):
-        raise ValueError("Duplicate Task Leaf semantics")
+    if any(key != parsed.leaf_id and leaf_identity(value) == identity for key, value in plan.leaf_tasks.items()):
+        raise ValueError("Duplicate Leaf Task semantics")
     from medbenchagent.data.query import DatasetQuery
-
-    query = DatasetQuery(context["dataset_access_manifest"])
+    query = DatasetQuery(_access(context))
     if hasattr(query, "iter_cases"):
         cases = list(query.iter_cases())
     else:
-        cases, offset = [], 0
-        while True:
-            page = query.sample(offset=offset, limit=512)
-            cases.extend(page.get("values", []))
-            if page.get("complete", True):
-                break
-            offset = page["next_offset"]
-    eligible = sum(not isinstance(resolve(case, ResolverSpec.parse(parsed.resolver)), NotApplicable) for case in cases)
+        page = query.sample(offset=0, limit=512)
+        cases = list(page.get("values", []))
+    eligible = sum(
+        not isinstance(resolve(case, ResolverSpec.parse(parsed.resolver)), NotApplicable)
+        for case in cases
+    )
     if eligible <= 0:
-        raise ValueError("Task Leaf resolver does not resolve any Case")
+        raise ValueError("Leaf Task resolver does not resolve any Case")
     parsed = parsed.model_copy(update={"eligible_count": eligible})
-    plan.leaves[parsed.leaf_id] = parsed
-    node = plan.nodes[parsed.node_id]
-    plan.nodes[parsed.node_id] = node.model_copy(update={"leaf_ids": [*node.leaf_ids, parsed.leaf_id], "status": "active"})
-    return result("success", "Task Leaf saved", **_write_derived_artifacts(context, plan))
+    plan.leaf_tasks[parsed.leaf_id] = parsed
+    plan.revision += 1
+    scenario = plan.scenarios[parsed.scenario_id]
+    plan.scenarios[parsed.scenario_id] = scenario.model_copy(
+        update={
+            "leaf_task_ids": [*scenario.leaf_task_ids, parsed.leaf_id],
+            "status": "review_pending",
+        }
+    )
+    updates = _write_artifacts(context, plan)
+    return result(
+        "success",
+        f"Leaf Task {parsed.leaf_id} saved ({eligible} eligible Cases)",
+        milestone={"kind": "leaf", "leaf_task_id": parsed.leaf_id, "capacity": eligible},
+        **updates,
+    )
+
+
+def save_task_leaf(context: dict[str, Any], *, leaf: dict[str, Any]) -> dict[str, Any]:
+    """Compatibility entry point for callers using the old tool name."""
+    plan = _load_plan(context)
+    if plan.phase != "leaves":
+        plan.phase = "leaves"
+    if not plan.current_scenario_id:
+        current = getattr(plan, "current_node_id", None) or (plan.pending_scenario_ids[0] if plan.pending_scenario_ids else None)
+        if current:
+            plan.current_scenario_id = current
+            _write_artifacts(context, plan)
+    parsed = LeafTask.model_validate(leaf)
+    normalized = {
+        "leaf_task_id": parsed.leaf_id,
+        "name": parsed.name,
+        "scenario_id": parsed.scenario_id,
+        "question_template": parsed.question_template,
+        "input": [selector.model_dump(mode="json") for selector in parsed.input],
+        "target": parsed.target,
+        "reference_rule": parsed.reference_rule,
+        "resolver": parsed.resolver,
+        "output_spec": parsed.output_spec.value,
+        "task_paradigm": parsed.task_paradigm.value,
+        "capability_category": parsed.capability_category.value,
+        "evidence": [basis.model_dump(mode="json") for basis in parsed.evidence],
+    }
+    return save_leaf_task(context, leaf=LeafTaskDraft.model_validate(normalized))
+
+
+def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview) -> dict[str, Any]:
+    plan = _load_plan(context)
+    if plan.phase != "leaves" or not plan.current_scenario_id:
+        raise ValueError("An active Scenario is required before review")
+    if review.scenario_id != plan.current_scenario_id:
+        raise ValueError("Review must belong to the active Scenario")
+    scenario = plan.scenarios[review.scenario_id]
+    expected = set(scenario.leaf_task_ids)
+    if set(review.checked_leaf_task_ids) != expected or not expected:
+        raise ValueError("Scenario review must cover every saved Leaf Task")
+    if review.status == "approved":
+        if any((plan.leaf_tasks[key].eligible_count or 0) <= 0 for key in expected):
+            raise ValueError("Cannot approve a Scenario with a zero-capacity Leaf Task")
+        plan.scenarios[review.scenario_id] = scenario.model_copy(update={"status": "completed"})
+        plan.reviews[review.scenario_id] = review
+        plan.completed_scenario_ids = sorted(set(plan.completed_scenario_ids) | {review.scenario_id})
+        plan.pending_scenario_ids = [key for key in plan.pending_scenario_ids if key != review.scenario_id]
+        plan.current_scenario_id = None
+        if not plan.pending_scenario_ids:
+            plan.phase = "complete"
+    else:
+        plan.scenarios[review.scenario_id] = scenario.model_copy(update={"status": "active"})
+        plan.reviews[review.scenario_id] = review
+    plan.revision += 1
+    updates = _write_artifacts(context, plan)
+    return result(
+        "success",
+        f"Scenario {review.scenario_id} review saved",
+        milestone={"kind": "scenario_review", "scenario_id": review.scenario_id, "status": review.status},
+        **updates,
+    )
 
 
 def review_current_node(context: dict[str, Any], *, review: dict[str, Any]) -> dict[str, Any]:
-    plan = _load_plan(context)
-    if plan.phase != "leaves" or not plan.current_node_id:
-        raise ValueError("A current active Node is required before review")
-    parsed = NodeReview.model_validate(review)
-    if parsed.node_id != plan.current_node_id:
-        raise ValueError("Review must belong to the current active Node")
-    node = plan.nodes[parsed.node_id]
-    expected = set(node.leaf_ids)
-    if set(parsed.checked_leaf_ids) != expected or not expected:
-        raise ValueError("Node review must cover every saved Leaf")
-    if parsed.status == "approved":
-        if any((plan.leaves[leaf_id].eligible_count or 0) <= 0 for leaf_id in expected):
-            raise ValueError("Cannot approve a Node with a zero-capacity Leaf")
-        plan.nodes[parsed.node_id] = node.model_copy(update={"status": "completed"})
-        plan.reviews[parsed.node_id] = parsed
-        plan.completed_node_ids = sorted(set(plan.completed_node_ids) | {parsed.node_id})
-        plan.pending_node_ids = [key for key in plan.pending_node_ids if key != parsed.node_id]
-        plan.current_node_id = None
-    else:
-        plan.nodes[parsed.node_id] = node.model_copy(update={"status": "active"})
-        plan.reviews[parsed.node_id] = parsed
-    return result("success", f"Node {parsed.node_id} review saved", **_write_derived_artifacts(context, plan))
+    """Compatibility wrapper for the pre-v3 Scenario review tool."""
+    parsed = dict(review)
+    scenario_id = parsed.pop("scenario_id", parsed.pop("node_id", None))
+    checked = parsed.pop("checked_leaf_task_ids", parsed.pop("checked_leaf_ids", []))
+    return review_current_scenario(
+        context,
+        review=ScenarioReview(
+            scenario_id=scenario_id,
+            checked_leaf_task_ids=checked,
+            status=parsed.get("status", "rejected"),
+            issues=parsed.get("issues", []),
+        ),
+    )
 
 
 def classify_task_nodes(context: dict[str, Any], *, assignments: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compatibility no-op: Capability Category is derived from Operation."""
     plan = _load_plan(context)
-    if plan.phase != "leaves" or plan.pending_node_ids or plan.current_node_id:
-        raise ValueError("All Nodes must be reviewed before capability classification")
-    blueprint = plan.blueprint or _load_blueprint_for_context(context)
-    allowed = blueprint_dimension_ids(blueprint)
-    parsed: dict[str, list[str]] = {}
-    for assignment in assignments:
-        node_id = assignment.get("node_id")
-        dimensions = assignment.get("capability_dimension_ids")
-        if node_id not in plan.nodes or plan.nodes[node_id].exclusion_reason:
-            raise ValueError(f"Unknown executable Node in capability assignment: {node_id}")
-        if not isinstance(dimensions, list) or not dimensions or not set(dimensions) <= allowed:
-            raise ValueError(f"Invalid Blueprint capability dimensions for Node: {node_id}")
-        parsed[node_id] = list(dict.fromkeys(dimensions))
-    expected = {key for key, node in plan.nodes.items() if not node.exclusion_reason}
-    if set(parsed) != expected:
-        raise ValueError("Capability assignments must cover every executable Node exactly once")
-    plan.capability_assignments = parsed
-    plan.nodes = {
-        key: node.model_copy(update={"capability_dimension_ids": parsed[key]})
-        for key, node in plan.nodes.items()
-    }
-    plan.leaves = {
-        key: leaf.model_copy(update={"capability_dimension_ids": parsed.get(leaf.node_id, [])})
-        for key, leaf in plan.leaves.items()
-    }
-    plan.phase = "complete"
-    return result("success", "Blueprint capabilities assigned", **_write_derived_artifacts(context, plan))
+    if plan.phase == "leaves" and not plan.pending_scenario_ids and not plan.current_scenario_id:
+        plan.phase = "complete"
+    return result("success", "Capability Categories are derived from Operation", **_write_artifacts(context, plan))
 
 
-def finish_task_space(context: dict[str, Any]) -> dict[str, Any]:
-    """Publish the complete validated Task Space artifact."""
+def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
     require(context, "Dataset", "PlanningConfig")
     plan = _load_plan(context)
-    validate_task_tree(plan, require_capabilities=True, require_reviews=True)
-    plan.phase = "complete"
-    updates = _write_derived_artifacts(context, plan)
-    versions = publish(context, "Plan", {"task_space_plan": updates["task_space_plan_path"]}, ("Dataset", "PlanningConfig")) if context.get("run_directory") else {}
-    return result("complete", "Task Space plan published", working_blueprint_path=updates["task_space_plan_path"], **updates, **versions)
+    if plan.phase != "complete" or plan.pending_scenario_ids or plan.current_scenario_id:
+        raise ValueError("Task Plan still has pending Scenarios")
+    for scenario_id, scenario in plan.scenarios.items():
+        if scenario.exclusion_reason:
+            continue
+        if not scenario.leaf_task_ids:
+            raise ValueError(f"Scenario has no Leaf Task: {scenario_id}")
+        review = plan.reviews.get(scenario_id)
+        if review is None or review.status != "approved":
+            raise ValueError(f"Scenario lacks an approved review: {scenario_id}")
+    updates = _write_artifacts(context, plan)
+    versions = publish(
+        context, "Plan", {"task_plan": updates["task_plan_path"]},
+        ("Dataset", "PlanningConfig"),
+    ) if context.get("run_directory") else {}
+    return result(
+        "complete",
+        "Task Plan published",
+        working_blueprint_path=updates["task_plan_path"],
+        milestone={"kind": "plan_complete"},
+        **updates,
+        **versions,
+    )
 
 
 def _available_tools(context: dict[str, Any]) -> set[str]:
     plan = _load_plan(context)
-    if plan.phase == "blocked":
-        return {"read_planning_context"}
-    if plan.phase == "facts":
-        return {"read_planning_context"}
+    if plan.phase in {"access", "overview"}:
+        return {"read_planning_context", "read_dataset_overview", "read_evidence_catalog"}
     if plan.phase == "axes":
-        return {"read_planning_context", "read_axis_analysis", "analyze_axis"}
+        return {
+            "read_planning_context", "read_dataset_overview", "read_evidence_catalog",
+            "read_axis_evidence", "analyze_axis",
+        }
     if plan.phase == "leaves":
-        return {"read_current_node_context", "save_task_leaf", "review_current_node", "read_task_node"}
-    if plan.phase == "capabilities":
-        return {"classify_task_nodes", "read_task_node"}
+        return {"read_scenario_context", "save_leaf_task", "review_current_scenario"}
     if plan.phase == "complete":
         return {"finish"}
+    if plan.phase == "blocked":
+        return {"read_planning_context", "read_dataset_overview"}
     return set()
 
 
+finish_task_space = finish_task_plan
+
+
 def compile_task_planning_agent(*, checkpointer=None):
-    funcs = (
+    tools = (
         read_planning_context,
+        read_dataset_overview,
+        read_evidence_catalog,
+        read_axis_evidence,
         analyze_axis,
-        read_axis_analysis,
-        read_current_node_context,
-        read_task_node,
-        save_task_leaf,
-        review_current_node,
-        classify_task_nodes,
+        read_scenario_context,
+        save_leaf_task,
+        review_current_scenario,
     )
     return compile_agent(
         "TaskPlanningAgent",
-        "Build one resumable annotation.v5 Task Plan. The deterministic planning context is available before the first decision. Call analyze_axis exactly three times in order: input_structure, operation, clinical_target. Then process the current Node only, save at least one evidence-backed Leaf, review all Leaves for that Node, and classify every completed Node with one or more registered Blueprint capability dimensions. Never invent labels, skip Nodes, or use reference evidence as model input.",
-        {f.__name__: f for f in funcs},
+        "Build one resumable annotation.v5 Task Plan using six levels: Task Axis, Axis Value, Task Scenario, Leaf Task, Task Paradigm and Benchmark Item. Axis definitions are fixed; assess every registered value exactly once, in order input_structure, operation, clinical_target. Code constructs Scenarios and assigns Capability Category from Operation using the registered six-category mapping. In the Leaves phase inspect one current Scenario, propose concrete evidence-backed Leaf Tasks with a valid Resolver and Task Paradigm, then review that Scenario. Never invent Axis Values, use reference evidence as model input, or expose chain-of-thought. Read only the evidence slice required by the current phase.",
+        {tool.__name__: tool for tool in tools},
         lambda c: {
-            "task_space_plan": c.get("task_space_plan_path"),
+            "task_plan": str(_plan_path(c)),
             "phase": _load_plan(c).phase,
-            "current_node_id": _load_plan(c).current_node_id,
-            "pending_node_count": len(_load_plan(c).pending_node_ids),
-            "planning_context": _load_plan(c).dataset_facts,
+            "next_axis": _load_plan(c).next_axis,
+            "current_scenario_id": _load_plan(c).current_scenario_id,
+            "pending_scenario_count": len(_load_plan(c).pending_scenario_ids),
+            "evidence_manifest_path": _load_plan(c).evidence_manifest_path,
         },
-        finish_task_space,
+        finish_task_plan,
         args_schemas={
+            "read_evidence_catalog": EvidenceCatalogArguments,
+            "read_axis_evidence": AxisEvidenceArguments,
             "analyze_axis": AxisArguments,
-            "read_task_node": TaskNodeArguments,
-            "save_task_leaf": TaskLeafArguments,
-            "review_current_node": NodeReviewArguments,
-            "classify_task_nodes": CapabilityAssignmentArguments,
+            "read_scenario_context": ScenarioArguments,
+            "save_leaf_task": LeafTaskArguments,
+            "review_current_scenario": ScenarioReviewArguments,
         },
         available_tools=_available_tools,
         initialize_context=_initialize_planning_context,
@@ -517,4 +738,4 @@ def compile_task_planning_agent(*, checkpointer=None):
 
 
 def apply_template_feedback(context, feedback):
-    return result("blocked", "Template review is part of Node planning")
+    return result("blocked", "Template review is part of Task Planning")

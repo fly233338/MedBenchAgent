@@ -89,7 +89,6 @@ def _candidate_snapshot(context, path, *, refresh=False):
             "summary": card_summary(card),
             "original_card_path": str(original),
             "entry": frozen_entry,
-            "access": access,
         }
     order = list(frozen)
     snapshot.update(

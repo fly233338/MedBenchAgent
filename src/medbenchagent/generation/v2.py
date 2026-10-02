@@ -1,4 +1,4 @@
-"""Deterministic benchmark item generation for compiled v2 Task Leaves."""
+"""Deterministic benchmark item generation for Leaf Tasks."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
-from medbenchagent.planning.task_space import OutputSpec, TaskLeaf
+from medbenchagent.planning.task_space import LeafTask, OutputSpec
 
 
 def _identity(dataset_id: str, leaf_id: str, case_id: str) -> str:
@@ -18,14 +18,19 @@ def _identity(dataset_id: str, leaf_id: str, case_id: str) -> str:
 
 def _input_assets(case: dict[str, Any], evidence_ids: list[str]) -> list[str]:
     wanted = set(evidence_ids)
-    return [str(item["value"]) for item in case.get("evidence", [])
-            if item.get("id") in wanted and item.get("type") == "asset"]
+    return [
+        str(item["value"]) for item in case.get("evidence", [])
+        if item.get("id") in wanted and item.get("type") == "asset"
+    ]
 
 
-def generate_task_items(cases: Iterable[dict[str, Any]], leaves: Iterable[TaskLeaf | dict[str, Any]], dataset_id: str,
-                        allocation: dict[str, int] | None = None) -> list[dict[str, Any]]:
-    """Instantiate eligible Cases exactly once per Leaf using its compiled Resolver."""
-    parsed = [TaskLeaf.model_validate(leaf) for leaf in leaves]
+def generate_task_items(
+    cases: Iterable[dict[str, Any]],
+    leaves: Iterable[LeafTask | dict[str, Any]],
+    dataset_id: str,
+    allocation: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    parsed = [LeafTask.model_validate(leaf) for leaf in leaves]
     items = []
     limits = allocation or {leaf.leaf_id: None for leaf in parsed}
     counts = {leaf.leaf_id: 0 for leaf in parsed}
@@ -44,25 +49,29 @@ def generate_task_items(cases: Iterable[dict[str, Any]], leaves: Iterable[TaskLe
             answer = resolved.reference
             if leaf.output_spec == OutputSpec.TEXT and isinstance(answer, dict):
                 answer = answer.get("value")
-            item = {
+            items.append({
+                "item_id": _identity(dataset_id, leaf.leaf_id, case_id),
                 "id": _identity(dataset_id, leaf.leaf_id, case_id),
+                "dataset_id": dataset_id,
                 "dataset": dataset_id,
+                "scenario_id": leaf.scenario_id,
+                "leaf_task_id": leaf.leaf_id,
                 "task_id": leaf.leaf_id,
                 "case_id": case_id,
+                "capability_category": leaf.capability_category.value,
+                "task_paradigm": leaf.task_paradigm.value,
                 "input_assets": _input_assets(case, resolved.input_evidence_ids),
                 "input_evidence_ids": resolved.input_evidence_ids,
-                "question": leaf.question_template or leaf.question,
+                "question": leaf.question_template,
                 "output_spec": leaf.output_spec.value,
                 "answer": answer,
                 "reference_evidence_ids": resolved.reference_evidence_ids,
-            }
-            items.append(item)
+            })
             counts[leaf.leaf_id] += 1
     return items
 
 
 def write_task_items(path: str | Path, items: Iterable[dict[str, Any]]) -> str:
-    """Write v2 items atomically as JSONL and return the resulting path."""
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")

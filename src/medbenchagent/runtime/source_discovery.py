@@ -142,6 +142,10 @@ def discover_source(context: dict, dataset_id: str) -> dict:
     proposal_path = folder / "proposal.json"
     if proposal_path.is_file():
         proposal = RootProposal.model_validate_json(proposal_path.read_text(encoding="utf-8"))
+    elif (explicit := explicit_source_path(request_text(context))):
+        root_name = Path(explicit.rstrip("\\/")).name
+        proposal = RootProposal(root=explicit, dataset_name=root_name)
+        atomic_write_json(proposal_path, proposal.model_dump())
     else:
         proposal = _extract_proposal(request_text(context))
         atomic_write_json(proposal_path, proposal.model_dump())

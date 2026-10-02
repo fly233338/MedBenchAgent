@@ -9,7 +9,7 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 1. 检查 Catalog、已登记数据集和配置来源；
 2. 通过 `DataProcessingAgent` 准备或复用数据；
 3. 提取 benchmark brief，选择数据集；
-4. 为每个数据集生成并审核完整 Task Tree；
+4. 为每个数据集生成并审核完整 Task Plan；
 5. 全局分配样本并生成问题；
 6. 由 `FinalizationAgent` 验证并发布 delivery。
 
@@ -44,7 +44,9 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
     candidate_cards/
   agents/<agent>/<scope>/
     state.json
-    semantic outputs
+    access.json
+    evidence/
+    planning outputs
   workers/<dataset>/
     inputs/ work/ outputs/ state/ logs/ conversations/
 ```
@@ -66,7 +68,9 @@ Supervisor 先解析数据准备请求：请求中包含可读的原始目录时
 
 ## Benchmark 构建
 
-`specify` 生成带字段级来源证据的 Requirement，并保留开放式意图和用户提到的数据集名称。`discover_datasets` 扫描并校验 Catalog 与 Prepared 根目录，冻结候选 Card；它不替用户做选择。用户未指定数据集时，Supervisor 根据 brief 和 Card 摘要筛出相关候选并通过英文 `ask_user` 请求选择一个或多个数据集；`select_datasets` 只绑定冻结候选 ID。每个 annotation.v5 数据集由 TaskPlanningAgent 从 Dataset Facts 和一个代表 Case 开始，按顺序完成三次 Axis 分析、确定性 Task Node 构造、Leaf 设计和 Node 审核。过程保存在一个可恢复的 `task_space_plan.json` 草稿中；只有每个可执行 Node 都有通过审核且有容量的 Leaf 后才发布 Task Plan。Task Tree 完成后，模型依据注册的 Blueprint 将 Node 归入一个或多个医学能力维度。Generation 只生成有确定答案依据的问题，Delivery 记录能力维度、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
+`specify` 生成带字段级来源证据的 Requirement，并保留开放式意图和用户提到的数据集名称。`discover_datasets` 扫描并校验 Catalog 与 Prepared 根目录，冻结候选 Card；它不替用户做选择。`select_datasets` 只绑定冻结候选 ID。随后代码生成并校验 `DatasetAccessReceipt`，模型不会决定路径、revision 或 digest。
+
+每个 annotation.v5 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按顺序筛选三个固定 Axis 的 Axis Value；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task，随后确定 Task Paradigm。Capability Category 是由 Operation 一对一派生的横向标签，不再有额外的模型分类阶段。完整计划使用 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 保存；只有每个可执行 Scenario 都有通过审核且有容量的 Leaf Task 后才发布 Plan。Generation 只生成有确定答案依据的 Benchmark Item，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
 
 ## 恢复与界面
 

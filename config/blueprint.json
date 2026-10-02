@@ -1,20 +1,44 @@
 {
   "name": "Blueprint",
-  "revision": "1",
-  "capability_dimensions": [
-    {"id": "image_acquisition", "name": "Image acquisition and basic information", "description": "Understanding modality, view, acquisition and image quality."},
-    {"id": "anatomy", "name": "Anatomy and global tissue characteristics", "description": "Recognizing anatomy and global anatomical properties."},
-    {"id": "finding_recognition", "name": "Finding recognition and characterization", "description": "Recognizing and characterizing visual findings."},
-    {"id": "clinical_assessment", "name": "Clinical assessment and diagnosis", "description": "Interpreting findings into assessment or diagnosis."},
-    {"id": "spatial_localization", "name": "Spatial localization", "description": "Localizing a finding or region in visual evidence."},
-    {"id": "report_generation", "name": "Report generation", "description": "Synthesizing visual evidence into a medical report."}
+  "revision": "2",
+  "capability_categories": [
+    {
+      "id": "Recognition",
+      "description": "Recognition of findings, anatomy and assessment attributes.",
+      "examples": ["finding recognition", "anatomy recognition", "assessment recognition"]
+    },
+    {
+      "id": "Localization",
+      "description": "Spatial grounding of findings or regions.",
+      "examples": ["bounding box", "spatial grounding", "slice or frame localization"]
+    },
+    {
+      "id": "Quantification",
+      "description": "Measurement, counting and numeric estimation.",
+      "examples": ["measurement", "count", "numeric estimation"]
+    },
+    {
+      "id": "Comparison",
+      "description": "Comparison across views, time points or prior/current studies.",
+      "examples": ["multi-view comparison", "prior-current comparison", "temporal comparison"]
+    },
+    {
+      "id": "Integration",
+      "description": "Integration of information across images, text and related evidence.",
+      "examples": ["multi-image integration", "image-text integration"]
+    },
+    {
+      "id": "Generation",
+      "description": "Description and report generation from visual evidence.",
+      "examples": ["description", "report generation"]
+    }
   ],
-  "task_concepts": [
-    {"id": "recognize", "description": "Recognize an explicitly annotated value.", "operations": ["recognize"]},
-    {"id": "localize", "description": "Locate an explicitly annotated region or index.", "operations": ["localize"]},
-    {"id": "quantify", "description": "Compute or report an explicitly annotated numeric value.", "operations": ["quantify"]},
-    {"id": "compare", "description": "Compare two linked evidence values.", "operations": ["compare"]},
-    {"id": "align", "description": "Align related evidence objects.", "operations": ["align"]},
-    {"id": "describe", "description": "Describe visual evidence using a paired reference.", "operations": ["describe"]}
+  "operations": [
+    {"id": "recognize", "capability_category": "Recognition"},
+    {"id": "localize", "capability_category": "Localization"},
+    {"id": "quantify", "capability_category": "Quantification"},
+    {"id": "compare", "capability_category": "Comparison"},
+    {"id": "align", "capability_category": "Integration"},
+    {"id": "describe", "capability_category": "Generation"}
   ]
 }

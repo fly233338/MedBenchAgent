@@ -1,4 +1,4 @@
-"""Deterministic audit and reporting for v2 benchmark items."""
+"""Deterministic audit and reporting for benchmark items."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from typing import Any, Iterable
 
 from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
-from medbenchagent.planning.task_space import OutputSpec, TaskLeaf
+from medbenchagent.planning.task_space import LeafTask, OutputSpec
 
 
 def _answer_matches(spec: OutputSpec, expected: Any, actual: Any) -> bool:
@@ -25,10 +25,13 @@ def _answer_matches(spec: OutputSpec, expected: Any, actual: Any) -> bool:
     return False
 
 
-def audit_task_items(cases: Iterable[dict[str, Any]], items: Iterable[dict[str, Any]], leaves: Iterable[TaskLeaf | dict[str, Any]]) -> dict[str, Any]:
-    """Reconstruct every reference and return accepted/rejected counts and reasons."""
+def audit_task_items(
+    cases: Iterable[dict[str, Any]],
+    items: Iterable[dict[str, Any]],
+    leaves: Iterable[LeafTask | dict[str, Any]],
+) -> dict[str, Any]:
     items = list(items)
-    leaf_map = {leaf.leaf_id: leaf for leaf in (TaskLeaf.model_validate(value) for value in leaves)}
+    leaf_map = {leaf.leaf_id: leaf for leaf in (LeafTask.model_validate(value) for value in leaves)}
     case_map = {case.get("case_id"): case for case in cases}
     accepted, rejected = [], []
     reasons = Counter()
@@ -37,7 +40,7 @@ def audit_task_items(cases: Iterable[dict[str, Any]], items: Iterable[dict[str, 
         case = case_map.get(item.get("case_id"))
         errors = []
         if leaf is None:
-            errors.append("unknown_task_leaf")
+            errors.append("unknown_leaf_task")
         if case is None:
             errors.append("unknown_case")
         if not errors:
@@ -45,7 +48,8 @@ def audit_task_items(cases: Iterable[dict[str, Any]], items: Iterable[dict[str, 
             if isinstance(resolved, NotApplicable):
                 errors.append(resolved.reason)
             else:
-                if not _answer_matches(leaf.output_spec, resolved.reference.get("value", resolved.reference) if isinstance(resolved.reference, dict) else resolved.reference, item.get("answer")):
+                expected = resolved.reference.get("value", resolved.reference) if isinstance(resolved.reference, dict) else resolved.reference
+                if not _answer_matches(leaf.output_spec, expected, item.get("answer")):
                     errors.append("answer_mismatch")
                 if set(item.get("input_evidence_ids", [])) & set(item.get("reference_evidence_ids", [])):
                     errors.append("input_reference_leakage")
@@ -55,23 +59,21 @@ def audit_task_items(cases: Iterable[dict[str, Any]], items: Iterable[dict[str, 
         else:
             accepted.append(item)
     by_capability = defaultdict(lambda: {"generated": 0, "accepted": 0, "rejected": 0})
-    by_dimension = defaultdict(lambda: {"generated": 0, "accepted": 0, "rejected": 0})
     for leaf_id, leaf in leaf_map.items():
         generated_count = sum(item.get("task_id") == leaf_id for item in items)
         accepted_count = sum(item.get("task_id") == leaf_id for item in accepted)
-        rejected_count = generated_count - accepted_count
-        group = by_capability[leaf.capability_category]
+        group = by_capability[leaf.capability_category.value]
         group["generated"] += generated_count
         group["accepted"] += accepted_count
-        group["rejected"] += rejected_count
-        dimensions = getattr(leaf, "capability_dimension_ids", [])
-        for dimension in dimensions:
-            group = by_dimension[dimension]
-            group["generated"] += generated_count
-            group["accepted"] += accepted_count
-            group["rejected"] += rejected_count
-    return {"schema_version": "audit-report.v2", "generated": len(items),
-            "accepted": len(accepted), "rejected": len(rejected), "reason_counts": dict(reasons),
-            "capability_categories": dict(by_capability), "capability_dimensions": dict(by_dimension),
-            "accepted_items": accepted, "rejected_items": rejected}
+        group["rejected"] += generated_count - accepted_count
+    return {
+        "schema_version": "audit-report.v3",
+        "generated": len(items),
+        "accepted": len(accepted),
+        "rejected": len(rejected),
+        "reason_counts": dict(reasons),
+        "capability_categories": dict(by_capability),
+        "accepted_items": accepted,
+        "rejected_items": rejected,
+    }
 

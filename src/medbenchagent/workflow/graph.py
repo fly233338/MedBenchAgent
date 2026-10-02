@@ -396,6 +396,7 @@ Handoff and construction:
 - Delegate planning using the canonical Requirement and selected dataset references. Do not paraphrase or discard scope.
 - Preserve completed valid work. A child completion is local progress; the run is complete only after validated delivery.
 - Resolve existing issues by their exact issue_id. Do not repeat an unchanged failed action or start an automatic refill loop.
+- If Task Planning returns blocked without a changed plan revision or phase, surface the diagnostic and do not call plan again unchanged.
 - Unsupported plans and zero allocations are valid outcomes; execution failures require diagnosis or user input.
 
 Interaction:
@@ -425,8 +426,8 @@ def compile_benchmark_graph(*, checkpointer=None):
         child["delegation"] = canonical_delegation(context, dataset_id)
         child["diagnostic_notes"] = (delegation or {}).get("revision_notes", "")
         # Task Planning is a resumable data-driven loop. Give it a budget
-        # proportional to the Node space instead of the generic 60-call
-        # supervisor budget; every mutation is checkpointed in task_space_plan.
+        # proportional to the Scenario space instead of the generic 60-call
+        # supervisor budget; every mutation is checkpointed in task_plan.
         base_limits = context.get("limits", {})
         child["limits"] = {
             **base_limits,
@@ -442,13 +443,24 @@ def compile_benchmark_graph(*, checkpointer=None):
             child.update(correction["updates"])
         output = planning.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "planning", output)
-        # A long planning loop may hit the per-invocation harness budget after
-        # checkpointing a valid partial draft. Keep it resumable instead of
-        # treating a budget boundary as a semantic failure.
-        draft = output.get("context", {}).get("task_space_plan", {})
-        if output["result"]["status"] == "blocked" and draft.get("phase") not in {"complete", "blocked"}:
+        # A blocked child is resumable only when the persisted draft actually
+        # advanced. Never turn a contract failure with no state mutation into a
+        # success, otherwise Supervisor will repeatedly delegate the same work.
+        draft = output.get("context", {}).get("task_plan", {})
+        previous = context.get("child_states", {}).get(dataset_id, {}).get("planning")
+        previous_draft = {}
+        if previous and Path(previous).is_file():
+            try:
+                previous_draft = json.loads(Path(previous).read_text(encoding="utf-8")).get("task_plan", {})
+            except (OSError, ValueError):
+                previous_draft = {}
+        advanced = (
+            draft.get("revision", 0) > previous_draft.get("revision", -1)
+            or draft.get("phase") != previous_draft.get("phase")
+        )
+        if output["result"]["status"] == "blocked" and advanced and draft.get("phase") not in {"complete", "blocked"}:
             outcome["status"] = "success"
-            outcome["summary"] = "Task Plan progress saved; planning can resume from the current Node"
+            outcome["summary"] = "Task Plan progress saved; planning can resume from the current Scenario"
             outcome["updates"]["planning_incomplete"] = True
         if output["result"]["status"] == "complete":
             requests = dict(context.get("template_revision_requests", {}))

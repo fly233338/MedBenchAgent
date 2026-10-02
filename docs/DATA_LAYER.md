@@ -35,6 +35,16 @@ Asset 处理保留原始来源引用。PNG/JPEG、单文件 DICOM、DICOM Series
 
 `DatasetQuery` 绑定一个 access manifest 和 cache revision，提供字段值、来源覆盖、记录采样、数组长度、配对和协议容量查询。查询返回准确总数和分页结果，供规划 Agent 使用。
 
+规划阶段不会把 access manifest 和全部 Case 内容直接交给模型。宿主先生成
+`DatasetAccessReceipt`，再生成 Dataset Overview、Evidence Catalog、Relation
+Summary 和有界 Case Samples。每个规划证据文件记录 dataset revision 与输入
+digest；读取工具只返回分页或当前 Axis/Scenario 所需的切片。
+
+结构事实区分 primary input asset 与 annotation/mask asset。只有明确的 primary
+asset 才能证明 multi-image 或 multi-view；region→mask 引用不等于多视图关系。
+未知关系保持 unknown 并由规划代码保守排除，不能用字段数量或整数值猜测
+index、时间或医学语义。
+
 ## 运行契约
 
 准备和构建使用 Run 冻结的配置、Catalog snapshot、Card 副本、事件日志和 operation ledger。产物依赖由 `runtime/dependencies.py` 校验；工具调用按参数和依赖幂等重放。

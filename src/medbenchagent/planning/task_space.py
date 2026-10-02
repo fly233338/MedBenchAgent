@@ -1,4 +1,10 @@
-"""Stable Task Planning vocabulary and validated task-space contracts."""
+"""Validated contracts for the six-level task-planning model.
+
+The model may select Axis Values and propose Leaf Tasks. Code owns Scenario
+construction, capability tagging, resolver validation, capacity and item
+instantiation. Compatibility aliases keep in-process callers usable while
+persisted artifacts move to the v3 schema.
+"""
 
 from __future__ import annotations
 
@@ -27,14 +33,24 @@ AXIS_VALUES: dict[TaskAxis, tuple[str, ...]] = {
 }
 
 
-# This is the structural operation family. It is deliberately separate from
-# the post-planning Blueprint capability dimensions.
-OPERATION_FAMILY_BY_OPERATION = {
-    "recognize": "Recognition", "localize": "Localization", "quantify": "Quantification",
-    "compare": "Comparison", "align": "Integration", "describe": "Generation",
+class CapabilityCategory(StrEnum):
+    RECOGNITION = "Recognition"
+    LOCALIZATION = "Localization"
+    QUANTIFICATION = "Quantification"
+    COMPARISON = "Comparison"
+    INTEGRATION = "Integration"
+    GENERATION = "Generation"
+
+
+CAPABILITY_BY_OPERATION: dict[str, CapabilityCategory] = {
+    "recognize": CapabilityCategory.RECOGNITION,
+    "localize": CapabilityCategory.LOCALIZATION,
+    "quantify": CapabilityCategory.QUANTIFICATION,
+    "compare": CapabilityCategory.COMPARISON,
+    "align": CapabilityCategory.INTEGRATION,
+    "describe": CapabilityCategory.GENERATION,
 }
-# Keep the old constant as a source-compatible alias for downstream callers.
-CAPABILITY_BY_OPERATION = OPERATION_FAMILY_BY_OPERATION
+OPERATION_FAMILY_BY_OPERATION = CAPABILITY_BY_OPERATION
 
 
 class TaskParadigm(StrEnum):
@@ -52,17 +68,6 @@ class OutputSpec(StrEnum):
     INDEX = "index"
 
 
-class CapabilityCategory(StrEnum):
-    """Legacy operation-family enum retained for metric configuration."""
-
-    RECOGNITION = "Recognition"
-    LOCALIZATION = "Localization"
-    QUANTIFICATION = "Quantification"
-    COMPARISON = "Comparison"
-    INTEGRATION = "Integration"
-    GENERATION = "Generation"
-
-
 class EvidenceBasis(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     reference: str = Field(min_length=1)
@@ -78,7 +83,7 @@ class EvidenceSelector(BaseModel):
     unit: str | None = None
 
 
-class AxisAssessment(BaseModel):
+class AxisValueDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     value: str = Field(min_length=1)
     supported: bool
@@ -86,11 +91,26 @@ class AxisAssessment(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class AxisDecisionSet(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    axis: TaskAxis
+    values: list[AxisValueDecision] = Field(min_length=1)
+    dataset_revision: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_registry(self):
+        allowed = set(AXIS_VALUES[self.axis])
+        actual = [item.value for item in self.values]
+        if set(actual) != allowed or len(actual) != len(set(actual)):
+            raise ValueError(f"Axis decision must cover registry exactly for {self.axis}")
+        return self
+
+
 class AxisAnalysis(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    input_structure: list[AxisAssessment]
-    operation: list[AxisAssessment]
-    clinical_target: list[AxisAssessment]
+    input_structure: list[AxisValueDecision]
+    operation: list[AxisValueDecision]
+    clinical_target: list[AxisValueDecision]
     dataset_revision: str = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -107,22 +127,24 @@ class AxisAnalysis(BaseModel):
         return self
 
 
-class TaskNode(BaseModel):
+class TaskScenario(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    node_id: str = Field(min_length=1)
+    scenario_id: str = Field(min_length=1)
     input_structure: str
     operation: str
     clinical_target: str
-    operation_family: str | None = None
-    # Compatibility field for existing manifests and metric configuration.
-    capability_category: str | None = None
+    capability_category: CapabilityCategory
     annotation_mapping: list[EvidenceSelector] = Field(default_factory=list)
     evidence_stats: dict[str, Any] = Field(default_factory=dict)
     feasible_case_count: int | None = Field(default=None, ge=0)
     exclusion_reason: str | None = None
-    leaf_ids: list[str] = Field(default_factory=list)
+    leaf_task_ids: list[str] = Field(default_factory=list)
     status: Literal["pending", "active", "review_pending", "completed", "blocked", "excluded"] = "pending"
-    capability_dimension_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("capability_category", mode="before")
+    @classmethod
+    def parse_capability_category(cls, value):
+        return CapabilityCategory(value)
 
     @model_validator(mode="after")
     def validate_values(self):
@@ -132,51 +154,63 @@ class TaskNode(BaseModel):
             raise ValueError("Unknown operation")
         if self.clinical_target not in AXIS_VALUES[TaskAxis.CLINICAL_TARGET]:
             raise ValueError("Unknown clinical target")
-        family = OPERATION_FAMILY_BY_OPERATION[self.operation]
-        if self.operation_family is None:
-            self.operation_family = family
-        if self.capability_category is None:
-            self.capability_category = family
-        if self.operation_family != family or self.capability_category != family:
-            raise ValueError("Operation family must follow the operation mapping")
+        expected = CAPABILITY_BY_OPERATION[self.operation]
+        if self.capability_category != expected:
+            raise ValueError("Capability Category must follow the Operation mapping")
         if self.exclusion_reason and self.status == "pending":
             self.status = "excluded"
         if self.status == "excluded" and not self.exclusion_reason:
-            raise ValueError("Excluded Node requires an exclusion reason")
-        if len(set(self.leaf_ids)) != len(self.leaf_ids):
-            raise ValueError("Task Node leaf IDs must be unique")
+            raise ValueError("Excluded Scenario requires an exclusion reason")
+        if len(set(self.leaf_task_ids)) != len(self.leaf_task_ids):
+            raise ValueError("Scenario Leaf Task IDs must be unique")
         return self
 
+    @property
+    def node_id(self) -> str:
+        return self.scenario_id
 
-class TaskLeaf(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    leaf_id: str = Field(min_length=1)
+    @property
+    def leaf_ids(self) -> list[str]:
+        return self.leaf_task_ids
+
+
+class LeafTask(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    leaf_task_id: str | None = None
     name: str = Field(min_length=1)
-    node_id: str = Field(min_length=1)
-    # question is retained as a compatibility alias. New plans use the
-    # canonical question_template field and generation reads that field.
-    question: str | None = None
+    scenario_id: str | None = None
     question_template: str | None = None
     input: list[EvidenceSelector] = Field(min_length=1)
     target: str = Field(min_length=1)
     reference_rule: str | None = None
-    answer: str | None = None
     resolver: dict[str, Any]
     output_spec: OutputSpec
     task_paradigm: TaskParadigm
-    capability_category: str = Field(min_length=1)
-    capability_dimension_ids: list[str] = Field(default_factory=list)
+    capability_category: CapabilityCategory
     evidence: list[EvidenceBasis] = Field(default_factory=list)
     eligible_count: int | None = Field(default=None, ge=0)
 
+    @field_validator("capability_category", mode="before")
+    @classmethod
+    def parse_capability_category(cls, value):
+        return CapabilityCategory(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, value):
+        value = dict(value)
+        value.setdefault("leaf_task_id", value.get("leaf_id"))
+        value.setdefault("scenario_id", value.get("node_id"))
+        value.setdefault("question_template", value.get("question"))
+        value.setdefault("reference_rule", value.get("answer"))
+        return value
+
     @model_validator(mode="after")
     def validate_contract(self):
-        template = self.question_template or self.question
-        if not template or not template.strip():
-            raise ValueError("Task Leaf requires question_template")
-        self.question_template = template.strip()
-        self.question = self.question or self.question_template
-        self.reference_rule = self.reference_rule or self.answer
+        if not self.leaf_task_id or not self.scenario_id or not self.question_template:
+            raise ValueError("LeafTask requires leaf_task_id, scenario_id and question_template")
+        if not self.reference_rule:
+            raise ValueError("LeafTask requires reference_rule")
         allowed = {
             TaskParadigm.VQA: {OutputSpec.LABEL, OutputSpec.LABELS, OutputSpec.NUMBER, OutputSpec.TEXT},
             TaskParadigm.VISUAL_GROUNDING: {OutputSpec.BBOX, OutputSpec.INDEX},
@@ -186,42 +220,92 @@ class TaskLeaf(BaseModel):
             raise ValueError("OutputSpec is incompatible with TaskParadigm")
         return self
 
+    @property
+    def leaf_id(self) -> str:
+        return self.leaf_task_id
 
-class NodeReview(BaseModel):
+    @property
+    def node_id(self) -> str:
+        return self.scenario_id
+
+    @property
+    def question(self) -> str:
+        return self.question_template
+
+
+class ScenarioReview(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    node_id: str = Field(min_length=1)
-    checked_leaf_ids: list[str] = Field(min_length=1)
+    scenario_id: str = Field(min_length=1)
+    checked_leaf_task_ids: list[str] = Field(default_factory=list)
     status: Literal["approved", "rejected"]
     issues: list[str] = Field(default_factory=list)
 
 
-class TaskSpacePlan(BaseModel):
+class BenchmarkItem(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    schema_version: str = "task-space-plan"
+    item_id: str = Field(min_length=1)
+    dataset_id: str = Field(min_length=1)
+    scenario_id: str = Field(min_length=1)
+    leaf_task_id: str = Field(min_length=1)
+    case_id: str = Field(min_length=1)
+    capability_category: CapabilityCategory
+    task_paradigm: TaskParadigm
+    output_spec: OutputSpec
+    question: str = Field(min_length=1)
+    answer: Any
+    input_assets: list[str] = Field(default_factory=list)
+    input_evidence_ids: list[str] = Field(default_factory=list)
+    reference_evidence_ids: list[str] = Field(default_factory=list)
+
+
+class TaskPlanState(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    schema_version: str = "task-plan.v3"
     dataset: dict[str, Any]
-    axis_analysis: AxisAnalysis | None = None
-    nodes: dict[str, TaskNode] = Field(default_factory=dict)
-    leaves: dict[str, TaskLeaf] = Field(default_factory=dict)
-    dataset_facts: dict[str, Any] = Field(default_factory=dict)
-    blueprint: dict[str, Any] = Field(default_factory=dict)
-    axis_assessments: dict[str, list[AxisAssessment]] = Field(default_factory=dict)
-    phase: Literal["facts", "axes", "nodes", "leaves", "capabilities", "complete", "blocked"] = "facts"
+    access_path: str | None = None
+    evidence_manifest_path: str | None = None
+    axis_decisions: dict[str, list[AxisValueDecision]] = Field(default_factory=dict)
+    scenarios: dict[str, TaskScenario] = Field(default_factory=dict)
+    leaf_tasks: dict[str, LeafTask] = Field(default_factory=dict)
+    phase: Literal["access", "overview", "axes", "scenarios", "leaves", "complete", "blocked"] = "access"
     next_axis: TaskAxis | None = TaskAxis.INPUT_STRUCTURE
-    current_node_id: str | None = None
-    pending_node_ids: list[str] = Field(default_factory=list)
-    completed_node_ids: list[str] = Field(default_factory=list)
-    reviews: dict[str, NodeReview] = Field(default_factory=dict)
-    capability_assignments: dict[str, list[str]] = Field(default_factory=dict)
-    scope: dict[str, Any] = Field(default_factory=dict)
-    review: dict[str, Any] = Field(default_factory=dict)
+    current_scenario_id: str | None = None
+    pending_scenario_ids: list[str] = Field(default_factory=list)
+    completed_scenario_ids: list[str] = Field(default_factory=list)
+    reviews: dict[str, ScenarioReview] = Field(default_factory=dict)
     revision: int = Field(default=0, ge=0)
+    review: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("next_axis", mode="before")
     @classmethod
     def parse_next_axis(cls, value):
         return None if value is None else TaskAxis(value)
 
+    @property
+    def nodes(self):
+        return self.scenarios
 
-def stable_node_id(input_structure: str, operation: str, clinical_target: str) -> str:
+    @property
+    def leaves(self):
+        return self.leaf_tasks
+
+    @property
+    def pending_node_ids(self):
+        return self.pending_scenario_ids
+
+    @property
+    def current_node_id(self):
+        return self.current_scenario_id
+
+
+def stable_scenario_id(input_structure: str, operation: str, clinical_target: str) -> str:
     payload = json.dumps([input_structure, operation, clinical_target], separators=(",", ":"))
-    return "node-" + hashlib.sha256(payload.encode()).hexdigest()[:16]
+    return "scenario-" + hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+AxisAssessment = AxisValueDecision
+TaskNode = TaskScenario
+TaskLeaf = LeafTask
+NodeReview = ScenarioReview
+TaskSpacePlan = TaskPlanState
+stable_node_id = stable_scenario_id
