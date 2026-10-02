@@ -540,7 +540,8 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
     plan = _load_plan(context)
     if plan.phase != "leaves" or not plan.current_scenario_id:
         raise ValueError("An active Task Scenario is required before saving a Leaf Task")
-    parsed = LeafTask.model_validate(leaf.model_dump(mode="json"))
+    draft = leaf if isinstance(leaf, LeafTaskDraft) else LeafTaskDraft.model_validate(leaf)
+    parsed = LeafTask.model_validate(draft.model_dump(mode="json"))
     if parsed.scenario_id != plan.current_scenario_id:
         raise ValueError("Leaf Task must belong to the active Scenario")
     scenario = plan.scenarios[parsed.scenario_id]
@@ -616,6 +617,7 @@ def save_task_leaf(context: dict[str, Any], *, leaf: dict[str, Any]) -> dict[str
 
 
 def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview) -> dict[str, Any]:
+    review = review if isinstance(review, ScenarioReview) else ScenarioReview.model_validate(review)
     plan = _load_plan(context)
     if plan.phase != "leaves" or not plan.current_scenario_id:
         raise ValueError("An active Scenario is required before review")

@@ -86,6 +86,7 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", Query)
     plan = task_planning._load_plan(context)
     node_id = plan.pending_node_ids[0]
+    context.update(task_planning.read_scenario_context(context, scenario_id=node_id)["updates"])
     leaf = {
         "leaf_id": "leaf-1", "name": "report", "node_id": node_id,
         "question_template": "Describe the finding.",
@@ -97,11 +98,18 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
                      "output_spec": "text", "result_step": "step_1"},
         "output_spec": "text", "task_paradigm": "Report Generation", "capability_category": "Generation",
     }
-    saved = task_planning.save_task_leaf(context, leaf=leaf)
+    saved = task_planning.save_leaf_task(context, leaf={
+        "leaf_task_id": leaf["leaf_id"], "name": leaf["name"],
+        "scenario_id": leaf["node_id"], "question_template": leaf["question_template"],
+        "input": leaf["input"], "target": leaf["target"],
+        "reference_rule": leaf["reference_rule"], "resolver": leaf["resolver"],
+        "output_spec": leaf["output_spec"], "task_paradigm": leaf["task_paradigm"],
+        "capability_category": leaf["capability_category"],
+    })
     context.update(saved["updates"])
     with pytest.raises(ValueError, match="checked_leaf_ids|cover every"):
         task_planning.review_current_node(context, review={"node_id": node_id, "checked_leaf_ids": [], "status": "approved"})
-    reviewed = task_planning.review_current_node(context, review={"node_id": node_id, "checked_leaf_ids": ["leaf-1"], "status": "approved"})
+    reviewed = task_planning.review_current_scenario(context, review={"scenario_id": node_id, "checked_leaf_task_ids": ["leaf-1"], "status": "approved"})
     context.update(reviewed["updates"])
     assigned = task_planning.classify_task_nodes(context, assignments=[{"node_id": node_id, "capability_dimension_ids": ["report_generation"]}])
     context.update(assigned["updates"])
