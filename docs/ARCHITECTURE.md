@@ -60,7 +60,7 @@ image-centric 产物不属于 v2 数据处理运行时。
 
 原始来源以只读方式访问。OpenHands Coding Session 在 Worker workspace 中探索来源、编写适配器并提交候选；宿主重新核验来源、locator、总体、annotation 和图像资产，再注册 Dataset、Profile、Card 和 Catalog。
 
-请求中包含可读的原始目录时，宿主先规范化目录名并确定性委派 `prepare_data`；目录清单、格式和 manifest 由 DataProcessingAgent 检查。只有目录缺失、不可读或无法解析数据集 ID 时才进入澄清。
+Supervisor 先解析数据准备请求：请求中包含可读的原始目录时，规范化目录名后委派 `prepare_data`；缺少目录时只询问目录路径。目录清单、格式和 manifest 由 DataProcessingAgent 检查，目录不可读或无法解析数据集 ID 时才进入澄清。
 
 有效的已登记数据默认复用。`prepare_data` 只有在用户明确要求时才使用 `rebuild`。数据源决议和准备候选绑定当前 Run，成功后才进入 benchmark 选择。
 

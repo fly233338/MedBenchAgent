@@ -17,7 +17,6 @@ from medbenchagent.runtime.contexts import SupervisorContext
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.tool_contracts import PrepareDataArguments, DatasetId, DelegationArguments, PageArguments, NoArguments
 from medbenchagent.data.readiness import list_datasets, inspect_dataset_status, dataset_status, configured_source, reuse_prepared
-from medbenchagent.runtime.source_discovery import dynamic_dataset_id, explicit_source_error, request_text
 from medbenchagent.runtime.run_artifacts import initialize_run, atomic_write_json
 from medbenchagent.settings import get_settings, run_settings
 from medbenchagent.runtime.contexts import load_context, save_context, ROLES
@@ -162,30 +161,9 @@ def required_field_action(context):
     return None
 
 
-def raw_preparation_action(context):
-    """Route an explicit raw directory to preparation before Supervisor model choice."""
-    if context.get("global_issue"):
-        return None
-    requirement = request_text(context)
-    dataset_id = dynamic_dataset_id(requirement)
-    if not dataset_id or dataset_id in context.get("prepared_entries", {}):
-        return None
-    if error := explicit_source_error(requirement, run_directory=context.get("run_directory")):
-        return {"tool": "ask_user", "arguments": {
-                    "question": error + ". Please provide a readable raw dataset directory.",
-                    "reference": "raw_source"},
-                "reason": "The explicit raw dataset directory needs correction"}
-    saved = context.get("child_states", {}).get(dataset_id, {}).get("preparation")
-    operation = Path(context.get("run_directory", "")) / "agents" / "DataProcessingAgent" / dataset_id
-    if saved or (operation / "preparation.json").is_file():
-        return None
-    return {"tool": "prepare_data", "arguments": {"dataset_id": dataset_id,
-            "mode": "reuse_or_prepare"}, "reason": "Prepare the explicit raw dataset directory"}
-
-
 def automatic_supervisor_action(context):
-    """Apply deterministic routing before asking the Supervisor model to choose."""
-    return required_field_action(context) or raw_preparation_action(context)
+    """Route only code-created benchmark-field clarifications automatically."""
+    return required_field_action(context)
 
 
 def canonical_delegation(context, dataset=None):
@@ -352,12 +330,17 @@ Use the available tools and current artifacts to decide whether the request need
 benchmark construction, both, or a concise answer. Inspect configured datasets before preparing or selecting data.
 Use reuse_or_prepare for ordinary preparation and rebuild only when the request explicitly asks for a rebuild.
 If the request is outside medical dataset preparation or benchmark construction, use end immediately.
-When the user supplies a raw dataset path, treat the directory format, file inventory, manifest presence,
-and dataset contents as facts for DataProcessingAgent to inspect. Do not ask the user for those details
-before delegating prepare_data. Ask only when the path is missing/unreadable or the preparation worker
-cannot resolve a remaining semantic choice from the source evidence.
-If an explicit raw path is present, the host may automatically route prepare_data before this decision;
-when choosing manually, use the normalized directory name as dataset_id and delegate prepare_data first.
+You are the first semantic parser for data-preparation requests. Decide from the complete user request
+whether data preparation is needed, whether a raw directory path was supplied, and which dataset ID should
+be used. If preparation is requested and a raw path is present, normalize the directory name to a lowercase
+hyphenated dataset_id (for example, BrEaST becomes breast) and call prepare_data with mode
+reuse_or_prepare. The source path is part of the original request and will be frozen by the host for the
+DataProcessingAgent; do not ask the user to repeat it.
+If preparation is requested but no raw path is present and no configured or registered source can satisfy
+the request, call ask_user with one focused question asking only for the raw directory path. Do not ask
+the user to describe file formats, manifests, image counts, or dataset contents; DataProcessingAgent must
+inspect those facts after prepare_data is delegated. If the path is present but unreadable, ask only for a
+readable replacement path. Do not call prepare_data merely to discover a missing path.
 
 Decisions:
 Use outstanding_work, current artifact readiness and available tools to choose the next useful action.

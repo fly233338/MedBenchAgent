@@ -4,7 +4,7 @@ import pytest
 
 from medbenchagent.data.dataset_catalog import normalize_dataset_id
 from medbenchagent.runtime import source_discovery
-from medbenchagent.workflow.graph import raw_preparation_action
+from medbenchagent.workflow.graph import SUPERVISOR_INSTRUCTIONS, automatic_supervisor_action, available_stages
 
 
 def test_dynamic_dataset_id_uses_directory_name(tmp_path):
@@ -57,25 +57,22 @@ def test_discover_source_does_not_cache_conflicting_registration(tmp_path, monke
     assert not (tmp_path / "run" / "discovery" / "sources" / "breast" / "source_decision.json").exists()
 
 
-def test_raw_preparation_action_is_idempotent(tmp_path):
+def test_supervisor_remains_first_decision_for_explicit_path(tmp_path):
     root = tmp_path / "BrEaST"
     root.mkdir()
     (root / "image.png").write_bytes(b"pixels")
     context = {"run_directory": str(tmp_path / "run"), "user_requirement": f"Prepare {root}"}
 
-    action = raw_preparation_action(context)
-    assert action["tool"] == "prepare_data"
-    assert action["arguments"] == {"dataset_id": "breast", "mode": "reuse_or_prepare"}
-
-    context["child_states"] = {"breast": {"preparation": str(tmp_path / "state.json")}}
-    assert raw_preparation_action(context) is None
+    assert automatic_supervisor_action(context) is None
+    assert {"ask_user", "prepare_data"} <= available_stages(context)
+    assert "DataProcessingAgent" in SUPERVISOR_INSTRUCTIONS
+    assert "Do not ask" in SUPERVISOR_INSTRUCTIONS
 
 
-def test_raw_preparation_action_asks_only_for_unusable_path(tmp_path):
+def test_source_discovery_still_reports_unusable_path(tmp_path):
     root = tmp_path / "BrEaST"
     root.mkdir()
-    context = {"run_directory": str(tmp_path / "run"), "user_requirement": f"Prepare {root}"}
 
-    action = raw_preparation_action(context)
-    assert action["tool"] == "ask_user"
-    assert "empty" in action["arguments"]["question"]
+    error = source_discovery.explicit_source_error(f"Prepare {root}")
+    assert error is not None
+    assert "empty" in error
