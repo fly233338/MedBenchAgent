@@ -77,7 +77,10 @@ class ResolverSpec(BaseModel):
     inputs: list[EvidenceSelector] = Field(min_length=1)
     steps: list[ResolverStep] = Field(min_length=1)
     output_spec: OutputSpec
-    result_step: str = Field(min_length=1)
+    result_step: str = Field(
+        min_length=1,
+        description="ID of the result step, using positional names step_0, step_1, step_2, ...",
+    )
 
     @model_validator(mode="after")
     def compile(self):
@@ -105,7 +108,11 @@ class ResolverSpec(BaseModel):
                 raise ValueError("Reference relation must name a model input role")
             seen.add(f"step_{index}")
         if self.result_step not in seen:
-            raise ValueError("Unknown result step")
+            available = ", ".join(sorted(seen))
+            raise ValueError(
+                f"Unknown result step {self.result_step!r}; "
+                f"result_step must be one of: {available}"
+            )
         return self
 
     @classmethod

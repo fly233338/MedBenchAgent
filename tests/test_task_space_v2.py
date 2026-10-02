@@ -1,3 +1,5 @@
+import pytest
+
 from medbenchagent.planning.node_builder import build_task_nodes
 from medbenchagent.planning.resolver import ResolverSpec, resolve
 from medbenchagent.planning.task_space import AxisAnalysis, AxisAssessment, EvidenceBasis, OutputSpec, TaskParadigm
@@ -96,6 +98,16 @@ def test_resolver_rejects_unnamed_or_relation_inputs():
             assert "explicit asset/text/value/region names" in str(exc)
         else:
             raise AssertionError("invalid Resolver input was accepted")
+
+
+def test_resolver_reports_positional_result_step_ids():
+    with pytest.raises(ValueError, match=r"result_step must be one of: step_0"):
+        ResolverSpec(
+            inputs=[{"role": "image", "name": "image", "evidence_type": "asset"}],
+            steps=[{"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}}],
+            output_spec=OutputSpec.TEXT,
+            result_step="read",
+        )
 
 
 def test_task_paradigm_rejects_incompatible_output():
