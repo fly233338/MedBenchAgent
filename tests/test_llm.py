@@ -87,6 +87,15 @@ def test_validation_failure_records_phase_schema_and_output(monkeypatch):
     assert diagnostics[0]["model_output"] == '{"kind":"wrong"}'
 
 
+def test_validation_output_excerpt_preserves_head_and_tail():
+    value = "a" * 3000
+    excerpt = llm._validation_output_excerpt(value)
+    assert len(excerpt) <= llm._VALIDATION_OUTPUT_LIMIT + 40
+    assert excerpt.startswith("a" * 1600)
+    assert excerpt.endswith("a" * 800)
+    assert "chars truncated" in excerpt
+
+
 def test_validated_json_streams_single_successful_call(monkeypatch):
     requests = []
 

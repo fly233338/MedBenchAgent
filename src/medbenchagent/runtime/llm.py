@@ -17,6 +17,17 @@ from medbenchagent.settings import get_llm_api_key, get_settings
 
 _CLIENTS: dict[tuple, OpenAI] = {}
 _CLIENT_LOCK = Lock()
+_VALIDATION_OUTPUT_LIMIT = 2400
+
+
+def _validation_output_excerpt(value: str) -> str:
+    """Keep validation events useful without storing full model responses."""
+    if len(value) <= _VALIDATION_OUTPUT_LIMIT:
+        return value
+    head = 1600
+    tail = _VALIDATION_OUTPUT_LIMIT - head
+    omitted = len(value) - head - tail
+    return f"{value[:head]}\n...[{omitted} chars truncated]...\n{value[-tail:]}"
 
 
 class ModelUnavailable(RuntimeError):
@@ -139,7 +150,10 @@ def complete_validated_json(
                 feedback += axis_hint
                 diagnostic.append(axis_hint.strip())
             feedback = feedback[:600]
-            record_llm_validation_error(errors=diagnostic, model_output=str(raw)[:6000])
+            record_llm_validation_error(
+                errors=diagnostic,
+                model_output=_validation_output_excerpt(str(raw)),
+            )
             record_llm_call(status="failure", started=started, error_type=phase)
             if attempt == 2 or (raw, feedback) == previous:
                 raise StructuredOutputError(f"LLM structured response failed validation: {feedback}") from exc
