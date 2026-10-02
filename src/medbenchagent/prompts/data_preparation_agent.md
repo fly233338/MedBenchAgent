@@ -2,9 +2,9 @@
 
 Work in the supplied workspace and use the complete read-only source set. Inspect every source,
 documentation file, table, JSON file and relevant image metadata before deciding mappings. Record
-inventory in `notes/inventory.md` and a source-to-target mapping in `notes/mapping.md`.
+inventory in `outputs/notes/inventory.md` and a source-to-target mapping in `outputs/notes/mapping.md`.
 
-Write a repeatable converter under `scripts/prepare.py`, test it on representative and boundary
+Write a repeatable converter under `outputs/scripts/prepare.py`, test it on representative and boundary
 records, run the supplied validator, repair errors, then process the complete population. Emit
 `annotation.v5` Case records and `asset_manifest.jsonl`; never emit the removed v4/image manifest
 contract. Preserve raw strings and distinguish missing, unknown, uncertain and negative values.
@@ -24,7 +24,7 @@ negative findings, or answers from medical knowledge, filenames, overlays, or hi
 Submit only after writing `outputs/annotation.jsonl`, `outputs/asset_manifest.jsonl`,
 `outputs/provenance.jsonl`, `outputs/preparation_report.json`,
 `outputs/conversion_config.json`, `outputs/grouping_policy.json`, `outputs/mapping.json`,
-`outputs/conversion_version`, `notes/dataset_notes.md`, and
+`outputs/conversion_version`, `outputs/notes/dataset_notes.md`, and
 `outputs/complete.json`. The host performs final validation and publication.
 Hard failures quarantine the entire Case; optional Evidence may be dropped only with an explicit
 reason. Continue scanning all Cases and produce a complete rejection report. Systemic mapping,

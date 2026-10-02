@@ -21,9 +21,18 @@ def build_data_preparation_task(context: dict, workspace: Path, *, feedback: str
     prompt = (Path(__file__).parents[1] / "prompts" / "data_preparation_agent.md").read_text(encoding="utf-8")
     task_context = {"sources": sources, "source_manifests": context.get("source_manifests", {}),
                     "schema": str(Path(__file__).parents[1] / "schemas" / "annotation.v5.schema.json"),
-                    "workspace": str(workspace), "validator": "medbenchagent.data.v5_validation",
+                    "workspace": str(workspace),
+                    "candidate_output_root": str(workspace / "outputs"),
+                    "prepared_bundle_root": str(Path(context["bundle_root"]).resolve()),
+                    "validator": "medbenchagent.data.v5_validation",
                     "feedback": feedback}
     objective = prompt + "\n\nFrozen task context:\n" + json.dumps(task_context, ensure_ascii=False)
+    objective += (
+        "\n\nOutput boundary: the original source is read-only. Do not ask where to write the processed dataset. "
+        "Write every candidate file only below ./outputs (including ./outputs/scripts and ./outputs/notes). "
+        "The host will validate the candidate and publish it to the prepared bundle path recorded as "
+        "prepared_bundle_root; the worker must never write to that path directly."
+    )
     if feedback:
         objective += "\n\nValidator feedback to repair:\n" + feedback[:12000]
     conversation_id = session.get("conversation_id") or str(uuid.uuid5(uuid.NAMESPACE_URL,

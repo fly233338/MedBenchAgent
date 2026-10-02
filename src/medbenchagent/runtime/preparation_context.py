@@ -26,6 +26,13 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
         raise ValueError("Provide nonempty sources with unique IDs within this dataset")
     runtime = context.get("execution_runtime") or select_backend(get_settings().data_processing)
     marker = Path(context["operation_directory"]) / "preparation.json"
+    def configured_bundle() -> Path:
+        return get_settings().paths.prepared_datasets_root / dataset_id / version_directory_name(uuid4())
+
+    def overlaps_source(path: Path) -> bool:
+        resolved = path.resolve()
+        return any(resolved.is_relative_to(Path(source.root).resolve()) for source in sources)
+
     if marker.is_file():
         saved = json.loads(marker.read_text(encoding="utf-8"))
         if saved["sources"] != [source.model_dump() for source in sources] or saved["dataset_id"] != dataset_id:
@@ -33,8 +40,25 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
         bundle = Path(saved["bundle"])
         if saved["runtime"] != runtime:
             raise ValueError("Frozen execution runtime changed; start a new run")
+        # A failed older attempt may have persisted an output path beneath the
+        # source before the guard ran. Rebind that marker to the configured
+        # prepared root so clarification/retry cannot repeat the stale path.
+        if overlaps_source(bundle):
+            bundle = configured_bundle()
+            if overlaps_source(bundle):
+                raise ValueError(
+                    "paths.prepared_datasets_root must be outside every configured source root; "
+                    f"configured output {bundle} overlaps source data"
+                )
+            atomic_write_json(marker, {"sources": [source.model_dump() for source in sources],
+                                       "dataset_id": dataset_id, "bundle": str(bundle), "runtime": runtime})
     else:
-        bundle = get_settings().paths.prepared_datasets_root / dataset_id / version_directory_name(uuid4())
+        bundle = configured_bundle()
+        if overlaps_source(bundle):
+            raise ValueError(
+                "paths.prepared_datasets_root must be outside every configured source root; "
+                f"configured output {bundle} overlaps source data"
+            )
         atomic_write_json(marker, {"sources": [source.model_dump() for source in sources],
                                    "dataset_id": dataset_id, "bundle": str(bundle), "runtime": runtime})
     runtime_path = bundle / "execution_runtime.json"
@@ -49,7 +73,7 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
         atomic_write_json(runtime_path, data_runtime)
     for source in sources:
         if bundle.resolve().is_relative_to(Path(source.root).resolve()):
-            raise ValueError("Run output must not be beneath a source directory")
+            raise ValueError("Configured prepared output overlaps a source directory")
         inventory_source(source, bundle / "source_manifests" / source.id)
     prepared = dict(context, sources=[source.model_dump() for source in sources], dataset_id=dataset_id,
                     dataset_scope=dataset_id, agent_role="DataProcessingAgent", execution_runtime=runtime,
