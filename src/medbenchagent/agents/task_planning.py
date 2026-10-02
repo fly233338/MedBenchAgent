@@ -107,7 +107,17 @@ def _read(path: str | Path) -> dict[str, Any]:
 
 
 def _access(context: dict[str, Any]) -> dict[str, Any]:
-    return context.get("dataset_access_manifest", {})
+    access = context.get("dataset_access_manifest")
+    if access:
+        return access
+    if context.get("bir_path") and context.get("dataset_scope"):
+        store = BIRStore(context["bir_path"])
+        relative = f"datasets/{context['dataset_scope']}/access.json"
+        path = store.root / Path(*relative.split("/"))
+        if path.is_file():
+            value = store.load(relative)
+            return value.get("source_access", value)
+    return {}
 
 
 def _bir(context: dict[str, Any]) -> BIRStore | None:

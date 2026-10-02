@@ -180,6 +180,7 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
             receipt = {
                 "schema_version": "dataset-access.v2",
                 "source_schema_version": access.get("schema_version", "annotation.v5"),
+                "source_access": access,
                 "dataset_id": identifier,
                 "revision": str(access.get("revision", "1")),
                 "cases_path": access.get("cases_path", entry["cases_path"]),

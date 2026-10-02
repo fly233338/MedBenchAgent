@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -24,3 +26,4 @@ class DatasetAccessReceipt(BaseModel):
     dataset_card_path: str | None = None
     dataset_card_digest: str | None = None
     source_schema_version: str | None = None
+    source_access: dict[str, Any] | None = None
