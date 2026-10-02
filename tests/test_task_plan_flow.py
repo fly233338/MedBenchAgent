@@ -53,6 +53,20 @@ def test_axis_calls_are_strictly_ordered(tmp_path):
     assert result["updates"]["task_space_plan"]["pending_node_ids"]
 
 
+def test_axis_evidence_exposes_catalog_counts_and_semantics(tmp_path):
+    context = _context(tmp_path)
+    plan = task_planning._load_plan(context)
+    plan.dataset_facts["evidence_catalog"] = {
+        "report": {"name": "report", "cases": 1, "types": {"text": 1}, "units": {}}
+    }
+    task_planning._write_derived_artifacts(context, plan)
+    result = task_planning.read_axis_evidence(context, axis="input_structure")
+    payload = __import__("json").loads(result["summary"])
+    assert payload["evidence_catalog"][0]["cases"] == 1
+    assert payload["evidence_catalog"][0]["types"] == {"text": 1}
+    assert payload["catalog_semantics"]["cases"]
+
+
 def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeypatch):
     context = _context(tmp_path)
     for axis, values in (("input_structure", ["single-image"]), ("operation", ["describe"]), ("clinical_target", ["finding"])):

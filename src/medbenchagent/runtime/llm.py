@@ -126,6 +126,12 @@ def complete_validated_json(
             else:
                 feedback = str(exc)
             feedback = feedback[:600]
+            if "assessments" in feedback or "dimension" in feedback or "evidence_refs" in feedback:
+                feedback += (
+                    " Axis v2 requires each assessment to contain only value, supported, "
+                    "evidence_basis (objects with reference and detail), and reason; "
+                    "cover every allowed value exactly once."
+                )
             record_llm_call(status="failure", started=started, error_type="validation_error")
             if attempt == 2 or (raw, feedback) == previous:
                 raise StructuredOutputError(f"LLM structured response failed validation: {feedback}") from exc

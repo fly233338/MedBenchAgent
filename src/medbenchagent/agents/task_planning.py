@@ -34,8 +34,14 @@ from medbenchagent.runtime.tool_contracts import NoArguments
 
 
 class AxisArguments(NoArguments):
-    axis: TaskAxis
-    assessments: list[AxisValueDecision] = Field(min_length=1)
+    axis: TaskAxis = Field(description="Axis being assessed; use the next axis returned by planning context.")
+    assessments: list[AxisValueDecision] = Field(
+        min_length=1,
+        description=(
+            "One assessment for every allowed value, using only value, supported, "
+            "evidence_basis[{reference,detail}], and reason."
+        ),
+    )
 
 
 class AxisAnalysisArguments(NoArguments):
@@ -473,6 +479,7 @@ def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=
 
 
 def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, Any]:
+    axis = TaskAxis(axis)
     plan = _load_plan(context)
     facts = _facts(context, plan)
     evidence = {
@@ -490,6 +497,11 @@ def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, 
         },
         "evidence_catalog": list(facts.get("evidence_catalog", {}).values())
         if isinstance(facts.get("evidence_catalog"), dict) else facts.get("evidence_catalog", []),
+        "catalog_semantics": {
+            "cases": "number of Cases containing an evidence name",
+            "types": "counts of evidence entries by type for that name",
+            "units": "counts of observed units for that name",
+        },
     }
     axis_dir = Path(context["operation_directory"]) / "axis_evidence"
     path = axis_dir / f"{axis.value}.json"
@@ -712,7 +724,7 @@ def compile_task_planning_agent(*, checkpointer=None):
     )
     return compile_agent(
         "TaskPlanningAgent",
-        "Build one resumable annotation.v5 Task Plan using six levels: Task Axis, Axis Value, Task Scenario, Leaf Task, Task Paradigm and Benchmark Item. Axis definitions are fixed; assess every registered value exactly once, in order input_structure, operation, clinical_target. Code constructs Scenarios and assigns Capability Category from Operation using the registered six-category mapping. In the Leaves phase inspect one current Scenario, propose concrete evidence-backed Leaf Tasks with a valid Resolver and Task Paradigm, then review that Scenario. Never invent Axis Values, use reference evidence as model input, or expose chain-of-thought. Read only the evidence slice required by the current phase.",
+        "Build one resumable annotation.v5 Task Plan using six levels: Task Axis, Axis Value, Task Scenario, Leaf Task, Task Paradigm and Benchmark Item. Axis definitions are fixed; assess every registered value exactly once, in order input_structure, operation, clinical_target. Before each axis decision, call read_axis_evidence and use its allowed_values and evidence_catalog. Catalog cases means Case coverage, types means per-name evidence-type counts, and units means observed unit counts; use these structural facts as evidence without turning them into medical conclusions. For analyze_axis, use only the current v2 contract: each assessment has value, supported, evidence_basis (a non-empty list of objects with reference and detail), and reason. Cover every allowed value exactly once. Never emit dimension, finding, evidence_refs, or any other fields. Code constructs Scenarios and assigns Capability Category from Operation using the registered six-category mapping. In the Leaves phase inspect one current Scenario, propose concrete evidence-backed Leaf Tasks with a valid Resolver and Task Paradigm, then review that Scenario. Never invent Axis Values, use reference evidence as model input, or expose chain-of-thought. Read only the evidence slice required by the current phase. Example analyze_axis arguments: {\"axis\":\"input_structure\",\"assessments\":[{\"value\":\"single-image\",\"supported\":true,\"evidence_basis\":[{\"reference\":\"evidence_catalog:ultrasound_image\",\"detail\":\"256 Cases; types.asset=256\"}],\"reason\":\"A primary image is present for every Case.\"}]} (include all allowed values).",
         {tool.__name__: tool for tool in tools},
         lambda c: {
             "task_plan": str(_plan_path(c)),
