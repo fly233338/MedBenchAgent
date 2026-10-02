@@ -25,9 +25,9 @@ def test_event_summary_excerpt_preserves_short_and_long_values():
 
 def test_tool_action_schema_describes_outer_reason_contract():
     properties = ToolAction.model_json_schema()["properties"]
-    assert "registered tool" in properties["tool"]["description"]
-    assert "selected tool" in properties["arguments"]["description"]
-    assert "outer ToolAction" in properties["reason"]["description"]
+    assert "registered tool" in properties["tool"]["description"].lower()
+    assert "selected tool" in properties["arguments"]["description"].lower()
+    assert "outer toolaction" in properties["reason"]["description"].lower()
 
 
 class ProfileArguments(NoArguments):
