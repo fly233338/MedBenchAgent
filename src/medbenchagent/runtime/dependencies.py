@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.runtime.construction import record_event
 
 CONTRACT_VERSION = "agent-runtime.v23"
 
@@ -186,8 +187,23 @@ def verify_resume(context):
     if not path.is_file():
         raise ValueError("This checkpoint uses an obsolete runtime; start a new run")
     saved = json.loads(path.read_text(encoding="utf-8"))
-    if saved != {"contract": CONTRACT_VERSION, "code": code_identity()}:
+    if saved.get("contract") != CONTRACT_VERSION:
         raise ValueError("Code or runtime contract changed; start a new run")
+    current_code = code_identity()
+    saved_code = saved.get("code_at_start", saved.get("code", {}))
+    code_changed = saved_code != current_code
+    event_path = context.get("construction_events_path")
+    if event_path:
+        record_event(
+            event_path,
+            "resume_compatibility",
+            run_id=context.get("run_id"),
+            code_changed=code_changed,
+            start_commit=saved_code.get("commit") if isinstance(saved_code, dict) else None,
+            current_commit=current_code.get("commit"),
+            source_diff=bool(current_code.get("source_diff")),
+            contract=CONTRACT_VERSION,
+        )
     frozen = json.loads(Path(context["effective_config_path"]).read_text(encoding="utf-8"))
     if frozen.get("execution_runtime") != context.get("execution_runtime"):
         raise ValueError("Frozen execution runtime changed; start a new run")
@@ -250,5 +266,5 @@ def initialize_dependencies(context, settings):
     )
     atomic_write_json(
         Path(context["run_directory"]) / "control" / "contract.json",
-        {"contract": CONTRACT_VERSION, "code": code_identity()},
+        {"contract": CONTRACT_VERSION, "code_at_start": code_identity()},
     )

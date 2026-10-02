@@ -47,7 +47,7 @@ max_top_value_chars = 200
 
 [harness]
 max_calls = 60
-max_seconds = 3600
+max_seconds = 7200
 max_failures = 3
 max_reworks = 3
 
