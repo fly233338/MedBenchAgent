@@ -676,6 +676,8 @@ def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = 
     context_value["leaf_task_ids"] = plan.scenarios[scenario_id].leaf_task_ids
     context_value["plan_phase"] = plan.phase
     context_value["question_template_count"] = _configured_template_count(context)
+    context_value["evidence_source"] = "planning_catalog"
+    context_value["available_followup_tool"] = "read_evidence_catalog"
     return result("success", json.dumps(context_value, ensure_ascii=False))
 
 
@@ -968,6 +970,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         },
         available_tools=_available_tools,
         initialize_context=_initialize_planning_context,
+        include_inspection_tools=False,
         checkpointer=checkpointer,
     )
 

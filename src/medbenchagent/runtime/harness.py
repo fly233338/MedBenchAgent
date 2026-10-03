@@ -48,6 +48,7 @@ class AgentState(TypedDict, total=False):
     failure_history: list[str]
     last_failure: str
     attempts: dict[str, int]
+    failed_actions: dict[str, int]
     observations: list[dict[str, Any]]
 
 
@@ -82,12 +83,14 @@ def compile_agent(
     read_tools: frozenset[str] = frozenset(),
     automatic_action: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     checkpointer: Any = None,
+    include_inspection_tools: bool = True,
 ):
     """Run registered tools serially, retaining private state and completed operations."""
-    from medbenchagent.runtime.inspection import list_evidence, read_evidence, EvidencePage, EvidenceRead
-    tools = {**tools, "list_evidence": list_evidence, "read_evidence": read_evidence}
-    args_schemas = {**(args_schemas or {}), "list_evidence": EvidencePage, "read_evidence": EvidenceRead}
-    read_tools = read_tools | {"list_evidence", "read_evidence"}
+    if include_inspection_tools:
+        from medbenchagent.runtime.inspection import list_evidence, read_evidence, EvidencePage, EvidenceRead
+        tools = {**tools, "list_evidence": list_evidence, "read_evidence": read_evidence}
+        args_schemas = {**(args_schemas or {}), "list_evidence": EvidencePage, "read_evidence": EvidenceRead}
+        read_tools = read_tools | {"list_evidence", "read_evidence"}
     schemas = {key: NoArguments for key in (*tools, "finish")}
     schemas.update(args_schemas or {})
     schemas["ask_user"] = AskUserArguments
@@ -119,6 +122,7 @@ def compile_agent(
             "failure_history": [],
             "last_failure": "",
             "attempts": {},
+            "failed_actions": {},
             "observations": [],
             "result": result("running", "Ready"),
         }
@@ -145,7 +149,7 @@ def compile_agent(
             if last_error:
                 summary += f". Last error: {last_error}"
             return {"result": result("blocked", summary)}
-        enabled = available_tools(context) | {"list_evidence", "read_evidence"} if available_tools is not None else set(catalog)
+        enabled = available_tools(context) if available_tools is not None else set(catalog)
         automatic = automatic_action(context) if automatic_action else None
         if automatic and automatic["tool"] in enabled:
             return {"action": automatic}
@@ -192,7 +196,7 @@ def compile_agent(
                     "Recent observations are summaries, not your full memory. Recover current evidence through "
                     "For planning evidence such as evidence_catalog:<name>, use the planning tools directly; "
                     "list_evidence/read_evidence are only for runtime inspection references. Before repeating inspections, "
-                    "use list_evidence/read_evidence. For a correctable error, change the "
+                    "use list_evidence/read_evidence when those tools are available. For a correctable error, change the "
                     "relevant arguments or obtain the missing evidence; preserve unrelated completed work. "
                     "Ask a concrete question naming the missing field/value, its context and why it matters. "
                     "Use finish only when all required outputs exist. Tools execute serially.",
@@ -237,7 +241,14 @@ def compile_agent(
         tool_name, arguments = action["tool"], action["arguments"]
         step = state["step"] + 1
         attempts = dict(state.get("attempts", {}))
+        failed_actions = dict(state.get("failed_actions", {}))
         identity = json.dumps([tool_name, arguments], sort_keys=True, ensure_ascii=False)
+        if failed_actions.get(identity, 0):
+            return {
+                "result": result("blocked", "Repeated failed action rejected; choose a different available tool or arguments"),
+                "step": step,
+                "failed_actions": failed_actions,
+            }
         if tool_name not in read_tools:
             attempts[identity] = attempts.get(identity, 0) + 1
         if attempts.get(identity, 0) > context.get("limits", {}).get("max_reworks", 3) + 1:
@@ -270,9 +281,11 @@ def compile_agent(
             outcome = result("failed", "Invalid tool arguments")
             outcome["errors"] = parameter_error
         else:
-            enabled = available_tools(context) | {"list_evidence", "read_evidence"} if available_tools is not None else None
+            enabled = available_tools(context) if available_tools is not None else None
             pending = context.get("global_issue")
-            allowed = {"ask_user", "resolve_clarification", "list_evidence", "read_evidence"}
+            allowed = {"ask_user", "resolve_clarification"}
+            if include_inspection_tools:
+                allowed.update({"list_evidence", "read_evidence"})
             if pending and pending.get("purpose") == "dataset_selection" and pending.get("status") == "answered":
                 allowed.update({"prepare_data", "discover_datasets", "select_datasets"})
             if enabled is not None and tool_name not in enabled:
@@ -443,6 +456,8 @@ def compile_agent(
             "result": outcome,
             "step": step,
             "attempts": attempts,
+            "failed_actions": ({**failed_actions, identity: failed_actions.get(identity, 0) + 1}
+                               if outcome["status"] == "failed" else failed_actions),
             "observations": observations,
             "elapsed": state["elapsed"] + time.monotonic() - started,
             "failures": state["failures"] + 1 if outcome["status"] == "failed" else 0,
