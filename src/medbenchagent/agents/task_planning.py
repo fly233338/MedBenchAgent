@@ -583,10 +583,7 @@ def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str 
             "answer_options": operation["answer_options"],
         }
         screening = complete_json(
-            "You are a fast Scenario Screening Agent. Return only JSON with decision keep or exclude and a concise reason. "
-            "Keep finite categorical annotations as recognize/Closed VQA; do not treat a categorical text field as open description. "
-            "Tumor masks primarily support finding localization. Quantify requires real numeric measurement evidence. "
-            "Do not design Leaf Tasks or options.",
+            registry.prompt("scenario_screening") if registry else "Return only JSON with decision keep or exclude and a concise reason.",
             json.dumps(payload, ensure_ascii=False),
             ScenarioScreeningResult,
         )
@@ -1172,6 +1169,8 @@ def _planning_instructions(context: dict[str, Any]) -> str:
     )
     if plan.phase == "screening":
         runtime += "\nWhen phase=screening, call screen_scenario once for the current Scenario; it performs a separate short screening model call."
+    if plan.phase == "leaves" and store:
+        base += "\n\n" + store.registry().prompt("leaf_task_design")
     return base + runtime
 
 def compile_task_planning_agent(*, checkpointer=None):
