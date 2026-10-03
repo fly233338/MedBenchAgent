@@ -487,10 +487,36 @@ def compile_benchmark_graph(*, checkpointer=None):
             child.update(correction["updates"])
         output = planning.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "planning", output)
+        draft = output.get("context", {}).get("task_plan", {})
+        progress = output.get("context", {})
+        if (
+            output["result"]["status"] in {"success", "complete"}
+            and draft.get("phase") == "leaves"
+            and not draft.get("current_scenario_id")
+            and draft.get("pending_scenario_ids")
+            and progress.get("completed_scenario_id")
+        ):
+            next_id = progress.get("next_pending_scenario_id") or draft["pending_scenario_ids"][0]
+            outcome["status"] = "success"
+            outcome["summary"] = (
+                f"Task Planning progress saved; Scenario {progress['completed_scenario_id']} completed. "
+                f"Continuing with pending Scenario {next_id}."
+            )
+            outcome["updates"].update(
+                planning_incomplete=True,
+                completed_scenario_id=progress["completed_scenario_id"],
+                next_pending_scenario_id=next_id,
+                milestone={
+                    "kind": "scenario_progress",
+                    "scenario_id": progress["completed_scenario_id"],
+                    "next_scenario_id": next_id,
+                },
+            )
+        elif output["result"]["status"] == "complete":
+            outcome["summary"] = "Task Plan completed and published."
         # A blocked child is resumable only when the persisted draft actually
         # advanced. Never turn a contract failure with no state mutation into a
         # success, otherwise Supervisor will repeatedly delegate the same work.
-        draft = output.get("context", {}).get("task_plan", {})
         previous = context.get("child_states", {}).get(dataset_id, {}).get("planning")
         previous_draft = {}
         if previous and Path(previous).is_file():

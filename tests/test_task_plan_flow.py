@@ -123,6 +123,8 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
         task_planning.review_current_node(context, review={"node_id": node_id, "checked_leaf_ids": [], "status": "approved"})
     reviewed = task_planning.review_current_scenario(context, review={"scenario_id": node_id, "checked_leaf_task_ids": ["leaf-1"], "status": "approved"})
     context.update(reviewed["updates"])
+    assert reviewed["milestone"]["kind"] == "scenario_complete"
+    assert reviewed["updates"]["planning_incomplete"] is False
     assigned = task_planning.classify_task_nodes(context, assignments=[{"node_id": node_id, "capability_dimension_ids": ["report_generation"]}])
     context.update(assigned["updates"])
     monkeypatch.setattr(task_planning, "require", lambda *_args: None)

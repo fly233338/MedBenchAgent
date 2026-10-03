@@ -905,10 +905,19 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview) 
         ]
     plan.revision += 1
     updates = _write_artifacts(context, plan)
+    next_pending = plan.pending_scenario_ids[0] if plan.pending_scenario_ids else None
     return result(
         "success",
         f"Scenario {review.scenario_id} review saved",
-        milestone={"kind": "scenario_review", "scenario_id": review.scenario_id, "status": review.status},
+        milestone={
+            "kind": "scenario_progress" if next_pending else "scenario_complete",
+            "scenario_id": review.scenario_id,
+            "next_scenario_id": next_pending,
+            "status": review.status,
+        },
+        planning_incomplete=bool(next_pending),
+        completed_scenario_id=review.scenario_id,
+        next_pending_scenario_id=next_pending,
         **updates,
     )
 
