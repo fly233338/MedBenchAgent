@@ -31,6 +31,7 @@ from medbenchagent.planning.task_space import (
 )
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.harness import compile_agent, result
+from medbenchagent.runtime.llm import complete_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.tool_contracts import NoArguments
 
@@ -61,6 +62,12 @@ class ScenarioArguments(NoArguments):
 
 class ScenarioScreeningArguments(NoArguments):
     scenario_id: str = Field(min_length=1)
+    decision: Literal["keep", "exclude"] | None = None
+    reason: str | None = None
+
+
+class ScenarioScreeningResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
     decision: Literal["keep", "exclude"]
     reason: str = Field(min_length=1)
 
@@ -554,13 +561,36 @@ def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanSt
     return plan
 
 
-def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str, reason: str) -> dict[str, Any]:
+def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str | None = None, reason: str | None = None) -> dict[str, Any]:
     plan = _load_plan(context)
     if plan.phase != "screening":
         raise ValueError("Scenario screening is not available in the current phase")
     if scenario_id not in plan.screening_pending_scenario_ids:
         raise ValueError("Scenario is not pending screening")
-    if decision not in {"keep", "exclude"} or not reason.strip():
+    if decision is None and reason is None:
+        registry = _registry(context)
+        scenario = plan.scenarios[scenario_id]
+        operation = registry.operation_definition(scenario.operation) if registry else {
+            "description": scenario.operation, "answer_options": "forbidden"
+        }
+        facts = _facts(context, plan)
+        catalog = list(facts.get("evidence_catalog", {}).values())
+        payload = {
+            "scenario": scenario.model_dump(mode="json"),
+            "evidence_catalog": catalog,
+            "operation_description": operation["description"],
+            "answer_options": operation["answer_options"],
+        }
+        screening = complete_json(
+            "You are a fast Scenario Screening Agent. Return only JSON with decision keep or exclude and a concise reason. "
+            "Keep finite categorical annotations as recognize/Closed VQA; do not treat a categorical text field as open description. "
+            "Tumor masks primarily support finding localization. Quantify requires real numeric measurement evidence. "
+            "Do not design Leaf Tasks or options.",
+            json.dumps(payload, ensure_ascii=False),
+            ScenarioScreeningResult,
+        )
+        decision, reason = screening["decision"], screening["reason"]
+    if decision not in {"keep", "exclude"} or not reason or not reason.strip():
         raise ValueError("Scenario screening requires decision keep/exclude and a non-empty reason")
     scenario = plan.scenarios[scenario_id]
     remaining = [item for item in plan.screening_pending_scenario_ids if item != scenario_id]
@@ -1116,13 +1146,7 @@ def _planning_instructions(context: dict[str, Any]) -> str:
         "Axis completion is persisted only by analyze_axis."
     )
     if plan.phase == "screening":
-        runtime += (
-            "\nWhen phase=screening, inspect only the current Scenario and its bounded Evidence Catalog "
-            "and call screen_scenario exactly once. Return only keep or exclude with a concise reason. "
-            "Finite categorical annotations such as Diagnosis, BIRADS, Shape and Echogenicity favor "
-            "recognize/Closed VQA; a single categorical text field does not justify describe; tumor masks "
-            "support finding localization; quantify requires real numeric measurement evidence."
-        )
+        runtime += "\nWhen phase=screening, call screen_scenario once for the current Scenario; it performs a separate short screening model call."
     return base + runtime
 
 def compile_task_planning_agent(*, checkpointer=None):

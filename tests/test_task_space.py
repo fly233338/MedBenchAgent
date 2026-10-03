@@ -157,6 +157,10 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
     context.update(task_planning.analyze_axes(context, analysis=axis)["updates"])
     context.update(task_planning.build_nodes(context)["updates"])
     node_id = next(key for key, value in context["task_nodes"].items() if not value["exclusion_reason"])
+    screened = task_planning.screen_scenario(
+        context, scenario_id=node_id, decision="keep", reason="The report scenario is suitable."
+    )
+    context.update(screened["updates"])
 
     class FakeQuery:
         def __init__(self, _access): pass
