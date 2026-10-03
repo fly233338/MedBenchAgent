@@ -44,9 +44,13 @@ Assess all allowed values for the current Axis. Use the Evidence Catalog as comp
 
 Use only Axis decisions supported by bounded evidence. Code owns Scenario combinations, Registry constraints, capability categories, and feasible Case counts. Do not invent Scenario values.
 
+The model decides Axis Values only. The model does not construct Task Scenarios. Code creates the cross-product of supported Axis Values and applies Registry constraints. The model works on one active executable Scenario at a time.
+
 ## Leaf Task Design
 
 For the active Scenario, create a complete Leaf Task with explicit input evidence selectors, target, resolver, output specification, task paradigm, capability category, and question templates. Diagnosis and report text may be resolver references, but must not be model-visible inputs. Resolver inputs require explicit evidence names and unique roles; result_step uses positional step IDs.
+
+Leaf input is the model-visible input. Resolver.inputs must be exactly identical to Leaf.input and must contain only model-visible evidence selectors. Reference evidence must not be added to Leaf.input or Resolver.inputs; reference evidence belongs only in resolver steps such as reference_text. For image-only tasks, an annotation such as BIRADS or Diagnosis may be used by the resolver as reference evidence, but it must never be a model input.
 
 ## Question Template Requirements
 

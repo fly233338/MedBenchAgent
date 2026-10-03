@@ -35,7 +35,11 @@ def validate_candidate_leaf(
     if registry is not None:
         validate_resolver_policy(spec, registry.resolver_policy)
     if leaf.input != spec.inputs or leaf.output_spec != spec.output_spec:
-        raise ValueError("Leaf Task input and OutputSpec must exactly match Resolver")
+        raise ValueError(
+            "Leaf Task input and OutputSpec must exactly match Resolver. "
+            "Resolver.inputs must equal Leaf.input; keep reference-only evidence "
+            "only in resolver steps such as reference_text."
+        )
     contracts = (resolver_context or {}).get("registry").task_contracts if (resolver_context or {}).get("registry") else None
     if contracts:
         allowed = set(contracts.get("paradigm_output_specs", {}).get(leaf.task_paradigm.value, []))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -279,9 +280,34 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
     plan_value = plan.model_dump(mode="json")
     axis_path = directory / "axis_decisions.json"
     scenarios_path = directory / "task_scenarios.json"
+    exclusions_path = directory / "scenario_exclusions.json"
     leaves_path = directory / "leaf_tasks.json"
     axis_value = {key: [item.model_dump(mode="json") for item in value] for key, value in plan.axis_decisions.items()}
-    scenarios_value = {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()}
+    scenarios_value = {
+        key: {
+            "scenario_id": value.scenario_id,
+            "input_structure": value.input_structure,
+            "operation": value.operation,
+            "clinical_target": value.clinical_target,
+            "capability_category": value.capability_category.value,
+            "feasible_case_count": value.feasible_case_count,
+            "status": value.status,
+            "leaf_task_ids": value.leaf_task_ids,
+        }
+        for key, value in plan.scenarios.items()
+        if not value.exclusion_reason
+    }
+    exclusions_value = {
+        key: {
+            "scenario_id": value.scenario_id,
+            "input_structure": value.input_structure,
+            "operation": value.operation,
+            "clinical_target": value.clinical_target,
+            "reason": value.exclusion_reason,
+        }
+        for key, value in plan.scenarios.items()
+        if value.exclusion_reason
+    }
     leaves_value = {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()}
     reviews_value = {key: value.model_dump(mode="json") for key, value in plan.reviews.items()}
     bir = _bir(context)
@@ -292,6 +318,7 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
             prefix + "task_plan.json": plan_value,
             prefix + "axis_decisions.json": axis_value,
             prefix + "scenarios.json": scenarios_value,
+            prefix + "scenario_exclusions.json": exclusions_value,
             prefix + "leaf_tasks.json": leaves_value,
             prefix + "reviews.json": reviews_value,
         }
@@ -309,6 +336,7 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
         _write_json(plan_path, plan_value)
     _write_json(axis_path, axis_value)
     _write_json(scenarios_path, scenarios_value)
+    _write_json(exclusions_path, exclusions_value)
     _write_json(leaves_path, leaves_value)
     legacy_view = plan.model_dump(mode="json")
     legacy_view.update({
@@ -324,10 +352,11 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
         "task_space_plan": legacy_view,
         "axis_decisions_path": str(axis_path),
         "task_scenarios_path": str(scenarios_path),
+        "scenario_exclusions_path": str(exclusions_path),
         "leaf_tasks_path": str(leaves_path),
         "reviews_path": str((Path(context.get("bir_path")) / "datasets" / context.get("dataset_scope", "dataset") / "planning" / "reviews.json") if context.get("bir_path") else directory / "reviews.json"),
         "task_nodes_path": str(scenarios_path),
-        "task_scenarios": {key: value.model_dump(mode="json") for key, value in plan.scenarios.items()},
+        "task_scenarios": scenarios_value,
         "leaf_tasks": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
         "bir_summary_ref": ({"revision": context.get("bir_revision"), "dataset_id": context.get("dataset_scope"),
                               "task_plan": str(plan_path)} if context.get("bir_path") else None),
@@ -350,7 +379,18 @@ def _assert_derived_artifact_consistency(context: dict[str, Any], plan: TaskPlan
     if not scenarios_path.is_file() or not leaves_path.is_file():
         raise ValueError("Task Plan derived artifacts are missing")
     expected_scenarios = {
-        key: value.model_dump(mode="json") for key, value in plan.scenarios.items()
+        key: {
+            "scenario_id": value.scenario_id,
+            "input_structure": value.input_structure,
+            "operation": value.operation,
+            "clinical_target": value.clinical_target,
+            "capability_category": value.capability_category.value,
+            "feasible_case_count": value.feasible_case_count,
+            "status": value.status,
+            "leaf_task_ids": value.leaf_task_ids,
+        }
+        for key, value in plan.scenarios.items()
+        if not value.exclusion_reason
     }
     expected_leaves = {
         key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()
@@ -691,11 +731,24 @@ def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = 
         _write_artifacts(context, plan)
     from medbenchagent.data.v5_index import V5DatasetQuery
     context_value = V5DatasetQuery(_access(context)).node_context(plan.scenarios[scenario_id])
-    context_value["leaf_task_ids"] = plan.scenarios[scenario_id].leaf_task_ids
+    scenario = plan.scenarios[scenario_id]
+    context_value["scenario"] = {
+        "scenario_id": scenario.scenario_id,
+        "input_structure": scenario.input_structure,
+        "operation": scenario.operation,
+        "clinical_target": scenario.clinical_target,
+        "capability_category": scenario.capability_category.value,
+        "feasible_case_count": scenario.feasible_case_count,
+        "status": scenario.status,
+        "leaf_task_ids": scenario.leaf_task_ids,
+    }
+    context_value["leaf_task_ids"] = scenario.leaf_task_ids
     context_value["plan_phase"] = plan.phase
     context_value["question_template_count"] = _configured_template_count(context)
     context_value["evidence_source"] = "planning_catalog"
     context_value["available_followup_tool"] = "read_evidence_catalog"
+    context_value["planning_evidence"] = context_value.pop("evidence", [])
+    context_value.pop("node", None)
     return result("success", json.dumps(context_value, ensure_ascii=False))
 
 
@@ -732,12 +785,17 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
     else:
         page = query.sample(offset=0, limit=512)
         cases = list(page.get("values", []))
-    eligible = sum(
-        not isinstance(resolve(case, ResolverSpec.parse(parsed.resolver)), NotApplicable)
-        for case in cases
-    )
+    resolution_reasons = Counter()
+    for case in cases:
+        resolved = resolve(case, ResolverSpec.parse(parsed.resolver))
+        if isinstance(resolved, NotApplicable):
+            resolution_reasons[resolved.reason] += 1
+    eligible = len(cases) - sum(resolution_reasons.values())
     if eligible <= 0:
-        raise ValueError("Leaf Task resolver does not resolve any Case")
+        common = ", ".join(f"{reason}={count}" for reason, count in resolution_reasons.most_common())
+        raise ValueError(
+            f"Resolver resolved 0 of {len(cases)} Cases. Common reasons: {common or 'unknown'}"
+        )
     parsed = parsed.model_copy(update={"eligible_count": eligible})
     plan.leaf_tasks[parsed.leaf_id] = parsed
     plan.revision += 1

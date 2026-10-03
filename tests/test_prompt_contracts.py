@@ -22,4 +22,6 @@ def test_task_planning_prompt_covers_visual_semantics_and_template_contract():
     prompt = (ROOT / "config/bir_template/registry/agent_prompts/task_planning.md").read_text(encoding="utf-8")
     for concept in ("Task Axis", "Axis Value", "Task Scenario", "Leaf Task"):
         assert concept in prompt
+    assert "Resolver.inputs must be exactly identical to Leaf.input" in prompt
+    assert "The model does not construct Task Scenarios" in prompt
     assert "discarded_leaf_tasks" in source

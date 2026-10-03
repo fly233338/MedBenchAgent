@@ -56,6 +56,9 @@ def test_axis_calls_are_strictly_ordered(tmp_path):
     assert set(json.loads(axis_path.read_text(encoding="utf-8"))) == {
         "input_structure", "operation", "clinical_target"
     }
+    scenarios = json.loads((Path(context["operation_directory"]) / "task_scenarios.json").read_text(encoding="utf-8"))
+    assert scenarios
+    assert all("annotation_mapping" not in value and "evidence_stats" not in value for value in scenarios.values())
 
 
 def test_axis_evidence_exposes_catalog_counts_and_semantics(tmp_path):
