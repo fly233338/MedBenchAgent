@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 
@@ -13,7 +14,7 @@ def test_data_preparation_prompt_describes_field_dispositions():
     assert "Operational or administrative noise" in prompt
     assert "question" in prompt.lower()
     assert "mapping.json" in prompt
-    assert "未标注”不能推成“阴性" in prompt
+    assert "Unannotated does not mean negative" in prompt
 
 
 def test_task_planning_prompt_is_the_orchestrator_prompt():
@@ -49,10 +50,23 @@ def test_stage_prompts_include_the_direct_semantic_constraints():
     review = (PROMPTS / "scenario_review.md").read_text(encoding="utf-8")
     source = (ROOT / "src/medbenchagent/agents/task_planning.py").read_text(encoding="utf-8")
 
-    assert "supported 表示至少存在一种有临床意义" in axis
+    assert "Supported means that at least one clinically meaningful task" in axis
     assert "Classify the operation by the primary task requested" in leaf
     assert "Do not infer absence from missing annotations" in leaf
     assert "Tumor masks support finding localization" in screening
-    assert "检查问句、可见输入、参考答案三者是否同一范围" in review
+    assert "Check whether the question, benchmark-model input, and reference answer cover the same scope" in review
+    assert "describe_synthesis_allowed" in axis
+    assert "direct report-level or structured narrative reference" in leaf
     assert "benchmark_brief" in source
     assert 'prompt("scenario_screening")' in source
+
+
+def test_planning_prompts_and_registry_descriptions_are_english():
+    paths = [*PROMPTS.glob("*.md"), ROOT / "src/medbenchagent/prompts/data_preparation_agent.md"]
+    for path in paths:
+        assert not re.search(r"[\u3400-\u9fff]", path.read_text(encoding="utf-8")), path
+    axes = json.loads((PROMPTS.parent / "axes.json").read_text(encoding="utf-8"))
+    for axis in axes["axes"]:
+        assert not re.search(r"[\u3400-\u9fff]", axis.get("description", "")), axis["id"]
+        for value in axis.get("values", []):
+            assert not re.search(r"[\u3400-\u9fff]", value.get("description", "")), value["id"]

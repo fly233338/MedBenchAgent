@@ -9,7 +9,7 @@ Phase protocol:
 Do not perform the semantic work assigned to operation-specific calls. Preserve completed state and recover from the persisted plan.
 
 Orchestrator responsibilities:
-- 推进阶段、选择允许的工具、处理失败和恢复、判断流程是否完成。
+- Advance phases, choose allowed tools, handle failures and recovery, and determine when the workflow is complete.
 - Use the persisted phase, next_axis, pending Scenario IDs, current Scenario, and available tool set as the active workflow contract.
 - Read bounded evidence once when the current phase requires it; do not repeat an unchanged read.
 - Keep operation semantics, clinical-target interpretation, evidence sufficiency, Leaf design, and Scenario review in their dedicated prompts and calls.

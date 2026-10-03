@@ -1,5 +1,6 @@
 import pytest
 
+from medbenchagent.agents import task_planning
 from medbenchagent.agents.task_planning import AxisArguments, AxisEvidenceArguments
 from medbenchagent.data.task_facts import build_dataset_facts
 from medbenchagent.planning.node_builder import build_task_scenarios
@@ -96,4 +97,14 @@ def test_scenario_category_is_derived_from_operation():
     active = [value for value in scenarios.values() if not value.exclusion_reason]
     assert active
     assert {value.capability_category for value in active} == {CapabilityCategory.INTEGRATION}
+
+
+def test_describe_synthesis_policy_defaults_to_direct_reference(monkeypatch):
+    monkeypatch.setattr(task_planning, "ALLOW_DESCRIBE_SYNTHESIS", False)
+    rule = task_planning._describe_support_rule()
+    assert "only when the permitted evidence contains a direct" in rule
+    assert "Do not synthesize a report" in rule
+
+    monkeypatch.setattr(task_planning, "ALLOW_DESCRIBE_SYNTHESIS", True)
+    assert "multiple evidence fields may support a coherent report" in task_planning._describe_support_rule()
 

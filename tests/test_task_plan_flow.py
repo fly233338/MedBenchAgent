@@ -315,3 +315,19 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
         assert field in reviewed_leaf
     assert "validation" in reviewed_leaf
 
+
+def test_axis_analysis_payload_disables_describe_synthesis_by_default(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    captured = {}
+
+    def fake_complete_json(prompt, user_prompt, schema):
+        captured["payload"] = json.loads(user_prompt)
+        return {"values": _assessments("input_structure", [])}
+
+    monkeypatch.setattr(task_planning, "complete_json", fake_complete_json)
+    task_planning.analyze_axis(context, axis="input_structure")
+
+    assert captured["payload"]["describe_synthesis_allowed"] is False
+    assert "direct report-level or structured narrative reference" in captured["payload"]["describe_support_rule"]
+    assert "Do not synthesize a report" in captured["payload"]["describe_support_rule"]
+

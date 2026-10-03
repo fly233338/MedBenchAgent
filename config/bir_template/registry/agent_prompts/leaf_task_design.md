@@ -21,7 +21,9 @@ categorical label into a narrative.
 Question variants must preserve the same target, scope, comparison
 direction, uncertainty, units, and answer requirements.
 
-先明确临床问题、目标对象、属性和范围，再选择 resolver 与输出形式。不能把每个 annotation 字段机械改成一道题。
-要求整合多个可验证事实；参考仅支持单个类别时，禁止设计段落描述。
-不得添加未标注的阴性所见、诊断或管理建议。
-“输入和参考范围一致”尤其重要：给一张局部图，却拿完整检查报告作答案；给一个病灶标注，却问所有异常；没有指定病灶，却问其边界或大小——这些任务即使 JSON、resolver 和选项全部合法，临床上仍然不成立。
+First define the clinical question, target entity, property, and scope before selecting the resolver and output format. Do not mechanically turn every annotation field into a task.
+Require multiple verifiable facts only when the current describe synthesis policy allows it. Do not add unannotated negative findings, diagnoses, or management recommendations.
+The input and reference scopes must match: a local image must not be paired with a full examination report as its answer; a lesion annotation must not be used to ask about all abnormalities; and a lesion must be specified before asking about its margins or size.
+
+The host supplies `describe_synthesis_allowed` and `describe_support_rule`. Follow them exactly. When synthesis is disabled, require a direct report-level or structured narrative reference and do not create a narrative by combining separate categorical values, text annotations, region annotations, metadata, or evidence counts.
+For describe, do not expand a single categorical label into a narrative.

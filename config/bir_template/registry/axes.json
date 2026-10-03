@@ -31,12 +31,12 @@
       "description": "The clinical object of the task.",
       "values": [
         {"id": "acquisition", "description": "Acquisition or protocol."},
-        {"id": "anatomy", "description": "包含器官、解剖结构、组织，以及适用模态下的细胞层次；明确包括正常结构与变异。"},
-        {"id": "finding", "description": "在本项目中约定为影像或病理图像中的观察所见、征象、形态模式；与疾病解释区分。"},
-        {"id": "attribute", "description": "任一临床对象的属性，不限于 finding。包括形态、边界、组成、回声/信号、分布、方向等。"},
-        {"id": "measurement", "description": "某个对象、某种属性在指定范围和方法下的定量结果；需要对象、单位和测量规则。"},
-        {"id": "assessment", "description": "对所见作出的标准化评估、分级或风险类别；应记录所用体系。"},
-        {"id": "diagnosis", "description": "疾病或病理类别；需要说明参考来自影像判断、病理、随访还是其他临床依据。"},
+        {"id": "anatomy", "description": "Organs, anatomical structures, tissues, and, where supported by the modality, cells; explicitly includes normal structures and variants."},
+        {"id": "finding", "description": "An observation, sign, or morphologic pattern in a medical or pathology image; distinct from disease interpretation."},
+        {"id": "attribute", "description": "An attribute of any clinical entity, not limited to findings. Includes morphology, margins, composition, echogenicity or signal, distribution, and orientation."},
+        {"id": "measurement", "description": "A quantitative result for an entity or attribute within a specified scope and method; requires an entity, unit, and measurement rule."},
+        {"id": "assessment", "description": "A standardized assessment, grade, or risk category assigned to an observation; record the applicable system."},
+        {"id": "diagnosis", "description": "A disease or pathology category; state whether the reference is imaging judgment, pathology, follow-up, or another clinical basis."},
         {"id": "quality", "description": "Image or study quality."}
       ]
     }
