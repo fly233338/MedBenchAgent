@@ -911,7 +911,7 @@ def _available_tools(context: dict[str, Any]) -> set[str]:
             "read_axis_evidence", "analyze_axis",
         }
     if plan.phase == "leaves":
-        return {"read_scenario_context", "save_leaf_task", "review_current_scenario"}
+        return {"read_scenario_context", "read_evidence_catalog", "save_leaf_task", "review_current_scenario"}
     if plan.phase == "complete":
         return {"finish"}
     if plan.phase == "blocked":
