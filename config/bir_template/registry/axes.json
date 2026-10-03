@@ -18,12 +18,12 @@
       "id": "operation",
       "description": "The primary model operation.",
       "values": [
-        {"id": "recognize", "description": "Recognize findings or attributes."},
-        {"id": "localize", "description": "Ground a finding spatially."},
-        {"id": "quantify", "description": "Measure, count or estimate a number."},
-        {"id": "compare", "description": "Compare linked evidence."},
-        {"id": "align", "description": "Integrate related evidence."},
-        {"id": "describe", "description": "Describe or generate a report."}
+        {"id": "recognize", "description": "Recognize findings or attributes. For finite categorical answers, design the complete answer option set from the Evidence Catalog.", "answer_options": "required"},
+        {"id": "localize", "description": "Ground a finding spatially by returning a bounding box or index. Do not design answer options.", "answer_options": "forbidden"},
+        {"id": "quantify", "description": "Measure, count or estimate a number. Return the numeric result directly; do not design answer options.", "answer_options": "forbidden"},
+        {"id": "compare", "description": "Compare linked evidence. For finite categorical judgments, design the complete answer option set from the Evidence Catalog.", "answer_options": "required"},
+        {"id": "align", "description": "Integrate related evidence. For finite categorical matching or relationship judgments, design the complete answer option set from the Evidence Catalog.", "answer_options": "required"},
+        {"id": "describe", "description": "Describe findings or generate a report in open-ended text. Do not design answer options.", "answer_options": "forbidden"}
       ]
     },
     {

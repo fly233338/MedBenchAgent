@@ -96,13 +96,6 @@ class LeafTaskDraft(BaseModel):
             raise ValueError("question_templates must be non-empty")
         if len(set(self.question_templates)) != len(self.question_templates):
             raise ValueError("question_templates must be unique")
-        if self.task_paradigm == TaskParadigm.VQA and self.output_spec == OutputSpec.LABEL:
-            if not self.options or len(self.options) < 2:
-                raise ValueError("Closed VQA label tasks require at least two options")
-            if len({option.casefold() for option in self.options}) != len(self.options):
-                raise ValueError("VQA options must be unique")
-        elif self.options is not None:
-            raise ValueError("Only VQA label tasks may define options")
         return self
 
 
@@ -753,6 +746,13 @@ def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = 
         "status": scenario.status,
         "leaf_task_ids": scenario.leaf_task_ids,
     }
+    registry = _registry(context)
+    if registry:
+        operation = registry.operation_definition(scenario.operation)
+        context_value["operation_guidance"] = {
+            "description": operation["description"],
+            "answer_options": operation["answer_options"],
+        }
     context_value["leaf_task_ids"] = scenario.leaf_task_ids
     context_value["plan_phase"] = plan.phase
     context_value["question_template_count"] = _configured_template_count(context)
@@ -803,11 +803,13 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         cases = list(page.get("values", []))
     resolution_reasons = Counter()
     resolved_answers = set()
+    operation_mode = (_registry(context).answer_options_mode(scenario.operation)
+                      if _registry(context) else ("required" if scenario.operation in {"recognize", "compare", "align"} else "forbidden"))
     for case in cases:
         resolved = resolve(case, ResolverSpec.parse(parsed.resolver))
         if isinstance(resolved, NotApplicable):
             resolution_reasons[resolved.reason] += 1
-        elif parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
+        elif operation_mode == "required" and parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
             value = resolved.reference.get("value", resolved.reference) if isinstance(resolved.reference, dict) else resolved.reference
             if isinstance(value, (str, int, float, bool)):
                 resolved_answers.add(str(value))
@@ -817,7 +819,7 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         raise ValueError(
             f"Resolver resolved 0 of {len(cases)} Cases. Common reasons: {common or 'unknown'}"
         )
-    if parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
+    if operation_mode == "required" and parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
         missing_options = resolved_answers - {option for option in (parsed.options or [])}
         if missing_options:
             raise ValueError(f"Closed VQA options must include every resolved answer: {sorted(missing_options)}")

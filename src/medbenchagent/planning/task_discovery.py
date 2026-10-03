@@ -30,13 +30,16 @@ def validate_candidate_leaf(
         raise ValueError("Leaf Task cannot be created under an excluded Task Scenario")
     if leaf.capability_category != scenario.capability_category:
         raise ValueError("Leaf Task Category differs from its Task Scenario")
-    if leaf.task_paradigm.value == "VQA" and leaf.output_spec.value == "label":
+    registry = registry or (resolver_context or {}).get("registry")
+    operation_mode = registry.answer_options_mode(scenario.operation) if registry else (
+        "required" if scenario.operation in {"recognize", "compare", "align"} else "forbidden"
+    )
+    if operation_mode == "required" and leaf.task_paradigm.value == "VQA" and leaf.output_spec.value == "label":
         if not leaf.options or len(leaf.options) < 2:
             raise ValueError("Closed VQA label tasks require at least two options")
-    elif leaf.options is not None:
-        raise ValueError("Only VQA label tasks may define options")
+    elif operation_mode == "forbidden" and leaf.options is not None:
+        raise ValueError(f"Operation {scenario.operation} forbids answer options")
     spec = ResolverSpec.parse(leaf.resolver)
-    registry = registry or (resolver_context or {}).get("registry")
     if registry is not None:
         validate_resolver_policy(spec, registry.resolver_policy)
     if leaf.input != spec.inputs or leaf.output_spec != spec.output_spec:

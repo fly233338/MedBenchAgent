@@ -127,7 +127,10 @@ class RegistrySnapshot:
             for path in sorted(prompt_root.glob("*.md")):
                 prompts[path.stem] = path.read_text(encoding="utf-8")
                 digests[f"agent_prompts/{path.name}"] = digest_file(path)
-        return cls(root, documents, digests, prompts)
+        snapshot = cls(root, documents, digests, prompts)
+        for operation in snapshot.axis_values("operation"):
+            snapshot.operation_definition(operation)
+        return snapshot
 
     @property
     def digest(self) -> str:
@@ -147,6 +150,19 @@ class RegistrySnapshot:
 
     def axis_definitions(self) -> list[dict[str, Any]]:
         return list(self.documents["axes.json"].get("axes", []))
+
+    def operation_definition(self, operation: str) -> dict[str, Any]:
+        operation_axis = next((axis for axis in self.axis_definitions() if axis.get("id") == "operation"), None)
+        for value in (operation_axis or {}).get("values", []):
+            if value.get("id") == operation:
+                mode = value.get("answer_options")
+                if mode not in {"required", "forbidden"}:
+                    raise ValueError(f"Operation {operation!r} has invalid answer_options: {mode!r}")
+                return dict(value)
+        raise ValueError(f"Unknown BIR operation: {operation!r}")
+
+    def answer_options_mode(self, operation: str) -> str:
+        return self.operation_definition(operation)["answer_options"]
 
     @property
     def capability_by_operation(self) -> dict[str, str]:
