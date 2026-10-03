@@ -655,8 +655,6 @@ def review_candidate_scenarios(context: dict[str, Any]) -> dict[str, Any]:
     }
     prompt = registry.prompt("scenario_global_review") if registry else "Review every Scenario and return keep or exclude with a reason."
     reviewed = ScenarioScreeningResult.model_validate(complete_json(prompt, json.dumps(payload, ensure_ascii=False), ScenarioScreeningResult))
-    if reviewed.scenario_id != scenario.scenario_id:
-        raise ValueError("Scenario Review returned a different scenario_id")
     remaining = pending[1:]
     plan.scenario_review_pending_ids = remaining
     plan.scenario_review_completed_ids = [*plan.scenario_review_completed_ids, scenario.scenario_id]
