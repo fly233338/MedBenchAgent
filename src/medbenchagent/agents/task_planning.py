@@ -557,11 +557,14 @@ def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanSt
     if not active:
         raise ValueError("Axis analysis produced no executable Task Scenario")
     plan.scenarios = scenarios
-    plan.phase = "screening"
+    plan.phase = "scenario_review"
     # Keep the compatibility pending list populated for run summaries; the
     # screening-specific list controls which Scenarios may be screened.
     plan.pending_scenario_ids = active.copy()
-    plan.screening_pending_scenario_ids = active
+    plan.screening_pending_scenario_ids = []
+    plan.scenario_review_pending_ids = active.copy()
+    plan.scenario_review_completed_ids = []
+    plan.scenario_review_excluded_ids = []
     plan.completed_scenario_ids = []
     plan.current_scenario_id = active[0] if active else None
     return plan
@@ -569,9 +572,9 @@ def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanSt
 
 def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str | None = None, reason: str | None = None) -> dict[str, Any]:
     plan = _load_plan(context)
-    if plan.phase != "screening":
+    if plan.phase not in {"screening", "scenario_review"}:
         raise ValueError("Scenario screening is not available in the current phase")
-    if scenario_id not in plan.screening_pending_scenario_ids:
+    if scenario_id not in (plan.screening_pending_scenario_ids or plan.scenario_review_pending_ids):
         raise ValueError("Scenario is not pending screening")
     if decision is None and reason is None:
         registry = _registry(context)
@@ -596,10 +599,12 @@ def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str 
     if decision not in {"keep", "exclude"} or not reason or not reason.strip():
         raise ValueError("Scenario screening requires decision keep/exclude and a non-empty reason")
     scenario = plan.scenarios[scenario_id]
-    remaining = [item for item in plan.screening_pending_scenario_ids if item != scenario_id]
+    queue = plan.screening_pending_scenario_ids or plan.scenario_review_pending_ids
+    remaining = [item for item in queue if item != scenario_id]
     if decision == "exclude":
         plan.scenarios[scenario_id] = scenario.model_copy(update={"status": "excluded", "exclusion_reason": reason.strip()})
-        plan.screening_pending_scenario_ids = remaining
+        plan.screening_pending_scenario_ids = []
+        plan.scenario_review_pending_ids = remaining
         plan.pending_scenario_ids = [item for item in plan.pending_scenario_ids if item != scenario_id]
         plan.current_scenario_id = remaining[0] if remaining else None
         if not remaining:
@@ -608,7 +613,8 @@ def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str 
         plan.phase = "leaves"
         plan.current_scenario_id = scenario_id
         plan.pending_scenario_ids = [scenario_id]
-        plan.screening_pending_scenario_ids = remaining
+        plan.screening_pending_scenario_ids = []
+        plan.scenario_review_pending_ids = remaining
         plan.scenarios[scenario_id] = scenario.model_copy(update={"status": "active"})
     plan.revision += 1
     updates = _write_artifacts(context, plan)
@@ -616,13 +622,14 @@ def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str 
 
 
 def review_candidate_scenarios(context: dict[str, Any]) -> dict[str, Any]:
-    """Review all candidate Scenarios once; keep them unchanged or exclude them before Leaf design."""
+    """Review one candidate Scenario; keep it unchanged or exclude it before Leaf design."""
     plan = _load_plan(context)
-    if plan.phase != "screening":
-        raise ValueError("Global Scenario Review is not available in the current phase")
-    candidates = [plan.scenarios[key] for key in plan.screening_pending_scenario_ids]
-    if not candidates:
-        raise ValueError("No candidate Scenarios are pending Global Scenario Review")
+    if plan.phase not in {"scenario_review", "screening"}:
+        raise ValueError("Scenario Review is not available in the current phase")
+    pending = plan.scenario_review_pending_ids or plan.screening_pending_scenario_ids
+    if not pending:
+        raise ValueError("No candidate Scenarios are pending Scenario Review")
+    scenario = plan.scenarios[pending[0]]
     registry = _registry(context)
     facts = _facts(context, plan)
     guidance = {}
@@ -632,39 +639,42 @@ def review_candidate_scenarios(context: dict[str, Any]) -> dict[str, Any]:
                 "description": registry.operation_definition(operation)["description"],
                 "answer_options": registry.operation_definition(operation)["answer_options"],
             }
-            for operation in sorted({item.operation for item in candidates})
+            for operation in [scenario.operation]
         }
     catalog = []
-    for entry in facts.get("evidence_catalog", {}).values():
-        catalog.append({key: entry[key] for key in ("name", "types", "cases", "value_count", "observed_values") if key in entry})
+    for entry in list(facts.get("evidence_catalog", {}).values())[:80]:
+        item = {key: entry[key] for key in ("name", "types", "cases", "value_count") if key in entry}
+        if entry.get("value_count", 0) <= 20 and entry.get("observed_values"):
+            item["observed_values"] = entry["observed_values"][:20]
+        catalog.append(item)
     payload = {
         "dataset": {"dataset_id": plan.dataset.get("dataset_id"), "case_count": facts.get("case_count", 0), "image_only_policy": True},
-        "scenarios": [item.model_dump(mode="json") for item in candidates],
+        "scenario": scenario.model_dump(mode="json"),
         "evidence_catalog": catalog,
         "operation_guidance": guidance,
     }
     prompt = registry.prompt("scenario_global_review") if registry else "Review every Scenario and return keep or exclude with a reason."
-    reviewed = GlobalScenarioReviewResult.model_validate(complete_json(prompt, json.dumps(payload, ensure_ascii=False), GlobalScenarioReviewResult))
-    expected = {item.scenario_id for item in candidates}
-    actual = {item.scenario_id for item in reviewed.results}
-    if actual != expected or len(reviewed.results) != len(expected):
-        raise ValueError("Global Scenario Review must return exactly one result for every candidate Scenario")
-    decisions = {item.scenario_id: item for item in reviewed.results}
-    accepted, excluded = [], []
-    for scenario in candidates:
-        item = decisions[scenario.scenario_id]
-        if item.decision == "keep":
-            accepted.append(scenario.scenario_id)
-        else:
-            plan.scenarios[scenario.scenario_id] = scenario.model_copy(update={"status": "excluded", "exclusion_reason": item.reason})
-            excluded.append(scenario.scenario_id)
-    plan.screening_pending_scenario_ids = []
-    plan.pending_scenario_ids = accepted
-    plan.current_scenario_id = accepted[0] if accepted else None
-    plan.phase = "leaves" if accepted else "complete"
+    reviewed = ScenarioScreeningResult.model_validate(complete_json(prompt, json.dumps(payload, ensure_ascii=False), ScenarioScreeningResult))
+    if reviewed.scenario_id != scenario.scenario_id:
+        raise ValueError("Scenario Review returned a different scenario_id")
+    remaining = pending[1:]
+    plan.scenario_review_pending_ids = remaining
+    plan.scenario_review_completed_ids = [*plan.scenario_review_completed_ids, scenario.scenario_id]
+    if reviewed.decision == "exclude":
+        plan.scenarios[scenario.scenario_id] = scenario.model_copy(update={"status": "excluded", "exclusion_reason": reviewed.reason})
+        plan.scenario_review_excluded_ids = [*plan.scenario_review_excluded_ids, scenario.scenario_id]
+    if remaining:
+        plan.phase = "scenario_review"
+        plan.current_scenario_id = remaining[0]
+        plan.pending_scenario_ids = []
+    else:
+        accepted = [key for key, item in plan.scenarios.items() if not item.exclusion_reason]
+        plan.pending_scenario_ids = accepted
+        plan.current_scenario_id = accepted[0] if accepted else None
+        plan.phase = "leaves" if accepted else "complete"
     plan.revision += 1
     updates = _write_artifacts(context, plan)
-    return result("success", f"Global Scenario Review kept {len(accepted)} and excluded {len(excluded)} Scenarios", **updates)
+    return result("success", f"Scenario Review {scenario.scenario_id}: {reviewed.decision}", **updates)
 
 
 def analyze_axis(context: dict[str, Any], *, axis: TaskAxis, assessments: list[AxisValueDecision] | None = None) -> dict[str, Any]:
@@ -1198,7 +1208,7 @@ def _available_tools(context: dict[str, Any]) -> set[str]:
             "read_planning_context", "read_dataset_overview", "read_evidence_catalog",
             "read_axis_evidence", "analyze_axis",
         }
-    if plan.phase == "screening":
+    if plan.phase in {"screening", "scenario_review"}:
         return {"review_candidate_scenarios"}
     if plan.phase == "leaves":
         state = context.get("planning_read_state", {})
@@ -1247,8 +1257,8 @@ def _planning_instructions(context: dict[str, Any]) -> str:
         "Axis completion is persisted only by analyze_axis.\n"
         "Read tools are bounded queries, not progress actions. Do not repeat an unchanged read."
     )
-    if plan.phase == "screening":
-        runtime += "\nWhen phase=screening, call review_candidate_scenarios exactly once; it performs one independent Global Scenario Review for all candidates."
+    if plan.phase in {"screening", "scenario_review"}:
+        runtime += "\nReview exactly one pending Scenario with review_candidate_scenarios. Do not design Leaf Tasks until all Scenario Reviews are complete."
     if plan.phase == "leaves" and store:
         base += "\n\n" + store.registry().prompt("leaf_task_design")
     return base + runtime

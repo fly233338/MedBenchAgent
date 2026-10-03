@@ -50,8 +50,8 @@ def test_axis_calls_are_strictly_ordered(tmp_path):
     task_planning.analyze_axis(context, axis="input_structure", assessments=_assessments("input_structure", ["single-image"]))
     task_planning.analyze_axis(context, axis="operation", assessments=_assessments("operation", ["describe"]))
     result = task_planning.analyze_axis(context, axis="clinical_target", assessments=_assessments("clinical_target", ["finding"]))
-    assert result["updates"]["task_space_plan"]["phase"] == "screening"
-    assert result["updates"]["task_space_plan"]["screening_pending_scenario_ids"]
+    assert result["updates"]["task_space_plan"]["phase"] == "scenario_review"
+    assert result["updates"]["task_space_plan"]["scenario_review_pending_ids"]
     axis_path = Path(context["operation_directory"]) / "axis_decisions.json"
     assert set(json.loads(axis_path.read_text(encoding="utf-8"))) == {
         "input_structure", "operation", "clinical_target"
@@ -96,7 +96,7 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
 
     monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", Query)
     plan = task_planning._load_plan(context)
-    node_id = plan.screening_pending_scenario_ids[0]
+    node_id = plan.scenario_review_pending_ids[0]
     screened = task_planning.screen_scenario(
         context, scenario_id=node_id, decision="keep", reason="The scenario is semantically suitable."
     )
@@ -159,7 +159,7 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
 
     monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", Query)
     plan = task_planning._load_plan(context)
-    scenario_id = plan.screening_pending_scenario_ids[0]
+    scenario_id = plan.scenario_review_pending_ids[0]
     screened = task_planning.screen_scenario(
         context, scenario_id=scenario_id, decision="keep", reason="The scenario is semantically suitable."
     )
