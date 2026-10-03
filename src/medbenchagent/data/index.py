@@ -151,12 +151,12 @@ class DatasetIndex:
         assets = {row["asset_id"]: row for row in self.assets()}
         return merge_facts(case_facts(case, assets) for case in self.iter_cases())
 
-    def node_context(self, node, *, sample_limit=5, evidence_limit=100):
+    def node_context(self, node, *, sample_limit=5, evidence_limit=100, registry=None):
         from medbenchagent.data.task_facts import case_facts
         from medbenchagent.planning.node_builder import NodeConstraintRegistry
         from medbenchagent.planning.task_space import TaskNode
         node = TaskNode.model_validate(node)
-        constraint_registry = NodeConstraintRegistry()
+        constraint_registry = NodeConstraintRegistry(registry)
         assets = {row["asset_id"]: row for row in self.assets()}
         samples, count = [], 0
         names = set()

@@ -28,7 +28,7 @@ def _context(tmp_path):
         "schema_version": "dataset-facts",
         "revision": "7",
         "case_count": 1,
-        "evidence_names": ["report"],
+        "evidence_names": ["image", "report"],
         "evidence": {"text": 1},
         "assets": {"image_assets": 1, "multi_image_cases": 0, "related_image_cases": 0, "volume_assets": 0},
         "relations": {"paired_text": 1, "paired": 1, "paired_study": 0, "related": 1},

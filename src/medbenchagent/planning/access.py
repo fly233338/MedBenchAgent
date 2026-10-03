@@ -23,6 +23,8 @@ class DatasetAccessReceipt(BaseModel):
     case_count: int = Field(ge=0)
     patient_count: int = Field(ge=0)
     patient_identity: str = Field(min_length=1)
+    mapping_path: str | None = None
+    mapping_digest: str | None = None
     dataset_card_path: str | None = None
     dataset_card_digest: str | None = None
     source_schema_version: str | None = None

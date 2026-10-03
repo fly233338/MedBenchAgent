@@ -36,6 +36,16 @@ class PlanningArguments(DelegationArguments):
     dataset_id: DatasetId
 
 
+def planning_draft_advanced(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+    """Compare planning drafts before the child state file is overwritten."""
+    return (
+        current.get("revision", 0) > previous.get("revision", -1)
+        or current.get("phase") != previous.get("phase")
+        or current.get("current_scenario_id") != previous.get("current_scenario_id")
+        or len(current.get("leaf_tasks", {})) != len(previous.get("leaf_tasks", {}))
+    )
+
+
 class DatasetSelectionArguments(NoArguments):
     dataset_ids: list[DatasetId] = Field(min_length=1)
     selection_reason: dict[str, NonEmpty] = Field(min_length=1)
@@ -485,6 +495,13 @@ def compile_benchmark_graph(*, checkpointer=None):
             if correction["status"] == "blocked":
                 return correction
             child.update(correction["updates"])
+        previous = context.get("child_states", {}).get(dataset_id, {}).get("planning")
+        previous_draft = {}
+        if previous and Path(previous).is_file():
+            try:
+                previous_draft = json.loads(Path(previous).read_text(encoding="utf-8")).get("task_plan", {})
+            except (OSError, ValueError):
+                previous_draft = {}
         output = planning.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "planning", output)
         draft = output.get("context", {}).get("task_plan", {})
@@ -523,17 +540,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         # A blocked child is resumable only when the persisted draft actually
         # advanced. Never turn a contract failure with no state mutation into a
         # success, otherwise Supervisor will repeatedly delegate the same work.
-        previous = context.get("child_states", {}).get(dataset_id, {}).get("planning")
-        previous_draft = {}
-        if previous and Path(previous).is_file():
-            try:
-                previous_draft = json.loads(Path(previous).read_text(encoding="utf-8")).get("task_plan", {})
-            except (OSError, ValueError):
-                previous_draft = {}
-        advanced = (
-            draft.get("revision", 0) > previous_draft.get("revision", -1)
-            or draft.get("phase") != previous_draft.get("phase")
-        )
+        advanced = planning_draft_advanced(previous_draft, draft)
         if output["result"]["status"] == "blocked" and advanced and draft.get("phase") not in {"complete", "blocked"}:
             outcome["status"] = "success"
             outcome["summary"] = "Task Plan is incomplete; the same planning child will resume from its persisted Axis or Scenario state"

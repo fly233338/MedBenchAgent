@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import difflib
 from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
@@ -35,6 +36,14 @@ from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.llm import complete_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.tool_contracts import NoArguments
+
+
+class LeafTaskValidationError(ValueError):
+    """A repairable Leaf failure with model-visible structured diagnostics."""
+
+    def __init__(self, message: str, diagnostics: dict[str, Any]):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 class AxisArguments(NoArguments):
@@ -178,6 +187,224 @@ def _configured_template_count(context: dict[str, Any]) -> int | None:
     return int(value)
 
 
+def _catalog_map(value: Any) -> dict[str, dict[str, Any]]:
+    if isinstance(value, dict):
+        return {str(key): dict(item) for key, item in value.items() if isinstance(item, dict)}
+    if isinstance(value, list):
+        return {
+            str(item["name"]): dict(item)
+            for item in value
+            if isinstance(item, dict) and item.get("name")
+        }
+    return {}
+
+
+def _mapping_path(context: dict[str, Any]) -> Path | None:
+    access = _access(context)
+    explicit = access.get("mapping_path")
+    if explicit:
+        return Path(explicit)
+    cases_path = access.get("cases_path")
+    if cases_path:
+        candidate = Path(cases_path).resolve().parent / "mapping.json"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _field_meanings(context: dict[str, Any]) -> dict[str, str]:
+    path = _mapping_path(context)
+    if not path:
+        return {}
+    try:
+        value = _read(path)
+    except (OSError, ValueError):
+        return {}
+    meanings: dict[str, str] = {}
+
+    def add(name: Any, item: Any) -> None:
+        if not isinstance(name, str) or not name.strip():
+            return
+        if isinstance(item, str) and item.strip():
+            meanings.setdefault(name, item.strip())
+            return
+        if not isinstance(item, dict):
+            return
+        for key in ("meaning", "description", "interpretation", "reason"):
+            text = item.get(key)
+            if isinstance(text, str) and text.strip():
+                meanings.setdefault(name, text.strip())
+                return
+
+    if isinstance(value, dict):
+        for key in ("fields", "field_meanings", "mapping"):
+            section = value.get(key)
+            if isinstance(section, dict):
+                for name, item in section.items():
+                    add(name, item)
+            elif isinstance(section, list):
+                for item in section:
+                    if isinstance(item, dict):
+                        add(item.get("field") or item.get("name") or item.get("path") or item.get("target"), item)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                add(item.get("field") or item.get("name") or item.get("path") or item.get("target"), item)
+    return meanings
+
+
+def _compact_scalar(value: Any, *, limit: int = 180) -> Any:
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + "…"
+    if isinstance(value, list):
+        return [_compact_scalar(item, limit=limit) for item in value[:8]]
+    if isinstance(value, dict):
+        return {key: _compact_scalar(item, limit=limit) for key, item in list(value.items())[:12]}
+    return value
+
+
+def _name_suggestions(name: str, available: list[str]) -> list[str]:
+    if not name:
+        return available[:20]
+    folded = name.casefold()
+    contains = [item for item in available if folded in item.casefold() or item.casefold() in folded]
+    close = difflib.get_close_matches(name, available, n=5, cutoff=0.25)
+    return list(dict.fromkeys([*contains[:5], *close]))[:8]
+
+
+def _case_evidence_names(context: dict[str, Any]) -> set[str]:
+    try:
+        from medbenchagent.data.query import DatasetQuery
+        query = DatasetQuery(_access(context))
+        if hasattr(query, "iter_cases"):
+            cases = []
+            for case in query.iter_cases():
+                cases.append(case)
+                if len(cases) >= 64:
+                    break
+        else:
+            cases = list(query.sample(offset=0, limit=64).get("values", []))
+        return {
+            item.get("name")
+            for case in cases
+            for item in case.get("evidence", [])
+            if item.get("name")
+        }
+    except Exception:
+        return set()
+
+
+def _asset_rows(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for item in case.get("evidence", []):
+        if item.get("type") != "asset" or item.get("value") not in assets:
+            continue
+        asset = assets[item["value"]]
+        if asset.get("kind") != "image":
+            continue
+        name = str(item.get("name", "")).casefold()
+        if name.startswith(("mask", "segmentation", "annotation", "roi")) or any(
+            token in name for token in ("_mask", "_seg", "mask_", "seg_")
+        ):
+            continue
+        rows.append(item)
+    return rows
+
+
+def _compact_case(case: dict[str, Any], assets: dict[str, dict[str, Any]], *, names: set[str] | None = None) -> dict[str, Any]:
+    primary = _asset_rows(case, assets)
+    primary_ids = {item.get("id") for item in primary}
+    rows = []
+    for item in case.get("evidence", []):
+        name = item.get("name")
+        if item.get("type") == "asset" and item in primary:
+            rows.append(item)
+            continue
+        if names and name not in names:
+            continue
+        refs = set(item.get("ref", []))
+        if item.get("type") in {"value", "text", "region"} and (refs & primary_ids or not primary_ids):
+            rows.append({**item, "value": _compact_scalar(item.get("value"))})
+    return {"evidence": rows[:20]}
+
+
+def _compact_catalog_entry(entry: dict[str, Any], meaning: str | None = None) -> dict[str, Any]:
+    item = {key: entry[key] for key in ("name", "cases", "types", "units", "value_count") if key in entry}
+    if entry.get("observed_values"):
+        item["observed_values"] = [
+            {**value, "value": _compact_scalar(value.get("value"))}
+            for value in entry["observed_values"][:8]
+            if isinstance(value, dict)
+        ]
+    if meaning:
+        item["meaning"] = meaning
+    return item
+
+
+def _scenario_context_payload(context: dict[str, Any], plan: TaskPlanState, scenario: Any, raw: dict[str, Any]) -> dict[str, Any]:
+    from medbenchagent.data.index import DatasetIndex
+
+    facts = _facts(context, plan)
+    catalog = _catalog_map(facts.get("evidence_catalog", {}))
+    meanings = _field_meanings(context)
+    raw_entries = {item.get("name") for item in raw.get("evidence", []) if item.get("name")}
+    input_names = {
+        item.get("name")
+        for case in raw.get("representative_cases", [])
+        for item in _asset_rows(case, {row.get("asset_id"): row for row in DatasetIndex(_access(context)).assets()})
+        if item.get("name")
+    }
+    ordered_names = [name for name in input_names if name in catalog]
+    ordered_names.extend(name for name in raw_entries if name in catalog and name not in ordered_names)
+    ordered_names.extend(name for name in catalog if name not in ordered_names)
+    evidence = [_compact_catalog_entry(catalog[name], meanings.get(name) or catalog[name].get("meaning")) for name in ordered_names[:30]]
+    assets = {row.get("asset_id"): row for row in DatasetIndex(_access(context)).assets()}
+    candidate_names = {item.get("name") for item in evidence if item.get("name")}
+    samples = [_compact_case(case, assets, names=candidate_names) for case in raw.get("representative_cases", [])[:3]]
+    samples = [case for case in samples if case.get("evidence")]
+    return {
+        "scenario": {
+            "scenario_id": scenario.scenario_id,
+            "input_structure": scenario.input_structure,
+            "operation": scenario.operation,
+            "clinical_target": scenario.clinical_target,
+            "capability_category": scenario.capability_category.value,
+            "feasible_case_count": scenario.feasible_case_count,
+            "status": scenario.status,
+            "leaf_task_ids": scenario.leaf_task_ids,
+        },
+        "planning_evidence": evidence,
+        "representative_cases": samples,
+        "capacity_hint": raw.get("capacity_hint"),
+    }
+
+
+def _leaf_diagnostics(context: dict[str, Any], plan: TaskPlanState, raw_leaf: Any, *, errors: list[dict[str, Any]], repair_hint: str) -> dict[str, Any]:
+    if hasattr(raw_leaf, "model_dump"):
+        attempted = raw_leaf.model_dump(mode="json")
+    else:
+        attempted = raw_leaf
+    facts = _facts(context, plan)
+    catalog = _catalog_map(facts.get("evidence_catalog", {}))
+    return {
+        "attempted_leaf": attempted,
+        "errors": errors,
+        "relevant_evidence": [_compact_catalog_entry(item, item.get("meaning")) for item in list(catalog.values())[:20]],
+        "repair_hint": repair_hint,
+    }
+
+
+def _raise_leaf_failure(context: dict[str, Any], plan: TaskPlanState, raw_leaf: Any, code: str, message: str, *, path: str = "", actual: Any = None, expected: Any = None, repair_hint: str = "Use the reported evidence and repair this Leaf before resubmitting.") -> None:
+    error = {"code": code, "message": message}
+    if path:
+        error["path"] = path
+    if actual is not None:
+        error["actual"] = actual
+    if expected is not None:
+        error["expected"] = expected
+    raise LeafTaskValidationError(message, _leaf_diagnostics(context, plan, raw_leaf, errors=[error], repair_hint=repair_hint))
+
+
 def _benchmark_brief(context: dict[str, Any]) -> dict[str, Any]:
     """Expose only benchmark intent needed by Task Planning model calls."""
     info = context.get("benchmark_info") or {}
@@ -215,6 +442,7 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
     directory = _evidence_dir(context)
     directory.mkdir(parents=True, exist_ok=True)
     access = _access(context)
+    mapping_path = _mapping_path(context)
     receipt = DatasetAccessReceipt.model_validate({
         "schema_version": "dataset-access",
         "dataset_id": context.get("dataset_scope", context.get("selected_dataset_id")),
@@ -230,6 +458,7 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
         "case_count": facts.get("case_count", 0),
         "patient_count": facts.get("patient_count", 0),
         "patient_identity": facts.get("patient_identity", "unknown"),
+        "mapping_path": str(mapping_path) if mapping_path else None,
     }).model_dump(mode="json")
     overview = {
         "schema_version": "dataset-overview",
@@ -242,11 +471,18 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
         "relations": facts.get("relations", {}),
         "evidence_counts": facts.get("evidence", {}),
     }
+    meanings = _field_meanings(context)
+    catalog_entries = []
+    for entry in facts.get("evidence_catalog", {}).values():
+        item = dict(entry)
+        if item.get("name") in meanings:
+            item["meaning"] = meanings[item["name"]]
+        catalog_entries.append(item)
     catalog = {
         "schema_version": "evidence-catalog",
         "dataset_id": receipt["dataset_id"],
         "revision": receipt["revision"],
-        "entries": list(facts.get("evidence_catalog", {}).values()),
+        "entries": catalog_entries,
         "names": facts.get("evidence_names", []),
         "annotation_mapping": facts.get("annotation_mapping", []),
     }
@@ -513,7 +749,16 @@ def _facts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
     manifest = plan.evidence_manifest_path
     if manifest:
         paths = _read(manifest).get("artifacts", {})
-        return _read(paths["overview"]) | {"evidence_catalog": _read(paths["catalog"]).get("entries", [])}
+        overview = _read(paths["overview"])
+        catalog_doc = _read(paths["catalog"])
+        entries = catalog_doc.get("entries", [])
+        catalog = _catalog_map(entries)
+        return overview | {
+            "evidence_catalog": catalog,
+            "evidence_names": catalog_doc.get("names", sorted(catalog)),
+            "annotation_mapping": catalog_doc.get("annotation_mapping", []),
+            "evidence": overview.get("evidence_counts", {}),
+        }
     try:
         profile = _profile(context)
     except (KeyError, OSError, ValueError):
@@ -818,24 +1063,73 @@ class AxisEvidenceArguments(NoArguments):
 
 
 def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=None) -> dict[str, Any]:
-    """Read one needed catalog slice; do not repeat an unchanged request before saving a Leaf Task."""
-    state = context.setdefault("planning_read_state", {"scenario_id": None, "scenario_context_read": False, "catalog_queries": []})
+    """Read catalog entries, concrete values and compact matching Case samples."""
+    from medbenchagent.data.index import DatasetIndex
+
+    state = context.setdefault("planning_read_state", {
+        "scenario_id": None,
+        "scenario_context_read": False,
+        "catalog_queries": [],
+        "catalog_cache": {},
+    })
+    state.setdefault("catalog_cache", {})
     query = json.dumps({"offset": offset, "limit": limit, "names": sorted(names or [])}, sort_keys=True)
-    if query in state.get("catalog_queries", []):
-        raise ValueError("This Evidence Catalog request was already completed; choose save_leaf_task or a new request")
     plan = _load_plan(context)
     paths = _read(plan.evidence_manifest_path)["artifacts"]
-    entries = _read(paths["catalog"]).get("entries", [])
-    if names:
-        entries = [row for row in entries if row.get("name") in set(names)]
+    catalog_doc = _read(paths["catalog"])
+    all_entries = catalog_doc.get("entries", [])
+    by_name = _catalog_map(all_entries)
+    available = sorted(by_name)
+    requested = list(dict.fromkeys(names or []))
+    unmatched = [name for name in requested if name not in by_name]
+    matched_names = [name for name in requested if name in by_name]
+    entries = [by_name[name] for name in matched_names] if requested else all_entries
     page = entries[offset:offset + limit]
-    state["catalog_queries"] = [*state.get("catalog_queries", []), query]
-    return result("success", json.dumps({
+    payload = {
         "revision": _read(paths["catalog"]).get("revision"),
-        "entries": page,
+        "query": {"offset": offset, "limit": limit, "names": requested},
+        "entries": [_compact_catalog_entry(item, item.get("meaning")) for item in page],
         "total": len(entries),
         "next_offset": offset + limit if offset + limit < len(entries) else None,
-    }, ensure_ascii=False), planning_read_state=state)
+        "unmatched_names": unmatched,
+        "suggestions": {name: _name_suggestions(name, available) for name in unmatched},
+    }
+    if requested:
+        query_index = DatasetIndex(_access(context))
+        assets = {row.get("asset_id"): row for row in query_index.assets()}
+        values = {}
+        samples = {}
+        for name in matched_names:
+            value_page = query_index.values(name, limit=50)
+            compact_values = []
+            truncated = False
+            for item in value_page.get("values", []):
+                value = _compact_scalar(item.get("value"), limit=180)
+                truncated = truncated or value != item.get("value")
+                compact_values.append({"value": value, "count": item.get("count", 0)})
+            values[name] = {
+                "values": compact_values,
+                "total": value_page.get("total", 0),
+                "truncated": truncated,
+            }
+            cases = query_index.sample(evidence_name=name, limit=3).get("values", [])
+            samples[name] = [_compact_case(case, assets, names={name}) for case in cases]
+        payload["field_values"] = values
+        payload["case_samples"] = samples
+    cached = state["catalog_cache"].get(query)
+    if cached is None:
+        state["catalog_queries"] = [*state.get("catalog_queries", []), query]
+        state["catalog_cache"][query] = payload
+        cached = payload
+    return result(
+        "success",
+        json.dumps(cached, ensure_ascii=False),
+        planning_read_state=state,
+        planning_evidence_cache={
+            **(context.get("planning_evidence_cache") or {}),
+            "catalog": list(state["catalog_cache"].values())[-8:],
+        },
+    )
 
 
 def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, Any]:
@@ -906,18 +1200,12 @@ def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = 
         plan.scenarios[scenario_id] = scenario.model_copy(update={"status": "active"})
         _write_artifacts(context, plan)
     from medbenchagent.data.index import DatasetIndex
-    context_value = DatasetIndex(_access(context)).node_context(plan.scenarios[scenario_id])
+    context_value = DatasetIndex(_access(context)).node_context(
+        plan.scenarios[scenario_id], sample_limit=3, registry=_registry(context)
+    )
     scenario = plan.scenarios[scenario_id]
-    context_value["scenario"] = {
-        "scenario_id": scenario.scenario_id,
-        "input_structure": scenario.input_structure,
-        "operation": scenario.operation,
-        "clinical_target": scenario.clinical_target,
-        "capability_category": scenario.capability_category.value,
-        "feasible_case_count": scenario.feasible_case_count,
-        "status": scenario.status,
-        "leaf_task_ids": scenario.leaf_task_ids,
-    }
+    compact = _scenario_context_payload(context, plan, scenario, context_value)
+    context_value = compact
     registry = _registry(context)
     if registry:
         operation = registry.operation_definition(scenario.operation)
@@ -925,61 +1213,103 @@ def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = 
             "description": operation["description"],
             "answer_options": operation["answer_options"],
         }
-    context_value["leaf_task_ids"] = scenario.leaf_task_ids
     context_value["plan_phase"] = plan.phase
     context_value["question_template_count"] = _configured_template_count(context)
     context_value["evidence_source"] = "planning_catalog"
     context_value["available_followup_tool"] = "read_evidence_catalog"
-    state = context.setdefault("planning_read_state", {"scenario_id": scenario_id, "scenario_context_read": False, "catalog_queries": []})
+    state = context.setdefault("planning_read_state", {
+        "scenario_id": scenario_id,
+        "scenario_context_read": False,
+        "catalog_queries": [],
+        "catalog_cache": {},
+    })
     if state.get("scenario_id") == scenario_id and state.get("scenario_context_read"):
         raise ValueError("This Scenario context was already read; choose save_leaf_task or a new evidence request")
     state.update({"scenario_id": scenario_id, "scenario_context_read": True, "catalog_queries": []})
     context_value["next_action"] = "design_leaf"
     context_value["instruction"] = "Use the listed evidence to design and save a Leaf Task. Do not reread this Scenario."
-    context_value["planning_evidence"] = context_value.pop("evidence", [])
-    context_value.pop("node", None)
-    return result("success", json.dumps(context_value, ensure_ascii=False), planning_read_state=state)
+    state["catalog_cache"] = {}
+    return result(
+        "success",
+        json.dumps(context_value, ensure_ascii=False),
+        planning_read_state=state,
+        planning_evidence_cache={
+            "scenario_id": scenario_id,
+            "planning_evidence": context_value.get("planning_evidence", []),
+            "representative_cases": context_value.get("representative_cases", []),
+        },
+    )
 
 
 def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str, Any]:
     """Terminal Leaf-design action after the current Scenario and required evidence are available."""
     plan = _load_plan(context)
+    raw_leaf = leaf
     if plan.phase != "leaves" or not plan.current_scenario_id:
         raise ValueError("An active Task Scenario is required before saving a Leaf Task")
-    draft = leaf if isinstance(leaf, LeafTaskDraft) else LeafTaskDraft.model_validate(leaf)
-    parsed = LeafTask.model_validate(draft.model_dump(mode="json"))
+    try:
+        draft = leaf if isinstance(leaf, LeafTaskDraft) else LeafTaskDraft.model_validate(leaf)
+        parsed = LeafTask.model_validate(draft.model_dump(mode="json"))
+    except ValueError as exc:
+        _raise_leaf_failure(context, plan, raw_leaf, "leaf_schema", str(exc), repair_hint="Preserve the submitted Leaf and correct only the reported schema fields.")
     if parsed.scenario_id != plan.current_scenario_id:
-        raise ValueError("Leaf Task must belong to the active Scenario")
+        _raise_leaf_failure(context, plan, raw_leaf, "scenario_mismatch", "Leaf Task must belong to the active Scenario", path="scenario_id", actual=parsed.scenario_id, expected=plan.current_scenario_id)
     expected_templates = _configured_template_count(context)
     if expected_templates is not None and len(parsed.question_templates) != expected_templates:
-        raise ValueError(
-            f"Leaf Task requires exactly {expected_templates} question_templates; "
-            f"received {len(parsed.question_templates)}"
+        _raise_leaf_failure(
+            context, plan, raw_leaf, "template_count",
+            f"Leaf Task requires exactly {expected_templates} question_templates; received {len(parsed.question_templates)}",
+            path="question_templates", actual=len(parsed.question_templates), expected=expected_templates,
         )
     scenario = plan.scenarios[parsed.scenario_id]
     if parsed.capability_category != scenario.capability_category:
-        raise ValueError("Leaf Task Category must match its Scenario")
+        _raise_leaf_failure(context, plan, raw_leaf, "capability_category", "Leaf Task Category must match its Scenario", path="capability_category", actual=parsed.capability_category.value, expected=scenario.capability_category.value)
     evidence_names = set(_facts(context, plan).get("evidence_names", []))
-    evidence_names.update(
-        selector.name for selector in parsed.input
-        if selector.name and selector.evidence_type == "asset"
-    )
     facts = _facts(context, plan)
-    validate_candidate_leaf(parsed, plan.scenarios, resolver_context={
-        "evidence_names": evidence_names,
-        "evidence_catalog": facts.get("evidence_catalog", {}),
-        "registry": _registry(context),
-    })
+    try:
+        spec = ResolverSpec.parse(parsed.resolver)
+    except ValueError as exc:
+        _raise_leaf_failure(context, plan, raw_leaf, "resolver_schema", str(exc), repair_hint="Keep the same Leaf and repair the Resolver steps or result_step reported above.")
+    catalog = _catalog_map(facts.get("evidence_catalog", {}))
+    evidence_names.update(_case_evidence_names(context))
+    available_names = sorted(set(catalog) | evidence_names)
+    for index, selector in enumerate(parsed.input):
+        if selector.name and selector.name not in evidence_names:
+            _raise_leaf_failure(
+                context, plan, raw_leaf, "missing_input_evidence",
+                f"Input evidence name {selector.name!r} does not exist for this dataset.",
+                path=f"input[{index}].name", actual=selector.name,
+                expected=_name_suggestions(selector.name, available_names),
+                repair_hint="Replace the input selector with one of the reported real evidence names and keep resolver.inputs identical.",
+            )
+    if parsed.input != spec.inputs:
+        _raise_leaf_failure(
+            context, plan, raw_leaf, "input_resolver_mismatch",
+            "Leaf.input and Resolver.inputs differ.",
+            actual={"input": [item.model_dump(mode="json") for item in parsed.input], "resolver_inputs": [item.model_dump(mode="json") for item in spec.inputs]},
+            repair_hint="Make Resolver.inputs exactly equal to Leaf.input; keep reference-only evidence in resolver steps.",
+        )
+    try:
+        validate_candidate_leaf(parsed, plan.scenarios, resolver_context={
+            "evidence_names": evidence_names,
+            "evidence_catalog": catalog,
+            "registry": _registry(context),
+        })
+    except ValueError as exc:
+        _raise_leaf_failure(context, plan, raw_leaf, "leaf_contract", str(exc), repair_hint="Use the current evidence catalog and change only the rejected selector or contract field.")
     identity = leaf_identity(parsed)
     if any(key != parsed.leaf_id and leaf_identity(value) == identity for key, value in plan.leaf_tasks.items()):
-        raise ValueError("Duplicate Leaf Task semantics")
+        _raise_leaf_failure(context, plan, raw_leaf, "duplicate_leaf", "Duplicate Leaf Task semantics", repair_hint="Change the target or resolver semantics while preserving the current Scenario evidence.")
     from medbenchagent.data.query import DatasetQuery
-    query = DatasetQuery(_access(context))
-    if hasattr(query, "iter_cases"):
-        cases = list(query.iter_cases())
-    else:
-        page = query.sample(offset=0, limit=512)
-        cases = list(page.get("values", []))
+    try:
+        query = DatasetQuery(_access(context))
+        if hasattr(query, "iter_cases"):
+            cases = list(query.iter_cases())
+        else:
+            page = query.sample(offset=0, limit=512)
+            cases = list(page.get("values", []))
+    except Exception as exc:
+        _raise_leaf_failure(context, plan, raw_leaf, "dataset_query", str(exc), repair_hint="Use the available planning evidence and retry this Leaf after the dataset query is available.")
     resolution_reasons = Counter()
     resolved_answers = set()
     operation_mode = (_registry(context).answer_options_mode(scenario.operation)
@@ -995,13 +1325,21 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
     eligible = len(cases) - sum(resolution_reasons.values())
     if eligible <= 0:
         common = ", ".join(f"{reason}={count}" for reason, count in resolution_reasons.most_common())
-        raise ValueError(
-            f"Resolver resolved 0 of {len(cases)} Cases. Common reasons: {common or 'unknown'}"
+        _raise_leaf_failure(
+            context, plan, raw_leaf, "resolver_zero_capacity",
+            f"Resolver resolved 0 of {len(cases)} Cases. Common reasons: {common or 'unknown'}",
+            actual=dict(resolution_reasons),
+            repair_hint="Use the relevant evidence names, types and relations reported above, then resubmit this same Leaf.",
         )
     if operation_mode == "required" and parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
         missing_options = resolved_answers - {option for option in (parsed.options or [])}
         if missing_options:
-            raise ValueError(f"Closed VQA options must include every resolved answer: {sorted(missing_options)}")
+            _raise_leaf_failure(
+                context, plan, raw_leaf, "options_incomplete",
+                f"Closed VQA options are missing resolved answers: {sorted(missing_options)}",
+                actual={"provided": parsed.options or [], "resolved": sorted(resolved_answers), "missing": sorted(missing_options)},
+                repair_hint="Add every resolved answer to options without inventing new categories.",
+            )
     parsed = parsed.model_copy(update={"eligible_count": eligible})
     plan.leaf_tasks[parsed.leaf_id] = parsed
     plan.revision += 1
@@ -1332,6 +1670,10 @@ def _planning_instructions(context: dict[str, Any]) -> str:
     if scenario:
         scenario_text = ", ".join((scenario.input_structure, scenario.operation, scenario.clinical_target))
     available = ", ".join(sorted(_available_tools(context)))
+    evidence_cache = context.get("planning_evidence_cache") or {}
+    cache_text = json.dumps(evidence_cache, ensure_ascii=False)
+    if len(cache_text) > 5000:
+        cache_text = cache_text[:5000] + "…"
     runtime = (
         "\n\n## Current Runtime Configuration\n"
         f"- Phase: {plan.phase}\n"
@@ -1340,6 +1682,7 @@ def _planning_instructions(context: dict[str, Any]) -> str:
         f"- Current scenario (input_structure / operation / clinical_target): {scenario_text}\n"
         f"- Saved Leaf Task count for the current Scenario: {len(scenario.leaf_task_ids) if scenario else 0}\n"
         f"- Benchmark brief: {json.dumps(_benchmark_brief(context), ensure_ascii=False)}\n"
+        f"- Current Scenario evidence cache: {cache_text if cache_text != '{}' else 'none'}\n"
         f"- Available planning tools: {available or 'none'}\n"
         "Use these runtime values as the active contract for the next action.\n"
         "When phase=axes, read the current Axis evidence once and then call analyze_axis for every allowed value.\n"

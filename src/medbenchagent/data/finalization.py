@@ -74,6 +74,7 @@ def finalize_prepared_dataset(candidate, context):
         "cases_path": str(temporary / "cases.jsonl"),
         "asset_manifest_path": str(temporary / "asset_manifest.jsonl"),
         "profile_path": str(temporary / "dataset_profile.json"),
+        "mapping_path": str(temporary / "mapping.json"),
         "dataset_card_path": str(temporary / "dataset_card.json"),
         "presentation_manifest_path": str(temporary / "presentation_manifest.jsonl"),
         "duckdb_path": str(temporary / "cache" / "annotation-cache" / "1" / "dataset.duckdb"),
@@ -95,6 +96,7 @@ def finalize_prepared_dataset(candidate, context):
             "cases_path": str(bundle / "cases.jsonl"),
             "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
             "profile_path": str(bundle / "dataset_profile.json"),
+            "mapping_path": str(bundle / "mapping.json"),
             "dataset_card_path": str(bundle / "dataset_card.json"),
             "duckdb_path": str(bundle / "cache" / "annotation-cache" / "1" / "dataset.duckdb"),
         }
@@ -109,6 +111,7 @@ def finalize_prepared_dataset(candidate, context):
             "cases_path": str(bundle / "cases.jsonl"),
             "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
             "profile_path": str(bundle / "dataset_profile.json"),
+            "mapping_path": str(bundle / "mapping.json"),
             "dataset_card_path": str(bundle / "dataset_card.json"),
             "duckdb_path": str(bundle / "cache" / "annotation-cache" / "1" / "dataset.duckdb"),
         },

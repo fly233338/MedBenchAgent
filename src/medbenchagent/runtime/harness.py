@@ -66,7 +66,7 @@ class ToolAction(BaseModel):
 def result(status: str, summary: str, **updates: Any) -> dict[str, Any]:
     structured = {key: updates.pop(key, default) for key, default in (
         ("unresolved_questions", []), ("warnings", []), ("artifacts", {}),
-        ("readiness", {}), ("affected_node_ids", []))}
+        ("readiness", {}), ("affected_node_ids", []), ("diagnostics", {}))}
     return {"status": status, "summary": summary, "updates": updates, **structured}
 
 
@@ -419,7 +419,12 @@ def compile_agent(
                         )
                         outcome = tool.invoke(arguments)
                     except ValueError as exc:
-                        outcome = result("failed", f"{type(exc).__name__}: {exc}")
+                        diagnostics = getattr(exc, "diagnostics", {})
+                        outcome = result(
+                            "failed",
+                            f"{type(exc).__name__}: {exc}",
+                            diagnostics=diagnostics,
+                        )
         context.update(outcome.get("updates", {}))
         if read_operation(operation_log_path(run_directory), operation_id) is None:
             append_operation(operation_log_path(run_directory), {
