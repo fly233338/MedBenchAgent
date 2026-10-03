@@ -156,11 +156,12 @@ class V5DatasetQuery:
         from medbenchagent.planning.node_builder import NodeConstraintRegistry
         from medbenchagent.planning.task_space import TaskNode
         node = TaskNode.model_validate(node)
+        constraint_registry = NodeConstraintRegistry()
         assets = {row["asset_id"]: row for row in self.assets()}
         samples, count = [], 0
         names = set()
         for case in self.iter_cases():
-            if NodeConstraintRegistry.check(node, case_facts(case, assets))[0]:
+            if constraint_registry.check(node, case_facts(case, assets))[0]:
                 count += 1
                 names.update(row["name"] for row in case["evidence"])
                 if len(samples) < sample_limit:
