@@ -105,3 +105,9 @@ Leaf Tasks with a required reason. The discarded IDs are removed from the
 Scenario and canonical plan; an approved Scenario must retain at least one
 valid Leaf Task.
 
+The canonical `pending_scenario_ids` projection follows the active workflow
+queue. During `scenario_review` it contains the Scenarios still awaiting
+candidate review; after that queue is exhausted it contains the accepted
+Scenarios still awaiting Leaf design and review. The persisted
+`scenario_review_pending_ids` field remains the authoritative review queue.
+

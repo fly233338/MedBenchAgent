@@ -570,7 +570,14 @@ def compile_benchmark_graph(*, checkpointer=None):
                     "revision": draft.get("revision", 0),
                     "phase": draft.get("phase"),
                     "current_scenario_id": draft.get("current_scenario_id"),
-                    "pending_scenario_count": len(draft.get("pending_scenario_ids", [])),
+                    "pending_scenario_count": len(
+                        (
+                            draft.get("scenario_review_pending_ids", [])
+                            or draft.get("screening_pending_scenario_ids", [])
+                        )
+                        if draft.get("phase") in {"screening", "scenario_review"}
+                        else draft.get("pending_scenario_ids", [])
+                    ),
                     "leaf_task_count": len(draft.get("leaf_tasks", {})),
                 },
             )

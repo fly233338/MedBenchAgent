@@ -103,7 +103,7 @@ def test_candidate_scenario_review_advances_the_explicit_scenario(tmp_path, monk
     context = _context(tmp_path)
     for axis, values in (
         ("input_structure", ["single-image"]),
-        ("operation", ["describe"]),
+        ("operation", ["recognize", "describe"]),
         ("clinical_target", ["finding"]),
     ):
         task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
@@ -120,7 +120,28 @@ def test_candidate_scenario_review_advances_the_explicit_scenario(tmp_path, monk
 
     assert captured["payload"]["scenario"]["scenario_id"] == scenario_id
     assert scenario_id not in plan.scenario_review_pending_ids
+    assert plan.pending_scenario_ids
+    if plan.phase == "scenario_review":
+        assert plan.pending_scenario_ids == plan.scenario_review_pending_ids
+    assert task_planning._planning_progress_key(context)["pending_scenario_count"] == len(plan.pending_scenario_ids)
     assert reviewed["summary"] == f"Scenario Review {scenario_id}: keep"
+
+
+def test_review_progress_uses_review_queue_when_legacy_pending_list_is_empty(tmp_path):
+    context = _context(tmp_path)
+    for axis, values in (
+        ("input_structure", ["single-image"]),
+        ("operation", ["recognize", "describe"]),
+        ("clinical_target", ["finding"]),
+    ):
+        task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
+    plan = task_planning._load_plan(context)
+    plan.pending_scenario_ids = []
+    task_planning._write_artifacts(context, plan)
+
+    progress = task_planning._planning_progress_key(context)
+    assert progress["pending_scenario_count"] == len(plan.scenario_review_pending_ids)
+    assert progress["pending_scenario_count"] > 0
 
 
 def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeypatch):

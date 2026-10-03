@@ -938,7 +938,11 @@ def review_candidate_scenarios(context: dict[str, Any], *, scenario_id: str) -> 
     if remaining:
         plan.phase = "scenario_review"
         plan.current_scenario_id = remaining[0]
-        plan.pending_scenario_ids = []
+        # Keep the canonical pending list aligned with the active workflow
+        # queue.  During Scenario Review these are the candidates still
+        # awaiting review; once the queue is exhausted the list is replaced
+        # with the accepted Scenarios that still need Leaf design.
+        plan.pending_scenario_ids = remaining.copy()
     else:
         accepted = [key for key, item in plan.scenarios.items() if not item.exclusion_reason]
         plan.pending_scenario_ids = accepted
@@ -1661,6 +1665,17 @@ def _available_tools(context: dict[str, Any]) -> set[str]:
     return set()
 
 
+def _workflow_pending_scenario_ids(plan: TaskPlanState) -> list[str]:
+    """Return the queue that represents unfinished Scenario work in this phase."""
+    if plan.phase in {"screening", "scenario_review"}:
+        return (
+            plan.scenario_review_pending_ids
+            or plan.screening_pending_scenario_ids
+            or plan.pending_scenario_ids
+        )
+    return plan.pending_scenario_ids
+
+
 def _planning_progress_key(context: dict[str, Any]) -> dict[str, Any]:
     """Identify the persisted planning state for action retries and receipts."""
     try:
@@ -1671,7 +1686,7 @@ def _planning_progress_key(context: dict[str, Any]) -> dict[str, Any]:
         "revision": plan.revision,
         "phase": plan.phase,
         "current_scenario_id": plan.current_scenario_id,
-        "pending_scenario_count": len(plan.pending_scenario_ids),
+        "pending_scenario_count": len(_workflow_pending_scenario_ids(plan)),
         "scenario_review_pending_count": len(plan.scenario_review_pending_ids),
         "leaf_task_count": len(plan.leaf_tasks),
     }
@@ -1702,6 +1717,8 @@ def _planning_instructions(context: dict[str, Any]) -> str:
         "\n\n## Current Runtime Configuration\n"
         f"- Phase: {plan.phase}\n"
         f"- Next Axis: {plan.next_axis.value if plan.next_axis else 'none'}\n"
+        f"- Pending Scenario count: {len(_workflow_pending_scenario_ids(plan))}\n"
+        f"- Scenario Review queue remaining: {len(plan.scenario_review_pending_ids)}\n"
         f"- Required question template count: {_configured_template_count(context) or 'not specified'}\n"
         f"- Current scenario (input_structure / operation / clinical_target): {scenario_text}\n"
         f"- Saved Leaf Task count for the current Scenario: {len(scenario.leaf_task_ids) if scenario else 0}\n"
@@ -1742,7 +1759,8 @@ def compile_task_planning_agent(*, checkpointer=None):
             "phase": _load_plan(c).phase,
             "next_axis": _load_plan(c).next_axis,
             "current_scenario_id": _load_plan(c).current_scenario_id,
-            "pending_scenario_count": len(_load_plan(c).pending_scenario_ids),
+            "pending_scenario_count": len(_workflow_pending_scenario_ids(_load_plan(c))),
+            "scenario_review_pending_count": len(_load_plan(c).scenario_review_pending_ids),
             "evidence_manifest_path": _load_plan(c).evidence_manifest_path,
         },
         finish_task_plan,
