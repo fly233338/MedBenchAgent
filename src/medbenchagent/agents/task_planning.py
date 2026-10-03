@@ -630,11 +630,29 @@ def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, 
     axis = TaskAxis(axis)
     plan = _load_plan(context)
     facts = _facts(context, plan)
+    registry = _registry(context)
+    axis_definition = next(
+        (item for item in registry.axis_definitions() if item.get("id") == axis.value),
+        {"id": axis.value, "description": ""},
+    ) if registry else {"id": axis.value, "description": ""}
+    value_definitions = {
+        item.get("id"): item.get("description", "")
+        for item in axis_definition.get("values", [])
+        if item.get("id")
+    }
     evidence = {
         "schema_version": "axis-evidence.v2",
         "axis": axis.value,
         "revision": facts.get("revision"),
         "allowed_values": list((_registry(context).axis_values(axis.value) if _registry(context) else AXIS_VALUES[axis])),
+        "axis_definition": {
+            "id": axis_definition.get("id", axis.value),
+            "description": axis_definition.get("description", ""),
+        },
+        "allowed_value_definitions": [
+            {"id": value, "description": value_definitions.get(value, "")}
+            for value in ((_registry(context).axis_values(axis.value) if _registry(context) else AXIS_VALUES[axis]))
+        ],
         "dataset_overview": {
             "case_count": facts.get("case_count", 0),
             "patient_count": facts.get("patient_count", 0),

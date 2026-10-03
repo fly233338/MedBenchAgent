@@ -19,4 +19,7 @@ def test_task_planning_prompt_covers_visual_semantics_and_template_contract():
     assert "patient or clinical context" in source
     assert "device/acquisition/administrative metadata" in source
     assert "question_template_count" in source
+    prompt = (ROOT / "config/bir_template/registry/agent_prompts/task_planning.md").read_text(encoding="utf-8")
+    for concept in ("Task Axis", "Axis Value", "Task Scenario", "Leaf Task"):
+        assert concept in prompt
     assert "discarded_leaf_tasks" in source

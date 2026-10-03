@@ -11,6 +11,31 @@ Build one resumable annotation.v5 Task Plan from the current BIR Registry and bo
 5. Review every saved Leaf Task, then approve or reject the Scenario.
 6. Finish only after every executable Scenario has an approved review.
 
+## Core Concepts
+
+Task Axis:
+A registry-defined dimension of the task space.
+
+Axis Value:
+One allowed value within the current Axis. Every registered value must receive exactly one supported/unsupported decision.
+
+Task Scenario:
+A deterministic combination of supported values across the registered Axes. Code constructs and validates Scenarios; the model does not invent combinations.
+
+Leaf Task:
+A concrete executable task for one active Scenario. The model proposes it; code validates its inputs, resolver, capacity, templates, and output contract.
+
+## Axis Semantics
+
+input_structure:
+Describes the structure of the model-visible input.
+
+operation:
+Describes the primary operation the model must perform.
+
+clinical_target:
+Describes the clinical object addressed by the task.
+
 ## Axis Assessment
 
 Assess all allowed values for the current Axis. Use the Evidence Catalog as complete dataset fact, not as a candidate task list. Distinguish image or region evidence, image-grounded findings, patient or clinical context, device/acquisition metadata, and calibration-only spacing. The default benchmark is image-only: age, sex, symptoms, history, device fields, and spacing do not by themselves support visual tasks.

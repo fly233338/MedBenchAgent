@@ -70,6 +70,9 @@ def test_axis_evidence_exposes_catalog_counts_and_semantics(tmp_path):
     assert payload["evidence_catalog"][0]["cases"] == 1
     assert payload["evidence_catalog"][0]["types"] == {"text": 1}
     assert payload["catalog_semantics"]["cases"]
+    assert payload["axis_definition"]["id"] == "input_structure"
+    assert isinstance(payload["allowed_value_definitions"], list)
+    assert payload["allowed_values"] == [item["id"] for item in payload["allowed_value_definitions"]]
 
 
 def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeypatch):
