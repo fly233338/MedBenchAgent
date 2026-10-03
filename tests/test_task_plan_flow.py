@@ -52,6 +52,10 @@ def test_axis_calls_are_strictly_ordered(tmp_path):
     result = task_planning.analyze_axis(context, axis="clinical_target", assessments=_assessments("clinical_target", ["finding"]))
     assert result["updates"]["task_space_plan"]["phase"] == "leaves"
     assert result["updates"]["task_space_plan"]["pending_node_ids"]
+    axis_path = Path(context["operation_directory"]) / "axis_decisions.json"
+    assert set(json.loads(axis_path.read_text(encoding="utf-8"))) == {
+        "input_structure", "operation", "clinical_target"
+    }
 
 
 def test_axis_evidence_exposes_catalog_counts_and_semantics(tmp_path):

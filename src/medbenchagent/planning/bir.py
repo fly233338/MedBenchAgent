@@ -51,7 +51,7 @@ class BIRTemplate:
 def _canonical_bytes(value: Any) -> bytes:
     if isinstance(value, (bytes, bytearray)):
         return bytes(value)
-    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
 def _digest_bytes(value: bytes) -> str:

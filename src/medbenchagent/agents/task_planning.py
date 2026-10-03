@@ -927,14 +927,26 @@ def _planning_instructions(context: dict[str, Any]) -> str:
     # The external prompt covers patient or clinical context, device/acquisition/administrative metadata, question_template_count
     # and discarded_leaf_tasks review semantics; this source keeps no long prompt.
     store = _bir(context)
-    if store:
-        return store.registry().prompt("task_planning")
-    return ("Build one resumable annotation.v5 Task Plan. Assess every registered Axis value, "
-            "construct evidence-backed Scenarios and Leaf Tasks, and let code validate contracts. "
-            "Use evidence_catalog:<name> and dataset_overview:* only as planning references; "
-            "never pass them to read_evidence. For runtime inspections, call list_evidence first "
-            "and use only the returned inspection references. Every action must be the outer "
-            "ToolAction shape {tool, arguments, reason}.")
+    base = store.registry().prompt("task_planning") if store else (
+        "Build one resumable annotation.v5 Task Plan. Follow the current phase, use bounded "
+        "evidence, and return one valid ToolAction at a time."
+    )
+    plan = _load_plan(context)
+    scenario = plan.scenarios.get(plan.current_scenario_id) if plan.current_scenario_id else None
+    scenario_text = "none"
+    if scenario:
+        scenario_text = ", ".join((scenario.input_structure, scenario.operation, scenario.clinical_target))
+    available = ", ".join(sorted(_available_tools(context)))
+    runtime = (
+        "\n\n## Current Runtime Configuration\n"
+        f"- Phase: {plan.phase}\n"
+        f"- Required question template count: {_configured_template_count(context) or 'not specified'}\n"
+        f"- Current scenario (input_structure / operation / clinical_target): {scenario_text}\n"
+        f"- Saved Leaf Task count for the current Scenario: {len(scenario.leaf_task_ids) if scenario else 0}\n"
+        f"- Available planning tools: {available or 'none'}\n"
+        "Use these runtime values as the active contract for the next action."
+    )
+    return base + runtime
 
 def compile_task_planning_agent(*, checkpointer=None):
     tools = (
