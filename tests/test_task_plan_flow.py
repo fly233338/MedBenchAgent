@@ -50,8 +50,8 @@ def test_axis_calls_are_strictly_ordered(tmp_path):
     task_planning.analyze_axis(context, axis="input_structure", assessments=_assessments("input_structure", ["single-image"]))
     task_planning.analyze_axis(context, axis="operation", assessments=_assessments("operation", ["describe"]))
     result = task_planning.analyze_axis(context, axis="clinical_target", assessments=_assessments("clinical_target", ["finding"]))
-    assert result["updates"]["task_space_plan"]["phase"] == "leaves"
-    assert result["updates"]["task_space_plan"]["pending_node_ids"]
+    assert result["updates"]["task_space_plan"]["phase"] == "screening"
+    assert result["updates"]["task_space_plan"]["screening_pending_scenario_ids"]
     axis_path = Path(context["operation_directory"]) / "axis_decisions.json"
     assert set(json.loads(axis_path.read_text(encoding="utf-8"))) == {
         "input_structure", "operation", "clinical_target"
@@ -95,6 +95,12 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
             ]}])
 
     monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", Query)
+    plan = task_planning._load_plan(context)
+    node_id = plan.screening_pending_scenario_ids[0]
+    screened = task_planning.screen_scenario(
+        context, scenario_id=node_id, decision="keep", reason="The scenario is semantically suitable."
+    )
+    context.update(screened["updates"])
     plan = task_planning._load_plan(context)
     node_id = plan.pending_node_ids[0]
     plan.current_scenario_id = node_id
@@ -153,7 +159,12 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
 
     monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", Query)
     plan = task_planning._load_plan(context)
-    scenario_id = plan.pending_node_ids[0]
+    scenario_id = plan.screening_pending_scenario_ids[0]
+    screened = task_planning.screen_scenario(
+        context, scenario_id=scenario_id, decision="keep", reason="The scenario is semantically suitable."
+    )
+    context.update(screened["updates"])
+    plan = task_planning._load_plan(context)
     plan.current_scenario_id = scenario_id
     task_planning._write_derived_artifacts(context, plan)
 
