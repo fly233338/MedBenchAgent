@@ -1,0 +1,1 @@
+Assess the supplied Axis using only the bounded evidence. Return one decision for every allowed value, with evidence_basis and a concise reason. Apply the image-only benchmark policy. Do not construct Scenarios or Leaf Tasks.

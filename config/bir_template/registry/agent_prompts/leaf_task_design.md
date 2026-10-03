@@ -1,0 +1,1 @@
+Design complete Leaf Tasks for the current Scenario. Use explicit model-visible inputs, a valid resolver, the required output contract, equivalent question_templates, and complete options when the operation guidance requires Closed VQA. Keep reference evidence out of model inputs.

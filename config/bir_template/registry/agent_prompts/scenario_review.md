@@ -1,0 +1,1 @@
+Review the supplied Scenario and Leaf summaries. Return a complete ScenarioReview covering every Leaf. Check semantic equivalence of question templates, output and paradigm compatibility, Closed VQA options, and reference-evidence leakage. Do not redesign Leaf Tasks.

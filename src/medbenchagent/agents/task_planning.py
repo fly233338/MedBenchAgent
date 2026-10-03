@@ -18,6 +18,7 @@ from medbenchagent.planning.task_discovery import leaf_identity, validate_candid
 from medbenchagent.planning.task_space import (
     AXIS_VALUES,
     AxisAnalysis,
+    AxisDecisionSet,
     AxisValueDecision,
     CapabilityCategory,
     EvidenceBasis,
@@ -38,8 +39,8 @@ from medbenchagent.runtime.tool_contracts import NoArguments
 
 class AxisArguments(NoArguments):
     axis: TaskAxis = Field(description="Axis being assessed; use the next axis returned by planning context.")
-    assessments: list[AxisValueDecision] = Field(
-        min_length=1,
+    assessments: list[AxisValueDecision] | None = Field(
+        default=None,
         description=(
             "One assessment for every allowed value, using only value, supported, "
             "evidence_basis[{reference,detail}], and reason."
@@ -117,7 +118,7 @@ class LeafTaskArguments(NoArguments):
 
 
 class ScenarioReviewArguments(NoArguments):
-    review: ScenarioReview
+    review: ScenarioReview | None = None
 
 
 def _read(path: str | Path) -> dict[str, Any]:
@@ -612,7 +613,7 @@ def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str 
     return result("success", f"Scenario {scenario_id} screening decision: {decision}", **updates)
 
 
-def analyze_axis(context: dict[str, Any], *, axis: TaskAxis, assessments: list[AxisValueDecision]) -> dict[str, Any]:
+def analyze_axis(context: dict[str, Any], *, axis: TaskAxis, assessments: list[AxisValueDecision] | None = None) -> dict[str, Any]:
     axis = TaskAxis(axis)
     plan = _load_plan(context)
     if plan.phase != "axes":
@@ -620,9 +621,19 @@ def analyze_axis(context: dict[str, Any], *, axis: TaskAxis, assessments: list[A
     expected = _axis_order()[len(plan.axis_decisions)]
     if axis != expected:
         raise ValueError(f"Expected Axis {expected}, received {axis}")
-    assessments = [AxisValueDecision.model_validate(value) for value in assessments]
     registry = _registry(context)
     allowed = set(registry.axis_values(axis.value) if registry else AXIS_VALUES[axis])
+    if assessments is None:
+        evidence = read_axis_evidence(context, axis=axis)["summary"]
+        axis_definition = next(item for item in registry.axis_definitions() if item["id"] == axis.value) if registry else {"id": axis.value}
+        parsed = complete_json(
+            registry.prompt("axis_analysis") if registry else "Assess the supplied Axis using bounded evidence.",
+            json.dumps({"axis": axis.value, "axis_definition": axis_definition, "allowed_values": sorted(allowed),
+                        "bounded_evidence": json.loads(evidence), "dataset_policy": "image-only benchmark"}, ensure_ascii=False),
+            AxisDecisionSet,
+        )
+        assessments = parsed["values"]
+    assessments = [AxisValueDecision.model_validate(value) for value in assessments]
     actual = [value.value for value in assessments]
     if set(actual) != allowed or len(actual) != len(set(actual)):
         raise ValueError(f"Axis analysis must cover registry exactly for {axis}")
@@ -941,11 +952,25 @@ def save_task_leaf(context: dict[str, Any], *, leaf: dict[str, Any]) -> dict[str
     return save_leaf_task(context, leaf=LeafTaskDraft.model_validate(normalized))
 
 
-def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview) -> dict[str, Any]:
-    review = review if isinstance(review, ScenarioReview) else ScenarioReview.model_validate(review)
+def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview | None = None) -> dict[str, Any]:
     plan = _load_plan(context)
     if plan.phase != "leaves" or not plan.current_scenario_id:
         raise ValueError("An active Scenario is required before review")
+    scenario = plan.scenarios[plan.current_scenario_id]
+    if review is None:
+        summaries = [
+            {key: value for key, value in leaf.model_dump(mode="json").items()
+             if key in {"leaf_task_id", "name", "target", "output_spec", "task_paradigm", "question_templates", "options", "eligible_count"}}
+            for leaf in (plan.leaf_tasks[item] for item in scenario.leaf_task_ids)
+        ]
+        prompt = _bir(context).prompt("scenario_review") if _bir(context) else "Review the supplied Leaf summaries and return a complete ScenarioReview."
+        review = ScenarioReview.model_validate(complete_json(
+            prompt,
+            json.dumps({"scenario": scenario.model_dump(mode="json"), "leaf_tasks": summaries}, ensure_ascii=False),
+            ScenarioReview,
+        ))
+    elif not isinstance(review, ScenarioReview):
+        review = ScenarioReview.model_validate(review)
     if review.scenario_id != plan.current_scenario_id:
         raise ValueError("Review must belong to the active Scenario")
     scenario = plan.scenarios[review.scenario_id]
@@ -1122,7 +1147,7 @@ def _planning_instructions(context: dict[str, Any]) -> str:
     # The external prompt covers patient or clinical context, device/acquisition/administrative metadata, question_template_count
     # and discarded_leaf_tasks review semantics; this source keeps no long prompt.
     store = _bir(context)
-    base = store.registry().prompt("task_planning") if store else (
+    base = store.registry().prompt("task_planning_orchestrator") if store else (
         "Build one resumable annotation Task Plan. Follow the current phase, use bounded "
         "evidence, and return one valid ToolAction at a time."
     )
