@@ -1058,11 +1058,15 @@ def _planning_instructions(context: dict[str, Any]) -> str:
     runtime = (
         "\n\n## Current Runtime Configuration\n"
         f"- Phase: {plan.phase}\n"
+        f"- Next Axis: {plan.next_axis.value if plan.next_axis else 'none'}\n"
         f"- Required question template count: {_configured_template_count(context) or 'not specified'}\n"
         f"- Current scenario (input_structure / operation / clinical_target): {scenario_text}\n"
         f"- Saved Leaf Task count for the current Scenario: {len(scenario.leaf_task_ids) if scenario else 0}\n"
         f"- Available planning tools: {available or 'none'}\n"
-        "Use these runtime values as the active contract for the next action."
+        "Use these runtime values as the active contract for the next action.\n"
+        "When phase=axes, read the current Axis evidence once and then call analyze_axis for every allowed value.\n"
+        "When next_axis=clinical_target, analyze_axis is the required next state-changing action; do not repeat an unchanged evidence-catalog read.\n"
+        "Axis completion is persisted only by analyze_axis."
     )
     return base + runtime
 

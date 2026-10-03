@@ -24,4 +24,8 @@ def test_task_planning_prompt_covers_visual_semantics_and_template_contract():
         assert concept in prompt
     assert "Resolver.inputs must be exactly identical to Leaf.input" in prompt
     assert "The model does not construct Task Scenarios" in prompt
+    assert "Axis Phase Protocol" in prompt
+    assert "next_axis` is `clinical_target`" in prompt
+    assert "`analyze_axis` exactly once" in prompt
+    assert "do not repeatedly request the same page" in prompt
     assert "discarded_leaf_tasks" in source

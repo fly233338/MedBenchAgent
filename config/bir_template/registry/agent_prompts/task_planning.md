@@ -11,6 +11,18 @@ Build one resumable annotation Task Plan from the current BIR Registry and bound
 5. Review every saved Leaf Task, then approve or reject the Scenario.
 6. Finish only after every executable Scenario has an approved review.
 
+## Axis Phase Protocol
+
+When the current phase is `axes`, follow this exact sequence:
+
+1. Call `read_planning_context` and use its `next_axis` as the only Axis to assess.
+2. Call `read_axis_evidence` for that Axis and use its allowed values and bounded evidence.
+3. Read `read_evidence_catalog` only when a specific evidence name or observed value is still needed. The catalog is paginated; do not repeatedly request the same page or wait for the entire catalog before deciding.
+4. Call `analyze_axis` exactly once with one decision for every allowed value.
+5. After `analyze_axis` succeeds, call `read_planning_context` again to confirm the next Axis or phase.
+
+If `next_axis` is `clinical_target`, the next state-changing action must be `analyze_axis`; do not continue browsing the evidence catalog with unchanged arguments. Axis decisions are the persisted output of this phase. Do not proceed to Scenario or Leaf work until all three Axes have been analyzed.
+
 ## Core Concepts
 
 Task Axis:

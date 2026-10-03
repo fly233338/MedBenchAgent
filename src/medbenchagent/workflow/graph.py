@@ -536,7 +536,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         )
         if output["result"]["status"] == "blocked" and advanced and draft.get("phase") not in {"complete", "blocked"}:
             outcome["status"] = "success"
-            outcome["summary"] = "Task Plan progress saved; planning can resume from the current Scenario"
+            outcome["summary"] = "Task Plan is incomplete; the same planning child will resume from its persisted Axis or Scenario state"
             outcome["updates"]["planning_incomplete"] = True
         if output["result"]["status"] == "complete":
             requests = dict(context.get("template_revision_requests", {}))
