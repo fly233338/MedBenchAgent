@@ -514,6 +514,12 @@ def compile_benchmark_graph(*, checkpointer=None):
             )
         elif output["result"]["status"] == "complete":
             outcome["summary"] = "Task Plan completed and published."
+            outcome["updates"]["planning_incomplete"] = False
+            outcome["updates"]["planning_status"] = "complete"
+            outcome["updates"]["dataset_task_plans"] = {
+                **context.get("dataset_task_plans", {}),
+                **output.get("context", {}).get("dataset_task_plans", {}),
+            }
         # A blocked child is resumable only when the persisted draft actually
         # advanced. Never turn a contract failure with no state mutation into a
         # success, otherwise Supervisor will repeatedly delegate the same work.
@@ -536,7 +542,10 @@ def compile_benchmark_graph(*, checkpointer=None):
             requests = dict(context.get("template_revision_requests", {}))
             requests.pop(dataset_id, None)
             outcome["updates"]["template_revision_requests"] = requests
-            outcome["updates"]["dataset_task_plans"] = {**context.get("dataset_task_plans", {}), dataset_id: output["context"]["working_blueprint_path"]}
+            outcome["updates"]["dataset_task_plans"] = {
+                **context.get("dataset_task_plans", {}),
+                dataset_id: output["context"]["working_blueprint_path"],
+            }
         return outcome
 
     def run_v2(context, *, dataset_id):
@@ -547,10 +556,18 @@ def compile_benchmark_graph(*, checkpointer=None):
         child = load_context(saved, "planning", dataset_id)
         child["operation_directory"] = agent_operation(context, "TaskSpacePipelineAgent", dataset_id)
         output = run_task_space_pipeline(child)
-        atomic_write_json(Path(child["operation_directory"]) / "result.json", output)
+        if output.get("status") != "success":
+            return result("failed", output.get("summary", "Task Space pipeline failed"), **output.get("updates", {}))
+        payload = output.get("updates", {}).get("task_space_output")
+        if not isinstance(payload, dict) or not isinstance(payload.get("audit"), dict):
+            raise ValueError(
+                "Task Space pipeline returned an invalid result envelope: "
+                "expected updates.task_space_output.audit"
+            )
+        atomic_write_json(Path(child["operation_directory"]) / "result.json", payload)
         result_path = Path(child["operation_directory"]) / "result.json"
         results = {**context.get("v2_pipeline_results", {}), dataset_id: str(result_path)}
-        counts = {**context.get("v2_pipeline_counts", {}), dataset_id: {"accepted": output["audit"]["accepted"], "shortfall": output.get("shortfall", {})}}
+        counts = {**context.get("v2_pipeline_counts", {}), dataset_id: {"accepted": payload["audit"]["accepted"], "shortfall": payload.get("shortfall", {})}}
         updates = {"v2_pipeline_results": results, "v2_pipeline_counts": counts,
                    "v2_pipeline_path": str(result_path), "delivery_counts": counts}
         if set(results) >= set(context.get("selected_dataset_ids", [])):

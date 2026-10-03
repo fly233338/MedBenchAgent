@@ -1007,6 +1007,11 @@ def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
         "Task Plan published",
         working_blueprint_path=updates["task_plan_path"],
         milestone={"kind": "plan_complete"},
+        planning_incomplete=False,
+        planning_status="complete",
+        dataset_task_plans={
+            context.get("dataset_scope", context.get("selected_dataset_id", "dataset")): updates["task_plan_path"]
+        },
         **updates,
         **versions,
     )

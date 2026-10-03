@@ -130,6 +130,8 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     monkeypatch.setattr(task_planning, "require", lambda *_args: None)
     finished = task_planning.finish_task_space(context)
     assert finished["status"] == "complete"
+    assert finished["updates"]["planning_incomplete"] is False
+    assert finished["updates"]["planning_status"] == "complete"
 
 
 def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
