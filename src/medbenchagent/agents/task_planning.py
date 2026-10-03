@@ -178,6 +178,25 @@ def _configured_template_count(context: dict[str, Any]) -> int | None:
     return int(value)
 
 
+def _benchmark_brief(context: dict[str, Any]) -> dict[str, Any]:
+    """Expose only benchmark intent needed by Task Planning model calls."""
+    info = context.get("benchmark_info") or {}
+    brief = {
+        "clinical_scope": info.get("clinical_scope"),
+        "diseases": info.get("diseases", []),
+        "modalities": info.get("modalities", []),
+        "evaluation_focus": info.get("evaluation_focus"),
+        "language": info.get("language"),
+        "sample_scope": context.get("sample_scope", info.get("sample_scope", [])),
+        "intent_notes": info.get("intent_notes", []),
+        "input_policy": context.get("benchmark_input_policy", "image-only"),
+    }
+    return {
+        key: value for key, value in brief.items()
+        if value not in (None, "", [], {})
+    }
+
+
 def _load_plan(context: dict[str, Any]) -> TaskPlanState:
     path = _plan_path(context)
     if path.is_file():
@@ -589,6 +608,7 @@ def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str 
             "evidence_catalog": catalog,
             "operation_description": operation["description"],
             "answer_options": operation["answer_options"],
+            "benchmark_brief": _benchmark_brief(context),
         }
         screening = complete_json(
             registry.prompt("scenario_screening") if registry else "Return only JSON with decision keep or exclude and a concise reason.",
@@ -652,8 +672,9 @@ def review_candidate_scenarios(context: dict[str, Any]) -> dict[str, Any]:
         "scenario": scenario.model_dump(mode="json"),
         "evidence_catalog": catalog,
         "operation_guidance": guidance,
+        "benchmark_brief": _benchmark_brief(context),
     }
-    prompt = registry.prompt("scenario_global_review") if registry else "Review every Scenario and return keep or exclude with a reason."
+    prompt = registry.prompt("scenario_screening") if registry else "Review one Scenario and return keep or exclude with a non-empty reason."
     reviewed = ScenarioScreeningResult.model_validate(complete_json(prompt, json.dumps(payload, ensure_ascii=False), ScenarioScreeningResult))
     remaining = pending[1:]
     plan.scenario_review_pending_ids = remaining
@@ -691,7 +712,8 @@ def analyze_axis(context: dict[str, Any], *, axis: TaskAxis, assessments: list[A
         parsed = complete_json(
             registry.prompt("axis_analysis") if registry else "Assess the supplied Axis using bounded evidence.",
             json.dumps({"axis": axis.value, "axis_definition": axis_definition, "allowed_values": sorted(allowed),
-                        "bounded_evidence": json.loads(evidence), "dataset_policy": "image-only benchmark"}, ensure_ascii=False),
+                        "bounded_evidence": json.loads(evidence), "dataset_policy": "image-only benchmark",
+                        "benchmark_brief": _benchmark_brief(context)}, ensure_ascii=False),
             AxisDecisionSet,
         )
         assessments = parsed["values"]
@@ -1030,6 +1052,58 @@ def save_task_leaf(context: dict[str, Any], *, leaf: dict[str, Any]) -> dict[str
     return save_leaf_task(context, leaf=LeafTaskDraft.model_validate(normalized))
 
 
+def _leaf_validation_summary(context: dict[str, Any], leaf: LeafTask) -> dict[str, Any]:
+    """Return a bounded resolver summary for Scenario Review."""
+    summary: dict[str, Any] = {
+        "contract_validated": True,
+        "eligible_count": leaf.eligible_count,
+        "case_count": None,
+        "successful_case_count": None,
+        "failure_reasons": {},
+        "answer_distribution": {},
+        "successful_examples": [],
+    }
+    access = _access(context)
+    if not access.get("cases_path") and not access.get("duckdb_path"):
+        return summary
+    try:
+        from medbenchagent.data.query import DatasetQuery
+        query = DatasetQuery(access)
+        cases = list(query.iter_cases()) if hasattr(query, "iter_cases") else list(query.sample(offset=0, limit=512).get("values", []))
+    except Exception as exc:  # pragma: no cover - diagnostics only
+        summary["validation_error"] = str(exc)
+        return summary
+    failures = Counter()
+    answers = Counter()
+    examples = []
+    for case in cases:
+        resolved = resolve(case, ResolverSpec.parse(leaf.resolver))
+        if isinstance(resolved, NotApplicable):
+            failures[resolved.reason] += 1
+            continue
+        reference = resolved.reference
+        value = reference.get("value", reference) if isinstance(reference, dict) else reference
+        if isinstance(value, (str, int, float, bool)):
+            answer = str(value)
+            answers[answer] += 1
+        else:
+            answer = None
+        if len(examples) < 3:
+            examples.append({
+                "case_id": case.get("case_id"),
+                "reference": reference if isinstance(reference, (str, int, float, bool, list, dict)) else str(reference),
+                "answer": answer,
+            })
+    summary.update({
+        "case_count": len(cases),
+        "successful_case_count": len(cases) - sum(failures.values()),
+        "failure_reasons": dict(failures),
+        "answer_distribution": dict(answers),
+        "successful_examples": examples,
+    })
+    return summary
+
+
 def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview | None = None) -> dict[str, Any]:
     plan = _load_plan(context)
     if plan.phase != "leaves" or not plan.current_scenario_id:
@@ -1037,14 +1111,32 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview |
     scenario = plan.scenarios[plan.current_scenario_id]
     if review is None:
         summaries = [
-            {key: value for key, value in leaf.model_dump(mode="json").items()
-             if key in {"leaf_task_id", "name", "target", "output_spec", "task_paradigm", "question_templates", "options", "eligible_count"}}
+            {
+                **{key: value for key, value in leaf.model_dump(mode="json").items()
+                   if key in {"leaf_task_id", "name", "target", "input", "reference_rule", "resolver",
+                              "evidence", "output_spec", "task_paradigm", "question_templates", "options",
+                              "eligible_count"}},
+                "validation": _leaf_validation_summary(context, leaf),
+            }
             for leaf in (plan.leaf_tasks[item] for item in scenario.leaf_task_ids)
         ]
-        prompt = _bir(context).prompt("scenario_review") if _bir(context) else "Review the supplied Leaf summaries and return a complete ScenarioReview."
+        registry = _registry(context)
+        operation_guidance = {}
+        if registry:
+            operation = registry.operation_definition(scenario.operation)
+            operation_guidance = {
+                "description": operation["description"],
+                "answer_options": operation["answer_options"],
+            }
+        prompt = registry.prompt("scenario_review") if registry else "Review the supplied Leaf summaries and return a complete ScenarioReview."
         review = ScenarioReview.model_validate(complete_json(
             prompt,
-            json.dumps({"scenario": scenario.model_dump(mode="json"), "leaf_tasks": summaries}, ensure_ascii=False),
+            json.dumps({
+                "scenario": scenario.model_dump(mode="json"),
+                "leaf_tasks": summaries,
+                "operation_guidance": operation_guidance,
+                "benchmark_brief": _benchmark_brief(context),
+            }, ensure_ascii=False),
             ScenarioReview,
         ))
     elif not isinstance(review, ScenarioReview):
@@ -1228,10 +1320,9 @@ finish_task_space = finish_task_plan
 
 def _planning_instructions(context: dict[str, Any]) -> str:
     """Load the frozen task-planning prompt from the experiment BIR."""
-    # The external prompt covers patient or clinical context, device/acquisition/administrative metadata, question_template_count
-    # and discarded_leaf_tasks review semantics; this source keeps no long prompt.
+    # The external prompt covers workflow operations; stage prompts carry semantic constraints.
     store = _bir(context)
-    base = store.registry().prompt("task_planning_orchestrator") if store else (
+    base = store.registry().prompt("task_planning") if store else (
         "Build one resumable annotation Task Plan. Follow the current phase, use bounded "
         "evidence, and return one valid ToolAction at a time."
     )
@@ -1248,6 +1339,7 @@ def _planning_instructions(context: dict[str, Any]) -> str:
         f"- Required question template count: {_configured_template_count(context) or 'not specified'}\n"
         f"- Current scenario (input_structure / operation / clinical_target): {scenario_text}\n"
         f"- Saved Leaf Task count for the current Scenario: {len(scenario.leaf_task_ids) if scenario else 0}\n"
+        f"- Benchmark brief: {json.dumps(_benchmark_brief(context), ensure_ascii=False)}\n"
         f"- Available planning tools: {available or 'none'}\n"
         "Use these runtime values as the active contract for the next action.\n"
         "When phase=axes, read the current Axis evidence once and then call analyze_axis for every allowed value.\n"

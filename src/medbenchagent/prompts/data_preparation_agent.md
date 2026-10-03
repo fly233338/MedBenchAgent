@@ -32,6 +32,8 @@ that a field is irrelevant from its name alone. Preserve the complete exclusion 
 mapping notes so later Task Planning can distinguish retained medical context from fields that were
 never task evidence.
 
+保留字段定义、标注对象、时间、单位、缺失状态和标注完整性。特别明确“未标注”不能推成“阴性”，“标了几个对象”不能自动推成“总共只有几个”。
+
 Case grouping priority is source-native imaging study/exam identifier, documented Case ID,
 documented composite key, then one source record or independent asset bundle per Case. Patient ID
 must never merge Cases. For DICOM, StudyInstanceUID is the Case, SeriesInstanceUID is a Case Asset,

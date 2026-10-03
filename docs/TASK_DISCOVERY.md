@@ -51,6 +51,24 @@ Each new Leaf Task stores the configured number of distinct
 equivalence. Generation uses a seeded shuffle cycle and records the selected
 `template_index` on each Benchmark Item so output diversity is reproducible.
 
+## Operation and target semantics
+
+Operation 表示“要求模型完成什么任务”，`clinical_target` 表示“针对什么对象或属性”，输出格式再单独规定。
+
+`recognize` covers presence, absence, identity, type, or categorical attributes of clinically relevant entities or observations, including anatomical structures, tissues, cells, findings, devices, evidence-supported assessment or diagnostic categories, visually assessable acquisition characteristics, and image quality.
+
+`localize` grounds a specified anatomical structure, tissue, cell, finding, or device in an explicit spatial or sequence location and returns a supported bounding box or slice/frame index.
+
+`quantify` determines a count, magnitude, extent, proportion, or other numeric quantity with an explicit measurement or counting scope, unit where applicable, and reference rule.
+
+`compare` determines similarities, differences, ordering, or change between explicitly linked and clinically comparable entities or observations, including the comparison dimension and direction.
+
+`align` establishes correspondence or concordance between explicitly related evidence. Multiple inputs alone do not make a task an alignment task.
+
+`describe` produces a coherent paragraph or structured report synthesizing multiple evidence-supported clinical observations and their relationships. An isolated label or verbose restatement of one categorical fact does not qualify.
+
+Task Planning must distinguish `benchmark_model_input` from reference evidence. Planning and review models may inspect the Resolver and reference contract; reference evidence must not be placed in the benchmark model input.
+
 ## Capability Category
 
 Capability Category is a horizontal reporting label, not a hierarchy level.

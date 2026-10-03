@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 
 from medbenchagent.agents import task_planning
-from medbenchagent.planning.task_space import AXIS_VALUES, TaskAxis, TaskSpacePlan
+from medbenchagent.planning.bir import RegistrySnapshot
+from medbenchagent.planning.task_space import AXIS_VALUES, LeafTask, TaskAxis, TaskSpacePlan
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _assessments(axis, supported):
@@ -233,4 +237,81 @@ def test_derived_plan_views_must_match_canonical_plan(tmp_path):
 
     with pytest.raises(ValueError, match="task_scenarios.json is inconsistent"):
         task_planning._assert_derived_artifact_consistency(context, plan)
+
+
+def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    context["benchmark_info"] = {
+        "clinical_scope": "breast imaging",
+        "language": "en",
+        "evaluation_focus": "recognition",
+        "diseases": [],
+        "modalities": ["ultrasound"],
+        "intent_notes": [],
+    }
+    for axis, values in (
+        ("input_structure", ["single-image"]),
+        ("operation", ["describe"]),
+        ("clinical_target", ["finding"]),
+    ):
+        task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
+    plan = task_planning._load_plan(context)
+    scenario_id = plan.scenario_review_pending_ids[0]
+    plan.phase = "leaves"
+    plan.current_scenario_id = scenario_id
+    plan.pending_scenario_ids = [scenario_id]
+    leaf = LeafTask.model_validate({
+        "leaf_task_id": "leaf-review",
+        "name": "finding-report",
+        "scenario_id": scenario_id,
+        "question_templates": ["Describe the finding."],
+        "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+        "target": "finding",
+        "reference_rule": "paired report",
+        "resolver": {
+            "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+            "steps": [
+                {"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}},
+                {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}},
+            ],
+            "output_spec": "text",
+            "result_step": "step_1",
+        },
+        "output_spec": "text",
+        "task_paradigm": "Report Generation",
+        "capability_category": "Generation",
+        "evidence": [{"reference": "profile:report", "detail": "paired report"}],
+        "eligible_count": 1,
+    })
+    plan.leaf_tasks[leaf.leaf_id] = leaf
+    plan.scenarios[scenario_id] = plan.scenarios[scenario_id].model_copy(
+        update={"leaf_task_ids": [leaf.leaf_id], "status": "review_pending"}
+    )
+    task_planning._write_artifacts(context, plan)
+
+    registry = RegistrySnapshot.from_directory(ROOT / "config" / "bir_template" / "registry")
+    monkeypatch.setattr(task_planning, "_registry", lambda _context: registry)
+    captured = {}
+
+    def fake_complete_json(prompt, user_prompt, schema):
+        captured["prompt"] = prompt
+        captured["payload"] = json.loads(user_prompt)
+        return {
+            "scenario_id": scenario_id,
+            "checked_leaf_task_ids": [leaf.leaf_id],
+            "discarded_leaf_tasks": [],
+            "status": "approved",
+            "issues": [],
+        }
+
+    monkeypatch.setattr(task_planning, "complete_json", fake_complete_json)
+    result = task_planning.review_current_scenario(context)
+
+    assert result["status"] == "success"
+    assert captured["prompt"] == registry.prompt("scenario_review")
+    assert captured["payload"]["benchmark_brief"]["clinical_scope"] == "breast imaging"
+    reviewed_leaf = captured["payload"]["leaf_tasks"][0]
+    for field in ("input", "resolver", "reference_rule", "evidence", "question_templates", "options", "output_spec", "task_paradigm"):
+        assert field in reviewed_leaf
+    assert "validation" in reviewed_leaf
 
