@@ -538,6 +538,26 @@ def compile_benchmark_graph(*, checkpointer=None):
             outcome["status"] = "success"
             outcome["summary"] = "Task Plan is incomplete; the same planning child will resume from its persisted Axis or Scenario state"
             outcome["updates"]["planning_incomplete"] = True
+        elif output["result"]["status"] == "blocked" and not advanced and draft.get("phase") not in {"complete", "blocked"}:
+            outcome["status"] = "blocked"
+            outcome["summary"] = (
+                "Task Planning stalled without persisted progress. "
+                "The current Scenario requires a state-changing action such as save_leaf_task "
+                "or a concrete blocking reason; repeated read-only retries were stopped."
+            )
+            outcome["updates"].update(
+                planning_status="stalled",
+                planning_incomplete=False,
+                planning_stalled=True,
+                stall_reason="No plan revision or phase change was persisted before the planning child blocked.",
+                planning_progress={
+                    "revision": draft.get("revision", 0),
+                    "phase": draft.get("phase"),
+                    "current_scenario_id": draft.get("current_scenario_id"),
+                    "pending_scenario_count": len(draft.get("pending_scenario_ids", [])),
+                    "leaf_task_count": len(draft.get("leaf_tasks", {})),
+                },
+            )
         if output["result"]["status"] == "complete":
             requests = dict(context.get("template_revision_requests", {}))
             requests.pop(dataset_id, None)
