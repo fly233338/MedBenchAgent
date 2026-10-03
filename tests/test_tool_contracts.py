@@ -130,6 +130,71 @@ def test_validated_defaults_reach_named_parameters(tmp_path, monkeypatch, harnes
                                   if item["event_type"] == "tool_started"}
 
 
+def test_progress_key_allows_repeated_stateful_actions(tmp_path, harness_model):
+    actions = iter(
+        [
+            *([{"tool": "profile", "arguments": {}, "reason": "Advance"}] * 6),
+            {"tool": "finish", "arguments": {}, "reason": "Done"},
+        ]
+    )
+    harness_model(lambda *_args: next(actions))
+    calls = []
+
+    def profile(context):
+        revision = context.get("revision", 0) + 1
+        calls.append(revision)
+        return result("success", "Advanced", revision=revision)
+
+    graph = compile_agent(
+        "Test",
+        "Test",
+        {"profile": profile},
+        lambda context: {},
+        lambda context: result("complete", "Done"),
+        progress_key=lambda context: context.get("revision", 0),
+    )
+    output = graph.invoke(
+        {
+            "context": {
+                "run_id": "test",
+                "operation_directory": str(tmp_path / "ops"),
+                "construction_events_path": str(tmp_path / "events.jsonl"),
+            }
+        }
+    )
+
+    assert output["result"]["status"] == "complete"
+    assert calls == [1, 2, 3, 4, 5, 6]
+
+
+def test_progress_key_still_caps_unchanged_repeated_actions(tmp_path, harness_model):
+    actions = iter(
+        [{"tool": "profile", "arguments": {}, "reason": "Repeat"}] * 8
+    )
+    harness_model(lambda *_args: next(actions))
+
+    graph = compile_agent(
+        "Test",
+        "Test",
+        {"profile": lambda context: result("success", "No progress")},
+        lambda context: {},
+        lambda context: result("complete", "Done"),
+        progress_key=lambda context: context.get("revision", 0),
+    )
+    output = graph.invoke(
+        {
+            "context": {
+                "run_id": "test",
+                "operation_directory": str(tmp_path / "ops"),
+                "construction_events_path": str(tmp_path / "events.jsonl"),
+            }
+        }
+    )
+
+    assert output["result"]["status"] == "blocked"
+    assert "rework budget" in output["result"]["summary"]
+
+
 def test_source_clarification_is_repaired_before_execution(tmp_path, harness_model):
     actions = iter([
         {"tool": "ask_user", "arguments": {"question": "What does status 0 mean?",

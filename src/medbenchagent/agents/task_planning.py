@@ -70,6 +70,10 @@ class ScenarioArguments(NoArguments):
     scenario_id: str | None = None
 
 
+class CandidateScenarioReviewArguments(NoArguments):
+    scenario_id: str = Field(min_length=1)
+
+
 class ScenarioScreeningArguments(NoArguments):
     scenario_id: str = Field(min_length=1)
     decision: Literal["keep", "exclude"] | None = None
@@ -906,7 +910,7 @@ def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str 
     return result("success", f"Scenario {scenario_id} screening decision: {decision}", **updates)
 
 
-def review_candidate_scenarios(context: dict[str, Any]) -> dict[str, Any]:
+def review_candidate_scenarios(context: dict[str, Any], *, scenario_id: str) -> dict[str, Any]:
     """Review one candidate Scenario; keep it unchanged or exclude it before Leaf design."""
     plan = _load_plan(context)
     if plan.phase not in {"scenario_review", "screening"}:
@@ -914,7 +918,11 @@ def review_candidate_scenarios(context: dict[str, Any]) -> dict[str, Any]:
     pending = plan.scenario_review_pending_ids or plan.screening_pending_scenario_ids
     if not pending:
         raise ValueError("No candidate Scenarios are pending Scenario Review")
-    scenario = plan.scenarios[pending[0]]
+    if scenario_id != pending[0]:
+        raise ValueError(
+            f"Scenario Review must process the queue head {pending[0]}, received {scenario_id}"
+        )
+    scenario = plan.scenarios[scenario_id]
     registry = _registry(context)
     facts = _facts(context, plan)
     guidance = {}
@@ -1675,6 +1683,22 @@ def _available_tools(context: dict[str, Any]) -> set[str]:
     return set()
 
 
+def _planning_progress_key(context: dict[str, Any]) -> dict[str, Any]:
+    """Identify the persisted planning state for action retries and receipts."""
+    try:
+        plan = _load_plan(context)
+    except (OSError, TypeError, ValueError, KeyError):
+        return {}
+    return {
+        "revision": plan.revision,
+        "phase": plan.phase,
+        "current_scenario_id": plan.current_scenario_id,
+        "pending_scenario_count": len(plan.pending_scenario_ids),
+        "scenario_review_pending_count": len(plan.scenario_review_pending_ids),
+        "leaf_task_count": len(plan.leaf_tasks),
+    }
+
+
 finish_task_space = finish_task_plan
 
 
@@ -1713,7 +1737,7 @@ def _planning_instructions(context: dict[str, Any]) -> str:
         "Read tools are bounded queries, not progress actions. Do not repeat an unchanged read."
     )
     if plan.phase in {"screening", "scenario_review"}:
-        runtime += "\nReview exactly one pending Scenario with review_candidate_scenarios. Do not design Leaf Tasks until all Scenario Reviews are complete."
+        runtime += "\nReview exactly one pending Scenario with review_candidate_scenarios, passing its scenario_id. Do not design Leaf Tasks until all Scenario Reviews are complete."
     if plan.phase == "leaves" and store:
         base += "\n\n" + store.registry().prompt("leaf_task_design")
     return base + runtime
@@ -1750,12 +1774,13 @@ def compile_task_planning_agent(*, checkpointer=None):
             "analyze_axis": AxisArguments,
             "read_scenario_context": ScenarioArguments,
             "screen_scenario": ScenarioScreeningArguments,
-            "review_candidate_scenarios": NoArguments,
+            "review_candidate_scenarios": CandidateScenarioReviewArguments,
             "save_leaf_task": LeafTaskArguments,
             "review_current_scenario": ScenarioReviewArguments,
         },
         available_tools=_available_tools,
         initialize_context=_initialize_planning_context,
+        progress_key=_planning_progress_key,
         include_inspection_tools=False,
         checkpointer=checkpointer,
     )

@@ -91,3 +91,10 @@ def test_supervisor_requires_candidate_discovery_before_selection(tmp_path):
 
     assert "discover_datasets" in stages
     assert "select_datasets" not in stages
+
+
+def test_stalled_planning_does_not_offer_plan():
+    stages = available_stages({"planning_stalled": True, "artifact_versions": {}})
+
+    assert "plan" not in stages
+    assert "ask_user" in stages

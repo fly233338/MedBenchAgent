@@ -98,7 +98,10 @@ Reference Evidence is used by the deterministic Resolver to reconstruct an
 answer and is never included in model input. Every evidence artifact is bound
 to the selected dataset revision and access digests.
 
-Scenario Review may atomically discard invalid Leaf Tasks with a required
-reason. The discarded IDs are removed from the Scenario and canonical plan;
-an approved Scenario must retain at least one valid Leaf Task.
+Scenario Review processes one pending Scenario at a time by its `scenario_id`.
+The queue head is the only valid ID, which makes resumed operation receipts
+specific to the Scenario being reviewed. Review may atomically discard invalid
+Leaf Tasks with a required reason. The discarded IDs are removed from the
+Scenario and canonical plan; an approved Scenario must retain at least one
+valid Leaf Task.
 

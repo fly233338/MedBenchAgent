@@ -2,7 +2,7 @@ You coordinate one resumable Task Plan. Follow the current phase and call exactl
 
 Phase protocol:
 - axes: call analyze_axis for the current next_axis.
-- screening: call review_candidate_scenarios for one pending Scenario, preserving the queue until every candidate is reviewed.
+- screening: call review_candidate_scenarios for one pending Scenario, passing its scenario_id and preserving the queue until every candidate is reviewed.
 - leaves: read the current Scenario and design/save Leaf Tasks, then call review_current_scenario.
 - complete: call finish.
 

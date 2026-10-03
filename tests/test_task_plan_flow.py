@@ -82,6 +82,47 @@ def test_axis_evidence_exposes_catalog_counts_and_semantics(tmp_path):
     assert payload["allowed_values"] == [item["id"] for item in payload["allowed_value_definitions"]]
 
 
+def test_candidate_scenario_review_requires_pending_queue_head(tmp_path):
+    context = _context(tmp_path)
+    for axis, values in (
+        ("input_structure", ["single-image"]),
+        ("operation", ["describe"]),
+        ("clinical_target", ["finding"]),
+    ):
+        task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
+    plan = task_planning._load_plan(context)
+    pending = plan.scenario_review_pending_ids
+
+    with pytest.raises(ValueError, match="queue head"):
+        task_planning.review_candidate_scenarios(context, scenario_id="scenario-wrong")
+
+    assert task_planning._load_plan(context).scenario_review_pending_ids == pending
+
+
+def test_candidate_scenario_review_advances_the_explicit_scenario(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    for axis, values in (
+        ("input_structure", ["single-image"]),
+        ("operation", ["describe"]),
+        ("clinical_target", ["finding"]),
+    ):
+        task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
+    scenario_id = task_planning._load_plan(context).scenario_review_pending_ids[0]
+    captured = {}
+
+    def fake_complete_json(prompt, user_prompt, schema):
+        captured["payload"] = json.loads(user_prompt)
+        return {"decision": "keep", "reason": "Suitable for review."}
+
+    monkeypatch.setattr(task_planning, "complete_json", fake_complete_json)
+    reviewed = task_planning.review_candidate_scenarios(context, scenario_id=scenario_id)
+    plan = task_planning._load_plan(context)
+
+    assert captured["payload"]["scenario"]["scenario_id"] == scenario_id
+    assert scenario_id not in plan.scenario_review_pending_ids
+    assert reviewed["summary"] == f"Scenario Review {scenario_id}: keep"
+
+
 def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeypatch):
     context = _context(tmp_path)
     for axis, values in (("input_structure", ["single-image"]), ("operation", ["describe"]), ("clinical_target", ["finding"])):

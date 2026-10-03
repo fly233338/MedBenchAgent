@@ -376,6 +376,8 @@ def available_stages(context: SupervisorContext):
         tools.add("end")
     if context.get("prepared_entries") and "Requirement" not in context.get("artifact_versions", {}):
         tools.add("finish")
+    if context.get("planning_stalled"):
+        return tools | {"ask_user"}
     if context.get("brief_requirement") != context.get("user_requirement") or "brief_requirement" not in context:
         tools.add("specify")
     if not context.get("brief_ready"):
@@ -476,6 +478,13 @@ def compile_benchmark_graph(*, checkpointer=None):
     def plan(context, *, dataset_id, delegation=None):
         """Plan tasks for exactly one selected prepared dataset; no quotas are assigned here."""
         require_pending(context, "plan", dataset_id)
+        if context.get("planning_stalled"):
+            return result(
+                "blocked",
+                "Task Planning is stalled; start a new planning attempt after correcting the reported diagnostic",
+                planning_status="stalled",
+                planning_stalled=True,
+            )
         child = child_context(context, dataset_id, "planning")
         child["delegation"] = canonical_delegation(context, dataset_id)
         child["diagnostic_notes"] = (delegation or {}).get("revision_notes", "")

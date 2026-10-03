@@ -82,6 +82,7 @@ def compile_agent(
     initialize_context: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     read_tools: frozenset[str] = frozenset(),
     automatic_action: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+    progress_key: Callable[[dict[str, Any]], Any] | None = None,
     checkpointer: Any = None,
     include_inspection_tools: bool = True,
 ):
@@ -242,7 +243,8 @@ def compile_agent(
         step = state["step"] + 1
         attempts = dict(state.get("attempts", {}))
         failed_actions = dict(state.get("failed_actions", {}))
-        identity = json.dumps([tool_name, arguments], sort_keys=True, ensure_ascii=False)
+        progress = progress_key(context) if progress_key is not None else None
+        identity = json.dumps([tool_name, arguments, progress], sort_keys=True, ensure_ascii=False)
         if failed_actions.get(identity, 0):
             return {
                 "result": result("blocked", "Repeated failed action rejected; choose a different available tool or arguments"),
@@ -271,7 +273,9 @@ def compile_agent(
                 {"field": ".".join(map(str, error["loc"])), "message": error["msg"]}
                 for error in exc.errors(include_url=False, include_input=False)
             ]
-        operation_signature = json.dumps([tool_name, arguments, dependencies], sort_keys=True, ensure_ascii=False)
+        operation_signature = json.dumps(
+            [tool_name, arguments, dependencies, progress], sort_keys=True, ensure_ascii=False
+        )
         operation_id = f"{scope}:{step}:{hashlib.sha256(operation_signature.encode()).hexdigest()[:12]}"
         operation = Path(context["operation_directory"]) / "operations" / f"{step}.json"
         record_event(context["construction_events_path"], "tool_started",
