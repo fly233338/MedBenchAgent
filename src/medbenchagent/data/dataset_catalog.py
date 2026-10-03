@@ -67,11 +67,9 @@ def load_dataset_catalog(catalog_path=None):
     path = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(path, {"schema_version": "dataset-catalog", "datasets": []})
+        atomic_write_json(path, {"datasets": []})
         return []
     value = json.loads(path.read_text(encoding="utf-8"))
-    if value.get("schema_version") not in {None, "dataset-catalog"}:
-        raise DatasetCatalogError("Only dataset-catalog is supported")
     entries = value.get("datasets", [])
     for entry in entries:
         validate_dataset_id(entry["dataset_id"])
@@ -121,7 +119,7 @@ def register_dataset(dataset_id, bundle, *, catalog_path=None):
         else []
     )
     atomic_write_json(
-        target, {"schema_version": "dataset-catalog", "datasets": entries + [entry]}
+        target, {"datasets": entries + [entry]}
     )
     return entry
 

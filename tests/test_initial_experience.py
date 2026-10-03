@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from medbenchagent.runtime.graph_runner import GraphRunner
 def test_missing_catalog_is_initialized_and_corruption_is_preserved(tmp_path):
     path = tmp_path / "datasets" / "dataset_catalog.json"
     assert load_dataset_catalog(path) == []
+    assert json.loads(path.read_text(encoding="utf-8")) == {"datasets": []}
     path.write_text("", encoding="utf-8")
     try:
         load_dataset_catalog(path)

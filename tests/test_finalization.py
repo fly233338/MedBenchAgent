@@ -1,3 +1,5 @@
+import json
+
 from medbenchagent.data.asset_manifest import digest_path
 from medbenchagent.data.finalization import finalize_prepared_dataset
 from medbenchagent.data.models import AssetEntry, CaseRecord, Evidence
@@ -52,6 +54,7 @@ def test_direct_prepared_bundle_is_catalog_reusable(tmp_path):
     entry = prepared_bundle_entry("breast", prepared_root=tmp_path / "Prepared")
     catalog = tmp_path / "catalog.json"
     registered = register_dataset("breast", prepared, catalog_path=catalog)
+    assert list(json.loads(catalog.read_text(encoding="utf-8"))) == ["datasets"]
     card, access = load_prepared(registered)
 
     assert result["bundle"] == str(prepared.resolve())
