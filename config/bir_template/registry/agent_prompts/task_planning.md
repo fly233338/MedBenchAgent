@@ -58,6 +58,15 @@ Use only Axis decisions supported by bounded evidence. Code owns Scenario combin
 
 The model decides Axis Values only. The model does not construct Task Scenarios. Code creates the cross-product of supported Axis Values and applies Registry constraints. The model works on one active executable Scenario at a time.
 
+## Scenario Screening
+
+During `screening`, inspect one current Scenario with its bounded Evidence Catalog and return one
+`screen_scenario` decision: `keep` or `exclude`, with a concise reason. Finite categorical
+Diagnosis, BIRADS, Shape, Echogenicity, or similar annotations favor `recognize`/Closed VQA; a
+categorical text field alone does not justify `describe`. Tumor masks primarily support finding
+localization, and `quantify` requires real numeric measurement evidence. Screening does not create
+Leaf Tasks or options and must not modify Scenario fields.
+
 ## Leaf Task Design
 
 For the active Scenario, create a complete Leaf Task with explicit input evidence selectors, target, resolver, output specification, task paradigm, capability category, and question templates. Diagnosis and report text may be resolver references, but must not be model-visible inputs. Resolver inputs require explicit evidence names and unique roles; result_step uses positional step IDs.

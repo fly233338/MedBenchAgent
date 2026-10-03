@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -57,6 +57,12 @@ class AxisAnalysisArguments(NoArguments):
 
 class ScenarioArguments(NoArguments):
     scenario_id: str | None = None
+
+
+class ScenarioScreeningArguments(NoArguments):
+    scenario_id: str = Field(min_length=1)
+    decision: Literal["keep", "exclude"]
+    reason: str = Field(min_length=1)
 
 
 class LeafTaskDraft(BaseModel):
@@ -538,11 +544,42 @@ def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanSt
     if not active:
         raise ValueError("Axis analysis produced no executable Task Scenario")
     plan.scenarios = scenarios
-    plan.phase = "leaves"
-    plan.pending_scenario_ids = active
+    plan.phase = "screening"
+    # Keep the compatibility pending list populated for run summaries; the
+    # screening-specific list controls which Scenarios may be screened.
+    plan.pending_scenario_ids = active.copy()
+    plan.screening_pending_scenario_ids = active
     plan.completed_scenario_ids = []
-    plan.current_scenario_id = None
+    plan.current_scenario_id = active[0] if active else None
     return plan
+
+
+def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str, reason: str) -> dict[str, Any]:
+    plan = _load_plan(context)
+    if plan.phase != "screening":
+        raise ValueError("Scenario screening is not available in the current phase")
+    if scenario_id not in plan.screening_pending_scenario_ids:
+        raise ValueError("Scenario is not pending screening")
+    if decision not in {"keep", "exclude"} or not reason.strip():
+        raise ValueError("Scenario screening requires decision keep/exclude and a non-empty reason")
+    scenario = plan.scenarios[scenario_id]
+    remaining = [item for item in plan.screening_pending_scenario_ids if item != scenario_id]
+    if decision == "exclude":
+        plan.scenarios[scenario_id] = scenario.model_copy(update={"status": "excluded", "exclusion_reason": reason.strip()})
+        plan.screening_pending_scenario_ids = remaining
+        plan.pending_scenario_ids = [item for item in plan.pending_scenario_ids if item != scenario_id]
+        plan.current_scenario_id = remaining[0] if remaining else None
+        if not remaining:
+            plan.phase = "complete"
+    else:
+        plan.phase = "leaves"
+        plan.current_scenario_id = scenario_id
+        plan.pending_scenario_ids = [scenario_id]
+        plan.screening_pending_scenario_ids = remaining
+        plan.scenarios[scenario_id] = scenario.model_copy(update={"status": "active"})
+    plan.revision += 1
+    updates = _write_artifacts(context, plan)
+    return result("success", f"Scenario {scenario_id} screening decision: {decision}", **updates)
 
 
 def analyze_axis(context: dict[str, Any], *, axis: TaskAxis, assessments: list[AxisValueDecision]) -> dict[str, Any]:
@@ -725,7 +762,10 @@ def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, 
 
 def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = None) -> dict[str, Any]:
     plan = _load_plan(context)
-    scenario_id = scenario_id or plan.current_scenario_id or (plan.pending_scenario_ids[0] if plan.pending_scenario_ids else None)
+    scenario_id = scenario_id or plan.current_scenario_id or (
+        plan.pending_scenario_ids[0] if plan.pending_scenario_ids else
+        (plan.screening_pending_scenario_ids[0] if plan.screening_pending_scenario_ids else None)
+    )
     if not scenario_id or scenario_id not in plan.scenarios:
         raise ValueError("No pending Task Scenario is available")
     if plan.current_scenario_id != scenario_id:
@@ -924,8 +964,13 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview) 
     if review.status == "approved":
         plan.completed_scenario_ids = sorted(set(plan.completed_scenario_ids) | {review.scenario_id})
         plan.pending_scenario_ids = [key for key in plan.pending_scenario_ids if key != review.scenario_id]
-        plan.current_scenario_id = None
-        if not plan.pending_scenario_ids:
+        if plan.pending_scenario_ids:
+            plan.current_scenario_id = plan.pending_scenario_ids[0]
+        elif plan.screening_pending_scenario_ids:
+            plan.phase = "screening"
+            plan.current_scenario_id = plan.screening_pending_scenario_ids[0]
+        else:
+            plan.current_scenario_id = None
             plan.phase = "complete"
     else:
         plan.completed_scenario_ids = [
@@ -1028,6 +1073,8 @@ def _available_tools(context: dict[str, Any]) -> set[str]:
             "read_planning_context", "read_dataset_overview", "read_evidence_catalog",
             "read_axis_evidence", "analyze_axis",
         }
+    if plan.phase == "screening":
+        return {"read_scenario_context", "read_evidence_catalog", "screen_scenario"}
     if plan.phase == "leaves":
         return {"read_scenario_context", "read_evidence_catalog", "save_leaf_task", "review_current_scenario"}
     if plan.phase == "complete":
@@ -1068,6 +1115,14 @@ def _planning_instructions(context: dict[str, Any]) -> str:
         "When next_axis=clinical_target, analyze_axis is the required next state-changing action; do not repeat an unchanged evidence-catalog read.\n"
         "Axis completion is persisted only by analyze_axis."
     )
+    if plan.phase == "screening":
+        runtime += (
+            "\nWhen phase=screening, inspect only the current Scenario and its bounded Evidence Catalog "
+            "and call screen_scenario exactly once. Return only keep or exclude with a concise reason. "
+            "Finite categorical annotations such as Diagnosis, BIRADS, Shape and Echogenicity favor "
+            "recognize/Closed VQA; a single categorical text field does not justify describe; tumor masks "
+            "support finding localization; quantify requires real numeric measurement evidence."
+        )
     return base + runtime
 
 def compile_task_planning_agent(*, checkpointer=None):
@@ -1078,6 +1133,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         read_axis_evidence,
         analyze_axis,
         read_scenario_context,
+        screen_scenario,
         save_leaf_task,
         review_current_scenario,
     )
@@ -1099,6 +1155,7 @@ def compile_task_planning_agent(*, checkpointer=None):
             "read_axis_evidence": AxisEvidenceArguments,
             "analyze_axis": AxisArguments,
             "read_scenario_context": ScenarioArguments,
+            "screen_scenario": ScenarioScreeningArguments,
             "save_leaf_task": LeafTaskArguments,
             "review_current_scenario": ScenarioReviewArguments,
         },

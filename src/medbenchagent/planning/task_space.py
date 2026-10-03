@@ -295,10 +295,11 @@ class TaskPlanState(BaseModel):
     axis_decisions: dict[str, list[AxisValueDecision]] = Field(default_factory=dict)
     scenarios: dict[str, TaskScenario] = Field(default_factory=dict)
     leaf_tasks: dict[str, LeafTask] = Field(default_factory=dict)
-    phase: Literal["access", "overview", "axes", "scenarios", "leaves", "complete", "blocked"] = "access"
+    phase: Literal["access", "overview", "axes", "scenarios", "screening", "leaves", "complete", "blocked"] = "access"
     next_axis: TaskAxis | None = TaskAxis.INPUT_STRUCTURE
     current_scenario_id: str | None = None
     pending_scenario_ids: list[str] = Field(default_factory=list)
+    screening_pending_scenario_ids: list[str] = Field(default_factory=list)
     completed_scenario_ids: list[str] = Field(default_factory=list)
     reviews: dict[str, ScenarioReview] = Field(default_factory=dict)
     revision: int = Field(default=0, ge=0)
