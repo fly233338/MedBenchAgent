@@ -1,7 +1,8 @@
 {
-  "schema_version": "bir.v1",
-  "template_revision": "bir-template.v1",
+  "schema_version": "bir",
+  "template_revision": "bir-template",
   "revision": 0,
   "status": "empty",
   "parts": {}
 }
+

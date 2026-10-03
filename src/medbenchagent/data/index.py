@@ -1,4 +1,4 @@
-"""DuckDB index for annotation.v5 Case/Evidence/Asset bundles."""
+"""DuckDB index for annotation Case/Evidence/Asset bundles."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ import duckdb
 
 from medbenchagent.data.asset_manifest import iter_asset_manifest
 from medbenchagent.data.sources import digest_file
-from medbenchagent.data.v5_models import CaseRecord, validate_case
+from medbenchagent.data.models import CaseRecord, validate_case
 
 
-def prepare_v5_dataset(cases_path, manifest_path, cache_root, *, revision="1", refresh=False,
+def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refresh=False,
                        source_root=None, source_roots=None):
     cases_file = Path(cases_path).resolve()
     manifest = Path(manifest_path).resolve()
-    cache = Path(cache_root) / "annotation-cache.v5" / revision
+    cache = Path(cache_root) / "annotation-cache" / revision
     if refresh and cache.exists():
         shutil.rmtree(cache)
     cache.mkdir(parents=True, exist_ok=True)
@@ -57,7 +57,7 @@ def prepare_v5_dataset(cases_path, manifest_path, cache_root, *, revision="1", r
     temporary.replace(db_path)
     profile = _profile(cases, assets)
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    access = {"schema_version": "annotation.v5", "revision": revision, "cases_path": str(cases_file), "asset_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(cases_file), "asset_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path)}
+    access = {"schema_version": "annotation", "revision": revision, "cases_path": str(cases_file), "asset_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(cases_file), "asset_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path)}
     access_path.write_text(json.dumps(access, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return profile, access
 
@@ -79,10 +79,10 @@ def _profile(cases, assets):
             if item.unit is not None:
                 row["units"][item.unit] += 1
     per_case = Counter(sum(item.type == "asset" for item in case.evidence) for case in cases)
-    return {"schema_version": "dataset-profile.v5", "case_count": len(cases), "patient_count": len({c.patient_id for c in cases if c.patient_id is not None}), "cases_per_patient": dict(Counter(c.patient_id for c in cases if c.patient_id is not None)), "evidence": [{"name": name, **row, "types": dict(row["types"]), "value_types": dict(row["value_types"]), "units": dict(row["units"])} for name, row in sorted(evidence.items())], "assets": {"kinds": dict(Counter(a.kind for a in assets.values())), "formats": dict(Counter(a.format for a in assets.values())), "assets_per_case": dict(per_case), "volume_properties": {a.asset_id: a.metadata for a in assets.values() if a.kind == "volume"}}}
+    return {"schema_version": "dataset-profile", "case_count": len(cases), "patient_count": len({c.patient_id for c in cases if c.patient_id is not None}), "cases_per_patient": dict(Counter(c.patient_id for c in cases if c.patient_id is not None)), "evidence": [{"name": name, **row, "types": dict(row["types"]), "value_types": dict(row["value_types"]), "units": dict(row["units"])} for name, row in sorted(evidence.items())], "assets": {"kinds": dict(Counter(a.kind for a in assets.values())), "formats": dict(Counter(a.format for a in assets.values())), "assets_per_case": dict(per_case), "volume_properties": {a.asset_id: a.metadata for a in assets.values() if a.kind == "volume"}}}
 
 
-class V5DatasetQuery:
+class DatasetIndex:
     def __init__(self, access):
         self.access = access
 
@@ -179,3 +179,4 @@ class V5DatasetQuery:
             rows = db.execute("SELECT value,count(*) FROM evidence WHERE name=? GROUP BY value ORDER BY value LIMIT ? OFFSET ?", [field, limit, offset]).fetchall()
         return {"values": [{"value": json.loads(v), "count": n} for v, n in rows], "total": total,
                 "dataset_version": self.access["revision"], "complete": offset + len(rows) >= total}
+

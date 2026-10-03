@@ -20,7 +20,7 @@ def _litellm_model(model: str) -> str:
 
 def _write_session_state(workspace: Path, request: dict, *, status: str, summary: str = "") -> None:
     bounded = (summary or "")[:6000]
-    state = {"schema_version": "preparation-session.v2", "task_id": request["task_id"],
+    state = {"schema_version": "preparation-session", "task_id": request["task_id"],
              "kind": request["kind"], "source_root": request["source_root"],
              "source_digest": request.get("source_digest", ""),
              "workflow_step": request.get("workflow_step", ""),
@@ -187,3 +187,4 @@ MedBench validation controls acceptance. Repeated actions that produce no new in
 
 if __name__ == "__main__":
     main(sys.argv[1], sys.argv[2])
+

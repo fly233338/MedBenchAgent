@@ -69,7 +69,7 @@ class ContextBoundary(BaseModel):
 
 class PrivateState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    schema_version: Literal["agent-private-state.v1"] = "agent-private-state.v1"
+    schema_version: Literal["agent-private-state"] = "agent-private-state"
     role: Literal["TaskPlanningAgent", "DataProcessingAgent", "AllocationAgent", "FinalizationAgent", "GenerationAgent"]
     dataset_id: str | None
     context: dict[str, Any]
@@ -114,3 +114,4 @@ def load_context(path, role, dataset=None):
         raise ValueError("Saved private state role/dataset does not match its delegation")
     validate_context(state.context, role, dataset)
     return state.context
+

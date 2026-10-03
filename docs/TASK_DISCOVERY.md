@@ -1,7 +1,7 @@
 # Task Planning
 
 Task Planning uses an immutable DatasetAccessReceipt and staged
-annotation.v5 evidence artifacts. The model receives only the evidence slice
+annotation evidence artifacts. The model receives only the evidence slice
 needed for its current decision.
 
 ~~~text
@@ -83,3 +83,4 @@ to the selected dataset revision and access digests.
 Scenario Review may atomically discard invalid Leaf Tasks with a required
 reason. The discarded IDs are removed from the Scenario and canonical plan;
 an approved Scenario must retain at least one valid Leaf Task.
+

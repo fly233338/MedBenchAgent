@@ -1,5 +1,5 @@
-from medbenchagent.audit.manifest_v2 import build_manifest
-from medbenchagent.planning.allocation_v2 import allocate_task_leaves
+from medbenchagent.audit.manifest import build_manifest
+from medbenchagent.planning.allocation import allocate_task_leaves
 
 
 def _leaf(leaf_id, node_id="n", capacity=3):
@@ -14,6 +14,7 @@ def test_allocation_is_capacity_bounded_and_manifest_has_no_metric():
     assert sum(allocation.values()) == 3
     assert allocation["a"] <= 1 and allocation["b"] <= 4
     manifest = build_manifest({"dataset_id": "d"}, [{"node_id": "n", "input_structure": "single-image", "operation": "recognize", "clinical_target": "finding", "capability_category": "Recognition"}], leaves, allocation, item_count=3)
-    assert manifest["schema_version"] == "benchmark-manifest.v2"
+    assert manifest["schema_version"] == "benchmark-manifest"
     assert "metrics" not in manifest
     assert manifest["tasks"]["a"]["output_spec"] == "label"
+

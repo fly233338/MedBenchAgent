@@ -122,16 +122,16 @@ def test_task_paradigm_rejects_incompatible_output():
         raise AssertionError("incompatible TaskLeaf was accepted")
 
 
-def test_v5_planner_axis_and_node_tools_persist_bounded_artifacts(tmp_path, monkeypatch):
+def test_canonical_planner_axis_and_node_tools_persist_bounded_artifacts(tmp_path, monkeypatch):
     from medbenchagent.agents import task_planning
 
     context = {
         "operation_directory": str(tmp_path),
-        "dataset_access_manifest": {"schema_version": "annotation.v5", "revision": "7"},
+        "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"},
     }
     monkeypatch.setattr(task_planning, "require", lambda *_args: None)
     monkeypatch.setattr(task_planning, "_profile", lambda _context: {
-        "schema_version": "dataset-profile.v5",
+        "schema_version": "dataset-profile",
         "assets": {"kinds": {"image": 1}, "assets_per_case": {1: 1}},
         "evidence": [{"name": "label", "types": {"value": 1}, "has_ref": 0}],
     })
@@ -147,10 +147,10 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
     from medbenchagent.agents import task_planning
 
     context = {"operation_directory": str(tmp_path),
-               "dataset_access_manifest": {"schema_version": "annotation.v5", "revision": "7"}}
+               "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"}}
     monkeypatch.setattr(task_planning, "require", lambda *_args: None)
     monkeypatch.setattr(task_planning, "_profile", lambda _context: {
-        "schema_version": "dataset-profile.v5", "assets": {"kinds": {"image": 1}, "assets_per_case": {1: 1}},
+        "schema_version": "dataset-profile", "assets": {"kinds": {"image": 1}, "assets_per_case": {1: 1}},
         "evidence": [{"name": "report", "types": {"text": 1}, "has_ref": 1}],
     })
     axis = _analysis(input_structure=["single-image"], operation=["describe"], clinical_target=["finding"]).model_copy(update={"dataset_revision": "7"}).model_dump()
@@ -175,3 +175,4 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
             "capability_category": "Generation"}
     saved = task_planning.save_task_leaf(context, leaf=leaf)
     assert saved["updates"]["task_leaves"]["leaf-1"]["eligible_count"] == 1
+

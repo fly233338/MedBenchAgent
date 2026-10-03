@@ -1,7 +1,7 @@
-from medbenchagent.audit.v2 import audit_task_items
+from medbenchagent.audit.task_items import audit_task_items
 
 
-def test_v2_audit_reconstructs_reference_and_rejects_leakage():
+def test_audit_reconstructs_reference_and_rejects_leakage():
     leaf = {"leaf_id": "l", "name": "report", "node_id": "n", "question": "Describe.",
             "input": [{"role": "image", "name": "image", "evidence_type": "asset"}], "target": "finding",
             "answer": "Read report", "output_spec": "text", "task_paradigm": "Report Generation",
@@ -16,3 +16,4 @@ def test_v2_audit_reconstructs_reference_and_rejects_leakage():
     report = audit_task_items([case], [good, bad], [leaf])
     assert report["accepted"] == 1 and report["rejected"] == 1
     assert report["reason_counts"]["input_reference_leakage"] == 1
+

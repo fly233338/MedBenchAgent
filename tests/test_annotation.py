@@ -2,10 +2,10 @@ import pytest
 
 from medbenchagent.data.asset_manifest import digest_path, iter_asset_manifest, stable_id
 from medbenchagent.data.case_query import CaseQuery
-from medbenchagent.data.v5_models import AssetEntry, CaseRecord, Evidence, validate_case
+from medbenchagent.data.models import AssetEntry, CaseRecord, Evidence, validate_case
 
 
-def test_v5_case_validates_refs_and_asset_links(tmp_path):
+def test_canonical_case_validates_refs_and_asset_links(tmp_path):
     image = tmp_path / "image.png"
     image.write_bytes(b"pixels")
     asset = AssetEntry(asset_id="a1", kind="image", format="png", source_path="image.png",
@@ -52,3 +52,4 @@ def test_manifest_rejects_changed_asset(tmp_path):
 
 def test_stable_id_is_reproducible():
     assert stable_id("source", "study-1", prefix="case") == stable_id("source", "study-1", prefix="case")
+

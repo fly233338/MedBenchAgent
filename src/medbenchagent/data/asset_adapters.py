@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from medbenchagent.data.v5_models import AssetEntry, PresentationSpec
+from medbenchagent.data.models import AssetEntry, PresentationSpec
 
 
 class AssetAdapterError(ValueError):
@@ -98,7 +98,7 @@ class AssetAdapter:
         return {"asset_id": asset_spec.asset_id, "presentation_id": self.presentation_digest(asset_spec, presentation_spec),
                 "mode": presentation_spec.mode, "axis": presentation_spec.axis, "indices": presentation_spec.indices,
                 "window": presentation_spec.window, "resize": presentation_spec.resize, "crop": presentation_spec.crop,
-                "adapter_version": "v5", "input_digest": asset_spec.file_digest, "output_digest": digest_file(output),
+                "input_digest": asset_spec.file_digest, "output_digest": digest_file(output),
                 "path": output.as_posix()}
 
 
@@ -313,3 +313,4 @@ def _asset_path(asset: AssetEntry, source_root: str | Path | None) -> Path:
     if path.is_absolute():
         raise AssetAdapterError("Asset source_path must be source-relative")
     return (Path(source_root).resolve() / path).resolve() if source_root is not None else path
+

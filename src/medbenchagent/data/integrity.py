@@ -12,8 +12,9 @@ def verify_cache(access):
 
 def verify_prepared_indexes(access):
     verify_cache(access)
-    if access.get("schema_version") == "annotation.v5":
-        from medbenchagent.data.v5_catalog import verify_v5_bundle
-        verify_v5_bundle(Path(access["cases_path"]).parent)
+    if access.get("schema_version") == "annotation":
+        from medbenchagent.data.bundle_catalog import verify_bundle
+        verify_bundle(Path(access["cases_path"]).parent)
         return
-    raise ValueError("Only annotation.v5 prepared bundles are supported; re-prepare this dataset")
+    raise ValueError("Only annotation prepared bundles are supported; re-prepare this dataset")
+

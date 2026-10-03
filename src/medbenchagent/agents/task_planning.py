@@ -178,7 +178,7 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
     directory.mkdir(parents=True, exist_ok=True)
     access = _access(context)
     receipt = DatasetAccessReceipt.model_validate({
-        "schema_version": "dataset-access.v2",
+        "schema_version": "dataset-access",
         "dataset_id": context.get("dataset_scope", context.get("selected_dataset_id")),
         "revision": access.get("revision"),
         "cases_path": access.get("cases_path"),
@@ -194,7 +194,7 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
         "patient_identity": facts.get("patient_identity", "unknown"),
     }).model_dump(mode="json")
     overview = {
-        "schema_version": "dataset-overview.v2",
+        "schema_version": "dataset-overview",
         "dataset_id": receipt["dataset_id"],
         "revision": receipt["revision"],
         "case_count": facts.get("case_count", 0),
@@ -205,7 +205,7 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
         "evidence_counts": facts.get("evidence", {}),
     }
     catalog = {
-        "schema_version": "evidence-catalog.v2",
+        "schema_version": "evidence-catalog",
         "dataset_id": receipt["dataset_id"],
         "revision": receipt["revision"],
         "entries": list(facts.get("evidence_catalog", {}).values()),
@@ -213,7 +213,7 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
         "annotation_mapping": facts.get("annotation_mapping", []),
     }
     relations = {
-        "schema_version": "relation-summary.v2",
+        "schema_version": "relation-summary",
         "dataset_id": receipt["dataset_id"],
         "revision": receipt["revision"],
         "relations": facts.get("relations", {}),
@@ -221,9 +221,9 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
     }
     samples_path = directory / "case_samples.json"
     sample = facts.get("representative_case")
-    samples = {"schema_version": "case-samples.v1", "cases": [sample] if sample else []}
+    samples = {"schema_version": "case-samples", "cases": [sample] if sample else []}
     manifest = {
-        "schema_version": "planning-evidence.v2",
+        "schema_version": "planning-evidence",
         "dataset_id": receipt["dataset_id"],
         "revision": receipt["revision"],
         "artifacts": {},
@@ -415,7 +415,7 @@ def _initialize_planning_context(context: dict[str, Any]) -> dict[str, Any]:
         context.update(_write_artifacts(context, plan))
         return context
     access = _access(context)
-    if access.get("schema_version") != "annotation.v5" or not access.get("cases_path"):
+    if access.get("schema_version") != "annotation" or not access.get("cases_path"):
         plan = TaskPlanState(
             dataset={"dataset_id": context.get("dataset_scope", "dataset")},
             phase="blocked",
@@ -425,11 +425,11 @@ def _initialize_planning_context(context: dict[str, Any]) -> dict[str, Any]:
         return context
 
     from medbenchagent.data.integrity import verify_prepared_indexes
-    from medbenchagent.data.v5_index import V5DatasetQuery
+    from medbenchagent.data.index import DatasetIndex
 
     try:
         verify_prepared_indexes(access)
-        query = V5DatasetQuery(access)
+        query = DatasetIndex(access)
         cases = list(query.iter_cases())
         assets = {row["asset_id"]: row for row in query.assets()}
         facts = build_dataset_facts(cases, assets, profile=_profile(context), revision=access.get("revision"))
@@ -488,7 +488,7 @@ def _facts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
         evidence["numeric"] = evidence.get("numeric", 0) + row.get("value_types", {}).get("number", 0)
     assets = profile.get("assets", {})
     return {
-        "schema_version": "dataset-facts.v2",
+        "schema_version": "dataset-facts",
         "revision": _access(context).get("revision"),
         "case_count": profile.get("case_count", 0),
         "patient_count": profile.get("patient_count", 0),
@@ -522,9 +522,9 @@ def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanSt
         "annotation_mapping": facts.get("annotation_mapping", []),
     }
     access = _access(context)
-    if access.get("schema_version") == "annotation.v5" and access.get("cases_path"):
-        from medbenchagent.data.v5_index import V5DatasetQuery
-        query = V5DatasetQuery(access)
+    if access.get("schema_version") == "annotation" and access.get("cases_path"):
+        from medbenchagent.data.index import DatasetIndex
+        query = DatasetIndex(access)
         assets = {row["asset_id"]: row for row in query.assets()}
         node_context["case_facts"] = [case_facts(case, assets) for case in query.iter_cases()]
     analysis = AxisAnalysis(
@@ -615,7 +615,7 @@ def build_nodes(context: dict[str, Any]) -> dict[str, Any]:
 def read_planning_context(context: dict[str, Any]) -> dict[str, Any]:
     plan = _load_plan(context)
     return result("success", json.dumps({
-        "schema_version": "planning-index.v2",
+        "schema_version": "planning-index",
         "phase": plan.phase,
         "next_axis": plan.next_axis,
         "evidence_manifest_path": plan.evidence_manifest_path,
@@ -685,7 +685,7 @@ def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, 
         if item.get("id")
     }
     evidence = {
-        "schema_version": "axis-evidence.v2",
+        "schema_version": "axis-evidence",
         "axis": axis.value,
         "revision": facts.get("revision"),
         "allowed_values": list((_registry(context).axis_values(axis.value) if _registry(context) else AXIS_VALUES[axis])),
@@ -733,8 +733,8 @@ def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = 
         plan.current_scenario_id = scenario_id
         plan.scenarios[scenario_id] = scenario.model_copy(update={"status": "active"})
         _write_artifacts(context, plan)
-    from medbenchagent.data.v5_index import V5DatasetQuery
-    context_value = V5DatasetQuery(_access(context)).node_context(plan.scenarios[scenario_id])
+    from medbenchagent.data.index import DatasetIndex
+    context_value = DatasetIndex(_access(context)).node_context(plan.scenarios[scenario_id])
     scenario = plan.scenarios[scenario_id]
     context_value["scenario"] = {
         "scenario_id": scenario.scenario_id,
@@ -951,7 +951,7 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview) 
 
 
 def review_current_node(context: dict[str, Any], *, review: dict[str, Any]) -> dict[str, Any]:
-    """Compatibility wrapper for the pre-v3 Scenario review tool."""
+    """Review the current Scenario directly."""
     parsed = dict(review)
     scenario_id = parsed.pop("scenario_id", parsed.pop("node_id", None))
     checked = parsed.pop("checked_leaf_task_ids", parsed.pop("checked_leaf_ids", []))
@@ -1046,7 +1046,7 @@ def _planning_instructions(context: dict[str, Any]) -> str:
     # and discarded_leaf_tasks review semantics; this source keeps no long prompt.
     store = _bir(context)
     base = store.registry().prompt("task_planning") if store else (
-        "Build one resumable annotation.v5 Task Plan. Follow the current phase, use bounded "
+        "Build one resumable annotation Task Plan. Follow the current phase, use bounded "
         "evidence, and return one valid ToolAction at a time."
     )
     plan = _load_plan(context)
@@ -1107,3 +1107,4 @@ def compile_task_planning_agent(*, checkpointer=None):
 
 def apply_template_feedback(context, feedback):
     return result("blocked", "Template review is part of Task Planning")
+

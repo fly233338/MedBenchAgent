@@ -67,7 +67,7 @@ def audit_task_items(
         group["accepted"] += accepted_count
         group["rejected"] += generated_count - accepted_count
     return {
-        "schema_version": "audit-report.v3",
+        "schema_version": "audit-report",
         "generated": len(items),
         "accepted": len(accepted),
         "rejected": len(rejected),

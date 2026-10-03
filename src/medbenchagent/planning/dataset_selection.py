@@ -8,7 +8,7 @@ from pathlib import Path
 from medbenchagent.data.contracts import Contract, Text
 from medbenchagent.data.dataset_catalog import load_dataset_catalog, load_prepared, resolve_path
 from medbenchagent.data.readiness import prepared_directory_entries
-from medbenchagent.data.v5_catalog import card_summary
+from medbenchagent.data.bundle_catalog import card_summary
 from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.dependencies import publish, require
 from medbenchagent.runtime.harness import result
@@ -46,7 +46,7 @@ def _candidate_snapshot(context, path, *, refresh=False):
     prepared_version = context.get("artifact_versions", {}).get("PreparedCandidates")
     if path.is_file():
         snapshot = json.loads(path.read_text(encoding="utf-8"))
-        changed = (snapshot.get("schema_version") != "dataset-candidates.v2"
+        changed = (snapshot.get("schema_version") != "dataset-candidates"
                    or snapshot["requirement_version"] != requirement_version
                    or snapshot["requirement"] != context["user_requirement"]
                    or snapshot["prepared_version"] != prepared_version)
@@ -59,7 +59,7 @@ def _candidate_snapshot(context, path, *, refresh=False):
     from medbenchagent.settings import get_settings
     raw_sources = list(get_settings().dataset_sources)
     snapshot = {
-        "schema_version": "dataset-candidates.v2",
+        "schema_version": "dataset-candidates",
         "requirement": context["user_requirement"],
         "requirement_version": requirement_version,
         "benchmark_info": context.get("benchmark_info", {}),
@@ -177,8 +177,8 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
             entry = snapshot["candidates"][identifier]["entry"]
             access = asset["access"]
             receipt = {
-                "schema_version": "dataset-access.v2",
-                "source_schema_version": access.get("schema_version", "annotation.v5"),
+                "schema_version": "dataset-access",
+                "source_schema_version": access.get("schema_version", "annotation"),
                 "source_access": access,
                 "dataset_id": identifier,
                 "revision": str(access.get("revision", "1")),
@@ -197,7 +197,7 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
                 "dataset_card_digest": snapshot["candidates"][identifier].get("card_digest"),
             }
             changes[f"datasets/{identifier}/selection.json"] = {
-                "schema_version": "dataset-selection.v1",
+                "schema_version": "dataset-selection",
                 "dataset_id": identifier,
                 "selected": True,
                 "selection_reason": selection.selection_reason,
@@ -225,3 +225,4 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
         **issue_updates,
         **versions,
     )
+

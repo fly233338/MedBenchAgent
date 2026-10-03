@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from medbenchagent.data.v5_models import AssetProfile, CaseRecord, DatasetProfile, EvidenceProfile, validate_case
+from medbenchagent.data.models import AssetProfile, CaseRecord, DatasetProfile, EvidenceProfile, validate_case
 
 
 class CaseQuery:
@@ -93,3 +93,4 @@ class AssetQuery(CaseQuery):
 
     def by_format(self, format_name):
         return [asset for asset in self.assets.values() if asset.format == format_name]
+

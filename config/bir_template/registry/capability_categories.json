@@ -1,5 +1,5 @@
 {
-  "schema_version": "bir-registry-capabilities.v1",
+  "schema_version": "bir-registry-capabilities",
   "categories": [
     {"id": "Recognition", "description": "Recognition of findings, anatomy and assessment attributes.", "examples": ["finding recognition", "anatomy recognition"]},
     {"id": "Localization", "description": "Spatial grounding of findings or regions.", "examples": ["bounding box", "spatial grounding"]},
@@ -17,3 +17,4 @@
     "describe": "Generation"
   }
 }
+

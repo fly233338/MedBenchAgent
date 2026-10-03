@@ -9,7 +9,7 @@ from pathlib import Path
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.construction import record_event
 
-CONTRACT_VERSION = "agent-runtime.v23"
+CONTRACT_VERSION = "agent-runtime"
 
 SOURCE_KINDS = frozenset(
     {
@@ -244,7 +244,7 @@ def initialize_dependencies(context, settings):
             "model": snapshot["llm"]["model"],
             "temperature": snapshot["llm"]["default_temperature"],
         },
-        "AllocationConfig": {"policy": "concept-dataset-leaf.v1", "model": settings.llm.model},
+        "AllocationConfig": {"policy": "concept-dataset-leaf", "model": settings.llm.model},
         "TemplateConfig": {
             "count": settings.generation.question_template_count,
             "temperature": context["question_temperature"],
@@ -254,7 +254,7 @@ def initialize_dependencies(context, settings):
             key: context.get(key)
             for key in ("seed", "max_tasks_per_image", "max_total_tasks_per_image")
         },
-        "FinalizationConfig": {"seed": context["seed"], "policy": "final-task.v1"},
+        "FinalizationConfig": {"seed": context["seed"], "policy": "final-task"},
     }
     for kind, value in configs.items():
         path = Path(context["run_directory"]) / "control" / "config" / f"{kind}.json"
@@ -268,3 +268,4 @@ def initialize_dependencies(context, settings):
         Path(context["run_directory"]) / "control" / "contract.json",
         {"contract": CONTRACT_VERSION, "code_at_start": code_identity()},
     )
+

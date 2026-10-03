@@ -1,4 +1,4 @@
-"""Host-side validation for an annotation.v5 preparation candidate."""
+"""Host-side validation for an annotation preparation candidate."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import json
 from pathlib import Path
 
 from medbenchagent.data.asset_manifest import iter_asset_manifest
-from medbenchagent.data.v5_models import CaseRecord, validate_case
+from medbenchagent.data.models import CaseRecord, validate_case
 
 
-def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | None = None,
+def validate_candidate(candidate: str | Path, *, source_root: str | Path | None = None,
                           source_roots: dict[str, str | Path] | None = None) -> dict:
     """Validate every Case and return a complete acceptance/quarantine report."""
     candidate = Path(candidate)
@@ -20,10 +20,10 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
     provenance = candidate / "provenance.jsonl"
     if not provenance.is_file():
         raise ValueError("provenance.jsonl is required")
-    required_receipts = ("conversion_config.json", "grouping_policy.json", "mapping.json", "conversion_version", "complete.json")
+    required_receipts = ("conversion_config.json", "grouping_policy.json", "mapping.json", "complete.json")
     missing_receipts = [name for name in required_receipts if not (candidate / name).is_file()]
     if missing_receipts:
-        raise ValueError("v5 candidate is missing required outputs: " + ", ".join(missing_receipts))
+        raise ValueError("Candidate is missing required outputs: " + ", ".join(missing_receipts))
     provenance_failures = []
     provenance_count = 0
     provenance_cases: set[str] = set()
@@ -74,7 +74,7 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
             provenance_failures.append({"kind": "provenance_failure",
                                         "error": f"accepted cases missing provenance: {missing_cases[:10]}"})
     return {
-        "schema_version": "preparation-report.v5",
+        "schema_version": "preparation-report",
         "status": "failed" if failures and not cases else "complete",
         "input_units": len(cases) + len(failures),
         "input_cases": len(cases) + len(failures),
@@ -86,7 +86,7 @@ def validate_v5_candidate(candidate: str | Path, *, source_root: str | Path | No
     }
 
 
-def write_v5_report(candidate: str | Path, report: dict) -> Path:
+def write_validation_report(candidate: str | Path, report: dict) -> Path:
     candidate = Path(candidate)
     path = candidate / "preparation_report.json"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -94,3 +94,4 @@ def write_v5_report(candidate: str | Path, report: dict) -> Path:
     (candidate / "quarantine.jsonl").write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in quarantined), encoding="utf-8")
     (candidate / "optional_evidence_dropped.jsonl").write_text("", encoding="utf-8")
     return path
+

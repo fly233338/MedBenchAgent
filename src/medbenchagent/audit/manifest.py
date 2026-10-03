@@ -1,4 +1,4 @@
-"""Manifest construction for the v3 benchmark artifacts."""
+"""Manifest construction for the benchmark artifacts."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def build_manifest(
             "generated_count": generated_counts.get(leaf_id, 0),
         }
     return {
-        "schema_version": "benchmark-manifest.v2",
+        "schema_version": "benchmark-manifest",
         "dataset": dataset,
         "task_scenarios": {key: value.model_dump(mode="json") for key, value in parsed_scenarios.items()},
         "leaf_tasks": {key: value.model_dump(mode="json") for key, value in parsed_leaves.items()},

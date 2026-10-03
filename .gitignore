@@ -24,8 +24,9 @@ htmlcov/
 benchmarks/
 .runtime/
 experiments/
-.runtime/
 experiments-v2/
+.runtime/
+experiments/
 .langgraph_api/
 
 # IDE and OS files
@@ -54,3 +55,4 @@ scripts/
 
 # Evaluation outputs; keep the checked-in report summarizer.
 results/*
+

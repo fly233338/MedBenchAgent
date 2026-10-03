@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class DatasetAccessReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    schema_version: str = "dataset-access.v2"
+    schema_version: str = "dataset-access"
     dataset_id: str = Field(min_length=1)
     revision: str = Field(min_length=1)
     cases_path: str = Field(min_length=1)
@@ -27,3 +27,4 @@ class DatasetAccessReceipt(BaseModel):
     dataset_card_digest: str | None = None
     source_schema_version: str | None = None
     source_access: dict[str, Any] | None = None
+

@@ -1,7 +1,7 @@
-from medbenchagent.generation.v2 import generate_task_items
+from medbenchagent.generation.items import generate_task_items
 
 
-def test_v2_generation_uses_resolver_and_hides_reference_from_inputs():
+def test_generation_uses_resolver_and_hides_reference_from_inputs():
     leaf = {
         "leaf_id": "report-leaf", "name": "report", "node_id": "node-1",
         "question": "Describe the study.", "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
@@ -27,7 +27,7 @@ def test_v2_generation_uses_resolver_and_hides_reference_from_inputs():
     assert items[0]["reference_evidence_ids"] == ["report-ev"]
 
 
-def test_v2_generation_honors_allocation_and_case_order():
+def test_generation_honors_allocation_and_case_order():
     leaf = {
         "leaf_id": "l", "name": "label", "node_id": "n", "question": "What is shown?",
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
@@ -45,7 +45,7 @@ def test_v2_generation_honors_allocation_and_case_order():
     assert len(items) == 1 and items[0]["case_id"] == "a"
 
 
-def test_v2_generation_uses_reproducible_balanced_template_cycle():
+def test_generation_uses_reproducible_balanced_template_cycle():
     leaf = {
         "leaf_id": "l", "name": "label", "node_id": "n",
         "question_templates": ["What is shown?", "Which finding is present?", "Identify the finding."],

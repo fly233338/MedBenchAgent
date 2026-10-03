@@ -1,4 +1,4 @@
-"""Post-planning metric configuration for v2 benchmark tasks."""
+"""Post-planning metric configuration for benchmark tasks."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ class MetricSpec(BaseModel):
 
 class EvaluationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    schema_version: str = "evaluation-config.v2"
+    schema_version: str = "evaluation-config"
     metrics: list[MetricSpec] = Field(default_factory=list)
 
     def for_task(self, *, output_spec: OutputSpec, task_paradigm: TaskParadigm, capability_category: CapabilityCategory) -> list[MetricSpec]:

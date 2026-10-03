@@ -189,7 +189,7 @@ class Mapping(Contract):
 
 class PreparationPlan(Contract):
     """Existing low-level operator request; agents use SemanticPreparationSpec and ExecutionPlan."""
-    schema_version: Literal["preparation.v2"] = "preparation.v2"
+    schema_version: Literal["preparation"] = "preparation"
     mapping: Mapping
     steps: list[Step] = Field(default_factory=list)
     fallback_reason: str | None = None
@@ -252,7 +252,7 @@ class FieldMeaning(SemanticDecision):
 
 
 class SemanticPreparationSpec(Contract):
-    schema_version: Literal["semantic-preparation.v1"] = "semantic-preparation.v1"
+    schema_version: Literal["semantic-preparation"] = "semantic-preparation"
     population: SemanticDecision
     population_mode: Literal["independent", "human_review"] = "independent"
     population_reference: Text
@@ -279,7 +279,7 @@ class SemanticPreparationSpec(Contract):
 
 
 class SourceFingerprint(Contract):
-    schema_version: Literal["source-fingerprint.v1"] = "source-fingerprint.v1"
+    schema_version: Literal["source-fingerprint"] = "source-fingerprint"
     dataset_id: Text
     source: Source
     source_artifact: Text
@@ -290,7 +290,7 @@ class SourceFingerprint(Contract):
 
 
 class ExecutionPlan(Contract):
-    schema_version: Literal["preparation-execution.v1"] = "preparation-execution.v1"
+    schema_version: Literal["preparation-execution"] = "preparation-execution"
     executor: Literal["built_in", "generated_python"]
     steps: list[Step] = Field(default_factory=list)
     adapter_reference: str | None = None
@@ -324,7 +324,7 @@ class ExecutionPlan(Contract):
 
 
 class SourceLocator(Contract):
-    schema_version: Literal["source-locator.v1"] = "source-locator.v1"
+    schema_version: Literal["source-locator"] = "source-locator"
     kind: Literal["table", "json", "jsonl", "mask"]
     path: Text
     row: int | None = Field(default=None, ge=1)
@@ -355,7 +355,7 @@ class FindingReference(Contract):
 
 
 class ExtractionProvenance(Contract):
-    schema_version: Literal["extraction-provenance.v1"] = "extraction-provenance.v1"
+    schema_version: Literal["extraction-provenance"] = "extraction-provenance"
     id: Text
     locators: list[SourceLocator] = Field(min_length=1)
     findings: list[FindingReference] = Field(default_factory=list)
@@ -391,7 +391,7 @@ class FieldAlignment(Contract):
 
 
 class HarmonizationPlan(Contract):
-    schema_version: Literal["harmonization.v2"] = "harmonization.v2"
+    schema_version: Literal["harmonization"] = "harmonization"
     fields: list[FieldAlignment] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -483,3 +483,4 @@ class SourcesArguments(Contract):
         if len({s.id for s in self.sources}) != len(self.sources):
             raise ValueError("Source IDs must be unique within a dataset")
         return self
+

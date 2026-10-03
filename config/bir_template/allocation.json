@@ -1,5 +1,5 @@
 {
-  "schema_version": "bir-allocation.v1",
+  "schema_version": "bir-allocation",
   "status": "pending",
   "revision": 0,
   "assignments": {},
@@ -7,3 +7,4 @@
   "shortfall": {},
   "dependencies": {}
 }
+

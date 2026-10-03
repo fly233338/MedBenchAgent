@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from medbenchagent.audit.manifest_v2 import build_manifest
-from medbenchagent.audit.v2 import audit_task_items
-from medbenchagent.generation.v2 import generate_task_items
-from medbenchagent.planning.allocation_v2 import allocate_task_leaves
+from medbenchagent.audit.manifest import build_manifest
+from medbenchagent.audit.task_items import audit_task_items
+from medbenchagent.generation.items import generate_task_items
+from medbenchagent.planning.allocation import allocate_task_leaves
 from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.task_discovery import validate_candidate_leaf
 from medbenchagent.planning.task_space import AxisAnalysis, LeafTask, TaskPlanState, TaskScenario
@@ -28,7 +28,7 @@ def _capability_report(scenarios: dict[str, TaskScenario], leaves: dict[str, Lea
         group["leaves"].add(leaf.leaf_id)
         group["scenarios"].add(scenario.scenario_id if scenario else leaf.scenario_id)
     return {
-        "schema_version": "capability-report.v3",
+        "schema_version": "capability-report",
         "groups": [
             {
                 "capability_category": key[0],
@@ -43,7 +43,7 @@ def _capability_report(scenarios: dict[str, TaskScenario], leaves: dict[str, Lea
     }
 
 
-def run_v2_pipeline(
+def run_pipeline(
     *,
     dataset: dict[str, Any],
     axis_analysis: AxisAnalysis | dict[str, Any] | None = None,

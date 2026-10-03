@@ -28,3 +28,4 @@ __all__ = [
     "validate_candidate_leaf", "validate_task_tree", "load_blueprint", "BIRStore",
     "BIRConflictError", "BIRCommit", "BIRValidationReport", "RegistrySnapshot",
 ]
+

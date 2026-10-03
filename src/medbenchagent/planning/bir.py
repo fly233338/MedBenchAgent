@@ -198,7 +198,7 @@ class RegistrySnapshot:
 class BIRStore:
     """Safe, revisioned access to an experiment's BIR directory."""
 
-    SCHEMA_VERSION = "bir.v1"
+    SCHEMA_VERSION = "bir"
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()

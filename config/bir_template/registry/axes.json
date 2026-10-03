@@ -1,5 +1,5 @@
 {
-  "schema_version": "bir-registry-axes.v1",
+  "schema_version": "bir-registry-axes",
   "axis_order": ["input_structure", "operation", "clinical_target"],
   "axes": [
     {
@@ -42,3 +42,4 @@
     }
   ]
 }
+

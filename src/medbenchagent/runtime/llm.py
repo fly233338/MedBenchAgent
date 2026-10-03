@@ -143,7 +143,7 @@ def complete_validated_json(
             diagnostic = [f"phase={phase}", f"schema={schema.__name__}", *errors]
             if "assessments" in feedback or "dimension" in feedback or "evidence_refs" in feedback:
                 axis_hint = (
-                    " Axis v2 requires each assessment to contain only value, supported, "
+                    " Axis requires each assessment to contain only value, supported, "
                     "evidence_basis (objects with reference and detail), and reason; "
                     "cover every allowed value exactly once."
                 )
@@ -168,3 +168,4 @@ def complete_validated_json(
                         response=response if on_chunk is None else None)
         return parsed
     raise AssertionError("unreachable")
+

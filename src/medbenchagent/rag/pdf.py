@@ -16,7 +16,7 @@ from medbenchagent.rag.remote import (
 )
 from medbenchagent.settings import get_settings
 
-CACHE_SCHEMA_VERSION = "3"
+CACHE_SCHEMA = "3"
 
 
 def discover_medical_materials(materials_root: str | Path) -> list[dict[str, str]]:
@@ -114,7 +114,7 @@ def extract_pdf_chunks(
     if not pdfs:
         raise RagUnavailable("No PDF medical materials were found.")
 
-    source_description = [CACHE_SCHEMA_VERSION, str(chunk_size), str(overlap)]
+    source_description = [CACHE_SCHEMA, str(chunk_size), str(overlap)]
     chunks: list[dict[str, object]] = []
     for pdf in pdfs:
         relative_path = pdf.relative_to(root).as_posix()
@@ -160,7 +160,7 @@ class LocalPdfRag:
                     "chunk_size": settings.chunk_size, "overlap": settings.chunk_overlap,
                     "embedding_base_url": settings.embedding_base_url,
                     "embedding_model": settings.embedding_model, "revision": revision}
-        cache = Path(cache_root) / ("pdf-v" + CACHE_SCHEMA_VERSION)
+        cache = Path(cache_root) / "pdf-cache"
         cache.mkdir(parents=True, exist_ok=True)
         entries = sorted(cache.glob("*/sources.json"))
         match = next((p.parent for p in entries if json.loads(p.read_text(encoding="utf-8")) == identity), None)
@@ -232,3 +232,4 @@ class LocalPdfRag:
             if float(score) >= threshold:
                 accepted.append(candidate)
         return sorted(accepted, key=lambda item: float(item["rerank_score"]), reverse=True)[: limit or settings.result_limit]
+

@@ -5,7 +5,7 @@ Evaluation is provisioned separately on the model-serving host. The main
 ignored repository-root `evaluation/` overlay beside the checkout before running
 these commands.
 
-The evaluation loader accepts `benchmark-manifest.v2` and the v5 `asset_manifest.jsonl`. Legacy
+The evaluation loader accepts `benchmark-manifest` and the `asset_manifest.jsonl`. Legacy
 legacy construction artifacts are outside the supported workflow.
 
 The evaluation overlay runs generated benchmark artifacts against local Medical
@@ -171,7 +171,7 @@ is required, accepts one or more unique values from `label`, `bbox`, and `text`,
 and filters samples before model loading. Every requested type must be present in the
 benchmark. The selected order is recorded in inference metadata.
 Each inference item also records the effective model `coordinate_size` used by the bbox
-parser. This field is optional in the backward-compatible `medbench-inference.v1`
+parser. This field is optional in the backward-compatible `medbench-inference`
 schema, so older files remain readable.
 
 If an existing inference JSON contains BreastGPT label outputs such as `（A）`,
@@ -223,7 +223,7 @@ memory; multi-GPU tensor parallelism and quantization are outside this evaluator
 
 The evaluator recomputes item scores and checks the recorded result. One report file
 is a response-format-keyed object whose selected `label`, `bbox`, and `text`
-values are complete `medbench-evaluation.v2` reports. Each section independently
+values are complete `medbench-evaluation` reports. Each section independently
 contains `metadata`, `summary`, `metric_groups`, `categories`, `tasks`, and `items`.
 It reports accuracy, semantic-option macro-F1, SacreBLEU, and mean IoU according to each
 question type's manifest metric. For label and text sections, `metric_groups` keeps
@@ -251,3 +251,4 @@ module implementing `ModelAdapter.generate`, then add its explicit name and
 factory to the registry in that package. Adapters own checkpoint loading, chat
 templates, batch preprocessing, decoding, and any model-specific coordinate
 space; common parsing and scoring remain model-independent.
+

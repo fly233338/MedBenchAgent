@@ -1,4 +1,4 @@
-"""Canonical annotation.v5 data contracts."""
+"""Canonical annotation data contracts."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ import json
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class V5Model(BaseModel):
+class CanonicalModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class Evidence(V5Model):
+class Evidence(CanonicalModel):
     id: str = Field(min_length=1)
     type: Literal["value", "text", "asset", "region"]
     name: str = Field(min_length=1)
@@ -42,7 +42,7 @@ class Evidence(V5Model):
         return self
 
 
-class CaseRecord(V5Model):
+class CaseRecord(CanonicalModel):
     case_id: str = Field(min_length=1)
     patient_id: str | None = None
     evidence: list[Evidence]
@@ -52,7 +52,7 @@ class CaseRecord(V5Model):
         return validate_case(self)
 
 
-class AssetEntry(V5Model):
+class AssetEntry(CanonicalModel):
     asset_id: str = Field(min_length=1)
     kind: Literal["image", "volume"]
     format: str = Field(min_length=1)
@@ -64,7 +64,7 @@ class AssetEntry(V5Model):
     source_id: str = Field(default="source", min_length=1)
 
 
-class PresentationSpec(V5Model):
+class PresentationSpec(CanonicalModel):
     mode: Literal["native", "slices", "montage"] = "native"
     axis: int | None = Field(default=None, ge=0, le=2)
     indices: list[int] = Field(default_factory=list)
@@ -86,7 +86,7 @@ class PresentationSpec(V5Model):
         return self
 
 
-class EvidenceProfile(V5Model):
+class EvidenceProfile(CanonicalModel):
     name: str
     cases: int = 0
     types: dict[str, int] = Field(default_factory=dict)
@@ -96,14 +96,14 @@ class EvidenceProfile(V5Model):
     has_ref: int = 0
 
 
-class AssetProfile(V5Model):
+class AssetProfile(CanonicalModel):
     kinds: dict[str, int] = Field(default_factory=dict)
     formats: dict[str, int] = Field(default_factory=dict)
     assets_per_case: dict[int, int] = Field(default_factory=dict)
     volume_properties: dict[str, Any] = Field(default_factory=dict)
 
 
-class DatasetProfile(V5Model):
+class DatasetProfile(CanonicalModel):
     case_count: int = 0
     patient_count: int = 0
     cases_per_patient: dict[str, int] = Field(default_factory=dict)
@@ -137,3 +137,4 @@ def validate_case(case: CaseRecord, assets: dict[str, AssetEntry] | None = None)
     for identifier in graph:
         visit(identifier, set())
     return case
+

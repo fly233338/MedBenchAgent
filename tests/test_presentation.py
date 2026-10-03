@@ -1,7 +1,7 @@
 import numpy as np
 
 from medbenchagent.data.asset_adapters import AssetAdapter, LoadedAsset
-from medbenchagent.data.v5_models import AssetEntry, PresentationSpec
+from medbenchagent.data.models import AssetEntry, PresentationSpec
 
 
 class _Volume(AssetAdapter):
@@ -19,3 +19,4 @@ def test_presentation_applies_window_crop_resize_before_slicing():
     result = adapter.present(asset, spec)
     assert result.data.shape == (1, 2, 2)
     assert result.data.dtype == np.uint8
+

@@ -1,5 +1,5 @@
 {
-  "schema_version": "benchmark-info.v1",
+  "schema_version": "benchmark-info",
   "revision": 0,
   "status": "empty",
   "clinical_scope": null,
@@ -17,3 +17,4 @@
   "source_runs": [],
   "change_log": []
 }
+

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-SESSION_SCHEMA = "preparation-session.v2"
+SESSION_SCHEMA = "preparation-session"
 
 
 @dataclass(frozen=True)
@@ -127,6 +127,4 @@ def write_session(workspace: Path, *, task: dict[str, Any], status: str,
              "stop_reason": stop_reason}
     _write(session_paths(workspace)["state"], state)
     return state
-
-
 

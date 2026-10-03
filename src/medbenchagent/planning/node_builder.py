@@ -1,4 +1,4 @@
-"""Deterministic constrained Task Scenario construction for annotation.v5."""
+"""Deterministic constrained Task Scenario construction for annotation."""
 
 from __future__ import annotations
 

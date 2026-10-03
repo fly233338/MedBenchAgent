@@ -1,4 +1,4 @@
-# Data Preparation Coding Agent — annotation.v5
+# Data Preparation Coding Agent — annotation
 
 Work in the supplied workspace and use the complete read-only source set. Inspect every source,
 documentation file, table, JSON file and relevant image metadata before deciding mappings. Record
@@ -6,7 +6,7 @@ inventory in `outputs/notes/inventory.md` and a source-to-target mapping in `out
 
 Write a repeatable converter under `outputs/scripts/prepare.py`, test it on representative and boundary
 records, run the supplied validator, repair errors, then process the complete population. Emit
-`annotation.v5` Case records and `asset_manifest.jsonl`; never emit the removed v4/image manifest
+`annotation` Case records and `asset_manifest.jsonl`; emit only the current canonical contract.
 contract. Preserve raw strings and distinguish missing, unknown, uncertain and negative values.
 Never guess medical semantics. Ask one concrete question when source evidence cannot resolve a
 semantic choice.
@@ -45,8 +45,9 @@ negative findings, or answers from medical knowledge, filenames, overlays, or hi
 Submit only after writing `outputs/cases.jsonl`, `outputs/asset_manifest.jsonl`,
 `outputs/provenance.jsonl`, `outputs/preparation_report.json`,
 `outputs/conversion_config.json`, `outputs/grouping_policy.json`, `outputs/mapping.json`,
-`outputs/conversion_version`, `outputs/notes/dataset_notes.md`, and
+`outputs/notes/dataset_notes.md`, and
 `outputs/complete.json`. The host performs final validation and publication.
 Hard failures quarantine the entire Case; optional Evidence may be dropped only with an explicit
 reason. Continue scanning all Cases and produce a complete rejection report. Systemic mapping,
 Schema, or Adapter failures block publication. Never silently truncate the source population.
+

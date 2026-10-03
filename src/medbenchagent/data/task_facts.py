@@ -190,7 +190,7 @@ def build_dataset_facts(
         case.get("patient_id") for case in case_list if case.get("patient_id")
     }
     return {
-        "schema_version": "dataset-facts.v2",
+        "schema_version": "dataset-facts",
         "revision": revision,
         "case_count": len(case_list),
         "patient_count": len(known_patient_ids),
@@ -212,3 +212,4 @@ def build_dataset_facts(
         "relations": merged["relations"],
         "representative_case": select_representative_case(case_list),
     }
+

@@ -19,7 +19,7 @@ def _analysis(supported):
             AxisValueDecision(
                 value=value,
                 supported=value in supported.get(axis, []),
-                evidence_basis=[EvidenceBasis(reference="overview:v2", detail="observed")],
+                evidence_basis=[EvidenceBasis(reference="overview", detail="observed")],
                 reason="observed",
             )
             for value in AXIS_VALUES[TaskAxis(axis)]
@@ -96,3 +96,4 @@ def test_scenario_category_is_derived_from_operation():
     active = [value for value in scenarios.values() if not value.exclusion_reason]
     assert active
     assert {value.capability_category for value in active} == {CapabilityCategory.INTEGRATION}
+

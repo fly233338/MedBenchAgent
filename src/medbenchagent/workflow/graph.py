@@ -10,7 +10,7 @@ from medbenchagent.agents.generation import run_generation
 from medbenchagent.agents.finalization import restore_delivery
 from medbenchagent.agents.templates import prepare_templates as run_templates
 from medbenchagent.agents.task_planning import compile_task_planning_agent, apply_template_feedback
-from medbenchagent.agents.v2_pipeline import run_task_space_pipeline
+from medbenchagent.agents.task_space_pipeline import run_task_space_pipeline
 from medbenchagent.planning.dataset_selection import discover_dataset_candidates as run_discovery
 from medbenchagent.planning.dataset_selection import select_datasets as run_selection
 from medbenchagent.planning.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
@@ -170,7 +170,7 @@ def specify(context: SupervisorContext):
         revision = int(current.get("revision", 0)) + 1
         merged = dict(current)
         merged.update(info)
-        merged.update({"schema_version": "benchmark-info.v1", "revision": revision,
+        merged.update({"schema_version": "benchmark-info", "revision": revision,
                        "sample_scope": sample_scope, "allocation_preferences": preferences,
                        "evidence": evidence, "missing_fields": missing_fields(info),
                        "source_runs": [*current.get("source_runs", []), context.get("run_id", "unknown")],
@@ -326,7 +326,7 @@ def pending_datasets(context):
         feedback = context.get("template_revision_requests", {}).get(dataset)
         if not _current(context, f"dataset/{dataset}/Plan") or (feedback and feedback["plan_version"] == context["artifact_versions"].get(f"dataset/{dataset}/Plan")):
             pending["pending_plan_dataset_ids"].append(dataset)
-        elif context.get("dataset_assets", {}).get(dataset, {}).get("access", {}).get("schema_version") == "annotation.v5":
+        elif context.get("dataset_assets", {}).get(dataset, {}).get("access", {}).get("schema_version") == "annotation":
             continue
         elif not _current(context, f"dataset/{dataset}/Templates"):
             pending["pending_templates_dataset_ids"].append(dataset)
@@ -374,16 +374,16 @@ def available_stages(context: SupervisorContext):
         return tools | {"discover_datasets"}
     if not _current(context, "DatasetSelection"):
         return tools | {"select_datasets"}
-    v5_selected = [d for d in context.get("selected_dataset_ids", [])
-                   if context.get("dataset_assets", {}).get(d, {}).get("access", {}).get("schema_version") == "annotation.v5"]
-    if v5_selected:
+    prepared_selected = [d for d in context.get("selected_dataset_ids", [])
+                   if context.get("dataset_assets", {}).get(d, {}).get("access", {}).get("schema_version") == "annotation"]
+    if prepared_selected:
         if pending_datasets(context)["pending_plan_dataset_ids"]:
             return tools | {"plan"}
         if _current(context, "Delivery"):
             return tools | {"finish"}
-        return tools | {"run_v2"}
+        return tools | {"run_task_space"}
     if any("planning" in state for state in context.get("child_states", {}).values()):
-        tools.add("run_v2")
+        tools.add("run_task_space")
     pending = pending_datasets(context)
     if pending["pending_plan_dataset_ids"] or pending["pending_templates_dataset_ids"]:
         if pending["pending_plan_dataset_ids"]:
@@ -428,7 +428,7 @@ Candidate discovery and selection:
   source exists, ask for the raw directory or let the user choose another candidate.
 
 Handoff and construction:
-- Do not call plan, run_v2, allocation, generation, or finalization before DatasetSelection is published.
+- Do not call plan, run_task_space, allocation, generation, or finalization before DatasetSelection is published.
 - Delegate planning using the canonical Requirement and selected dataset references. Do not paraphrase or discard scope.
 - Preserve completed valid work. A child completion is local progress; the run is complete only after validated delivery.
 - Resolve existing issues by their exact issue_id. Do not repeat an unchanged failed action or start an automatic refill loop.
@@ -548,11 +548,11 @@ def compile_benchmark_graph(*, checkpointer=None):
             }
         return outcome
 
-    def run_v2(context, *, dataset_id):
-        """Execute a completed v2 Task Space for one prepared Dataset."""
+    def run_task_space(context, *, dataset_id):
+        """Execute a completed Task Space for one prepared Dataset."""
         saved = context.get("child_states", {}).get(dataset_id, {}).get("planning")
         if not saved:
-            raise ValueError("Run v2 planning tools before executing the Task Space pipeline")
+            raise ValueError("Run planning tools before executing the Task Space pipeline")
         child = load_context(saved, "planning", dataset_id)
         child["operation_directory"] = agent_operation(context, "TaskSpacePipelineAgent", dataset_id)
         output = run_task_space_pipeline(child)
@@ -566,10 +566,10 @@ def compile_benchmark_graph(*, checkpointer=None):
             )
         atomic_write_json(Path(child["operation_directory"]) / "result.json", payload)
         result_path = Path(child["operation_directory"]) / "result.json"
-        results = {**context.get("v2_pipeline_results", {}), dataset_id: str(result_path)}
-        counts = {**context.get("v2_pipeline_counts", {}), dataset_id: {"accepted": payload["audit"]["accepted"], "shortfall": payload.get("shortfall", {})}}
-        updates = {"v2_pipeline_results": results, "v2_pipeline_counts": counts,
-                   "v2_pipeline_path": str(result_path), "delivery_counts": counts}
+        results = {**context.get("pipeline_results", {}), dataset_id: str(result_path)}
+        counts = {**context.get("pipeline_counts", {}), dataset_id: {"accepted": payload["audit"]["accepted"], "shortfall": payload.get("shortfall", {})}}
+        updates = {"pipeline_results": results, "pipeline_counts": counts,
+                   "pipeline_path": str(result_path), "delivery_counts": counts}
         if set(results) >= set(context.get("selected_dataset_ids", [])):
             versions = publish(context, "Delivery", {"task_space_outputs": results}, ())
             updates.update(versions, delivery_path=str(result_path))
@@ -704,7 +704,7 @@ def compile_benchmark_graph(*, checkpointer=None):
                         output["context"], "DatasetProfile",
                         {"path": finalized["access_manifest"].get("profile_path")}, ("Dataset",),
                     )
-                    card_versions = {} if finalized.get("annotation_schema") == "annotation.v5" else publish(
+                    card_versions = {} if finalized.get("annotation_schema") == "annotation" else publish(
                         output["context"], "DatasetCard",
                         {"path": finalized["card_path"]}, ("DatasetProfile",),
                     )
@@ -729,8 +729,8 @@ def compile_benchmark_graph(*, checkpointer=None):
         return outcome
 
     def allocate(context, *, delegation=None):
-        """Legacy allocation is unavailable; v5 uses the deterministic Task Space pipeline."""
-        raise ValueError("Use run_v2 for annotation.v5 datasets")
+        """Legacy allocation is unavailable; the current pipeline uses the deterministic Task Space pipeline."""
+        raise ValueError("Use run_task_space for annotation datasets")
 
     def generate(context, *, dataset_id):
         """Generate one dataset's positive allocation using its own Protocols and annotation."""
@@ -784,7 +784,7 @@ def compile_benchmark_graph(*, checkpointer=None):
 
     def finish(context):
         if context.get("delivery_path") and any(
-            context.get("dataset_assets", {}).get(d, {}).get("access", {}).get("schema_version") == "annotation.v5"
+            context.get("dataset_assets", {}).get(d, {}).get("access", {}).get("schema_version") == "annotation"
             for d in context.get("selected_dataset_ids", [])
         ):
             return result("complete", f"Task Space benchmark delivered; shortfall {context.get('delivery_counts', {}).get('shortfall', {})}",
@@ -807,13 +807,13 @@ def compile_benchmark_graph(*, checkpointer=None):
         {"end": end, "resolve_clarification": resolve_clarification, "specify": specify,
          "discover_datasets": discover_datasets, "select_datasets": select_datasets,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
-         "prepare_data": prepare_data, "plan": plan, "run_v2": run_v2, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
+         "prepare_data": prepare_data, "plan": plan, "run_task_space": run_task_space, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
         describe, finish, available_tools=available_stages, automatic_action=automatic_supervisor_action,
         read_tools=frozenset({"list_datasets", "inspect_dataset_status", "discover_datasets"}),
         args_schemas={"resolve_clarification": ResolveClarificationArguments, "prepare_data": PrepareDataArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
                       "select_datasets": DatasetSelectionArguments,
-                      "plan": PlanningArguments, "run_v2": DatasetStatusArguments, "allocate": DelegationArguments,
+                      "plan": PlanningArguments, "run_task_space": DatasetStatusArguments, "allocate": DelegationArguments,
                       "generate": DatasetStatusArguments, "prepare_templates": DatasetStatusArguments})
 
     def initialize(state):
@@ -873,3 +873,4 @@ def compile_benchmark_graph(*, checkpointer=None):
 
 
 benchmark_graph = compile_benchmark_graph()
+

@@ -54,10 +54,10 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 ## 数据准备
 
-数据准备的 canonical 产物使用 `annotation.v5`、`asset_manifest.jsonl` 和
+数据准备的 canonical 产物使用 `annotation`、`asset_manifest.jsonl` 和
 `preparation_report.json`。Case grouping、Evidence ref 和 Asset 完整性由宿主确定性校验；
 OpenHands Coding Session 只负责在 Worker workspace 中探索来源和编写可重复转换器。旧的
-image-centric 产物不属于 v2 数据处理运行时。
+image-centric 产物不属于 数据处理运行时。
 
 原始来源以只读方式访问。OpenHands Coding Session 在 Worker workspace 中探索来源、编写适配器并提交候选；宿主重新核验来源、locator、总体、annotation 和图像资产，再注册 Dataset、Profile、Card 和 Catalog。
 
@@ -69,7 +69,7 @@ Supervisor 先解析数据准备请求：请求中包含可读的原始目录时
 
 `specify` 生成带字段级来源证据的 Requirement，并保留开放式意图和用户提到的数据集名称。`discover_datasets` 扫描并校验 Catalog 与 Prepared 根目录，冻结候选 Card；它不替用户做选择。`select_datasets` 只绑定冻结候选 ID。随后代码生成并校验 `DatasetAccessReceipt`，模型不会决定路径、revision 或 digest。
 
-每个 annotation.v5 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。完整计划的 canonical 文件位于 BIR 的 `datasets/<id>/planning/`；Run 目录中的 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 是派生视图。Generation 使用冻结 seed 在模板中可复现地抽取问题，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
+每个 annotation 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。完整计划的 canonical 文件位于 BIR 的 `datasets/<id>/planning/`；Run 目录中的 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 是派生视图。Generation 使用冻结 seed 在模板中可复现地抽取问题，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
 
 ## 恢复与界面
 
@@ -78,3 +78,4 @@ Run 的配置、产物索引、事件日志和 Agent 状态都位于 Run 目录�
 ## 评测边界
 
 benchmark 构建和模型推理是两个独立阶段。evaluation 读取已发布 benchmark 和图像 manifest，模型适配器、预测解析和指标计算不参与构建流程。
+

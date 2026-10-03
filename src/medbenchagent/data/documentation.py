@@ -15,7 +15,7 @@ def document_index(bundle):
     if not path.is_file():
         raise ValueError("Prepared documentation index is missing; prepare a new version")
     value = json.loads(path.read_text(encoding="utf-8"))
-    if value.get("schema_version") != "dataset-documentation.v1":
+    if value.get("schema_version") != "dataset-documentation":
         raise ValueError("Unsupported frozen documentation index")
     return value
 
@@ -29,7 +29,7 @@ def freeze_document(bundle, source_id, root, path):
     if suffix not in TEXT_FORMATS | {".pdf"}:
         raise ValueError("Only UTF-8 text and text-extractable PDF documentation are supported")
     index_path = bundle / "documentation/index.json"
-    index = document_index(bundle) if index_path.exists() else {"schema_version": "dataset-documentation.v1", "documents": []}
+    index = document_index(bundle) if index_path.exists() else {"schema_version": "dataset-documentation", "documents": []}
     for item in index["documents"]:
         if item["source_id"] == source_id and item["path"] == path:
             if item["file_digest"] != digest_file(original):
@@ -78,3 +78,4 @@ def read_document(bundle, source_id, path, *, page=1, offset=0, limit=6000):
     text = pages[page - 1]
     return {"source_id": source_id, "path": path, "page": page, "pages": len(pages),
             "text": text[offset:offset + limit], "next_offset": offset + limit if offset + limit < len(text) else None}
+

@@ -10,7 +10,7 @@ OpenHands Coding Session 只能在 Worker workspace 中写候选文件。宿主�
 
 ## Dataset Bundle
 
-已发布 Bundle 提供（annotation.v5）：
+已发布 Bundle 提供（annotation）：
 
 - `cases.jsonl`：以 Case/Evidence 为核心的 canonical 记录；
 - `asset_manifest.jsonl`：image/volume Asset、来源和完整性摘要；
@@ -56,3 +56,4 @@ index、时间或医学语义。
 和摘要；Evidence、规划和交付阶段通过 BIRStore 读取并以 revision/digest 校验写回。
 
 新运行存储在 `.runtime/<run>/control`、`inputs`、`agents` 和 `workers` 下。现有旧运行目录不属于当前运行时。
+

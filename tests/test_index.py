@@ -2,13 +2,13 @@ import json
 
 from medbenchagent.data.asset_manifest import digest_path
 from medbenchagent.data.dataset import prepare_annotation_dataset
-from medbenchagent.data.v5_models import AssetEntry, CaseRecord, Evidence
+from medbenchagent.data.models import AssetEntry, CaseRecord, Evidence
 from medbenchagent.data.query import DatasetQuery
-from medbenchagent.data.v5_index import V5DatasetQuery
+from medbenchagent.data.index import DatasetIndex
 from medbenchagent.planning.task_space import CapabilityCategory, TaskScenario
 
 
-def test_v5_duckdb_index_and_query(tmp_path):
+def test_canonical_duckdb_index_and_query(tmp_path):
     source = tmp_path / "image.png"
     source.write_bytes(b"image")
     asset = AssetEntry(asset_id="a1", kind="image", format="png", source_path="image.png", file_digest=digest_path(source))
@@ -39,10 +39,10 @@ def test_asset_adapter_resolves_source_relative_path(tmp_path):
     assert loaded.metadata["width"] == 2
 
 
-def test_v5_node_context_uses_constraint_registry_instance(tmp_path, monkeypatch):
+def test_canonical_node_context_uses_constraint_registry_instance(tmp_path, monkeypatch):
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(json.dumps({"evidence": [{"name": "tumor_region", "types": {"region": 1}}]}), encoding="utf-8")
-    query = object.__new__(V5DatasetQuery)
+    query = object.__new__(DatasetIndex)
     query.access = {"revision": "1", "profile_path": str(profile_path)}
     monkeypatch.setattr(query, "assets", lambda: [])
     monkeypatch.setattr(query, "iter_cases", lambda: iter([
@@ -62,3 +62,4 @@ def test_v5_node_context_uses_constraint_registry_instance(tmp_path, monkeypatch
     assert result["capacity_hint"] == 1
     assert result["representative_cases"][0]["case_id"] == "keep"
     assert result["evidence"] == [{"name": "tumor_region", "types": {"region": 1}}]
+

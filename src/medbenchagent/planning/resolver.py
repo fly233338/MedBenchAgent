@@ -1,4 +1,4 @@
-"""Typed deterministic Reference Resolver for annotation.v5 cases."""
+"""Typed deterministic Reference Resolver for annotation cases."""
 
 from __future__ import annotations
 

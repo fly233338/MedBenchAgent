@@ -1,4 +1,4 @@
-"""Catalog and Card contracts for immutable annotation.v5 bundles."""
+"""Catalog and Card contracts for immutable annotation bundles."""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ from pathlib import Path
 from medbenchagent.data.sources import digest_file
 
 
-def read_v5_card(path: str | Path) -> dict:
+def read_card(path: str | Path) -> dict:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
-    if value.get("schema_version") != "dataset-card.v3":
-        raise ValueError("Dataset Card requires dataset-card.v3")
+    if value.get("schema_version") != "dataset-card":
+        raise ValueError("Dataset Card requires dataset-card")
     return value
 
 
 def card_summary(card: dict) -> dict:
-    """Return the bounded, model-visible summary for a validated v5 Card."""
-    if not isinstance(card, dict) or card.get("schema_version") != "dataset-card.v3":
-        raise ValueError("Dataset Card requires dataset-card.v3")
+    """Return the bounded, model-visible summary for a validated Card."""
+    if not isinstance(card, dict) or card.get("schema_version") != "dataset-card":
+        raise ValueError("Dataset Card requires dataset-card")
     summary = card.get("summary", {})
     return {
         "dataset_id": card.get("dataset_id"),
@@ -31,18 +31,18 @@ def card_summary(card: dict) -> dict:
     }
 
 
-def verify_v5_bundle(bundle: str | Path) -> dict:
+def verify_bundle(bundle: str | Path) -> dict:
     bundle = Path(bundle).resolve()
     ready_path = bundle / "ready.json"
     if not ready_path.is_file():
-        raise ValueError("Dataset bundle is not annotation.v5; re-prepare the dataset")
+        raise ValueError("Dataset bundle is not annotation; re-prepare the dataset")
     ready = json.loads(ready_path.read_text(encoding="utf-8"))
-    if ready.get("annotation_schema") != "annotation.v5" or ready.get("schema_version") != "dataset-bundle.v4":
-        raise ValueError("Dataset bundle is not annotation.v5; re-prepare the dataset")
+    if ready.get("annotation_schema") != "annotation" or ready.get("schema_version") != "dataset-bundle":
+        raise ValueError("Dataset bundle is not annotation; re-prepare the dataset")
     access = ready["access"]
     for key in ("cases_path", "asset_manifest_path", "profile_path", "dataset_card_path"):
         if not Path(access[key]).is_file():
-            raise ValueError(f"Missing v5 bundle artifact: {key}")
+            raise ValueError(f"Missing bundle artifact: {key}")
     checks = {
         "annotation_digest": access["cases_path"],
         "asset_manifest_digest": access["asset_manifest_path"],
@@ -50,8 +50,9 @@ def verify_v5_bundle(bundle: str | Path) -> dict:
     }
     for digest_key, path in checks.items():
         if digest_file(path) != access[digest_key]:
-            raise ValueError(f"v5 bundle digest mismatch: {digest_key}")
-    card = read_v5_card(access["dataset_card_path"])
+            raise ValueError(f"bundle digest mismatch: {digest_key}")
+    card = read_card(access["dataset_card_path"])
     if card["annotation_digest"] != access["annotation_digest"] or card["asset_manifest_digest"] != access["asset_manifest_digest"] or card["profile_digest"] != access["profile_digest"]:
-        raise ValueError("Dataset Card facts do not match v5 bundle")
+        raise ValueError("Dataset Card facts do not match bundle")
     return {"ready": ready, "card": card}
+

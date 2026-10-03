@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from medbenchagent.data.sources import digest_file
-from medbenchagent.data.v5_models import AssetEntry
+from medbenchagent.data.models import AssetEntry
 
 
 def stable_id(*parts: object, prefix: str) -> str:
@@ -120,3 +120,4 @@ def group_dicom_series(root: str | Path, *, source_id: str = "source") -> list[A
                       "members": [path.relative_to(root).as_posix() for path in paths]} if len(paths) > 1 else {},
         ))
     return entries
+

@@ -127,12 +127,12 @@ def inspect_join(context, **arguments):
 
 
 def save_image_plan(context, *, overrides):
-    """Record a v5 presentation plan against the Asset manifest."""
+    """Record a presentation plan against the Asset manifest."""
     manifest_path = context.get("asset_manifest_path")
     if not manifest_path:
-        raise ValueError("Presentation plans require a v5 asset_manifest.jsonl")
+        raise ValueError("Presentation plans require a asset_manifest.jsonl")
     from medbenchagent.data.asset_manifest import iter_asset_manifest
-    from medbenchagent.data.v5_models import PresentationSpec
+    from medbenchagent.data.models import PresentationSpec
     asset_ids = {entry.asset_id for entry in iter_asset_manifest(manifest_path)}
     policies = {
         key: (value.model_dump() if hasattr(value, "model_dump") else value)
@@ -151,3 +151,4 @@ def save_image_plan(context, *, overrides):
 def compile_data_processing_agent(*, checkpointer=None):
     from medbenchagent.agents.dataset_agent import compile_dataset_agent
     return compile_dataset_agent(checkpointer=checkpointer)
+

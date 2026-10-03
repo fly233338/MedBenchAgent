@@ -1,4 +1,4 @@
-"""Deterministic capacity-aware allocation for v2 Task Leaves."""
+"""Deterministic capacity-aware allocation for Task Leaves."""
 
 from __future__ import annotations
 

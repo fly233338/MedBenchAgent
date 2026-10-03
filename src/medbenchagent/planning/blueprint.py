@@ -17,7 +17,7 @@ def load_blueprint(path: str | Path) -> dict[str, Any]:
     source = Path(path)
     if source.is_dir():
         return {
-            "schema_version": "bir.v1",
+            "schema_version": "bir",
             "registry": RegistrySnapshot.from_directory(source / "registry").documents,
         }
     if not source.is_file():
@@ -58,3 +58,4 @@ def load_bir(path: str | Path) -> BIRStore:
     if not report.valid:
         raise ValueError("Invalid BIR: " + "; ".join(report.errors))
     return store
+

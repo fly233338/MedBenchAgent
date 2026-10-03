@@ -3,7 +3,7 @@
 The model may select Axis Values and propose Leaf Tasks. Code owns Scenario
 construction, capability tagging, resolver validation, capacity and item
 instantiation. Compatibility aliases keep in-process callers usable while
-persisted artifacts move to the v3 schema.
+persisted artifacts use the current schema.
 """
 
 from __future__ import annotations
@@ -288,7 +288,7 @@ class BenchmarkItem(BaseModel):
 
 class TaskPlanState(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
-    schema_version: str = "task-plan.v3"
+    schema_version: str = "task-plan"
     dataset: dict[str, Any]
     access_path: str | None = None
     evidence_manifest_path: str | None = None
@@ -337,3 +337,4 @@ TaskLeaf = LeafTask
 NodeReview = ScenarioReview
 TaskSpacePlan = TaskPlanState
 stable_node_id = stable_scenario_id
+

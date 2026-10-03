@@ -1,5 +1,5 @@
 {
-  "schema_version": "bir-delivery.v1",
+  "schema_version": "bir-delivery",
   "status": "pending",
   "revision": 0,
   "outputs": {},
@@ -7,3 +7,4 @@
   "validation": {},
   "dependencies": {}
 }
+

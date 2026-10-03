@@ -20,11 +20,11 @@ def build_data_preparation_task(context: dict, workspace: Path, *, feedback: str
     session = load_session(workspace)
     prompt = (Path(__file__).parents[1] / "prompts" / "data_preparation_agent.md").read_text(encoding="utf-8")
     task_context = {"sources": sources, "source_manifests": context.get("source_manifests", {}),
-                    "schema": str(Path(__file__).parents[1] / "schemas" / "annotation.v5.schema.json"),
+                    "schema": str(Path(__file__).parents[1] / "schemas" / "annotation.schema.json"),
                     "workspace": str(workspace),
                     "candidate_output_root": str(workspace / "outputs"),
                     "prepared_bundle_root": str(Path(context["bundle_root"]).resolve()),
-                    "validator": "medbenchagent.data.v5_validation",
+                    "validator": "medbenchagent.data.preparation_validation",
                     "feedback": feedback}
     objective = prompt + "\n\nFrozen task context:\n" + json.dumps(task_context, ensure_ascii=False)
     objective += (
@@ -43,9 +43,10 @@ def build_data_preparation_task(context: dict, workspace: Path, *, feedback: str
         source_manifest=context.get("source_manifests", {}).get(primary["id"], context["source_manifest"]),
         source_roots={item["id"]: item["root"] for item in sources},
         workspace=str(workspace), objective=objective,
-         required_outputs=["cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl", "preparation_report.json", "conversion_config.json", "grouping_policy.json", "mapping.json", "conversion_version", "complete.json", "scripts/prepare.py", "notes/inventory.md", "notes/mapping.md", "notes/dataset_notes.md"],
+         required_outputs=["cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl", "preparation_report.json", "conversion_config.json", "grouping_policy.json", "mapping.json", "complete.json", "scripts/prepare.py", "notes/inventory.md", "notes/mapping.md", "notes/dataset_notes.md"],
         feedback=feedback, attempt=session.get("attempt", 1), conversation_id=conversation_id,
         max_iterations=context.get("coding_worker_max_iterations", 80), timeout_seconds=context.get("coding_worker_timeout_seconds", 3600),
         model=get_settings().llm.model, base_url=get_settings().llm.base_url,
         reasoning_effort=get_settings().llm.reasoning_effort, run_id=context["run_id"],
         dataset_id=context["dataset_scope"], source_id=primary["id"], workflow_step="preparation")
+

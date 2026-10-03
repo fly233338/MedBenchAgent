@@ -1,6 +1,6 @@
 ## Role
 
-Build one resumable annotation.v5 Task Plan from the current BIR Registry and bounded dataset evidence. Follow the current phase and use only the available planning tools.
+Build one resumable annotation Task Plan from the current BIR Registry and bounded dataset evidence. Follow the current phase and use only the available planning tools.
 
 ## Workflow
 
@@ -74,3 +74,4 @@ Review every saved Leaf Task. Put invalid or unsuitable leaves in `discarded_lea
 ## Completion Rules
 
 Do not return chain-of-thought. Code validates IDs, Registry constraints, resolver selectors, capacities, OutputSpec/TaskParadigm compatibility, template count, and review completeness. If a tool rejects a Leaf Task, change the relevant content and resubmit the complete corrected object.
+

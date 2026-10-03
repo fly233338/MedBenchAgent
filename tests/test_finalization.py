@@ -1,14 +1,14 @@
 from medbenchagent.data.asset_manifest import digest_path
-from medbenchagent.data.finalization import finalize_v5_prepared_dataset
-from medbenchagent.data.v5_models import AssetEntry, CaseRecord, Evidence
-from medbenchagent.data.v5_catalog import verify_v5_bundle
+from medbenchagent.data.finalization import finalize_prepared_dataset
+from medbenchagent.data.models import AssetEntry, CaseRecord, Evidence
+from medbenchagent.data.bundle_catalog import verify_bundle
 from medbenchagent.data.dataset_catalog import prepared_bundle_entry, register_dataset, load_prepared
 from medbenchagent.data.contracts import Source
 from medbenchagent.runtime import preparation_context
 from medbenchagent.data import readiness
 
 
-def test_finalize_v5_bundle(tmp_path):
+def test_finalize_canonical_bundle(tmp_path):
     candidate = tmp_path / "candidate"
     candidate.mkdir()
     asset_path = candidate / "image.png"
@@ -23,13 +23,12 @@ def test_finalize_v5_bundle(tmp_path):
     (candidate / "conversion_config.json").write_text('{}', encoding="utf-8")
     (candidate / "grouping_policy.json").write_text('{}', encoding="utf-8")
     (candidate / "mapping.json").write_text('{}', encoding="utf-8")
-    (candidate / "conversion_version").write_text("v5\n", encoding="utf-8")
     (candidate / "complete.json").write_text('{"complete":true}', encoding="utf-8")
-    result = finalize_v5_prepared_dataset(candidate, {"bundle_root": str(tmp_path / "bundle")})
+    result = finalize_prepared_dataset(candidate, {"bundle_root": str(tmp_path / "bundle")})
     assert result["status"] == "complete"
     assert (tmp_path / "bundle" / "ready.json").is_file()
     assert result["report"]["accepted_cases"] == 1
-    assert verify_v5_bundle(tmp_path / "bundle")["card"]["schema_version"] == "dataset-card.v3"
+    assert verify_bundle(tmp_path / "bundle")["card"]["schema_version"] == "dataset-card"
 
 
 def test_direct_prepared_bundle_is_catalog_reusable(tmp_path):
@@ -48,9 +47,8 @@ def test_direct_prepared_bundle_is_catalog_reusable(tmp_path):
     for name, value in (("conversion_config.json", "{}"), ("grouping_policy.json", "{}"),
                         ("mapping.json", "{}"), ("complete.json", '{"complete":true}')):
         (candidate / name).write_text(value, encoding="utf-8")
-    (candidate / "conversion_version").write_text("v5\n", encoding="utf-8")
 
-    result = finalize_v5_prepared_dataset(candidate, {"bundle_root": str(prepared), "dataset_id": "breast"})
+    result = finalize_prepared_dataset(candidate, {"bundle_root": str(prepared), "dataset_id": "breast"})
     entry = prepared_bundle_entry("breast", prepared_root=tmp_path / "Prepared")
     catalog = tmp_path / "catalog.json"
     registered = register_dataset("breast", prepared, catalog_path=catalog)
@@ -82,8 +80,7 @@ def test_prepared_directory_inventory_returns_valid_bundles_and_diagnostics(tmp_
     for name, value in (("conversion_config.json", "{}"), ("grouping_policy.json", "{}"),
                         ("mapping.json", "{}"), ("complete.json", '{"complete":true}')):
         (candidate / name).write_text(value, encoding="utf-8")
-    (candidate / "conversion_version").write_text("v5\n", encoding="utf-8")
-    finalize_v5_prepared_dataset(candidate, {"bundle_root": str(prepared / "breast"), "dataset_id": "breast"})
+    finalize_prepared_dataset(candidate, {"bundle_root": str(prepared / "breast"), "dataset_id": "breast"})
     (prepared / "broken").mkdir(parents=True)
     monkeypatch.setattr(readiness, "get_settings", lambda: type("Settings", (), {
         "paths": type("Paths", (), {"prepared_datasets_root": prepared})(),
@@ -120,3 +117,4 @@ def test_preparation_context_uses_direct_dataset_bundle(tmp_path, monkeypatch):
 
     assert result["bundle_root"] == str((prepared / "breast").resolve())
     assert (prepared / "breast" / "source_manifests" / "original" / "source.json").is_file()
+

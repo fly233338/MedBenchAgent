@@ -30,9 +30,10 @@
 准备状态、Worker 会话、工具操作和 LangGraph checkpoint 都可以从新 Run 目录恢复。已完成的候选和发布 Bundle 保持内容摘要，重复恢复不会重新发布相同版本。
 
 详细字段契约见 [DATA_LAYER.md](DATA_LAYER.md)。
-# annotation.v5 validation
+# annotation validation
 
 准备候选必须包含 `cases.jsonl`、`asset_manifest.jsonl`、`provenance.jsonl` 和
 `preparation_report.json`。宿主逐 Case 验证 Evidence ID、ref、Asset 引用、source locator 和
 digest，并完成完整 population 账本。单个坏 Case 隔离并记录原因；映射、Schema 或 Adapter
 级别的系统性错误阻止发布。准备阶段不生成任务、答案或模型输入选择。
+

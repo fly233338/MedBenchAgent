@@ -1,10 +1,10 @@
-"""annotation.v5 dataset registry."""
+"""annotation dataset registry."""
 
 import json
 from pathlib import Path
 import re
 from medbenchagent import settings
-from medbenchagent.data.v5_catalog import read_v5_card, verify_v5_bundle
+from medbenchagent.data.bundle_catalog import read_card, verify_bundle
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 DATASET_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -48,7 +48,7 @@ def prepared_bundle_entry(dataset_id, *, prepared_root=None):
     cases = Path(access.get("cases_path", ""))
     if cases.parent.resolve() != bundle or not cases.is_file():
         raise DatasetCatalogError("Prepared bundle cases_path must point to its direct bundle")
-    card = read_v5_card(access.get("dataset_card_path", bundle / "dataset_card.json"))
+    card = read_card(access.get("dataset_card_path", bundle / "dataset_card.json"))
     if card.get("dataset_id") != dataset_id:
         raise DatasetCatalogError("Prepared bundle Card dataset_id does not match its directory")
     return {
@@ -67,11 +67,11 @@ def load_dataset_catalog(catalog_path=None):
     path = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(path, {"schema_version": "dataset-catalog.v5", "datasets": []})
+        atomic_write_json(path, {"schema_version": "dataset-catalog", "datasets": []})
         return []
     value = json.loads(path.read_text(encoding="utf-8"))
-    if value.get("schema_version") not in {None, "dataset-catalog.v5"}:
-        raise DatasetCatalogError("Only dataset-catalog.v5 is supported")
+    if value.get("schema_version") not in {None, "dataset-catalog"}:
+        raise DatasetCatalogError("Only dataset-catalog is supported")
     entries = value.get("datasets", [])
     for entry in entries:
         validate_dataset_id(entry["dataset_id"])
@@ -91,12 +91,12 @@ def dataset_by_id(datasets, dataset_id):
 
 def load_prepared(entry):
     bundle = resolve_path(entry["cases_path"]).parent
-    verified = verify_v5_bundle(bundle)
+    verified = verify_bundle(bundle)
     access = verified["ready"]["access"]
     frozen_card_path = resolve_path(entry.get("dataset_card_path", access["dataset_card_path"]))
-    card = verified["card"] if frozen_card_path == resolve_path(access["dataset_card_path"]) else read_v5_card(frozen_card_path)
+    card = verified["card"] if frozen_card_path == resolve_path(access["dataset_card_path"]) else read_card(frozen_card_path)
     if card.get("annotation_digest") != access["annotation_digest"] or card.get("asset_manifest_digest") != access["asset_manifest_digest"]:
-        raise DatasetCatalogError("Frozen Dataset Card does not match annotation.v5 bundle")
+        raise DatasetCatalogError("Frozen Dataset Card does not match annotation bundle")
     return card, access
 
 
@@ -121,6 +121,7 @@ def register_dataset(dataset_id, bundle, *, catalog_path=None):
         else []
     )
     atomic_write_json(
-        target, {"schema_version": "dataset-catalog.v5", "datasets": entries + [entry]}
+        target, {"schema_version": "dataset-catalog", "datasets": entries + [entry]}
     )
     return entry
+

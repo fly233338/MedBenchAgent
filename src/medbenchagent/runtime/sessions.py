@@ -57,7 +57,7 @@ def create_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT, template: Pat
         shutil.rmtree(folder, ignore_errors=True)
         raise
     manifest = json.loads((folder / "BIR" / "manifest.json").read_text(encoding="utf-8"))
-    record = {"schema_version": "mba-session.v3", "name": name, "created_at": _now(),
+    record = {"schema_version": "mba-session", "name": name, "created_at": _now(),
               "bir_path": str(folder / "BIR"), "bir_revision": manifest["revision"],
               "bir_manifest_digest": bir.digest("manifest.json"),
               "messages": [], "runs": [], "pending_runs": []}
@@ -71,7 +71,7 @@ def load_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT) -> dict:
     if not path.is_file():
         raise ValueError(f"Unknown experiment: {name}")
     record = json.loads(path.read_text(encoding="utf-8"))
-    if record.get("schema_version") != "mba-session.v3" or record.get("name") != name:
+    if record.get("schema_version") != "mba-session" or record.get("name") != name:
         raise ValueError(f"Invalid experiment session: {name}")
     return record
 
@@ -214,3 +214,4 @@ def upsert_dataset_source(name: str, entry: dict, *, root: Path = EXPERIMENTS_RO
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+

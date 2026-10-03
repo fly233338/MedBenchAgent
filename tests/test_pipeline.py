@@ -1,8 +1,8 @@
-from medbenchagent.planning.pipeline_v2 import run_v2_pipeline
+from medbenchagent.planning.pipeline import run_pipeline
 from medbenchagent.planning.task_space import AxisAnalysis, AxisAssessment, EvidenceBasis
 
 
-def test_v2_pipeline_reaches_audited_manifest():
+def test_task_space_pipeline_reaches_audited_manifest():
     allowed = {"input_structure": ["single-image"], "operation": ["describe"], "clinical_target": ["finding"]}
     registries = {
         "input_structure": ["single-image", "multi-image", "multi-view", "volume", "image-text", "paired-study"],
@@ -17,6 +17,7 @@ def test_v2_pipeline_reaches_audited_manifest():
             "output_spec": "text", "task_paradigm": "Report Generation", "capability_category": "Generation",
             "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}], "steps": [{"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}}, {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}}], "output_spec": "text", "result_step": "step_1"}}
     case = {"case_id": "c", "evidence": [{"id": "a", "type": "asset", "name": "image", "value": "asset", "ref": []}, {"id": "r", "type": "text", "name": "report", "value": "Clear", "ref": ["a"]}]}
-    result = run_v2_pipeline(dataset={"dataset_id": "d"}, axis_analysis=analysis, node_context={"evidence": {"image": {}, "report": {}, "text": 1}, "relations": {"related": 1}}, leaves=[leaf], cases=[case], requested_count=1)
+    result = run_pipeline(dataset={"dataset_id": "d"}, axis_analysis=analysis, node_context={"evidence": {"image": {}, "report": {}, "text": 1}, "relations": {"related": 1}}, leaves=[leaf], cases=[case], requested_count=1)
     assert result["audit"]["accepted"] == 1
-    assert result["manifest"]["schema_version"] == "benchmark-manifest.v2"
+    assert result["manifest"]["schema_version"] == "benchmark-manifest"
+

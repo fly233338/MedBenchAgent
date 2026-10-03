@@ -1,5 +1,5 @@
 {
-  "schema_version": "bir-registry-constraints.v1",
+  "schema_version": "bir-registry-constraints",
   "rules": [
     {"id": "single-image", "when": {"input_structure": "single-image"}, "requires": [{"path": "assets.primary_image_assets", "gte": 1}], "message": "single-image requires a primary image asset"},
     {"id": "multi-image", "when": {"input_structure": "multi-image"}, "requires": [{"path": "assets.multi_image_cases", "gte": 1}], "message": "multi-image requires at least two primary image assets in a Case"},
@@ -14,3 +14,4 @@
     {"id": "describe", "when": {"operation": "describe"}, "requires_any": [{"path": "evidence.text", "gte": 1}, {"path": "relations.paired_text", "gte": 1}, {"path": "structured_reference", "eq": true}], "message": "describe requires a structured reference"}
   ]
 }
+

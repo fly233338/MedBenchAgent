@@ -1,4 +1,4 @@
-"""Interactive discovery of a raw source using the current v5 Source contract."""
+"""Interactive discovery of a raw source using the current Source contract."""
 
 from __future__ import annotations
 
@@ -180,3 +180,4 @@ def discover_source(context: dict, dataset_id: str) -> dict:
         upsert_dataset_source(experiment_name, entry, root=Path(experiment_root))
     atomic_write_json(decision_path, {"entry": entry, "inventory_path": str(folder / "source_inventory.json")})
     return entry
+

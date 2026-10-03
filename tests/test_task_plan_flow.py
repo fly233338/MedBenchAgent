@@ -39,7 +39,7 @@ def _context(tmp_path):
     return {
         "operation_directory": str(tmp_path),
         "task_space_plan_path": str(path),
-        "dataset_access_manifest": {"schema_version": "annotation.v5", "revision": "7"},
+        "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"},
     }
 
 
@@ -222,3 +222,4 @@ def test_derived_plan_views_must_match_canonical_plan(tmp_path):
 
     with pytest.raises(ValueError, match="task_scenarios.json is inconsistent"):
         task_planning._assert_derived_artifact_consistency(context, plan)
+

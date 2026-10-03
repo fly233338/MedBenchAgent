@@ -67,7 +67,7 @@ def new_issue(role, context, reference, question, *, subject_scope=None, source_
             raise ValueError("Display clarification requires the active single source")
         manifest_path = context.get("asset_manifest_path")
         if not manifest_path:
-            raise ValueError("Display clarification requires a v5 asset_manifest.jsonl")
+            raise ValueError("Display clarification requires a asset_manifest.jsonl")
         from medbenchagent.data.asset_manifest import iter_asset_manifest
         found = {entry.asset_id for entry in iter_asset_manifest(manifest_path) if entry.asset_id in images}
         if found != set(images):
@@ -197,3 +197,4 @@ def resolve_clarification(context, *, issue_id, kind):
         else:
             updates[field] = str(target)
     return result("success", "Clarification resolved and routed to its origin", **updates)
+
