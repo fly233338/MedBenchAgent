@@ -149,7 +149,11 @@ def complete_validated_json(
                 )
                 feedback += axis_hint
                 diagnostic.append(axis_hint.strip())
-            feedback = feedback[:600]
+            repair_guidance = (
+                " Correct only the reported contract errors, preserve all already valid fields, "
+                "and return one complete JSON object."
+            )
+            feedback = (feedback + repair_guidance)[:1600]
             record_llm_validation_error(
                 errors=diagnostic,
                 model_output=_validation_output_excerpt(str(raw)),
@@ -160,7 +164,7 @@ def complete_validated_json(
             previous = raw, feedback
             messages.extend([{"role": "assistant", "content": raw[:6000]},
                              {"role": "user", "content":
-                              f"Correct your JSON. Contract error: {feedback}. Return only a corrected JSON object."}])
+                              f"Correct your JSON. Contract error: {feedback} Return only a corrected JSON object."}])
             if on_retry is not None:
                 on_retry()
             continue

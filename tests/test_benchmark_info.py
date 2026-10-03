@@ -44,3 +44,29 @@ def test_evidence_rejects_quotes_not_present_in_user_inputs():
             {"field": "dataset_mentions", "quote": "Example CT", "input_index": 0},
             {"field": "intent_notes", "quote": "image interpretation", "input_index": 0},
         ]), None, ["Build a 20 questions English benchmark for thoracic imaging CT cases using Example CT; focus on image interpretation"])
+
+
+def test_missing_modality_scope_is_derived_from_source_quote():
+    result = _validate_extraction({
+        "clinical_scope": "breast cancer", "modalities": ["ultrasound"], "language": "en",
+        "sample_count": 20, "dataset_mentions": ["breast-us"], "intent_notes": [],
+        "sample_scope": [], "allocation_preferences": [], "evidence": [
+            {"field": "clinical_scope", "quote": "breast cancer", "input_index": 0},
+            {"field": "modalities", "quote": "breast-us", "input_index": 0},
+            {"field": "language", "quote": "English", "input_index": 0},
+            {"field": "sample_count", "quote": "20", "input_index": 0},
+            {"field": "dataset_mentions", "quote": "breast-us", "input_index": 0},
+        ],
+    }, None, ["Build a 20 question English benchmark for breast cancer using breast-us"])
+    assert result["sample_scope"][0]["modalities"] == ["ultrasound"]
+
+
+def test_unquoted_intent_notes_are_dropped():
+    result = _validate_extraction(_brief([
+        {"field": "clinical_scope", "quote": "thoracic imaging", "input_index": 0},
+        {"field": "modalities", "quote": "CT cases", "input_index": 0},
+        {"field": "language", "quote": "English benchmark", "input_index": 0},
+        {"field": "sample_count", "quote": "20 questions", "input_index": 0},
+        {"field": "dataset_mentions", "quote": "Example CT", "input_index": 0},
+    ]), None, ["Build a 20 questions English benchmark for thoracic imaging CT cases using Example CT"])
+    assert result["intent_notes"] == []

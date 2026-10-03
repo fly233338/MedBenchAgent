@@ -28,7 +28,7 @@ class ExtractedBrief(BaseModel):
     language: str | None = None
     # Explicit invalid values must survive extraction so the user can correct them.
     sample_count: Any = None
-    sample_scope: list[ScopeRequirement]
+    sample_scope: list[ScopeRequirement] = Field(default_factory=list)
     allocation_preferences: list[AllocationPreference] = Field(default_factory=list)
     evidence: list[dict[str, Any]]
     max_total_tasks_per_image: int | None = Field(default=None, gt=0)
@@ -65,7 +65,11 @@ Every nonempty explicit field must have at least one evidence entry. Evidence qu
 the numbered user inputs; never quote an assistant question. `input_index` is zero-based and must identify the input
 containing the quote. Evidence is a source pointer, not a normalized-value equality check. If a value is inferred from
 a clarification or configuration default, do not fabricate a quote for it.
-sample_scope must cover EVERY explicit modality and population restriction. Distinguish
+sample_scope must cover EVERY explicit modality and population restriction. If modalities is nonempty,
+always create a modality scope for every listed modality. For example, a request containing "breast-us"
+may normalize modalities to ["ultrasound"], but the scope quote must remain the exact original "breast-us".
+The evidence array must also include {"field":"intent_notes", ...} whenever intent_notes is nonempty.
+Distinguish
 testing disease knowledge from selecting only cases with that disease. The former is
 evaluation_focus, not a positive-case filter. Do not invent restrictions. Use an empty
 list when none were requested. Quote the user's original language, without translation. Keep `dataset_mentions` as
@@ -154,11 +158,14 @@ def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = N
 
 def _validate_extraction(result, existing, user_inputs):
     info = merge_info(existing or {}, result)
-    if not isinstance(result.get("sample_scope"), list):
+    raw_scopes = result.get("sample_scope", [])
+    if info["modalities"] and not raw_scopes:
+        raw_scopes = _derive_modality_scope(info["modalities"], user_inputs)
+    if not isinstance(raw_scopes, list):
         raise ValueError("Extraction must include sample_scope as a list, including explicit modalities")
-    if "sample_scope" in result:
+    if raw_scopes or "sample_scope" in result:
         from medbenchagent.planning.scope import ScopeRequirement
-        scopes = [ScopeRequirement.model_validate(r).model_dump() for r in result["sample_scope"]]
+        scopes = [ScopeRequirement.model_validate(r).model_dump() for r in raw_scopes]
         if len({r["id"] for r in scopes}) != len(scopes) or any(not any(r["quote"] in text for text in user_inputs) for r in scopes):
             raise ValueError("Sample scope requires unique IDs and exact user quotations")
         for operator in ("in", "not_in"):
@@ -180,6 +187,9 @@ def _validate_extraction(result, existing, user_inputs):
     evidence = result.get("evidence")
     if not isinstance(evidence, list):
         raise ValueError("Extraction requires evidence for explicit values")
+    evidence_fields = {item.get("field") for item in evidence if isinstance(item, dict)}
+    if info.get("intent_notes") and "intent_notes" not in evidence_fields:
+        info["intent_notes"] = []
     expected = [(field, info.get(field)) for field in (*REQUIRED_FIELDS, *OPTIONAL_FIELDS, "max_total_tasks_per_image")
                 if info.get(field) not in (None, "", [])]
     allowed_fields = set(REQUIRED_FIELDS + OPTIONAL_FIELDS +
@@ -214,6 +224,27 @@ def _validate_extraction(result, existing, user_inputs):
     info["allocation_preferences"] = preferences
     info["evidence"] = evidence
     return info
+
+
+def _derive_modality_scope(modalities: list[str], user_inputs: list[str]) -> list[dict[str, Any]]:
+    """Build a scope only when every normalized modality has a source quote."""
+    aliases = {
+        "ultrasound": ("ultrasound", "sonography", "breast-us", "us"),
+        "computed tomography": ("computed tomography", "ct"),
+        "magnetic resonance imaging": ("magnetic resonance imaging", "mri"),
+        "x-ray": ("x-ray", "xray", "radiograph"),
+    }
+    text = "\n".join(user_inputs)
+    quotes = []
+    for modality in modalities:
+        candidates = aliases.get(modality.casefold(), (modality,))
+        match = next((candidate for candidate in candidates if candidate.casefold() in text.casefold()), None)
+        if match is None:
+            return []
+        start = text.casefold().find(match.casefold())
+        quotes.append(text[start:start + len(match)])
+    return [{"id": "scope-modality", "kind": "modality", "description": "Explicit modality selection",
+             "quote": " or ".join(quotes), "modalities": modalities, "operator": "in", "logic": "any"}]
 
 
 def write_working_blueprint(
