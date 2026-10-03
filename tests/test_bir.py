@@ -37,3 +37,18 @@ def test_bir_rejects_path_escape(tmp_path: Path):
     store = BIRStore(tmp_path / "pilot" / "BIR")
     with pytest.raises(ValueError):
         store.load("../outside.json")
+
+
+def test_bir_json_is_readable_and_failed_transaction_preserves_previous_file(tmp_path: Path):
+    sessions.create_experiment("pilot", root=tmp_path)
+    store = BIRStore(tmp_path / "pilot" / "BIR")
+    store.update("allocation.json", {"schema_version": "allocation.v1", "items": ["one"]},
+                 run_id="r1", actor="test")
+    path = store.root / "allocation.json"
+    text = path.read_text(encoding="utf-8")
+    assert "\n  \"items\"" in text
+    before = json.loads(text)
+    with pytest.raises(TypeError):
+        store.update("allocation.json", {"schema_version": "allocation.v1", "items": {1, 2}},
+                     run_id="r2", actor="test")
+    assert json.loads(path.read_text(encoding="utf-8")) == before
