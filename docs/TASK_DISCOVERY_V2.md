@@ -41,6 +41,11 @@ from patient/clinical context, device or administrative metadata, and
 calibration-only spacing. Medical relevance alone does not make a field a
 valid image-only task target.
 
+Value evidence may also expose deterministic `observed_values` entries with
+normalized values and counts. These entries are the only source for Closed VQA
+option vocabularies. VQA label leaves store the complete finite vocabulary in
+`options`; Report Generation and Visual Grounding leaves do not.
+
 Each new Leaf Task stores the configured number of distinct
 `question_templates` (between three and five). Review checks their semantic
 equivalence. Generation uses a seeded shuffle cycle and records the selected

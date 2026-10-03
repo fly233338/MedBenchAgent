@@ -171,6 +171,7 @@ class LeafTask(BaseModel):
     name: str = Field(min_length=1)
     scenario_id: str | None = None
     question_templates: list[str] = Field(min_length=1)
+    options: list[str] | None = None
     input: list[EvidenceSelector] = Field(min_length=1)
     target: str = Field(min_length=1)
     reference_rule: str | None = None
@@ -216,6 +217,11 @@ class LeafTask(BaseModel):
         ))
         if allowed and self.output_spec.value not in allowed:
             raise ValueError("OutputSpec is incompatible with TaskParadigm")
+        if self.options is not None:
+            if any(not isinstance(option, str) or not option.strip() for option in self.options):
+                raise ValueError("VQA options must be non-empty strings")
+            if len({option.casefold() for option in self.options}) != len(self.options):
+                raise ValueError("VQA options must be unique")
         return self
 
     @property

@@ -30,6 +30,11 @@ def validate_candidate_leaf(
         raise ValueError("Leaf Task cannot be created under an excluded Task Scenario")
     if leaf.capability_category != scenario.capability_category:
         raise ValueError("Leaf Task Category differs from its Task Scenario")
+    if leaf.task_paradigm.value == "VQA" and leaf.output_spec.value == "label":
+        if not leaf.options or len(leaf.options) < 2:
+            raise ValueError("Closed VQA label tasks require at least two options")
+    elif leaf.options is not None:
+        raise ValueError("Only VQA label tasks may define options")
     spec = ResolverSpec.parse(leaf.resolver)
     registry = registry or (resolver_context or {}).get("registry")
     if registry is not None:
@@ -62,6 +67,16 @@ def validate_candidate_leaf(
         ]
         if missing:
             raise ValueError(f"Input Evidence roles cannot be resolved: {missing}")
+        if leaf.options is not None:
+            catalog = resolver_context.get("evidence_catalog", {})
+            if catalog:
+                names = {step.selector.name for step in spec.steps if step.selector and step.selector.name}
+                candidates = set()
+                for name in names:
+                    entry = catalog.get(name, {})
+                    candidates.update(str(item.get("value")) for item in entry.get("observed_values", []) if isinstance(item, dict))
+                if candidates and not set(leaf.options).issubset(candidates):
+                    raise ValueError("VQA options must come from Evidence Catalog observed_values")
     return leaf
 
 

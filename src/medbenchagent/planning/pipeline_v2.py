@@ -79,7 +79,10 @@ def run_v2_pipeline(
     if not evidence_names and isinstance((node_context or {}).get("evidence"), dict):
         evidence_names.update((node_context or {}).get("evidence", {}).keys())
     for leaf in parsed_leaves:
-        validate_candidate_leaf(leaf, scenarios, resolver_context={"evidence_names": evidence_names})
+        validate_candidate_leaf(leaf, scenarios, resolver_context={
+            "evidence_names": evidence_names,
+            "evidence_catalog": (node_context or {}).get("evidence_catalog", {}),
+        })
     case_list = list(cases)
     from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
     parsed_leaves = [

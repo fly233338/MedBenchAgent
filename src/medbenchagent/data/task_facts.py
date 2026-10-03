@@ -169,6 +169,23 @@ def build_dataset_facts(
             for name, data in by_name.items()
         }
 
+    # Preserve the registered profile while enriching value-like evidence with
+    # the deterministic vocabulary observed in the canonical cases.
+    observed: dict[str, Counter] = defaultdict(Counter)
+    for case in case_list:
+        for row in case.get("evidence", []):
+            if row.get("type") == "value" and row.get("name") and row.get("value") is not None:
+                value = row.get("value")
+                if isinstance(value, (str, int, float, bool)):
+                    observed[row["name"]][str(value)] += 1
+    for name, counts in observed.items():
+        entry = evidence_catalog.setdefault(name, {"name": name, "cases": 0, "types": {"value": 0}, "units": {}})
+        entry["observed_values"] = [
+            {"value": value, "count": count}
+            for value, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+        entry["value_count"] = len(counts)
+
     known_patient_ids = {
         case.get("patient_id") for case in case_list if case.get("patient_id")
     }

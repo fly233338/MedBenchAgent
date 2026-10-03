@@ -65,6 +65,10 @@ class LeafTaskDraft(BaseModel):
     name: str = Field(min_length=1)
     scenario_id: str = Field(min_length=1)
     question_templates: list[str] = Field(min_length=1)
+    options: list[str] | None = Field(
+        default=None,
+        description="Complete Closed VQA answer vocabulary; required for VQA label tasks.",
+    )
     input: list[EvidenceSelector] = Field(min_length=1)
     target: str = Field(min_length=1)
     reference_rule: str = Field(min_length=1)
@@ -92,6 +96,13 @@ class LeafTaskDraft(BaseModel):
             raise ValueError("question_templates must be non-empty")
         if len(set(self.question_templates)) != len(self.question_templates):
             raise ValueError("question_templates must be unique")
+        if self.task_paradigm == TaskParadigm.VQA and self.output_spec == OutputSpec.LABEL:
+            if not self.options or len(self.options) < 2:
+                raise ValueError("Closed VQA label tasks require at least two options")
+            if len({option.casefold() for option in self.options}) != len(self.options):
+                raise ValueError("VQA options must be unique")
+        elif self.options is not None:
+            raise ValueError("Only VQA label tasks may define options")
         return self
 
 
@@ -774,7 +785,12 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         selector.name for selector in parsed.input
         if selector.name and selector.evidence_type == "asset"
     )
-    validate_candidate_leaf(parsed, plan.scenarios, resolver_context={"evidence_names": evidence_names, "registry": _registry(context)})
+    facts = _facts(context, plan)
+    validate_candidate_leaf(parsed, plan.scenarios, resolver_context={
+        "evidence_names": evidence_names,
+        "evidence_catalog": facts.get("evidence_catalog", {}),
+        "registry": _registry(context),
+    })
     identity = leaf_identity(parsed)
     if any(key != parsed.leaf_id and leaf_identity(value) == identity for key, value in plan.leaf_tasks.items()):
         raise ValueError("Duplicate Leaf Task semantics")
@@ -786,16 +802,25 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         page = query.sample(offset=0, limit=512)
         cases = list(page.get("values", []))
     resolution_reasons = Counter()
+    resolved_answers = set()
     for case in cases:
         resolved = resolve(case, ResolverSpec.parse(parsed.resolver))
         if isinstance(resolved, NotApplicable):
             resolution_reasons[resolved.reason] += 1
+        elif parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
+            value = resolved.reference.get("value", resolved.reference) if isinstance(resolved.reference, dict) else resolved.reference
+            if isinstance(value, (str, int, float, bool)):
+                resolved_answers.add(str(value))
     eligible = len(cases) - sum(resolution_reasons.values())
     if eligible <= 0:
         common = ", ".join(f"{reason}={count}" for reason, count in resolution_reasons.most_common())
         raise ValueError(
             f"Resolver resolved 0 of {len(cases)} Cases. Common reasons: {common or 'unknown'}"
         )
+    if parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
+        missing_options = resolved_answers - {option for option in (parsed.options or [])}
+        if missing_options:
+            raise ValueError(f"Closed VQA options must include every resolved answer: {sorted(missing_options)}")
     parsed = parsed.model_copy(update={"eligible_count": eligible})
     plan.leaf_tasks[parsed.leaf_id] = parsed
     plan.revision += 1
@@ -831,6 +856,7 @@ def save_task_leaf(context: dict[str, Any], *, leaf: dict[str, Any]) -> dict[str
         "name": parsed.name,
         "scenario_id": parsed.scenario_id,
         "question_templates": parsed.question_templates,
+        "options": parsed.options,
         "input": [selector.model_dump(mode="json") for selector in parsed.input],
         "target": parsed.target,
         "reference_rule": parsed.reference_rule,
