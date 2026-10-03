@@ -8,5 +8,3 @@ Quantify requires real numeric or deterministically computable measurement evide
 Exclude tasks that depend only on metadata, invented fields, constant answers, or shortcuts.
 
 Review one Scenario at a time and return one keep/exclude decision with a non-empty reason.
-
-The host supplies `describe_synthesis_allowed` and `describe_support_rule`. Follow them exactly. When synthesis is disabled, a direct report-level or structured narrative reference is required for `describe`; multiple categorical values, text annotations, region annotations, metadata, or evidence counts do not qualify.

@@ -22,8 +22,5 @@ Question variants must preserve the same target, scope, comparison
 direction, uncertainty, units, and answer requirements.
 
 First define the clinical question, target entity, property, and scope before selecting the resolver and output format. Do not mechanically turn every annotation field into a task.
-Require multiple verifiable facts only when the current describe synthesis policy allows it. Do not add unannotated negative findings, diagnoses, or management recommendations.
+Do not add unannotated negative findings, diagnoses, or management recommendations.
 The input and reference scopes must match: a local image must not be paired with a full examination report as its answer; a lesion annotation must not be used to ask about all abnormalities; and a lesion must be specified before asking about its margins or size.
-
-The host supplies `describe_synthesis_allowed` and `describe_support_rule`. Follow them exactly. When synthesis is disabled, require a direct report-level or structured narrative reference and do not create a narrative by combining separate categorical values, text annotations, region annotations, metadata, or evidence counts.
-For describe, do not expand a single categorical label into a narrative.

@@ -409,26 +409,6 @@ def _raise_leaf_failure(context: dict[str, Any], plan: TaskPlanState, raw_leaf: 
     raise LeafTaskValidationError(message, _leaf_diagnostics(context, plan, raw_leaf, errors=[error], repair_hint=repair_hint))
 
 
-ALLOW_DESCRIBE_SYNTHESIS = False
-
-
-def _describe_support_rule() -> str:
-    if ALLOW_DESCRIBE_SYNTHESIS:
-        return (
-            "For `describe`, multiple evidence fields may support a coherent report only when their "
-            "combination is explicitly permitted by the current task policy, has a defined target "
-            "and scope, and is covered by the reference."
-        )
-    return (
-        "For `describe`, mark the value as supported only when the permitted evidence contains a direct "
-        "report-level or structured narrative reference for the requested entity, region, or examination. "
-        "Do not synthesize a report from multiple categorical values, text annotations, region annotations, "
-        "metadata, or evidence counts. Multiple text entries, region annotations, or per-case counts do not "
-        "support `describe` by themselves. A categorical text field, a list of findings, or a collection of "
-        "region annotations is not a report-level narrative reference."
-    )
-
-
 def _benchmark_brief(context: dict[str, Any]) -> dict[str, Any]:
     """Expose only benchmark intent needed by Task Planning model calls."""
     info = context.get("benchmark_info") or {}
@@ -986,9 +966,7 @@ def analyze_axis(context: dict[str, Any], *, axis: TaskAxis, assessments: list[A
             registry.prompt("axis_analysis") if registry else "Assess the supplied Axis using bounded evidence.",
             json.dumps({"axis": axis.value, "axis_definition": axis_definition, "allowed_values": sorted(allowed),
                         "bounded_evidence": json.loads(evidence), "dataset_policy": "image-only benchmark",
-                        "benchmark_brief": _benchmark_brief(context),
-                        "describe_synthesis_allowed": ALLOW_DESCRIBE_SYNTHESIS,
-                        "describe_support_rule": _describe_support_rule()}, ensure_ascii=False),
+                        "benchmark_brief": _benchmark_brief(context)}, ensure_ascii=False),
             AxisDecisionSet,
         )
         assessments = parsed["values"]

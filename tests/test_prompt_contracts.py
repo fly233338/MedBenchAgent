@@ -41,6 +41,7 @@ def test_registry_contains_the_canonical_operation_definitions():
     assert definitions["compare"].startswith("Determine similarities, differences, ordering")
     assert definitions["align"].startswith("Establish correspondence or assess concordance")
     assert "An isolated label, label list" in definitions["describe"]
+    assert "When no structured text is available" in definitions["describe"]
 
 
 def test_stage_prompts_include_the_direct_semantic_constraints():
@@ -55,8 +56,6 @@ def test_stage_prompts_include_the_direct_semantic_constraints():
     assert "Do not infer absence from missing annotations" in leaf
     assert "Tumor masks support finding localization" in screening
     assert "Check whether the question, benchmark-model input, and reference answer cover the same scope" in review
-    assert "describe_synthesis_allowed" in axis
-    assert "direct report-level or structured narrative reference" in leaf
     assert "benchmark_brief" in source
     assert 'prompt("scenario_screening")' in source
 

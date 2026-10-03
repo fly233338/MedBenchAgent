@@ -14,5 +14,3 @@ The review package must include:
 - Deterministic validation results already completed by code.
 
 Planning and review models should inspect the reference answer; only the benchmark VLM input must exclude reference evidence. Use `benchmark_model_input` for the latter concept.
-
-The host supplies `describe_synthesis_allowed` and `describe_support_rule`. Follow them exactly. When synthesis is disabled, require a direct report-level or structured narrative reference and reject a narrative assembled from separate categorical values, text annotations, region annotations, metadata, or evidence counts.
