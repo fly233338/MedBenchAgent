@@ -731,18 +731,24 @@ class AxisEvidenceArguments(NoArguments):
 
 
 def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=None) -> dict[str, Any]:
+    """Read one needed catalog slice; do not repeat an unchanged request before saving a Leaf Task."""
+    state = context.setdefault("planning_read_state", {"scenario_id": None, "scenario_context_read": False, "catalog_queries": []})
+    query = json.dumps({"offset": offset, "limit": limit, "names": sorted(names or [])}, sort_keys=True)
+    if query in state.get("catalog_queries", []):
+        raise ValueError("This Evidence Catalog request was already completed; choose save_leaf_task or a new request")
     plan = _load_plan(context)
     paths = _read(plan.evidence_manifest_path)["artifacts"]
     entries = _read(paths["catalog"]).get("entries", [])
     if names:
         entries = [row for row in entries if row.get("name") in set(names)]
     page = entries[offset:offset + limit]
+    state["catalog_queries"] = [*state.get("catalog_queries", []), query]
     return result("success", json.dumps({
         "revision": _read(paths["catalog"]).get("revision"),
         "entries": page,
         "total": len(entries),
         "next_offset": offset + limit if offset + limit < len(entries) else None,
-    }, ensure_ascii=False))
+    }, ensure_ascii=False), planning_read_state=state)
 
 
 def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, Any]:
@@ -799,6 +805,7 @@ def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, 
 
 
 def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = None) -> dict[str, Any]:
+    """Read the current Scenario once; the next Leaf action must be evidence lookup or save."""
     plan = _load_plan(context)
     scenario_id = scenario_id or plan.current_scenario_id or (
         plan.pending_scenario_ids[0] if plan.pending_scenario_ids else
@@ -836,12 +843,19 @@ def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = 
     context_value["question_template_count"] = _configured_template_count(context)
     context_value["evidence_source"] = "planning_catalog"
     context_value["available_followup_tool"] = "read_evidence_catalog"
+    state = context.setdefault("planning_read_state", {"scenario_id": scenario_id, "scenario_context_read": False, "catalog_queries": []})
+    if state.get("scenario_id") == scenario_id and state.get("scenario_context_read"):
+        raise ValueError("This Scenario context was already read; choose save_leaf_task or a new evidence request")
+    state.update({"scenario_id": scenario_id, "scenario_context_read": True, "catalog_queries": []})
+    context_value["next_action"] = "design_leaf"
+    context_value["instruction"] = "Use the listed evidence to design and save a Leaf Task. Do not reread this Scenario."
     context_value["planning_evidence"] = context_value.pop("evidence", [])
     context_value.pop("node", None)
-    return result("success", json.dumps(context_value, ensure_ascii=False))
+    return result("success", json.dumps(context_value, ensure_ascii=False), planning_read_state=state)
 
 
 def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str, Any]:
+    """Terminal Leaf-design action after the current Scenario and required evidence are available."""
     plan = _load_plan(context)
     if plan.phase != "leaves" or not plan.current_scenario_id:
         raise ValueError("An active Task Scenario is required before saving a Leaf Task")
@@ -911,11 +925,13 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
             "status": "review_pending",
         }
     )
+    context.pop("planning_read_state", None)
     updates = _write_artifacts(context, plan)
     return result(
         "success",
         f"Leaf Task {parsed.leaf_id} saved ({eligible} eligible Cases)",
         milestone={"kind": "leaf", "leaf_task_id": parsed.leaf_id, "capacity": eligible},
+        planning_read_state={},
         **updates,
     )
 
@@ -1128,7 +1144,13 @@ def _available_tools(context: dict[str, Any]) -> set[str]:
     if plan.phase == "screening":
         return {"read_scenario_context", "read_evidence_catalog", "screen_scenario"}
     if plan.phase == "leaves":
-        return {"read_scenario_context", "read_evidence_catalog", "save_leaf_task", "review_current_scenario"}
+        state = context.get("planning_read_state", {})
+        if not state.get("scenario_context_read"):
+            return {"read_scenario_context"}
+        scenario = plan.scenarios.get(plan.current_scenario_id)
+        if not scenario or not scenario.leaf_task_ids:
+            return {"read_evidence_catalog", "save_leaf_task"}
+        return {"save_leaf_task", "review_current_scenario"}
     if plan.phase == "complete":
         return {"finish"}
     if plan.phase == "blocked":
@@ -1165,7 +1187,8 @@ def _planning_instructions(context: dict[str, Any]) -> str:
         "Use these runtime values as the active contract for the next action.\n"
         "When phase=axes, read the current Axis evidence once and then call analyze_axis for every allowed value.\n"
         "When next_axis=clinical_target, analyze_axis is the required next state-changing action; do not repeat an unchanged evidence-catalog read.\n"
-        "Axis completion is persisted only by analyze_axis."
+        "Axis completion is persisted only by analyze_axis.\n"
+        "Read tools are bounded queries, not progress actions. Do not repeat an unchanged read."
     )
     if plan.phase == "screening":
         runtime += "\nWhen phase=screening, call screen_scenario once for the current Scenario; it performs a separate short screening model call."
