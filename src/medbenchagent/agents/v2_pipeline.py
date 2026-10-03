@@ -80,8 +80,7 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
         commit = store.transaction({"allocation.json": allocation_value,
                                     f"outputs/{dataset_id}.json": output_value,
                                     "delivery.json": delivery_value},
-                                   run_id=context.get("run_id", "unknown"), actor="v2_pipeline",
-                                   expected_revision=int(context.get("bir_revision", manifest["revision"])))
+                                   run_id=context.get("run_id", "unknown"), actor="v2_pipeline")
         context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
     return result(
         "success",

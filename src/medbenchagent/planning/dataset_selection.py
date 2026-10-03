@@ -171,7 +171,6 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
             context.update(publish(child, kind, references, deps))
     if context.get("bir_path"):
         store = BIRStore(context["bir_path"])
-        manifest = json.loads((store.root / "manifest.json").read_text(encoding="utf-8"))
         changes = {"benchmark_info.json": store.load("benchmark_info.json")}
         for identifier in selection.selected_dataset_ids:
             asset = assets[identifier]
@@ -208,8 +207,7 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
             }
             changes[f"datasets/{identifier}/access.json"] = receipt
         commit = store.transaction({key: value for key, value in changes.items() if key != "benchmark_info.json"},
-                                   run_id=context.get("run_id", "unknown"), actor="dataset_selection",
-                                   expected_revision=int(context.get("bir_revision", manifest["revision"])))
+                                   run_id=context.get("run_id", "unknown"), actor="dataset_selection")
         context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
     issue_updates = _selection_issue_updates(context, selection_issue_id)
     versions = publish(context, "DatasetSelection", {"path": str(path)},

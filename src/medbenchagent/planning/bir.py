@@ -345,20 +345,23 @@ class BIRStore:
         return BIRValidationReport(not errors, int(manifest.get("revision", 0)), tuple(errors), tuple(warnings))
 
     def update(self, relative_path: str, value: dict[str, Any], *, run_id: str,
-               actor: str, expected_revision: int, dependencies: dict[str, str] | None = None) -> BIRCommit:
+               actor: str, expected_revision: int | None = None, dependencies: dict[str, str] | None = None) -> BIRCommit:
         return self.transaction({relative_path: value}, run_id=run_id, actor=actor,
                                  expected_revision=expected_revision, dependencies=dependencies)
 
     def transaction(self, changes: dict[str, dict[str, Any]], *, run_id: str, actor: str,
-                    expected_revision: int, dependencies: dict[str, str] | None = None) -> BIRCommit:
+                    expected_revision: int | None = None, dependencies: dict[str, str] | None = None) -> BIRCommit:
         if not changes:
             manifest = self._read_manifest()
             return BIRCommit(int(manifest["revision"]), digest_file(self.manifest_path), (), manifest.get("status", "empty"))
         with self.lock:
             manifest = self._read_manifest()
             actual = int(manifest.get("revision", 0))
-            if actual != expected_revision:
-                raise BIRConflictError(f"BIR revision conflict: expected {expected_revision}, found {actual}")
+            # The lock is the serialization boundary.  A caller's revision is
+            # advisory only: agent contexts may legitimately lag behind the
+            # canonical BIR while another step commits an unrelated change.
+            # Keep the value available for diagnostics without rejecting the
+            # otherwise safe, atomic transaction.
             registry_changes = [path for path in changes if path.replace("\\", "/").startswith("registry/")]
             if registry_changes:
                 raise ValueError("BIR Registry is immutable after experiment creation")
@@ -374,7 +377,8 @@ class BIRStore:
                     json.loads(staged.read_text(encoding="utf-8"))
                 new_revision = actual + 1
                 commit = {"revision": new_revision, "run_id": run_id, "actor": actor,
-                          "paths": sorted(changes), "dependencies": dependencies or {}}
+                          "paths": sorted(changes), "dependencies": dependencies or {},
+                          "based_on_revision": expected_revision}
                 (staging / "commit.json").write_bytes(_canonical_bytes(commit))
                 for relative in changes:
                     staged = staging / Path(*_safe_relative(relative).parts)

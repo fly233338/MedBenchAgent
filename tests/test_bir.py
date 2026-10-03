@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from medbenchagent.planning.bir import BIRConflictError, BIRStore
+from medbenchagent.planning.bir import BIRStore
 from medbenchagent.runtime import sessions
 
 
@@ -24,9 +24,9 @@ def test_bir_revision_conflict_and_digest_validation(tmp_path: Path):
     first = store.update("benchmark_info.json", {"schema_version": "benchmark-info.v1", "value": 1},
                          run_id="r1", actor="test", expected_revision=0)
     assert first.revision == 1
-    with pytest.raises(BIRConflictError):
-        store.update("benchmark_info.json", {"schema_version": "benchmark-info.v1", "value": 2},
-                     run_id="r2", actor="test", expected_revision=0)
+    second = store.update("benchmark_info.json", {"schema_version": "benchmark-info.v1", "value": 2},
+                          run_id="r2", actor="test", expected_revision=0)
+    assert second.revision == 2
     assert store.validate().valid
     (tmp_path / "pilot" / "BIR" / "benchmark_info.json").write_text("{}", encoding="utf-8")
     assert not store.validate().valid

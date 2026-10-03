@@ -176,9 +176,8 @@ def specify(context: SupervisorContext):
                        "source_runs": [*current.get("source_runs", []), context.get("run_id", "unknown")],
                        "change_log": [*current.get("change_log", []),
                                       {"run_id": context.get("run_id", "unknown"), "fields": sorted(info)}][-50:]})
-        manifest = json.loads((store.root / "manifest.json").read_text(encoding="utf-8"))
         commit = store.update("benchmark_info.json", merged, run_id=context.get("run_id", "unknown"),
-                              actor="specify", expected_revision=int(context.get("bir_revision", manifest["revision"])))
+                              actor="specify")
         updates.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest,
                        bir_summary_ref={"revision": commit.revision, "path": "benchmark_info.json"})
     if missing:

@@ -239,9 +239,7 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
             for key in canonical if key.endswith(".json") and "manifest" not in key
         }
         canonical[f"datasets/{dataset_id}/evidence/manifest.json"] = manifest
-        current = int(json.loads((bir.root / "manifest.json").read_text(encoding="utf-8"))["revision"])
-        commit = bir.transaction(canonical, run_id=context.get("run_id", "unknown"), actor="task_planning",
-                                 expected_revision=int(context.get("bir_revision", current)))
+        commit = bir.transaction(canonical, run_id=context.get("run_id", "unknown"), actor="task_planning")
         context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
         # Materialize the compatibility evidence view beside the Agent state.
         derived = {
@@ -303,9 +301,7 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
             if not path.is_file() or json.loads(path.read_text(encoding="utf-8")) != value:
                 changed[relative] = value
         if changed:
-            current = int(json.loads((bir.root / "manifest.json").read_text(encoding="utf-8"))["revision"])
             commit = bir.transaction(changed, run_id=context.get("run_id", "unknown"), actor="task_planning",
-                                     expected_revision=int(context.get("bir_revision", current)),
                                      dependencies={"registry": bir.registry().digest, "access": _access(context).get("revision", "")})
             context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
         bir.materialize(prefix + "task_plan.json", plan_path)
@@ -654,6 +650,10 @@ def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, 
             "types": "counts of evidence entries by type for that name",
             "units": "counts of observed units for that name",
         },
+        "reference_semantics": {
+            "planning": "evidence_catalog:<name> and dataset_overview:* are registered planning references; do not pass them to read_evidence.",
+            "inspection": "Only references returned by list_evidence are valid for read_evidence.",
+        },
     }
     axis_dir = Path(context["operation_directory"]) / "axis_evidence"
     path = axis_dir / f"{axis.value}.json"
@@ -928,7 +928,11 @@ def _planning_instructions(context: dict[str, Any]) -> str:
     if store:
         return store.registry().prompt("task_planning")
     return ("Build one resumable annotation.v5 Task Plan. Assess every registered Axis value, "
-            "construct evidence-backed Scenarios and Leaf Tasks, and let code validate contracts.")
+            "construct evidence-backed Scenarios and Leaf Tasks, and let code validate contracts. "
+            "Use evidence_catalog:<name> and dataset_overview:* only as planning references; "
+            "never pass them to read_evidence. For runtime inspections, call list_evidence first "
+            "and use only the returned inspection references. Every action must be the outer "
+            "ToolAction shape {tool, arguments, reason}.")
 
 def compile_task_planning_agent(*, checkpointer=None):
     tools = (

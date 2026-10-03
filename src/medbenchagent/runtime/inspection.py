@@ -134,6 +134,8 @@ def list_evidence(context, **arguments):
 def read_evidence(context, *, reference, pointer=None, offset=0, limit=20, text_offset=0):
     """Read current evidence; pointer selects nested keys/list indices, offset pages containers or text."""
     from medbenchagent.runtime.harness import result
+    if isinstance(reference, str) and (reference.startswith("evidence_catalog:") or reference.startswith("dataset_overview:")):
+        raise ValueError("Planning evidence references are not inspection IDs; use read_axis_evidence or read_evidence_catalog")
     pending = context.get("global_issue")
     if pending and pending.get("answer_reference") == reference:
         from medbenchagent.runtime.clarifications import issue_context
