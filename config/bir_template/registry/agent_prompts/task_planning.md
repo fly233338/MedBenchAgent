@@ -42,6 +42,9 @@ Do not invent fields, relationships, dataset revisions, or completed work.
    - Apply the Leaf Task design instructions.
    - Save valid, meaningfully distinct Leaf Tasks.
    - Call `review_current_scenario` without supplying your own review.
+   - If context has been read and no valid Leaf can be supported, call
+     `exclude_current_scenario` with evidence. Do not exclude after one
+     failed candidate or a temporary data/model failure.
    - Follow the returned state and review feedback.
 
 5. `complete`
@@ -61,6 +64,10 @@ Do not invent fields, relationships, dataset revisions, or completed work.
    unrelated valid work.
 5. Use only tools available in the current state. Do not invent a tool or
    bypass a phase restriction.
+
+`feasible_case_count` is structural Scenario capacity, `eligible_count` is
+Resolver-successful Case capacity, and Scenario Review judges clinical
+meaning, wording, reference validity and template applicability.
 
 ## 5. Output
 

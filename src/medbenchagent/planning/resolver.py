@@ -71,7 +71,27 @@ class ReferenceTextStep(BaseModel):
     selector: EvidenceSelector
 
 
-ResolverStep = Union[ReadStep, CollectStep, SelectStep, CompareStep, ComputeStep, LocateStep, ReferenceTextStep]
+class MapLabelStep(BaseModel):
+    """Deterministically map an encoded scalar label to an explicit output label."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    op: Literal["map_label"] = "map_label"
+    input: str = Field(min_length=1)
+    mapping: dict[str, str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_mapping(self):
+        if any(not key.strip() for key in self.mapping):
+            raise ValueError("map_label mapping keys must be non-empty encoded labels")
+        if any(not value.strip() for value in self.mapping.values()):
+            raise ValueError("map_label mapping values must be non-empty strings")
+        return self
+
+
+ResolverStep = Union[
+    ReadStep, CollectStep, SelectStep, CompareStep, ComputeStep,
+    LocateStep, ReferenceTextStep, MapLabelStep,
+]
 
 
 class ResolverSpec(BaseModel):
@@ -104,7 +124,7 @@ class ResolverSpec(BaseModel):
             seen_roles.add(selector.role)
         seen = set()
         for index, step in enumerate(self.steps):
-            dependencies = ([step.input] if isinstance(step, (SelectStep, LocateStep)) else
+            dependencies = ([step.input] if isinstance(step, (SelectStep, LocateStep, MapLabelStep)) else
                             [step.left, step.right] if isinstance(step, CompareStep) else
                             step.inputs if isinstance(step, ComputeStep) else [])
             if not set(dependencies) <= seen:
@@ -292,6 +312,19 @@ def resolve(case: dict[str, Any], resolver_spec: ResolverSpec | dict[str, Any]) 
         elif isinstance(step, LocateStep):
             source = values.get(step.input)
             values[key] = source.get("value", source) if source is not None else None
+            value_refs[key] = set(value_refs.get(step.input, set()))
+        elif isinstance(step, MapLabelStep):
+            source = values.get(step.input)
+            if source is None:
+                return NotApplicable(reason="map_label_input_missing")
+            value = _value(source)
+            try:
+                encoded = encode_closed_label(value)
+            except ValueError:
+                return NotApplicable(reason="map_label_input_not_scalar")
+            if encoded not in step.mapping:
+                return NotApplicable(reason="map_label_unmapped")
+            values[key] = step.mapping[encoded]
             value_refs[key] = set(value_refs.get(step.input, set()))
         if values.get(key) is None:
             return NotApplicable(reason=f"{step.op}_not_applicable")

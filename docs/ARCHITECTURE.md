@@ -69,13 +69,16 @@ Supervisor 先解析数据准备请求：请求中包含可读的原始目录时
 
 `specify` 生成带字段级来源证据的 Requirement，并保留开放式意图和用户提到的数据集名称。`discover_datasets` 扫描并校验 Catalog 与 Prepared 根目录，冻结候选 Card；它不替用户做选择。`select_datasets` 只绑定冻结候选 ID。随后代码生成并校验 `DatasetAccessReceipt`，模型不会决定路径、revision 或 digest。
 
-每个 annotation 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。完整计划的 canonical 文件位于 BIR 的 `datasets/<id>/planning/`；Run 目录中的 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 是派生视图。Generation 使用冻结 seed 在模板中可复现地抽取问题，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
+每个 annotation 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。Screening `keep` 只表示允许进入 Leaf 探索；Leaf 阶段可以在证据充分且没有有效 Leaf 时显式排除 Scenario，所有排除理由和证据都写入 canonical plan。完整计划的 canonical 文件位于 BIR 的 `datasets/<id>/planning/`；Run 目录中的 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 是派生视图。Generation 使用冻结 seed 在模板中可复现地抽取问题，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
 
 Leaf design receives a bounded structured context containing the dataset
 revision, Evidence Catalog, source-backed annotation semantics, documented
 relations, representative Cases, coverage limitations and current Scenario
 Leaf summaries. This context is carried in the planning request rather than
 reconstructed from truncated observation summaries.
+Read state and evidence caches are bound to dataset ID, dataset revision and
+current Scenario ID; switching or recovering a Scenario invalidates stale
+context. The runtime injects this dynamic context once per request.
 
 Generation resolves model inputs in the order declared by `Resolver.inputs`.
 Benchmark Items record `options`, ordered input evidence/assets and explicit
@@ -83,6 +86,9 @@ role bindings. Audit recomputes these bindings, the selected question
 template, the Resolver answer and reference evidence before accepting an item.
 Derived Closed VQA labels use the same deterministic scalar encoding during
 planning, generation and audit.
+When a Leaf needs a smaller categorical vocabulary, the Resolver may contain
+an explicit `map_label` step. Unmapped values remain ineligible; no runtime
+agent infers or edits mappings.
 
 ## 恢复与界面
 

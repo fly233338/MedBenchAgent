@@ -141,7 +141,13 @@ def build_task_scenarios(
                     "reason": reason,
                 }
             scenario = scenario.model_copy(
-                update={"exclusion_reason": reason, "status": "excluded"}
+                update={
+                    "exclusion_reason": reason,
+                    "status": "excluded",
+                    "exclusion_stage": "structural",
+                    "screening_decision": "exclude",
+                    "screening_reason": reason,
+                }
             )
         scenarios[scenario.scenario_id] = scenario
     return scenarios

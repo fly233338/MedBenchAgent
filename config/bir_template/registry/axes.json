@@ -31,12 +31,12 @@
       "description": "The clinical object of the task.",
       "values": [
         {"id": "acquisition", "description": "Acquisition or protocol."},
-        {"id": "anatomy", "description": "Organs, anatomical structures, tissues, and, where supported by the modality, cells; explicitly includes normal structures and variants."},
+        {"id": "anatomy", "description": "Organs, anatomical structures, tissues, and, where supported by the modality, cells; explicitly includes normal structures and variants. A fixed organ name alone is not a task; properties of an entity belong to attribute."},
         {"id": "finding", "description": "An observation, sign, or morphologic pattern in a medical or pathology image; distinct from disease interpretation."},
         {"id": "attribute", "description": "An attribute of any clinical entity, not limited to findings. Includes morphology, margins, composition, echogenicity or signal, distribution, and orientation."},
         {"id": "measurement", "description": "A quantitative result for an entity or attribute within a specified scope and method; requires an entity, unit, and measurement rule."},
-        {"id": "assessment", "description": "A standardized assessment, grade, or risk category assigned to an observation; record the applicable system."},
-        {"id": "diagnosis", "description": "A disease or pathology category; state whether the reference is imaging judgment, pathology, follow-up, or another clinical basis."},
+        {"id": "assessment", "description": "A standardized assessment, grade, score, or risk category assigned to an observation, such as a documented BI-RADS category; record the applicable system."},
+        {"id": "diagnosis", "description": "A disease or pathology category; state whether the reference is imaging judgment, pathology, follow-up, or another clinical basis. Diagnosis and assessment may both be supported when they ask distinct questions."},
         {"id": "quality", "description": "Image or study quality."}
       ]
     }

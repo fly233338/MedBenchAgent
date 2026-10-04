@@ -66,7 +66,7 @@ def validate_candidate_leaf(
         selector.evidence_type != "asset" for selector in leaf.input
     ):
         raise ValueError("Report Generation accepts only assets as input")
-    if resolver_context is not None:
+    if resolver_context is not None and "evidence_names" in resolver_context:
         names = resolver_context.get("evidence_names", set())
         missing = [
             selector.role for selector in leaf.input
@@ -76,7 +76,7 @@ def validate_candidate_leaf(
             raise ValueError(f"Input Evidence roles cannot be resolved: {missing}")
         if leaf.options is not None:
             catalog = resolver_context.get("evidence_catalog", {})
-            derived = any(step.op in {"compare", "compute"} for step in spec.steps)
+            derived = any(step.op in {"compare", "compute", "map_label"} for step in spec.steps)
             if catalog and not derived:
                 names = {
                     step.selector.name
@@ -98,13 +98,24 @@ def validate_candidate_leaf(
     return leaf
 
 
-def leaf_identity(leaf: LeafTask):
+def leaf_identity(leaf: LeafTask, scenario: TaskScenario | None = None):
+    """Return a Scenario-independent semantic fingerprint for a Leaf.
+
+    Scenario IDs are deliberately excluded so equivalent tasks cannot be
+    counted twice when axis combinations put them in different Scenarios.
+    Input and Resolver order remain significant for comparison direction and
+    role binding semantics; options are normalized as a vocabulary.
+    """
     spec = ResolverSpec.parse(leaf.resolver).model_dump(mode="json")
     return (
-        leaf.scenario_id,
+        scenario.clinical_target if scenario is not None else "",
         leaf.target.strip().casefold(),
+        json.dumps([item.model_dump(mode="json") for item in leaf.input], sort_keys=True),
+        leaf.reference_rule.strip().casefold() if leaf.reference_rule else "",
         json.dumps(spec, sort_keys=True),
         leaf.task_paradigm.value,
+        leaf.output_spec.value,
+        json.dumps(sorted((option.casefold() for option in (leaf.options or []))), ensure_ascii=False),
     )
 
 
@@ -112,18 +123,24 @@ def validate_task_tree(plan: TaskPlanState, *, require_reviews: bool = True, reg
     if not plan.axis_decisions:
         raise ValueError("Task Plan requires completed Axis decisions")
     active = {key: value for key, value in plan.scenarios.items() if not value.exclusion_reason}
+    for scenario_id, scenario in plan.scenarios.items():
+        if scenario.exclusion_reason:
+            if scenario.status != "excluded":
+                raise ValueError(f"Excluded Scenario has invalid status: {scenario_id}")
+            if scenario.leaf_task_ids:
+                raise ValueError(f"Excluded Scenario still references Leaf Tasks: {scenario_id}")
     identities: set[tuple[str, str, str, str]] = set()
     leaf_ids: set[str] = set()
     for leaf_id, leaf in plan.leaf_tasks.items():
         validate_candidate_leaf(
             leaf,
             plan.scenarios,
-            resolver_context={"evidence_names": set()},
+            resolver_context={"registry": registry},
             registry=registry,
         )
         if leaf_id != leaf.leaf_id:
             raise ValueError(f"Leaf map key does not match leaf_task_id: {leaf_id}")
-        identity = leaf_identity(leaf)
+        identity = leaf_identity(leaf, plan.scenarios.get(leaf.scenario_id))
         if identity in identities:
             raise ValueError("Duplicate Leaf Task semantics")
         identities.add(identity)
@@ -169,7 +186,7 @@ def compile_task_space_plan(
             resolver_context={"evidence_names": node_context.get("evidence_names", [])},
             registry=registry,
         )
-        identity = leaf_identity(leaf)
+        identity = leaf_identity(leaf, scenarios.get(leaf.scenario_id))
         if identity in identities:
             raise ValueError("Duplicate Leaf Task semantics")
         identities.add(identity)

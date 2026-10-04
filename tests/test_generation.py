@@ -1,4 +1,5 @@
 from medbenchagent.generation.items import generate_task_items
+from medbenchagent.audit.task_items import audit_task_items
 from pydantic import ValidationError
 
 
@@ -118,6 +119,35 @@ def test_generation_preserves_input_role_order_and_derived_label_options():
         {"role": "image_a", "evidence_ids": ["a-image"], "assets": ["asset-a"]},
         {"role": "image_b", "evidence_ids": ["b-image"], "assets": ["asset-b"]},
     ]
+
+
+def test_generation_and_audit_use_map_label_output_domain():
+    leaf = {
+        "leaf_id": "margin-parent", "name": "margin", "node_id": "scenario-margin",
+        "question_templates": ["How is the margin classified?"],
+        "options": ["circumscribed", "not circumscribed"],
+        "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+        "target": "attribute", "reference_rule": "Map documented margin subtypes to their supported parent class.",
+        "output_spec": "label", "task_paradigm": "VQA", "capability_category": "Recognition",
+        "resolver": {
+            "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+            "steps": [
+                {"op": "read", "selector": {"role": "margin", "name": "margin", "evidence_type": "value"}},
+                {"op": "map_label", "input": "step_0", "mapping": {
+                    "circumscribed": "circumscribed",
+                    "not circumscribed - angular": "not circumscribed",
+                }},
+            ],
+            "output_spec": "label", "result_step": "step_1",
+        },
+    }
+    case = {"case_id": "c", "evidence": [
+        {"id": "image", "type": "asset", "name": "image", "value": "asset", "ref": []},
+        {"id": "margin", "type": "value", "name": "margin", "value": "not circumscribed - angular", "ref": []},
+    ]}
+    items = generate_task_items([case], [leaf], "dataset")
+    assert items[0]["answer"] == "not circumscribed"
+    assert audit_task_items([case], items, [leaf])["accepted"] == 1
 
 
 def test_generation_rejects_duplicate_asset_binding_across_roles():

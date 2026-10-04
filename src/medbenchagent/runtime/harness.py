@@ -189,9 +189,10 @@ def compile_agent(
                         json.dumps(ToolAction.model_json_schema(), ensure_ascii=False),
                     )
                 described = describe(context)
+                state_description = described
                 prompt_payload = {
                     "tools": {k: v for k, v in catalog.items() if k in enabled},
-                    "state": described,
+                    "state": state_description,
                     "pending_clarification": context.get("global_issue"),
                     "recent_observations": state.get("observations", []),
                     "last_result": {
@@ -201,11 +202,32 @@ def compile_agent(
                     },
                 }
                 if isinstance(described, dict) and "leaf_context" in described:
+                    state_description = {
+                        key: value for key, value in described.items() if key != "leaf_context"
+                    }
+                    prompt_payload["state"] = state_description
+                    leaf_context_json = json.dumps(described.get("leaf_context"), ensure_ascii=False)
                     prompt_payload.update({
                         "benchmark_brief": described.get("benchmark_brief", {}),
                         "leaf_context": described.get("leaf_context"),
                         "feedback": described.get("feedback", {}),
+                        "context_metrics": {
+                            "leaf_context_chars": len(leaf_context_json),
+                            "state_chars": len(json.dumps(state_description, ensure_ascii=False)),
+                            "leaf_context_token_estimate": (len(leaf_context_json) + 3) // 4,
+                            "state_token_estimate": (len(json.dumps(state_description, ensure_ascii=False)) + 3) // 4,
+                        },
                     })
+                    record_event(
+                        context["construction_events_path"],
+                        "planning_context_metrics",
+                        run_id=context.get("run_id"),
+                        agent=name,
+                        dataset_id=context.get("dataset_scope"),
+                        source_id=context.get("source_scope"),
+                        operation="decide",
+                        **prompt_payload["context_metrics"],
+                    )
                 action = complete_validated_json(
                     resolved_instructions
                     + '\nReturn exactly one outer ToolAction, for example '

@@ -2,12 +2,15 @@ import pytest
 
 from medbenchagent.planning.node_builder import build_task_nodes
 from medbenchagent.planning.resolver import ResolverSpec, resolve
+from medbenchagent.planning.task_discovery import leaf_identity
 from medbenchagent.planning.task_space import (
     AxisAnalysis,
     AxisAssessment,
     AxisDecisionSet,
     EvidenceBasis,
+    LeafTask,
     OutputSpec,
+    TaskScenario,
     TaskParadigm,
 )
 
@@ -72,6 +75,57 @@ def test_resolver_separates_input_asset_from_reference_text():
     assert result.reference == "Clear." or result.reference.get("value") == "Clear."
     assert result.input_evidence_ids == ["asset"]
     assert result.reference_evidence_ids == ["report"]
+
+
+def test_resolver_map_label_is_explicit_and_unmapped_values_are_not_applicable():
+    def spec(mapping):
+        return ResolverSpec(
+            inputs=[{"role": "image", "name": "image", "evidence_type": "asset"}],
+            steps=[
+                {"op": "read", "selector": {"role": "label", "name": "margin", "evidence_type": "value"}},
+                {"op": "map_label", "input": "step_0", "mapping": mapping},
+            ],
+            output_spec=OutputSpec.LABEL,
+            result_step="step_1",
+        )
+
+    case = {"case_id": "c1", "evidence": [
+        {"id": "image", "type": "asset", "name": "image", "value": "a1", "ref": []},
+        {"id": "margin", "type": "value", "name": "margin", "value": "not circumscribed - angular", "ref": []},
+    ]}
+    mapped = resolve(case, spec({"not circumscribed - angular": "not circumscribed"}))
+    assert mapped.reference == "not circumscribed"
+    assert mapped.reference_evidence_ids == ["margin"]
+    unmapped = resolve(case, spec({"circumscribed": "circumscribed"}))
+    assert unmapped.reason == "map_label_unmapped"
+
+
+def test_leaf_identity_is_cross_scenario_but_preserves_distinct_targets():
+    base = {
+        "question_templates": ["What is the category?"],
+        "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+        "reference_rule": "Use the documented category.",
+        "resolver": {
+            "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+            "steps": [{"op": "read", "selector": {"role": "label", "name": "label", "evidence_type": "value"}}],
+            "output_spec": "label", "result_step": "step_0",
+        },
+        "output_spec": "label", "task_paradigm": "VQA", "capability_category": "Recognition",
+        "options": ["a", "b"],
+    }
+    assessment = LeafTask.model_validate({"leaf_task_id": "a", "name": "a", "scenario_id": "scenario-a", "target": "assessment", **base})
+    same_task = assessment.model_copy(update={"leaf_task_id": "b", "scenario_id": "scenario-b"})
+    diagnosis = assessment.model_copy(update={"leaf_task_id": "c", "scenario_id": "scenario-c", "target": "diagnosis"})
+    assert leaf_identity(assessment) == leaf_identity(same_task)
+    assert leaf_identity(assessment) != leaf_identity(diagnosis)
+    assessment_scenario = TaskScenario(
+        scenario_id="scenario-a", input_structure="single-image", operation="recognize",
+        clinical_target="assessment", capability_category="Recognition",
+    )
+    diagnosis_scenario = assessment_scenario.model_copy(update={
+        "scenario_id": "scenario-b", "clinical_target": "diagnosis",
+    })
+    assert leaf_identity(assessment, assessment_scenario) != leaf_identity(same_task, diagnosis_scenario)
 
 
 def test_resolver_accepts_named_region_and_value_inputs():

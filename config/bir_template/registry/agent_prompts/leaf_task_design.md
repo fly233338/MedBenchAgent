@@ -46,6 +46,14 @@ Classify the task by what the model is asked to do, not by the annotation
 storage type or the surface form of its answer. Do not mechanically turn
 every available field into a question.
 
+Classify the clinical target by the requested prediction: a standardized
+grade or risk category is `assessment` (for example, BI-RADS); a disease or
+pathology class is `diagnosis`; an observed sign is `finding`; and a property
+such as shape, margin, composition or echogenicity is `attribute`.
+Assessment and diagnosis may coexist when the questions and reference bases
+differ. Do not create an anatomy task that only asks for a fixed organ name;
+use `attribute` for tissue composition or another property of an entity.
+
 Additionally, explore useful questions through numeric relationships,
 categorical agreement or differences, aggregation, and derived measurements.
 For example, compare two documented ratios computed from linked measurements,
@@ -71,6 +79,12 @@ eligible Case.
    with the executable contract. Do not silently invent thresholds,
    tolerances, conversions, or imputation rules.
 
+For a finite answer-domain reduction, use the deterministic `map_label`
+Resolver step with an explicit encoded-source-to-output mapping. Preserve the
+raw annotation, leave unmapped values unresolved, and keep missing, unknown,
+not-applicable and explicit negative values distinct. Never group values only
+because they share a prefix or the word `not`.
+
 The reference may be directly annotated or deterministically derived.
 A pre-existing final answer label is not required, but all necessary
 evidence and computations must be available.
@@ -87,6 +101,9 @@ Choose the output format that fits the clinical goal and the reference.
 3. For Closed VQA labels, provide the complete supported `options`.
    Ground direct-label options in the registered vocabulary, and derived
    options in the supported reference-output contract.
+   Keep one semantic dimension at one granularity. A small vocabulary is
+   usually preferable; more than eight options requires another design
+   review. Do not delete rare values or invent `other` to reduce the count.
 4. Match the exact answer encoding. Do not assume that booleans, numeric
    codes, and text labels are interchangeable.
 5. Omit options when the applicable contract forbids them.
@@ -120,6 +137,16 @@ describe the same task and scope.
 9. Compare the candidate with the supplied saved-Leaf summaries to avoid
    equivalent tasks.
 
+Every question template must be valid for every eligible case, including
+normal, negative, and other supported boundary cases. Do not assume a lesion
+exists, that an object is unique, that a fixed number of images or a time
+relationship is present, or that a Case-level annotation identifies one
+lesion. If a range restriction is necessary, it must be enforced by the
+actual Resolver eligibility and stated in the reference contract.
+
+For image-level assessments such as BI-RADS, use image- or Case-level wording
+and do not write a template that presupposes a visible lesion.
+
 Complete all fields required by the tool schema, including task identifiers,
 Scenario membership, capability category, and supporting `evidence`.
 
@@ -135,8 +162,11 @@ fields. Do not repeat the same failed submission or relax evidence
 requirements merely to make it pass.
 
 When the current Scenario's task design is complete, call
-`review_current_scenario` if available. Do not supply your own review
-to bypass the dedicated review call.
+`review_current_scenario` if available. If the required context has been
+read and no valid Leaf can be supported, call `exclude_current_scenario`
+with a concrete reason and evidence basis. A single failed candidate or
+temporary read/model failure is not grounds for exclusion. Do not supply
+your own review to bypass the dedicated review call.
 
 ## 3. Current Runtime Contract
 
@@ -160,6 +190,13 @@ Use them as the active constraints; do not replace them with assumptions.
 ### 3.4 Permitted Reference and Output Contracts
 
 {{resolver_policy_and_task_contracts_json}}
+
+### 3.5 Current Leaf Evidence
+
+The request payload contains one structured `leaf_context` object. Use it as
+the authoritative current Scenario evidence, including any fields returned by
+follow-up `read_evidence_catalog` calls. Do not expect the same context to be
+repeated inside the planning state or tool history.
 
 ## 4. Response Contract
 

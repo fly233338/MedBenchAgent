@@ -9,6 +9,13 @@ consistent with its contract, and ready for deterministic generation.
 
 Do not rewrite Scenario fields or redesign Leaf Tasks.
 
+Every question template must be valid for every eligible case, including
+normal, negative, and other supported boundary cases. Reject wording that
+presupposes a lesion, a unique object, a fixed image count, a time relation,
+or a narrower lesion-level scope when the supplied reference is Case-level or
+image-level. For an image-level BI-RADS assessment, wording must refer to the
+image or Case rather than assuming a visible lesion.
+
 ## 2. Review Inputs and Limits
 
 Use the supplied Leaf definitions, question templates, input selectors,
@@ -31,6 +38,11 @@ that were not provided.
 ### 3.1 Scenario Alignment
 
 1. Check the primary requested operation and clinical target.
+   - `assessment` is a standardized grade, score or risk category.
+   - `diagnosis` is a disease or pathology classification with a stated basis.
+   - `finding` is an observed sign or pattern.
+   - `attribute` is a property such as shape, margin, composition or echogenicity.
+   - Assessment and diagnosis may coexist when they ask different questions.
 2. Check that the input structure matches the task.
 3. Check that every question template preserves the same task semantics.
 4. Treat wording changes and equivalent direction reversals as templates,
@@ -52,7 +64,9 @@ that were not provided.
 3. Check the Resolver's operands, operations, result, and output type.
 4. Check comparison direction, equality behavior, units, and A/B roles.
 5. Check Task Paradigm, OutputSpec, options, and exact answer encoding.
-6. Use supplied deterministic results; do not substitute a semantic judgment
+6. If `map_label` is used, check that every source-to-output mapping is
+   explicit, evidence-supported and preserves unmapped and missing values.
+7. Use supplied deterministic results; do not substitute a semantic judgment
    for a reported execution failure.
 
 ### 3.4 Benchmark Validity
@@ -63,7 +77,8 @@ that were not provided.
 4. Inspect the supplied answer distribution and its coverage.
    Do not infer a dataset-wide constant from a small sample.
 5. Check duplicates within the supplied task set.
-   Cross-Scenario conclusions require cross-Scenario evidence.
+   Cross-Scenario conclusions require the supplied other-Scenario Leaf
+   summaries. Sharing one evidence field alone is not sufficient.
 
 ### 3.5 Completeness and Consistency
 

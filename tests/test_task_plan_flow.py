@@ -5,7 +5,7 @@ import pytest
 
 from medbenchagent.agents import task_planning
 from medbenchagent.planning.bir import RegistrySnapshot
-from medbenchagent.planning.task_space import AXIS_VALUES, LeafTask, TaskAxis, TaskSpacePlan
+from medbenchagent.planning.task_space import AXIS_VALUES, CapabilityCategory, EvidenceBasis, LeafTask, TaskAxis, TaskSpacePlan, TaskScenario
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,12 +119,15 @@ def test_candidate_scenario_review_advances_the_explicit_scenario(tmp_path, monk
     plan = task_planning._load_plan(context)
 
     assert captured["payload"]["scenario"]["scenario_id"] == scenario_id
+    assert "count_semantics" in captured["payload"]
     assert scenario_id not in plan.scenario_review_pending_ids
     assert plan.pending_scenario_ids
     if plan.phase == "scenario_review":
         assert plan.pending_scenario_ids == plan.scenario_review_pending_ids
     assert task_planning._planning_progress_key(context)["pending_scenario_count"] == len(plan.pending_scenario_ids)
     assert reviewed["summary"] == f"Scenario Review {scenario_id}: keep"
+    assert plan.scenarios[scenario_id].screening_decision == "keep"
+    assert plan.scenarios[scenario_id].feasible_task_directions
 
 
 def test_review_progress_uses_review_queue_when_legacy_pending_list_is_empty(tmp_path):
@@ -376,4 +379,115 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
     for field in ("input", "resolver", "reference_rule", "evidence", "question_templates", "options", "output_spec", "task_paradigm"):
         assert field in reviewed_leaf
     assert "validation" in reviewed_leaf
+
+
+def test_leaf_scenario_can_be_excluded_without_leaf_and_all_excluded_can_finish(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    for axis, values in (
+        ("input_structure", ["single-image"]),
+        ("operation", ["describe"]),
+        ("clinical_target", ["finding"]),
+    ):
+        task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
+    plan = task_planning._load_plan(context)
+    first_id = plan.scenario_review_pending_ids[0]
+    second = TaskScenario(
+        scenario_id="scenario-next",
+        input_structure="single-image",
+        operation="recognize",
+        clinical_target="finding",
+        capability_category=CapabilityCategory.RECOGNITION,
+        status="active",
+    )
+    plan.phase = "leaves"
+    plan.current_scenario_id = first_id
+    plan.pending_scenario_ids = [first_id, second.scenario_id]
+    plan.scenarios[second.scenario_id] = second
+    task_planning._write_artifacts(context, plan)
+    context["planning_read_state"] = {
+        "binding": {"dataset_id": "d", "revision": "7", "scenario_id": first_id},
+        "scenario_id": first_id,
+        "scenario_context_read": True,
+        "catalog_queries": [],
+        "catalog_cache": {},
+    }
+
+    excluded = task_planning.exclude_current_scenario(
+        context,
+        scenario_id=first_id,
+        reason="No supported Leaf direction remains after reading the Scenario evidence.",
+        evidence_basis=[EvidenceBasis(reference="catalog:report", detail="The required scope is unavailable.")],
+    )
+    context.update(excluded["updates"])
+    plan = task_planning._load_plan(context)
+    assert plan.scenarios[first_id].status == "excluded"
+    assert plan.current_scenario_id == second.scenario_id
+    assert json.loads((Path(context["operation_directory"]) / "scenario_exclusions.json").read_text())[first_id]["stage"] == "leaf_review"
+    context["planning_read_state"]["scenario_context_read"] = True
+
+    excluded = task_planning.exclude_current_scenario(
+        context,
+        scenario_id=second.scenario_id,
+        reason="The remaining Scenario has no supported reference route.",
+        evidence_basis=[EvidenceBasis(reference="catalog:report", detail="No deterministic reference.")],
+    )
+    context.update(excluded["updates"])
+    monkeypatch.setattr(task_planning, "require", lambda *_args: None)
+    finished = task_planning.finish_task_plan(context)
+    assert finished["status"] == "complete"
+    assert finished["updates"]["executable_leaf_count"] == 0
+    assert "no executable tasks" in finished["summary"]
+
+
+def test_review_discarding_all_leafs_allows_explicit_scenario_exclusion(tmp_path):
+    context = _context(tmp_path)
+    for axis, values in (
+        ("input_structure", ["single-image"]),
+        ("operation", ["describe"]),
+        ("clinical_target", ["finding"]),
+    ):
+        task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
+    plan = task_planning._load_plan(context)
+    scenario_id = plan.scenario_review_pending_ids[0]
+    plan.phase = "leaves"
+    plan.current_scenario_id = scenario_id
+    plan.pending_scenario_ids = [scenario_id]
+    leaf = LeafTask.model_validate({
+        "leaf_task_id": "discard-me", "name": "report", "scenario_id": scenario_id,
+        "question_templates": ["Describe the image."],
+        "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+        "target": "finding", "reference_rule": "Use paired report.",
+        "resolver": {
+            "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+            "steps": [
+                {"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}},
+                {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}},
+            ],
+            "output_spec": "text", "result_step": "step_1",
+        },
+        "output_spec": "text", "task_paradigm": "Report Generation", "capability_category": "Generation",
+        "eligible_count": 1,
+    })
+    plan.leaf_tasks[leaf.leaf_id] = leaf
+    plan.scenarios[scenario_id] = plan.scenarios[scenario_id].model_copy(
+        update={"leaf_task_ids": [leaf.leaf_id], "status": "review_pending"}
+    )
+    task_planning._write_artifacts(context, plan)
+    reviewed = task_planning.review_current_scenario(context, review={
+        "scenario_id": scenario_id,
+        "checked_leaf_task_ids": [leaf.leaf_id],
+        "discarded_leaf_tasks": [{"leaf_task_id": leaf.leaf_id, "reason": "No valid wording."}],
+        "status": "rejected",
+        "issues": ["The only candidate is invalid."],
+    })
+    context.update(reviewed["updates"])
+    context["planning_read_state"]["scenario_context_read"] = True
+    excluded = task_planning.exclude_current_scenario(
+        context,
+        scenario_id=scenario_id,
+        reason="Review discarded every saved Leaf.",
+        evidence_basis=[EvidenceBasis(reference="review:discard-me", detail="The only Leaf was rejected.")],
+    )
+    assert excluded["status"] == "success"
+    assert task_planning._load_plan(context).scenarios[scenario_id].status == "excluded"
 

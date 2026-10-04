@@ -35,6 +35,20 @@ A plan is resumable and stores only stage references, decisions, scenarios,
 leaf tasks, reviews and revisions. Large dataset facts are kept in separate
 evidence artifacts and paged through read tools.
 
+Screening `keep` means that the Scenario is worth exploring; it does not
+promise that a valid Leaf will be found. A Leaf-design Scenario may be
+explicitly excluded after its bound context has been read when no valid Leaf
+exists, including after review discards every saved Leaf. The exclusion
+reason and evidence are persisted. A data or model failure never performs
+this exclusion automatically. A completed plan may therefore contain zero
+executable tasks when every Scenario was excluded.
+
+Scenario counts have separate meanings: `feasible_case_count` counts Cases
+that satisfy deterministic structural Scenario constraints; `eligible_count`
+counts Cases resolved successfully by one Leaf Resolver; Scenario Review
+decides whether the task meaning, wording, reference contract and templates
+are clinically valid.
+
 The Evidence Catalog and annotation mapping are complete dataset facts, not a
 task candidate list. Task Planning must distinguish image-grounded evidence
 from patient/clinical context, device or administrative metadata, and
@@ -50,6 +64,9 @@ Each new Leaf Task stores the configured number of distinct
 `question_templates` (between three and five). Review checks their semantic
 equivalence. Generation uses a seeded shuffle cycle and records the selected
 `template_index` on each Benchmark Item so output diversity is reproducible.
+Every template must remain valid for every eligible Case, including normal,
+negative and other supported boundary Cases; wording must not presuppose a
+lesion, unique object or narrower annotation scope.
 
 Question templates are complete strings; generation does not interpolate
 placeholders. A Leaf's `input` and `resolver.inputs` must match exactly.
@@ -58,6 +75,12 @@ asset roles cannot resolve to the same Evidence ID. The generated item keeps
 ordered role bindings, flattened input Evidence IDs/assets, options and
 reference Evidence IDs so downstream consumers do not need another semantic
 decision.
+
+Leaf duplicate detection uses a Scenario-independent semantic fingerprint
+covering ordered inputs, target, reference rule, Resolver, output contract and
+answer vocabulary. Scenario names or axis combinations alone do not create
+new task coverage; assessment and diagnosis remain distinct when their target
+or reference meaning differs.
 
 For Closed VQA labels, direct tasks use the registered observed vocabulary.
 Derived comparison or computation tasks use the encoded values produced by
@@ -81,6 +104,20 @@ Operation 表示“要求模型完成什么任务”，`clinical_target` 表示�
 `describe` produces a coherent paragraph or structured report synthesizing multiple evidence-supported clinical observations and their relationships. An isolated label or verbose restatement of one categorical fact does not qualify.
 
 Task Planning must distinguish `benchmark_model_input` from reference evidence. Planning and review models may inspect the Resolver and reference contract; reference evidence must not be placed in the benchmark model input.
+
+Clinical target selection follows the requested prediction: `assessment` is a
+standardized grade, score or risk category such as BI-RADS; `diagnosis` is a
+disease or pathology class with an explicit reference basis; `finding` is an
+observed sign or pattern; and `attribute` is a property such as shape,
+margin, composition or echogenicity. Assessment and diagnosis may coexist.
+A fixed organ name alone is not an anatomy task.
+
+Closed-label tasks may use the deterministic `map_label` Resolver step when
+an explicit evidence-supported mapping groups raw encoded labels into a
+single answer domain. Unmapped, missing, unknown, not-applicable and explicit
+negative values remain distinct unless the mapping explicitly states
+otherwise. The same Resolver output is used for planning capacity, generation
+and audit.
 
 ## Capability Category
 

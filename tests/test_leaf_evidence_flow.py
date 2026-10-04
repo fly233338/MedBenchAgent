@@ -141,6 +141,9 @@ def test_catalog_returns_text_values_samples_and_suggestions(tmp_path, monkeypat
     assert payload["field_values"]["classification"]["values"]
     assert payload["case_samples"]["classification"][0]["evidence"]
     assert payload["suggestions"]["clasification"][0] == "classification"
+    leaf_context = first["updates"]["leaf_context"]
+    cached_field = next(item for item in leaf_context["evidence_catalog"] if item["name"] == "classification")
+    assert cached_field["field_values"][0]["value"] == "benign"
 
     second = task_planning.read_evidence_catalog(context, names=["classification", "clasification"])
     assert json.loads(second["summary"]) == payload
@@ -182,6 +185,33 @@ def test_bad_leaf_contains_repairable_diagnostics(tmp_path):
     assert diagnostics["attempted_leaf"]["leaf_task_id"] == "bad"
     assert diagnostics["errors"][0]["code"] == "missing_input_evidence"
     assert diagnostics["errors"][0]["expected"] == ["ultrasound_bmode_image"]
+
+
+def test_leaf_context_drops_cache_when_scenario_binding_changes(tmp_path):
+    plan, path = _plan(tmp_path, facts={
+        "revision": "r1",
+        "evidence_catalog": {"old": {"name": "old", "cases": 1, "types": {"value": 1}}},
+        "evidence_names": ["old"],
+    })
+    second = plan.scenarios["scenario-1"].model_copy(update={"scenario_id": "scenario-2"})
+    plan.scenarios["scenario-2"] = second
+    plan.current_scenario_id = "scenario-2"
+    plan.pending_scenario_ids = ["scenario-2"]
+    path.write_text(plan.model_dump_json(), encoding="utf-8")
+    context = {
+        "operation_directory": str(tmp_path),
+        "task_plan_path": str(path),
+        "dataset_access_manifest": {"schema_version": "annotation", "revision": "r1"},
+        "planning_evidence_cache": {
+            "binding": {"dataset_id": "dataset", "revision": "r1", "scenario_id": "scenario-1"},
+            "scenario_id": "scenario-1",
+            "planning_evidence": [],
+            "representative_cases": [],
+            "catalog_fields": {"stale": {"name": "stale", "field_values": [{"value": "old"}]}},
+        },
+    }
+    leaf_context = task_planning._leaf_context(context, task_planning._load_plan(context))
+    assert all(item.get("name") != "stale" for item in leaf_context["evidence_catalog"])
 
 
 def test_planning_recovery_compares_pre_call_draft():

@@ -4,8 +4,10 @@
 
 Review one candidate Scenario before Leaf Task design.
 
-Keep the Scenario when the supplied evidence supports at least one viable
-task within its input structure, operation, and clinical target.
+Keep the Scenario when the supplied evidence supports at least one plausible
+task direction worth exploring within its input structure, operation, and
+clinical target. `keep` authorizes Leaf exploration; it does not guarantee
+that a valid Leaf will be saved.
 
 Do not require a pre-existing question or final answer field.
 
@@ -32,6 +34,14 @@ Check the following in order:
    - Check the required entities, measurement scopes, units, and relationships.
    - Do not assume missing fields, transformations, or case-specific facts.
 
+5. Count semantics
+   - `feasible_case_count` is the number of Cases satisfying structural
+     Scenario constraints. It is not the number of questions or Leaf Tasks.
+   - `eligible_count` is available only after a deterministic Resolver is
+     submitted and counts Cases that the Resolver can actually resolve.
+   - Scenario Review judges task meaning, wording, reference validity and
+     template applicability after Leaf design.
+
 5. Benchmark validity
    - Exclude a Scenario when the available evidence establishes that no
      viable task avoids leakage, unsupported inference, or an input-independent
@@ -56,7 +66,24 @@ Check the following in order:
 8. Do not infer a constant answer distribution from a small example set.
    Use supplied coverage and distribution evidence.
 
-## 4. Decision
+## 4. Clinical Target Boundaries
+
+Classify the requested prediction target precisely:
+
+- `assessment` means a named standardized grade, score or risk category,
+  such as a documented BI-RADS assessment.
+- `diagnosis` means a disease or pathology classification with its reference
+  basis stated.
+- `finding` means an observed imaging sign or morphologic pattern.
+- `attribute` means a property of an entity, such as shape, margin,
+  composition, echogenicity or signal.
+
+Assessment and diagnosis may both be supported when they ask distinct
+questions. Do not treat a fixed organ name as a task by itself; anatomy tasks
+must concern an actual structure, tissue or variant, while composition and
+other object properties belong to `attribute`.
+
+## 5. Decision
 
 - `keep`: at least one evidence-supported task route exists.
 - `exclude`: the supplied evidence does not establish any viable route,
@@ -67,9 +94,12 @@ Distinguish missing evidence from an explicit incompatibility.
 
 Do not design Leaf Tasks, question templates, or answer options.
 
-## 5. Output
+## 6. Output
 
 Return JSON only, with exactly:
 
 - `decision`: `keep` or `exclude`.
 - `reason`: a concise, non-empty explanation.
+- `supporting_fields`: field names that support the decision.
+- `feasible_task_directions`: short task directions when `decision` is `keep`.
+- `evidence_basis`: references and details supporting the decision.

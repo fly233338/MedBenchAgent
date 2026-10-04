@@ -139,7 +139,13 @@ class TaskScenario(BaseModel):
     annotation_mapping: list[EvidenceSelector] = Field(default_factory=list)
     evidence_stats: dict[str, Any] = Field(default_factory=dict)
     feasible_case_count: int | None = Field(default=None, ge=0)
+    screening_decision: Literal["keep", "exclude"] | None = None
+    screening_reason: str | None = None
+    screening_supporting_fields: list[str] = Field(default_factory=list)
+    feasible_task_directions: list[str] = Field(default_factory=list)
     exclusion_reason: str | None = None
+    exclusion_stage: Literal["structural", "screening", "leaf_review"] | None = None
+    exclusion_evidence: list[EvidenceBasis] = Field(default_factory=list)
     leaf_task_ids: list[str] = Field(default_factory=list)
     status: Literal["pending", "active", "review_pending", "completed", "blocked", "excluded"] = "pending"
 
@@ -157,6 +163,16 @@ class TaskScenario(BaseModel):
             self.status = "excluded"
         if self.status == "excluded" and not self.exclusion_reason:
             raise ValueError("Excluded Scenario requires an exclusion reason")
+        if self.screening_decision == "keep" and self.exclusion_reason and self.exclusion_stage != "leaf_review":
+            raise ValueError("A kept Scenario cannot have an exclusion reason")
+        if self.exclusion_reason and self.exclusion_stage is None:
+            self.exclusion_stage = "screening"
+        if self.exclusion_stage and not self.exclusion_reason:
+            raise ValueError("Scenario exclusion stage requires an exclusion reason")
+        if len(set(self.screening_supporting_fields)) != len(self.screening_supporting_fields):
+            raise ValueError("Scenario screening supporting fields must be unique")
+        if len(set(self.feasible_task_directions)) != len(self.feasible_task_directions):
+            raise ValueError("Scenario feasible task directions must be unique")
         if len(set(self.leaf_task_ids)) != len(self.leaf_task_ids):
             raise ValueError("Scenario Leaf Task IDs must be unique")
         return self
