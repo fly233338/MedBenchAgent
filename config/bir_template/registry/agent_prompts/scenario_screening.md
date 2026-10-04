@@ -1,48 +1,114 @@
 # Scenario Feasibility Screening
 
-## Purpose
+## 1. Purpose
 
-Review one candidate Scenario before Leaf Task design. Determine whether the
-current evidence supports one or more concrete, atomic clinical targets.
-Screening constrains later Leaf design; it does not brainstorm task ideas.
+Review one candidate Scenario before Leaf Task design.
 
-Do not design Leaf Tasks, question templates, answer options, or speculative
-derived measurements.
+Keep the Scenario when the supplied evidence supports at least one plausible
+task direction worth exploring within its input structure, operation, and
+clinical target. `keep` authorizes Leaf exploration; it does not guarantee
+that a valid Leaf will be saved.
 
-## Validated Clinical Target
+Do not require a pre-existing question or final answer field.
 
-Return only targets that are:
+## 2. Review Procedure
 
-1. Atomic and specific rather than broad phrases such as "lesion characteristics".
-2. Consistent with the Scenario clinical target Axis value.
-3. Bound to an explicit subject and scope such as Case, image, lesion, or region.
-4. Grounded in named annotation fields, assets, regions, or a registered deterministic derivation.
-5. Determinable from the permitted model input; reference computability alone is insufficient.
-6. Executable through the registered Resolver operations when `reference_kind` is `derived`.
+Check the following in order:
 
-Numeric category codes do not become measurements. BI-RADS and other ordinal
-systems remain `assessment`. Management requires an explicit recommendation or
-management reference. Missing evidence is not a negative finding.
+1. Scenario alignment
+   - Interpret the Scenario using the supplied Registry definitions.
+   - Keep its Axis values unchanged.
 
-## Decision
+2. Input feasibility
+   - Check that the required primary inputs and explicit relationships exist.
+   - Apply the benchmark input policy.
 
-- `keep` requires at least one validated clinical target.
-- `exclude` is appropriate when the supplied evidence establishes no viable route
-  or establishes a blocking input, leakage, or reference incompatibility.
+3. Task possibility
+   - Identify whether at least one clinically meaningful question could
+     require the specified operation on the specified target.
+   - Do not classify a task solely by its annotation type or answer format.
 
-Apply all injected planning rules below.
+4. Reference feasibility
+   - Accept direct annotations or deterministic derivations using supported
+     operations.
+   - Check the required entities, measurement scopes, units, and relationships.
+   - Do not assume missing fields, transformations, or case-specific facts.
 
-{{PLANNING_RULES}}
+5. Count semantics
+   - `feasible_case_count` is the number of Cases satisfying structural
+     Scenario constraints. It is not the number of questions or Leaf Tasks.
+   - `eligible_count` is available only after a deterministic Resolver is
+     submitted and counts Cases that the Resolver can actually resolve.
+   - Scenario Review judges task meaning, wording, reference validity and
+     template applicability after Leaf design.
 
-## Output
+5. Benchmark validity
+   - Exclude a Scenario when the available evidence establishes that no
+     viable task avoids leakage, unsupported inference, or an input-independent
+     shortcut.
 
-Return JSON only with exactly:
+## 3. Semantic Constraints
+
+1. Finite categorical annotations can support recognition or classification.
+   A categorical value stored as text does not by itself support description.
+2. A finding mask can support localization of that finding. It does not
+   spatially localize a diagnosis or assessment category.
+3. Quantification requires an explicit numeric reference or a supported
+   deterministic derivation with a defined scope.
+4. Comparison requires explicitly related, clinically comparable entities
+   and an identifiable comparison dimension.
+5. Alignment requires a correspondence or concordance task; multiple inputs
+   alone are insufficient.
+6. Description requires multiple supported observations and an appropriate
+   reference, not a verbose restatement of one category.
+7. A failure of one possible Leaf Task does not invalidate every task in
+   the Scenario.
+8. Do not infer a constant answer distribution from a small example set.
+   Use supplied coverage and distribution evidence.
+
+The following evidence constraints apply to this feasibility decision:
+{{EVIDENCE_CONSTRAINTS}}
+
+## 4. Clinical Target Boundaries
+
+Classify the requested prediction target precisely:
+
+- `assessment` means a named standardized grade, score or risk category,
+  such as a documented BI-RADS assessment.
+- `diagnosis` means a disease or pathology classification with its reference
+  basis stated.
+- `finding` means an observed imaging sign or morphologic pattern.
+- `attribute` means a property of an entity, such as shape, margin,
+  composition, echogenicity or signal.
+
+Assessment and diagnosis may both be supported when they ask distinct
+questions. Do not treat a fixed organ name as a task by itself; anatomy tasks
+must concern an actual structure, tissue or variant, while composition and
+other object properties belong to `attribute`.
+
+Use these target semantics for the current dataset:
+{{TARGET_SEMANTICS}}
+
+For this dataset, also apply:
+{{DATASET_RULES}}
+
+## 5. Decision
+
+- `keep`: at least one evidence-supported task route exists.
+- `exclude`: the supplied evidence does not establish any viable route,
+  or establishes a blocking incompatibility.
+
+Explain the decisive evidence or missing prerequisite in the reason.
+Distinguish missing evidence from an explicit incompatibility.
+
+Do not design Leaf Tasks, question templates, or answer options.
+
+## 6. Output
+
+Return JSON only, with exactly:
 
 - `decision`: `keep` or `exclude`.
-- `reason`: a concise explanation.
-- `supporting_fields`: field names supporting the decision.
-- `validated_clinical_targets`: an array containing `target_id`, `name`,
-  `target_type`, `subject`, `scope`, `reference_kind`, and `reference_fields`.
+- `reason`: a concise, non-empty explanation.
+- `supporting_fields`: field names that support the decision.
+- `feasible_task_directions`: short task directions when `decision` is `keep`.
 - `evidence_basis`: references and details supporting the decision.
-
-When `decision` is `exclude`, `validated_clinical_targets` may be empty.

@@ -109,8 +109,11 @@ Axis, Resolver and stage prompts. Rules contain natural-language boundaries and 
 they are not executable predicates. After a dataset is selected, Task Planning performs one
 rule-selection call using the Dataset Card and benchmark brief, persists selected rule IDs and
 the Registry digest in the dataset Task Plan, and reuses that selection during recovery.
-Common rules are always active. The selected frozen rules are injected only into their declared
-Axis Analysis, Scenario Screening, Leaf Task Design, or Scenario Review prompt slot.
+Common rules are always active. Extracted rule text is inserted into the matching semantic
+paragraph of the original Axis Analysis, Scenario Screening, Leaf Task Design, or Scenario
+Review Prompt (target semantics, evidence constraints, or reference constraints). Dataset
+specific text is introduced in the existing dataset-specific context of that paragraph rather
+than as a standalone rule block.
 
 Scenario Screening records validated clinical targets rather than speculative task directions.
 Each Leaf references one `clinical_target_id` from its Scenario, and code validates the target

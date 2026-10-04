@@ -171,7 +171,8 @@ ID, target type, subject, scope, reference kind, and reference fields. `keep` re
 one target; it does not ask the model to brainstorm Leaf Tasks. Leaf design must select a target
 ID from the current Scenario and cannot create a new clinical target.
 
-Planning rules are frozen Markdown files in the experiment BIR Registry. The loader selects
-common rules plus the persisted dataset rule selection for each declared planning stage. A rule
-can explain clinical boundaries or provide a valid/invalid example, but deterministic code still
-owns all structural and Resolver validation.
+Planning rules are frozen Markdown files in the experiment BIR Registry. The loader places
+extracted common evidence, target, and reference constraints back into the corresponding
+paragraphs of the original stage Prompt. Dataset-specific text is inserted at the existing
+dataset-specific semantic point. A rule can explain clinical boundaries or provide a valid/invalid
+example, but deterministic code still owns all structural and Resolver validation.

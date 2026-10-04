@@ -9,10 +9,6 @@ consistent with its contract, and ready for deterministic generation.
 
 Do not rewrite Scenario fields or redesign Leaf Tasks.
 
-Apply all injected planning rules below.
-
-{{PLANNING_RULES}}
-
 Every question template must be valid for every eligible case, including
 normal, negative, and other supported boundary cases. Reject wording that
 presupposes a lesion, a unique object, a fixed image count, a time relation,
@@ -42,7 +38,7 @@ that were not provided.
 ### 3.1 Scenario Alignment
 
 1. Check the primary requested operation and clinical target.
-   - `assessment` is a standardized grade, score or risk category. A Leaf must reference a validated clinical target ID from its Scenario.
+   - `assessment` is a standardized grade, score or risk category.
    - `diagnosis` is a disease or pathology classification with a stated basis.
    - `finding` is an observed sign or pattern.
    - `attribute` is a property such as shape, margin, composition or echogenicity.
@@ -52,6 +48,12 @@ that were not provided.
 4. Treat wording changes and equivalent direction reversals as templates,
    not independent capabilities.
 
+Use these target semantics for this review:
+{{TARGET_SEMANTICS}}
+
+For this dataset, also apply:
+{{DATASET_RULES}}
+
 ### 3.2 Evidence and Leakage
 
 1. Check that the target, visible-input scope, and reference scope agree.
@@ -60,6 +62,9 @@ that were not provided.
 4. Reject inference of absence, completeness, or zero from missing annotations.
 5. Check that reference-only information is excluded from the intended
    benchmark model input.
+
+Apply these evidence constraints:
+{{EVIDENCE_CONSTRAINTS}}
 
 ### 3.3 Reference and Output Contract
 
@@ -72,6 +77,9 @@ that were not provided.
    explicit, evidence-supported and preserves unmapped and missing values.
 7. Use supplied deterministic results; do not substitute a semantic judgment
    for a reported execution failure.
+
+Apply these reference constraints:
+{{REFERENCE_CONSTRAINTS}}
 
 ### 3.4 Benchmark Validity
 

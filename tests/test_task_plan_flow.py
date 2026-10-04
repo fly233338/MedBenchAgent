@@ -390,7 +390,7 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
 
     assert result["status"] == "success"
     assert "{{PLANNING_RULES}}" not in captured["prompt"]
-    assert "clinical-target-boundaries" in captured["prompt"]
+    assert "The clinical target follows the requested prediction" in captured["prompt"]
     assert captured["payload"]["benchmark_brief"]["clinical_scope"] == "breast imaging"
     reviewed_leaf = captured["payload"]["leaf_tasks"][0]
     for field in ("input", "resolver", "reference_rule", "evidence", "question_templates", "options", "output_spec", "task_paradigm"):

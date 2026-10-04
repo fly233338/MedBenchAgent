@@ -274,6 +274,39 @@ def _render_planning_rules(context: dict[str, Any], *, stage: str, selected_ids:
     return catalog.render(ids, stage=stage)
 
 
+def _render_rule_bodies(context: dict[str, Any], *, stage: str, ids: set[str] | None = None,
+                        custom_only: bool = False) -> str:
+    """Render extracted rules into the semantic slot where the original Prompt used them."""
+    catalog = _planning_rules(context)
+    if catalog is None:
+        return ""
+    plan = _load_plan(context)
+    selected_ids = plan.rule_selection.get("selected_rule_ids", []) if plan.rule_selection else []
+    rules = catalog.selected(selected_ids, stage=stage)
+    if custom_only:
+        rules = tuple(rule for rule in rules if rule.scope != "common")
+    elif ids is not None:
+        rules = tuple(rule for rule in rules if rule.id in ids)
+    return "\n\n".join(rule.body.strip() for rule in rules if rule.body.strip())
+
+
+def _rule_insertions(context: dict[str, Any], *, stage: str) -> dict[str, str]:
+    return {
+        "{{TARGET_SEMANTICS}}": _render_rule_bodies(
+            context, stage=stage, ids={"clinical-target-boundaries"}
+        ),
+        "{{EVIDENCE_CONSTRAINTS}}": _render_rule_bodies(
+            context, stage=stage, ids={"evidence-grounding", "missing-values"}
+        ),
+        "{{REFERENCE_CONSTRAINTS}}": _render_rule_bodies(
+            context, stage=stage, ids={"numeric-and-derived"}
+        ),
+        "{{DATASET_RULES}}": _render_rule_bodies(
+            context, stage=stage, custom_only=True
+        ),
+    }
+
+
 def _field_meanings(context: dict[str, Any]) -> dict[str, str]:
     path = _mapping_path(context)
     if not path:
@@ -2459,13 +2492,8 @@ def _render_leaf_prompt(context: dict[str, Any], plan: TaskPlanState, template: 
                 "task_contracts": registry.task_contracts if registry else {},
             }, ensure_ascii=False
         ),
-        "{{PLANNING_RULES}}": _render_planning_rules(context, stage="leaf_task_design"),
-        "{{NOVELTY_INSTRUCTIONS}}": (
-            "Additionally, explore useful questions through supported numeric relationships and derived measurements."
-            if context.get("planning_novelty_enabled", False)
-            else "Do not explore novel aggregations or derived measurements beyond the registered target and Resolver."
-        ),
     }
+    replacements.update(_rule_insertions(context, stage="leaf_task_design"))
     rendered = template
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
@@ -2475,7 +2503,10 @@ def _render_leaf_prompt(context: dict[str, Any], plan: TaskPlanState, template: 
 def _stage_prompt(context: dict[str, Any], name: str) -> str:
     registry = _registry(context)
     template = registry.prompt(name) if registry else ""
-    return template.replace("{{PLANNING_RULES}}", _render_planning_rules(context, stage=name))
+    rendered = template
+    for placeholder, value in _rule_insertions(context, stage=name).items():
+        rendered = rendered.replace(placeholder, value)
+    return rendered
 
 
 def _planning_instructions(context: dict[str, Any]) -> str:
