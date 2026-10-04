@@ -76,12 +76,23 @@ def validate_candidate_leaf(
             raise ValueError(f"Input Evidence roles cannot be resolved: {missing}")
         if leaf.options is not None:
             catalog = resolver_context.get("evidence_catalog", {})
-            if catalog:
-                names = {step.selector.name for step in spec.steps if step.selector and step.selector.name}
+            derived = any(step.op in {"compare", "compute"} for step in spec.steps)
+            if catalog and not derived:
+                names = {
+                    step.selector.name
+                    for step in spec.steps
+                    if hasattr(step, "selector") and step.selector.name
+                }
                 candidates = set()
                 for name in names:
                     entry = catalog.get(name, {})
-                    candidates.update(str(item.get("value")) for item in entry.get("observed_values", []) if isinstance(item, dict))
+                    from medbenchagent.planning.resolver import encode_closed_label
+                    for item in entry.get("observed_values", []):
+                        if isinstance(item, dict):
+                            try:
+                                candidates.add(encode_closed_label(item.get("value")))
+                            except ValueError:
+                                continue
                 if candidates and not set(leaf.options).issubset(candidates):
                     raise ValueError("VQA options must come from Evidence Catalog observed_values")
     return leaf

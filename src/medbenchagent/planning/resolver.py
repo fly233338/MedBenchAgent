@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import json
 from typing import Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -13,6 +14,7 @@ from medbenchagent.planning.task_space import OutputSpec, EvidenceSelector
 class ResolvedTaskItem(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     input_evidence_ids: list[str]
+    input_bindings: list[dict[str, Any]]
     reference: Any
     reference_evidence_ids: list[str]
 
@@ -87,12 +89,19 @@ class ResolverSpec(BaseModel):
         roles = {s.role for s in self.inputs}
         if len(roles) != len(self.inputs):
             raise ValueError("Input roles must be unique")
+        seen_roles = set()
         for selector in self.inputs:
-            if selector.relation is not None or selector.evidence_type not in {"asset", "text", "value", "region"} or not selector.name:
+            if selector.evidence_type not in {"asset", "text", "value", "region"} or not selector.name:
                 raise ValueError(
                     "Resolver inputs require explicit asset/text/value/region names "
-                    "and cannot depend on reference relations"
+                    "and any input relation must reference an earlier input role"
                 )
+            if selector.relation is not None and selector.relation not in seen_roles:
+                raise ValueError(
+                    "Input relation must reference an earlier input role; "
+                    "Resolver inputs require explicit asset/text/value/region names"
+                )
+            seen_roles.add(selector.role)
         seen = set()
         for index, step in enumerate(self.steps):
             dependencies = ([step.input] if isinstance(step, (SelectStep, LocateStep)) else
@@ -176,6 +185,22 @@ def validate_output(value, spec):
     return value
 
 
+def encode_closed_label(value: Any) -> str:
+    """Encode a scalar Resolver result for a string-valued Closed VQA domain."""
+    if isinstance(value, str):
+        if not value:
+            raise ValueError("Closed VQA labels must be non-empty strings")
+        return value
+    if type(value) is bool:
+        return "true" if value else "false"
+    if type(value) in (int, float):
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        if not isinstance(encoded, str):
+            raise ValueError("Closed VQA label encoding failed")
+        return encoded
+    raise ValueError("Closed VQA labels require scalar string, boolean or numeric answers")
+
+
 def _value(value):
     if isinstance(value, dict):
         return value["value"]
@@ -188,10 +213,22 @@ def resolve(case: dict[str, Any], resolver_spec: ResolverSpec | dict[str, Any]) 
     spec = ResolverSpec.parse(resolver_spec)
     values: dict[str, Any] = {}
     value_refs: dict[str, set[str]] = {}
-    roles = {selector.role: [item["id"] for item in _evidence(case, selector)] for selector in spec.inputs}
-    input_ids = sorted({identifier for ids in roles.values() for identifier in ids})
-    if any(not ids for ids in roles.values()):
-        return NotApplicable(reason="missing_input_evidence")
+    roles: dict[str, list[str]] = {}
+    input_bindings: list[dict[str, Any]] = []
+    input_ids: list[str] = []
+    asset_ids: set[str] = set()
+    for selector in spec.inputs:
+        rows = _evidence(case, selector, roles)
+        ids = [item["id"] for item in rows]
+        if not ids:
+            return NotApplicable(reason="missing_input_evidence")
+        if selector.evidence_type == "asset":
+            if asset_ids.intersection(ids):
+                return NotApplicable(reason="duplicate_input_asset")
+            asset_ids.update(ids)
+        roles[selector.role] = ids
+        input_bindings.append({"role": selector.role, "evidence_ids": ids})
+        input_ids.extend(ids)
     for index, step in enumerate(spec.steps):
         key = f"step_{index}"
         if isinstance(step, (ReadStep, CollectStep, ReferenceTextStep)):
@@ -284,5 +321,10 @@ def resolve(case: dict[str, Any], resolver_spec: ResolverSpec | dict[str, Any]) 
         reference = validate_output(_value(reference), spec.output_spec)
     except ValueError:
         return NotApplicable(reason="invalid_output")
-    return ResolvedTaskItem(input_evidence_ids=input_ids, reference=reference, reference_evidence_ids=ref_ids)
+    return ResolvedTaskItem(
+        input_evidence_ids=input_ids,
+        input_bindings=input_bindings,
+        reference=reference,
+        reference_evidence_ids=ref_ids,
+    )
 

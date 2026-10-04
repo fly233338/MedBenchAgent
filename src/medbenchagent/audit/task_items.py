@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any, Iterable
 
-from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
+from medbenchagent.generation.items import _input_assets, _input_bindings
+from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, encode_closed_label, resolve
 from medbenchagent.planning.task_space import LeafTask, OutputSpec
 
 
@@ -49,6 +50,34 @@ def audit_task_items(
                 errors.append(resolved.reason)
             else:
                 expected = resolved.reference.get("value", resolved.reference) if isinstance(resolved.reference, dict) else resolved.reference
+                if leaf.output_spec == OutputSpec.LABEL and leaf.options is not None:
+                    try:
+                        expected = encode_closed_label(expected)
+                    except ValueError:
+                        errors.append("invalid_label_encoding")
+                expected_bindings = _input_bindings(case, resolved.input_bindings)
+                template_index = item.get("template_index", -1)
+                expected_question = (
+                    leaf.question_templates[template_index]
+                    if isinstance(template_index, int) and 0 <= template_index < len(leaf.question_templates)
+                    else None
+                )
+                if item.get("question") != expected_question:
+                    errors.append("question_mismatch")
+                if item.get("template_count") != len(leaf.question_templates):
+                    errors.append("template_count_mismatch")
+                if not isinstance(template_index, int) or template_index < 0 or template_index >= len(leaf.question_templates):
+                    errors.append("template_index_invalid")
+                if item.get("options") != leaf.options:
+                    errors.append("options_mismatch")
+                if item.get("input_bindings") != expected_bindings:
+                    errors.append("input_binding_mismatch")
+                if item.get("input_evidence_ids") != resolved.input_evidence_ids:
+                    errors.append("input_order_mismatch")
+                if item.get("input_assets") != _input_assets(case, resolved.input_evidence_ids):
+                    errors.append("input_asset_order_mismatch")
+                if item.get("reference_evidence_ids") != resolved.reference_evidence_ids:
+                    errors.append("reference_evidence_mismatch")
                 if not _answer_matches(leaf.output_spec, expected, item.get("answer")):
                     errors.append("answer_mismatch")
                 if set(item.get("input_evidence_ids", [])) & set(item.get("reference_evidence_ids", [])):

@@ -214,7 +214,7 @@ def specify(context: SupervisorContext):
 
 COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path", "artifact_versions",
           "limits", "user_requirement", "benchmark_info", "seed", "max_tasks_per_image", "question_temperature",
-          "question_template_count",
+          "question_template_count", "benchmark_input_policy", "planning_novelty_enabled",
           "bir_path", "bir_revision", "bir_manifest_digest", "bir_template_revision",
           "registration_catalog_path", "sample_scope", "max_total_tasks_per_image", "allocation_preferences",
           "execution_runtime")
@@ -873,6 +873,8 @@ def compile_benchmark_graph(*, checkpointer=None):
         settings = resolve_run_services(settings)
         execution_runtime = select_backend(settings.data_processing)
         defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature", "question_template_count")}
+        defaults["benchmark_input_policy"] = settings.benchmark.input_policy
+        defaults["planning_novelty_enabled"] = settings.planning.novelty_enabled
         from medbenchagent.runtime.sessions import EXPERIMENTS_ROOT, experiment_path
         experiment_name = state.get("experiment_name")
         experiments_root = Path(state.get("experiments_root") or EXPERIMENTS_ROOT)

@@ -71,6 +71,19 @@ Supervisor 先解析数据准备请求：请求中包含可读的原始目录时
 
 每个 annotation 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。完整计划的 canonical 文件位于 BIR 的 `datasets/<id>/planning/`；Run 目录中的 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 是派生视图。Generation 使用冻结 seed 在模板中可复现地抽取问题，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
 
+Leaf design receives a bounded structured context containing the dataset
+revision, Evidence Catalog, source-backed annotation semantics, documented
+relations, representative Cases, coverage limitations and current Scenario
+Leaf summaries. This context is carried in the planning request rather than
+reconstructed from truncated observation summaries.
+
+Generation resolves model inputs in the order declared by `Resolver.inputs`.
+Benchmark Items record `options`, ordered input evidence/assets and explicit
+role bindings. Audit recomputes these bindings, the selected question
+template, the Resolver answer and reference evidence before accepting an item.
+Derived Closed VQA labels use the same deterministic scalar encoding during
+planning, generation and audit.
+
 ## 恢复与界面
 
 Run 的配置、产物索引、事件日志和 Agent 状态都位于 Run 目录。GraphRunner 使用 LangGraph checkpoint 恢复；TUI 右侧显示 Run 列表、每个 Agent 的状态表和可过滤事件日志。

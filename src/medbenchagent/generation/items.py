@@ -8,7 +8,7 @@ import random
 from pathlib import Path
 from typing import Any, Iterable
 
-from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
+from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, encode_closed_label, resolve
 from medbenchagent.planning.task_space import LeafTask, OutputSpec
 
 
@@ -18,10 +18,27 @@ def _identity(dataset_id: str, leaf_id: str, case_id: str) -> str:
 
 
 def _input_assets(case: dict[str, Any], evidence_ids: list[str]) -> list[str]:
-    wanted = set(evidence_ids)
+    by_id = {item.get("id"): item for item in case.get("evidence", [])}
     return [
-        str(item["value"]) for item in case.get("evidence", [])
-        if item.get("id") in wanted and item.get("type") == "asset"
+        str(by_id[evidence_id]["value"])
+        for evidence_id in evidence_ids
+        if evidence_id in by_id and by_id[evidence_id].get("type") == "asset"
+    ]
+
+
+def _input_bindings(case: dict[str, Any], bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id = {item.get("id"): item for item in case.get("evidence", [])}
+    return [
+        {
+            "role": binding["role"],
+            "evidence_ids": list(binding["evidence_ids"]),
+            "assets": [
+                str(by_id[evidence_id]["value"])
+                for evidence_id in binding["evidence_ids"]
+                if evidence_id in by_id and by_id[evidence_id].get("type") == "asset"
+            ],
+        }
+        for binding in bindings
     ]
 
 
@@ -64,6 +81,12 @@ def generate_task_items(
             answer = resolved.reference
             if leaf.output_spec == OutputSpec.TEXT and isinstance(answer, dict):
                 answer = answer.get("value")
+            if leaf.output_spec == OutputSpec.LABEL and leaf.options is not None:
+                answer = encode_closed_label(answer.get("value", answer) if isinstance(answer, dict) else answer)
+                if answer not in leaf.options:
+                    raise ValueError(
+                        f"Resolved label {answer!r} is missing from Leaf Task options for {leaf.leaf_id}"
+                    )
             template_index = cycles[leaf.leaf_id][counts[leaf.leaf_id] % len(cycles[leaf.leaf_id])]
             items.append({
                 "item_id": _identity(dataset_id, leaf.leaf_id, case_id),
@@ -76,6 +99,8 @@ def generate_task_items(
                 "case_id": case_id,
                 "capability_category": leaf.capability_category.value,
                 "task_paradigm": leaf.task_paradigm.value,
+                "options": list(leaf.options) if leaf.options is not None else None,
+                "input_bindings": _input_bindings(case, resolved.input_bindings),
                 "input_assets": _input_assets(case, resolved.input_evidence_ids),
                 "input_evidence_ids": resolved.input_evidence_ids,
                 "question": leaf.question_templates[template_index],

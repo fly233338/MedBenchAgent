@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 
 class BlueprintTask(TypedDict):
@@ -25,7 +25,10 @@ class BenchmarkItem(TypedDict):
     template_index: NotRequired[int]
     template_count: NotRequired[int]
     options: list[str] | None
-    answer: str | list[float]
+    input_bindings: list[dict[str, object]]
+    input_evidence_ids: list[str]
+    reference_evidence_ids: list[str]
+    answer: Any
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,5 @@
 from medbenchagent.generation.items import generate_task_items
+from pydantic import ValidationError
 
 
 def test_generation_uses_resolver_and_hides_reference_from_inputs():
@@ -74,4 +75,102 @@ def test_generation_uses_reproducible_balanced_template_cycle():
     ]
     assert {item["template_index"] for item in first} == {0, 1, 2}
     assert all(item["template_count"] == 3 for item in first)
+
+
+def test_generation_preserves_input_role_order_and_derived_label_options():
+    leaf = {
+        "leaf_id": "compare-leaf", "name": "compare", "node_id": "scenario-compare",
+        "question_templates": ["Is Image A larger than Image B?"],
+        "options": ["true", "false"],
+        "input": [
+            {"role": "image_a", "name": "image_a", "evidence_type": "asset"},
+            {"role": "image_b", "name": "image_b", "evidence_type": "asset"},
+        ],
+        "target": "measurement", "reference_rule": "Compare the two measurements.",
+        "output_spec": "label", "task_paradigm": "VQA", "capability_category": "Comparison",
+        "resolver": {
+            "inputs": [
+                {"role": "image_a", "name": "image_a", "evidence_type": "asset"},
+                {"role": "image_b", "name": "image_b", "evidence_type": "asset"},
+            ],
+            "steps": [
+                {"op": "read", "selector": {"role": "image_a", "name": "measurement_a", "evidence_type": "value"}},
+                {"op": "read", "selector": {"role": "image_b", "name": "measurement_b", "evidence_type": "value"}},
+                {"op": "compare", "left": "step_0", "right": "step_1", "mode": "greater"},
+            ],
+            "output_spec": "label", "result_step": "step_2",
+        },
+    }
+    case = {"case_id": "c", "evidence": [
+        {"id": "b-image", "type": "asset", "name": "image_b", "value": "asset-b", "ref": []},
+        {"id": "b-value", "type": "value", "name": "measurement_b", "value": 2, "ref": ["b-image"]},
+        {"id": "a-image", "type": "asset", "name": "image_a", "value": "asset-a", "ref": []},
+        {"id": "a-value", "type": "value", "name": "measurement_a", "value": 3, "ref": ["a-image"]},
+    ]}
+
+    items = generate_task_items([case], [leaf], "dataset")
+
+    assert items[0]["answer"] == "true"
+    assert items[0]["options"] == ["true", "false"]
+    assert items[0]["input_evidence_ids"] == ["a-image", "b-image"]
+    assert items[0]["input_assets"] == ["asset-a", "asset-b"]
+    assert items[0]["input_bindings"] == [
+        {"role": "image_a", "evidence_ids": ["a-image"], "assets": ["asset-a"]},
+        {"role": "image_b", "evidence_ids": ["b-image"], "assets": ["asset-b"]},
+    ]
+
+
+def test_generation_rejects_duplicate_asset_binding_across_roles():
+    leaf = {
+        "leaf_id": "duplicate-assets", "name": "compare", "node_id": "scenario-compare",
+        "question_templates": ["Compare A and B."],
+        "input": [
+            {"role": "image_a", "name": "image", "evidence_type": "asset"},
+            {"role": "image_b", "name": "image", "evidence_type": "asset"},
+        ],
+        "target": "measurement", "reference_rule": "Compare.",
+        "output_spec": "number", "task_paradigm": "VQA", "capability_category": "Comparison",
+        "resolver": {
+            "inputs": [
+                {"role": "image_a", "name": "image", "evidence_type": "asset"},
+                {"role": "image_b", "name": "image", "evidence_type": "asset"},
+            ],
+            "steps": [
+                {"op": "read", "selector": {"role": "image_a", "name": "value_a", "evidence_type": "value"}},
+                {"op": "read", "selector": {"role": "image_b", "name": "value_b", "evidence_type": "value"}},
+                {"op": "compare", "left": "step_0", "right": "step_1", "mode": "difference"},
+            ],
+            "output_spec": "number", "result_step": "step_2",
+        },
+    }
+    case = {"case_id": "c", "evidence": [
+        {"id": "image", "type": "asset", "name": "image", "value": "asset", "ref": []},
+        {"id": "a", "type": "value", "name": "value_a", "value": 3, "ref": ["image"]},
+        {"id": "b", "type": "value", "name": "value_b", "value": 2, "ref": ["image"]},
+    ]}
+
+    assert generate_task_items([case], [leaf], "dataset") == []
+
+
+def test_leaf_rejects_unresolved_question_placeholders():
+    leaf = {
+        "leaf_id": "placeholder", "name": "label", "node_id": "scenario",
+        "question_templates": ["Is {{image_a}} larger than {{image_b}}?"],
+        "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+        "target": "finding", "reference_rule": "Read label", "output_spec": "label",
+        "task_paradigm": "VQA", "capability_category": "Recognition",
+        "resolver": {
+            "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+            "steps": [{"op": "read", "selector": {"role": "label", "name": "label", "evidence_type": "value"}}],
+            "output_spec": "label", "result_step": "step_0",
+        },
+    }
+
+    try:
+        from medbenchagent.planning.task_space import LeafTask
+        LeafTask.model_validate(leaf)
+    except ValidationError as exc:
+        assert "unresolved placeholders" in str(exc)
+    else:
+        raise AssertionError("unresolved question placeholders were accepted")
 

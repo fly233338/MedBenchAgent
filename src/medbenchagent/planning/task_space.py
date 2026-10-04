@@ -208,6 +208,8 @@ class LeafTask(BaseModel):
             raise ValueError("LeafTask requires leaf_task_id, scenario_id and question_templates")
         if any(not template.strip() for template in self.question_templates):
             raise ValueError("LeafTask question_templates must be non-empty")
+        if any("{{" in template or "}}" in template for template in self.question_templates):
+            raise ValueError("LeafTask question_templates must be complete; unresolved placeholders are not supported")
         if len(set(self.question_templates)) != len(self.question_templates):
             raise ValueError("LeafTask question_templates must be unique")
         if not self.reference_rule:
@@ -280,7 +282,9 @@ class BenchmarkItem(BaseModel):
     question: str = Field(min_length=1)
     template_index: int = Field(default=0, ge=0)
     template_count: int = Field(default=1, ge=1)
+    options: list[str] | None = None
     answer: Any
+    input_bindings: list[dict[str, Any]] = Field(default_factory=list)
     input_assets: list[str] = Field(default_factory=list)
     input_evidence_ids: list[str] = Field(default_factory=list)
     reference_evidence_ids: list[str] = Field(default_factory=list)

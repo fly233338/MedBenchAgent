@@ -51,6 +51,19 @@ Each new Leaf Task stores the configured number of distinct
 equivalence. Generation uses a seeded shuffle cycle and records the selected
 `template_index` on each Benchmark Item so output diversity is reproducible.
 
+Question templates are complete strings; generation does not interpolate
+placeholders. A Leaf's `input` and `resolver.inputs` must match exactly.
+Resolver roles are unique and are resolved in declaration order. Multiple
+asset roles cannot resolve to the same Evidence ID. The generated item keeps
+ordered role bindings, flattened input Evidence IDs/assets, options and
+reference Evidence IDs so downstream consumers do not need another semantic
+decision.
+
+For Closed VQA labels, direct tasks use the registered observed vocabulary.
+Derived comparison or computation tasks use the encoded values produced by
+the Resolver. The same encoding and option-domain check is applied when a
+Leaf is saved, when items are generated and when items are audited.
+
 ## Operation and target semantics
 
 Operation 表示“要求模型完成什么任务”，`clinical_target` 表示“针对什么对象或属性”，输出格式再单独规定。

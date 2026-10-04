@@ -1,5 +1,11 @@
 from medbenchagent.planning.pipeline import run_pipeline
-from medbenchagent.planning.task_space import AxisAnalysis, AxisAssessment, EvidenceBasis
+from medbenchagent.planning.task_space import (
+    AxisAnalysis,
+    AxisAssessment,
+    EvidenceBasis,
+    TaskPlanState,
+    TaskScenario,
+)
 
 
 def test_task_space_pipeline_reaches_audited_manifest():
@@ -20,4 +26,76 @@ def test_task_space_pipeline_reaches_audited_manifest():
     result = run_pipeline(dataset={"dataset_id": "d"}, axis_analysis=analysis, node_context={"evidence": {"image": {}, "report": {}, "text": 1}, "relations": {"related": 1}}, leaves=[leaf], cases=[case], requested_count=1)
     assert result["audit"]["accepted"] == 1
     assert result["manifest"]["schema_version"] == "benchmark-manifest"
+
+
+def test_task_space_pipeline_uses_leaves_persisted_in_plan_when_omitted():
+    leaf = {
+        "leaf_id": "persisted-leaf", "name": "report", "node_id": "scenario-1",
+        "question": "Describe.",
+        "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+        "target": "finding", "answer": "Read report", "output_spec": "text",
+        "task_paradigm": "Report Generation", "capability_category": "Generation",
+        "resolver": {
+            "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+            "steps": [
+                {"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}},
+                {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}},
+            ],
+            "output_spec": "text", "result_step": "step_1",
+        },
+    }
+    scenario = TaskScenario(
+        scenario_id="scenario-1", input_structure="single-image", operation="describe",
+        clinical_target="finding", capability_category="Generation",
+        leaf_task_ids=["persisted-leaf"], status="completed",
+    )
+    plan = TaskPlanState(
+        dataset={"dataset_id": "d"}, scenarios={"scenario-1": scenario},
+        leaf_tasks={"persisted-leaf": leaf}, phase="complete",
+    )
+    case = {"case_id": "c", "evidence": [
+        {"id": "a", "type": "asset", "name": "image", "value": "asset", "ref": []},
+        {"id": "r", "type": "text", "name": "report", "value": "Clear", "ref": ["a"]},
+    ]}
+
+    result = run_pipeline(dataset={"dataset_id": "d"}, plan=plan, cases=[case], requested_count=1)
+
+    assert len(result["items"]) == 1
+    assert result["items"][0]["task_id"] == "persisted-leaf"
+
+
+def test_explicit_leaves_override_plan_leaves():
+    analysis = AxisAnalysis(
+        input_structure=[AxisAssessment(value="single-image", supported=True, evidence_basis=[EvidenceBasis(reference="c", detail="observed")], reason="observed")],
+        operation=[AxisAssessment(value="describe", supported=True, evidence_basis=[EvidenceBasis(reference="c", detail="observed")], reason="observed")],
+        clinical_target=[AxisAssessment(value="finding", supported=True, evidence_basis=[EvidenceBasis(reference="c", detail="observed")], reason="observed")],
+        dataset_revision="1",
+    )
+    leaf = {
+        "leaf_id": "explicit", "name": "report", "node_id": "node-87e180f32ee34e5d",
+        "question": "Describe.",
+        "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+        "target": "finding", "answer": "Read report", "output_spec": "text",
+        "task_paradigm": "Report Generation", "capability_category": "Generation",
+        "resolver": {
+            "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+            "steps": [
+                {"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}},
+                {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}},
+            ],
+            "output_spec": "text", "result_step": "step_1",
+        },
+    }
+    case = {"case_id": "c", "evidence": [
+        {"id": "a", "type": "asset", "name": "image", "value": "asset", "ref": []},
+        {"id": "r", "type": "text", "name": "report", "value": "Clear", "ref": ["a"]},
+    ]}
+
+    result = run_pipeline(
+        dataset={"dataset_id": "d"}, axis_analysis=analysis,
+        node_context={"evidence": {"image": {}, "report": {}, "text": 1}, "relations": {"related": 1}},
+        leaves=[leaf], cases=[case], requested_count=1,
+    )
+
+    assert set(result["leaves"]) == {"explicit"}
 

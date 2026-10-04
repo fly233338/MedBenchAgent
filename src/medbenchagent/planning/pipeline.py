@@ -48,7 +48,7 @@ def run_pipeline(
     dataset: dict[str, Any],
     axis_analysis: AxisAnalysis | dict[str, Any] | None = None,
     node_context: dict[str, Any] | None = None,
-    leaves: Iterable[LeafTask | dict[str, Any]] = (),
+    leaves: Iterable[LeafTask | dict[str, Any]] | None = None,
     cases: Iterable[dict[str, Any]],
     requested_count: int,
     seed: int = 0,
@@ -62,28 +62,37 @@ def run_pipeline(
         analysis = None
     else:
         analysis = AxisAnalysis.model_validate(axis_analysis)
+        parsed_leaves = []
         scenarios = (
             {scenario.scenario_id: scenario for scenario in (TaskScenario.model_validate(value) for value in nodes)}
             if nodes is not None
             else build_task_scenarios(analysis, node_context or {})
         )
-    parsed_leaves = []
-    for value in leaves:
-        leaf = LeafTask.model_validate(value)
-        if leaf.scenario_id not in scenarios:
-            legacy_id = leaf.scenario_id.replace("node-", "scenario-", 1)
-            if legacy_id in scenarios:
-                leaf = leaf.model_copy(update={"scenario_id": legacy_id})
-        parsed_leaves.append(leaf)
+    if leaves is not None:
+        parsed_leaves = []
+        for value in leaves:
+            leaf = LeafTask.model_validate(value)
+            if leaf.scenario_id not in scenarios:
+                legacy_id = leaf.scenario_id.replace("node-", "scenario-", 1)
+                if legacy_id in scenarios:
+                    leaf = leaf.model_copy(update={"scenario_id": legacy_id})
+            parsed_leaves.append(leaf)
+    case_list = list(cases)
     evidence_names = set((node_context or {}).get("evidence_names", []))
     if not evidence_names and isinstance((node_context or {}).get("evidence"), dict):
         evidence_names.update((node_context or {}).get("evidence", {}).keys())
+    if not evidence_names:
+        evidence_names.update(
+            item.get("name")
+            for case in case_list
+            for item in case.get("evidence", [])
+            if item.get("name")
+        )
     for leaf in parsed_leaves:
         validate_candidate_leaf(leaf, scenarios, resolver_context={
             "evidence_names": evidence_names,
             "evidence_catalog": (node_context or {}).get("evidence_catalog", {}),
         })
-    case_list = list(cases)
     from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
     parsed_leaves = [
         leaf.model_copy(update={"eligible_count": sum(

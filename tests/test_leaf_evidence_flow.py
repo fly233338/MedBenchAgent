@@ -87,6 +87,9 @@ def test_scenario_context_prioritizes_input_and_related_evidence(tmp_path, monke
     assert payload["representative_cases"][0]["evidence"]
     assert all(item["name"] != "age" for item in payload["representative_cases"][0]["evidence"])
     assert output["updates"]["planning_evidence_cache"]["scenario_id"] == "scenario-1"
+    assert output["updates"]["leaf_context"]["evidence_catalog"]
+    assert "coverage_and_limitations" in output["updates"]["leaf_context"]
+    assert output["updates"]["leaf_context"]["annotation_semantics"]["status"] == "unavailable"
 
 
 def test_catalog_returns_text_values_samples_and_suggestions(tmp_path, monkeypatch):

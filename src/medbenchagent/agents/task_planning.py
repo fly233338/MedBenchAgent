@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from medbenchagent.data.task_facts import build_dataset_facts, case_facts
 from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.access import DatasetAccessReceipt
-from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
+from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, encode_closed_label, resolve
 from medbenchagent.planning.bir import BIRStore, RegistrySnapshot
 from medbenchagent.planning.task_discovery import leaf_identity, validate_candidate_leaf
 from medbenchagent.planning.task_space import (
@@ -126,6 +126,8 @@ class LeafTaskDraft(BaseModel):
     def validate_templates(self):
         if any(not template.strip() for template in self.question_templates):
             raise ValueError("question_templates must be non-empty")
+        if any("{{" in template or "}}" in template for template in self.question_templates):
+            raise ValueError("question_templates must be complete; unresolved placeholders are not supported")
         if len(set(self.question_templates)) != len(self.question_templates):
             raise ValueError("question_templates must be unique")
         return self
@@ -383,6 +385,71 @@ def _scenario_context_payload(context: dict[str, Any], plan: TaskPlanState, scen
     }
 
 
+def _documented_annotation_semantics(context: dict[str, Any]) -> dict[str, Any]:
+    """Return bounded, source-backed mapping semantics for Leaf design."""
+    path = _mapping_path(context)
+    if not path:
+        return {"status": "unavailable", "source": None}
+    try:
+        mapping = _read(path)
+    except (OSError, ValueError):
+        return {"status": "unavailable", "source": str(path)}
+    if not isinstance(mapping, dict):
+        return {"status": "unavailable", "source": str(path)}
+    selected = {}
+    for key in ("entity_meanings", "fields", "relationships", "missing", "findings", "spatial", "invariant_fields"):
+        if key in mapping:
+            value = mapping[key]
+            if isinstance(value, list):
+                value = value[:50]
+            selected[key] = _compact_scalar(value, limit=240)
+    return {"status": "available", "source": str(path), "content": selected}
+
+
+def _leaf_context(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
+    scenario = plan.scenarios.get(plan.current_scenario_id) if plan.current_scenario_id else None
+    facts = _facts(context, plan)
+    cache = context.get("planning_evidence_cache") or {}
+    catalog = cache.get("planning_evidence") or [
+        _compact_catalog_entry(item, item.get("meaning"))
+        for item in list(_catalog_map(facts.get("evidence_catalog", {})).values())[:30]
+    ]
+    representative = cache.get("representative_cases", [])[:3]
+    existing = []
+    if scenario:
+        for leaf_id in scenario.leaf_task_ids:
+            leaf = plan.leaf_tasks.get(leaf_id)
+            if leaf:
+                existing.append({
+                    key: value
+                    for key, value in leaf.model_dump(mode="json").items()
+                    if key in {"leaf_task_id", "name", "target", "input", "reference_rule",
+                               "resolver", "output_spec", "task_paradigm", "question_templates", "options"}
+                })
+    access = _access(context)
+    return {
+        "dataset_binding": {
+            "dataset_id": access.get("dataset_id", context.get("dataset_scope", context.get("selected_dataset_id"))),
+            "revision": access.get("revision", facts.get("revision")),
+        },
+        "scenario": scenario.model_dump(mode="json") if scenario else None,
+        "evidence_catalog": catalog,
+        "annotation_semantics": _documented_annotation_semantics(context),
+        "relations": facts.get("relations", {}),
+        "representative_cases": representative,
+        "coverage_and_limitations": {
+            "case_count": facts.get("case_count"),
+            "evidence_coverage": {
+                key: value.get("cases")
+                for key, value in _catalog_map(facts.get("evidence_catalog", {})).items()
+                if isinstance(value, dict) and "cases" in value
+            },
+            "annotation_completeness": "unavailable unless documented by preparation evidence",
+        },
+        "existing_leaf_tasks": existing,
+    }
+
+
 def _leaf_diagnostics(context: dict[str, Any], plan: TaskPlanState, raw_leaf: Any, *, errors: list[dict[str, Any]], repair_hint: str) -> dict[str, Any]:
     if hasattr(raw_leaf, "model_dump"):
         attempted = raw_leaf.model_dump(mode="json")
@@ -420,7 +487,7 @@ def _benchmark_brief(context: dict[str, Any]) -> dict[str, Any]:
         "language": info.get("language"),
         "sample_scope": context.get("sample_scope", info.get("sample_scope", [])),
         "intent_notes": info.get("intent_notes", []),
-        "input_policy": context.get("benchmark_input_policy", "image-only"),
+        "input_policy": context.get("benchmark_input_policy"),
     }
     return {
         key: value for key, value in brief.items()
@@ -1245,6 +1312,7 @@ def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = 
         "success",
         json.dumps(context_value, ensure_ascii=False),
         planning_read_state=state,
+        leaf_context=_leaf_context(context, plan),
         planning_evidence_cache={
             "scenario_id": scenario_id,
             "planning_evidence": context_value.get("planning_evidence", []),
@@ -1333,7 +1401,14 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         elif operation_mode == "required" and parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
             value = resolved.reference.get("value", resolved.reference) if isinstance(resolved.reference, dict) else resolved.reference
             if isinstance(value, (str, int, float, bool)):
-                resolved_answers.add(str(value))
+                try:
+                    resolved_answers.add(encode_closed_label(value))
+                except ValueError as exc:
+                    _raise_leaf_failure(
+                        context, plan, raw_leaf, "label_encoding",
+                        str(exc), path="options",
+                        repair_hint="Use string options matching the deterministic Resolver answer encoding.",
+                    )
     eligible = len(cases) - sum(resolution_reasons.values())
     if eligible <= 0:
         common = ", ".join(f"{reason}={count}" for reason, count in resolution_reasons.most_common())
@@ -1369,6 +1444,7 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         f"Leaf Task {parsed.leaf_id} saved ({eligible} eligible Cases)",
         milestone={"kind": "leaf", "leaf_task_id": parsed.leaf_id, "capacity": eligible},
         planning_read_state={},
+        leaf_context=_leaf_context(context, plan),
         **updates,
     )
 
@@ -1434,7 +1510,10 @@ def _leaf_validation_summary(context: dict[str, Any], leaf: LeafTask) -> dict[st
         reference = resolved.reference
         value = reference.get("value", reference) if isinstance(reference, dict) else reference
         if isinstance(value, (str, int, float, bool)):
-            answer = str(value)
+            try:
+                answer = encode_closed_label(value)
+            except ValueError:
+                answer = str(value)
             answers[answer] += 1
         else:
             answer = None
@@ -1695,6 +1774,79 @@ def _planning_progress_key(context: dict[str, Any]) -> dict[str, Any]:
 finish_task_space = finish_task_plan
 
 
+def _planning_description(context: dict[str, Any]) -> dict[str, Any]:
+    plan = _load_plan(context)
+    description = {
+        "task_plan": str(_plan_path(context)),
+        "phase": plan.phase,
+        "next_axis": plan.next_axis,
+        "current_scenario_id": plan.current_scenario_id,
+        "pending_scenario_count": len(_workflow_pending_scenario_ids(plan)),
+        "scenario_review_pending_count": len(plan.scenario_review_pending_ids),
+        "evidence_manifest_path": plan.evidence_manifest_path,
+        "benchmark_brief": _benchmark_brief(context),
+        "feedback": context.get("planning_feedback", {}),
+    }
+    if plan.phase == "leaves":
+        description["leaf_context"] = _leaf_context(context, plan)
+    return description
+
+
+def _render_leaf_prompt(context: dict[str, Any], plan: TaskPlanState, template: str) -> str:
+    registry = _registry(context)
+    scenario = plan.scenarios.get(plan.current_scenario_id) if plan.current_scenario_id else None
+    operation = registry.operation_definition(scenario.operation) if registry and scenario else {}
+    target = {}
+    if registry and scenario:
+        target_axis = next(
+            (item for item in registry.axis_definitions() if item.get("id") == "clinical_target"),
+            {},
+        )
+        target = next(
+            (item for item in target_axis.get("values", []) if item.get("id") == scenario.clinical_target),
+            {},
+        )
+    state = {
+        "phase": plan.phase,
+        "next_axis": plan.next_axis.value if plan.next_axis else None,
+        "current_scenario": scenario.model_dump(mode="json") if scenario else None,
+        "saved_leaf_count": len(scenario.leaf_task_ids) if scenario else 0,
+        "available_tools": sorted(_available_tools(context)),
+        "leaf_context": _leaf_context(context, plan),
+    }
+    replacements = {
+        "{{current_planning_state_and_scenario_json}}": json.dumps(state, ensure_ascii=False),
+        "{{question_template_count}}": str(_configured_template_count(context) or "not specified"),
+        "{{benchmark_output_language}}": str(_benchmark_brief(context).get("language", "unavailable")),
+        "{{benchmark_input_policy}}": str(context.get("benchmark_input_policy", "unavailable")),
+        "{{current_operation_and_clinical_target_definitions_json}}": json.dumps(
+            {"operation": operation, "clinical_target": target}, ensure_ascii=False
+        ),
+        "{{resolver_policy_and_task_contracts_json}}": json.dumps(
+            {
+                "resolver_policy": registry.resolver_policy if registry else {},
+                "task_contracts": registry.task_contracts if registry else {},
+            }, ensure_ascii=False
+        ),
+    }
+    rendered = template
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    if not context.get("planning_novelty_enabled", True):
+        rendered = rendered.replace(
+            "Additionally, explore useful questions through numeric relationships,\n"
+            "categorical agreement or differences, aggregation, and derived measurements.\n"
+            "For example, compare two documented ratios computed from linked measurements,\n"
+            "or count findings within a scope whose annotation coverage is complete.\n"
+            "Use these possibilities only when they fit the current Scenario and can be\n"
+            "verified through available evidence and supported Resolver operations.\n"
+            "Seek meaningful task differences rather than wording variations; do not\n"
+            "invent facts, require unsupported computations, or force extra tasks.\n",
+            "",
+        )
+    return rendered
+
+
 def _planning_instructions(context: dict[str, Any]) -> str:
     """Load the frozen task-planning prompt from the experiment BIR."""
     # The external prompt covers workflow operations; stage prompts carry semantic constraints.
@@ -1709,32 +1861,28 @@ def _planning_instructions(context: dict[str, Any]) -> str:
     if scenario:
         scenario_text = ", ".join((scenario.input_structure, scenario.operation, scenario.clinical_target))
     available = ", ".join(sorted(_available_tools(context)))
-    evidence_cache = context.get("planning_evidence_cache") or {}
-    cache_text = json.dumps(evidence_cache, ensure_ascii=False)
-    if len(cache_text) > 5000:
-        cache_text = cache_text[:5000] + "…"
     runtime = (
-        "\n\n## Current Runtime Configuration\n"
+        "\n\n# Current Planning Context\n\n"
+        "## 1. Persisted State\n\n"
         f"- Phase: {plan.phase}\n"
         f"- Next Axis: {plan.next_axis.value if plan.next_axis else 'none'}\n"
-        f"- Pending Scenario count: {len(_workflow_pending_scenario_ids(plan))}\n"
-        f"- Scenario Review queue remaining: {len(plan.scenario_review_pending_ids)}\n"
-        f"- Required question template count: {_configured_template_count(context) or 'not specified'}\n"
-        f"- Current scenario (input_structure / operation / clinical_target): {scenario_text}\n"
-        f"- Saved Leaf Task count for the current Scenario: {len(scenario.leaf_task_ids) if scenario else 0}\n"
-        f"- Benchmark brief: {json.dumps(_benchmark_brief(context), ensure_ascii=False)}\n"
-        f"- Current Scenario evidence cache: {cache_text if cache_text != '{}' else 'none'}\n"
-        f"- Available planning tools: {available or 'none'}\n"
-        "Use these runtime values as the active contract for the next action.\n"
-        "When phase=axes, read the current Axis evidence once and then call analyze_axis for every allowed value.\n"
-        "When next_axis=clinical_target, analyze_axis is the required next state-changing action; do not repeat an unchanged evidence-catalog read.\n"
-        "Axis completion is persisted only by analyze_axis.\n"
-        "Read tools are bounded queries, not progress actions. Do not repeat an unchanged read."
+        f"- Current Scenario: {scenario_text}\n"
+        f"- Saved Leaf Task Count: {len(scenario.leaf_task_ids) if scenario else 0}\n"
+        f"- Required Question Template Count: {_configured_template_count(context) or 'not specified'}\n\n"
+        "## 2. Active Requirements\n\n"
+        f"- Benchmark Brief: {json.dumps(_benchmark_brief(context), ensure_ascii=False)}\n"
+        f"- Benchmark Input Policy: {context.get('benchmark_input_policy', 'unavailable')}\n"
+        f"- Applicable Resolver Policy: {json.dumps((_registry(context).resolver_policy if _registry(context) else {}), ensure_ascii=False)}\n\n"
+        "## 3. Available Actions\n\n"
+        f"{available or 'none'}\n\n"
+        "Use these values for the next action. Call only an available tool and follow its supplied schema.\n"
+        "An Axis assessment covers all allowed values in one dedicated call.\n"
+        "A read action provides context but does not persist stage completion."
     )
     if plan.phase in {"screening", "scenario_review"}:
         runtime += "\nReview exactly one pending Scenario with review_candidate_scenarios, passing its scenario_id. Do not design Leaf Tasks until all Scenario Reviews are complete."
     if plan.phase == "leaves" and store:
-        base += "\n\n" + store.registry().prompt("leaf_task_design")
+        return _render_leaf_prompt(context, plan, store.registry().prompt("leaf_task_design"))
     return base + runtime
 
 def compile_task_planning_agent(*, checkpointer=None):
@@ -1756,12 +1904,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         {tool.__name__: tool for tool in tools},
         lambda c: {
             "task_plan": str(_plan_path(c)),
-            "phase": _load_plan(c).phase,
-            "next_axis": _load_plan(c).next_axis,
-            "current_scenario_id": _load_plan(c).current_scenario_id,
-            "pending_scenario_count": len(_workflow_pending_scenario_ids(_load_plan(c))),
-            "scenario_review_pending_count": len(_load_plan(c).scenario_review_pending_ids),
-            "evidence_manifest_path": _load_plan(c).evidence_manifest_path,
+            **_planning_description(c),
         },
         finish_task_plan,
         args_schemas={

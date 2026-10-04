@@ -47,6 +47,10 @@ asset 才能证明 multi-image 或 multi-view；region→mask 引用不等于多
 未知关系保持 unknown 并由规划代码保守排除，不能用字段数量或整数值猜测
 index、时间或医学语义。
 
+规划上下文可以引用准备阶段保存的 `mapping.json` 和语义证据。宿主将字段含义、
+关系说明、覆盖限制和代表性 Case 组织成有界结构化 `leaf_context`；缺失的语义保持
+显式缺失。该上下文与 Evidence Catalog 一起传给 Leaf 设计，不依赖被截断的历史工具摘要。
+
 ## 运行契约
 
 准备和构建使用 Run 冻结的配置、Catalog snapshot、Card 副本、事件日志和 operation ledger。产物依赖由 `runtime/dependencies.py` 校验；工具调用按参数和依赖幂等重放。

@@ -2,6 +2,10 @@ dataset_sources = []
 
 [benchmark]
 default_sample_count = 1000
+input_policy = "image-only"
+
+[planning]
+novelty_enabled = true
 
 [paths]
 dataset_catalog = "datasets/dataset_catalog.json"

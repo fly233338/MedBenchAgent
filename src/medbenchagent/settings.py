@@ -80,6 +80,12 @@ class DatasetProfileSettings:
 @dataclass(frozen=True)
 class BenchmarkSettings:
     default_sample_count: int
+    input_policy: str
+
+
+@dataclass(frozen=True)
+class PlanningSettings:
+    novelty_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,7 @@ class AppSettings:
     dataset_profile: DatasetProfileSettings
     dataset_sources: tuple[dict[str, Any], ...]
     benchmark: BenchmarkSettings
+    planning: PlanningSettings
     default_config_path: Path
     local_config_path: Path | None
     environment_overrides: tuple[str, ...]
@@ -110,7 +117,11 @@ class AppSettings:
         return {
             "settings": {
                 "dataset_sources": list(self.dataset_sources),
-                "benchmark": {"default_sample_count": self.benchmark.default_sample_count},
+                "benchmark": {
+                    "default_sample_count": self.benchmark.default_sample_count,
+                    "input_policy": self.benchmark.input_policy,
+                },
+                "planning": {"novelty_enabled": self.planning.novelty_enabled},
                 "harness": self.harness,
                 "data_processing": self.data_processing,
                 "paths": {key: str(getattr(self.paths, key)) for key in self.paths.__dataclass_fields__},
@@ -306,8 +317,15 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     if not 3 <= question_template_count <= 5:
         raise ValueError("generation.question_template_count must be between 3 and 5")
     return AppSettings(
-        benchmark=BenchmarkSettings(default_sample_count=_integer(values["benchmark"]["default_sample_count"],
-                                                                  "benchmark.default_sample_count", minimum=1)),
+        benchmark=BenchmarkSettings(
+            default_sample_count=_integer(values["benchmark"]["default_sample_count"],
+                                          "benchmark.default_sample_count", minimum=1),
+            input_policy=_string(values["benchmark"].get("input_policy", "image-only"),
+                                 "benchmark.input_policy"),
+        ),
+        planning=PlanningSettings(
+            novelty_enabled=bool(values.get("planning", {}).get("novelty_enabled", True)),
+        ),
         dataset_sources=_dataset_sources(values["dataset_sources"]),
         harness={key: _integer(value, f"harness.{key}", minimum=1) for key, value in values["harness"].items()},
         data_processing={"backend": backend, "image": _string(values["data_processing"]["image"], "data_processing.image"),
