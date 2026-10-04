@@ -28,6 +28,7 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
     if plan.phase != "complete":
         raise ValueError("Task Plan must be complete before execution")
     from medbenchagent.data.index import DatasetIndex
+    from medbenchagent.planning.resolver import ResolverContext
     cases = list(DatasetIndex(access).iter_cases())
     output = run_pipeline(
         dataset={"dataset_id": context.get("selected_dataset_id", "dataset")},
@@ -35,6 +36,7 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
         cases=cases,
         requested_count=requested_count or context.get("benchmark_info", {}).get("sample_count", 1),
         seed=context.get("seed", 0),
+        resolver_context=ResolverContext.from_access(access),
     )
     paths = {}
     for name, payload in (

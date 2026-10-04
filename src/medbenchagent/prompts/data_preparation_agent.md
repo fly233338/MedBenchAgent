@@ -48,8 +48,13 @@ and SOPInstanceUID identifies an instance. The grouping mapping must be encoded 
 conversion code and be host-verifiable.
 
 Evidence types are value, text, asset, and region. Region uses normalized xyxy coordinates. Create
-`ref` only when the source explicitly establishes the relationship. Do not infer labels, relations,
-negative findings, or answers from medical knowledge, filenames, overlays, or hidden annotations.
+`ref` only when the source explicitly establishes the relationship. Preserve referenced mask files
+as stable semantic asset Evidence (for example `tumor_mask`), never as per-case filename fields,
+with their source locator, dimensions and digest even when no region is
+materialized during preparation. Downstream benchmark planning may use a registered deterministic
+Resolver operation such as `mask_to_bbox`; preparation does not decide which later task needs it.
+Do not infer labels, relations, negative findings, or answers from medical knowledge, filenames,
+overlays, or hidden annotations.
 
 Submit only after writing `outputs/cases.jsonl`, `outputs/asset_manifest.jsonl`,
 `outputs/provenance.jsonl`, `outputs/preparation_report.json`,

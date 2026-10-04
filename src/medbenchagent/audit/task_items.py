@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from typing import Any, Iterable
 
 from medbenchagent.generation.items import _input_assets, _input_bindings
-from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, encode_closed_label, resolve
+from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve
 from medbenchagent.planning.task_space import LeafTask, OutputSpec
 
 
@@ -30,6 +30,7 @@ def audit_task_items(
     cases: Iterable[dict[str, Any]],
     items: Iterable[dict[str, Any]],
     leaves: Iterable[LeafTask | dict[str, Any]],
+    resolver_context: ResolverContext | None = None,
 ) -> dict[str, Any]:
     items = list(items)
     leaf_map = {leaf.leaf_id: leaf for leaf in (LeafTask.model_validate(value) for value in leaves)}
@@ -45,7 +46,7 @@ def audit_task_items(
         if case is None:
             errors.append("unknown_case")
         if not errors:
-            resolved = resolve(case, ResolverSpec.parse(leaf.resolver))
+            resolved = resolve(case, ResolverSpec.parse(leaf.resolver), resolver_context=resolver_context)
             if isinstance(resolved, NotApplicable):
                 errors.append(resolved.reason)
             else:

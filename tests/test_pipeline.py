@@ -23,7 +23,7 @@ def test_task_space_pipeline_reaches_audited_manifest():
             "output_spec": "text", "task_paradigm": "Report Generation", "capability_category": "Generation",
             "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}], "steps": [{"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}}, {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}}], "output_spec": "text", "result_step": "step_1"}}
     case = {"case_id": "c", "evidence": [{"id": "a", "type": "asset", "name": "image", "value": "asset", "ref": []}, {"id": "r", "type": "text", "name": "report", "value": "Clear", "ref": ["a"]}]}
-    result = run_pipeline(dataset={"dataset_id": "d"}, axis_analysis=analysis, node_context={"evidence": {"image": {}, "report": {}, "text": 1}, "relations": {"related": 1}, "validated_clinical_targets": {"finding": [{"target_id": "finding", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]}]}}, leaves=[leaf], cases=[case], requested_count=1)
+    result = run_pipeline(dataset={"dataset_id": "d"}, axis_analysis=analysis, node_context={"assets": {"primary_image_assets": 1}, "evidence": {"image": {}, "report": {}, "text": 1}, "relations": {"related": 1}, "validated_clinical_targets": {"finding": [{"target_id": "finding", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]}]}}, leaves=[leaf], cases=[case], requested_count=1)
     assert result["audit"]["accepted"] == 1
     assert result["manifest"]["schema_version"] == "benchmark-manifest"
 
@@ -94,7 +94,7 @@ def test_explicit_leaves_override_plan_leaves():
 
     result = run_pipeline(
         dataset={"dataset_id": "d"}, axis_analysis=analysis,
-        node_context={"evidence": {"image": {}, "report": {}, "text": 1}, "relations": {"related": 1}, "validated_clinical_targets": {"finding": [{"target_id": "finding", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]}]}},
+        node_context={"assets": {"primary_image_assets": 1}, "evidence": {"image": {}, "report": {}, "text": 1}, "relations": {"related": 1}, "validated_clinical_targets": {"finding": [{"target_id": "finding", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]}]}},
         leaves=[leaf], cases=[case], requested_count=1,
     )
 

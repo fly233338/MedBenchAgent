@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from medbenchagent.data.task_facts import build_dataset_facts, case_facts
 from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.access import DatasetAccessReceipt
-from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, encode_closed_label, resolve
+from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve
 from medbenchagent.planning.bir import BIRStore, RegistrySnapshot
 from medbenchagent.planning.extensions import PlanningExtensionCatalog
 from medbenchagent.planning.task_discovery import leaf_identity, validate_candidate_leaf, validate_task_tree
@@ -779,6 +779,9 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
         "patient_count": facts.get("patient_count", 0),
         "patient_identity": facts.get("patient_identity", "unknown"),
         "mapping_path": str(mapping_path) if mapping_path else None,
+        "source_root": access.get("source_root"),
+        "source_roots": access.get("source_roots", {}),
+        "bundle_root": access.get("bundle_root"),
     }).model_dump(mode="json")
     overview = {
         "schema_version": "dataset-overview",
@@ -1158,6 +1161,13 @@ def _facts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
             "comparable": 0,
             "related_image_groups": 0,
         },
+        "derived_capabilities": {
+            "mask_to_bbox": sum(
+                1 for name, row in evidence_catalog.items()
+                if "mask" in str(name).casefold()
+                and "asset" in (row.get("types") or {})
+            ),
+        },
     }
 
 
@@ -1167,6 +1177,7 @@ def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanSt
         "evidence": facts.get("evidence", {}),
         "assets": facts.get("assets", {}),
         "relations": facts.get("relations", {}),
+        "derived_capabilities": facts.get("derived_capabilities", {}),
         "evidence_names": facts.get("evidence_names", []),
         "annotation_mapping": facts.get("annotation_mapping", []),
     }
@@ -1245,6 +1256,7 @@ def _screening_payload(context: dict[str, Any], plan: TaskPlanState, scenario) -
         "evidence_catalog": catalog,
         "field_semantics": _field_semantics(context, [item.get("name") for item in catalog if item.get("name")]),
         "relations": facts.get("relations", {}),
+        "derived_capabilities": facts.get("derived_capabilities", {}),
         "annotation_semantics": _documented_annotation_semantics(context),
         "count_semantics": {
             "feasible_case_count": "Cases satisfying structural Scenario constraints; not a question or Leaf count.",
@@ -1635,6 +1647,7 @@ def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, 
             "patient_identity": facts.get("patient_identity", "unknown"),
             "assets": facts.get("assets", {}),
             "relations": facts.get("relations", {}),
+            "derived_capabilities": facts.get("derived_capabilities", {}),
             "evidence": facts.get("evidence", {}),
         },
         "evidence_catalog": list(facts.get("evidence_catalog", {}).values())
@@ -1805,6 +1818,7 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         _raise_leaf_failure(context, plan, raw_leaf, "dataset_query", str(exc), repair_hint="Use the available planning evidence and retry this Leaf after the dataset query is available.")
     resolution_reasons = Counter()
     resolved_answers = set()
+    resolver_context = ResolverContext.from_access(_access(context))
     operation_mode = (_registry(context).answer_options_mode(scenario.operation)
                       if _registry(context) else ("required" if scenario.operation in {"recognize", "compare", "align"} else "forbidden"))
     for case in cases:
@@ -1823,7 +1837,11 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         if required_structure == "volume" and not any(item.get("kind") == "volume" for item in selected_primary):
             resolution_reasons["input_structure_volume_mismatch"] += 1
             continue
-        resolved = resolve(case, ResolverSpec.parse(parsed.resolver))
+        resolved = resolve(
+            case,
+            ResolverSpec.parse(parsed.resolver),
+            resolver_context=resolver_context,
+        )
         if isinstance(resolved, NotApplicable):
             resolution_reasons[resolved.reason] += 1
         elif operation_mode == "required" and parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
@@ -1939,8 +1957,13 @@ def _leaf_validation_summary(context: dict[str, Any], leaf: LeafTask) -> dict[st
     failures = Counter()
     answers = Counter()
     examples = []
+    resolver_context = ResolverContext.from_access(access)
     for case in cases:
-        resolved = resolve(case, ResolverSpec.parse(leaf.resolver))
+        resolved = resolve(
+            case,
+            ResolverSpec.parse(leaf.resolver),
+            resolver_context=resolver_context,
+        )
         if isinstance(resolved, NotApplicable):
             failures[resolved.reason] += 1
             continue
@@ -2195,9 +2218,15 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview |
     _reset_planning_context(context, plan, plan.current_scenario_id)
     updates = _write_artifacts(context, plan)
     next_pending = plan.pending_scenario_ids[0] if plan.pending_scenario_ids else None
+    review_summary = {
+        "status": review.status,
+        "checked_leaf_task_ids": sorted(remaining),
+        "discarded_leaf_task_ids": sorted(discarded),
+        "issues": list(review.issues),
+    }
     return result(
         "success",
-        f"Scenario {review.scenario_id} review saved",
+        f"Scenario {review.scenario_id} review saved: {json.dumps(review_summary, ensure_ascii=False)}",
         milestone={
             "kind": "scenario_progress" if next_pending else "scenario_complete",
             "scenario_id": review.scenario_id,
@@ -2209,6 +2238,7 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview |
         next_pending_scenario_id=next_pending,
         planning_read_state=context["planning_read_state"],
         planning_evidence_cache=context["planning_evidence_cache"],
+        scenario_review=review_summary,
         **updates,
     )
 

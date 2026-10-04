@@ -89,6 +89,10 @@ role bindings. Audit recomputes these bindings, the selected question
 template, the Resolver answer and reference evidence before accepting an item.
 Derived Closed VQA labels use the same deterministic scalar encoding during
 planning, generation and audit.
+Reference-only Resolver steps may read immutable Assets through the frozen
+Dataset Access manifest. The registered `mask_to_bbox` operation derives a
+normalized bounding box from a mask without adding the mask to model input;
+Planning, Generation and Audit share the same asset context and digest checks.
 When a Leaf needs a smaller categorical vocabulary, the Resolver may contain
 an explicit `map_label` step. Unmapped values remain ineligible; no runtime
 agent infers or edits mappings.

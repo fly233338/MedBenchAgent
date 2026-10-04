@@ -6,6 +6,7 @@ def run_generation(context, *, leaf_path=None, output_path=None, allocation=None
     from pathlib import Path
     import json
     from medbenchagent.data.index import DatasetIndex
+    from medbenchagent.planning.resolver import ResolverContext
     access = context["dataset_access_manifest"]
     leaves = json.loads(Path(leaf_path or context.get("leaf_tasks_path") or context["task_leaves_path"]).read_text(encoding="utf-8"))
     items = generate_task_items(
@@ -14,6 +15,7 @@ def run_generation(context, *, leaf_path=None, output_path=None, allocation=None
         context.get("selected_dataset_id", "dataset"),
         allocation=allocation,
         seed=context.get("seed", 0),
+        resolver_context=ResolverContext.from_access(access),
     )
     destination = output_path or str(Path(context["operation_directory"]) / "benchmark_items.jsonl")
     write_task_items(destination, items)

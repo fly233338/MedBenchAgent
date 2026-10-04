@@ -29,4 +29,7 @@ class DatasetAccessReceipt(BaseModel):
     dataset_card_digest: str | None = None
     source_schema_version: str | None = None
     source_access: dict[str, Any] | None = None
+    source_root: str | None = None
+    source_roots: dict[str, str] = Field(default_factory=dict)
+    bundle_root: str | None = None
 

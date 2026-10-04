@@ -35,10 +35,8 @@ def _analysis(supported):
 
 def test_axis_tool_schema_is_nested_and_strict():
     schema = AxisArguments.model_json_schema()
-    item = schema["$defs"]["AxisValueDecision"]
-    assert item["type"] == "object"
-    assert set(item["required"]) == {"value", "supported", "evidence_basis", "reason"}
-    assert item["additionalProperties"] is False
+    assert set(schema["required"]) == {"axis"}
+    assert "assessments" not in schema["properties"]
 
 
 def test_axis_tool_arguments_parse_json_enum_values():
@@ -48,8 +46,10 @@ def test_axis_tool_arguments_parse_json_enum_values():
         "evidence_basis": [{"reference": "catalog:image", "detail": "observed"}],
         "reason": "observed",
     }
-    parsed = AxisArguments.model_validate({"axis": "input_structure", "assessments": [assessment]})
+    parsed = AxisArguments.model_validate({"axis": "input_structure"})
     assert parsed.axis is TaskAxis.INPUT_STRUCTURE
+    with pytest.raises(ValueError):
+        AxisArguments.model_validate({"axis": "input_structure", "assessments": [assessment]})
     assert AxisEvidenceArguments.model_validate({"axis": "input_structure"}).axis is TaskAxis.INPUT_STRUCTURE
     with pytest.raises(ValueError):
         AxisEvidenceArguments.model_validate({"axis": "unknown"})
@@ -96,3 +96,27 @@ def test_scenario_category_is_derived_from_operation():
     active = [value for value in scenarios.values() if not value.exclusion_reason]
     assert active
     assert {value.capability_category for value in active} == {CapabilityCategory.INTEGRATION}
+
+
+def test_localize_accepts_registered_mask_to_bbox_capability():
+    analysis = _analysis({
+        "input_structure": ["single-image"],
+        "operation": ["localize"],
+        "clinical_target": ["finding"],
+    })
+    scenarios = build_task_scenarios(
+        analysis,
+        {
+            "assets": {"primary_image_assets": 1},
+            "evidence": {"asset": 1},
+            "derived_capabilities": {"mask_to_bbox": 1},
+            "case_facts": [{
+                "assets": {"primary_image_assets": 1},
+                "evidence": {"asset": 1},
+                "derived_capabilities": {"mask_to_bbox": 1},
+            }],
+        },
+    )
+    active = [value for value in scenarios.values() if not value.exclusion_reason]
+    assert len(active) == 1
+    assert active[0].operation == "localize"

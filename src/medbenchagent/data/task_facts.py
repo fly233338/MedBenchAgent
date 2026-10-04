@@ -24,6 +24,19 @@ def _asset_role(item: dict[str, Any]) -> str:
     return "annotation" if _is_annotation_asset(item) else "primary"
 
 
+def _is_mask_asset(item: dict[str, Any]) -> bool:
+    name = str(item.get("name", "")).casefold()
+    return item.get("type") == "asset" and any(
+        token in name for token in ("mask", "segmentation", "roi")
+    )
+
+
+def _semantic_evidence_name(name: Any) -> bool:
+    """Exclude case-specific locator fields from model-visible planning facts."""
+    value = str(name or "")
+    return not value.casefold().startswith(("mask_filename:", "mask_region:"))
+
+
 def case_facts(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> dict[str, Any]:
     rows = case.get("evidence", [])
     by_id = {row["id"]: row for row in rows}
@@ -69,7 +82,7 @@ def case_facts(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> dict[
     )
     return {
         "evidence": dict(counts),
-        "evidence_names": sorted({r.get("name") for r in rows if r.get("name")}),
+        "evidence_names": sorted({r.get("name") for r in rows if _semantic_evidence_name(r.get("name")) and r.get("name")}),
         "assets": {
             "image_assets": len(image_rows),
             "primary_image_assets": len(primary_images),
@@ -91,6 +104,9 @@ def case_facts(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> dict[
             "paired_study": 2 if comparable else 0,
             "temporal_links": 0,
         },
+        "derived_capabilities": {
+            "mask_to_bbox": int(any(_is_mask_asset(row) for row in rows)),
+        },
     }
 
 
@@ -99,6 +115,7 @@ def merge_facts(facts: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "evidence": Counter(),
         "assets": Counter(),
         "relations": Counter(),
+        "derived_capabilities": Counter(),
         "evidence_names": set(),
     }
     for value in facts:
@@ -124,7 +141,14 @@ def select_representative_case(cases: Iterable[dict[str, Any]]) -> dict[str, Any
         evidence = case.get("evidence", [])
         return (-len({row.get("name") for row in evidence}), -len(evidence), str(case["case_id"]))
 
-    return min(values, key=score)
+    selected = min(values, key=score)
+    return {
+        **selected,
+        "evidence": [
+            row for row in selected.get("evidence", [])
+            if _semantic_evidence_name(row.get("name"))
+        ],
+    }
 
 
 def build_dataset_facts(
@@ -141,7 +165,9 @@ def build_dataset_facts(
     evidence_catalog: dict[str, dict[str, Any]] = {}
     if profile:
         evidence_catalog = {
-            row["name"]: row for row in profile.get("evidence", []) if row.get("name")
+            row["name"]: row
+            for row in profile.get("evidence", [])
+            if row.get("name") and _semantic_evidence_name(row.get("name"))
         }
     if not evidence_catalog:
         by_name: dict[str, dict[str, Any]] = defaultdict(
@@ -151,7 +177,7 @@ def build_dataset_facts(
             names = set()
             for row in case.get("evidence", []):
                 name = row.get("name")
-                if not name:
+                if not name or not _semantic_evidence_name(name):
                     continue
                 names.add(name)
                 by_name[name]["types"][row.get("type")] += 1
@@ -210,6 +236,7 @@ def build_dataset_facts(
         "evidence_names": merged["evidence_names"],
         "assets": merged["assets"],
         "relations": merged["relations"],
+        "derived_capabilities": merged["derived_capabilities"],
         "representative_case": select_representative_case(case_list),
     }
 

@@ -104,8 +104,6 @@ The following rules may add or tighten constraints for the current dataset, dise
 
 They are additive. They must not relax the core validation requirements or override the required output contract.
 
-{{DATASET_SPECIFIC_RULES}}
-
 For input structure, check the actual resolved visual input against the Registry: image count, Case/subject linkage, task-relevant relations, explicit view correspondence or preserved volume organization as applicable. Selector count and the total number of assets in the Case are not substitutes for this check.
 
 ## Output
@@ -117,3 +115,5 @@ Return one JSON object matching the supplied ScenarioReview schema:
 - discarded_leaf_tasks: saved Leaf IDs to remove, each with a specific reason;
 - status: approved only when at least one Leaf remains and all remaining Leaves pass the required checks; otherwise rejected;
 - issues: concrete blockers or repair requirements, identifying the affected Leaf.
+
+{{DATASET_SPECIFIC_RULES}}

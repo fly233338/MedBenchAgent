@@ -62,7 +62,10 @@ Do not invent:
 - image measurements;
 - aggregation rules.
 
-unless they are explicitly registered and executable.
+unless they are explicitly registered and executable. When `mask_to_bbox` is registered, use it as a
+Resolver reference step with the mask kept out of the model input; do not describe or invent a
+different geometry algorithm. Set its channel and exact foreground values from the registered mask
+semantics.
 
 ## 5. Preserve label semantics
 
@@ -150,8 +153,6 @@ The following rules may add or tighten constraints for the current dataset, dise
 
 They are additive. They must not relax the core grounding requirements, expand the validated target set, or override the required output contract.
 
-{{DATASET_SPECIFIC_RULES}}
-
 Apply the Registry input definition to the actual resolved images. Check the number of primary images and their documented Case, subject and task-relevant relations. One selector may resolve multiple images; selector count is not image count. Use multi-view only when explicit view identity and correspondence are supported.
 
 Leaf.input must exactly equal resolver.inputs, including roles and order. Keep reference-only evidence in Resolver reference steps, not in its inputs.
@@ -163,3 +164,5 @@ Return exactly one outer ToolAction matching the supplied schema. Submit a valid
 Each Leaf must reference one validated clinical target and satisfy all Scenario constraints. After saving the valid distinct Leaves, call review_current_scenario without supplying your own review. Follow the returned state and feedback.
 
 Do not add unsupported targets or alter target semantics merely to increase diversity or bypass a validation error.
+
+{{DATASET_SPECIFIC_RULES}}

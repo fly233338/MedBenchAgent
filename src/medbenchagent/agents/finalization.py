@@ -168,6 +168,8 @@ def finalize_benchmark(context: dict[str, Any], *, output_directory: str | Path 
         if not raw_path or not Path(raw_path).is_file():
             raise ValueError(f"Generation output is missing for {dataset_id}")
         cases = list(DatasetIndex(context["dataset_assets"][dataset_id]["access"]).iter_cases())
+        from medbenchagent.planning.resolver import ResolverContext
+        resolver_context = ResolverContext.from_access(context["dataset_assets"][dataset_id]["access"])
         raw_items = _read_jsonl(raw_path)
         raw_generated_count = len(raw_items)
         for row in raw_items:
@@ -181,7 +183,10 @@ def finalize_benchmark(context: dict[str, Any], *, output_directory: str | Path 
                 quarantine.append({"dataset_id": dataset_id, "stage": "audit", "item": row, "reasons": ["dataset_mismatch"]})
                 continue
             generated.append(row)
-        audit = audit_task_items(cases, generated, plans[dataset_id].leaf_tasks.values())
+        audit = audit_task_items(
+            cases, generated, plans[dataset_id].leaf_tasks.values(),
+            resolver_context=resolver_context,
+        )
         accepted = list(audit["accepted_items"])
         quarantine.extend({"dataset_id": dataset_id, "stage": "audit", **row} for row in audit["rejected_items"])
         bounded, over_allocated = [], []

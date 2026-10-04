@@ -78,6 +78,8 @@ def finalize_prepared_dataset(candidate, context):
         "dataset_card_path": str(temporary / "dataset_card.json"),
         "presentation_manifest_path": str(temporary / "presentation_manifest.jsonl"),
         "duckdb_path": str(temporary / "cache" / "annotation-cache" / "1" / "dataset.duckdb"),
+        "source_root": context.get("source_root"),
+        "source_roots": context.get("source_roots", {}),
     }
     atomic_write_json(
         temporary / "ready.json",

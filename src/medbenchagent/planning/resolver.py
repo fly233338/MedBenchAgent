@@ -2,13 +2,156 @@
 
 from __future__ import annotations
 
-import math
 import json
+import math
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from medbenchagent.planning.task_space import OutputSpec, EvidenceSelector
+
+
+@dataclass
+class ResolverContext:
+    """Frozen asset access shared by planning, generation and audit."""
+
+    assets: dict[str, dict[str, Any]] = field(default_factory=dict)
+    roots: dict[str, Path] = field(default_factory=dict)
+    cache: dict[tuple[Any, ...], Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_access(cls, access: dict[str, Any] | None) -> "ResolverContext":
+        access = access or {}
+        manifest_path = access.get("asset_manifest_path")
+        if not manifest_path or not Path(manifest_path).is_file():
+            return cls()
+        from medbenchagent.data.asset_manifest import iter_asset_manifest
+
+        assets = {
+            entry.asset_id: entry.model_dump(mode="json")
+            for entry in iter_asset_manifest(manifest_path)
+        }
+        roots: dict[str, Path] = {}
+        bundle_root = access.get("bundle_root")
+        if not bundle_root and access.get("cases_path"):
+            bundle_root = str(Path(access["cases_path"]).resolve().parent)
+        if bundle_root:
+            roots["source"] = Path(bundle_root).resolve()
+            roots["bundle"] = Path(bundle_root).resolve()
+        for key in ("source_root", "bundle_root"):
+            if access.get(key):
+                roots["source_root" if key == "source_root" else "bundle"] = Path(access[key]).resolve()
+        for key in ("source_roots", "asset_roots"):
+            values = access.get(key)
+            if isinstance(values, dict):
+                roots.update({str(name): Path(value).resolve() for name, value in values.items()})
+        nested = access.get("source_access")
+        if isinstance(nested, dict) and nested is not access:
+            nested_context = cls.from_access(nested)
+            for asset_id, asset in nested_context.assets.items():
+                assets.setdefault(asset_id, asset)
+            for name, root in nested_context.roots.items():
+                roots.setdefault(name, root)
+        return cls(assets=assets, roots=roots)
+
+    def _asset_path(self, asset_id: str) -> tuple[dict[str, Any], Path] | None:
+        asset = self.assets.get(asset_id)
+        if not asset:
+            return None
+        source_id = str(asset.get("source_id", "source"))
+        candidates = []
+        for root in (
+            self.roots.get(source_id), self.roots.get("source"),
+            self.roots.get("source_root"), self.roots.get("bundle"),
+            *self.roots.values(),
+        ):
+            if root is not None and root not in candidates:
+                candidates.append(root)
+        relative = Path(str(asset.get("source_path", "")))
+        if not str(relative) or relative.is_absolute():
+            return None
+        for root in candidates:
+            path = (root / relative).resolve()
+            if path.is_relative_to(root) and path.is_file():
+                return asset, path
+        return None
+
+    def mask_bbox(
+        self,
+        asset_id: str,
+        *,
+        channel: str,
+        foreground: list[int],
+    ) -> tuple[list[float] | None, str | None]:
+        key = ("mask_to_bbox", asset_id, channel, tuple(foreground))
+        if key in self.cache:
+            return self.cache[key]
+        located = self._asset_path(asset_id)
+        if located is None:
+            value = (None, "missing_asset")
+            self.cache[key] = value
+            return value
+        asset, path = located
+        from medbenchagent.data.sources import digest_file
+
+        expected_digest = asset.get("file_digest")
+        if expected_digest and digest_file(path) != expected_digest:
+            value = (None, "asset_digest_mismatch")
+            self.cache[key] = value
+            return value
+        try:
+            from PIL import Image
+            import numpy as np
+
+            with Image.open(path) as image:
+                image.load()
+                rgba = image.convert("RGBA")
+                array = np.asarray(rgba)
+        except Exception:
+            value = (None, "mask_read_error")
+            self.cache[key] = value
+            return value
+        if array.ndim != 3 or array.shape[2] != 4:
+            value = (None, "mask_invalid_dimensions")
+            self.cache[key] = value
+            return value
+        expected_width = asset.get("width")
+        expected_height = asset.get("height")
+        if (expected_width and expected_width != array.shape[1]) or (
+            expected_height and expected_height != array.shape[0]
+        ):
+            value = (None, "asset_dimension_mismatch")
+            self.cache[key] = value
+            return value
+        channel_indexes = {"red": 0, "green": 1, "blue": 2, "alpha": 3}
+        if channel == "any":
+            selected = np.isin(array, foreground).any(axis=2)
+        elif channel in channel_indexes:
+            selected = np.isin(array[:, :, channel_indexes[channel]], foreground)
+        elif channel == "luminance":
+            luminance = np.asarray(Image.fromarray(array, mode="RGBA").convert("L"))
+            selected = np.isin(luminance, foreground)
+        else:
+            value = (None, "mask_channel_invalid")
+            self.cache[key] = value
+            return value
+        ys, xs = np.where(selected)
+        if not len(xs):
+            value = (None, "mask_empty")
+            self.cache[key] = value
+            return value
+        height, width = array.shape[:2]
+        bbox = [
+            float(xs.min() / width),
+            float(ys.min() / height),
+            float((xs.max() + 1) / width),
+            float((ys.max() + 1) / height),
+        ]
+        value = (bbox, None)
+        self.cache[key] = value
+        return value
 
 
 class ResolvedTaskItem(BaseModel):
@@ -65,6 +208,22 @@ class LocateStep(BaseModel):
     input: str = Field(min_length=1)
 
 
+class MaskToBBoxStep(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    op: Literal["mask_to_bbox"] = "mask_to_bbox"
+    input: str = Field(min_length=1)
+    channel: Literal["red", "green", "blue", "alpha", "luminance", "any"] = "alpha"
+    foreground: list[int] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_foreground(self):
+        if any(type(value) is not int or value < 0 or value > 255 for value in self.foreground):
+            raise ValueError("mask_to_bbox foreground values must be integers in [0,255]")
+        if len(set(self.foreground)) != len(self.foreground):
+            raise ValueError("mask_to_bbox foreground values must be unique")
+        return self
+
+
 class ReferenceTextStep(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     op: Literal["reference_text"] = "reference_text"
@@ -90,7 +249,7 @@ class MapLabelStep(BaseModel):
 
 ResolverStep = Union[
     ReadStep, CollectStep, SelectStep, CompareStep, ComputeStep,
-    LocateStep, ReferenceTextStep, MapLabelStep,
+    LocateStep, MaskToBBoxStep, ReferenceTextStep, MapLabelStep,
 ]
 
 
@@ -123,8 +282,10 @@ class ResolverSpec(BaseModel):
                 )
             seen_roles.add(selector.role)
         seen = set()
+        step_types: dict[str, str | None] = {}
+        collection_steps: set[str] = set()
         for index, step in enumerate(self.steps):
-            dependencies = ([step.input] if isinstance(step, (SelectStep, LocateStep, MapLabelStep)) else
+            dependencies = ([step.input] if isinstance(step, (SelectStep, LocateStep, MaskToBBoxStep, MapLabelStep)) else
                             [step.left, step.right] if isinstance(step, CompareStep) else
                             step.inputs if isinstance(step, ComputeStep) else [])
             if not set(dependencies) <= seen:
@@ -135,13 +296,40 @@ class ResolverSpec(BaseModel):
                 raise ValueError("Binary compute requires two inputs")
             if hasattr(step, "selector") and step.selector.relation and step.selector.relation not in roles:
                 raise ValueError("Reference relation must name a model input role")
-            seen.add(f"step_{index}")
+            key = f"step_{index}"
+            if isinstance(step, (ReadStep, CollectStep, ReferenceTextStep)):
+                step_types[key] = step.selector.evidence_type
+                if isinstance(step, CollectStep):
+                    collection_steps.add(key)
+            elif isinstance(step, SelectStep):
+                step_types[key] = step_types.get(step.input)
+            elif isinstance(step, CompareStep):
+                step_types[key] = "value"
+            elif isinstance(step, ComputeStep):
+                step_types[key] = "value"
+            elif isinstance(step, LocateStep):
+                input_type = step_types.get(step.input)
+                if input_type not in {"region", "index"} or step.input in collection_steps:
+                    raise ValueError("locate requires a region or index reference")
+                step_types[key] = "bbox" if input_type == "region" else "index"
+            elif isinstance(step, MaskToBBoxStep):
+                if step_types.get(step.input) != "asset" or step.input in collection_steps:
+                    raise ValueError("mask_to_bbox requires a preceding asset reference")
+                step_types[key] = "bbox"
+            elif isinstance(step, MapLabelStep):
+                step_types[key] = "label"
+            seen.add(key)
         if self.result_step not in seen:
             available = ", ".join(sorted(seen))
             raise ValueError(
                 f"Unknown result step {self.result_step!r}; "
                 f"result_step must be one of: {available}"
             )
+        result_type = step_types.get(self.result_step)
+        if self.output_spec == OutputSpec.BBOX and result_type not in {"bbox", "region"}:
+            raise ValueError("bbox output requires a region, locate or mask_to_bbox result")
+        if self.output_spec == OutputSpec.INDEX and result_type != "index":
+            raise ValueError("index output requires an index reference")
         return self
 
     @classmethod
@@ -229,7 +417,12 @@ def _value(value):
     return value
 
 
-def resolve(case: dict[str, Any], resolver_spec: ResolverSpec | dict[str, Any]) -> ResolvedTaskItem | NotApplicable:
+def resolve(
+    case: dict[str, Any],
+    resolver_spec: ResolverSpec | dict[str, Any],
+    *,
+    resolver_context: ResolverContext | None = None,
+) -> ResolvedTaskItem | NotApplicable:
     spec = ResolverSpec.parse(resolver_spec)
     values: dict[str, Any] = {}
     value_refs: dict[str, set[str]] = {}
@@ -312,6 +505,21 @@ def resolve(case: dict[str, Any], resolver_spec: ResolverSpec | dict[str, Any]) 
         elif isinstance(step, LocateStep):
             source = values.get(step.input)
             values[key] = source.get("value", source) if source is not None else None
+            value_refs[key] = set(value_refs.get(step.input, set()))
+        elif isinstance(step, MaskToBBoxStep):
+            source = values.get(step.input)
+            if not isinstance(source, dict) or source.get("type") != "asset":
+                return NotApplicable(reason="mask_to_bbox_input_invalid")
+            if resolver_context is None:
+                return NotApplicable(reason="missing_asset_context")
+            bbox, reason = resolver_context.mask_bbox(
+                str(source.get("value")),
+                channel=step.channel,
+                foreground=step.foreground,
+            )
+            if bbox is None:
+                return NotApplicable(reason=reason or "mask_to_bbox_failed")
+            values[key] = bbox
             value_refs[key] = set(value_refs.get(step.input, set()))
         elif isinstance(step, MapLabelStep):
             source = values.get(step.input)

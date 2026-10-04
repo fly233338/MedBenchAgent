@@ -8,7 +8,7 @@ import random
 from pathlib import Path
 from typing import Any, Iterable
 
-from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, encode_closed_label, resolve
+from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve
 from medbenchagent.planning.task_space import LeafTask, OutputSpec
 
 
@@ -57,6 +57,7 @@ def generate_task_items(
     dataset_id: str,
     allocation: dict[str, int] | None = None,
     seed: int = 0,
+    resolver_context: ResolverContext | None = None,
 ) -> list[dict[str, Any]]:
     parsed = [LeafTask.model_validate(leaf) for leaf in leaves]
     items = []
@@ -75,7 +76,7 @@ def generate_task_items(
             limit = limits.get(leaf.leaf_id)
             if limit is not None and counts[leaf.leaf_id] >= limit:
                 continue
-            resolved = resolve(case, ResolverSpec.parse(leaf.resolver))
+            resolved = resolve(case, ResolverSpec.parse(leaf.resolver), resolver_context=resolver_context)
             if isinstance(resolved, NotApplicable):
                 continue
             answer = resolved.reference

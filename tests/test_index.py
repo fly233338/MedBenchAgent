@@ -44,10 +44,11 @@ def test_canonical_node_context_uses_constraint_registry_instance(tmp_path, monk
     profile_path.write_text(json.dumps({"evidence": [{"name": "tumor_region", "types": {"region": 1}}]}), encoding="utf-8")
     query = object.__new__(DatasetIndex)
     query.access = {"revision": "1", "profile_path": str(profile_path)}
-    monkeypatch.setattr(query, "assets", lambda: [])
+    monkeypatch.setattr(query, "assets", lambda: [{"asset_id": "image", "kind": "image"}])
     monkeypatch.setattr(query, "iter_cases", lambda: iter([
             {"case_id": "keep", "patient_id": None, "evidence": [
-                {"id": "region", "type": "region", "name": "tumor_region", "value": [1, 2, 3, 4], "ref": []}
+                    {"id": "image", "type": "asset", "name": "image", "value": "image", "ref": []},
+                    {"id": "region", "type": "region", "name": "tumor_region", "value": [0.1, 0.2, 0.3, 0.4], "ref": ["image"]}
         ]},
         {"case_id": "drop", "patient_id": None, "evidence": []},
     ]))

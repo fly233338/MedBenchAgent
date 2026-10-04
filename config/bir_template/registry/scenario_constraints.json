@@ -66,6 +66,10 @@
         {
           "path": "evidence.index",
           "gte": 1
+        },
+        {
+          "path": "derived_capabilities.mask_to_bbox",
+          "gte": 1
         }
       ],
       "message": "localize requires explicit region or index evidence"

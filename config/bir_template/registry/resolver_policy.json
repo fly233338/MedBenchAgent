@@ -1,6 +1,6 @@
 {
   "schema_version": "bir-registry-resolver",
-  "step_operations": ["read", "collect", "select", "compare", "compute", "locate", "reference_text", "map_label"],
+  "step_operations": ["read", "collect", "select", "compare", "compute", "locate", "mask_to_bbox", "reference_text", "map_label"],
   "compute_operations": ["sum", "mean", "difference", "ratio", "count"],
   "compare_modes": ["equal", "less", "greater", "difference"],
   "input_evidence_types": ["asset", "text", "value", "region"]

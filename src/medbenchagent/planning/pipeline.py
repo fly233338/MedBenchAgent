@@ -54,6 +54,7 @@ def run_pipeline(
     seed: int = 0,
     nodes: Iterable[TaskScenario | dict[str, Any]] | None = None,
     plan: TaskPlanState | dict[str, Any] | None = None,
+    resolver_context=None,
 ) -> dict[str, Any]:
     parsed_plan = TaskPlanState.model_validate(plan) if plan is not None else None
     if parsed_plan is not None:
@@ -96,7 +97,7 @@ def run_pipeline(
     from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
     parsed_leaves = [
         leaf.model_copy(update={"eligible_count": sum(
-            not isinstance(resolve(case, ResolverSpec.parse(leaf.resolver)), NotApplicable)
+            not isinstance(resolve(case, ResolverSpec.parse(leaf.resolver), resolver_context=resolver_context), NotApplicable)
             for case in case_list
         )})
         for leaf in parsed_leaves
@@ -109,8 +110,9 @@ def run_pipeline(
         dataset.get("dataset_id", "dataset"),
         allocation=allocation,
         seed=seed,
+        resolver_context=resolver_context,
     )
-    audit = audit_task_items(case_list, items, active)
+    audit = audit_task_items(case_list, items, active, resolver_context=resolver_context)
     manifest = build_manifest(dataset, scenarios.values(), parsed_leaves, allocation,
                               item_count=audit["accepted"], generated_items=audit["accepted_items"])
     shortfall = {
