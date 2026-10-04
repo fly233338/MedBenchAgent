@@ -62,6 +62,10 @@ class ExtensionSelectionArguments(NoArguments):
     selection_issue_id: str = ""
 
 
+class ExtensionDiscoveryArguments(NoArguments):
+    dataset_id: DatasetId
+
+
 class BenchmarkInputState(TypedDict, total=False):
     messages: list[Any]
     user_requirement: str
@@ -956,6 +960,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         args_schemas={"resolve_clarification": ResolveClarificationArguments, "prepare_data": PrepareDataArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
                       "select_datasets": DatasetSelectionArguments,
+                      "discover_planning_extensions": ExtensionDiscoveryArguments,
                       "select_planning_extensions": ExtensionSelectionArguments,
                       "plan": PlanningArguments, "allocate": DelegationArguments,
                       "generate": DatasetStatusArguments, "prepare_templates": DatasetStatusArguments})

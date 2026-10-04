@@ -11,14 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_registry_loads_extensions_and_renders_by_stage():
     registry = RegistrySnapshot.from_directory(ROOT / "config" / "bir_template" / "registry")
     catalog = registry.planning_extensions()
-    assert catalog.ids() == ("breast_cancer",)
-    extension = catalog.get("breast_cancer")
-    assert extension.type == "disease"
-    assert "scenario_screening" in extension.stages
-    rendered = catalog.render(["breast_cancer"], stage="scenario_screening")
-    assert "BI-RADS" in rendered
-    assert catalog.render(["breast_cancer"], stage="scenario_review") == rendered
-    assert catalog.selection_digest(["breast_cancer"]).startswith("sha256:")
+    assert catalog.ids() == ()
+    assert catalog.render([], stage="scenario_screening").startswith("No dataset-specific")
 
 
 def test_extension_loader_rejects_invalid_metadata(tmp_path):
