@@ -60,10 +60,6 @@ class ScenarioConstraintRegistry:
         assets = dict(context.get("assets", {}))
         if "primary_image_assets" not in assets:
             assets["primary_image_assets"] = assets.get("image_assets", 0)
-        if assets.get("primary_image_assets", 0) < 1 and any(
-            name not in {"text", "numeric"} for name in context.get("evidence", {})
-        ):
-            assets["primary_image_assets"] = 1
         context["assets"] = assets
         for rule in self.registry.scenario_constraints.get("rules", []):
             when = rule.get("when", {})

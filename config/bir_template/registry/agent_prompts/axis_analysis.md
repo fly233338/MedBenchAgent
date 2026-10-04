@@ -133,3 +133,15 @@ The following rules may add or tighten constraints for the current dataset, dise
 They are additive. They must not relax the core evidence-grounding requirements, change the registered axis definitions, or override the required output contract.
 
 {{DATASET_SPECIFIC_RULES}}
+
+For input_structure, apply the Registry definitions to the selected primary visual input. Multiple images require documented Case membership and a task-relevant relationship; image count or a shared patient ID alone is insufficient. Multi-view additionally requires explicit view identity and correspondence. Reference-only masks and annotations do not count as additional primary images.
+
+The same input bundle has one category, using the Registry's specificity rule. A dataset may support multiple categories when it provides different valid bundles.
+
+Return one JSON object matching the supplied AxisDecisionSet schema:
+
+- axis: copy the supplied current axis;
+- dataset_revision: copy the supplied dataset revision;
+- values: include every allowed value exactly once, each with value, supported, reason, and evidence_basis entries containing reference and detail.
+
+Do not add fields outside the supplied schema.

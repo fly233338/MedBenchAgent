@@ -178,3 +178,10 @@ The following rules may add or tighten constraints for the current dataset, dise
 They are additive. They must not relax the core evidence-grounding requirements, change the fixed Scenario, or override the required output contract.
 
 {{DATASET_SPECIFIC_RULES}}
+
+Apply the Registry input-structure definition to the images actually selected. For multiple images, verify documented Case membership, task-relevant relations and alignment between the selected images and the target reference. For multi-view, also require explicit view identity and correspondence. A Case-level label must not be silently reassigned to an unrelated image or lesion.
+
+## Additional examples
+
+- A recognize / attribute Scenario has separately documented shape and margin references: these can be two separate atomic targets when both are supported. Do not combine them into a vague target such as lesion characteristics.
+- Two linked time points of the same tracked lesion can form a multi-image input when the target and references apply to those images. Different time points do not establish multi-view without documented view correspondence.

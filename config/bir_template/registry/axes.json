@@ -8,31 +8,23 @@
   "axes": [
     {
       "id": "input_structure",
-      "description": "Structure of the model-visible input.",
+      "description": "Structure of the primary visual input actually supplied to the evaluated model, not all assets available in a Case. For the same input bundle, use volume for spatially organized 3D input, multi-view for explicitly corresponding views, multi-image for other valid linked image groups, and single-image for one image. Question text, answer options and reference-only annotations do not define additional input structures.",
       "values": [
         {
           "id": "single-image",
-          "description": "One primary image."
+          "description": "Exactly one primary 2D image is supplied. The target reference must apply to that image or its documented subject. Other images available in the Case are not part of this input. A single extracted slice is also single-image."
         },
         {
           "id": "multi-image",
-          "description": "Multiple primary images in one case."
+          "description": "Two or more distinct primary 2D images are jointly supplied from one documented clinical Case and form a task-relevant group. Their relationship and target-reference scope must be supported, for example through a common examination, matched subject or linked time points. Image count, a shared patient ID or storage location alone is insufficient. Use multi-view when explicit view correspondence is established."
         },
         {
           "id": "multi-view",
-          "description": "Related views of the same finding or study."
+          "description": "Two or more primary 2D images show the same documented anatomical subject or lesion from distinct views. View identity and correspondence must be supported. Generic relatedness, shared study membership, different times or different modalities alone do not establish multi-view. Use this category instead of multi-image for the same input bundle."
         },
         {
           "id": "volume",
-          "description": "A volumetric image input."
-        },
-        {
-          "id": "image-text",
-          "description": "An image paired with text evidence."
-        },
-        {
-          "id": "paired-study",
-          "description": "Two explicitly linked studies."
+          "description": "One 3D image volume is supplied with the slice order and spatial relationships required by the task preserved in the actual model input. An unordered image collection is not a volume. A single extracted slice is single-image; separate selected 2D slices must satisfy the multi-image definition."
         }
       ]
     },

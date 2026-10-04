@@ -151,3 +151,15 @@ The following rules may add or tighten constraints for the current dataset, dise
 They are additive. They must not relax the core grounding requirements, expand the validated target set, or override the required output contract.
 
 {{DATASET_SPECIFIC_RULES}}
+
+Apply the Registry input definition to the actual resolved images. Check the number of primary images and their documented Case, subject and task-relevant relations. One selector may resolve multiple images; selector count is not image count. Use multi-view only when explicit view identity and correspondence are supported.
+
+Leaf.input must exactly equal resolver.inputs, including roles and order. Keep reference-only evidence in Resolver reference steps, not in its inputs.
+
+Use exactly the configured number of distinct, complete question_templates in the requested benchmark language. Templates must preserve the same target, subject, scope and answer contract. Generation does not interpolate placeholders.
+
+Return exactly one outer ToolAction matching the supplied schema. Submit a valid Leaf through save_leaf_task using its leaf argument; do not return a raw Leaf list.
+
+Each Leaf must reference one validated clinical target and satisfy all Scenario constraints. After saving the valid distinct Leaves, call review_current_scenario without supplying your own review. Follow the returned state and feedback.
+
+Do not add unsupported targets or alter target semantics merely to increase diversity or bypass a validation error.

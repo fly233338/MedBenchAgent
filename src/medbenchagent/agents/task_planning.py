@@ -58,13 +58,6 @@ def _target_dump(value: ValidatedClinicalTarget | dict[str, Any]) -> dict[str, A
 
 class AxisArguments(NoArguments):
     axis: TaskAxis = Field(description="Axis being assessed; use the next axis returned by planning context.")
-    assessments: list[AxisValueDecision] | None = Field(
-        default=None,
-        description=(
-            "One assessment for every allowed value, using only value, supported, "
-            "evidence_basis[{reference,detail}], and reason."
-        ),
-    )
 
     @field_validator("axis", mode="before")
     @classmethod
@@ -168,7 +161,7 @@ class LeafTaskArguments(NoArguments):
 
 
 class ScenarioReviewArguments(NoArguments):
-    review: ScenarioReview | None = None
+    pass
 
 
 class ScenarioExclusionArguments(NoArguments):
@@ -1436,8 +1429,11 @@ def analyze_axis(context: dict[str, Any], *, axis: TaskAxis, assessments: list[A
         parsed = complete_json(
             _stage_prompt(context, "axis_analysis") if registry else "Assess the supplied Axis using bounded evidence.",
             json.dumps({"axis": axis.value, "axis_definition": axis_definition, "allowed_values": sorted(allowed),
-                        "bounded_evidence": json.loads(evidence), "dataset_policy": "image-only benchmark",
-                        "benchmark_brief": _benchmark_brief(context)}, ensure_ascii=False),
+                        "bounded_evidence": json.loads(evidence),
+                        "benchmark_brief": _benchmark_brief(context),
+                        "resolver_policy": registry.resolver_policy if registry else {},
+                        "task_contracts": registry.task_contracts if registry else {},
+                        "input_policy": _benchmark_brief(context).get("input_policy") if isinstance(_benchmark_brief(context), dict) else None}, ensure_ascii=False),
             AxisDecisionSet,
         )
         assessments = parsed["values"]
@@ -1796,7 +1792,7 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         and leaf_identity(value, plan.scenarios.get(value.scenario_id)) == identity
         for key, value in plan.leaf_tasks.items()
     ):
-        _raise_leaf_failure(context, plan, raw_leaf, "duplicate_leaf", "Duplicate Leaf Task semantics", repair_hint="Change the target or resolver semantics while preserving the current Scenario evidence.")
+        _raise_leaf_failure(context, plan, raw_leaf, "duplicate_leaf", "Duplicate Leaf Task semantics", repair_hint="Reuse or skip the existing Leaf Task when the semantics are already present; do not alter target or resolver semantics to bypass deduplication.")
     from medbenchagent.data.query import DatasetQuery
     try:
         query = DatasetQuery(_access(context))
@@ -1812,6 +1808,21 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
     operation_mode = (_registry(context).answer_options_mode(scenario.operation)
                       if _registry(context) else ("required" if scenario.operation in {"recognize", "compare", "align"} else "forbidden"))
     for case in cases:
+        selected_primary = [
+            item for item in case.get("evidence", [])
+            if item.get("type") == "asset" and item.get("name") in {selector.name for selector in parsed.input}
+            and item.get("name", "").casefold() not in {"mask", "segmentation", "annotation", "roi"}
+        ]
+        required_structure = scenario.input_structure
+        if required_structure == "single-image" and len(selected_primary) != 1:
+            resolution_reasons["input_structure_single_image_mismatch"] += 1
+            continue
+        if required_structure in {"multi-image", "multi-view"} and len(selected_primary) < 2:
+            resolution_reasons["input_structure_multiple_image_mismatch"] += 1
+            continue
+        if required_structure == "volume" and not any(item.get("kind") == "volume" for item in selected_primary):
+            resolution_reasons["input_structure_volume_mismatch"] += 1
+            continue
         resolved = resolve(case, ResolverSpec.parse(parsed.resolver))
         if isinstance(resolved, NotApplicable):
             resolution_reasons[resolved.reason] += 1
@@ -1845,12 +1856,18 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
                 repair_hint="Add every resolved answer to options without inventing new categories.",
             )
     parsed = parsed.model_copy(update={"eligible_count": eligible})
+    existing = plan.leaf_tasks.get(parsed.leaf_id)
+    if existing is not None and existing.scenario_id != parsed.scenario_id:
+        _raise_leaf_failure(context, plan, raw_leaf, "leaf_id_conflict", "A Leaf ID cannot move between Scenarios", path="leaf_task_id", actual=parsed.leaf_id, expected=existing.scenario_id)
     plan.leaf_tasks[parsed.leaf_id] = parsed
     plan.revision += 1
     scenario = plan.scenarios[parsed.scenario_id]
+    leaf_ids = list(scenario.leaf_task_ids)
+    if parsed.leaf_id not in leaf_ids:
+        leaf_ids.append(parsed.leaf_id)
     plan.scenarios[parsed.scenario_id] = scenario.model_copy(
         update={
-            "leaf_task_ids": [*scenario.leaf_task_ids, parsed.leaf_id],
+            "leaf_task_ids": leaf_ids,
             "status": "review_pending",
         }
     )
@@ -2450,7 +2467,9 @@ def _planning_instructions(context: dict[str, Any]) -> str:
     if plan.phase in {"screening", "scenario_review"}:
         runtime += "\nReview exactly one pending Scenario with review_candidate_scenarios, passing its scenario_id. Do not design Leaf Tasks until all Scenario Reviews are complete."
     if plan.phase == "leaves" and store:
-        return _render_leaf_prompt(context, plan, store.registry().prompt("leaf_task_design"))
+        coordinator = base
+        leaf = _render_leaf_prompt(context, plan, store.registry().prompt("leaf_task_design"))
+        return "\n\n".join((coordinator, runtime, leaf))
     return base + runtime
 
 def compile_task_planning_agent(*, checkpointer=None):

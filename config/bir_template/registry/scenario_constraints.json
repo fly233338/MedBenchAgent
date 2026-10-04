@@ -54,32 +54,6 @@
       "message": "volume requires a volume asset"
     },
     {
-      "id": "image-text",
-      "when": {
-        "input_structure": "image-text"
-      },
-      "requires": [
-        {
-          "path": "relations.paired_text",
-          "gte": 1
-        }
-      ],
-      "message": "image-text requires an explicit image/text relation"
-    },
-    {
-      "id": "paired-study",
-      "when": {
-        "input_structure": "paired-study"
-      },
-      "requires": [
-        {
-          "path": "relations.paired_study",
-          "gte": 1
-        }
-      ],
-      "message": "paired-study requires two linked study objects"
-    },
-    {
       "id": "localize",
       "when": {
         "operation": "localize"

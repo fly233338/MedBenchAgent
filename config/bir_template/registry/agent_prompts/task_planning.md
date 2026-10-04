@@ -74,3 +74,5 @@ meaning, wording, reference validity and template applicability.
 Return exactly one ToolAction conforming to the supplied schema.
 
 Keep the action reason brief. Do not return a separate planning narrative.
+
+5. Use the effective benchmark input policy and the Registry input definitions supplied by the runtime. Classify the visual inputs actually selected for the task, not all assets available in the Case.
