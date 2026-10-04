@@ -1,7 +1,9 @@
-from medbenchagent.planning.node_builder import NodeConstraintRegistry, build_task_nodes, build_task_scenarios
+from medbenchagent.planning.node_builder import NodeConstraintRegistry, build_task_scenarios
 from medbenchagent.planning.resolver import (
     MapLabelStep,
     MaskToBBoxStep,
+    ReadMaskFeatureStep,
+    ArgmaxStep,
     NotApplicable,
     ResolvedTaskItem,
     ResolverContext,
@@ -30,9 +32,9 @@ from medbenchagent.planning.task_space import (
 __all__ = [
     "AXIS_VALUES", "CAPABILITY_BY_OPERATION", "AxisAnalysis", "AxisDecisionSet", "DatasetAccessReceipt",
     "AxisValueDecision", "CapabilityCategory", "LeafTask", "NodeConstraintRegistry",
-    "MapLabelStep", "MaskToBBoxStep", "NotApplicable", "OutputSpec", "ResolvedTaskItem",
+    "MapLabelStep", "MaskToBBoxStep", "ReadMaskFeatureStep", "ArgmaxStep", "NotApplicable", "OutputSpec", "ResolvedTaskItem",
     "ResolverContext", "ResolverSpec", "TaskAxis",
-    "TaskParadigm", "TaskPlanState", "TaskScenario", "build_task_nodes",
+    "TaskParadigm", "TaskPlanState", "TaskScenario",
     "build_task_scenarios", "compile_task_space_plan", "resolve",
     "validate_candidate_leaf", "validate_task_tree", "load_blueprint", "BIRStore",
     "BIRConflictError", "BIRCommit", "BIRValidationReport", "RegistrySnapshot",

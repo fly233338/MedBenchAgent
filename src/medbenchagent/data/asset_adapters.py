@@ -59,15 +59,22 @@ class AssetAdapter:
                 raise AssetAdapterError("Presentation window requires low < high")
             data = np.clip((data.astype(float) - low) / (high - low), 0, 1) * 255
             data = data.astype(np.uint8)
+        slices = [np.take(data, index, axis=axis) for index in indices]
         if presentation_spec.crop is not None:
             if len(presentation_spec.crop) != 4:
                 raise AssetAdapterError("Presentation crop requires normalized xyxy coordinates")
-            y0, x0, y1, x1 = presentation_spec.crop
+            x0, y0, x1, y1 = presentation_spec.crop
             if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
                 raise AssetAdapterError("Presentation crop must be normalized xyxy")
-            h, w = data.shape[-2:]
-            data = data[..., int(y0*h):int(y1*h), int(x0*w):int(x1*w)]
-        slices = [np.take(data, index, axis=axis) for index in indices]
+            cropped = []
+            for slice_data in slices:
+                height, width = np.asarray(slice_data).shape[-2:]
+                left, right = int(x0 * width), int(x1 * width)
+                top, bottom = int(y0 * height), int(y1 * height)
+                if right <= left or bottom <= top:
+                    raise AssetAdapterError("Presentation crop produced an empty slice")
+                cropped.append(np.asarray(slice_data)[top:bottom, left:right])
+            slices = cropped
         if presentation_spec.resize is not None:
             from PIL import Image
             width, height = presentation_spec.resize
@@ -89,6 +96,10 @@ class AssetAdapter:
         output.parent.mkdir(parents=True, exist_ok=True)
         loaded = self.present(asset_spec, presentation_spec, source_root=source_root)
         data = loaded.data
+        if presentation_spec.mode == "slices" and np.asarray(data).ndim == 3:
+            if np.asarray(data).shape[0] != 1:
+                raise AssetAdapterError("Slice presentations with multiple indices must be materialized with present_to_paths")
+            data = np.asarray(data)[0]
         try:
             from PIL import Image
             image = data if isinstance(data, Image.Image) else Image.fromarray(np.asarray(data))
@@ -100,6 +111,52 @@ class AssetAdapter:
                 "window": presentation_spec.window, "resize": presentation_spec.resize, "crop": presentation_spec.crop,
                 "input_digest": asset_spec.file_digest, "output_digest": digest_file(output),
                 "path": output.as_posix()}
+
+    def present_to_paths(
+        self,
+        asset_spec: AssetEntry,
+        presentation_spec: PresentationSpec,
+        output_directory: str | Path,
+        *,
+        source_root: str | Path | None = None,
+        view_ids: list[str] | None = None,
+        panel_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Materialize ordered slice views as independent PNG records."""
+        from PIL import Image
+        from medbenchagent.data.sources import digest_file
+
+        if presentation_spec.mode != "slices":
+            raise AssetAdapterError("present_to_paths requires slices mode")
+        output_directory = Path(output_directory)
+        output_directory.mkdir(parents=True, exist_ok=True)
+        loaded = self.present(asset_spec, presentation_spec, source_root=source_root)
+        data = np.asarray(loaded.data)
+        if data.ndim != 3:
+            raise AssetAdapterError("Slice materialization requires one or more 2D slices")
+        if view_ids is not None and len(view_ids) != data.shape[0]:
+            raise AssetAdapterError("view_ids length must match slice count")
+        records = []
+        for order, slice_data in enumerate(data):
+            output = output_directory / f"{asset_spec.asset_id}_{order:04d}.png"
+            Image.fromarray(np.asarray(slice_data)).save(output, format="PNG", compress_level=9)
+            records.append({
+                "schema_version": "presentation-record",
+                "presentation_id": self.presentation_digest(asset_spec, presentation_spec) + f":{order}",
+                "case_id": str(asset_spec.metadata.get("case_id", asset_spec.asset_id)),
+                "asset_id": asset_spec.asset_id,
+                "path": output.as_posix(),
+                "input_digest": asset_spec.file_digest,
+                "output_digest": digest_file(output),
+                "mode": presentation_spec.mode,
+                "view_id": view_ids[order] if view_ids else None,
+                "panel_id": panel_id,
+                "axis": presentation_spec.axis,
+                "index": presentation_spec.indices[order] if presentation_spec.indices else order,
+                "order": order,
+                "metadata": {"presentation": presentation_spec.model_dump(mode="json")},
+            })
+        return records
 
 
 class ImageAdapter(AssetAdapter):

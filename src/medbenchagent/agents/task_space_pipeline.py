@@ -21,7 +21,7 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
     if access.get("schema_version") != "annotation":
         raise ValueError("Task Space pipeline requires annotation")
     operation = Path(context["operation_directory"])
-    plan_path = context.get("task_plan_path") or context.get("task_space_plan_path")
+    plan_path = context.get("task_plan_path")
     if not plan_path or not Path(plan_path).is_file():
         raise ValueError("Axis Analysis/Task Plan artifact is required")
     plan = TaskPlanState.model_validate(json.loads(Path(plan_path).read_text(encoding="utf-8")))
@@ -29,7 +29,11 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
         raise ValueError("Task Plan must be complete before execution")
     from medbenchagent.data.index import DatasetIndex
     from medbenchagent.planning.resolver import ResolverContext
+    from medbenchagent.data.manifests import SamplingManifest, load_manifest
     cases = list(DatasetIndex(access).iter_cases())
+    sampling_manifest = None
+    if access.get("sampling_manifest_path"):
+        sampling_manifest = load_manifest(access["sampling_manifest_path"], SamplingManifest)
     output = run_pipeline(
         dataset={"dataset_id": context.get("selected_dataset_id", "dataset")},
         plan=plan,
@@ -37,6 +41,7 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
         requested_count=requested_count or context.get("benchmark_info", {}).get("sample_count", 1),
         seed=context.get("seed", 0),
         resolver_context=ResolverContext.from_access(access),
+        sampling_manifest=sampling_manifest,
     )
     paths = {}
     for name, payload in (

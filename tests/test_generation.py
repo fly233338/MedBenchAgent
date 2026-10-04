@@ -1,13 +1,26 @@
 from medbenchagent.generation.items import generate_task_items
 from medbenchagent.audit.task_items import audit_task_items
+from medbenchagent.data.manifests import SamplingManifest, SamplingUnit
 from pydantic import ValidationError
+
+
+def _sampling(case_id="c", evidence_ids=None):
+    return SamplingManifest(
+        dataset_id="dataset",
+        revision="1",
+        units=[SamplingUnit(
+            sampling_unit_id=f"unit-{case_id}", case_id=case_id, split="test",
+            view_ids=[], ordered_evidence_ids=evidence_ids or [], panel_id=None,
+            eligible=True, order=0,
+        )],
+    )
 
 
 def test_generation_uses_resolver_and_hides_reference_from_inputs():
     leaf = {
-        "leaf_id": "report-leaf", "name": "report", "node_id": "node-1", "clinical_target_id": "finding",
-        "question": "Describe the study.", "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
-        "target": "report", "answer": "Read the paired report", "output_spec": "text",
+        "leaf_task_id": "report-leaf", "name": "report", "scenario_id": "node-1", "clinical_target_id": "finding",
+        "question_templates": ["Describe the study."], "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+        "target": "report", "reference_rule": "Read the paired report", "output_spec": "text",
         "task_paradigm": "Report Generation", "capability_category": "Generation",
         "resolver": {
             "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
@@ -31,9 +44,9 @@ def test_generation_uses_resolver_and_hides_reference_from_inputs():
 
 def test_generation_honors_allocation_and_case_order():
     leaf = {
-        "leaf_id": "l", "name": "label", "node_id": "n", "clinical_target_id": "finding", "question": "What is shown?",
+        "leaf_task_id": "l", "name": "label", "scenario_id": "n", "clinical_target_id": "finding", "question_templates": ["What is shown?"],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
-        "target": "finding", "answer": "Read label", "output_spec": "label",
+        "target": "finding", "reference_rule": "Read label", "output_spec": "label",
         "task_paradigm": "VQA", "capability_category": "Recognition",
         "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
                      "steps": [{"op": "read", "selector": {"role": "label", "name": "label", "evidence_type": "value"}}],
@@ -44,15 +57,15 @@ def test_generation_honors_allocation_and_case_order():
              {"case_id": "a", "evidence": [{"id": "i", "type": "asset", "name": "image", "value": "a"},
                                                 {"id": "l", "type": "value", "name": "label", "value": "yes"}]}]
     items = generate_task_items(cases, [leaf], "d", allocation={"l": 1})
-    assert len(items) == 1 and items[0]["case_id"] == "a"
+    assert len(items) == 1 and items[0]["case_id"] == "b"
 
 
 def test_generation_uses_reproducible_balanced_template_cycle():
     leaf = {
-        "leaf_id": "l", "name": "label", "node_id": "n", "clinical_target_id": "finding",
+        "leaf_task_id": "l", "name": "label", "scenario_id": "n", "clinical_target_id": "finding",
         "question_templates": ["What is shown?", "Which finding is present?", "Identify the finding."],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
-        "target": "finding", "answer": "Read label", "output_spec": "label",
+        "target": "finding", "reference_rule": "Read label", "output_spec": "label",
         "task_paradigm": "VQA", "capability_category": "Recognition",
         "resolver": {
             "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
@@ -80,7 +93,7 @@ def test_generation_uses_reproducible_balanced_template_cycle():
 
 def test_generation_preserves_input_role_order_and_derived_label_options():
     leaf = {
-        "leaf_id": "compare-leaf", "name": "compare", "node_id": "scenario-compare", "clinical_target_id": "finding",
+        "leaf_task_id": "compare-leaf", "name": "compare", "scenario_id": "scenario-compare", "clinical_target_id": "finding",
         "question_templates": ["Is Image A larger than Image B?"],
         "options": ["true", "false"],
         "input": [
@@ -109,7 +122,7 @@ def test_generation_preserves_input_role_order_and_derived_label_options():
         {"id": "a-value", "type": "value", "name": "measurement_a", "value": 3, "ref": ["a-image"]},
     ]}
 
-    items = generate_task_items([case], [leaf], "dataset")
+    items = generate_task_items([case], [leaf], "dataset", sampling_manifest=_sampling("c", ["a-image", "b-image", "a-value", "b-value"]))
 
     assert items[0]["answer"] == "true"
     assert items[0]["options"] == ["true", "false"]
@@ -123,7 +136,7 @@ def test_generation_preserves_input_role_order_and_derived_label_options():
 
 def test_generation_and_audit_use_map_label_output_domain():
     leaf = {
-        "leaf_id": "margin-parent", "name": "margin", "node_id": "scenario-margin", "clinical_target_id": "finding",
+        "leaf_task_id": "margin-parent", "name": "margin", "scenario_id": "scenario-margin", "clinical_target_id": "finding",
         "question_templates": ["How is the margin classified?"],
         "options": ["circumscribed", "not circumscribed"],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
@@ -152,7 +165,7 @@ def test_generation_and_audit_use_map_label_output_domain():
 
 def test_generation_rejects_duplicate_asset_binding_across_roles():
     leaf = {
-        "leaf_id": "duplicate-assets", "name": "compare", "node_id": "scenario-compare", "clinical_target_id": "finding",
+        "leaf_task_id": "duplicate-assets", "name": "compare", "scenario_id": "scenario-compare", "clinical_target_id": "finding",
         "question_templates": ["Compare A and B."],
         "input": [
             {"role": "image_a", "name": "image", "evidence_type": "asset"},
@@ -179,12 +192,12 @@ def test_generation_rejects_duplicate_asset_binding_across_roles():
         {"id": "b", "type": "value", "name": "value_b", "value": 2, "ref": ["image"]},
     ]}
 
-    assert generate_task_items([case], [leaf], "dataset") == []
+    assert generate_task_items([case], [leaf], "dataset", sampling_manifest=_sampling("c", ["image", "a", "b"])) == []
 
 
 def test_leaf_rejects_unresolved_question_placeholders():
     leaf = {
-        "leaf_id": "placeholder", "name": "label", "node_id": "scenario", "clinical_target_id": "finding",
+        "leaf_task_id": "placeholder", "name": "label", "scenario_id": "scenario", "clinical_target_id": "finding",
         "question_templates": ["Is {{image_a}} larger than {{image_b}}?"],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
         "target": "finding", "reference_rule": "Read label", "output_spec": "label",

@@ -20,8 +20,8 @@ For example:
 
 - the existence of numeric values does not by itself support `quantify`;
 - the existence of masks does not by itself support every possible localization or measurement task;
-  a mask supports localization when the Registry exposes a deterministic operation such as
-  `mask_to_bbox` and the frozen Asset manifest can resolve the mask file;
+  a mask supports localization only when validated mask geometry is embedded in the prepared
+  Evidence and the Registry exposes a deterministic operation such as `mask_to_bbox`;
 - the existence of a diagnosis field does not support management recommendations;
 - the existence of a category encoded by numbers does not make it a quantitative variable.
 
@@ -127,6 +127,15 @@ The reason must explain the decisive semantic evidence or the decisive blocker.
 The evidence basis must reference registered evidence supplied in the input. Do not invent fields, assets, relationships, or annotations.
 
 The goal is to identify supported axis values, not to design Leaf Tasks.
+
+## Prepared Evidence Constraints
+
+- Treat only explicitly registered and validated derived features as usable Resolver references. The presence of a mask, label, region, calibration field, or numeric value does not by itself establish localization, quantification, comparison, or another capability.
+- Keep primary model-visible image/volume Evidence separate from reference-only mask, label, region, calibration, and derived Evidence. Never use filenames, asset IDs, patient IDs, or hidden metadata as shortcuts.
+- Quantitative targets require an explicit subject, scope, unit, or documented dimensionless definition. Do not invent thresholds, conversions, aggregations, or class mappings.
+- Multi-view, volume, and ordered-panel tasks require stable view identity, documented correspondence, and a frozen presentation/sampling order. An index refers only to that registered order.
+- Missing annotation is not negative. Empty masks, tied maxima, missing planes, missing units, and incomplete manifests are unsupported and must be excluded rather than replaced with 0, an empty box, or `N/A`.
+- Prefer direct or derived references whose coverage, scope, unit, relation, and input/reference role are explicit and executable.
 
 ## Dataset- or disease-specific additional rules
 

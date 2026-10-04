@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from medbenchagent.data.sources import digest_file
+from medbenchagent.data.manifests import PresentationRecord, SamplingManifest, SplitManifest, load_manifest
 
 
 def read_card(path: str | Path) -> dict:
@@ -48,9 +49,26 @@ def verify_bundle(bundle: str | Path) -> dict:
         "asset_manifest_digest": access["asset_manifest_path"],
         "profile_digest": access["profile_path"],
     }
+    for name in ("presentation", "split", "sampling"):
+        path_key = f"{name}_manifest_path"
+        digest_key = f"{name}_manifest_digest"
+        if path_key in access or digest_key in access:
+            if not access.get(path_key) or not access.get(digest_key):
+                raise ValueError(f"Manifest path/digest pair is incomplete: {name}")
+            checks[digest_key] = access[path_key]
     for digest_key, path in checks.items():
+        if not Path(path).is_file():
+            raise ValueError(f"Missing bundle artifact: {digest_key}")
         if digest_file(path) != access[digest_key]:
             raise ValueError(f"bundle digest mismatch: {digest_key}")
+    for name, model in (
+        ("presentation", PresentationRecord),
+        ("split", SplitManifest),
+        ("sampling", SamplingManifest),
+    ):
+        path = access.get(f"{name}_manifest_path")
+        if path:
+            load_manifest(path, model)
     card = read_card(access["dataset_card_path"])
     if card["annotation_digest"] != access["annotation_digest"] or card["asset_manifest_digest"] != access["asset_manifest_digest"] or card["profile_digest"] != access["profile_digest"]:
         raise ValueError("Dataset Card facts do not match bundle")

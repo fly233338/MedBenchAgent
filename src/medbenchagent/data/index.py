@@ -13,6 +13,17 @@ from medbenchagent.data.sources import digest_file
 from medbenchagent.data.models import CaseRecord, validate_case
 
 
+def _manifest_access(root: Path) -> dict[str, str]:
+    """Return optional prepared manifest paths and their content digests."""
+    values: dict[str, str] = {}
+    for name in ("presentation", "split", "sampling"):
+        path = root / f"{name}_manifest.jsonl"
+        if path.is_file():
+            values[f"{name}_manifest_path"] = str(path)
+            values[f"{name}_manifest_digest"] = digest_file(path)
+    return values
+
+
 def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refresh=False,
                        source_root=None, source_roots=None):
     cases_file = Path(cases_path).resolve()
@@ -24,9 +35,15 @@ def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refr
     db_path = cache / "dataset.duckdb"
     profile_path = cache / "dataset_profile.json"
     access_path = cache / "dataset_access_manifest.json"
+    manifest_access = _manifest_access(cases_file.parent)
     if access_path.is_file():
         access = json.loads(access_path.read_text(encoding="utf-8"))
-        if access.get("annotation_digest") == digest_file(cases_file) and access.get("asset_manifest_digest") == digest_file(manifest):
+        if (
+            access.get("annotation_digest") == digest_file(cases_file)
+            and access.get("asset_manifest_digest") == digest_file(manifest)
+            and all(access.get(key) == value for key, value in manifest_access.items())
+            and all(key in manifest_access for key in access if key.endswith("_manifest_path") or key.endswith("_manifest_digest"))
+        ):
             return json.loads(profile_path.read_text(encoding="utf-8")), access
     assets = {entry.asset_id: entry for entry in iter_asset_manifest(
         manifest, source_root=source_root, source_roots=source_roots
@@ -57,7 +74,7 @@ def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refr
     temporary.replace(db_path)
     profile = _profile(cases, assets)
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    access = {"schema_version": "annotation", "revision": revision, "cases_path": str(cases_file), "asset_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(cases_file), "asset_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path)}
+    access = {"schema_version": "annotation", "revision": revision, "cases_path": str(cases_file), "asset_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(cases_file), "asset_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path), **manifest_access}
     access_path.write_text(json.dumps(access, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return profile, access
 
@@ -147,15 +164,35 @@ class DatasetIndex:
             offset = page["next_offset"]
 
     def facts(self):
-        from medbenchagent.data.task_facts import case_facts, merge_facts
+        from medbenchagent.data.task_facts import build_dataset_facts
         assets = {row["asset_id"]: row for row in self.assets()}
-        return merge_facts(case_facts(case, assets) for case in self.iter_cases())
+        profile = json.loads(Path(self.access["profile_path"]).read_text(encoding="utf-8"))
+        facts = build_dataset_facts(self.iter_cases(), assets, profile=profile, revision=self.access.get("revision"))
+        try:
+            from medbenchagent.data.manifests import load_manifest, PresentationRecord, SamplingManifest, verify_manifest_digest
+            for name, model in (("presentation", PresentationRecord), ("sampling", SamplingManifest)):
+                path = self.access.get(f"{name}_manifest_path")
+                digest = self.access.get(f"{name}_manifest_digest")
+                if not path:
+                    continue
+                verify_manifest_digest(path, digest)
+                manifest = load_manifest(path, model)
+                if name == "presentation":
+                    records = manifest if isinstance(manifest, list) else [manifest]
+                    ordered = len({record.view_id for record in records if record.view_id})
+                else:
+                    ordered = len(manifest.units)
+                facts.setdefault("view_panel_capabilities", {})["ordered"] = ordered
+                facts.setdefault("derived_capabilities", {}).setdefault("view_panel", {})["ordered"] = ordered
+        except (OSError, ValueError):
+            pass
+        return facts
 
     def node_context(self, node, *, sample_limit=5, evidence_limit=100, registry=None):
         from medbenchagent.data.task_facts import case_facts
         from medbenchagent.planning.node_builder import NodeConstraintRegistry
-        from medbenchagent.planning.task_space import TaskNode
-        node = TaskNode.model_validate(node)
+        from medbenchagent.planning.task_space import TaskScenario
+        node = TaskScenario.model_validate(node)
         constraint_registry = NodeConstraintRegistry(registry)
         assets = {row["asset_id"]: row for row in self.assets()}
         samples, count = [], 0
@@ -167,9 +204,9 @@ class DatasetIndex:
                 if len(samples) < sample_limit:
                     samples.append(case)
         profile = json.loads(Path(self.access["profile_path"]).read_text(encoding="utf-8"))
-        return {"dataset_version": self.access["revision"], "scenario_id": node.node_id,
-                "node_id": node.node_id, "scenario": node.model_dump(),
-                "node": node.model_dump(), "evidence": [row for row in profile["evidence"] if row["name"] in names][:evidence_limit],
+        return {"dataset_version": self.access["revision"], "scenario_id": node.scenario_id,
+                "scenario": node.model_dump(),
+                "evidence": [row for row in profile["evidence"] if row["name"] in names][:evidence_limit],
                 "capacity_hint": count, "relations": self.facts()["relations"],
                 "representative_cases": samples}
 

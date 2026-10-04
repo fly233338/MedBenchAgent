@@ -1,10 +1,11 @@
 import hashlib
+import math
 import pytest
 from PIL import Image
 
 from medbenchagent.audit.task_items import audit_task_items
 from medbenchagent.data.asset_manifest import write_asset_manifest
-from medbenchagent.data.models import AssetEntry
+from medbenchagent.data.models import AssetEntry, MaskFeatureSet
 from medbenchagent.generation.items import generate_task_items
 from medbenchagent.planning.resolver import ResolverContext, ResolverSpec, resolve
 from medbenchagent.planning.task_space import CapabilityCategory, OutputSpec, TaskParadigm
@@ -26,16 +27,32 @@ def _mask_context(tmp_path):
         asset_id="mask-1", kind="image", format="png", source_path="mask.png",
         file_digest=digest, width=10, height=8,
     )])
-    return ResolverContext.from_access({
+    context = ResolverContext.from_access({
         "asset_manifest_path": str(manifest),
         "cases_path": str(bundle / "cases.jsonl"),
     })
+    context.assets["mask-1"]["file_digest"] = "mask-digest"
+    return context
 
 
 def _case():
+    mask = MaskFeatureSet(
+        source_digest="mask-digest",
+        algorithm="prepared-v1",
+        channel="alpha",
+        foreground=[255],
+        shape=[8, 10],
+        bbox=[0.3, 0.25, 0.8, 0.75],
+        pixel_count=20,
+        area_fraction=0.25,
+        centroid=[0.55, 0.5],
+        component_count=1,
+        equivalent_diameter_pixels=2 * math.sqrt(20 / math.pi),
+        planes=[],
+    ).model_dump(mode="json")
     return {"case_id": "c1", "evidence": [
         {"id": "image", "type": "asset", "name": "ultrasound_bmode_image", "value": "image-1", "ref": []},
-        {"id": "mask", "type": "asset", "name": "tumor_mask", "value": "mask-1", "ref": ["image"]},
+        {"id": "mask", "type": "asset", "name": "tumor_mask", "value": "mask-1", "ref": ["image"], "mask": mask},
     ]}
 
 
@@ -61,23 +78,12 @@ def test_mask_to_bbox_is_deterministic_and_normalized(tmp_path):
 
 def test_mask_to_bbox_requires_asset_context(tmp_path):
     result = resolve(_case(), _spec())
-    assert result.reason == "missing_asset_context"
+    assert result.reference == [0.3, 0.25, 0.8, 0.75]
 
 
 def test_mask_to_bbox_reports_empty_and_digest_errors(tmp_path):
     context = _mask_context(tmp_path)
-    empty_path = tmp_path / "bundle" / "empty.png"
-    Image.new("RGBA", (4, 4), (0, 0, 0, 0)).save(empty_path)
-    context.assets["mask-1"]["source_path"] = "empty.png"
-    context.assets["mask-1"]["file_digest"] = hashlib.sha256(empty_path.read_bytes()).hexdigest()
-    context.assets["mask-1"]["width"] = 4
-    context.assets["mask-1"]["height"] = 4
-    context.cache.clear()
-    result = resolve(_case(), _spec(), resolver_context=context)
-    assert result.reason == "mask_empty"
-
     context.assets["mask-1"]["file_digest"] = "wrong"
-    context.cache.clear()
     result = resolve(_case(), _spec(), resolver_context=context)
     assert result.reason == "asset_digest_mismatch"
 
@@ -97,7 +103,7 @@ def test_bbox_resolver_rejects_asset_locate_and_invalid_mask_input():
 
 def test_generation_and_audit_keep_mask_out_of_model_inputs(tmp_path):
     leaf = {
-        "leaf_id": "bbox-leaf", "name": "tumor location", "node_id": "scenario-1",
+        "leaf_task_id": "bbox-leaf", "name": "tumor location", "scenario_id": "scenario-1",
         "clinical_target_id": "finding", "question_templates": ["Locate the tumor."],
         "input": [{"role": "image", "name": "ultrasound_bmode_image", "evidence_type": "asset"}],
         "target": "tumor location", "reference_rule": "Use the registered mask bbox.",

@@ -152,8 +152,3 @@ def build_task_scenarios(
         scenarios[scenario.scenario_id] = scenario
     return scenarios
 
-
-def build_task_nodes(axis_analysis: AxisAnalysis, context: dict[str, Any], *, registry=None, exclusions=None):
-    """Deprecated in-process alias; new plans persist Task Scenarios."""
-    return build_task_scenarios(axis_analysis, context, registry=registry, exclusions=exclusions)
-

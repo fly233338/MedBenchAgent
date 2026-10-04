@@ -7,7 +7,13 @@ from collections import Counter
 from typing import Any, Iterable
 
 from medbenchagent.planning.node_builder import build_task_scenarios
-from medbenchagent.planning.resolver import ResolverSpec, validate_resolver_policy
+from medbenchagent.planning.resolver import (
+    ArgmaxStep,
+    MaskToBBoxStep,
+    ReadMaskFeatureStep,
+    ResolverSpec,
+    validate_resolver_policy,
+)
 from medbenchagent.planning.task_space import (
     AxisAnalysis,
     LeafTask,
@@ -85,6 +91,48 @@ def validate_candidate_leaf(
         ]
         if missing:
             raise ValueError(f"Input Evidence roles cannot be resolved: {missing}")
+        reference_only = set(resolver_context.get("reference_only_evidence_names", []))
+        catalog = resolver_context.get("evidence_catalog", {})
+        if isinstance(catalog, dict):
+            for name, entry in catalog.items():
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("input_visibility") == "reference_only" or entry.get("semantic_role") in {
+                    "mask", "annotation", "label", "calibration", "reference"
+                }:
+                    reference_only.add(name)
+        leaked = [
+            selector.name for selector in leaf.input
+            if selector.name and selector.name in reference_only
+        ]
+        if leaked:
+            raise ValueError(f"Reference-only Evidence cannot be model inputs: {sorted(set(leaked))}")
+        mask_steps = [step for step in spec.steps if isinstance(step, (MaskToBBoxStep, ReadMaskFeatureStep))]
+        if mask_steps:
+            mask_names = {
+                step.selector.name
+                for step in spec.steps
+                if hasattr(step, "selector") and step.selector.name in reference_only
+            }
+            if not mask_names:
+                raise ValueError("Mask-derived Resolver steps require reference-only mask Evidence")
+            coverage = resolver_context.get("mask_feature_coverage", {})
+            for step in mask_steps:
+                if isinstance(step, MaskToBBoxStep):
+                    feature = "bbox"
+                else:
+                    feature = step.feature
+                if coverage and not coverage.get(feature, coverage.get(f"plane_{feature}", 0)):
+                    raise ValueError(f"Resolver mask feature is unavailable: {feature}")
+        if any(isinstance(step, ArgmaxStep) for step in spec.steps):
+            if not resolver_context.get("ordered_collection_available") and not resolver_context.get("sampling_manifest_digest"):
+                raise ValueError("argmax requires a frozen ordered sampling manifest")
+        if scenario.input_structure in {"multi-view", "multi-image", "volume"}:
+            if not any(
+                resolver_context.get(key)
+                for key in ("presentation_manifest_digest", "sampling_manifest_digest")
+            ):
+                raise ValueError("Multi-view, multi-image and volume tasks require a presentation or sampling manifest")
         if leaf.options is not None:
             catalog = resolver_context.get("evidence_catalog", {})
             derived = any(step.op in {"compare", "compute", "map_label"} for step in spec.steps)
@@ -150,7 +198,7 @@ def validate_task_tree(plan: TaskPlanState, *, require_reviews: bool = True, reg
             resolver_context={"registry": registry},
             registry=registry,
         )
-        if leaf_id != leaf.leaf_id:
+        if leaf_id != leaf.leaf_task_id:
             raise ValueError(f"Leaf map key does not match leaf_task_id: {leaf_id}")
         identity = leaf_identity(leaf, plan.scenarios.get(leaf.scenario_id))
         if identity in identities:
@@ -202,12 +250,12 @@ def compile_task_space_plan(
         if identity in identities:
             raise ValueError("Duplicate Leaf Task semantics")
         identities.add(identity)
-        if leaf.leaf_id in accepted:
-            raise ValueError(f"Duplicate Leaf Task identity: {leaf.leaf_id}")
-        accepted[leaf.leaf_id] = leaf
+        if leaf.leaf_task_id in accepted:
+            raise ValueError(f"Duplicate Leaf Task identity: {leaf.leaf_task_id}")
+        accepted[leaf.leaf_task_id] = leaf
         scenario = scenarios[leaf.scenario_id]
         scenarios[leaf.scenario_id] = scenario.model_copy(update={
-            "leaf_task_ids": [*scenario.leaf_task_ids, leaf.leaf_id],
+            "leaf_task_ids": [*scenario.leaf_task_ids, leaf.leaf_task_id],
             "status": "completed" if leaf.eligible_count else scenario.status,
         })
     active = [key for key, value in scenarios.items() if not value.exclusion_reason]

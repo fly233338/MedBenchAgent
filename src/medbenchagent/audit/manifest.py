@@ -19,15 +19,12 @@ def build_manifest(
     parsed_scenarios = {}
     for raw in scenarios:
         value = dict(raw) if isinstance(raw, dict) else raw.model_dump(mode="json")
-        if "scenario_id" not in value and "node_id" in value:
-            value["scenario_id"] = value["node_id"]
-        value.pop("node_id", None)
         if "capability_category" not in value:
             value["capability_category"] = "Recognition"
         parsed = TaskScenario.model_validate(value)
         parsed_scenarios[parsed.scenario_id] = parsed
     parsed_leaves = {
-        leaf.leaf_id: leaf
+        leaf.leaf_task_id: leaf
         for leaf in (LeafTask.model_validate(value) for value in leaves)
     }
     unknown = set(allocation) - set(parsed_leaves)

@@ -7,6 +7,7 @@ from medbenchagent.data.preparation_validation import validate_candidate, write_
 from medbenchagent.data.index import prepare_dataset
 from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.data.manifests import PresentationRecord, SamplingManifest, SplitManifest, load_manifest
 
 
 def finalize_prepared_dataset(candidate, context):
@@ -44,6 +45,34 @@ def finalize_prepared_dataset(candidate, context):
             target = temporary / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
+    optional_manifests = {
+        "presentation_manifest.jsonl": PresentationRecord,
+        "split_manifest.jsonl": SplitManifest,
+        "sampling_manifest.jsonl": SamplingManifest,
+    }
+    for name, model in optional_manifests.items():
+        source = candidate / name
+        if not source.is_file():
+            continue
+        parsed = load_manifest(source, model)
+        if name == "presentation_manifest.jsonl":
+            records = parsed if isinstance(parsed, list) else [parsed]
+            normalized_records = []
+            for record in records:
+                source_asset = Path(record.path)
+                if not source_asset.is_absolute():
+                    source_asset = candidate / source_asset
+                source_asset = source_asset.resolve()
+                relative = source_asset.relative_to(candidate)
+                target_asset = temporary / relative
+                target_asset.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_asset, target_asset)
+                normalized_records.append(record.model_copy(update={"path": relative.as_posix()}))
+            with (temporary / name).open("w", encoding="utf-8", newline="\n") as handle:
+                for record in normalized_records:
+                    handle.write(record.model_dump_json() + "\n")
+        else:
+            shutil.copy2(source, temporary / name)
     profile, access = prepare_dataset(
         temporary / "cases.jsonl",
         temporary / "asset_manifest.jsonl",
@@ -68,7 +97,6 @@ def finalize_prepared_dataset(candidate, context):
         "asset_profile": profile["assets"],
     }
     atomic_write_json(temporary / "dataset_card.json", card)
-    (temporary / "presentation_manifest.jsonl").write_text("", encoding="utf-8")
     access = {
         **access,
         "cases_path": str(temporary / "cases.jsonl"),
@@ -76,7 +104,6 @@ def finalize_prepared_dataset(candidate, context):
         "profile_path": str(temporary / "dataset_profile.json"),
         "mapping_path": str(temporary / "mapping.json"),
         "dataset_card_path": str(temporary / "dataset_card.json"),
-        "presentation_manifest_path": str(temporary / "presentation_manifest.jsonl"),
         "duckdb_path": str(temporary / "cache" / "annotation-cache" / "1" / "dataset.duckdb"),
         "source_root": context.get("source_root"),
         "source_roots": context.get("source_roots", {}),
@@ -103,20 +130,29 @@ def finalize_prepared_dataset(candidate, context):
             "duckdb_path": str(bundle / "cache" / "annotation-cache" / "1" / "dataset.duckdb"),
         }
     )
+    for name in ("presentation", "split", "sampling"):
+        key = f"{name}_manifest_path"
+        if key in ready["access"]:
+            ready["access"][key] = str(bundle / f"{name}_manifest.jsonl")
     atomic_write_json(bundle / "ready.json", ready)
+    access_manifest = {
+        **access,
+        "cases_path": str(bundle / "cases.jsonl"),
+        "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
+        "profile_path": str(bundle / "dataset_profile.json"),
+        "mapping_path": str(bundle / "mapping.json"),
+        "dataset_card_path": str(bundle / "dataset_card.json"),
+        "duckdb_path": str(bundle / "cache" / "annotation-cache" / "1" / "dataset.duckdb"),
+    }
+    for name in ("presentation", "split", "sampling"):
+        key = f"{name}_manifest_path"
+        if key in access_manifest:
+            access_manifest[key] = str(bundle / f"{name}_manifest.jsonl")
     return {
         "status": "complete",
         "bundle": str(bundle),
         "cases_path": str(bundle / "cases.jsonl"),
-        "access_manifest": {
-            **access,
-            "cases_path": str(bundle / "cases.jsonl"),
-            "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
-            "profile_path": str(bundle / "dataset_profile.json"),
-            "mapping_path": str(bundle / "mapping.json"),
-            "dataset_card_path": str(bundle / "dataset_card.json"),
-            "duckdb_path": str(bundle / "cache" / "annotation-cache" / "1" / "dataset.duckdb"),
-        },
+        "access_manifest": access_manifest,
         "report": report,
         "card_path": str(bundle / "dataset_card.json"),
         "dataset_entry": {

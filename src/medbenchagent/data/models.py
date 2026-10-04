@@ -4,11 +4,103 @@ from __future__ import annotations
 
 from typing import Any, Literal
 import json
+import math
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CanonicalModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class MaskPlaneFeature(CanonicalModel):
+    """Deterministic geometry for one indexed plane of a mask."""
+
+    axis: int = Field(ge=0)
+    index: int = Field(ge=0)
+    bbox: list[float] = Field(min_length=4, max_length=4)
+    pixel_count: int = Field(gt=0)
+    area_fraction: float = Field(ge=0, le=1)
+    centroid: list[float] = Field(min_length=2, max_length=2)
+    equivalent_diameter_pixels: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def geometry(self):
+        if not (
+            0 <= self.bbox[0] < self.bbox[2] <= 1
+            and 0 <= self.bbox[1] < self.bbox[3] <= 1
+        ):
+            raise ValueError("Mask plane bbox requires normalized xyxy coordinates")
+        if any(not math.isfinite(value) or not 0 <= value <= 1 for value in self.centroid):
+            raise ValueError("Mask plane centroid requires normalized finite coordinates")
+        if not math.isfinite(self.area_fraction) or not math.isfinite(self.equivalent_diameter_pixels):
+            raise ValueError("Mask plane geometry must be finite")
+        expected = 2 * math.sqrt(self.pixel_count / math.pi)
+        if not math.isclose(self.equivalent_diameter_pixels, expected, rel_tol=1e-6, abs_tol=1e-6):
+            raise ValueError("Mask plane equivalent_diameter_pixels does not match pixel_count")
+        return self
+
+
+class MaskFeatureSet(CanonicalModel):
+    """Prepared, source-digest-bound mask geometry.
+
+    The host consumes these values as immutable derived evidence.  It never
+    re-reads a mask file while planning or generating a benchmark item.
+    """
+
+    source_digest: str = Field(min_length=1)
+    algorithm: str = Field(min_length=1)
+    channel: Literal["red", "green", "blue", "alpha", "luminance", "any"]
+    foreground: list[int] = Field(min_length=1)
+    shape: list[int] = Field(min_length=2, max_length=3)
+    bbox: list[float] = Field(min_length=4, max_length=4)
+    pixel_count: int = Field(gt=0)
+    area_fraction: float = Field(ge=0, le=1)
+    centroid: list[float] = Field(min_length=2, max_length=3)
+    component_count: int = Field(gt=0)
+    equivalent_diameter_pixels: float = Field(gt=0)
+    spacing: list[float] | None = None
+    physical_area: float | None = Field(default=None, gt=0)
+    physical_unit: str | None = None
+    planes: list[MaskPlaneFeature] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def geometry(self):
+        if any(type(value) is not int or value < 0 or value > 255 for value in self.foreground):
+            raise ValueError("Mask foreground values must be integers in [0,255]")
+        if len(set(self.foreground)) != len(self.foreground):
+            raise ValueError("Mask foreground values must be unique")
+        if any(type(value) is not int or value <= 0 for value in self.shape):
+            raise ValueError("Mask shape dimensions must be positive integers")
+        if not (
+            0 <= self.bbox[0] < self.bbox[2] <= 1
+            and 0 <= self.bbox[1] < self.bbox[3] <= 1
+        ):
+            raise ValueError("Mask bbox requires normalized xyxy coordinates")
+        if any(not math.isfinite(value) or not 0 <= value <= 1 for value in self.centroid):
+            raise ValueError("Mask centroid requires normalized finite coordinates")
+        if not math.isfinite(self.area_fraction) or not math.isfinite(self.equivalent_diameter_pixels):
+            raise ValueError("Mask geometry must be finite")
+        expected = 2 * math.sqrt(self.pixel_count / math.pi)
+        if not math.isclose(self.equivalent_diameter_pixels, expected, rel_tol=1e-6, abs_tol=1e-6):
+            raise ValueError("Mask equivalent_diameter_pixels does not match pixel_count")
+        if self.spacing is not None:
+            if len(self.spacing) not in {2, 3} or any(not math.isfinite(value) or value <= 0 for value in self.spacing):
+                raise ValueError("Mask spacing must contain positive finite values")
+        if self.physical_area is not None:
+            if self.spacing is None or not self.physical_unit or not self.physical_unit.strip():
+                raise ValueError("physical_area requires spacing and physical_unit")
+            if not math.isfinite(self.physical_area):
+                raise ValueError("physical_area must be finite")
+        elif self.physical_unit is not None and not self.physical_unit.strip():
+            raise ValueError("physical_unit must be non-empty when supplied")
+        coordinates = {(plane.axis, plane.index) for plane in self.planes}
+        if len(coordinates) != len(self.planes):
+            raise ValueError("Mask planes must have unique (axis,index) pairs")
+        if any(plane.axis >= len(self.shape) for plane in self.planes):
+            raise ValueError("Mask plane axis is outside mask shape")
+        if any(plane.index >= self.shape[plane.axis] for plane in self.planes):
+            raise ValueError("Mask plane index is outside mask shape")
+        return self
 
 
 class Evidence(CanonicalModel):
@@ -19,6 +111,8 @@ class Evidence(CanonicalModel):
     time: float | int | None = None
     unit: str | None = None
     ref: list[str] = Field(default_factory=list)
+    mask: MaskFeatureSet | None = None
+    view_id: str | None = None
 
     @model_validator(mode="after")
     def value_contract(self):
@@ -29,6 +123,10 @@ class Evidence(CanonicalModel):
             raise ValueError("text Evidence requires a string value")
         if self.type == "asset" and (not isinstance(self.value, str) or not self.value):
             raise ValueError("asset Evidence requires an asset_id string")
+        if self.mask is not None and self.type != "asset":
+            raise ValueError("Mask features are only valid on asset Evidence")
+        if self.view_id is not None and not self.view_id.strip():
+            raise ValueError("view_id must be a non-empty stable identifier")
         if self.type == "region":
             if (not isinstance(self.value, list) or len(self.value) != 4 or
                     any(type(v) not in (int, float) for v in self.value) or
@@ -62,6 +160,18 @@ class AssetEntry(CanonicalModel):
     height: int | None = Field(default=None, gt=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
     source_id: str = Field(default="source", min_length=1)
+
+    @model_validator(mode="after")
+    def semantic_metadata(self):
+        role = self.metadata.get("semantic_role", self.metadata.get("role"))
+        visibility = self.metadata.get("input_visibility")
+        if role is not None and role not in {
+            "primary", "model_input", "image", "volume", "annotation", "mask", "label", "calibration", "reference"
+        }:
+            raise ValueError("Asset semantic_role is not supported")
+        if visibility is not None and visibility not in {"model_visible", "reference_only", "unknown"}:
+            raise ValueError("Asset input_visibility is not supported")
+        return self
 
 
 class PresentationSpec(CanonicalModel):
@@ -120,12 +230,32 @@ def validate_case(case: CaseRecord, assets: dict[str, AssetEntry] | None = None)
             raise ValueError(f"Evidence {item.id} references an unknown Evidence")
         if item.type == "asset" and assets is not None and item.value not in assets:
             raise ValueError(f"Evidence {item.id} references an unknown Asset")
+        if item.mask is not None and item.type == "asset" and assets is not None:
+            asset = assets.get(item.value)
+            if asset is None:
+                raise ValueError(f"Evidence {item.id} mask references an unknown Asset")
+            if item.mask.source_digest != asset.file_digest:
+                raise ValueError(
+                    f"Evidence {item.id} mask source_digest does not match Asset {asset.asset_id}"
+                )
+            if asset.kind == "image" and len(item.mask.shape) != 2:
+                raise ValueError(f"Evidence {item.id} image mask shape must be [height,width]")
+            if asset.kind == "volume" and len(item.mask.shape) < 3:
+                raise ValueError(f"Evidence {item.id} volume mask shape must include three dimensions")
+            expected_shape = asset.metadata.get("shape") if isinstance(asset.metadata, dict) else None
+            if expected_shape and list(expected_shape) != item.mask.shape:
+                raise ValueError(f"Evidence {item.id} mask shape does not match Asset metadata")
+            if asset.kind == "image" and asset.width and asset.height:
+                if item.mask.shape != [asset.height, asset.width]:
+                    raise ValueError(f"Evidence {item.id} mask shape does not match Asset dimensions")
         if item.id in item.ref or len(item.ref) != len(set(item.ref)):
             raise ValueError("Self or duplicate Evidence ref")
         if item.type == "region":
             linked = [value for value in case.evidence if value.id in item.ref]
             if len(linked) != 1 or linked[0].type != "asset":
                 raise ValueError("Region must reference exactly one Asset Evidence")
+            if assets and linked[0].value not in assets:
+                raise ValueError(f"Region {item.id} references an unknown Asset")
             if assets and assets[linked[0].value].kind != "image":
                 raise ValueError("2D Region requires an image Asset")
     graph = {item.id: item.ref for item in case.evidence}

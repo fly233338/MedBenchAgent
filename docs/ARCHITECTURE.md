@@ -55,8 +55,10 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 ## 数据准备
 
-数据准备的 canonical 产物使用 `annotation`、`asset_manifest.jsonl` 和
-`preparation_report.json`。Case grouping、Evidence ref 和 Asset 完整性由宿主确定性校验；
+数据准备的 canonical 产物使用 `annotation`、`asset_manifest.jsonl`、可选的
+`presentation_manifest.jsonl`、`split_manifest.jsonl`、`sampling_manifest.jsonl` 和
+`preparation_report.json`。Mask geometry 作为带 Asset digest 的 Evidence feature 保存，
+Case grouping、Evidence ref 和 Asset 完整性由宿主确定性校验；
 OpenHands Coding Session 只负责在 Worker workspace 中探索来源和编写可重复转换器。旧的
 image-centric 产物不属于 数据处理运行时。
 
@@ -72,7 +74,7 @@ Supervisor 先解析数据准备请求：请求中包含可读的原始目录时
 
 每个 annotation 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。Screening `keep` 只表示允许进入 Leaf 探索；Leaf 阶段可以在证据充分且没有有效 Leaf 时显式排除 Scenario，所有排除理由和证据都写入 canonical plan。完整计划的 canonical 文件位于 BIR 的 `datasets/<id>/planning/`；Run 目录中的 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 是派生视图。
 
-所有选中数据集的 Plan 完成后，Allocation 使用每个 Leaf 的 `eligible_count` 计算一个全局配额，默认先均衡数据集再均衡数据集内 Leaf。Generation 按数据集消费该配额并写出 JSONL。Finalization 重新审计每个生成项，隔离非法项，检查每图上限和重复项，平衡 Closed VQA 选项位置，并发布统一的 `benchmark.jsonl`、`benchmark_manifest.json`、`audit_report.json` 和 `quarantine.jsonl`。
+所有选中数据集的 Plan 完成后，Allocation 使用每个 Leaf 的 `eligible_count` 计算一个全局配额，默认先均衡数据集再均衡数据集内 Leaf。Generation 按数据集消费该配额和冻结的 Sampling manifest，并写出 JSONL。Finalization 重新审计每个生成项，隔离非法项，检查每图上限、manifest 引用和重复项，保留 shortfall，平衡 Closed VQA 选项位置，并发布统一的 `benchmark.jsonl`、`benchmark_manifest.json`、`audit_report.json` 和 `quarantine.jsonl`。
 
 Leaf design receives a bounded structured context containing the dataset
 revision, Evidence Catalog, source-backed annotation semantics, documented
@@ -83,16 +85,18 @@ Read state and evidence caches are bound to dataset ID, dataset revision and
 current Scenario ID; switching or recovering a Scenario invalidates stale
 context. The runtime injects this dynamic context once per request.
 
-Generation resolves model inputs in the order declared by `Resolver.inputs`.
+Generation resolves model inputs in the order declared by `Resolver.inputs` and the frozen Sampling manifest; order is never inferred from Case IDs, filenames, or dictionary order.
 Benchmark Items record `options`, ordered input evidence/assets and explicit
 role bindings. Audit recomputes these bindings, the selected question
 template, the Resolver answer and reference evidence before accepting an item.
 Derived Closed VQA labels use the same deterministic scalar encoding during
 planning, generation and audit.
-Reference-only Resolver steps may read immutable Assets through the frozen
-Dataset Access manifest. The registered `mask_to_bbox` operation derives a
-normalized bounding box from a mask without adding the mask to model input;
+Reference-only Resolver steps read immutable prepared features through the frozen
+Dataset Access manifest. The registered `mask_to_bbox` operation reads the
+normalized bounding box embedded in mask Evidence without adding the mask to model input;
 Planning, Generation and Audit share the same asset context and digest checks.
+`read_mask_feature` exposes only registered geometry fields, and `argmax` requires a
+manifest-frozen ordered numeric collection with ties rejected.
 When a Leaf needs a smaller categorical vocabulary, the Resolver may contain
 an explicit `map_label` step. Unmapped values remain ineligible; no runtime
 agent infers or edits mappings.
@@ -108,7 +112,7 @@ benchmark 构建和模型推理是两个独立阶段。evaluation 读取已发�
 
 ## Planning Prompt Extensions
 
-The BIR Registry freezes four complete core planning Prompts under
+The BIR Registry freezes five complete core planning Prompts under
 `registry/agent_prompts/`. Each Prompt contains the common evidence boundaries,
 clinical target semantics, Resolver constraints, examples, and output contract.
 Each file has one final `{{DATASET_SPECIFIC_RULES}}` placeholder.

@@ -6,9 +6,13 @@ def run_generation(context, *, leaf_path=None, output_path=None, allocation=None
     from pathlib import Path
     import json
     from medbenchagent.data.index import DatasetIndex
+    from medbenchagent.data.manifests import SamplingManifest, load_manifest
     from medbenchagent.planning.resolver import ResolverContext
     access = context["dataset_access_manifest"]
-    leaves = json.loads(Path(leaf_path or context.get("leaf_tasks_path") or context["task_leaves_path"]).read_text(encoding="utf-8"))
+    sampling_manifest = None
+    if access.get("sampling_manifest_path"):
+        sampling_manifest = load_manifest(access["sampling_manifest_path"], SamplingManifest)
+    leaves = json.loads(Path(leaf_path or context["leaf_tasks_path"]).read_text(encoding="utf-8"))
     items = generate_task_items(
         list(DatasetIndex(access).iter_cases()),
         leaves.values(),
@@ -16,6 +20,7 @@ def run_generation(context, *, leaf_path=None, output_path=None, allocation=None
         allocation=allocation,
         seed=context.get("seed", 0),
         resolver_context=ResolverContext.from_access(access),
+        sampling_manifest=sampling_manifest,
     )
     destination = output_path or str(Path(context["operation_directory"]) / "benchmark_items.jsonl")
     write_task_items(destination, items)

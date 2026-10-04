@@ -10,31 +10,35 @@ from collections import Counter, defaultdict
 from typing import Any, Iterable
 
 
-_ANNOTATION_NAME_HINTS = ("mask", "segmentation", "annotation", "label", "roi")
+def _asset_metadata(item: dict[str, Any], assets: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    asset_id = item.get("value") if item.get("type") == "asset" else None
+    asset = assets.get(asset_id, {}) if isinstance(asset_id, str) else {}
+    metadata = asset.get("metadata", {}) if isinstance(asset, dict) else {}
+    return metadata if isinstance(metadata, dict) else {}
 
 
-def _is_annotation_asset(item: dict[str, Any]) -> bool:
-    name = str(item.get("name", "")).casefold()
-    return name.startswith(_ANNOTATION_NAME_HINTS) or any(
-        token in name for token in ("_mask", "_seg", "mask_", "seg_")
-    )
+def _asset_role(item: dict[str, Any], assets: dict[str, dict[str, Any]]) -> str:
+    """Return an explicit input/reference role without using names as hints."""
+    if item.get("mask") is not None:
+        return "reference"
+    metadata = _asset_metadata(item, assets)
+    visibility = metadata.get("input_visibility")
+    role = metadata.get("semantic_role", metadata.get("role"))
+    if visibility == "reference_only" or role in {"annotation", "mask", "label", "calibration", "reference"}:
+        return "reference"
+    if visibility == "model_visible" or role in {"primary", "model_input", "image", "volume"}:
+        return "primary"
+    # An unannotated image/volume is a possible visual input, but it never
+    # contributes derived annotation capabilities without explicit metadata.
+    return "primary" if item.get("type") == "asset" else "unknown"
 
 
-def _asset_role(item: dict[str, Any]) -> str:
-    return "annotation" if _is_annotation_asset(item) else "primary"
-
-
-def _is_mask_asset(item: dict[str, Any]) -> bool:
-    name = str(item.get("name", "")).casefold()
-    return item.get("type") == "asset" and any(
-        token in name for token in ("mask", "segmentation", "roi")
-    )
+def _is_mask_asset(item: dict[str, Any], assets: dict[str, dict[str, Any]]) -> bool:
+    return item.get("type") == "asset" and item.get("mask") is not None
 
 
 def _semantic_evidence_name(name: Any) -> bool:
-    """Exclude case-specific locator fields from model-visible planning facts."""
-    value = str(name or "")
-    return not value.casefold().startswith(("mask_filename:", "mask_region:"))
+    return isinstance(name, str) and bool(name.strip())
 
 
 def case_facts(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -45,8 +49,8 @@ def case_facts(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> dict[
         row for row in asset_rows
         if row.get("value") in assets and assets[row["value"]].get("kind") == "image"
     ]
-    primary_images = [row for row in image_rows if _asset_role(row) == "primary"]
-    annotation_images = [row for row in image_rows if _asset_role(row) == "annotation"]
+    primary_images = [row for row in image_rows if _asset_role(row, assets) == "primary"]
+    annotation_images = [row for row in image_rows if _asset_role(row, assets) == "reference"]
     primary_ids = {row["id"] for row in primary_images}
 
     explicit_groups = [set(row.get("ref", [])) for row in rows]
@@ -73,13 +77,37 @@ def case_facts(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> dict[
         row.get("type") == "value" and type(row.get("value")) in (int, float)
         for row in rows
     )
-    counts["index"] = sum(
-        row.get("type") == "value"
-        and any(token in str(row.get("name", "")).casefold() for token in ("index", "slice", "frame"))
-        and type(row.get("value")) is int
-        and row.get("value", -1) >= 0
-        for row in rows
-    )
+    # Index support comes from explicit view/sampling manifests, never from a
+    # field name or an integer stored in an Evidence value.
+    counts["index"] = 0
+    mask_rows = [row for row in rows if _is_mask_asset(row, assets)]
+    reference_only_names = {
+        row.get("name") for row in rows
+        if row.get("name") and (
+            row.get("mask") is not None
+            or _asset_role(row, assets) == "reference"
+        )
+    }
+    mask_features = {
+        feature: sum(feature in (row.get("mask") or {}) for row in mask_rows)
+        for feature in (
+            "bbox", "pixel_count", "area_fraction", "centroid", "component_count",
+            "equivalent_diameter_pixels", "physical_area",
+        )
+    }
+    plane_features = {
+        feature: sum(
+            any(feature in plane for plane in (row.get("mask") or {}).get("planes", []))
+            for row in mask_rows
+        )
+        for feature in ("bbox", "pixel_count", "area_fraction", "centroid", "equivalent_diameter_pixels")
+    }
+    view_ids = {row.get("view_id") for row in primary_images if row.get("view_id")}
+    panel_ids = {
+        _asset_metadata(row, assets).get("panel_id")
+        for row in primary_images
+        if _asset_metadata(row, assets).get("panel_id")
+    }
     return {
         "evidence": dict(counts),
         "evidence_names": sorted({r.get("name") for r in rows if _semantic_evidence_name(r.get("name")) and r.get("name")}),
@@ -105,9 +133,43 @@ def case_facts(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> dict[
             "temporal_links": 0,
         },
         "derived_capabilities": {
-            "mask_to_bbox": int(any(_is_mask_asset(row) for row in rows)),
+            "mask_to_bbox": len(mask_rows),
+            "mask_geometry": {
+                "coverage": len(mask_rows),
+                **mask_features,
+                "plane_features": plane_features,
+            },
+            "view_panel": {
+                "view_identity": len(view_ids),
+                "panel_identity": len(panel_ids),
+                "ordered": 0,
+            },
         },
+        "mask_feature_coverage": mask_features | {f"plane_{key}": value for key, value in plane_features.items()},
+        "view_panel_capabilities": {
+            "view_identity": len(view_ids),
+            "panel_identity": len(panel_ids),
+            "ordered": 0,
+        },
+        "reference_only_evidence_names": sorted(reference_only_names),
     }
+
+
+def _merge_capabilities(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Merge explicit capability summaries without treating names as semantics."""
+    merged = dict(left)
+    for key, value in right.items():
+        if isinstance(value, dict):
+            merged[key] = _merge_capabilities(
+                merged.get(key, {}) if isinstance(merged.get(key), dict) else {}, value
+            )
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            merged[key] = merged.get(key, 0) + value
+        elif isinstance(value, bool):
+            merged[key] = bool(merged.get(key, False) or value)
+        elif value is not None:
+            merged[key] = value
+    return merged
 
 
 def merge_facts(facts: Iterable[dict[str, Any]]) -> dict[str, Any]:
@@ -115,15 +177,26 @@ def merge_facts(facts: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "evidence": Counter(),
         "assets": Counter(),
         "relations": Counter(),
-        "derived_capabilities": Counter(),
+        "derived_capabilities": {},
+        "mask_feature_coverage": Counter(),
+        "view_panel_capabilities": Counter(),
+        "reference_only_evidence_names": set(),
         "evidence_names": set(),
     }
     for value in facts:
         for key in ("evidence", "assets", "relations"):
             result[key].update(value[key])
+        for key in ("mask_feature_coverage", "view_panel_capabilities"):
+            result[key].update(value.get(key, {}))
+        result["derived_capabilities"] = _merge_capabilities(
+            result["derived_capabilities"], value.get("derived_capabilities", {})
+        )
         result["evidence_names"].update(value["evidence_names"])
+        result["reference_only_evidence_names"].update(value.get("reference_only_evidence_names", []))
     return {
-        key: sorted(value) if isinstance(value, set) else dict(value)
+        key: sorted(value) if isinstance(value, set)
+        else dict(value) if isinstance(value, Counter)
+        else value
         for key, value in result.items()
     }
 
@@ -234,9 +307,12 @@ def build_dataset_facts(
         ],
         "evidence": merged["evidence"],
         "evidence_names": merged["evidence_names"],
+        "reference_only_evidence_names": merged["reference_only_evidence_names"],
         "assets": merged["assets"],
         "relations": merged["relations"],
         "derived_capabilities": merged["derived_capabilities"],
+        "mask_feature_coverage": merged["mask_feature_coverage"],
+        "view_panel_capabilities": merged["view_panel_capabilities"],
         "representative_case": select_representative_case(case_list),
     }
 

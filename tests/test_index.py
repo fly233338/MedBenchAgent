@@ -59,7 +59,6 @@ def test_canonical_node_context_uses_constraint_registry_instance(tmp_path, monk
     )
     result = query.node_context(node)
     assert result["scenario_id"] == "scenario-1"
-    assert result["node_id"] == "scenario-1"
     assert result["capacity_hint"] == 1
     assert result["representative_cases"][0]["case_id"] == "keep"
     assert result["evidence"] == [{"name": "tumor_region", "types": {"region": 1}}]

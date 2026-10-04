@@ -5,14 +5,14 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from medbenchagent.planning.sample_counts import allocate_leaf_counts
-from medbenchagent.planning.task_space import LeafTask, TaskLeaf, TaskPlanState
+from medbenchagent.planning.task_space import LeafTask, TaskPlanState
 
 
-def allocate_task_leaves(leaves: Iterable[TaskLeaf | dict], requested_count: int) -> dict[str, int]:
+def allocate_task_leaves(leaves: Iterable[LeafTask | dict], requested_count: int) -> dict[str, int]:
     if type(requested_count) is not int or requested_count <= 0:
         raise ValueError("requested_count must be a positive integer")
-    parsed = [TaskLeaf.model_validate(leaf) for leaf in leaves]
-    capacities = {leaf.leaf_id: leaf.eligible_count or 0 for leaf in parsed}
+    parsed = [LeafTask.model_validate(leaf) for leaf in leaves]
+    capacities = {leaf.leaf_task_id: leaf.eligible_count or 0 for leaf in parsed}
     active = [key for key, capacity in capacities.items() if capacity > 0]
     if not active:
         return {key: 0 for key in capacities}

@@ -32,6 +32,11 @@ class BenchmarkItem(TypedDict, total=False):
     leaf_task_id: str
     task_id: str
     case_id: str
+    sampling_unit_id: str
+    split: str
+    view_ids: list[str]
+    panel_id: str | None
+    sampling_order: int
     capability_category: str
     task_paradigm: str
     output_spec: str

@@ -5,7 +5,7 @@ import pytest
 
 from medbenchagent.agents import task_planning
 from medbenchagent.planning.bir import RegistrySnapshot
-from medbenchagent.planning.task_space import AXIS_VALUES, CapabilityCategory, EvidenceBasis, LeafTask, TaskAxis, TaskSpacePlan, TaskScenario
+from medbenchagent.planning.task_space import AXIS_VALUES, CapabilityCategory, EvidenceBasis, LeafTask, TaskAxis, TaskPlanState, TaskScenario
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,16 +33,16 @@ def _context(tmp_path):
         "assets": {"image_assets": 1, "multi_image_cases": 0, "related_image_cases": 0, "volume_assets": 0},
         "relations": {"paired_text": 1, "paired": 1, "paired_study": 0, "related": 1},
     }
-    plan = TaskSpacePlan(
+    plan = TaskPlanState(
         dataset={"dataset_id": "d"}, dataset_facts=facts,
         blueprint={"name": "Blueprint", "capability_dimensions": [{"id": "report_generation"}], "task_concepts": []},
         phase="axes",
     )
-    path = Path(tmp_path) / "task_space_plan.json"
+    path = Path(tmp_path) / "task_plan.json"
     path.write_text(plan.model_dump_json(), encoding="utf-8")
     return {
         "operation_directory": str(tmp_path),
-        "task_space_plan_path": str(path),
+        "task_plan_path": str(path),
         "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"},
     }
 
@@ -54,8 +54,8 @@ def test_axis_calls_are_strictly_ordered(tmp_path):
     task_planning.analyze_axis(context, axis="input_structure", assessments=_assessments("input_structure", ["single-image"]))
     task_planning.analyze_axis(context, axis="operation", assessments=_assessments("operation", ["describe"]))
     result = task_planning.analyze_axis(context, axis="clinical_target", assessments=_assessments("clinical_target", ["finding"]))
-    assert result["updates"]["task_space_plan"]["phase"] == "scenario_review"
-    assert result["updates"]["task_space_plan"]["scenario_review_pending_ids"]
+    assert result["updates"]["task_plan"]["phase"] == "scenario_review"
+    assert result["updates"]["task_plan"]["scenario_review_pending_ids"]
     axis_path = Path(context["operation_directory"]) / "axis_decisions.json"
     assert set(json.loads(axis_path.read_text(encoding="utf-8"))) == {
         "input_structure", "operation", "clinical_target"
@@ -178,12 +178,12 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     )
     context.update(screened["updates"])
     plan = task_planning._load_plan(context)
-    node_id = plan.pending_node_ids[0]
+    node_id = plan.pending_scenario_ids[0]
     plan.current_scenario_id = node_id
     task_planning._write_derived_artifacts(context, plan)
     leaf = {
-        "leaf_id": "leaf-1", "name": "report", "node_id": node_id,
-        "question_template": "Describe the finding.",
+        "leaf_task_id": "leaf-1", "name": "report", "scenario_id": node_id,
+        "question_templates": ["Describe the finding."],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
         "clinical_target_id": "finding_target", "target": "finding", "reference_rule": "paired report",
         "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
@@ -193,8 +193,8 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
         "output_spec": "text", "task_paradigm": "Report Generation", "capability_category": "Generation",
     }
     saved = task_planning.save_leaf_task(context, leaf={
-        "leaf_task_id": leaf["leaf_id"], "name": leaf["name"],
-        "scenario_id": leaf["node_id"], "question_template": leaf["question_template"],
+        "leaf_task_id": leaf["leaf_task_id"], "name": leaf["name"],
+        "scenario_id": leaf["scenario_id"], "question_templates": leaf["question_templates"],
             "input": leaf["input"], "clinical_target_id": leaf["clinical_target_id"], "target": leaf["target"],
         "reference_rule": leaf["reference_rule"], "resolver": leaf["resolver"],
         "output_spec": leaf["output_spec"], "task_paradigm": leaf["task_paradigm"],
@@ -202,15 +202,13 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     })
     context.update(saved["updates"])
     with pytest.raises(ValueError, match="checked_leaf_ids|cover every"):
-        task_planning.review_current_node(context, review={"node_id": node_id, "checked_leaf_ids": [], "status": "approved"})
+        task_planning.review_current_scenario(context, review={"scenario_id": node_id, "checked_leaf_task_ids": [], "status": "approved"})
     reviewed = task_planning.review_current_scenario(context, review={"scenario_id": node_id, "checked_leaf_task_ids": ["leaf-1"], "status": "approved"})
     context.update(reviewed["updates"])
     assert reviewed["updates"]["milestone"]["kind"] == "scenario_complete"
     assert reviewed["updates"]["planning_incomplete"] is False
-    assigned = task_planning.classify_task_nodes(context, assignments=[{"node_id": node_id, "capability_dimension_ids": ["report_generation"]}])
-    context.update(assigned["updates"])
     monkeypatch.setattr(task_planning, "require", lambda *_args: None)
-    finished = task_planning.finish_task_space(context)
+    finished = task_planning.finish_task_plan(context)
     assert finished["status"] == "complete"
     assert finished["updates"]["planning_incomplete"] is False
     assert finished["updates"]["planning_status"] == "complete"
@@ -364,9 +362,9 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
         "evidence": [{"reference": "profile:report", "detail": "paired report"}],
         "eligible_count": 1,
     })
-    plan.leaf_tasks[leaf.leaf_id] = leaf
+    plan.leaf_tasks[leaf.leaf_task_id] = leaf
     plan.scenarios[scenario_id] = plan.scenarios[scenario_id].model_copy(
-        update={"leaf_task_ids": [leaf.leaf_id], "status": "review_pending"}
+        update={"leaf_task_ids": [leaf.leaf_task_id], "status": "review_pending"}
     )
     task_planning._write_artifacts(context, plan)
 
@@ -379,7 +377,7 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
         captured["payload"] = json.loads(user_prompt)
         return {
             "scenario_id": scenario_id,
-            "checked_leaf_task_ids": [leaf.leaf_id],
+            "checked_leaf_task_ids": [leaf.leaf_task_id],
             "discarded_leaf_tasks": [],
             "status": "approved",
             "issues": [],
@@ -488,15 +486,15 @@ def test_review_discarding_all_leafs_allows_explicit_scenario_exclusion(tmp_path
         "output_spec": "text", "task_paradigm": "Report Generation", "capability_category": "Generation",
         "eligible_count": 1,
     })
-    plan.leaf_tasks[leaf.leaf_id] = leaf
+    plan.leaf_tasks[leaf.leaf_task_id] = leaf
     plan.scenarios[scenario_id] = plan.scenarios[scenario_id].model_copy(
-        update={"leaf_task_ids": [leaf.leaf_id], "status": "review_pending"}
+        update={"leaf_task_ids": [leaf.leaf_task_id], "status": "review_pending"}
     )
     task_planning._write_artifacts(context, plan)
     reviewed = task_planning.review_current_scenario(context, review={
         "scenario_id": scenario_id,
-        "checked_leaf_task_ids": [leaf.leaf_id],
-        "discarded_leaf_tasks": [{"leaf_task_id": leaf.leaf_id, "reason": "No valid wording."}],
+        "checked_leaf_task_ids": [leaf.leaf_task_id],
+        "discarded_leaf_tasks": [{"leaf_task_id": leaf.leaf_task_id, "reason": "No valid wording."}],
         "status": "rejected",
         "issues": ["The only candidate is invalid."],
     })

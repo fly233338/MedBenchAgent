@@ -27,6 +27,7 @@ class GenerationRequest(TypedDict):
     dataset_id: str
     construction_events_path: str
     dataset_access_manifest: dict[str, object]
+    sampling_manifest: dict[str, object]
     tasks: dict[str, GenerationTask]
     target_sample_count: int
     seed: int

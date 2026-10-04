@@ -10,10 +10,22 @@ from typing import Any, Iterable
 
 from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve
 from medbenchagent.planning.task_space import LeafTask, OutputSpec
+from medbenchagent.data.manifests import SamplingManifest, SamplingUnit
 
 
-def _identity(dataset_id: str, leaf_id: str, case_id: str) -> str:
-    payload = json.dumps([dataset_id, leaf_id, case_id], separators=(",", ":"))
+def _identity(
+    dataset_id: str,
+    leaf_id: str,
+    case_id: str,
+    sampling_unit_id: str | None = None,
+    view_ids: list[str] | None = None,
+    panel_id: str | None = None,
+    order: int | None = None,
+) -> str:
+    payload = json.dumps(
+        [dataset_id, leaf_id, case_id, sampling_unit_id, view_ids or [], panel_id, order],
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -42,6 +54,53 @@ def _input_bindings(case: dict[str, Any], bindings: list[dict[str, Any]]) -> lis
     ]
 
 
+def _case_for_unit(case: dict[str, Any], unit: SamplingUnit) -> dict[str, Any]:
+    """Return a shallow Case view with manifest order applied to Evidence."""
+    if not unit.ordered_evidence_ids and not unit.view_ids:
+        return case
+    evidence = list(case.get("evidence", []))
+    evidence_order = {identifier: index for index, identifier in enumerate(unit.ordered_evidence_ids)}
+    view_order = {identifier: index for index, identifier in enumerate(unit.view_ids)}
+    original = {id(item): index for index, item in enumerate(evidence)}
+
+    def key(item):
+        if item.get("id") in evidence_order:
+            return (0, evidence_order[item["id"]])
+        if item.get("view_id") in view_order:
+            return (1, view_order[item["view_id"]])
+        return (2, original[id(item)])
+
+    return {**case, "evidence": sorted(evidence, key=key)}
+
+
+def _sampling_units(
+    cases: list[dict[str, Any]],
+    sampling_manifest: SamplingManifest | dict[str, Any] | Iterable[SamplingUnit | dict[str, Any]] | None,
+) -> list[tuple[dict[str, Any], SamplingUnit]]:
+    by_case = {case.get("case_id"): case for case in cases if isinstance(case.get("case_id"), str)}
+    if sampling_manifest is None:
+        return [
+            (case, SamplingUnit(
+                sampling_unit_id=str(case["case_id"]), case_id=str(case["case_id"]), split="unspecified",
+                view_ids=[], ordered_evidence_ids=[], panel_id=None, eligible=True, reason=None, order=index,
+            ))
+            for index, case in enumerate(cases)
+            if isinstance(case.get("case_id"), str) and case.get("case_id")
+        ]
+    if isinstance(sampling_manifest, SamplingManifest):
+        units = sampling_manifest.units
+    elif isinstance(sampling_manifest, dict):
+        units = SamplingManifest.model_validate(sampling_manifest).units
+    else:
+        units = [SamplingUnit.model_validate(unit) for unit in sampling_manifest]
+    result = []
+    for unit in sorted(units, key=lambda item: item.order):
+        case = by_case.get(unit.case_id)
+        if case is not None and unit.eligible:
+            result.append((_case_for_unit(case, unit), unit))
+    return result
+
+
 def _template_cycle(seed: int, dataset_id: str, leaf_id: str, count: int) -> list[int]:
     payload = json.dumps([seed, dataset_id, leaf_id], separators=(",", ":"), ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).digest()
@@ -58,23 +117,41 @@ def generate_task_items(
     allocation: dict[str, int] | None = None,
     seed: int = 0,
     resolver_context: ResolverContext | None = None,
+    sampling_manifest: SamplingManifest | dict[str, Any] | Iterable[SamplingUnit | dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     parsed = [LeafTask.model_validate(leaf) for leaf in leaves]
     items = []
-    limits = allocation or {leaf.leaf_id: None for leaf in parsed}
-    counts = {leaf.leaf_id: 0 for leaf in parsed}
+    limits = allocation or {leaf.leaf_task_id: None for leaf in parsed}
+    counts = {leaf.leaf_task_id: 0 for leaf in parsed}
     cycles = {
-        leaf.leaf_id: _template_cycle(seed, dataset_id, leaf.leaf_id, len(leaf.question_templates))
+        leaf.leaf_task_id: _template_cycle(seed, dataset_id, leaf.leaf_task_id, len(leaf.question_templates))
         for leaf in parsed
     }
-    ordered_cases = sorted(cases, key=lambda value: str(value.get("case_id", "")))
-    for case in ordered_cases:
+    case_list = list(cases)
+    volume_input = False
+    if resolver_context is not None:
+        volume_input = any(
+            resolver_context.asset(str(item.get("value")))
+            and resolver_context.asset(str(item.get("value"))).get("kind") == "volume"
+            for case in case_list
+            for item in case.get("evidence", [])
+            if item.get("type") == "asset"
+        )
+    requires_manifest = volume_input or any(
+        len(leaf.input) > 1
+        or any(item.get("view_id") for item in case.get("evidence", []) if isinstance(item, dict))
+        for leaf in parsed
+        for case in case_list
+    )
+    if requires_manifest and sampling_manifest is None:
+        raise ValueError("View-dependent Generation requires a SamplingManifest")
+    for case, sampling_unit in _sampling_units(case_list, sampling_manifest):
         case_id = case.get("case_id")
         if not isinstance(case_id, str) or not case_id:
             continue
         for leaf in parsed:
-            limit = limits.get(leaf.leaf_id)
-            if limit is not None and counts[leaf.leaf_id] >= limit:
+            limit = limits.get(leaf.leaf_task_id)
+            if limit is not None and counts[leaf.leaf_task_id] >= limit:
                 continue
             resolved = resolve(case, ResolverSpec.parse(leaf.resolver), resolver_context=resolver_context)
             if isinstance(resolved, NotApplicable):
@@ -86,17 +163,17 @@ def generate_task_items(
                 answer = encode_closed_label(answer.get("value", answer) if isinstance(answer, dict) else answer)
                 if answer not in leaf.options:
                     raise ValueError(
-                        f"Resolved label {answer!r} is missing from Leaf Task options for {leaf.leaf_id}"
+                        f"Resolved label {answer!r} is missing from Leaf Task options for {leaf.leaf_task_id}"
                     )
-            template_index = cycles[leaf.leaf_id][counts[leaf.leaf_id] % len(cycles[leaf.leaf_id])]
-            items.append({
-                "item_id": _identity(dataset_id, leaf.leaf_id, case_id),
-                "id": _identity(dataset_id, leaf.leaf_id, case_id),
+            template_index = cycles[leaf.leaf_task_id][counts[leaf.leaf_task_id] % len(cycles[leaf.leaf_task_id])]
+            item = {
+                "item_id": _identity(dataset_id, leaf.leaf_task_id, case_id, sampling_unit.sampling_unit_id, sampling_unit.view_ids, sampling_unit.panel_id, sampling_unit.order),
+                "id": _identity(dataset_id, leaf.leaf_task_id, case_id, sampling_unit.sampling_unit_id, sampling_unit.view_ids, sampling_unit.panel_id, sampling_unit.order),
                 "dataset_id": dataset_id,
                 "dataset": dataset_id,
                 "scenario_id": leaf.scenario_id,
-                "leaf_task_id": leaf.leaf_id,
-                "task_id": leaf.leaf_id,
+                "leaf_task_id": leaf.leaf_task_id,
+                "task_id": leaf.leaf_task_id,
                 "case_id": case_id,
                 "capability_category": leaf.capability_category.value,
                 "task_paradigm": leaf.task_paradigm.value,
@@ -110,8 +187,17 @@ def generate_task_items(
                 "output_spec": leaf.output_spec.value,
                 "answer": answer,
                 "reference_evidence_ids": resolved.reference_evidence_ids,
-            })
-            counts[leaf.leaf_id] += 1
+            }
+            if sampling_manifest is not None:
+                item.update({
+                    "sampling_unit_id": sampling_unit.sampling_unit_id,
+                    "split": sampling_unit.split,
+                    "view_ids": list(sampling_unit.view_ids),
+                    "panel_id": sampling_unit.panel_id,
+                    "sampling_order": sampling_unit.order,
+                })
+            items.append(item)
+            counts[leaf.leaf_task_id] += 1
     return items
 
 

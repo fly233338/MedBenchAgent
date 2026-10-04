@@ -51,7 +51,7 @@ def prepared_bundle_entry(dataset_id, *, prepared_root=None):
     card = read_card(access.get("dataset_card_path", bundle / "dataset_card.json"))
     if card.get("dataset_id") != dataset_id:
         raise DatasetCatalogError("Prepared bundle Card dataset_id does not match its directory")
-    return {
+    value = {
         "dataset_id": dataset_id,
         "name": card["name"],
         "description": card["description"],
@@ -61,6 +61,13 @@ def prepared_bundle_entry(dataset_id, *, prepared_root=None):
         "profile_path": str(bundle / "dataset_profile.json"),
         "dataset_card_path": str(bundle / "dataset_card.json"),
     }
+    for name in ("presentation", "split", "sampling"):
+        path_key = f"{name}_manifest_path"
+        digest_key = f"{name}_manifest_digest"
+        if access.get(path_key):
+            value[path_key] = access[path_key]
+            value[digest_key] = access.get(digest_key)
+    return value
 
 
 def load_dataset_catalog(catalog_path=None):
@@ -112,6 +119,14 @@ def register_dataset(dataset_id, bundle, *, catalog_path=None):
         "profile_path": str(bundle / "dataset_profile.json"),
         "dataset_card_path": str(bundle / "dataset_card.json"),
     }
+    ready = json.loads((bundle / "ready.json").read_text(encoding="utf-8")) if (bundle / "ready.json").is_file() else {}
+    access = ready.get("access", {})
+    for name in ("presentation", "split", "sampling"):
+        path_key = f"{name}_manifest_path"
+        digest_key = f"{name}_manifest_digest"
+        if access.get(path_key):
+            entry[path_key] = access[path_key]
+            entry[digest_key] = access.get(digest_key)
     target = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
     entries = (
         [e for e in load_dataset_catalog(target) if e["dataset_id"] != dataset_id]

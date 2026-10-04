@@ -1,8 +1,11 @@
 {
   "schema_version": "bir-registry-resolver",
-  "step_operations": ["read", "collect", "select", "compare", "compute", "locate", "mask_to_bbox", "reference_text", "map_label"],
+  "step_operations": ["read", "collect", "select", "compare", "compute", "locate", "mask_to_bbox", "read_mask_feature", "argmax", "reference_text", "map_label"],
   "compute_operations": ["sum", "mean", "difference", "ratio", "count"],
   "compare_modes": ["equal", "less", "greater", "difference"],
-  "input_evidence_types": ["asset", "text", "value", "region"]
+  "input_evidence_types": ["asset", "text", "value", "region"],
+  "mask_feature_names": ["bbox", "pixel_count", "area_fraction", "centroid", "component_count", "equivalent_diameter_pixels", "physical_area", "plane_bbox", "plane_area_fraction", "plane_centroid", "plane_equivalent_diameter_pixels"],
+  "argmax": {"input_type": "ordered_numeric_collection", "output_type": "index", "tie_policy": "reject", "zero_based": true},
+  "reference_only_evidence": {"mask": true, "labels": true, "calibration": true}
 }
 

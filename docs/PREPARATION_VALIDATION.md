@@ -19,7 +19,7 @@
 
 ## 发布前检查
 
-- 验证来源路径、记录 ID、finding 关系、字段映射、mask 几何和图像 manifest。
+- 验证来源路径、记录 ID、finding 关系、字段映射、带 digest 的 mask 几何、展示 manifest 和采样顺序。
 - 统计保留记录、整图隔离和等价重复；Profile、Card 和 Catalog 绑定最终 Bundle。
 - 仅接受通过完整验证的候选；不确定的总体选择进入明确的用户审核。
 - 数据准备不决定 benchmark 题目；Task Planning 将完整 Evidence Catalog 作为事实清单，
@@ -36,6 +36,9 @@
 `preparation_report.json`。宿主逐 Case 验证 Evidence ID、ref、Asset 引用、source locator 和
 digest，并完成完整 population 账本。单个坏 Case 隔离并记录原因；映射、Schema 或 Adapter
 级别的系统性错误阻止发布。准备阶段不生成任务、答案或模型输入选择。
+
+若候选提供 presentation、split 或 sampling manifest，宿主同时验证记录引用、输出文件 digest、
+Case/Asset/view identity 和冻结顺序。缺失或不一致的 manifest 不能用于 view-dependent task。
 
 
 ## Field Semantics for Planning

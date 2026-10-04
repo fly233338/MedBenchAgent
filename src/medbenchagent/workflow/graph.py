@@ -695,7 +695,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         child["artifact_versions"] = dict(context.get("artifact_versions", {}))
         child["operation_directory"] = agent_operation(context, "GenerationAgent", dataset_id)
         counts = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))["counts"][dataset_id]
-        leaf_path = child.get("leaf_tasks_path") or child.get("task_leaves_path")
+        leaf_path = child.get("leaf_tasks_path")
         output_path = Path(child["operation_directory"]) / "benchmark_items.jsonl"
         if sum(counts.values()):
             generated = run_generation(child, leaf_path=leaf_path, output_path=output_path, allocation=counts)

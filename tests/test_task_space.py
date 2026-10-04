@@ -1,11 +1,11 @@
 import pytest
 
-from medbenchagent.planning.node_builder import build_task_nodes
+from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.resolver import ResolverSpec, resolve
 from medbenchagent.planning.task_discovery import leaf_identity
 from medbenchagent.planning.task_space import (
     AxisAnalysis,
-    AxisAssessment,
+    AxisValueDecision,
     AxisDecisionSet,
     EvidenceBasis,
     LeafTask,
@@ -20,7 +20,7 @@ def _analysis(**supported):
         allowed = {"input_structure": ("single-image", "multi-image", "multi-view", "volume", "image-text", "paired-study"),
                    "operation": ("recognize", "localize", "quantify", "compare", "align", "describe"),
                    "clinical_target": ("acquisition", "anatomy", "finding", "attribute", "assessment", "diagnosis", "management", "quality")} [axis]
-        return [AxisAssessment(value=value, supported=value in names,
+        return [AxisValueDecision(value=value, supported=value in names,
                                evidence_basis=[EvidenceBasis(reference="case:c1", detail="observed")], reason="observed") for value in allowed]
     return AxisAnalysis(input_structure=values("input_structure", supported.get("input_structure", [])),
                         operation=values("operation", supported.get("operation", [])),
@@ -30,8 +30,8 @@ def _analysis(**supported):
 
 def test_axis_registry_and_node_ids_are_deterministic():
     analysis = _analysis(input_structure=["single-image"], operation=["recognize"], clinical_target=["finding"])
-    first = build_task_nodes(analysis, {"evidence": {}})
-    second = build_task_nodes(analysis, {"evidence": {}})
+    first = build_task_scenarios(analysis, {"evidence": {}})
+    second = build_task_scenarios(analysis, {"evidence": {}})
     assert first.keys() == second.keys()
     assert len(first) == 1
     assert next(iter(first.values())).capability_category == "Recognition"
@@ -54,7 +54,7 @@ def test_axis_decision_set_accepts_json_axis_value_under_strict_contract():
 
 def test_node_constraints_preserve_empty_nodes_with_reason():
     analysis = _analysis(input_structure=["multi-view"], operation=["recognize"], clinical_target=["finding"])
-    nodes = build_task_nodes(analysis, {"assets": {"related_image_cases": 0}, "evidence": {}})
+    nodes = build_task_scenarios(analysis, {"assets": {"related_image_cases": 0}, "evidence": {}})
     node = next(iter(nodes.values()))
     assert node.exclusion_reason == "multi-view requires related image assets"
 
@@ -188,9 +188,8 @@ def test_resolver_reports_positional_result_step_ids():
 
 def test_task_paradigm_rejects_incompatible_output():
     try:
-        from medbenchagent.planning.task_space import TaskLeaf
-        TaskLeaf(leaf_id="l", name="l", node_id="n", question="q", input=[{"role": "x"}],
-                 clinical_target_id="finding", target="t", answer="a", resolver={}, output_spec=OutputSpec.BBOX,
+        LeafTask(leaf_task_id="l", name="l", scenario_id="n", question_templates=["q"], input=[{"role": "x"}],
+                 clinical_target_id="finding", target="t", reference_rule="a", resolver={}, output_spec=OutputSpec.BBOX,
                  task_paradigm=TaskParadigm.VQA, capability_category="Recognition")
     except ValueError as exc:
         assert "incompatible" in str(exc)
@@ -247,13 +246,16 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
                 {"id": "report", "type": "text", "name": "report", "value": "Clear", "ref": ["asset"]},
             ]}]}
     monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", FakeQuery)
-    leaf = {"leaf_id": "leaf-1", "name": "report", "node_id": node_id, "clinical_target_id": "finding_report", "question": "Describe the finding.",
+    leaf = {"leaf_task_id": "leaf-1", "name": "report", "scenario_id": node_id, "clinical_target_id": "finding_report", "question_templates": ["Describe the finding."],
             "input": [{"role": "image", "name": "image", "evidence_type": "asset"}], "target": "finding",
-            "answer": "Read the paired report", "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+            "reference_rule": "Read the paired report", "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
             "steps": [{"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}},
                       {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}}],
             "output_spec": "text", "result_step": "step_1"}, "output_spec": "text", "task_paradigm": "Report Generation",
             "capability_category": "Generation"}
-    saved = task_planning.save_task_leaf(context, leaf=leaf)
+    saved = task_planning.save_leaf_task(
+        context,
+        leaf=task_planning.LeafTaskDraft.model_validate(leaf),
+    )
     assert saved["updates"]["task_leaves"]["leaf-1"]["eligible_count"] == 1
 

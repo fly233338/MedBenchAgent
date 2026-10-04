@@ -14,6 +14,7 @@ OpenHands Coding Session 只能在 Worker workspace 中写候选文件。宿主�
 
 - `cases.jsonl`：以 Case/Evidence 为核心的 canonical 记录；
 - `asset_manifest.jsonl`：image/volume Asset、来源和完整性摘要；
+- `presentation_manifest.jsonl`、`split_manifest.jsonl`、`sampling_manifest.jsonl`：可选但带 digest 的展示、来源分组和冻结采样顺序；
 - `preparation_report.json`：完整输入、接收、隔离和失败账本；
 - Profile：字段、结构、覆盖率、值分布和容量索引；
 - Card：数据集范围、模态、字段角色和来源证据；
@@ -42,9 +43,10 @@ Evidence Catalog 是完整数据事实清单，不是任务候选清单。Task P
 Summary 和有界 Case Samples。每个规划证据文件记录 dataset revision 与输入
 digest；读取工具只返回分页或当前 Axis/Scenario 所需的切片。
 
-结构事实区分 primary input asset 与 annotation/mask asset。只有明确的 primary
+Mask 的 bbox、面积、质心、component、等效直径和 plane feature 必须由准备阶段写入
+Evidence，并绑定对应 Asset digest；Resolver 不读取原始 mask 文件。结构事实区分 primary
 asset 才能证明 multi-image 或 multi-view；region→mask 引用不等于多视图关系。
-未知关系保持 unknown 并由规划代码保守排除，不能用字段数量或整数值猜测
+未知 role、visibility、关系或 manifest 顺序保持 unknown 并由规划代码保守排除，不能用字段数量或整数值猜测
 index、时间或医学语义。
 
 规划上下文可以引用准备阶段保存的 `mapping.json` 和语义证据。宿主将字段含义、

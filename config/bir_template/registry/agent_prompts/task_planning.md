@@ -20,6 +20,15 @@ During Leaf design, apply the appended Leaf Task instructions.
 
 Do not invent fields, relationships, dataset revisions, or completed work.
 
+## Prepared Evidence Constraints
+
+- Use only explicitly registered and validated derived features as Resolver references. A mask, label, region, calibration field, or numeric value does not establish a task capability by itself.
+- Keep primary model-visible image/volume Evidence separate from reference-only mask, label, region, calibration, and derived Evidence. Do not use filenames, asset IDs, patient IDs, or hidden metadata as shortcuts.
+- Quantitative targets require an explicit subject, scope, unit, or documented dimensionless definition. Do not invent thresholds, conversions, aggregations, or class mappings.
+- Multi-view, volume, and ordered-panel tasks require stable view identity, documented correspondence, and a frozen presentation/sampling order. Indexes refer only to that registered order.
+- Missing annotation, empty masks, tied maxima, missing planes, missing units, and incomplete manifests are unsupported and must be excluded rather than replaced with 0, an empty box, or `N/A`.
+- Prefer direct or derived references whose coverage, scope, unit, relation, and input/reference role are explicit and executable.
+
 ## 3. Phase Workflow
 
 1. `access` or `overview`

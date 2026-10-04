@@ -199,26 +199,17 @@ class TaskScenario(BaseModel):
             raise ValueError("Scenario Leaf Task IDs must be unique")
         return self
 
-    @property
-    def node_id(self) -> str:
-        return self.scenario_id
-
-    @property
-    def leaf_ids(self) -> list[str]:
-        return self.leaf_task_ids
-
-
 class LeafTask(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    leaf_task_id: str | None = None
+    model_config = ConfigDict(extra="forbid", strict=True)
+    leaf_task_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    scenario_id: str | None = None
+    scenario_id: str = Field(min_length=1)
     clinical_target_id: str = Field(min_length=1)
     question_templates: list[str] = Field(min_length=1)
     options: list[str] | None = None
     input: list[EvidenceSelector] = Field(min_length=1)
     target: str = Field(min_length=1)
-    reference_rule: str | None = None
+    reference_rule: str = Field(min_length=1)
     resolver: dict[str, Any]
     output_spec: OutputSpec
     task_paradigm: TaskParadigm
@@ -231,33 +222,24 @@ class LeafTask(BaseModel):
     def parse_capability_category(cls, value):
         return CapabilityCategory(value)
 
-    @model_validator(mode="before")
+    @field_validator("output_spec", mode="before")
     @classmethod
-    def normalize_legacy_fields(cls, value):
-        value = dict(value)
-        value.setdefault("leaf_task_id", value.get("leaf_id"))
-        value.setdefault("scenario_id", value.get("node_id"))
-        if not value.get("question_templates"):
-            legacy_question = value.get("question_template", value.get("question"))
-            if legacy_question:
-                value["question_templates"] = [legacy_question]
-        value.pop("question_template", None)
-        value.pop("question", None)
-        value.setdefault("reference_rule", value.get("answer"))
-        return value
+    def parse_output_spec(cls, value):
+        return OutputSpec(value)
+
+    @field_validator("task_paradigm", mode="before")
+    @classmethod
+    def parse_task_paradigm(cls, value):
+        return TaskParadigm(value)
 
     @model_validator(mode="after")
     def validate_contract(self):
-        if not self.leaf_task_id or not self.scenario_id or not self.question_templates:
-            raise ValueError("LeafTask requires leaf_task_id, scenario_id and question_templates")
         if any(not template.strip() for template in self.question_templates):
             raise ValueError("LeafTask question_templates must be non-empty")
         if any("{{" in template or "}}" in template for template in self.question_templates):
             raise ValueError("LeafTask question_templates must be complete; unresolved placeholders are not supported")
         if len(set(self.question_templates)) != len(self.question_templates):
             raise ValueError("LeafTask question_templates must be unique")
-        if not self.reference_rule:
-            raise ValueError("LeafTask requires reference_rule")
         allowed = set(_DEFAULT_REGISTRY.task_contracts.get("paradigm_output_specs", {}).get(
             self.task_paradigm.value, []
         ))
@@ -269,24 +251,6 @@ class LeafTask(BaseModel):
             if len({option.casefold() for option in self.options}) != len(self.options):
                 raise ValueError("VQA options must be unique")
         return self
-
-    @property
-    def leaf_id(self) -> str:
-        return self.leaf_task_id
-
-    @property
-    def node_id(self) -> str:
-        return self.scenario_id
-
-    @property
-    def question(self) -> str:
-        return self.question_templates[0]
-
-    @property
-    def question_template(self) -> str:
-        """Compatibility view for callers that still expect one template."""
-        return self.question_templates[0]
-
 
 class LeafTaskDiscard(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -335,9 +299,11 @@ class BenchmarkItem(BaseModel):
 
 
 class TaskPlanState(BaseModel):
-    model_config = ConfigDict(extra="allow", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True)
     schema_version: str = "task-plan"
     dataset: dict[str, Any]
+    dataset_facts: dict[str, Any] = Field(default_factory=dict)
+    blueprint: dict[str, Any] = Field(default_factory=dict)
     access_path: str | None = None
     evidence_manifest_path: str | None = None
     axis_decisions: dict[str, list[AxisValueDecision]] = Field(default_factory=dict)
@@ -362,32 +328,7 @@ class TaskPlanState(BaseModel):
     def parse_next_axis(cls, value):
         return None if value is None else TaskAxis(value)
 
-    @property
-    def nodes(self):
-        return self.scenarios
-
-    @property
-    def leaves(self):
-        return self.leaf_tasks
-
-    @property
-    def pending_node_ids(self):
-        return self.pending_scenario_ids
-
-    @property
-    def current_node_id(self):
-        return self.current_scenario_id
-
-
 def stable_scenario_id(input_structure: str, operation: str, clinical_target: str) -> str:
     payload = json.dumps([input_structure, operation, clinical_target], separators=(",", ":"))
     return "scenario-" + hashlib.sha256(payload.encode()).hexdigest()[:16]
-
-
-AxisAssessment = AxisValueDecision
-TaskNode = TaskScenario
-TaskLeaf = LeafTask
-NodeReview = ScenarioReview
-TaskSpacePlan = TaskPlanState
-stable_node_id = stable_scenario_id
 

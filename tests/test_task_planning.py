@@ -65,7 +65,7 @@ def test_breast_like_facts_do_not_count_masks_as_multi_image_or_age_as_index():
         "patient_id": None,
         "evidence": [
             {"id": "image-ev", "type": "asset", "name": "ultrasound_image", "value": "image", "ref": []},
-            {"id": "mask-ev", "type": "asset", "name": "mask_tumor", "value": "mask", "ref": []},
+            {"id": "mask-ev", "type": "asset", "name": "mask_tumor", "value": "mask", "ref": [], "mask": {}},
             {"id": "region", "type": "region", "name": "mask_tumor_region", "value": [0, 0, 1, 1], "ref": ["mask-ev"]},
             {"id": "age", "type": "value", "name": "age", "value": 57, "ref": []},
         ],

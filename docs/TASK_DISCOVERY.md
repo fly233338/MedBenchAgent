@@ -105,7 +105,7 @@ Operation 表示“要求模型完成什么任务”，`clinical_target` 表示�
 
 `describe` produces a coherent paragraph or structured report synthesizing multiple evidence-supported clinical observations and their relationships. An isolated label or verbose restatement of one categorical fact does not qualify.
 
-Task Planning must distinguish `benchmark_model_input` from reference evidence. Planning and review models may inspect the Resolver and reference contract; reference evidence must not be placed in the benchmark model input.
+Task Planning must distinguish `benchmark_model_input` from reference evidence. Planning and review models may inspect the Resolver and reference contract; reference evidence must not be placed in the benchmark model input. Prepared mask features are immutable derived references, not model inputs.
 
 Clinical target selection follows the requested prediction: `assessment` is a
 standardized grade, score or risk category such as BI-RADS; `diagnosis` is a
@@ -148,7 +148,8 @@ Supervisor does not relabel it as progress or automatically repeat it.
 
 Reference Evidence is used by the deterministic Resolver to reconstruct an
 answer and is never included in model input. Every evidence artifact is bound
-to the selected dataset revision and access digests.
+to the selected dataset revision and access digests. Ordered comparison and index
+tasks additionally require a frozen presentation or sampling manifest.
 
 Scenario Review processes one pending Scenario at a time by its `scenario_id`.
 The queue head is the only valid ID, which makes resumed operation receipts

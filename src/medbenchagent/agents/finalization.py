@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from medbenchagent.audit.task_items import audit_task_items
+from medbenchagent.data.manifests import PresentationRecord, SamplingManifest, SplitManifest, load_manifest, verify_manifest_digest
 from medbenchagent.planning.task_space import TaskPlanState
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
@@ -94,11 +95,78 @@ def _limit_reasons(items: Iterable[dict[str, Any]], *, max_tasks_per_image: int 
     return accepted, rejected
 
 
+def _access_payload(access: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "dataset_id", "revision", "annotation_digest", "asset_manifest_digest", "profile_digest",
+        "duckdb_digest", "mapping_digest", "dataset_card_digest", "presentation_manifest_digest",
+        "split_manifest_digest", "sampling_manifest_digest",
+    )
+    return {key: access.get(key) for key in keys if access.get(key) is not None}
+
+
+def _digest_payload(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def _verify_dataset_manifests(access: dict[str, Any]) -> dict[str, Any]:
+    references = {}
+    for name in ("presentation", "split", "sampling"):
+        path = access.get(f"{name}_manifest_path")
+        digest = access.get(f"{name}_manifest_digest")
+        if path or digest:
+            if not path or not digest or not Path(path).is_file():
+                raise ValueError(f"{name} manifest is missing")
+            verify_manifest_digest(path, digest)
+            model = {
+                "presentation": PresentationRecord,
+                "split": SplitManifest,
+                "sampling": SamplingManifest,
+            }[name]
+            load_manifest(path, model)
+            references[name] = {"path": path, "digest": digest}
+    return references
+
+
+def _validate_item_manifest_refs(item: dict[str, Any], resolver_context) -> list[str]:
+    errors = []
+    sampling_id = item.get("sampling_unit_id")
+    sampling = resolver_context.manifests.get("sampling") if resolver_context else None
+    if sampling_id:
+        unit = next((value for value in (sampling.units if sampling else []) if value.sampling_unit_id == sampling_id), None)
+        if unit is None:
+            errors.append("unknown_sampling_unit")
+        else:
+            if item.get("case_id") != unit.case_id:
+                errors.append("sampling_case_mismatch")
+            if item.get("split") != unit.split:
+                errors.append("sampling_split_mismatch")
+            if item.get("view_ids") != unit.view_ids:
+                errors.append("sampling_view_order_mismatch")
+            if item.get("panel_id") != unit.panel_id:
+                errors.append("sampling_panel_mismatch")
+            if item.get("sampling_order") != unit.order:
+                errors.append("sampling_order_mismatch")
+    elif sampling is not None and item.get("view_ids"):
+        errors.append("missing_sampling_unit")
+    if item.get("view_ids"):
+        presentation = resolver_context.manifests.get("presentation") if resolver_context else None
+        records = presentation if isinstance(presentation, list) else ([presentation] if presentation is not None else [])
+        available = {record.view_id for record in records if record.view_id}
+        if not set(item["view_ids"]) <= available:
+            errors.append("unknown_presentation_view")
+    return errors
+
+
 def _manifest(context: dict[str, Any], plans: dict[str, TaskPlanState], allocation: dict[str, Any],
               items: list[dict[str, Any]], reports: dict[str, Any], option_distribution: dict[str, Any]) -> dict[str, Any]:
     tasks, datasets = {}, {}
+    access_receipts = {}
+    manifest_refs = {}
     for dataset_id in sorted(plans):
         plan = plans[dataset_id]
+        access = context.get("dataset_assets", {}).get(dataset_id, {}).get("access", {})
+        access_receipts[dataset_id] = _access_payload(access)
+        manifest_refs[dataset_id] = _verify_dataset_manifests(access)
         counts = allocation["counts"].get(dataset_id, {})
         dataset_items = [item for item in items if item.get("dataset_id") == dataset_id]
         datasets[dataset_id] = {
@@ -109,6 +177,11 @@ def _manifest(context: dict[str, Any], plans: dict[str, TaskPlanState], allocati
             "accepted_count": reports[dataset_id]["accepted"],
             "shortfall": reports[dataset_id]["shortfall"],
             "item_count": len(dataset_items),
+            "dataset_access_digest": _digest_payload(access_receipts[dataset_id]),
+            "prepared_annotation_digest": access.get("annotation_digest"),
+            "presentation_manifest_digest": access.get("presentation_manifest_digest"),
+            "split_manifest_digest": access.get("split_manifest_digest"),
+            "sampling_manifest_digest": access.get("sampling_manifest_digest"),
         }
         for leaf_id, leaf in sorted(plan.leaf_tasks.items()):
             tasks[f"{dataset_id}::{leaf_id}"] = {
@@ -123,12 +196,54 @@ def _manifest(context: dict[str, Any], plans: dict[str, TaskPlanState], allocati
                 "generated_count": sum(item.get("leaf_task_id") == leaf_id for item in dataset_items),
                 "accepted_count": sum(item.get("leaf_task_id") == leaf_id for item in dataset_items),
             }
+    digest_inputs = {
+        "bir_intent": context.get("bir_intent", context.get("benchmark_info", {})),
+        "registry_digest": context.get("registry_digest") or context.get("bir_manifest_digest"),
+        "dataset_access": access_receipts,
+        "task_plans": {
+            dataset_id: plan.model_dump(mode="json")
+            for dataset_id, plan in sorted(plans.items())
+        },
+        "task_plan_digests": context.get("task_plan_digests", {}),
+        "presentation": {
+            dataset_id: {
+                name: value.get("digest")
+                for name, value in refs.items()
+            }
+            for dataset_id, refs in manifest_refs.items()
+        },
+        "split": {dataset_id: access.get("split_manifest_digest") for dataset_id, access in (
+            (key, context.get("dataset_assets", {}).get(key, {}).get("access", {})) for key in sorted(plans)
+        )},
+        "sampling": {dataset_id: access.get("sampling_manifest_digest") for dataset_id, access in (
+            (key, context.get("dataset_assets", {}).get(key, {}).get("access", {})) for key in sorted(plans)
+        )},
+        "evaluation_protocol": context.get("evaluation_protocol", {}),
+        "allocation": allocation,
+        "seed": context.get("seed", 0),
+    }
     return {
         "schema_version": "benchmark-manifest",
-        "benchmark_id": hashlib.sha256(json.dumps(
-            [sorted(plans), allocation, context.get("seed", 0)], sort_keys=True, ensure_ascii=False
-        ).encode()).hexdigest(),
+        "benchmark_id": _digest_payload(digest_inputs),
+        "digest_inputs": digest_inputs,
         "benchmark_info": context.get("benchmark_info", {}),
+        "dataset_access_digest": _digest_payload(access_receipts),
+        "prepared_annotation_digest": {
+            dataset_id: value.get("annotation_digest") for dataset_id, value in access_receipts.items()
+        },
+        "presentation_manifest_digest": {
+            dataset_id: value.get("presentation_manifest_digest") for dataset_id, value in access_receipts.items()
+        },
+        "split_manifest_digest": {
+            dataset_id: value.get("split_manifest_digest") for dataset_id, value in access_receipts.items()
+        },
+        "sampling_manifest_digest": {
+            dataset_id: value.get("sampling_manifest_digest") for dataset_id, value in access_receipts.items()
+        },
+        "registry_digest": digest_inputs["registry_digest"],
+        "task_plan_digest": context.get("task_plan_digests", {}),
+        "evaluation_protocol": context.get("evaluation_protocol", {}),
+        "view_panel_semantics": context.get("view_panel_semantics", {}),
         "sample_scope": context.get("sample_scope", []),
         "execution_limits": {
             "max_tasks_per_image": context.get("max_tasks_per_image"),
@@ -170,6 +285,7 @@ def finalize_benchmark(context: dict[str, Any], *, output_directory: str | Path 
         cases = list(DatasetIndex(context["dataset_assets"][dataset_id]["access"]).iter_cases())
         from medbenchagent.planning.resolver import ResolverContext
         resolver_context = ResolverContext.from_access(context["dataset_assets"][dataset_id]["access"])
+        _verify_dataset_manifests(context["dataset_assets"][dataset_id]["access"])
         raw_items = _read_jsonl(raw_path)
         raw_generated_count = len(raw_items)
         for row in raw_items:
@@ -181,6 +297,10 @@ def finalize_benchmark(context: dict[str, Any], *, output_directory: str | Path 
                 continue
             if row.get("dataset_id", row.get("dataset")) != dataset_id or row.get("dataset") not in {None, dataset_id}:
                 quarantine.append({"dataset_id": dataset_id, "stage": "audit", "item": row, "reasons": ["dataset_mismatch"]})
+                continue
+            manifest_reasons = _validate_item_manifest_refs(row, resolver_context)
+            if manifest_reasons:
+                quarantine.append({"dataset_id": dataset_id, "stage": "manifest", "item": row, "reasons": manifest_reasons})
                 continue
             generated.append(row)
         audit = audit_task_items(

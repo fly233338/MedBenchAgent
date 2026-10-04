@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class DatasetAccessReceipt(BaseModel):
@@ -32,4 +32,24 @@ class DatasetAccessReceipt(BaseModel):
     source_root: str | None = None
     source_roots: dict[str, str] = Field(default_factory=dict)
     bundle_root: str | None = None
+    presentation_manifest_path: str | None = Field(default=None, min_length=1)
+    presentation_manifest_digest: str | None = Field(default=None, min_length=1)
+    split_manifest_path: str | None = Field(default=None, min_length=1)
+    split_manifest_digest: str | None = Field(default=None, min_length=1)
+    sampling_manifest_path: str | None = Field(default=None, min_length=1)
+    sampling_manifest_digest: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def manifest_pairs(self):
+        for name in ("presentation_manifest", "split_manifest", "sampling_manifest"):
+            path = getattr(self, f"{name}_path")
+            digest = getattr(self, f"{name}_digest")
+            if (path is None) != (digest is None):
+                raise ValueError(f"{name} path and digest must be supplied together")
+        return self
+
+    def manifest_reference(self, name: str) -> tuple[str, str] | None:
+        path = getattr(self, f"{name}_path")
+        digest = getattr(self, f"{name}_digest")
+        return (path, digest) if path and digest else None
 

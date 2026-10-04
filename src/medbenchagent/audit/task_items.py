@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any, Iterable
 
-from medbenchagent.generation.items import _input_assets, _input_bindings
+from medbenchagent.generation.items import _case_for_unit, _input_assets, _input_bindings
 from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve
 from medbenchagent.planning.task_space import LeafTask, OutputSpec
 
@@ -33,7 +33,7 @@ def audit_task_items(
     resolver_context: ResolverContext | None = None,
 ) -> dict[str, Any]:
     items = list(items)
-    leaf_map = {leaf.leaf_id: leaf for leaf in (LeafTask.model_validate(value) for value in leaves)}
+    leaf_map = {leaf.leaf_task_id: leaf for leaf in (LeafTask.model_validate(value) for value in leaves)}
     case_map = {case.get("case_id"): case for case in cases}
     accepted, rejected = [], []
     reasons = Counter()
@@ -46,10 +46,24 @@ def audit_task_items(
         if case is None:
             errors.append("unknown_case")
         if not errors:
-            resolved = resolve(case, ResolverSpec.parse(leaf.resolver), resolver_context=resolver_context)
+            sampling_unit = None
+            if item.get("sampling_unit_id"):
+                manifest = (resolver_context.manifests.get("sampling") if resolver_context else None)
+                sampling_unit = next(
+                    (unit for unit in (manifest.units if manifest is not None else [])
+                     if unit.sampling_unit_id == item.get("sampling_unit_id")),
+                    None,
+                )
+                if sampling_unit is None:
+                    errors.append("unknown_sampling_unit")
+                elif sampling_unit.case_id != case.get("case_id") or not sampling_unit.eligible:
+                    errors.append("invalid_sampling_unit")
+                else:
+                    case = _case_for_unit(case, sampling_unit)
+            resolved = resolve(case, ResolverSpec.parse(leaf.resolver), resolver_context=resolver_context) if not errors else None
             if isinstance(resolved, NotApplicable):
                 errors.append(resolved.reason)
-            else:
+            elif resolved is not None:
                 expected = resolved.reference.get("value", resolved.reference) if isinstance(resolved.reference, dict) else resolved.reference
                 if leaf.output_spec == OutputSpec.LABEL and leaf.options is not None:
                     try:
@@ -79,6 +93,15 @@ def audit_task_items(
                     errors.append("input_asset_order_mismatch")
                 if item.get("reference_evidence_ids") != resolved.reference_evidence_ids:
                     errors.append("reference_evidence_mismatch")
+                if sampling_unit is not None:
+                    if item.get("split") != sampling_unit.split:
+                        errors.append("sampling_split_mismatch")
+                    if item.get("view_ids") != sampling_unit.view_ids:
+                        errors.append("sampling_view_order_mismatch")
+                    if item.get("panel_id") != sampling_unit.panel_id:
+                        errors.append("sampling_panel_mismatch")
+                    if item.get("sampling_order") != sampling_unit.order:
+                        errors.append("sampling_order_mismatch")
                 if not _answer_matches(leaf.output_spec, expected, item.get("answer")):
                     errors.append("answer_mismatch")
                 if set(item.get("input_evidence_ids", [])) & set(item.get("reference_evidence_ids", [])):

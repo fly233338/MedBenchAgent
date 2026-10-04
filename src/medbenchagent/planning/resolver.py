@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,140 +17,69 @@ class ResolverContext:
     """Frozen asset access shared by planning, generation and audit."""
 
     assets: dict[str, dict[str, Any]] = field(default_factory=dict)
-    roots: dict[str, Path] = field(default_factory=dict)
+    manifests: dict[str, Any] = field(default_factory=dict)
     cache: dict[tuple[Any, ...], Any] = field(default_factory=dict)
 
     @classmethod
     def from_access(cls, access: dict[str, Any] | None) -> "ResolverContext":
         access = access or {}
         manifest_path = access.get("asset_manifest_path")
-        if not manifest_path or not Path(manifest_path).is_file():
-            return cls()
-        from medbenchagent.data.asset_manifest import iter_asset_manifest
+        assets: dict[str, dict[str, Any]] = {}
+        if manifest_path:
+            from medbenchagent.data.asset_manifest import iter_asset_manifest
+            try:
+                assets = {
+                    entry.asset_id: entry.model_dump(mode="json")
+                    for entry in iter_asset_manifest(manifest_path)
+                }
+            except (OSError, ValueError):
+                assets = {}
+        manifests: dict[str, Any] = {}
+        from medbenchagent.data.manifests import load_manifest, PresentationRecord, SamplingManifest, SplitManifest, verify_manifest_digest
 
-        assets = {
-            entry.asset_id: entry.model_dump(mode="json")
-            for entry in iter_asset_manifest(manifest_path)
-        }
-        roots: dict[str, Path] = {}
-        bundle_root = access.get("bundle_root")
-        if not bundle_root and access.get("cases_path"):
-            bundle_root = str(Path(access["cases_path"]).resolve().parent)
-        if bundle_root:
-            roots["source"] = Path(bundle_root).resolve()
-            roots["bundle"] = Path(bundle_root).resolve()
-        for key in ("source_root", "bundle_root"):
-            if access.get(key):
-                roots["source_root" if key == "source_root" else "bundle"] = Path(access[key]).resolve()
-        for key in ("source_roots", "asset_roots"):
-            values = access.get(key)
-            if isinstance(values, dict):
-                roots.update({str(name): Path(value).resolve() for name, value in values.items()})
+        for name, model in (
+            ("presentation", PresentationRecord),
+            ("split", SplitManifest),
+            ("sampling", SamplingManifest),
+        ):
+            path = access.get(f"{name}_manifest_path")
+            if path:
+                try:
+                    verify_manifest_digest(path, access.get(f"{name}_manifest_digest"))
+                    manifests[name] = load_manifest(path, model)
+                except (OSError, ValueError):
+                    manifests[name] = None
         nested = access.get("source_access")
         if isinstance(nested, dict) and nested is not access:
             nested_context = cls.from_access(nested)
             for asset_id, asset in nested_context.assets.items():
                 assets.setdefault(asset_id, asset)
-            for name, root in nested_context.roots.items():
-                roots.setdefault(name, root)
-        return cls(assets=assets, roots=roots)
+            for name, manifest in nested_context.manifests.items():
+                manifests.setdefault(name, manifest)
+        return cls(assets=assets, manifests=manifests)
 
-    def _asset_path(self, asset_id: str) -> tuple[dict[str, Any], Path] | None:
-        asset = self.assets.get(asset_id)
-        if not asset:
-            return None
-        source_id = str(asset.get("source_id", "source"))
-        candidates = []
-        for root in (
-            self.roots.get(source_id), self.roots.get("source"),
-            self.roots.get("source_root"), self.roots.get("bundle"),
-            *self.roots.values(),
-        ):
-            if root is not None and root not in candidates:
-                candidates.append(root)
-        relative = Path(str(asset.get("source_path", "")))
-        if not str(relative) or relative.is_absolute():
-            return None
-        for root in candidates:
-            path = (root / relative).resolve()
-            if path.is_relative_to(root) and path.is_file():
-                return asset, path
-        return None
+    def asset(self, asset_id: str) -> dict[str, Any] | None:
+        return self.assets.get(asset_id)
 
-    def mask_bbox(
-        self,
-        asset_id: str,
-        *,
-        channel: str,
-        foreground: list[int],
-    ) -> tuple[list[float] | None, str | None]:
-        key = ("mask_to_bbox", asset_id, channel, tuple(foreground))
-        if key in self.cache:
-            return self.cache[key]
-        located = self._asset_path(asset_id)
-        if located is None:
-            value = (None, "missing_asset")
-            self.cache[key] = value
-            return value
-        asset, path = located
-        from medbenchagent.data.sources import digest_file
+    def ordered_evidence(self) -> dict[str, int]:
+        mapping: dict[str, int] = {}
+        manifest = self.manifests.get("sampling")
+        if manifest is None:
+            return mapping
+        for unit in manifest.units:
+            for index, evidence_id in enumerate(unit.ordered_evidence_ids):
+                mapping.setdefault(evidence_id, index)
+        return mapping
 
-        expected_digest = asset.get("file_digest")
-        if expected_digest and digest_file(path) != expected_digest:
-            value = (None, "asset_digest_mismatch")
-            self.cache[key] = value
-            return value
-        try:
-            from PIL import Image
-            import numpy as np
-
-            with Image.open(path) as image:
-                image.load()
-                rgba = image.convert("RGBA")
-                array = np.asarray(rgba)
-        except Exception:
-            value = (None, "mask_read_error")
-            self.cache[key] = value
-            return value
-        if array.ndim != 3 or array.shape[2] != 4:
-            value = (None, "mask_invalid_dimensions")
-            self.cache[key] = value
-            return value
-        expected_width = asset.get("width")
-        expected_height = asset.get("height")
-        if (expected_width and expected_width != array.shape[1]) or (
-            expected_height and expected_height != array.shape[0]
-        ):
-            value = (None, "asset_dimension_mismatch")
-            self.cache[key] = value
-            return value
-        channel_indexes = {"red": 0, "green": 1, "blue": 2, "alpha": 3}
-        if channel == "any":
-            selected = np.isin(array, foreground).any(axis=2)
-        elif channel in channel_indexes:
-            selected = np.isin(array[:, :, channel_indexes[channel]], foreground)
-        elif channel == "luminance":
-            luminance = np.asarray(Image.fromarray(array, mode="RGBA").convert("L"))
-            selected = np.isin(luminance, foreground)
-        else:
-            value = (None, "mask_channel_invalid")
-            self.cache[key] = value
-            return value
-        ys, xs = np.where(selected)
-        if not len(xs):
-            value = (None, "mask_empty")
-            self.cache[key] = value
-            return value
-        height, width = array.shape[:2]
-        bbox = [
-            float(xs.min() / width),
-            float(ys.min() / height),
-            float((xs.max() + 1) / width),
-            float((ys.max() + 1) / height),
-        ]
-        value = (bbox, None)
-        self.cache[key] = value
-        return value
+    def ordered_views(self) -> dict[str, int]:
+        mapping: dict[str, int] = {}
+        manifest = self.manifests.get("sampling")
+        if manifest is None:
+            return mapping
+        for unit in manifest.units:
+            for index, view_id in enumerate(unit.view_ids):
+                mapping.setdefault(view_id, index)
+        return mapping
 
 
 class ResolvedTaskItem(BaseModel):
@@ -224,6 +152,37 @@ class MaskToBBoxStep(BaseModel):
         return self
 
 
+class ReadMaskFeatureStep(BaseModel):
+    """Read an immutable feature embedded in a prepared mask Evidence."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    op: Literal["read_mask_feature"] = "read_mask_feature"
+    input: str = Field(min_length=1)
+    feature: Literal[
+        "bbox", "pixel_count", "area_fraction", "centroid", "component_count",
+        "equivalent_diameter_pixels", "physical_area", "plane_bbox",
+        "plane_area_fraction", "plane_centroid", "plane_equivalent_diameter_pixels",
+    ]
+    axis: int | None = Field(default=None, ge=0)
+    index: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_plane_selector(self):
+        plane = self.feature.startswith("plane_")
+        if plane and (self.axis is None or self.index is None):
+            raise ValueError("Plane mask features require both axis and index")
+        if not plane and (self.axis is not None or self.index is not None):
+            raise ValueError("axis/index are only valid for plane mask features")
+        return self
+
+
+class ArgmaxStep(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    op: Literal["argmax"] = "argmax"
+    input: str = Field(min_length=1)
+    tie_policy: Literal["reject"] = "reject"
+
+
 class ReferenceTextStep(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     op: Literal["reference_text"] = "reference_text"
@@ -249,7 +208,8 @@ class MapLabelStep(BaseModel):
 
 ResolverStep = Union[
     ReadStep, CollectStep, SelectStep, CompareStep, ComputeStep,
-    LocateStep, MaskToBBoxStep, ReferenceTextStep, MapLabelStep,
+    LocateStep, MaskToBBoxStep, ReadMaskFeatureStep, ArgmaxStep,
+    ReferenceTextStep, MapLabelStep,
 ]
 
 
@@ -285,7 +245,7 @@ class ResolverSpec(BaseModel):
         step_types: dict[str, str | None] = {}
         collection_steps: set[str] = set()
         for index, step in enumerate(self.steps):
-            dependencies = ([step.input] if isinstance(step, (SelectStep, LocateStep, MaskToBBoxStep, MapLabelStep)) else
+            dependencies = ([step.input] if isinstance(step, (SelectStep, LocateStep, MaskToBBoxStep, ReadMaskFeatureStep, ArgmaxStep, MapLabelStep)) else
                             [step.left, step.right] if isinstance(step, CompareStep) else
                             step.inputs if isinstance(step, ComputeStep) else [])
             if not set(dependencies) <= seen:
@@ -298,7 +258,7 @@ class ResolverSpec(BaseModel):
                 raise ValueError("Reference relation must name a model input role")
             key = f"step_{index}"
             if isinstance(step, (ReadStep, CollectStep, ReferenceTextStep)):
-                step_types[key] = step.selector.evidence_type
+                step_types[key] = "collection" if isinstance(step, CollectStep) else step.selector.evidence_type
                 if isinstance(step, CollectStep):
                     collection_steps.add(key)
             elif isinstance(step, SelectStep):
@@ -316,6 +276,19 @@ class ResolverSpec(BaseModel):
                 if step_types.get(step.input) != "asset" or step.input in collection_steps:
                     raise ValueError("mask_to_bbox requires a preceding asset reference")
                 step_types[key] = "bbox"
+            elif isinstance(step, ReadMaskFeatureStep):
+                if step_types.get(step.input) != "asset" or step.input in collection_steps:
+                    raise ValueError("read_mask_feature requires a preceding asset reference")
+                if step.feature in {"bbox", "plane_bbox"}:
+                    step_types[key] = "bbox"
+                elif step.feature == "centroid" or step.feature == "plane_centroid":
+                    step_types[key] = "vector"
+                else:
+                    step_types[key] = "number"
+            elif isinstance(step, ArgmaxStep):
+                if step_types.get(step.input) != "collection" or step.input not in collection_steps:
+                    raise ValueError("argmax requires a preceding ordered collect step")
+                step_types[key] = "index"
             elif isinstance(step, MapLabelStep):
                 step_types[key] = "label"
             seen.add(key)
@@ -344,6 +317,7 @@ def validate_resolver_policy(spec: ResolverSpec | dict[str, Any], policy: dict[s
     allowed_compute = set(policy.get("compute_operations", []))
     allowed_compare = set(policy.get("compare_modes", []))
     allowed_types = set(policy.get("input_evidence_types", []))
+    allowed_features = set(policy.get("mask_feature_names", []))
     for selector in parsed.inputs:
         if selector.evidence_type not in allowed_types:
             raise ValueError(f"Resolver input evidence type is disabled by the Registry: {selector.evidence_type}")
@@ -354,6 +328,12 @@ def validate_resolver_policy(spec: ResolverSpec | dict[str, Any], policy: dict[s
             raise ValueError(f"Resolver compute operation is disabled by the Registry: {step.operation}")
         if isinstance(step, CompareStep) and step.mode not in allowed_compare:
             raise ValueError(f"Resolver compare mode is disabled by the Registry: {step.mode}")
+        if isinstance(step, ReadMaskFeatureStep) and step.feature not in allowed_features:
+            raise ValueError(f"Resolver mask feature is disabled by the Registry: {step.feature}")
+        if isinstance(step, ArgmaxStep):
+            policy_argmax = policy.get("argmax", {})
+            if policy_argmax.get("tie_policy", "reject") != step.tie_policy:
+                raise ValueError("Resolver argmax tie policy is disabled by the Registry")
     return parsed
 
 
@@ -417,6 +397,50 @@ def _value(value):
     return value
 
 
+def _mask_value(source: Any) -> dict[str, Any] | None:
+    if not isinstance(source, dict) or source.get("type") != "asset":
+        return None
+    mask = source.get("mask")
+    return mask if isinstance(mask, dict) else None
+
+
+def _feature_value(mask: dict[str, Any], feature: str, axis: int | None, index: int | None):
+    if feature.startswith("plane_"):
+        planes = mask.get("planes") or []
+        plane = next(
+            (item for item in planes if item.get("axis") == axis and item.get("index") == index),
+            None,
+        )
+        if plane is None:
+            return None, "mask_plane_missing"
+        return plane[feature.removeprefix("plane_")], None
+    if feature not in mask:
+        return None, "mask_feature_missing"
+    value = mask.get(feature)
+    if feature == "physical_area" and (value is None or not mask.get("physical_unit")):
+        return None, "mask_physical_unit_missing"
+    return value, None
+
+
+def _ordered_collection(rows: list[dict[str, Any]], context: ResolverContext | None) -> bool:
+    """Check that a collection has a frozen order from a SamplingManifest."""
+    if not rows or context is None:
+        return False
+    evidence_order = context.ordered_evidence()
+    view_order = context.ordered_views()
+    keys = []
+    for row in rows:
+        evidence_id = row.get("id")
+        view_id = row.get("view_id")
+        if evidence_id in evidence_order:
+            keys.append(evidence_order[evidence_id])
+        elif view_id in view_order:
+            keys.append(view_order[view_id])
+        else:
+            return False
+    return keys == sorted(keys) and len(keys) == len(set(keys))
+
+
 def resolve(
     case: dict[str, Any],
     resolver_spec: ResolverSpec | dict[str, Any],
@@ -435,6 +459,8 @@ def resolve(
         ids = [item["id"] for item in rows]
         if not ids:
             return NotApplicable(reason="missing_input_evidence")
+        if any(item.get("mask") is not None for item in rows):
+            return NotApplicable(reason="reference_only_mask_input")
         if selector.evidence_type == "asset":
             if asset_ids.intersection(ids):
                 return NotApplicable(reason="duplicate_input_asset")
@@ -508,18 +534,46 @@ def resolve(
             value_refs[key] = set(value_refs.get(step.input, set()))
         elif isinstance(step, MaskToBBoxStep):
             source = values.get(step.input)
-            if not isinstance(source, dict) or source.get("type") != "asset":
+            mask = _mask_value(source)
+            if mask is None:
                 return NotApplicable(reason="mask_to_bbox_input_invalid")
-            if resolver_context is None:
-                return NotApplicable(reason="missing_asset_context")
-            bbox, reason = resolver_context.mask_bbox(
-                str(source.get("value")),
-                channel=step.channel,
-                foreground=step.foreground,
-            )
-            if bbox is None:
-                return NotApplicable(reason=reason or "mask_to_bbox_failed")
-            values[key] = bbox
+            if mask.get("channel") != step.channel or list(mask.get("foreground", [])) != list(step.foreground):
+                return NotApplicable(reason="mask_feature_selector_mismatch")
+            if resolver_context is not None:
+                asset = resolver_context.asset(str(source.get("value")))
+                if asset is not None and mask.get("source_digest") != asset.get("file_digest"):
+                    return NotApplicable(reason="asset_digest_mismatch")
+            values[key] = mask.get("bbox")
+            value_refs[key] = set(value_refs.get(step.input, set()))
+        elif isinstance(step, ReadMaskFeatureStep):
+            source = values.get(step.input)
+            mask = _mask_value(source)
+            if mask is None:
+                return NotApplicable(reason="read_mask_feature_input_invalid")
+            if resolver_context is not None:
+                asset = resolver_context.asset(str(source.get("value")))
+                if asset is not None and mask.get("source_digest") != asset.get("file_digest"):
+                    return NotApplicable(reason="asset_digest_mismatch")
+            value, reason = _feature_value(mask, step.feature, step.axis, step.index)
+            if value is None:
+                return NotApplicable(reason=reason or "mask_feature_not_applicable")
+            values[key] = value
+            value_refs[key] = set(value_refs.get(step.input, set()))
+        elif isinstance(step, ArgmaxStep):
+            source = values.get(step.input)
+            if not isinstance(source, list) or not source:
+                return NotApplicable(reason="argmax_source_missing")
+            if not _ordered_collection(source, resolver_context):
+                return NotApplicable(reason="argmax_collection_not_ordered")
+            try:
+                numbers = [_scalar(_value(item)) for item in source]
+            except (TypeError, ValueError):
+                return NotApplicable(reason="argmax_non_numeric_collection")
+            maximum = max(numbers)
+            winners = [index for index, value in enumerate(numbers) if value == maximum]
+            if len(winners) != 1:
+                return NotApplicable(reason="argmax_tie")
+            values[key] = winners[0]
             value_refs[key] = set(value_refs.get(step.input, set()))
         elif isinstance(step, MapLabelStep):
             source = values.get(step.input)

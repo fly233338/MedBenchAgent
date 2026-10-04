@@ -2,9 +2,9 @@ from medbenchagent.audit.task_items import audit_task_items
 
 
 def test_audit_reconstructs_reference_and_rejects_leakage():
-    leaf = {"leaf_id": "l", "name": "report", "node_id": "n", "clinical_target_id": "finding", "question": "Describe.",
+    leaf = {"leaf_task_id": "l", "name": "report", "scenario_id": "n", "clinical_target_id": "finding", "question_templates": ["Describe."],
             "input": [{"role": "image", "name": "image", "evidence_type": "asset"}], "target": "finding",
-            "answer": "Read report", "output_spec": "text", "task_paradigm": "Report Generation",
+            "reference_rule": "Read report", "output_spec": "text", "task_paradigm": "Report Generation",
             "capability_category": "Generation", "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
             "steps": [{"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}},
                       {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}}],
@@ -27,9 +27,9 @@ def test_audit_reconstructs_reference_and_rejects_leakage():
 
 def test_audit_rejects_wrong_question_and_input_binding():
     leaf = {
-        "leaf_id": "l", "name": "report", "node_id": "n", "clinical_target_id": "finding", "question": "Describe.",
+        "leaf_task_id": "l", "name": "report", "scenario_id": "n", "clinical_target_id": "finding", "question_templates": ["Describe."],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
-        "target": "finding", "answer": "Read report", "output_spec": "text",
+        "target": "finding", "reference_rule": "Read report", "output_spec": "text",
         "task_paradigm": "Report Generation", "capability_category": "Generation",
         "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
                      "steps": [

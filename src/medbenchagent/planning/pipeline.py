@@ -25,7 +25,7 @@ def _capability_report(scenarios: dict[str, TaskScenario], leaves: dict[str, Lea
         key = (category, leaf.task_paradigm.value, leaf.output_spec.value)
         group = groups[key]
         group["items"] += 1
-        group["leaves"].add(leaf.leaf_id)
+        group["leaves"].add(leaf.leaf_task_id)
         group["scenarios"].add(scenario.scenario_id if scenario else leaf.scenario_id)
     return {
         "schema_version": "capability-report",
@@ -55,6 +55,7 @@ def run_pipeline(
     nodes: Iterable[TaskScenario | dict[str, Any]] | None = None,
     plan: TaskPlanState | dict[str, Any] | None = None,
     resolver_context=None,
+    sampling_manifest=None,
 ) -> dict[str, Any]:
     parsed_plan = TaskPlanState.model_validate(plan) if plan is not None else None
     if parsed_plan is not None:
@@ -103,7 +104,7 @@ def run_pipeline(
         for leaf in parsed_leaves
     ]
     allocation = allocate_task_leaves(parsed_leaves, requested_count)
-    active = [leaf for leaf in parsed_leaves if allocation.get(leaf.leaf_id, 0) > 0]
+    active = [leaf for leaf in parsed_leaves if allocation.get(leaf.leaf_task_id, 0) > 0]
     items = generate_task_items(
         case_list,
         active,
@@ -111,20 +112,21 @@ def run_pipeline(
         allocation=allocation,
         seed=seed,
         resolver_context=resolver_context,
+        sampling_manifest=sampling_manifest,
     )
     audit = audit_task_items(case_list, items, active, resolver_context=resolver_context)
     manifest = build_manifest(dataset, scenarios.values(), parsed_leaves, allocation,
                               item_count=audit["accepted"], generated_items=audit["accepted_items"])
     shortfall = {
-        leaf.leaf_id: allocation.get(leaf.leaf_id, 0)
-        - sum(item.get("task_id") == leaf.leaf_id for item in audit["accepted_items"])
-        for leaf in parsed_leaves if allocation.get(leaf.leaf_id, 0) > 0
+        leaf.leaf_task_id: allocation.get(leaf.leaf_task_id, 0)
+        - sum(item.get("task_id") == leaf.leaf_task_id for item in audit["accepted_items"])
+        for leaf in parsed_leaves if allocation.get(leaf.leaf_task_id, 0) > 0
     }
-    leaves_by_id = {leaf.leaf_id: leaf for leaf in parsed_leaves}
+    leaves_by_id = {leaf.leaf_task_id: leaf for leaf in parsed_leaves}
     return {
         "axis_analysis": analysis.model_dump(mode="json") if analysis else None,
         "scenarios": {key: scenario.model_dump(mode="json") for key, scenario in scenarios.items()},
-        "leaves": {leaf.leaf_id: leaf.model_dump(mode="json") for leaf in parsed_leaves},
+        "leaves": {leaf.leaf_task_id: leaf.model_dump(mode="json") for leaf in parsed_leaves},
         "allocation": allocation,
         "items": audit["accepted_items"],
         "audit": {key: value for key, value in audit.items() if key not in {"accepted_items", "rejected_items"}},
