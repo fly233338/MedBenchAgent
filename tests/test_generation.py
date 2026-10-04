@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 def test_generation_uses_resolver_and_hides_reference_from_inputs():
     leaf = {
-        "leaf_id": "report-leaf", "name": "report", "node_id": "node-1",
+        "leaf_id": "report-leaf", "name": "report", "node_id": "node-1", "clinical_target_id": "finding",
         "question": "Describe the study.", "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
         "target": "report", "answer": "Read the paired report", "output_spec": "text",
         "task_paradigm": "Report Generation", "capability_category": "Generation",
@@ -31,7 +31,7 @@ def test_generation_uses_resolver_and_hides_reference_from_inputs():
 
 def test_generation_honors_allocation_and_case_order():
     leaf = {
-        "leaf_id": "l", "name": "label", "node_id": "n", "question": "What is shown?",
+        "leaf_id": "l", "name": "label", "node_id": "n", "clinical_target_id": "finding", "question": "What is shown?",
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
         "target": "finding", "answer": "Read label", "output_spec": "label",
         "task_paradigm": "VQA", "capability_category": "Recognition",
@@ -49,7 +49,7 @@ def test_generation_honors_allocation_and_case_order():
 
 def test_generation_uses_reproducible_balanced_template_cycle():
     leaf = {
-        "leaf_id": "l", "name": "label", "node_id": "n",
+        "leaf_id": "l", "name": "label", "node_id": "n", "clinical_target_id": "finding",
         "question_templates": ["What is shown?", "Which finding is present?", "Identify the finding."],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
         "target": "finding", "answer": "Read label", "output_spec": "label",
@@ -80,14 +80,14 @@ def test_generation_uses_reproducible_balanced_template_cycle():
 
 def test_generation_preserves_input_role_order_and_derived_label_options():
     leaf = {
-        "leaf_id": "compare-leaf", "name": "compare", "node_id": "scenario-compare",
+        "leaf_id": "compare-leaf", "name": "compare", "node_id": "scenario-compare", "clinical_target_id": "finding",
         "question_templates": ["Is Image A larger than Image B?"],
         "options": ["true", "false"],
         "input": [
             {"role": "image_a", "name": "image_a", "evidence_type": "asset"},
             {"role": "image_b", "name": "image_b", "evidence_type": "asset"},
         ],
-        "target": "measurement", "reference_rule": "Compare the two measurements.",
+        "target": "finding", "reference_rule": "Compare the two measurements.",
         "output_spec": "label", "task_paradigm": "VQA", "capability_category": "Comparison",
         "resolver": {
             "inputs": [
@@ -123,7 +123,7 @@ def test_generation_preserves_input_role_order_and_derived_label_options():
 
 def test_generation_and_audit_use_map_label_output_domain():
     leaf = {
-        "leaf_id": "margin-parent", "name": "margin", "node_id": "scenario-margin",
+        "leaf_id": "margin-parent", "name": "margin", "node_id": "scenario-margin", "clinical_target_id": "finding",
         "question_templates": ["How is the margin classified?"],
         "options": ["circumscribed", "not circumscribed"],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
@@ -152,13 +152,13 @@ def test_generation_and_audit_use_map_label_output_domain():
 
 def test_generation_rejects_duplicate_asset_binding_across_roles():
     leaf = {
-        "leaf_id": "duplicate-assets", "name": "compare", "node_id": "scenario-compare",
+        "leaf_id": "duplicate-assets", "name": "compare", "node_id": "scenario-compare", "clinical_target_id": "finding",
         "question_templates": ["Compare A and B."],
         "input": [
             {"role": "image_a", "name": "image", "evidence_type": "asset"},
             {"role": "image_b", "name": "image", "evidence_type": "asset"},
         ],
-        "target": "measurement", "reference_rule": "Compare.",
+        "target": "finding", "reference_rule": "Compare.",
         "output_spec": "number", "task_paradigm": "VQA", "capability_category": "Comparison",
         "resolver": {
             "inputs": [
@@ -184,7 +184,7 @@ def test_generation_rejects_duplicate_asset_binding_across_roles():
 
 def test_leaf_rejects_unresolved_question_placeholders():
     leaf = {
-        "leaf_id": "placeholder", "name": "label", "node_id": "scenario",
+        "leaf_id": "placeholder", "name": "label", "node_id": "scenario", "clinical_target_id": "finding",
         "question_templates": ["Is {{image_a}} larger than {{image_b}}?"],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
         "target": "finding", "reference_rule": "Read label", "output_spec": "label",

@@ -163,3 +163,15 @@ candidate review; after that queue is exhausted it contains the accepted
 Scenarios still awaiting Leaf design and review. The persisted
 `scenario_review_pending_ids` field remains the authoritative review queue.
 
+
+## Validated Clinical Targets and Rules
+
+Scenario Screening is an evidence gate. It returns atomic `validated_clinical_targets` with an
+ID, target type, subject, scope, reference kind, and reference fields. `keep` requires at least
+one target; it does not ask the model to brainstorm Leaf Tasks. Leaf design must select a target
+ID from the current Scenario and cannot create a new clinical target.
+
+Planning rules are frozen Markdown files in the experiment BIR Registry. The loader selects
+common rules plus the persisted dataset rule selection for each declared planning stage. A rule
+can explain clinical boundaries or provide a valid/invalid example, but deterministic code still
+owns all structural and Resolver validation.

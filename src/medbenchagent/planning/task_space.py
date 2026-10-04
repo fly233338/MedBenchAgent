@@ -129,6 +129,23 @@ class AxisAnalysis(BaseModel):
         return self
 
 
+class ValidatedClinicalTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    target_id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    name: str = Field(min_length=1)
+    target_type: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    scope: str = Field(min_length=1)
+    reference_kind: Literal["direct", "derived"]
+    reference_fields: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_reference_fields(self):
+        if len(set(self.reference_fields)) != len(self.reference_fields):
+            raise ValueError("Validated clinical target reference_fields must be unique")
+        return self
+
+
 class TaskScenario(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     scenario_id: str = Field(min_length=1)
@@ -142,7 +159,7 @@ class TaskScenario(BaseModel):
     screening_decision: Literal["keep", "exclude"] | None = None
     screening_reason: str | None = None
     screening_supporting_fields: list[str] = Field(default_factory=list)
-    feasible_task_directions: list[str] = Field(default_factory=list)
+    validated_clinical_targets: list[ValidatedClinicalTarget] = Field(default_factory=list)
     exclusion_reason: str | None = None
     exclusion_stage: Literal["structural", "screening", "leaf_review"] | None = None
     exclusion_evidence: list[EvidenceBasis] = Field(default_factory=list)
@@ -165,14 +182,19 @@ class TaskScenario(BaseModel):
             raise ValueError("Excluded Scenario requires an exclusion reason")
         if self.screening_decision == "keep" and self.exclusion_reason and self.exclusion_stage != "leaf_review":
             raise ValueError("A kept Scenario cannot have an exclusion reason")
+        if self.screening_decision == "keep" and not self.validated_clinical_targets:
+            raise ValueError("Keeping a Scenario requires validated clinical targets")
         if self.exclusion_reason and self.exclusion_stage is None:
             self.exclusion_stage = "screening"
         if self.exclusion_stage and not self.exclusion_reason:
             raise ValueError("Scenario exclusion stage requires an exclusion reason")
         if len(set(self.screening_supporting_fields)) != len(self.screening_supporting_fields):
             raise ValueError("Scenario screening supporting fields must be unique")
-        if len(set(self.feasible_task_directions)) != len(self.feasible_task_directions):
-            raise ValueError("Scenario feasible task directions must be unique")
+        target_ids = [item.target_id for item in self.validated_clinical_targets]
+        if len(target_ids) != len(set(target_ids)):
+            raise ValueError("Scenario validated clinical target IDs must be unique")
+        if any(item.target_type != self.clinical_target for item in self.validated_clinical_targets):
+            raise ValueError("Validated clinical target type must match Scenario clinical_target")
         if len(set(self.leaf_task_ids)) != len(self.leaf_task_ids):
             raise ValueError("Scenario Leaf Task IDs must be unique")
         return self
@@ -191,6 +213,7 @@ class LeafTask(BaseModel):
     leaf_task_id: str | None = None
     name: str = Field(min_length=1)
     scenario_id: str | None = None
+    clinical_target_id: str = Field(min_length=1)
     question_templates: list[str] = Field(min_length=1)
     options: list[str] | None = None
     input: list[EvidenceSelector] = Field(min_length=1)
@@ -320,7 +343,7 @@ class TaskPlanState(BaseModel):
     axis_decisions: dict[str, list[AxisValueDecision]] = Field(default_factory=dict)
     scenarios: dict[str, TaskScenario] = Field(default_factory=dict)
     leaf_tasks: dict[str, LeafTask] = Field(default_factory=dict)
-    phase: Literal["access", "overview", "axes", "scenarios", "screening", "scenario_review", "leaves", "complete", "blocked"] = "access"
+    phase: Literal["access", "overview", "rule_selection", "axes", "scenarios", "screening", "scenario_review", "leaves", "complete", "blocked"] = "access"
     next_axis: TaskAxis | None = TaskAxis.INPUT_STRUCTURE
     current_scenario_id: str | None = None
     pending_scenario_ids: list[str] = Field(default_factory=list)
@@ -330,6 +353,7 @@ class TaskPlanState(BaseModel):
     scenario_review_excluded_ids: list[str] = Field(default_factory=list)
     completed_scenario_ids: list[str] = Field(default_factory=list)
     reviews: dict[str, ScenarioReview] = Field(default_factory=dict)
+    rule_selection: dict[str, Any] = Field(default_factory=dict)
     revision: int = Field(default=0, ge=0)
     review: dict[str, Any] = Field(default_factory=dict)
 

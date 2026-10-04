@@ -15,6 +15,7 @@ def _plan(tmp_path, *, phase="leaves", facts=None):
         operation="recognize",
         clinical_target="finding",
         capability_category=CapabilityCategory.RECOGNITION,
+        validated_clinical_targets=[{"target_id": "finding", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["ultrasound_bmode_image"]}],
         status="active",
     )
     plan = TaskPlanState(
@@ -164,6 +165,7 @@ def test_bad_leaf_contains_repairable_diagnostics(tmp_path):
         "leaf_task_id": "bad",
         "name": "finding",
         "scenario_id": "scenario-1",
+        "clinical_target_id": "finding",
         "question_templates": ["What is shown?"],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
         "target": "finding",

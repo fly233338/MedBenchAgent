@@ -7,6 +7,7 @@ class GenerationTask(TypedDict, total=False):
     leaf_task_id: str
     name: str
     scenario_id: str
+    clinical_target_id: str
     question_templates: list[str]
     options: list[str] | None
     input: list[dict[str, Any]]

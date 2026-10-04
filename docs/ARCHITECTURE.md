@@ -101,3 +101,17 @@ Run 的配置、产物索引、事件日志和 Agent 状态都位于 Run 目录�
 
 benchmark 构建和模型推理是两个独立阶段。evaluation 读取已发布 benchmark 和图像 manifest，模型适配器、预测解析和指标计算不参与构建流程。
 
+
+## Planning Rule Library
+
+The BIR Registry freezes Markdown planning rules under `registry/rules/` together with the
+Axis, Resolver and stage prompts. Rules contain natural-language boundaries and examples;
+they are not executable predicates. After a dataset is selected, Task Planning performs one
+rule-selection call using the Dataset Card and benchmark brief, persists selected rule IDs and
+the Registry digest in the dataset Task Plan, and reuses that selection during recovery.
+Common rules are always active. The selected frozen rules are injected only into their declared
+Axis Analysis, Scenario Screening, Leaf Task Design, or Scenario Review prompt slot.
+
+Scenario Screening records validated clinical targets rather than speculative task directions.
+Each Leaf references one `clinical_target_id` from its Scenario, and code validates the target
+type, reference fields, Resolver contract, capacity, and derived plan projections.

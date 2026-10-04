@@ -1,17 +1,151 @@
 {
   "schema_version": "bir-registry-constraints",
   "rules": [
-    {"id": "single-image", "when": {"input_structure": "single-image"}, "requires": [{"path": "assets.primary_image_assets", "gte": 1}], "message": "single-image requires a primary image asset"},
-    {"id": "multi-image", "when": {"input_structure": "multi-image"}, "requires": [{"path": "assets.multi_image_cases", "gte": 1}], "message": "multi-image requires at least two primary image assets in a Case"},
-    {"id": "multi-view", "when": {"input_structure": "multi-view"}, "requires": [{"path": "assets.related_image_cases", "gte": 1}], "message": "multi-view requires related image assets"},
-    {"id": "volume", "when": {"input_structure": "volume"}, "requires": [{"path": "assets.volume_assets", "gte": 1}], "message": "volume requires a volume asset"},
-    {"id": "image-text", "when": {"input_structure": "image-text"}, "requires": [{"path": "relations.paired_text", "gte": 1}], "message": "image-text requires an explicit image/text relation"},
-    {"id": "paired-study", "when": {"input_structure": "paired-study"}, "requires": [{"path": "relations.paired_study", "gte": 1}], "message": "paired-study requires two linked study objects"},
-    {"id": "localize", "when": {"operation": "localize"}, "requires_any": [{"path": "evidence.region", "gte": 1}, {"path": "evidence.index", "gte": 1}], "message": "localize requires explicit region or index evidence"},
-    {"id": "quantify", "when": {"operation": "quantify"}, "requires_any": [{"path": "evidence.numeric", "gte": 1}, {"path": "computable_numeric", "eq": true}], "message": "quantify requires numeric or computable evidence"},
-    {"id": "compare", "when": {"operation": "compare"}, "requires": [{"path": "relations.comparable", "gte": 2}], "message": "compare requires two linked comparable evidence items"},
-    {"id": "align", "when": {"operation": "align"}, "requires_any": [{"path": "relations.related_image_groups", "gte": 1}, {"path": "relations.related", "gte": 1}], "message": "align requires explicit related evidence objects"},
-    {"id": "describe", "when": {"operation": "describe"}, "requires_any": [{"path": "evidence.text", "gte": 1}, {"path": "relations.paired_text", "gte": 1}, {"path": "structured_reference", "eq": true}], "message": "describe requires a structured reference"}
+    {
+      "id": "single-image",
+      "when": {
+        "input_structure": "single-image"
+      },
+      "requires": [
+        {
+          "path": "assets.primary_image_assets",
+          "gte": 1
+        }
+      ],
+      "message": "single-image requires a primary image asset"
+    },
+    {
+      "id": "multi-image",
+      "when": {
+        "input_structure": "multi-image"
+      },
+      "requires": [
+        {
+          "path": "assets.multi_image_cases",
+          "gte": 1
+        }
+      ],
+      "message": "multi-image requires at least two primary image assets in a Case"
+    },
+    {
+      "id": "multi-view",
+      "when": {
+        "input_structure": "multi-view"
+      },
+      "requires": [
+        {
+          "path": "assets.related_image_cases",
+          "gte": 1
+        }
+      ],
+      "message": "multi-view requires related image assets"
+    },
+    {
+      "id": "volume",
+      "when": {
+        "input_structure": "volume"
+      },
+      "requires": [
+        {
+          "path": "assets.volume_assets",
+          "gte": 1
+        }
+      ],
+      "message": "volume requires a volume asset"
+    },
+    {
+      "id": "image-text",
+      "when": {
+        "input_structure": "image-text"
+      },
+      "requires": [
+        {
+          "path": "relations.paired_text",
+          "gte": 1
+        }
+      ],
+      "message": "image-text requires an explicit image/text relation"
+    },
+    {
+      "id": "paired-study",
+      "when": {
+        "input_structure": "paired-study"
+      },
+      "requires": [
+        {
+          "path": "relations.paired_study",
+          "gte": 1
+        }
+      ],
+      "message": "paired-study requires two linked study objects"
+    },
+    {
+      "id": "localize",
+      "when": {
+        "operation": "localize"
+      },
+      "requires_any": [
+        {
+          "path": "evidence.region",
+          "gte": 1
+        },
+        {
+          "path": "evidence.index",
+          "gte": 1
+        }
+      ],
+      "message": "localize requires explicit region or index evidence"
+    },
+    {
+      "id": "compare",
+      "when": {
+        "operation": "compare"
+      },
+      "requires": [
+        {
+          "path": "relations.comparable",
+          "gte": 2
+        }
+      ],
+      "message": "compare requires two linked comparable evidence items"
+    },
+    {
+      "id": "align",
+      "when": {
+        "operation": "align"
+      },
+      "requires_any": [
+        {
+          "path": "relations.related_image_groups",
+          "gte": 1
+        },
+        {
+          "path": "relations.related",
+          "gte": 1
+        }
+      ],
+      "message": "align requires explicit related evidence objects"
+    },
+    {
+      "id": "describe",
+      "when": {
+        "operation": "describe"
+      },
+      "requires_any": [
+        {
+          "path": "evidence.text",
+          "gte": 1
+        },
+        {
+          "path": "relations.paired_text",
+          "gte": 1
+        },
+        {
+          "path": "structured_reference",
+          "eq": true
+        }
+      ],
+      "message": "describe requires a structured reference"
+    }
   ]
 }
-

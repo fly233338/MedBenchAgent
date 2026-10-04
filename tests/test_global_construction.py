@@ -20,6 +20,7 @@ def _plan(dataset_id, leaves):
             "leaf_task_id": leaf_id,
             "name": leaf_id,
             "scenario_id": scenario_id,
+            "clinical_target_id": "finding",
             "question_templates": ["What is shown?"],
             "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
             "target": "finding",
@@ -44,6 +45,7 @@ def _plan(dataset_id, leaves):
         operation="recognize",
         clinical_target="finding",
         capability_category=CapabilityCategory.RECOGNITION,
+        validated_clinical_targets=[{"target_id": "finding", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["label"]}],
         leaf_task_ids=sorted(parsed),
         status="completed",
     )

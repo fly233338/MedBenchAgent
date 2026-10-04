@@ -19,7 +19,7 @@ def _analysis(**supported):
     def values(axis, names):
         allowed = {"input_structure": ("single-image", "multi-image", "multi-view", "volume", "image-text", "paired-study"),
                    "operation": ("recognize", "localize", "quantify", "compare", "align", "describe"),
-                   "clinical_target": ("acquisition", "anatomy", "finding", "attribute", "measurement", "assessment", "diagnosis", "quality")} [axis]
+                   "clinical_target": ("acquisition", "anatomy", "finding", "attribute", "assessment", "diagnosis", "management", "quality")} [axis]
         return [AxisAssessment(value=value, supported=value in names,
                                evidence_basis=[EvidenceBasis(reference="case:c1", detail="observed")], reason="observed") for value in allowed]
     return AxisAnalysis(input_structure=values("input_structure", supported.get("input_structure", [])),
@@ -113,9 +113,9 @@ def test_leaf_identity_is_cross_scenario_but_preserves_distinct_targets():
         "output_spec": "label", "task_paradigm": "VQA", "capability_category": "Recognition",
         "options": ["a", "b"],
     }
-    assessment = LeafTask.model_validate({"leaf_task_id": "a", "name": "a", "scenario_id": "scenario-a", "target": "assessment", **base})
+    assessment = LeafTask.model_validate({"leaf_task_id": "a", "name": "a", "scenario_id": "scenario-a", "clinical_target_id": "assessment", "target": "assessment", **base})
     same_task = assessment.model_copy(update={"leaf_task_id": "b", "scenario_id": "scenario-b"})
-    diagnosis = assessment.model_copy(update={"leaf_task_id": "c", "scenario_id": "scenario-c", "target": "diagnosis"})
+    diagnosis = assessment.model_copy(update={"leaf_task_id": "c", "scenario_id": "scenario-c", "clinical_target_id": "diagnosis", "target": "diagnosis"})
     assert leaf_identity(assessment) == leaf_identity(same_task)
     assert leaf_identity(assessment) != leaf_identity(diagnosis)
     assessment_scenario = TaskScenario(
@@ -190,7 +190,7 @@ def test_task_paradigm_rejects_incompatible_output():
     try:
         from medbenchagent.planning.task_space import TaskLeaf
         TaskLeaf(leaf_id="l", name="l", node_id="n", question="q", input=[{"role": "x"}],
-                 target="t", answer="a", resolver={}, output_spec=OutputSpec.BBOX,
+                 clinical_target_id="finding", target="t", answer="a", resolver={}, output_spec=OutputSpec.BBOX,
                  task_paradigm=TaskParadigm.VQA, capability_category="Recognition")
     except ValueError as exc:
         assert "incompatible" in str(exc)
@@ -234,7 +234,8 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
     context.update(task_planning.build_nodes(context)["updates"])
     node_id = next(key for key, value in context["task_nodes"].items() if not value["exclusion_reason"])
     screened = task_planning.screen_scenario(
-        context, scenario_id=node_id, decision="keep", reason="The report scenario is suitable."
+        context, scenario_id=node_id, decision="keep", reason="The report scenario is suitable.",
+        validated_clinical_targets=[{"target_id": "finding_report", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]}],
     )
     context.update(screened["updates"])
 
@@ -246,7 +247,7 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
                 {"id": "report", "type": "text", "name": "report", "value": "Clear", "ref": ["asset"]},
             ]}]}
     monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", FakeQuery)
-    leaf = {"leaf_id": "leaf-1", "name": "report", "node_id": node_id, "question": "Describe the finding.",
+    leaf = {"leaf_id": "leaf-1", "name": "report", "node_id": node_id, "clinical_target_id": "finding_report", "question": "Describe the finding.",
             "input": [{"role": "image", "name": "image", "evidence_type": "asset"}], "target": "finding",
             "answer": "Read the paired report", "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
             "steps": [{"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}},

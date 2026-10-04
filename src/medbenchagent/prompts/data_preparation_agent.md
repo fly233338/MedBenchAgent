@@ -32,6 +32,13 @@ that a field is irrelevant from its name alone. Preserve the complete exclusion 
 mapping notes so later Task Planning can distinguish retained medical context from fields that were
 never task evidence.
 
+For every retained planning-relevant field, record a `field_semantics` entry in `mapping.json` with
+the source-backed `semantic_role`, `value_kind`, `scope`, `unit` when known, `input_visibility`,
+coverage, and missingness. Use `unknown` when the source does not establish a semantic role. Do not
+classify a field as a clinical numeric reference from its storage type alone. Typical roles include
+`assessment_reference`, `diagnostic_reference`, `clinical_context`, `calibration`,
+`spatial_reference`, `acquisition_metadata`, `quality_reference`, and `administrative`.
+
 Preserve field definitions, annotation objects, time, units, missingness, and annotation coverage. Unannotated does not mean negative, and annotating several objects does not mean that the total number of objects is known.
 
 Case grouping priority is source-native imaging study/exam identifier, documented Case ID,

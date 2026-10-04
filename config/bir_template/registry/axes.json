@@ -1,45 +1,114 @@
 {
   "schema_version": "bir-registry-axes",
-  "axis_order": ["input_structure", "operation", "clinical_target"],
+  "axis_order": [
+    "input_structure",
+    "operation",
+    "clinical_target"
+  ],
   "axes": [
     {
       "id": "input_structure",
       "description": "Structure of the model-visible input.",
       "values": [
-        {"id": "single-image", "description": "One primary image."},
-        {"id": "multi-image", "description": "Multiple primary images in one case."},
-        {"id": "multi-view", "description": "Related views of the same finding or study."},
-        {"id": "volume", "description": "A volumetric image input."},
-        {"id": "image-text", "description": "An image paired with text evidence."},
-        {"id": "paired-study", "description": "Two explicitly linked studies."}
+        {
+          "id": "single-image",
+          "description": "One primary image."
+        },
+        {
+          "id": "multi-image",
+          "description": "Multiple primary images in one case."
+        },
+        {
+          "id": "multi-view",
+          "description": "Related views of the same finding or study."
+        },
+        {
+          "id": "volume",
+          "description": "A volumetric image input."
+        },
+        {
+          "id": "image-text",
+          "description": "An image paired with text evidence."
+        },
+        {
+          "id": "paired-study",
+          "description": "Two explicitly linked studies."
+        }
       ]
     },
     {
       "id": "operation",
       "description": "The primary model operation.",
       "values": [
-        {"id": "recognize", "description": "Identify the presence, absence, identity, type, or categorical attributes of clinically relevant entities or observations, including anatomical structures, tissues, cells, findings, devices, and evidence-supported assessment or diagnostic categories. This also includes visually assessable acquisition characteristics and image quality.", "answer_options": "required"},
-        {"id": "localize", "description": "Ground a specified anatomical structure, tissue, cell, finding, or device in an explicit spatial or sequence location within the supplied image, volume, or image sequence. Return a supported grounding representation, currently a bounding box or slice/frame index.", "answer_options": "forbidden"},
-        {"id": "quantify", "description": "Determine a count, magnitude, extent, proportion, or other numeric quantity for a specified entity or observation. Specify the measurement or counting scope, unit where applicable, and reference rule. Ground truth must be directly annotated or deterministically derivable from documented evidence.", "answer_options": "forbidden"},
-        {"id": "compare", "description": "Determine similarities, differences, ordering, or change between explicitly linked and clinically comparable entities or observations across time, views, modalities, or conditions. Specify the comparison dimension and direction. The result may be categorical or numeric.", "answer_options": "required"},
-        {"id": "align", "description": "Establish correspondence or assess concordance between explicitly related evidence, such as the same structure or lesion across views or modalities, or a statement and its imaging evidence. The requested result must concern the relationship between the evidence sources.", "answer_options": "required"},
-        {"id": "describe", "description": "Produce a coherent paragraph or structured report that characterizes a specified entity, region, or examination by synthesizing multiple evidence-supported clinical observations and their relationships. Preserve the documented scope and uncertainty. An isolated label, label list, or verbose restatement of one categorical fact does not qualify. When no structured text is available, annotations that could be combined into a report do not count as evidence for `describe`.", "answer_options": "forbidden"}
+        {
+          "id": "recognize",
+          "description": "Identify the presence, absence, identity, type, or categorical attributes of clinically relevant entities or observations, including anatomical structures, tissues, cells, findings, devices, and evidence-supported assessment or diagnostic categories. This also includes visually assessable acquisition characteristics and image quality.",
+          "answer_options": "required"
+        },
+        {
+          "id": "localize",
+          "description": "Ground a specified anatomical structure, tissue, cell, finding, or device in an explicit spatial or sequence location within the supplied image, volume, or image sequence. Return a supported grounding representation, currently a bounding box or slice/frame index.",
+          "answer_options": "forbidden"
+        },
+        {
+          "id": "quantify",
+          "description": "Determine a count, magnitude, extent, proportion, or other numeric quantity for a specified entity or observation. Specify the measurement or counting scope, unit where applicable, and reference rule. Ground truth must be directly annotated or deterministically derivable from documented evidence.",
+          "answer_options": "forbidden"
+        },
+        {
+          "id": "compare",
+          "description": "Determine similarities, differences, ordering, or change between explicitly linked and clinically comparable entities or observations across time, views, modalities, or conditions. Specify the comparison dimension and direction. The result may be categorical or numeric.",
+          "answer_options": "required"
+        },
+        {
+          "id": "align",
+          "description": "Establish correspondence or assess concordance between explicitly related evidence, such as the same structure or lesion across views or modalities, or a statement and its imaging evidence. The requested result must concern the relationship between the evidence sources.",
+          "answer_options": "required"
+        },
+        {
+          "id": "describe",
+          "description": "Produce a coherent paragraph or structured report that characterizes a specified entity, region, or examination by synthesizing multiple evidence-supported clinical observations and their relationships. Preserve the documented scope and uncertainty. An isolated label, label list, or verbose restatement of one categorical fact does not qualify. When no structured text is available, annotations that could be combined into a report do not count as evidence for `describe`.",
+          "answer_options": "forbidden"
+        }
       ]
     },
     {
       "id": "clinical_target",
       "description": "The clinical object of the task.",
       "values": [
-        {"id": "acquisition", "description": "Acquisition or protocol."},
-        {"id": "anatomy", "description": "Organs, anatomical structures, tissues, and, where supported by the modality, cells; explicitly includes normal structures and variants. A fixed organ name alone is not a task; properties of an entity belong to attribute."},
-        {"id": "finding", "description": "An observation, sign, or morphologic pattern in a medical or pathology image; distinct from disease interpretation."},
-        {"id": "attribute", "description": "An attribute of any clinical entity, not limited to findings. Includes morphology, margins, composition, echogenicity or signal, distribution, and orientation."},
-        {"id": "measurement", "description": "A quantitative result for an entity or attribute within a specified scope and method; requires an entity, unit, and measurement rule."},
-        {"id": "assessment", "description": "A standardized assessment, grade, score, or risk category assigned to an observation, such as a documented BI-RADS category; record the applicable system."},
-        {"id": "diagnosis", "description": "A disease or pathology category; state whether the reference is imaging judgment, pathology, follow-up, or another clinical basis. Diagnosis and assessment may both be supported when they ask distinct questions."},
-        {"id": "quality", "description": "Image or study quality."}
+        {
+          "id": "acquisition",
+          "description": "An imaging acquisition characteristic, protocol, technique, or acquisition setting. The requested answer itself must concern acquisition."
+        },
+        {
+          "id": "anatomy",
+          "description": "A named anatomical structure, organ, tissue, or anatomical region that is itself the requested prediction. A fixed organ name alone is not a task."
+        },
+        {
+          "id": "finding",
+          "description": "An observed imaging sign, abnormality, lesion, or morphologic pattern whose presence, absence, type, count, or location is requested."
+        },
+        {
+          "id": "attribute",
+          "description": "A property or characteristic of a specific clinical entity, such as shape, margin, echogenicity, orientation, posterior acoustic behavior, or a quantified size attribute."
+        },
+        {
+          "id": "assessment",
+          "description": "A standardized clinical or imaging assessment, grade, category, or risk classification defined by an explicit assessment system. Numeric encodings remain ordinal assessment categories."
+        },
+        {
+          "id": "diagnosis",
+          "description": "A disease, pathology, or diagnostic category requested as the answer. The diagnostic reference basis must be supported by the dataset."
+        },
+        {
+          "id": "management",
+          "description": "A recommended next clinical action, follow-up strategy, diagnostic procedure, treatment action, or management decision. An explicit recommendation or management reference is required."
+        },
+        {
+          "id": "quality",
+          "description": "Image, examination, or study quality, adequacy, or technical acceptability supported by an explicit quality reference."
+        }
       ]
     }
   ]
 }
-

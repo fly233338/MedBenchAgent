@@ -5,7 +5,7 @@ default_sample_count = 1000
 input_policy = "image-only"
 
 [planning]
-novelty_enabled = true
+novelty_enabled = false
 
 [paths]
 dataset_catalog = "datasets/dataset_catalog.json"

@@ -324,7 +324,7 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                                  "benchmark.input_policy"),
         ),
         planning=PlanningSettings(
-            novelty_enabled=bool(values.get("planning", {}).get("novelty_enabled", True)),
+            novelty_enabled=bool(values.get("planning", {}).get("novelty_enabled", False)),
         ),
         dataset_sources=_dataset_sources(values["dataset_sources"]),
         harness={key: _integer(value, f"harness.{key}", minimum=1) for key, value in values["harness"].items()},

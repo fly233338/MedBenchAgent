@@ -37,3 +37,11 @@
 digest，并完成完整 population 账本。单个坏 Case 隔离并记录原因；映射、Schema 或 Adapter
 级别的系统性错误阻止发布。准备阶段不生成任务、答案或模型输入选择。
 
+
+## Field Semantics for Planning
+
+Prepared mapping evidence may include a `field_semantics` section for retained fields. Each entry
+records source-backed `semantic_role`, `value_kind`, `scope`, `unit`, `input_visibility`, coverage,
+and missingness. Planning treats an absent semantic role as `unknown`; it never infers a clinical
+numeric reference from storage type or aggregate counts. Calibration-only and reference-only fields
+remain unavailable to an image-only benchmark model.

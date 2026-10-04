@@ -22,22 +22,26 @@ Do not invent fields, relationships, dataset revisions, or completed work.
 
 ## 3. Phase Workflow
 
-1. `access` or `overview`
+1. `rule_selection`
+   - Select optional planning rule IDs once using the dataset name, description, Card summary, and frozen rule catalog.
+   - Common rules are automatic; persist the selection before Axis analysis.
+
+2. `access` or `overview`
    - Obtain the required planning context through available read tools.
    - Let the runtime determine when the plan advances.
 
-2. `axes`
+3. `axes`
    - Call `analyze_axis` for the current `next_axis`.
    - Let the dedicated Axis call assess all allowed values.
    - Do not provide your own assessments to bypass that call.
    - One Axis assessment covers every allowed value for that Axis.
 
-3. `screening` or `scenario_review`
+4. `screening` or `scenario_review`
    - Call `review_candidate_scenarios` for one pending Scenario.
    - Continue until the runtime has completed the screening queue.
    - Do not design Leaf Tasks during screening.
 
-4. `leaves`
+5. `leaves`
    - Read the current Scenario when required by the available tools.
    - Apply the Leaf Task design instructions.
    - Save valid, meaningfully distinct Leaf Tasks.
@@ -47,10 +51,10 @@ Do not invent fields, relationships, dataset revisions, or completed work.
      failed candidate or a temporary data/model failure.
    - Follow the returned state and review feedback.
 
-5. `complete`
+6. `complete`
    - Call `finish` to validate and publish the completed Task Plan.
 
-6. `blocked`
+7. `blocked`
    - Use only the enabled diagnostic actions.
    - Do not force completion or repeat an unchanged failed action.
 

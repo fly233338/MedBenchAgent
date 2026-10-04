@@ -124,6 +124,10 @@ def build_task_scenarios(
             capability_category=CapabilityCategory(registry.registry.capability_by_operation[operation]),
             annotation_mapping=mapping,
             evidence_stats=context.get("evidence", {}),
+            validated_clinical_targets=[
+                item for item in (context.get("validated_clinical_targets", {}).get(clinical_target, [])
+                                  if isinstance(context.get("validated_clinical_targets", {}), dict) else [])
+            ],
         )
         feasible, reason = registry.check(scenario, context)
         case_facts = context.get("case_facts", [])

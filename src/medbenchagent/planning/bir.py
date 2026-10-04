@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from filelock import FileLock
+from medbenchagent.planning.rules import PlanningRuleCatalog, load_rule_catalog
 
 
 class BIRConflictError(ValueError):
@@ -97,11 +98,13 @@ def _schema(value: Any) -> str:
 class RegistrySnapshot:
     """Loaded, immutable view of the experiment Registry."""
 
-    def __init__(self, root: Path, documents: dict[str, Any], digests: dict[str, str], prompts: dict[str, str]):
+    def __init__(self, root: Path, documents: dict[str, Any], digests: dict[str, str],
+                 prompts: dict[str, str], rules: PlanningRuleCatalog):
         self.root = root
         self.documents = documents
         self.digests = digests
         self.prompts = prompts
+        self.rules = rules
 
     @classmethod
     def from_directory(cls, root: str | Path) -> "RegistrySnapshot":
@@ -127,7 +130,10 @@ class RegistrySnapshot:
             for path in sorted(prompt_root.glob("*.md")):
                 prompts[path.stem] = path.read_text(encoding="utf-8")
                 digests[f"agent_prompts/{path.name}"] = digest_file(path)
-        snapshot = cls(root, documents, digests, prompts)
+        rules = load_rule_catalog(root / "rules")
+        for rule in rules:
+            digests[f"rules/{rule.path}"] = rule.digest
+        snapshot = cls(root, documents, digests, prompts, rules)
         for operation in snapshot.axis_values("operation"):
             snapshot.operation_definition(operation)
         return snapshot
@@ -189,6 +195,9 @@ class RegistrySnapshot:
             return self.prompts[name]
         except KeyError as exc:
             raise ValueError(f"BIR prompt is missing: {name}") from exc
+
+    def planning_rules(self) -> PlanningRuleCatalog:
+        return self.rules
 
     def validate_value(self, axis: str, value: str) -> None:
         if value not in self.axis_values(axis):

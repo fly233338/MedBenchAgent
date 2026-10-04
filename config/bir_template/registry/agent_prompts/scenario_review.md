@@ -9,6 +9,10 @@ consistent with its contract, and ready for deterministic generation.
 
 Do not rewrite Scenario fields or redesign Leaf Tasks.
 
+Apply all injected planning rules below.
+
+{{PLANNING_RULES}}
+
 Every question template must be valid for every eligible case, including
 normal, negative, and other supported boundary cases. Reject wording that
 presupposes a lesion, a unique object, a fixed image count, a time relation,
@@ -38,7 +42,7 @@ that were not provided.
 ### 3.1 Scenario Alignment
 
 1. Check the primary requested operation and clinical target.
-   - `assessment` is a standardized grade, score or risk category.
+   - `assessment` is a standardized grade, score or risk category. A Leaf must reference a validated clinical target ID from its Scenario.
    - `diagnosis` is a disease or pathology classification with a stated basis.
    - `finding` is an observed sign or pattern.
    - `attribute` is a property such as shape, margin, composition or echogenicity.

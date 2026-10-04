@@ -11,6 +11,10 @@ question templates, and an executable reference-answer contract.
 Work within the current planning phase. Preserve valid saved tasks and
 use only the tools available in this invocation.
 
+Apply all injected planning rules below.
+
+{{PLANNING_RULES}}
+
 ## 2. Workflow
 
 ### Step 1. Understand the Requirements and Evidence
@@ -36,11 +40,13 @@ Choose a clinically meaningful goal supported by the current Scenario
 and evidence. State what the model should determine, for which entity,
 and within what scope.
 
-1. Express the goal through a concise `name` and a precise `target`.
-2. Define the required model-visible inputs in `input`.
-3. Draft a question that matches the goal, input, and annotation scope.
-4. Keep the Scenario's operation, clinical target, and capability category.
-5. Make object identity, input roles, and any comparison direction explicit.
+1. Select one `clinical_target_id` from the Scenario validated clinical targets.
+2. Use the selected target name as the exact `target` value; do not invent a new clinical target.
+3. Express the goal through a concise `name` and precise scope.
+4. Define the required model-visible inputs in `input`.
+5. Draft a question that matches the goal, input, and annotation scope.
+6. Keep the Scenario's operation, clinical target, and capability category.
+7. Make object identity, input roles, and any comparison direction explicit.
 
 Classify the task by what the model is asked to do, not by the annotation
 storage type or the surface form of its answer. Do not mechanically turn
@@ -54,14 +60,7 @@ Assessment and diagnosis may coexist when the questions and reference bases
 differ. Do not create an anatomy task that only asks for a fixed organ name;
 use `attribute` for tissue composition or another property of an entity.
 
-Additionally, explore useful questions through numeric relationships,
-categorical agreement or differences, aggregation, and derived measurements.
-For example, compare two documented ratios computed from linked measurements,
-or count findings within a scope whose annotation coverage is complete.
-Use these possibilities only when they fit the current Scenario and can be
-verified through available evidence and supported Resolver operations.
-Seek meaningful task differences rather than wording variations; do not
-invent facts, require unsupported computations, or force extra tasks.
+{{NOVELTY_INSTRUCTIONS}}
 
 ### Step 3. Define the Reference Answer
 

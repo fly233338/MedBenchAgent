@@ -112,7 +112,10 @@ def test_candidate_scenario_review_advances_the_explicit_scenario(tmp_path, monk
 
     def fake_complete_json(prompt, user_prompt, schema):
         captured["payload"] = json.loads(user_prompt)
-        return {"decision": "keep", "reason": "Suitable for review."}
+        return {"decision": "keep", "reason": "Suitable for review.", "validated_clinical_targets": [{
+            "target_id": "finding_target", "name": "finding", "target_type": "finding",
+            "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"],
+        }]}
 
     monkeypatch.setattr(task_planning, "complete_json", fake_complete_json)
     reviewed = task_planning.review_candidate_scenarios(context, scenario_id=scenario_id)
@@ -127,7 +130,7 @@ def test_candidate_scenario_review_advances_the_explicit_scenario(tmp_path, monk
     assert task_planning._planning_progress_key(context)["pending_scenario_count"] == len(plan.pending_scenario_ids)
     assert reviewed["summary"] == f"Scenario Review {scenario_id}: keep"
     assert plan.scenarios[scenario_id].screening_decision == "keep"
-    assert plan.scenarios[scenario_id].feasible_task_directions
+    assert plan.scenarios[scenario_id].validated_clinical_targets
 
 
 def test_review_progress_uses_review_queue_when_legacy_pending_list_is_empty(tmp_path):
@@ -167,7 +170,11 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     plan = task_planning._load_plan(context)
     node_id = plan.scenario_review_pending_ids[0]
     screened = task_planning.screen_scenario(
-        context, scenario_id=node_id, decision="keep", reason="The scenario is semantically suitable."
+        context, scenario_id=node_id, decision="keep", reason="The scenario is semantically suitable.",
+            validated_clinical_targets=[
+                {"target_id": "finding_target", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]},
+                {"target_id": "context_target", "name": "context", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]},
+            ]
     )
     context.update(screened["updates"])
     plan = task_planning._load_plan(context)
@@ -178,7 +185,7 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
         "leaf_id": "leaf-1", "name": "report", "node_id": node_id,
         "question_template": "Describe the finding.",
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
-        "target": "finding", "reference_rule": "paired report",
+        "clinical_target_id": "finding_target", "target": "finding", "reference_rule": "paired report",
         "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
                      "steps": [{"op": "read", "selector": {"role": "image", "name": "image", "evidence_type": "asset"}},
                                {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}}],
@@ -188,7 +195,7 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     saved = task_planning.save_leaf_task(context, leaf={
         "leaf_task_id": leaf["leaf_id"], "name": leaf["name"],
         "scenario_id": leaf["node_id"], "question_template": leaf["question_template"],
-        "input": leaf["input"], "target": leaf["target"],
+            "input": leaf["input"], "clinical_target_id": leaf["clinical_target_id"], "target": leaf["target"],
         "reference_rule": leaf["reference_rule"], "resolver": leaf["resolver"],
         "output_spec": leaf["output_spec"], "task_paradigm": leaf["task_paradigm"],
         "capability_category": leaf["capability_category"],
@@ -230,7 +237,11 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
     plan = task_planning._load_plan(context)
     scenario_id = plan.scenario_review_pending_ids[0]
     screened = task_planning.screen_scenario(
-        context, scenario_id=scenario_id, decision="keep", reason="The scenario is semantically suitable."
+        context, scenario_id=scenario_id, decision="keep", reason="The scenario is semantically suitable.",
+        validated_clinical_targets=[
+            {"target_id": "finding_target", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]},
+            {"target_id": "context_target", "name": "context", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]},
+        ]
     )
     context.update(screened["updates"])
     plan = task_planning._load_plan(context)
@@ -248,7 +259,8 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
                 f"Identify {target}.",
             ],
             "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
-            "target": target,
+                    "clinical_target_id": "finding_target" if target == "finding" else "context_target",
+                    "target": target,
             "reference_rule": "paired report",
             "resolver": {
                 "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
@@ -325,10 +337,14 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
     plan.phase = "leaves"
     plan.current_scenario_id = scenario_id
     plan.pending_scenario_ids = [scenario_id]
+    plan.scenarios[scenario_id] = plan.scenarios[scenario_id].model_copy(update={
+        "validated_clinical_targets": [{"target_id": "finding_target", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]}],
+    })
     leaf = LeafTask.model_validate({
         "leaf_task_id": "leaf-review",
         "name": "finding-report",
         "scenario_id": scenario_id,
+        "clinical_target_id": "finding_target",
         "question_templates": ["Describe the finding."],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
         "target": "finding",
@@ -373,7 +389,8 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
     result = task_planning.review_current_scenario(context)
 
     assert result["status"] == "success"
-    assert captured["prompt"] == registry.prompt("scenario_review")
+    assert "{{PLANNING_RULES}}" not in captured["prompt"]
+    assert "clinical-target-boundaries" in captured["prompt"]
     assert captured["payload"]["benchmark_brief"]["clinical_scope"] == "breast imaging"
     reviewed_leaf = captured["payload"]["leaf_tasks"][0]
     for field in ("input", "resolver", "reference_rule", "evidence", "question_templates", "options", "output_spec", "task_paradigm"):
@@ -452,8 +469,11 @@ def test_review_discarding_all_leafs_allows_explicit_scenario_exclusion(tmp_path
     plan.phase = "leaves"
     plan.current_scenario_id = scenario_id
     plan.pending_scenario_ids = [scenario_id]
+    plan.scenarios[scenario_id] = plan.scenarios[scenario_id].model_copy(update={
+        "validated_clinical_targets": [{"target_id": "finding_target", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]}],
+    })
     leaf = LeafTask.model_validate({
-        "leaf_task_id": "discard-me", "name": "report", "scenario_id": scenario_id,
+            "leaf_task_id": "discard-me", "name": "report", "scenario_id": scenario_id, "clinical_target_id": "finding_target",
         "question_templates": ["Describe the image."],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
         "target": "finding", "reference_rule": "Use paired report.",

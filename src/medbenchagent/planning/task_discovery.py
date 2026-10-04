@@ -13,6 +13,7 @@ from medbenchagent.planning.task_space import (
     LeafTask,
     TaskPlanState,
     TaskScenario,
+    ValidatedClinicalTarget,
 )
 
 
@@ -30,6 +31,16 @@ def validate_candidate_leaf(
         raise ValueError("Leaf Task cannot be created under an excluded Task Scenario")
     if leaf.capability_category != scenario.capability_category:
         raise ValueError("Leaf Task Category differs from its Task Scenario")
+    target = next(
+        (item if isinstance(item, ValidatedClinicalTarget) else ValidatedClinicalTarget.model_validate(item)
+         for item in scenario.validated_clinical_targets
+         if (item.target_id if isinstance(item, ValidatedClinicalTarget) else item.get("target_id")) == leaf.clinical_target_id),
+        None,
+    )
+    if target is None:
+        raise ValueError("Leaf Task references an unknown validated clinical target")
+    if leaf.target.strip() != target.name.strip():
+        raise ValueError("Leaf Task target does not match its validated clinical target")
     registry = registry or (resolver_context or {}).get("registry")
     operation_mode = registry.answer_options_mode(scenario.operation) if registry else (
         "required" if scenario.operation in {"recognize", "compare", "align"} else "forbidden"
@@ -109,6 +120,7 @@ def leaf_identity(leaf: LeafTask, scenario: TaskScenario | None = None):
     spec = ResolverSpec.parse(leaf.resolver).model_dump(mode="json")
     return (
         scenario.clinical_target if scenario is not None else "",
+        leaf.clinical_target_id,
         leaf.target.strip().casefold(),
         json.dumps([item.model_dump(mode="json") for item in leaf.input], sort_keys=True),
         leaf.reference_rule.strip().casefold() if leaf.reference_rule else "",
