@@ -3,33 +3,40 @@ from pathlib import Path
 import pytest
 
 from medbenchagent.planning.bir import RegistrySnapshot
-from medbenchagent.planning.rules import load_rule_catalog, rule_selection_digest
+from medbenchagent.planning.extensions import load_extension_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_registry_loads_frozen_rules_and_renders_common_first():
+def test_registry_loads_extensions_and_renders_by_stage():
     registry = RegistrySnapshot.from_directory(ROOT / "config" / "bir_template" / "registry")
-    catalog = registry.planning_rules()
-    assert "clinical-target-boundaries" in catalog.ids()
-    rendered = catalog.render(["ultrasound-spatial-calibration"], stage="scenario_screening")
-    assert rendered.index("clinical-target-boundaries") < rendered.index("ultrasound-spatial-calibration")
-    assert "{{PLANNING_RULES}}" not in rendered
-    assert rule_selection_digest(catalog, ["ultrasound-spatial-calibration"]).startswith("sha256:")
+    catalog = registry.planning_extensions()
+    assert catalog.ids() == ("breast_cancer",)
+    extension = catalog.get("breast_cancer")
+    assert extension.type == "disease"
+    assert "scenario_screening" in extension.stages
+    rendered = catalog.render(["breast_cancer"], stage="scenario_screening")
+    assert "BI-RADS" in rendered
+    assert catalog.render(["breast_cancer"], stage="scenario_review") == rendered
+    assert catalog.selection_digest(["breast_cancer"]).startswith("sha256:")
 
 
-def test_rule_catalog_rejects_duplicate_ids_and_invalid_stages(tmp_path):
-    root = tmp_path / "rules"
+def test_extension_loader_rejects_invalid_metadata(tmp_path):
+    root = tmp_path / "extensions"
     root.mkdir()
-    body = "---\nid: duplicate\ndescription: One\nstages: [axis_analysis]\nscope: common\n---\nBody\n"
+    body = "---\nid: demo\ntype: disease\nstages: [axis_analysis]\n---\nBody\n"
     (root / "a.md").write_text(body, encoding="utf-8")
-    (root / "b.md").write_text(body, encoding="utf-8")
-    with pytest.raises(ValueError, match="unique"):
-        load_rule_catalog(root)
-
-    (root / "b.md").write_text(
-        body.replace("id: duplicate", "id: invalid").replace("axis_analysis", "unknown_stage"),
-        encoding="utf-8",
-    )
+    (root / "b.md").write_text(body.replace("id: demo", "id: demo2"), encoding="utf-8")
+    assert set(load_extension_catalog(root).ids()) == {"demo", "demo2"}
+    (root / "c.md").write_text(body.replace("type: disease", "type: invalid"), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid type"):
+        load_extension_catalog(root)
+    (root / "c.md").write_text(body.replace("stages: [axis_analysis]", "stages: [invalid]"), encoding="utf-8")
     with pytest.raises(ValueError, match="invalid stages"):
-        load_rule_catalog(root)
+        load_extension_catalog(root)
+
+
+def test_extension_selection_rejects_unknown_ids():
+    registry = RegistrySnapshot.from_directory(ROOT / "config" / "bir_template" / "registry")
+    with pytest.raises(ValueError, match="Unknown planning extension"):
+        registry.planning_extensions().selected(["unknown"], stage="axis_analysis")

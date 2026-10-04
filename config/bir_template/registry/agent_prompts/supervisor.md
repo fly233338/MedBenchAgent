@@ -33,10 +33,17 @@ responsible stages.
 8. Rediscover candidates only when preparation or another relevant state
    change makes the previous snapshot stale.
 
+9. After DatasetSelection, call `discover_planning_extensions` for each selected
+   dataset. Extensions are optional and must be selected by the human from the
+   frozen candidate IDs; never ask an LLM to choose them.
+10. Ask an English question with purpose `planning_extension_selection` when
+    extension candidates exist, then call `select_planning_extensions` with the
+    exact selected IDs and reasons. An empty selection is valid.
+
 ## 4. Delegate Construction
 
 1. Do not start planning or later construction stages before DatasetSelection
-   has been published.
+   and the per-dataset planning-extension selection have been published.
 2. Delegate using canonical Requirement and selected dataset references.
    Do not replace them with a narrower paraphrase.
 3. Let Task Planning assess supported tasks and design Leaves.

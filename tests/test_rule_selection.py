@@ -1,37 +1,39 @@
 import json
 from pathlib import Path
 
-from medbenchagent.agents import task_planning
 from medbenchagent.planning.bir import RegistrySnapshot
 from medbenchagent.planning.task_space import TaskPlanState
+from medbenchagent.planning.extension_selection import select_extensions
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_rule_selection_is_persisted_once_for_dataset(tmp_path, monkeypatch):
-    plan = TaskPlanState(dataset={"dataset_id": "breast-us"}, phase="rule_selection")
+def test_extension_selection_persists_empty_or_selected_ids(tmp_path):
+    plan = TaskPlanState(dataset={"dataset_id": "breast-us"}, phase="axes")
     plan_path = tmp_path / "task_plan.json"
     plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
     registry = RegistrySnapshot.from_directory(ROOT / "config" / "bir_template" / "registry")
-    captured = {}
-
-    def fake_complete_json(prompt, user_prompt, schema):
-        captured["payload"] = json.loads(user_prompt)
-        return {"selected_rule_ids": ["breast-cancer-birads-boundary"], "reason": "Breast ultrasound dataset."}
-
-    monkeypatch.setattr(task_planning, "_registry", lambda _context: registry)
-    monkeypatch.setattr(task_planning, "complete_json", fake_complete_json)
     context = {
         "operation_directory": str(tmp_path),
         "task_plan_path": str(plan_path),
-        "dataset_entry": {"dataset_id": "breast-us", "name": "Breast Ultrasound", "description": "Breast cancer ultrasound"},
-        "benchmark_info": {"diseases": ["breast_cancer"], "modalities": ["ultrasound"]},
+        "bir_path": str(ROOT / "experiments" / "test" / "BIR"),
+        "dataset_scope": "breast-us",
+        "run_directory": str(tmp_path),
+        "artifact_versions": {},
     }
-
-    result = task_planning.select_planning_rules(context)
-    saved = task_planning._load_plan(context)
-    assert saved.phase == "axes"
-    assert "clinical-target-boundaries" in saved.rule_selection["selected_rule_ids"]
-    assert "breast-cancer-birads-boundary" in saved.rule_selection["selected_rule_ids"]
-    assert captured["payload"]["dataset"]["name"] == "Breast Ultrasound"
-    assert Path(result["updates"]["rule_selection_path"]).is_file()
+    # Use the checked-in Registry directly for this isolated selection test.
+    from medbenchagent.planning import extension_selection
+    extension_selection._catalog = lambda _context: registry.planning_extensions()
+    extension_selection._snapshot = lambda _context, _dataset_id, refresh=False: (
+        {"registry_digest": registry.digest, "candidates": {"breast_cancer": registry.planning_extensions().get("breast_cancer").metadata()}},
+        tmp_path / "extension_candidates.json",
+    )
+    (tmp_path / "extension_candidates.json").write_text(json.dumps({"registry_digest": registry.digest, "candidates": {"breast_cancer": registry.planning_extensions().get("breast_cancer").metadata()}}), encoding="utf-8")
+    result = select_extensions(
+        context,
+        dataset_id="breast-us",
+        extension_ids=["breast_cancer"],
+        selection_reason={"breast_cancer": "Human selected for breast-cancer planning."},
+    )
+    assert result["updates"]["planning_extension_selections"]["breast-us"]["selected_extension_ids"] == ["breast_cancer"]
+    assert Path(result["updates"]["extension_selection_path"]).is_file()

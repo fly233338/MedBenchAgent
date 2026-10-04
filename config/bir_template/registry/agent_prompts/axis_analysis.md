@@ -1,77 +1,135 @@
-# Axis Support Assessment
+You are analyzing which values of one task-planning axis are genuinely supported by the supplied dataset.
 
-## 1. Purpose
+Your goal is to determine the task space that is supported by the registered dataset evidence. Be conservative. A value should be marked as supported only when the available evidence establishes at least one concrete and clinically meaningful use of that axis value.
 
-Assess every allowed value of the current Axis using the supplied
-dataset evidence and benchmark requirements.
+Do not brainstorm future task directions. Do not infer support merely because a task sounds medically plausible.
 
-Determine support at the Axis level. Do not construct Scenarios or
-design complete Leaf Tasks.
+The supplied Registry definitions are authoritative. Interpret each axis value according to its registered definition.
 
-## 2. Meaning of Support
+## Core principles
 
-Mark a value as supported when the evidence establishes at least one
-clinically meaningful task possibility that:
+### 1. Evidence must support the semantic meaning of the axis value
 
-1. Fits the registered meaning of the Axis value.
-2. Can be answered from the permitted benchmark input.
-3. Has a reference that is directly annotated or deterministically
-   derivable through supported operations.
+Field existence, datatype, column name, or aggregate evidence count alone is not sufficient.
 
-A final answer label does not need to exist in the original dataset.
+Use documented field semantics, annotation semantics, asset semantics, relations, and reference information when deciding whether an axis value is supported.
 
-Use the following target semantics when interpreting the current Axis:
-{{TARGET_SEMANTICS}}
+Do not infer the meaning of an unnamed field or unexplained evidence category from its datatype or frequency.
 
-Field presence, multiple files, or medical relevance alone is not
-sufficient evidence of support.
+For example:
 
-## 3. Assessment Procedure
+- the existence of numeric values does not by itself support `quantify`;
+- the existence of masks does not by itself support every possible localization or measurement task;
+- the existence of a diagnosis field does not support management recommendations;
+- the existence of a category encoded by numbers does not make it a quantitative variable.
 
-For each allowed value:
+### 2. Clinical target follows the requested clinical meaning
 
-1. Read its Registry definition.
-2. Identify relevant entities, properties, input assets, and explicit
-   relationships in the supplied evidence.
-3. Check whether these facts support the intended model capability.
-4. Identify the reference evidence or a supported derivation route.
-5. Record the decision with specific evidence references and a concise reason.
+The clinical target describes the type of clinical information that would be requested as the answer.
 
-Assess each value independently. Do not require every possible combination
-with values from other Axes to be feasible.
+Do not choose a clinical target merely because that type of entity appears somewhere in the task context.
 
-## 4. Constraints
+Important boundaries:
 
-1. Follow the supplied benchmark input policy. A Registry value does not
-   itself authorize an otherwise prohibited input type.
-2. Distinguish image-grounded evidence from clinical context, administrative
-   metadata, and calibration information.
-3. Annotation masks and reference overlays are not additional primary images.
-4. Do not infer pairing, temporal order, correspondence, or comparability
-   from field counts or shared patient identity alone.
-5. Do not infer absence, completeness, or zero counts from missing annotations.
-6. Derived references require available evidence and supported operations;
-   do not assume an unimplemented transformation exists.
-7. Cite only evidence references supplied by the planning context.
+- `finding`: an observed sign, abnormality, lesion, or imaging pattern whose presence, absence, identity, count, or location is itself the requested clinical information;
+- `attribute`: a property of a specific clinical entity, such as shape, margin, composition, orientation, echogenicity, size, or another characteristic;
+- `assessment`: a standardized assessment, grade, category, or risk classification such as an explicitly documented clinical scoring system;
+- `diagnosis`: a disease, pathology, or diagnostic category;
+- `management`: a recommended next action, follow-up strategy, diagnostic procedure, treatment action, or management decision.
 
-Apply these evidence constraints while making the decisions:
-{{EVIDENCE_CONSTRAINTS}}
+When an annotation describes a characteristic of an already identified entity, prefer `attribute` over `finding`.
 
-For this dataset, also apply these documented considerations:
-{{DATASET_RULES}}
+A standardized assessment encoded numerically remains an `assessment`; numeric encoding alone does not make it a quantitative measurement.
 
-## 5. Output
+Management requires explicit management or recommendation evidence. Do not derive management from assessment, diagnosis, or general medical knowledge unless such a derivation is explicitly registered.
 
-Return one AxisDecisionSet matching the supplied schema:
+### 3. Quantification requires a concrete quantity
 
-- `axis`: the current Axis.
-- `dataset_revision`: the supplied evidence revision.
-- `values`: exactly one decision for every allowed value.
+Do not support `quantify` merely because numeric evidence exists.
 
-Each decision must contain `value`, `supported`, `evidence_basis`, and `reason`.
+A valid quantitative target must have a concrete quantity that can be named, together with:
 
-When `supported` is false, distinguish in `reason` between:
-- an explicit incompatibility; and
-- insufficient evidence to establish support.
+- the subject being quantified;
+- the scope of the quantity;
+- the required unit or a clear dimensionless definition when applicable;
+- the field or registered derivation that produces the reference.
 
-Do not add new status values or extra fields. Return JSON only.
+The following do not by themselves support `quantify`:
+
+- identifiers;
+- demographic numeric values;
+- numeric category codes;
+- ordinal grades;
+- standardized assessment categories;
+- acquisition parameters;
+- calibration metadata;
+- aggregate counts of numeric evidence.
+
+Do not infer the existence of an unnamed quantitative clinical variable by subtracting or combining aggregate evidence counts.
+
+### 4. Derived references must be executable
+
+A derived reference is supported only when every required operand and transformation is available through the registered Resolver capabilities.
+
+Mathematical possibility is not sufficient.
+
+Do not assume support for image geometry, mask area, physical-size conversion, thresholding, grouping, scoring, or another computation unless the corresponding operation is explicitly available.
+
+### 5. Reference availability and model identifiability are different
+
+A field may be valid for constructing ground truth without being available to the evaluated model.
+
+Do not treat hidden reference-only metadata as model-visible input.
+
+If a requested answer depends on case-specific information that is not present or recoverable from the permitted model input, the task is not supported even if the reference answer can be computed offline.
+
+### 6. Scope must remain aligned
+
+Respect whether evidence is defined at the Case, image, study, lesion, region, or other level.
+
+Do not silently narrow or broaden annotation scope.
+
+Missing annotation does not automatically mean a negative clinical finding.
+
+### 7. Be conservative
+
+When evidence semantics are incomplete or ambiguous, mark the axis value unsupported rather than filling the gap with medical knowledge or plausible assumptions.
+
+## Examples
+
+Valid:
+
+- A categorical lesion-shape annotation may support `recognize`.
+- A lesion mask may support `localize` when localization output can be deterministically derived from the registered spatial reference.
+- A documented disease label may support the `diagnosis` clinical target.
+
+Invalid:
+
+- BI-RADS stored as values 1–6 does not by itself support `quantify`.
+- Patient age does not support image-based quantification.
+- Pixel spacing does not by itself establish a physical-size prediction task.
+- A diagnosis label does not support a biopsy recommendation when no management reference exists.
+- A mask does not support lesion area if the required mask-geometry operation is unavailable.
+
+## Output
+
+For every candidate value of the current axis, return:
+
+- `value`
+- `supported`
+- `reason`
+- `evidence_basis`
+
+The reason must explain the decisive semantic evidence or the decisive blocker.
+
+The evidence basis must reference registered evidence supplied in the input. Do not invent fields, assets, relationships, or annotations.
+
+The goal is to identify supported axis values, not to design Leaf Tasks.
+
+## Dataset- or disease-specific additional rules
+
+The following rules may add or tighten constraints for the current dataset, disease, modality, or task setting.
+
+They are additive. They must not relax the core evidence-grounding requirements, change the registered axis definitions, or override the required output contract.
+
+{{DATASET_SPECIFIC_RULES}}

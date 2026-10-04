@@ -18,7 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from filelock import FileLock
-from medbenchagent.planning.rules import PlanningRuleCatalog, load_rule_catalog
+from medbenchagent.planning.extensions import PlanningExtensionCatalog, load_extension_catalog
 
 
 class BIRConflictError(ValueError):
@@ -99,12 +99,12 @@ class RegistrySnapshot:
     """Loaded, immutable view of the experiment Registry."""
 
     def __init__(self, root: Path, documents: dict[str, Any], digests: dict[str, str],
-                 prompts: dict[str, str], rules: PlanningRuleCatalog):
+                 prompts: dict[str, str], extensions: PlanningExtensionCatalog):
         self.root = root
         self.documents = documents
         self.digests = digests
         self.prompts = prompts
-        self.rules = rules
+        self.extensions = extensions
 
     @classmethod
     def from_directory(cls, root: str | Path) -> "RegistrySnapshot":
@@ -130,10 +130,10 @@ class RegistrySnapshot:
             for path in sorted(prompt_root.glob("*.md")):
                 prompts[path.stem] = path.read_text(encoding="utf-8")
                 digests[f"agent_prompts/{path.name}"] = digest_file(path)
-        rules = load_rule_catalog(root / "rules")
-        for rule in rules:
-            digests[f"rules/{rule.path}"] = rule.digest
-        snapshot = cls(root, documents, digests, prompts, rules)
+        extensions = load_extension_catalog(root / "planning_extensions")
+        for extension in extensions:
+            digests[f"planning_extensions/{extension.path}"] = extension.digest
+        snapshot = cls(root, documents, digests, prompts, extensions)
         for operation in snapshot.axis_values("operation"):
             snapshot.operation_definition(operation)
         return snapshot
@@ -196,8 +196,8 @@ class RegistrySnapshot:
         except KeyError as exc:
             raise ValueError(f"BIR prompt is missing: {name}") from exc
 
-    def planning_rules(self) -> PlanningRuleCatalog:
-        return self.rules
+    def planning_extensions(self) -> PlanningExtensionCatalog:
+        return self.extensions
 
     def validate_value(self, axis: str, value: str) -> None:
         if value not in self.axis_values(axis):

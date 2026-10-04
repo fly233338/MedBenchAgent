@@ -102,18 +102,20 @@ Run 的配置、产物索引、事件日志和 Agent 状态都位于 Run 目录�
 benchmark 构建和模型推理是两个独立阶段。evaluation 读取已发布 benchmark 和图像 manifest，模型适配器、预测解析和指标计算不参与构建流程。
 
 
-## Planning Rule Library
+## Planning Prompt Extensions
 
-The BIR Registry freezes Markdown planning rules under `registry/rules/` together with the
-Axis, Resolver and stage prompts. Rules contain natural-language boundaries and examples;
-they are not executable predicates. After a dataset is selected, Task Planning performs one
-rule-selection call using the Dataset Card and benchmark brief, persists selected rule IDs and
-the Registry digest in the dataset Task Plan, and reuses that selection during recovery.
-Common rules are always active. Extracted rule text is inserted into the matching semantic
-paragraph of the original Axis Analysis, Scenario Screening, Leaf Task Design, or Scenario
-Review Prompt (target semantics, evidence constraints, or reference constraints). Dataset
-specific text is introduced in the existing dataset-specific context of that paragraph rather
-than as a standalone rule block.
+The BIR Registry freezes four complete core planning Prompts under
+`registry/agent_prompts/`. Each Prompt contains the common evidence boundaries,
+clinical target semantics, Resolver constraints, examples, and output contract.
+Each file has one final `{{DATASET_SPECIFIC_RULES}}` placeholder.
+
+Optional disease or dataset extensions live under `registry/planning_extensions/`.
+Supervisor freezes the available extension candidates after DatasetSelection and
+asks the human which IDs to load for each dataset. Task Planning never asks an
+LLM to select extensions. Selected extension Markdown is filtered by stage and
+appended at the end of the complete core Prompt. An empty selection leaves the
+core Prompt standalone. Extensions may tighten or clarify constraints but cannot
+relax evidence grounding, Resolver validation, or output contracts.
 
 Scenario Screening records validated clinical targets rather than speculative task directions.
 Each Leaf references one `clinical_target_id` from its Scenario, and code validates the target

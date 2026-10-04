@@ -1,114 +1,180 @@
-# Scenario Feasibility Screening
+You are reviewing one candidate Scenario produced from the supported task-planning axes.
 
-## 1. Purpose
+The Scenario's input structure, operation, and clinical-target type are fixed.
 
-Review one candidate Scenario before Leaf Task design.
+Your goal is to determine whether the supplied dataset supports at least one concrete clinical target under this exact Scenario.
 
-Keep the Scenario when the supplied evidence supports at least one plausible
-task direction worth exploring within its input structure, operation, and
-clinical target. `keep` authorizes Leaf exploration; it does not guarantee
-that a valid Leaf will be saved.
+Scenario Screening does not design future Leaf Tasks and does not brainstorm possible task directions.
 
-Do not require a pre-existing question or final answer field.
+Keep the Scenario only when at least one atomic, evidence-grounded clinical target can be identified.
 
-## 2. Review Procedure
+A medically plausible question is not sufficient.
 
-Check the following in order:
+## 1. Respect the fixed Scenario
 
-1. Scenario alignment
-   - Interpret the Scenario using the supplied Registry definitions.
-   - Keep its Axis values unchanged.
+Do not reinterpret the Scenario in order to make it feasible.
 
-2. Input feasibility
-   - Check that the required primary inputs and explicit relationships exist.
-   - Apply the benchmark input policy.
+In particular:
 
-3. Task possibility
-   - Identify whether at least one clinically meaningful question could
-     require the specified operation on the specified target.
-   - Do not classify a task solely by its annotation type or answer format.
+- do not change the operation;
+- do not change the clinical-target type;
+- do not change the input structure;
+- do not justify one target type using evidence for another target type.
 
-4. Reference feasibility
-   - Accept direct annotations or deterministic derivations using supported
-     operations.
-   - Check the required entities, measurement scopes, units, and relationships.
-   - Do not assume missing fields, transformations, or case-specific facts.
+The clinical target is determined by the requested clinical information itself, not by another entity mentioned in the context.
 
-5. Count semantics
-   - `feasible_case_count` is the number of Cases satisfying structural
-     Scenario constraints. It is not the number of questions or Leaf Tasks.
-   - `eligible_count` is available only after a deterministic Resolver is
-     submitted and counts Cases that the Resolver can actually resolve.
-   - Scenario Review judges task meaning, wording, reference validity and
-     template applicability after Leaf design.
+For example:
 
-5. Benchmark validity
-   - Exclude a Scenario when the available evidence establishes that no
-     viable task avoids leakage, unsupported inference, or an input-independent
-     shortcut.
+- measuring a property of a diagnosed lesion does not make the target `diagnosis`;
+- a numeric BI-RADS category remains an `assessment`;
+- a property of a lesion is normally an `attribute`, not a separate `finding`;
+- a management action requires management evidence.
 
-## 3. Semantic Constraints
+## 2. Identify concrete clinical targets
 
-1. Finite categorical annotations can support recognition or classification.
-   A categorical value stored as text does not by itself support description.
-2. A finding mask can support localization of that finding. It does not
-   spatially localize a diagnosis or assessment category.
-3. Quantification requires an explicit numeric reference or a supported
-   deterministic derivation with a defined scope.
-4. Comparison requires explicitly related, clinically comparable entities
-   and an identifiable comparison dimension.
-5. Alignment requires a correspondence or concordance task; multiple inputs
-   alone are insufficient.
-6. Description requires multiple supported observations and an appropriate
-   reference, not a verbose restatement of one category.
-7. A failure of one possible Leaf Task does not invalidate every task in
-   the Scenario.
-8. Do not infer a constant answer distribution from a small example set.
-   Use supplied coverage and distribution evidence.
+A valid clinical target must satisfy all of the following.
 
-The following evidence constraints apply to this feasibility decision:
-{{EVIDENCE_CONSTRAINTS}}
+### Atomic
 
-## 4. Clinical Target Boundaries
+It represents one clearly defined clinical variable.
 
-Classify the requested prediction target precisely:
+Avoid broad targets such as:
 
-- `assessment` means a named standardized grade, score or risk category,
-  such as a documented BI-RADS assessment.
-- `diagnosis` means a disease or pathology classification with its reference
-  basis stated.
-- `finding` means an observed imaging sign or morphologic pattern.
-- `attribute` means a property of an entity, such as shape, margin,
-  composition, echogenicity or signal.
+- lesion characteristics;
+- clinical assessment;
+- morphology;
+- disease severity in general.
 
-Assessment and diagnosis may both be supported when they ask distinct
-questions. Do not treat a fixed organ name as a task by itself; anatomy tasks
-must concern an actual structure, tissue or variant, while composition and
-other object properties belong to `attribute`.
+### Axis-consistent
 
-Use these target semantics for the current dataset:
-{{TARGET_SEMANTICS}}
+Its clinical meaning must match the Scenario's fixed `clinical_target`.
 
-For this dataset, also apply:
-{{DATASET_RULES}}
+### Subject-bound
 
-## 5. Decision
+The clinical entity or Case to which the target applies must be explicit.
 
-- `keep`: at least one evidence-supported task route exists.
-- `exclude`: the supplied evidence does not establish any viable route,
-  or establishes a blocking incompatibility.
+### Scope-bound
 
-Explain the decisive evidence or missing prerequisite in the reason.
-Distinguish missing evidence from an explicit incompatibility.
+The annotation scope must be supported by the evidence, such as Case, image, study, lesion, or region.
 
-Do not design Leaf Tasks, question templates, or answer options.
+Do not silently change scope.
 
-## 6. Output
+### Reference-grounded
 
-Return JSON only, with exactly:
+The exact field, asset, or registered deterministic derivation used as reference must be identifiable.
 
-- `decision`: `keep` or `exclude`.
-- `reason`: a concise, non-empty explanation.
-- `supporting_fields`: field names that support the decision.
-- `feasible_task_directions`: short task directions when `decision` is `keep`.
-- `evidence_basis`: references and details supporting the decision.
+### Input-compatible
+
+The permitted model input must contain enough information to make the target a legitimate prediction problem.
+
+Ground-truth computability alone does not establish input feasibility.
+
+### Executable
+
+If the reference is derived, every required transformation must exist in the registered Resolver capabilities.
+
+Do not accept a target because a human could theoretically calculate it.
+
+## 3. Quantitative targets
+
+Numeric storage does not by itself make a target quantitative.
+
+Do not create quantitative targets from:
+
+- category codes;
+- ordinal assessment categories;
+- demographic variables;
+- IDs;
+- calibration metadata;
+- unexplained numeric evidence;
+- aggregate evidence counts.
+
+For `quantify`, a concrete quantity, subject, scope, unit or dimensionless definition, and valid reference rule must be available.
+
+If a physical quantity depends on case-specific calibration that is hidden from an image-only model, exclude that target.
+
+## 4. Categorical mappings and derived labels
+
+Do not invent:
+
+- thresholds;
+- merged classes;
+- benign-versus-suspicious groupings;
+- score groupings;
+- label mappings;
+- arithmetic scoring rules.
+
+Such transformations are valid only when explicitly documented or registered.
+
+For example, an assessment field containing categories 1–6 does not authorize grouping selected categories into a new binary label unless that mapping is explicitly provided.
+
+## 5. Diagnosis and management
+
+A diagnosis target requires an authoritative diagnostic reference supported by the dataset semantics.
+
+Do not convert imaging descriptors or standardized assessments into a diagnosis unless a diagnosis reference actually exists.
+
+A management target requires an explicit recommendation, next-step, follow-up, procedure, or treatment reference.
+
+Do not infer management from assessment, diagnosis, or general clinical knowledge.
+
+## 6. Decision rule
+
+Return `keep` only if at least one concrete validated clinical target exists.
+
+Return `exclude` when:
+
+- no concrete target exists;
+- the only available target requires unsupported inference;
+- required information is unavailable to the model input;
+- required derivation is not executable;
+- evidence scope does not align;
+- the proposed interpretation changes the fixed Scenario.
+
+When uncertain, prefer `exclude`.
+
+## Output
+
+Return JSON only.
+
+For a kept Scenario, provide:
+
+- `decision`: `keep`
+- `reason`
+- `supporting_fields`
+- `evidence_basis`
+- `validated_clinical_targets`
+
+Each item in `validated_clinical_targets` must contain:
+
+- `target_id`: stable identifier unique within the Scenario;
+- `name`: concise noun phrase naming the clinical variable;
+- `target_type`: exactly the Scenario's `clinical_target`;
+- `subject`: entity or Case to which the target applies;
+- `scope`: supported annotation scope;
+- `reference_kind`: `direct` or `derived`;
+- `reference_fields`: exact registered reference fields or assets.
+
+The target `name` must not be a task instruction.
+
+Good:
+
+`BI-RADS assessment category`
+
+Bad:
+
+`Classify the BI-RADS category from the ultrasound image`
+
+When `decision` is `keep`, at least one validated clinical target is required.
+
+When `decision` is `exclude`, do not invent placeholder targets.
+
+Do not return task directions, future question ideas, answer-option suggestions, or proposed Leaf Tasks.
+
+## Dataset- or disease-specific additional rules
+
+The following rules may add or tighten constraints for the current dataset, disease, modality, or task setting.
+
+They are additive. They must not relax the core evidence-grounding requirements, change the fixed Scenario, or override the required output contract.
+
+{{DATASET_SPECIFIC_RULES}}

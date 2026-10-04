@@ -323,6 +323,8 @@ def compile_agent(
                 allowed.update({"list_evidence", "read_evidence"})
             if pending and pending.get("purpose") == "dataset_selection" and pending.get("status") == "answered":
                 allowed.update({"prepare_data", "discover_datasets", "select_datasets"})
+            if pending and pending.get("purpose") == "planning_extension_selection" and pending.get("status") == "answered":
+                allowed.update({"discover_planning_extensions", "select_planning_extensions"})
             if enabled is not None and tool_name not in enabled:
                 outcome = result("failed", "Tool is not ready for the current state")
             elif pending and tool_name not in allowed:
@@ -360,7 +362,7 @@ def compile_agent(
                     if name == "SupervisorAgent" and not issue.get("purpose"):
                         metadata = {
                             key: arguments[key]
-                            for key in ("purpose", "candidate_snapshot_path", "allowed_dataset_ids")
+                            for key in ("purpose", "candidate_snapshot_path", "allowed_dataset_ids", "allowed_extension_ids")
                             if arguments.get(key)
                         }
                         if metadata:

@@ -15,7 +15,7 @@ from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.access import DatasetAccessReceipt
 from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, encode_closed_label, resolve
 from medbenchagent.planning.bir import BIRStore, RegistrySnapshot
-from medbenchagent.planning.rules import rule_selection_digest
+from medbenchagent.planning.extensions import PlanningExtensionCatalog
 from medbenchagent.planning.task_discovery import leaf_identity, validate_candidate_leaf, validate_task_tree
 from medbenchagent.planning.task_space import (
     AXIS_VALUES,
@@ -82,11 +82,6 @@ class ScenarioArguments(NoArguments):
 
 class CandidateScenarioReviewArguments(NoArguments):
     scenario_id: str = Field(min_length=1)
-
-
-class RuleSelectionArguments(NoArguments):
-    selected_rule_ids: list[str] = Field(default_factory=list)
-    reason: str = Field(min_length=1)
 
 
 class ScenarioScreeningArguments(NoArguments):
@@ -259,52 +254,26 @@ def _mapping_path(context: dict[str, Any]) -> Path | None:
     return None
 
 
-def _planning_rules(context: dict[str, Any]):
+def _planning_extensions(context: dict[str, Any]) -> PlanningExtensionCatalog | None:
     registry = _registry(context)
-    return registry.planning_rules() if registry else None
+    return registry.planning_extensions() if registry else None
 
 
-def _render_planning_rules(context: dict[str, Any], *, stage: str, selected_ids: list[str] | None = None) -> str:
-    catalog = _planning_rules(context)
-    if catalog is None:
-        return "No additional planning rules are registered for this stage."
+def _selected_extension_ids(context: dict[str, Any]) -> list[str]:
     plan = _load_plan(context)
-    selection = plan.rule_selection or {}
-    ids = selected_ids if selected_ids is not None else selection.get("selected_rule_ids", [])
-    return catalog.render(ids, stage=stage)
+    selection = plan.extension_selection or context.get("planning_extension_selection") or {}
+    return list(selection.get("selected_extension_ids", []))
 
 
-def _render_rule_bodies(context: dict[str, Any], *, stage: str, ids: set[str] | None = None,
-                        custom_only: bool = False) -> str:
-    """Render extracted rules into the semantic slot where the original Prompt used them."""
-    catalog = _planning_rules(context)
+def _render_extensions(context: dict[str, Any], *, stage: str) -> str:
+    catalog = _planning_extensions(context)
     if catalog is None:
-        return ""
-    plan = _load_plan(context)
-    selected_ids = plan.rule_selection.get("selected_rule_ids", []) if plan.rule_selection else []
-    rules = catalog.selected(selected_ids, stage=stage)
-    if custom_only:
-        rules = tuple(rule for rule in rules if rule.scope != "common")
-    elif ids is not None:
-        rules = tuple(rule for rule in rules if rule.id in ids)
-    return "\n\n".join(rule.body.strip() for rule in rules if rule.body.strip())
+        return "No dataset-specific planning extensions are selected for this stage."
+    return catalog.render(_selected_extension_ids(context), stage=stage)
 
 
-def _rule_insertions(context: dict[str, Any], *, stage: str) -> dict[str, str]:
-    return {
-        "{{TARGET_SEMANTICS}}": _render_rule_bodies(
-            context, stage=stage, ids={"clinical-target-boundaries"}
-        ),
-        "{{EVIDENCE_CONSTRAINTS}}": _render_rule_bodies(
-            context, stage=stage, ids={"evidence-grounding", "missing-values"}
-        ),
-        "{{REFERENCE_CONSTRAINTS}}": _render_rule_bodies(
-            context, stage=stage, ids={"numeric-and-derived"}
-        ),
-        "{{DATASET_RULES}}": _render_rule_bodies(
-            context, stage=stage, custom_only=True
-        ),
-    }
+def _extension_insertions(context: dict[str, Any], *, stage: str) -> dict[str, str]:
+    return {"{{DATASET_SPECIFIC_RULES}}": _render_extensions(context, stage=stage)}
 
 
 def _field_meanings(context: dict[str, Any]) -> dict[str, str]:
@@ -706,7 +675,7 @@ def _leaf_context(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any
             "dataset_id": access.get("dataset_id", context.get("dataset_scope", context.get("selected_dataset_id"))),
             "revision": access.get("revision", facts.get("revision")),
         },
-        "rule_selection": plan.rule_selection,
+        "extension_selection": plan.extension_selection,
         "scenario": {
             "scenario_id": scenario.scenario_id,
             "input_structure": scenario.input_structure,
@@ -918,7 +887,7 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
     scenarios_path = directory / "task_scenarios.json"
     exclusions_path = directory / "scenario_exclusions.json"
     leaves_path = directory / "leaf_tasks.json"
-    rule_selection_path = directory / "rule_selection.json"
+    extension_selection_path = directory / "extension_selection.json"
     axis_value = {key: [item.model_dump(mode="json") for item in value] for key, value in plan.axis_decisions.items()}
     scenarios_value = {
         key: {
@@ -969,7 +938,7 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
             prefix + "scenario_exclusions.json": exclusions_value,
             prefix + "leaf_tasks.json": leaves_value,
             prefix + "reviews.json": reviews_value,
-            prefix + "rule_selection.json": plan.rule_selection,
+            prefix + "extension_selection.json": plan.extension_selection,
         }
         changed = {}
         for relative, value in changes.items():
@@ -987,7 +956,7 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
     _write_json(scenarios_path, scenarios_value)
     _write_json(exclusions_path, exclusions_value)
     _write_json(leaves_path, leaves_value)
-    _write_json(rule_selection_path, plan.rule_selection)
+    _write_json(extension_selection_path, plan.extension_selection)
     legacy_view = plan.model_dump(mode="json")
     legacy_view.update({
         "pending_node_ids": plan.pending_scenario_ids,
@@ -1004,8 +973,8 @@ def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, 
         "task_scenarios_path": str(scenarios_path),
         "scenario_exclusions_path": str(exclusions_path),
         "leaf_tasks_path": str(leaves_path),
-        "rule_selection_path": str(rule_selection_path),
-        "rule_selection": plan.rule_selection,
+        "extension_selection_path": str(extension_selection_path),
+        "extension_selection": plan.extension_selection,
         "reviews_path": str((Path(context.get("bir_path")) / "datasets" / context.get("dataset_scope", "dataset") / "planning" / "reviews.json") if context.get("bir_path") else directory / "reviews.json"),
         "task_nodes_path": str(scenarios_path),
         "task_scenarios": scenarios_value,
@@ -1029,9 +998,9 @@ def _assert_derived_artifact_consistency(context: dict[str, Any], plan: TaskPlan
     scenarios_path = directory / "task_scenarios.json"
     exclusions_path = directory / "scenario_exclusions.json"
     leaves_path = directory / "leaf_tasks.json"
-    rule_selection_path = directory / "rule_selection.json"
+    extension_selection_path = directory / "extension_selection.json"
     if (not scenarios_path.is_file() or not exclusions_path.is_file()
-            or not leaves_path.is_file() or not rule_selection_path.is_file()):
+            or not leaves_path.is_file() or not extension_selection_path.is_file()):
         raise ValueError("Task Plan derived artifacts are missing")
     expected_scenarios = {
         key: {
@@ -1078,73 +1047,11 @@ def _assert_derived_artifact_consistency(context: dict[str, Any], plan: TaskPlan
         raise ValueError("leaf_tasks.json is inconsistent with task_plan.json")
     if _read(exclusions_path) != expected_exclusions:
         raise ValueError("scenario_exclusions.json is inconsistent with task_plan.json")
-    if _read(rule_selection_path) != plan.rule_selection:
-        raise ValueError("rule_selection.json is inconsistent with task_plan.json")
+    if _read(extension_selection_path) != plan.extension_selection:
+        raise ValueError("extension_selection.json is inconsistent with task_plan.json")
 
 
 _write_derived_artifacts = _write_artifacts
-
-
-def _rule_selection_payload(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
-    registry = _registry(context)
-    catalog = registry.planning_rules() if registry else None
-    dataset = dict(plan.dataset)
-    dataset_entry = context.get("dataset_entry") or {}
-    card = context.get("dataset_card_summary") or {}
-    dataset.update({key: dataset_entry.get(key) for key in ("name", "description") if dataset_entry.get(key)})
-    return {
-        "dataset": dataset,
-        "dataset_card_summary": card,
-        "benchmark_brief": _benchmark_brief(context),
-        "rules": catalog.selection_metadata() if catalog else [],
-        "selection_policy": "Common rules are always active. Select only optional rules relevant to this dataset.",
-    }
-
-
-def select_planning_rules(context: dict[str, Any], *, selected_rule_ids: list[str] | None = None,
-                          reason: str | None = None) -> dict[str, Any]:
-    """Select and persist the frozen rule set for one dataset planning run."""
-    plan = _load_plan(context)
-    if plan.phase != "rule_selection":
-        raise ValueError("Planning rule selection is not available in the current phase")
-    registry = _registry(context)
-    catalog = registry.planning_rules() if registry else None
-    if catalog is None:
-        ids = []
-        reason = reason or "No planning rules are registered."
-    elif selected_rule_ids is None:
-        prompt = (
-            "Select the optional planning rule IDs relevant to the supplied dataset. "
-            "Return JSON with selected_rule_ids and a concise reason. Common rules are automatic."
-        )
-        parsed = complete_json(
-            prompt,
-            json.dumps(_rule_selection_payload(context, plan), ensure_ascii=False),
-            RuleSelectionArguments,
-        )
-        selected_rule_ids = parsed.get("selected_rule_ids", [])
-        reason = parsed.get("reason", "Rules selected from the frozen Registry.")
-    ids = list(dict.fromkeys(selected_rule_ids or []))
-    if catalog:
-        for rule_id in ids:
-            catalog.get(rule_id)
-        ids = sorted({item.id for item in catalog.common()} | set(ids))
-        selection_digest = rule_selection_digest(catalog, ids)
-        registry_digest = registry.digest if registry else None
-    else:
-        selection_digest = None
-        registry_digest = registry.digest if registry else None
-    plan.rule_selection = {
-        "selected_rule_ids": ids,
-        "registry_digest": registry_digest,
-        "selected_rule_digest": selection_digest,
-        "selection_reason": (reason or "Rules selected from the frozen Registry.").strip(),
-    }
-    plan.phase = "axes"
-    plan.next_axis = TaskAxis.INPUT_STRUCTURE
-    plan.revision += 1
-    updates = _write_artifacts(context, plan)
-    return result("success", "Planning rules selected", **updates)
 
 
 def _initialize_planning_context(context: dict[str, Any]) -> dict[str, Any]:
@@ -1186,7 +1093,8 @@ def _initialize_planning_context(context: dict[str, Any]) -> dict[str, Any]:
         dataset={"dataset_id": context.get("dataset_scope", "dataset")},
         access_path=evidence_paths["access"],
         evidence_manifest_path=evidence_paths["manifest"],
-        phase="rule_selection" if facts.get("case_count", 0) and facts.get("evidence_names") else "blocked",
+        phase="axes" if facts.get("case_count", 0) and facts.get("evidence_names") else "blocked",
+        extension_selection=context.get("planning_extension_selection", {}),
         review={} if facts.get("case_count", 0) and facts.get("evidence_names") else {"reason": "Dataset has no Case or Evidence"},
     )
     context.update(_write_artifacts(context, plan))
@@ -1597,7 +1505,7 @@ def read_planning_context(context: dict[str, Any]) -> dict[str, Any]:
         "phase": plan.phase,
         "next_axis": plan.next_axis,
         "evidence_manifest_path": plan.evidence_manifest_path,
-        "rule_selection": plan.rule_selection,
+        "extension_selection": plan.extension_selection,
         "axis_decisions": list(plan.axis_decisions),
         "scenario_count": len(plan.scenarios),
         "leaf_task_count": len(plan.leaf_tasks),
@@ -2379,8 +2287,6 @@ def _available_tools(context: dict[str, Any]) -> set[str]:
     plan = _load_plan(context)
     if plan.phase in {"access", "overview"}:
         return {"read_planning_context", "read_dataset_overview", "read_evidence_catalog"}
-    if plan.phase == "rule_selection":
-        return {"select_planning_rules"}
     if plan.phase == "axes":
         return {
             "read_planning_context", "read_dataset_overview", "read_evidence_catalog",
@@ -2493,7 +2399,7 @@ def _render_leaf_prompt(context: dict[str, Any], plan: TaskPlanState, template: 
             }, ensure_ascii=False
         ),
     }
-    replacements.update(_rule_insertions(context, stage="leaf_task_design"))
+    replacements.update(_extension_insertions(context, stage="leaf_task_design"))
     rendered = template
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
@@ -2504,7 +2410,7 @@ def _stage_prompt(context: dict[str, Any], name: str) -> str:
     registry = _registry(context)
     template = registry.prompt(name) if registry else ""
     rendered = template
-    for placeholder, value in _rule_insertions(context, stage=name).items():
+    for placeholder, value in _extension_insertions(context, stage=name).items():
         rendered = rendered.replace(placeholder, value)
     return rendered
 
@@ -2541,8 +2447,6 @@ def _planning_instructions(context: dict[str, Any]) -> str:
         "An Axis assessment covers all allowed values in one dedicated call.\n"
         "A read action provides context but does not persist stage completion."
     )
-    if plan.phase == "rule_selection":
-        runtime += "\nSelect the optional planning rules for this dataset with select_planning_rules before Axis analysis."
     if plan.phase in {"screening", "scenario_review"}:
         runtime += "\nReview exactly one pending Scenario with review_candidate_scenarios, passing its scenario_id. Do not design Leaf Tasks until all Scenario Reviews are complete."
     if plan.phase == "leaves" and store:
@@ -2555,7 +2459,6 @@ def compile_task_planning_agent(*, checkpointer=None):
         read_dataset_overview,
         read_evidence_catalog,
         read_axis_evidence,
-        select_planning_rules,
         analyze_axis,
         read_scenario_context,
         screen_scenario,
@@ -2576,7 +2479,6 @@ def compile_task_planning_agent(*, checkpointer=None):
         args_schemas={
             "read_evidence_catalog": EvidenceCatalogArguments,
             "read_axis_evidence": AxisEvidenceArguments,
-            "select_planning_rules": RuleSelectionArguments,
             "analyze_axis": AxisArguments,
             "read_scenario_context": ScenarioArguments,
             "screen_scenario": ScenarioScreeningArguments,

@@ -171,8 +171,12 @@ ID, target type, subject, scope, reference kind, and reference fields. `keep` re
 one target; it does not ask the model to brainstorm Leaf Tasks. Leaf design must select a target
 ID from the current Scenario and cannot create a new clinical target.
 
-Planning rules are frozen Markdown files in the experiment BIR Registry. The loader places
-extracted common evidence, target, and reference constraints back into the corresponding
-paragraphs of the original stage Prompt. Dataset-specific text is inserted at the existing
-dataset-specific semantic point. A rule can explain clinical boundaries or provide a valid/invalid
-example, but deterministic code still owns all structural and Resolver validation.
+The four core planning Prompts are complete Markdown files containing common
+constraints and validated examples. Each has one final
+`{{DATASET_SPECIFIC_RULES}}` placeholder. Optional disease or dataset extensions
+are frozen under `registry/planning_extensions/` and selected by the Supervisor
+through the human Dataset Selection-style flow. Selected extension text is
+filtered by stage and appended at the end of the core Prompt. Extensions may
+add or tighten constraints but cannot relax evidence grounding, Resolver
+validation, or the output contract. Deterministic code still owns all structural
+and Resolver validation.

@@ -13,6 +13,8 @@ from medbenchagent.agents.templates import prepare_templates as run_templates
 from medbenchagent.agents.task_planning import compile_task_planning_agent, apply_template_feedback
 from medbenchagent.planning.dataset_selection import discover_dataset_candidates as run_discovery
 from medbenchagent.planning.dataset_selection import select_datasets as run_selection
+from medbenchagent.planning.extension_selection import discover_extension_candidates as run_extension_discovery
+from medbenchagent.planning.extension_selection import select_extensions as run_extension_selection
 from medbenchagent.planning.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
 from medbenchagent.runtime.contexts import SupervisorContext
 from medbenchagent.runtime.harness import compile_agent, result
@@ -53,6 +55,13 @@ class DatasetSelectionArguments(NoArguments):
     selection_issue_id: str = ""
 
 
+class ExtensionSelectionArguments(NoArguments):
+    dataset_id: DatasetId
+    extension_ids: list[NonEmpty] = Field(default_factory=list)
+    selection_reason: dict[str, NonEmpty] = Field(default_factory=dict)
+    selection_issue_id: str = ""
+
+
 class BenchmarkInputState(TypedDict, total=False):
     messages: list[Any]
     user_requirement: str
@@ -79,6 +88,7 @@ class BenchmarkState(BenchmarkInputState, total=False):
     construction_events_path: str
     benchmark_info: dict
     selected_dataset_ids: list[str]
+    planning_extension_selections: dict[str, dict]
     dataset_candidates: list[dict]
     candidate_order: list[str]
     preparation_candidates: list[str]
@@ -115,6 +125,7 @@ class BenchmarkOutputState(TypedDict, total=False):
     construction_events_path: str
     benchmark_info: dict
     selected_dataset_ids: list[str]
+    planning_extension_selections: dict[str, dict]
     dataset_candidates: list[dict]
     candidate_order: list[str]
     preparation_candidates: list[str]
@@ -222,6 +233,7 @@ def specify(context: SupervisorContext):
 COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path", "artifact_versions",
           "limits", "user_requirement", "benchmark_info", "seed", "max_tasks_per_image", "question_temperature",
           "question_template_count", "benchmark_input_policy", "planning_novelty_enabled",
+          "planning_extension_selections",
           "bir_path", "bir_revision", "bir_manifest_digest", "bir_template_revision",
           "registration_catalog_path", "sample_scope", "max_total_tasks_per_image", "allocation_preferences",
           "execution_runtime")
@@ -236,6 +248,9 @@ def required_field_action(context):
     if issue and issue.get("purpose") == "dataset_selection" and issue.get("status") == "pending":
         return {"tool": "ask_user", "arguments": {"question": issue["question"], "issue_id": issue["issue_id"]},
                 "reason": "Collect the user's dataset selection"}
+    if issue and issue.get("purpose") == "planning_extension_selection" and issue.get("status") == "pending":
+        return {"tool": "ask_user", "arguments": {"question": issue["question"], "issue_id": issue["issue_id"]},
+                "reason": "Collect the user's planning extension selection"}
     clarification = context.get("clarification") or {}
     if (clarification.get("purpose") == "benchmark_fields"
             and context.get("brief_requirement") != context["user_requirement"]):
@@ -278,6 +293,7 @@ def child_context(context, dataset_id, role):
     child.update(agent_role=ROLES[role], dataset_scope=dataset_id, selected_dataset_id=dataset_id,
                  cases_path=asset["access"]["cases_path"], dataset_entry=asset["entry"],
                  dataset_access_manifest=asset["access"], dataset_card_summary=asset["card_summary"],
+                 planning_extension_selection=context.get("planning_extension_selections", {}).get(dataset_id, {}),
                  operation_directory=agent_operation(
                      context, {"planning": "TaskPlanningAgent", "templates": "TaskPlanningAgent",
                                "generation": "GenerationAgent"}[role], dataset_id, role))
@@ -379,8 +395,8 @@ def _rebuild_requested(context: SupervisorContext) -> bool:
 def available_stages(context: SupervisorContext):
     if context.get("global_issue"):
         issue = context["global_issue"]
-        if issue.get("purpose") == "dataset_selection" and issue.get("status") == "answered":
-            return {"ask_user", "read_evidence", "prepare_data", "discover_datasets", "select_datasets"}
+        if issue.get("purpose") in {"dataset_selection", "planning_extension_selection"} and issue.get("status") == "answered":
+            return {"ask_user", "read_evidence", "prepare_data", "discover_datasets", "select_datasets", "discover_planning_extensions", "select_planning_extensions"}
         return {"resolve_clarification", "ask_user", "read_evidence"} if issue["status"] == "answered" else {"ask_user"}
     tools = {"ask_user", "list_datasets", "inspect_dataset_status", "prepare_data", "discover_datasets"}
     if not _construction_started(context):
@@ -397,6 +413,10 @@ def available_stages(context: SupervisorContext):
         return tools | {"discover_datasets"}
     if not _current(context, "DatasetSelection"):
         return tools | {"select_datasets"}
+    selected = context.get("selected_dataset_ids", [])
+    extension_selections = context.get("planning_extension_selections", {})
+    if selected and any(dataset_id not in extension_selections for dataset_id in selected):
+        return tools | {"discover_planning_extensions"}
     prepared_selected = [d for d in context.get("selected_dataset_ids", [])
                    if context.get("dataset_assets", {}).get(d, {}).get("access", {}).get("schema_version") == "annotation"]
     if prepared_selected and len(prepared_selected) == len(context.get("selected_dataset_ids", [])):
@@ -455,6 +475,13 @@ Candidate discovery and selection:
 - If a requested dataset is not prepared but has a configured source, prepare it before rediscovering candidates. If no
   source exists, ask for the raw directory or let the user choose another candidate.
 
+Planning extension selection:
+- After DatasetSelection, call discover_planning_extensions for each selected dataset.
+- Extensions are optional. If candidates exist, ask the human which exact extension IDs to load, or accept an explicit
+  user choice. Pass purpose=planning_extension_selection, the candidate snapshot path, and allowed extension IDs to ask_user.
+- Map the answer to frozen extension IDs and call select_planning_extensions. An empty selection is valid and keeps the
+  complete core Prompt standalone. Never ask an LLM to choose extensions.
+
 Handoff and construction:
 - Do not call plan, allocation, generation, or finalization before DatasetSelection is published.
 - Delegate planning using the canonical Requirement and selected dataset references. Do not paraphrase or discard scope.
@@ -488,6 +515,22 @@ def compile_benchmark_graph(*, checkpointer=None):
         """Bind one or more user/Supervisor-selected candidates from the frozen snapshot."""
         return run_selection(context, dataset_ids=dataset_ids, selection_reason=selection_reason,
                              selection_issue_id=selection_issue_id)
+
+    def discover_planning_extensions(context, *, dataset_id):
+        """Freeze available extensions for one selected dataset; never selects them."""
+        if dataset_id not in context.get("selected_dataset_ids", []):
+            raise ValueError("Dataset must be selected before discovering planning extensions")
+        return run_extension_discovery(context, dataset_id=dataset_id)
+
+    def select_planning_extensions(context, *, dataset_id, extension_ids, selection_reason, selection_issue_id=""):
+        """Bind human-selected extension IDs from the frozen snapshot."""
+        return run_extension_selection(
+            context,
+            dataset_id=dataset_id,
+            extension_ids=extension_ids,
+            selection_reason=selection_reason,
+            selection_issue_id=selection_issue_id,
+        )
 
     def plan(context, *, dataset_id, delegation=None):
         """Plan tasks for exactly one selected prepared dataset; no quotas are assigned here."""
@@ -903,7 +946,9 @@ def compile_benchmark_graph(*, checkpointer=None):
     supervisor = compile_agent("SupervisorAgent",
         _supervisor_instructions,
         {"end": end, "resolve_clarification": resolve_clarification, "specify": specify,
-         "discover_datasets": discover_datasets, "select_datasets": select_datasets,
+        "discover_datasets": discover_datasets, "select_datasets": select_datasets,
+        "discover_planning_extensions": discover_planning_extensions,
+        "select_planning_extensions": select_planning_extensions,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
          "prepare_data": prepare_data, "plan": plan, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
         describe, finish, available_tools=available_stages, automatic_action=automatic_supervisor_action,
@@ -911,6 +956,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         args_schemas={"resolve_clarification": ResolveClarificationArguments, "prepare_data": PrepareDataArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
                       "select_datasets": DatasetSelectionArguments,
+                      "select_planning_extensions": ExtensionSelectionArguments,
                       "plan": PlanningArguments, "allocate": DelegationArguments,
                       "generate": DatasetStatusArguments, "prepare_templates": DatasetStatusArguments})
 
