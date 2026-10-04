@@ -76,6 +76,7 @@ def allocate_task_plans(
     }
     active_datasets = {dataset_id for dataset_id, leaves in capacities.items() if any(leaves.values())}
     if not active_datasets:
+        empty_counts = {dataset_id: {leaf_id: 0 for leaf_id in sorted(leaves)} for dataset_id, leaves in capacities.items()}
         return {
             "schema_version": "bir-allocation",
             "status": "no_capacity",
@@ -83,7 +84,8 @@ def allocate_task_plans(
             "allocated_count": 0,
             "shortfall": requested_count,
             "dataset_counts": {dataset_id: 0 for dataset_id in sorted(capacities)},
-            "counts": {dataset_id: {leaf_id: 0 for leaf_id in sorted(leaves)} for dataset_id, leaves in capacities.items()},
+            "counts": empty_counts,
+            "assignments": empty_counts,
             "capacities": capacities,
             "weights": {"datasets": {}, "leaves": {}},
         }
@@ -126,6 +128,7 @@ def allocate_task_plans(
         "shortfall": requested_count - allocated,
         "dataset_counts": {dataset_id: sum(values.values()) for dataset_id, values in counts.items()},
         "counts": counts,
+        "assignments": counts,
         "capacities": capacities,
         "weights": {"datasets": dataset_weight_map, "leaves": leaf_weight_records},
     }
