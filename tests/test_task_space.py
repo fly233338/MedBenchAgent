@@ -2,7 +2,14 @@ import pytest
 
 from medbenchagent.planning.node_builder import build_task_nodes
 from medbenchagent.planning.resolver import ResolverSpec, resolve
-from medbenchagent.planning.task_space import AxisAnalysis, AxisAssessment, EvidenceBasis, OutputSpec, TaskParadigm
+from medbenchagent.planning.task_space import (
+    AxisAnalysis,
+    AxisAssessment,
+    AxisDecisionSet,
+    EvidenceBasis,
+    OutputSpec,
+    TaskParadigm,
+)
 
 
 def _analysis(**supported):
@@ -25,6 +32,21 @@ def test_axis_registry_and_node_ids_are_deterministic():
     assert first.keys() == second.keys()
     assert len(first) == 1
     assert next(iter(first.values())).capability_category == "Recognition"
+
+
+def test_axis_decision_set_accepts_json_axis_value_under_strict_contract():
+    value = AxisDecisionSet.model_validate({
+        "axis": "input_structure",
+        "dataset_revision": "1",
+        "values": [{
+            "value": "single-image",
+            "supported": True,
+            "evidence_basis": [{"reference": "dataset_overview:assets", "detail": "observed"}],
+            "reason": "The dataset contains one primary image per case.",
+        }],
+    })
+
+    assert value.axis.value == "input_structure"
 
 
 def test_node_constraints_preserve_empty_nodes_with_reason():

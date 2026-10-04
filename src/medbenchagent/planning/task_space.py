@@ -96,6 +96,11 @@ class AxisDecisionSet(BaseModel):
     values: list[AxisValueDecision] = Field(min_length=1)
     dataset_revision: str = Field(min_length=1)
 
+    @field_validator("axis", mode="before")
+    @classmethod
+    def parse_axis(cls, value):
+        return TaskAxis(value)
+
     @model_validator(mode="after")
     def validate_registry(self):
         actual = [item.value for item in self.values]
