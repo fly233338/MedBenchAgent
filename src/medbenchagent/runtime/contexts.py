@@ -46,11 +46,15 @@ class DataProcessingContext(SupervisorContext, total=False):
 class AllocationContext(SupervisorContext, total=False):
     selected_dataset_ids: list[str]
     allocation_preferences: list[dict]
+    allocation_path: str
+    allocation: dict[str, Any]
 
 
 class FinalizationContext(AllocationContext, total=False):
     dataset_checks: dict
     delivery_path: str
+    dataset_generations: dict[str, dict[str, Any]]
+    delivery_counts: dict[str, Any]
 
 
 class ContextBoundary(BaseModel):

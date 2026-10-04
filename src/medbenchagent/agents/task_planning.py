@@ -1259,12 +1259,19 @@ def screen_scenario(context: dict[str, Any], *, scenario_id: str, decision: str 
         if not remaining:
             plan.phase = "complete"
     else:
-        plan.phase = "leaves"
-        plan.current_scenario_id = scenario_id
-        plan.pending_scenario_ids = [scenario_id]
+        _apply_screening_record(plan, scenario, reviewed)
         plan.screening_pending_scenario_ids = []
         plan.scenario_review_pending_ids = remaining
-        _apply_screening_record(plan, scenario, reviewed)
+        if remaining:
+            # Compatibility callers may submit a manual screening decision,
+            # but they cannot jump over the rest of the candidate-review queue.
+            plan.phase = "scenario_review"
+            plan.current_scenario_id = remaining[0]
+            plan.pending_scenario_ids = remaining.copy()
+        else:
+            plan.phase = "leaves"
+            plan.current_scenario_id = scenario_id
+            plan.pending_scenario_ids = [scenario_id]
     _reset_planning_context(context, plan, plan.current_scenario_id)
     plan.revision += 1
     updates = _write_artifacts(context, plan)
@@ -2100,7 +2107,13 @@ def classify_task_nodes(context: dict[str, Any], *, assignments: list[dict[str, 
 def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
     require(context, "Dataset", "PlanningConfig", "TemplateConfig")
     plan = _load_plan(context)
-    if plan.phase != "complete" or plan.pending_scenario_ids or plan.current_scenario_id:
+    if (
+        plan.phase != "complete"
+        or plan.pending_scenario_ids
+        or plan.current_scenario_id
+        or plan.screening_pending_scenario_ids
+        or plan.scenario_review_pending_ids
+    ):
         raise ValueError("Task Plan still has pending Scenarios")
     validate_task_tree(plan, require_reviews=True, registry=_registry(context))
     expected_templates = _configured_template_count(context)

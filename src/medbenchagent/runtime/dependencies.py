@@ -100,7 +100,10 @@ DEPENDENCIES = {
     "Dataset": ("DataConfig",),
     "Plan": ("Requirement", "Dataset", "Materials", "PlanningConfig"),
     "Templates": ("Plan", "TemplateConfig"),
-    "Generation": ("Dataset", "Plan", "Templates", "GenerationConfig", "Allocation"),
+    # Task Plan now owns the reviewed question templates and resolver
+    # contract.  Annotation generation therefore has no separate Templates
+    # artifact dependency.
+    "Generation": ("Dataset", "Plan", "GenerationConfig", "Allocation"),
 }
 
 

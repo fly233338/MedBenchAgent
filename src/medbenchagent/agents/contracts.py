@@ -19,6 +19,8 @@ class GenerationAgentInputState(TypedDict, total=False):
     max_tasks_per_image: int
     max_total_tasks_per_image: int | None
     question_temperature: float
+    allocation_path: str
+    generation_target_counts: dict[str, int]
 
 
 class GenerationAgentState(GenerationAgentInputState, total=False):

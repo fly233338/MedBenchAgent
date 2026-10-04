@@ -1,4 +1,9 @@
-"""Run-context adapter for deterministic Task Plan execution."""
+"""Run-context adapter retained for in-process callers.
+
+The Supervisor no longer uses this one-shot helper: global Allocation and
+Finalization are explicit stages.  This function only materializes a local
+pipeline result for focused callers and never writes global BIR parts.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,6 @@ from medbenchagent.planning.pipeline import run_pipeline
 from medbenchagent.planning.task_space import TaskPlanState
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
-from medbenchagent.planning.bir import BIRStore, digest_file
 
 
 def run_task_space_pipeline(context, *, requested_count: int | None = None):
@@ -42,53 +46,11 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
         path = operation / name
         atomic_write_json(path, payload)
         paths[name] = str(path)
-    if context.get("bir_path"):
-        store = BIRStore(context["bir_path"])
-        dataset_id = context.get("selected_dataset_id", "dataset")
-        manifest = json.loads((store.root / "manifest.json").read_text(encoding="utf-8"))
-        allocation_value = {
-            "schema_version": "bir-allocation",
-            "status": "complete",
-            "revision": int(manifest["revision"]) + 1,
-            "requested_count": requested_count or context.get("benchmark_info", {}).get("sample_count", 1),
-            "assignments": {dataset_id: output["allocation"]},
-            "counts": output["allocation"],
-            "shortfall": output.get("shortfall", {}),
-            "dependencies": {"planning": digest_file(plan_path)},
-        }
-        output_value = {
-            "schema_version": "bir-output",
-            "dataset_id": dataset_id,
-            "status": "complete",
-            "benchmark_items_path": paths["benchmark_items.json"],
-            "benchmark_items_digest": digest_file(paths["benchmark_items.json"]),
-            "audit_path": paths["task_space_audit.json"],
-            "manifest_path": paths["task_space_manifest.json"],
-            "capability_report_path": paths["capability_report.json"],
-            "counts": output["audit"],
-            "shortfall": output.get("shortfall", {}),
-            "dependencies": {"planning": digest_file(plan_path)},
-        }
-        delivery_value = {
-            "schema_version": "bir-delivery",
-            "status": "complete",
-            "outputs": {dataset_id: f"outputs/{dataset_id}.json"},
-            "counts": {"accepted": output["audit"].get("accepted", 0), "generated": len(output["items"])},
-            "validation": output["audit"],
-            "dependencies": {"allocation": "allocation.json", "output": f"outputs/{dataset_id}.json"},
-        }
-        commit = store.transaction({"allocation.json": allocation_value,
-                                    f"outputs/{dataset_id}.json": output_value,
-                                    "delivery.json": delivery_value},
-                                   run_id=context.get("run_id", "unknown"), actor="task_space_pipeline")
-        context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
     return result(
         "success",
         f"Task Space pipeline completed with {len(output['items'])} items",
         **paths,
         task_space_output=output,
         bir_revision=context.get("bir_revision"), bir_manifest_digest=context.get("bir_manifest_digest"),
-        bir_summary_ref=({"revision": context.get("bir_revision"), "dataset_id": context.get("selected_dataset_id", "dataset"),
-                          "delivery": "delivery.json"} if context.get("bir_path") else None),
     )
 

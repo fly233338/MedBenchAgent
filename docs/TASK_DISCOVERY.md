@@ -13,7 +13,9 @@ DatasetSelection
   -> current Scenario evidence
   -> Leaf Tasks + Task Paradigm + question templates
   -> Scenario review
-  -> Benchmark Items
+  -> Global Allocation
+  -> Per-dataset Generation
+  -> Global Finalization and Benchmark Items
 ~~~
 
 ## Registry-backed levels

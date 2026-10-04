@@ -1,12 +1,23 @@
-"""Private generation inputs assembled from a Plan and its separate template artifact."""
+"""Canonical generation request contracts derived from Task Plan Leaves."""
 
-from typing import TypedDict
-
-from medbenchagent.contracts import BlueprintTask
+from typing import Any, TypedDict
 
 
-class GenerationTask(BlueprintTask):
+class GenerationTask(TypedDict, total=False):
+    leaf_task_id: str
+    name: str
+    scenario_id: str
     question_templates: list[str]
+    options: list[str] | None
+    input: list[dict[str, Any]]
+    target: str
+    reference_rule: str
+    resolver: dict[str, Any]
+    output_spec: str
+    task_paradigm: str
+    capability_category: str
+    eligible_count: int
+    sample_count: int
 
 
 class GenerationRequest(TypedDict):

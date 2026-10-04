@@ -54,7 +54,7 @@ Prepared data remains under `datasets/Prepared`. Deliveries reference prepared i
 
 ## Data preparation and construction
 
-The Supervisor can inspect registered datasets, prepare configured raw sources, reuse valid prepared versions, plan benchmark tasks, review templates, allocate samples, generate questions and publish a validated delivery. Missing facts become a focused `ask_user` question inside the same run. Requests outside dataset preparation or benchmark construction end without creating artifacts.
+The Supervisor can inspect registered datasets, prepare configured raw sources, reuse valid prepared versions, plan and review tasks independently for each selected dataset, allocate one global sample budget, generate dataset-local JSONL items and publish one audited delivery. Missing facts become a focused `ask_user` question inside the same run. Requests outside dataset preparation or benchmark construction end without creating artifacts.
 
 Raw-source preparation uses an OpenHands coding session. The source is read-only; candidates are validated deterministically before registration. Registered datasets are reused unless the request explicitly asks for a rebuild.
 

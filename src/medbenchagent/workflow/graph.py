@@ -7,10 +7,10 @@ from typing import Any, TypedDict
 from langchain_core.messages import convert_to_messages
 from langgraph.graph import StateGraph, START, END
 from medbenchagent.agents.generation import run_generation
-from medbenchagent.agents.finalization import restore_delivery
+from medbenchagent.agents.allocation import allocate_benchmark
+from medbenchagent.agents.finalization import finalize_benchmark, restore_delivery
 from medbenchagent.agents.templates import prepare_templates as run_templates
 from medbenchagent.agents.task_planning import compile_task_planning_agent, apply_template_feedback
-from medbenchagent.agents.task_space_pipeline import run_task_space_pipeline
 from medbenchagent.planning.dataset_selection import discover_dataset_candidates as run_discovery
 from medbenchagent.planning.dataset_selection import select_datasets as run_selection
 from medbenchagent.planning.benchmark_info import extract_benchmark_info, missing_fields, write_working_blueprint
@@ -20,12 +20,13 @@ from medbenchagent.runtime.llm import StructuredOutputError
 from medbenchagent.runtime.tool_contracts import PrepareDataArguments, DatasetId, DelegationArguments, PageArguments, NoArguments, NonEmpty
 from pydantic import Field
 from medbenchagent.data.readiness import list_datasets, inspect_dataset_status, dataset_status, configured_source, reuse_prepared
-from medbenchagent.runtime.run_artifacts import initialize_run, atomic_write_json
+from medbenchagent.runtime.run_artifacts import initialize_run
 from medbenchagent.settings import get_settings, run_settings
 from medbenchagent.runtime.contexts import load_context, save_context, ROLES
 from medbenchagent.runtime.dependencies import publish, require, initialize_dependencies, verify_resume
 from medbenchagent.runtime.preflight import preflight_errors, rag_capability
 from medbenchagent.runtime.clarifications import inject_answers, new_issue, resolve_clarification, ResolveClarificationArguments
+from medbenchagent.planning.bir import BIRStore, digest_file
 
 
 class DatasetStatusArguments(NoArguments):
@@ -84,6 +85,9 @@ class BenchmarkState(BenchmarkInputState, total=False):
     candidate_snapshot_path: str
     selection_path: str
     dataset_task_plans: dict
+    allocation_path: str
+    allocation: dict
+    dataset_generations: dict
     raw_source_paths: dict
     delivery_path: str
     delivery_counts: dict
@@ -117,6 +121,9 @@ class BenchmarkOutputState(TypedDict, total=False):
     candidate_snapshot_path: str
     selection_path: str
     dataset_task_plans: dict
+    allocation_path: str
+    allocation: dict
+    dataset_generations: dict
     raw_source_paths: dict
     delivery_path: str
     delivery_counts: dict
@@ -303,7 +310,7 @@ def child_result(context, dataset_id, role, output):
 def describe(context: SupervisorContext):
     details = {key: context.get(key) for key in (
         "user_requirement", "benchmark_info", "brief_ready", "brief_missing_fields", "sample_count_source", "selected_dataset_ids",
-        "dataset_task_plans", "dataset_templates", "template_revision_requests", "dataset_generations", "delivery_counts", "allocation_path", "prepared_entries",
+        "dataset_task_plans", "dataset_templates", "template_revision_requests", "dataset_generations", "delivery_counts", "allocation_path", "allocation", "prepared_entries",
         "artifact_versions", "global_issue", "last_agent_result", "requested_dataset_ids",
         "dataset_candidates", "candidate_order", "preparation_candidates", "candidate_snapshot_path")}
     ids = set(context.get("selected_dataset_ids", [])) | set(context.get("prepared_entries", {}))
@@ -342,9 +349,13 @@ def pending_datasets(context):
             pending["pending_templates_dataset_ids"].append(dataset)
     if not _current(context, "Allocation"):
         return pending
-    assigned = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))
-    pending["pending_generation_dataset_ids"] = [d for d in context["selected_dataset_ids"]
-        if sum(assigned["counts"][d].values()) and not _current(context, f"dataset/{d}/Generation")]
+    allocation_path = context.get("allocation_path")
+    if not allocation_path or not Path(allocation_path).is_file():
+        return pending
+    pending["pending_generation_dataset_ids"] = [
+        d for d in context["selected_dataset_ids"]
+        if not _current(context, f"dataset/{d}/Generation")
+    ]
     return pending
 
 
@@ -388,14 +399,19 @@ def available_stages(context: SupervisorContext):
         return tools | {"select_datasets"}
     prepared_selected = [d for d in context.get("selected_dataset_ids", [])
                    if context.get("dataset_assets", {}).get(d, {}).get("access", {}).get("schema_version") == "annotation"]
-    if prepared_selected:
-        if pending_datasets(context)["pending_plan_dataset_ids"]:
+    if prepared_selected and len(prepared_selected) == len(context.get("selected_dataset_ids", [])):
+        pending = pending_datasets(context)
+        if pending["pending_plan_dataset_ids"]:
             return tools | {"plan"}
-        if _current(context, "Delivery"):
-            return tools | {"finish"}
-        return tools | {"run_task_space"}
+        if not _current(context, "Allocation"):
+            return tools | {"allocate"}
+        if pending["pending_generation_dataset_ids"]:
+            return tools | {"generate"}
+        if not _current(context, "Delivery"):
+            return tools | {"finalize"}
+        return tools | {"finish"}
     if any("planning" in state for state in context.get("child_states", {}).values()):
-        tools.add("run_task_space")
+        tools.add("plan")
     pending = pending_datasets(context)
     if pending["pending_plan_dataset_ids"] or pending["pending_templates_dataset_ids"]:
         if pending["pending_plan_dataset_ids"]:
@@ -440,7 +456,7 @@ Candidate discovery and selection:
   source exists, ask for the raw directory or let the user choose another candidate.
 
 Handoff and construction:
-- Do not call plan, run_task_space, allocation, generation, or finalization before DatasetSelection is published.
+- Do not call plan, allocation, generation, or finalization before DatasetSelection is published.
 - Delegate planning using the canonical Requirement and selected dataset references. Do not paraphrase or discard scope.
 - Preserve completed valid work. A child completion is local progress; the run is complete only after validated delivery.
 - Resolve existing issues by their exact issue_id. Do not repeat an unchanged failed action or start an automatic refill loop.
@@ -463,8 +479,6 @@ def _supervisor_instructions(context: dict[str, Any]) -> str:
 
 def compile_benchmark_graph(*, checkpointer=None):
     planning = compile_task_planning_agent()
-    generation = None
-    finalization = None
 
     def discover_datasets(context):
         """Freeze and expose validated Prepared candidates for Supervisor review."""
@@ -591,32 +605,129 @@ def compile_benchmark_graph(*, checkpointer=None):
             }
         return outcome
 
-    def run_task_space(context, *, dataset_id):
-        """Execute a completed Task Space for one prepared Dataset."""
+    def allocate(context, *, delegation=None):
+        """Compute one global allocation after every selected Plan is complete."""
+        pending = pending_datasets(context)
+        if pending["pending_plan_dataset_ids"]:
+            raise ValueError("All selected Task Plans must complete before Allocation")
+        if _current(context, "Allocation"):
+            return result("success", "Global Allocation is already current", allocation_path=context.get("allocation_path"), allocation=context.get("allocation", {}))
+        operation_directory = agent_operation(context, "AllocationAgent")
+        path = Path(operation_directory) / "allocation.json"
+        output = allocate_benchmark(context, output_path=path)
+        allocation = output["updates"].get("allocation", {})
+        if allocation.get("status") == "no_capacity":
+            return result("blocked", "All selected Task Plans have zero eligible capacity", allocation_path=str(path), allocation=allocation)
+        bir_updates = {}
+        if context.get("bir_path"):
+            store = BIRStore(context["bir_path"])
+            manifest = json.loads((store.root / "manifest.json").read_text(encoding="utf-8"))
+            allocation_value = {
+                **allocation,
+                "revision": int(manifest.get("revision", 0)) + 1,
+                "dependencies": {dataset_id: digest_file(context["dataset_task_plans"][dataset_id])
+                                  for dataset_id in context["selected_dataset_ids"]},
+            }
+            commit = store.transaction({"allocation.json": allocation_value},
+                                       run_id=context.get("run_id", "unknown"), actor="allocation")
+            bir_updates = {"bir_revision": commit.revision, "bir_manifest_digest": commit.manifest_digest}
+        dependencies = ("Requirement", "DatasetSelection", "AllocationConfig",
+                        *(f"dataset/{dataset_id}/Plan" for dataset_id in context["selected_dataset_ids"]))
+        versions = publish(context, "Allocation", {"path": str(path), "allocation": allocation}, dependencies)
+        return result("success", output["summary"], allocation_path=str(path), allocation=allocation, **bir_updates, **versions)
+
+    def generate(context, *, dataset_id):
+        """Generate one dataset's allocated items from its canonical Leaf Tasks."""
+        require_pending(context, "generation", dataset_id)
+        require(context, "Allocation")
         saved = context.get("child_states", {}).get(dataset_id, {}).get("planning")
         if not saved:
-            raise ValueError("Run planning tools before executing the Task Space pipeline")
+            raise ValueError("Run planning tools before Generation")
         child = load_context(saved, "planning", dataset_id)
-        child["operation_directory"] = agent_operation(context, "TaskSpacePipelineAgent", dataset_id)
-        output = run_task_space_pipeline(child)
-        if output.get("status") != "success":
-            return result("failed", output.get("summary", "Task Space pipeline failed"), **output.get("updates", {}))
-        payload = output.get("updates", {}).get("task_space_output")
-        if not isinstance(payload, dict) or not isinstance(payload.get("audit"), dict):
-            raise ValueError(
-                "Task Space pipeline returned an invalid result envelope: "
-                "expected updates.task_space_output.audit"
-            )
-        atomic_write_json(Path(child["operation_directory"]) / "result.json", payload)
-        result_path = Path(child["operation_directory"]) / "result.json"
-        results = {**context.get("pipeline_results", {}), dataset_id: str(result_path)}
-        counts = {**context.get("pipeline_counts", {}), dataset_id: {"accepted": payload["audit"]["accepted"], "shortfall": payload.get("shortfall", {})}}
-        updates = {"pipeline_results": results, "pipeline_counts": counts,
-                   "pipeline_path": str(result_path), "delivery_counts": counts}
-        if set(results) >= set(context.get("selected_dataset_ids", [])):
-            versions = publish(context, "Delivery", {"task_space_outputs": results}, ())
-            updates.update(versions, delivery_path=str(result_path))
-        return result("success", output["summary"], dataset_id=dataset_id, **updates)
+        child.update({key: context[key] for key in ("allocation_path", "allocation", "benchmark_info", "seed", "max_tasks_per_image", "max_total_tasks_per_image") if key in context})
+        child["artifact_versions"] = dict(context.get("artifact_versions", {}))
+        child["operation_directory"] = agent_operation(context, "GenerationAgent", dataset_id)
+        counts = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))["counts"][dataset_id]
+        leaf_path = child.get("leaf_tasks_path") or child.get("task_leaves_path")
+        output_path = Path(child["operation_directory"]) / "benchmark_items.jsonl"
+        if sum(counts.values()):
+            generated = run_generation(child, leaf_path=leaf_path, output_path=output_path, allocation=counts)
+        else:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("", encoding="utf-8")
+            generated = result("success", "Skipped dataset with zero allocation", raw_output_path=str(output_path), item_count=0, task_counts={}, generation_target_counts=counts)
+        refs = {"raw_output_path": generated["updates"]["raw_output_path"], "item_count": generated["updates"].get("item_count", 0), "counts": counts}
+        versions = publish(child, "Generation", refs, ("Dataset", "Plan", "GenerationConfig", "Allocation"))
+        bir_updates = {}
+        if context.get("bir_path"):
+            store = BIRStore(context["bir_path"])
+            output_value = {
+                "schema_version": "bir-output",
+                "dataset_id": dataset_id,
+                "status": "skipped" if not sum(counts.values()) else "complete",
+                "benchmark_items_path": generated["updates"]["raw_output_path"],
+                "benchmark_items_digest": digest_file(generated["updates"]["raw_output_path"]),
+                "counts": generated["updates"].get("task_counts", {}),
+                "allocation": counts,
+                "dependencies": {"planning": digest_file(context["dataset_task_plans"][dataset_id]),
+                                 "allocation": digest_file(context["allocation_path"])},
+            }
+            commit = store.transaction({f"outputs/{dataset_id}.json": output_value},
+                                       run_id=context.get("run_id", "unknown"), actor="generation")
+            bir_updates = {"bir_revision": commit.revision, "bir_manifest_digest": commit.manifest_digest}
+        state = dict(child, **generated["updates"], artifact_versions=versions["artifact_versions"])
+        state_path = Path(child["operation_directory"]) / "state.json"
+        save_context(state_path, state, "generation", dataset_id)
+        states = {key: dict(value) for key, value in context.get("child_states", {}).items()}
+        states.setdefault(dataset_id, {})["generation"] = str(state_path)
+        generations = {**context.get("dataset_generations", {}), dataset_id: {
+            "raw_output_path": generated["updates"]["raw_output_path"],
+            "item_count": generated["updates"].get("item_count", 0),
+            "task_counts": generated["updates"].get("task_counts", {}),
+        }}
+        return result("success", generated["summary"], dataset_id=dataset_id, dataset_generations=generations,
+                      child_states=states, artifact_versions=versions["artifact_versions"], **bir_updates)
+
+    def finalize(context):
+        """Audit and publish one combined package after all Generations complete."""
+        pending = pending_datasets(context)
+        if pending["pending_generation_dataset_ids"]:
+            raise ValueError("All dataset Generations must complete before Finalization")
+        if _current(context, "Delivery") and context.get("delivery_path"):
+            return result("success", "Delivery is already current", delivery_path=context["delivery_path"], delivery_counts=context.get("delivery_counts", {}))
+        output = finalize_benchmark({**context, "operation_directory": agent_operation(context, "FinalizationAgent")})
+        updates = dict(output["updates"])
+        updates["manifest_path"] = updates.get("manifest_path")
+        updates["audit_artifacts"] = {
+            "benchmark": updates.get("benchmark_path"),
+            "report": updates.get("audit_report_path"),
+            "quarantine": updates.get("quarantine_path"),
+        }
+        bir_updates = {}
+        if context.get("bir_path"):
+            store = BIRStore(context["bir_path"])
+            delivery_value = {
+                "schema_version": "bir-delivery",
+                "status": "complete",
+                "outputs": {dataset_id: f"outputs/{dataset_id}.json" for dataset_id in context["selected_dataset_ids"]},
+                "combined_output": updates.get("benchmark_path"),
+                "manifest_path": updates.get("manifest_path"),
+                "audit_report_path": updates.get("audit_report_path"),
+                "counts": updates.get("delivery_counts", {}),
+                "dependencies": {
+                    "allocation": "allocation.json",
+                    **{f"generation:{dataset_id}": f"outputs/{dataset_id}.json"
+                       for dataset_id in context["selected_dataset_ids"]},
+                },
+            }
+            commit = store.transaction({"delivery.json": delivery_value},
+                                       run_id=context.get("run_id", "unknown"), actor="finalization")
+            bir_updates = {"bir_revision": commit.revision, "bir_manifest_digest": commit.manifest_digest}
+        dependencies = ("DatasetSelection", "Allocation", "FinalizationConfig",
+                        *(f"dataset/{dataset_id}/Generation" for dataset_id in context["selected_dataset_ids"]))
+        refs = {key: updates[key] for key in ("delivery_path", "benchmark_path", "manifest_path", "audit_report_path", "quarantine_path") if key in updates}
+        versions = publish(context, "Delivery", refs, dependencies)
+        return result("success", output["summary"], **updates, **bir_updates, **versions)
 
     def prepare_templates(context, *, dataset_id):
         """Review templates immediately after this Dataset's Plan; return task defects to Planning."""
@@ -771,67 +882,11 @@ def compile_benchmark_graph(*, checkpointer=None):
             outcome["updates"].update(publish(published, "PreparedCandidates", {"entries": entries}, ()))
         return outcome
 
-    def allocate(context, *, delegation=None):
-        """Legacy allocation is unavailable; the current pipeline uses the deterministic Task Space pipeline."""
-        raise ValueError("Use run_task_space for annotation datasets")
-
-    def generate(context, *, dataset_id):
-        """Generate one dataset's positive allocation using its own Protocols and annotation."""
-        require_pending(context, "generation", dataset_id)
-        require(context, "Allocation")
-        child = child_context(context, dataset_id, "generation")
-        require(child, "Plan")
-        assigned = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))
-        counts = assigned["counts"][dataset_id]
-        if not sum(counts.values()):
-            return result("success", "Skipped dataset with zero allocation")
-        blueprint = json.loads(Path(context["dataset_task_plans"][dataset_id]).read_text(encoding="utf-8"))
-        for key, leaf in blueprint["tasks"].items():
-            leaf["sample_count"] = counts[key]
-        blueprint["allocation"] = {"allocated_count": sum(counts.values()), "counts": counts}
-        path = Path(child["operation_directory"]) / "request_plan.json"
-        atomic_write_json(path, blueprint)
-        child["working_blueprint_path"] = str(path)
-        child["templates_path"] = context["dataset_templates"][dataset_id]
-        outcome = run_generation(child, generation)
-        child.update(outcome["updates"])
-        state_path = Path(child["operation_directory"]) / "state.json"
-        save_context(state_path, child, "generation", dataset_id)
-        states = {key: dict(value) for key, value in context.get("child_states", {}).items()}
-        states.setdefault(dataset_id, {})["generation"] = str(state_path)
-        generations = {**context.get("dataset_generations", {}), dataset_id: {
-            "raw_output_path": child["raw_output_path"], "working_blueprint_path": child["working_blueprint_path"]}}
-        return result("success", "Dataset generated", dataset_generations=generations,
-                      artifact_versions=child["artifact_versions"], child_states=states)
-
-    def finalize(context):
-        """Delegate global finalization only after all positive-allocation Generations are complete."""
-        if "finalize" not in available_stages(context):
-            raise ValueError("All Generations must complete before finalization")
-        saved = context.get("finalization_state_path")
-        child = load_context(saved, "finalization") if saved else {}
-        child.update({k: context[k] for k in (*COMMON, "selected_dataset_ids", "dataset_assets", "dataset_task_plans",
-                     "dataset_templates", "dataset_generations", "allocation_path") if k in context})
-        child["operation_directory"] = agent_operation(context, "FinalizationAgent")
-        inject_answers(context, child, "FinalizationAgent")
-        output = finalization.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
-        path = Path(child["operation_directory"]) / "state.json"
-        save_context(path, output["context"], "finalization")
-        updates = {"artifact_versions": output["context"]["artifact_versions"], "finalization_state_path": str(path),
-                   "last_agent_result": output["result"]}
-        updates["issues"] = {**context.get("issues", {}), **output["context"].get("issues", {})}
-        updates["global_issue"] = output["context"].get("global_issue")
-        if output["result"]["status"] == "complete":
-            updates.update({k: v for k, v in output["context"].items() if k in BenchmarkOutputState.__annotations__})
-        return {**output["result"], "status": "success" if output["result"]["status"] in {"complete", "needs_input"} else output["result"]["status"], "updates": updates}
-
     def finish(context):
-        if context.get("delivery_path") and any(
-            context.get("dataset_assets", {}).get(d, {}).get("access", {}).get("schema_version") == "annotation"
-            for d in context.get("selected_dataset_ids", [])
-        ):
-            return result("complete", f"Task Space benchmark delivered; shortfall {context.get('delivery_counts', {}).get('shortfall', {})}",
-                          delivery_path=context["delivery_path"], delivery_counts=context.get("delivery_counts", {}))
+        if context.get("delivery_path"):
+            return result("complete", f"Benchmark delivered; shortfall {context.get('delivery_counts', {}).get('shortfall', 0)}",
+                          delivery_path=context["delivery_path"], delivery_counts=context.get("delivery_counts", {}),
+                          manifest_path=context.get("manifest_path"))
         if context.get("prepared_entries") and "Requirement" not in context.get("artifact_versions", {}):
             if preparation_pending(context):
                 raise ValueError("Prepare and register the dataset first")
@@ -850,13 +905,13 @@ def compile_benchmark_graph(*, checkpointer=None):
         {"end": end, "resolve_clarification": resolve_clarification, "specify": specify,
          "discover_datasets": discover_datasets, "select_datasets": select_datasets,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
-         "prepare_data": prepare_data, "plan": plan, "run_task_space": run_task_space, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
+         "prepare_data": prepare_data, "plan": plan, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
         describe, finish, available_tools=available_stages, automatic_action=automatic_supervisor_action,
         read_tools=frozenset({"list_datasets", "inspect_dataset_status", "discover_datasets"}),
         args_schemas={"resolve_clarification": ResolveClarificationArguments, "prepare_data": PrepareDataArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
                       "select_datasets": DatasetSelectionArguments,
-                      "plan": PlanningArguments, "run_task_space": DatasetStatusArguments, "allocate": DelegationArguments,
+                      "plan": PlanningArguments, "allocate": DelegationArguments,
                       "generate": DatasetStatusArguments, "prepare_templates": DatasetStatusArguments})
 
     def initialize(state):

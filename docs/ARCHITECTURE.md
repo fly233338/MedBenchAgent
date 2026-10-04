@@ -10,8 +10,9 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 2. 通过 `DataProcessingAgent` 准备或复用数据；
 3. 提取 benchmark brief，选择数据集；
 4. 为每个数据集生成并审核完整 Task Plan；
-5. 全局分配样本并生成问题；
-6. 由 `FinalizationAgent` 验证并发布 delivery。
+5. 在所有计划完成后执行一次全局 Allocation；
+6. 按数据集执行 Generation；
+7. 由 `FinalizationAgent` 全局审计、合并、平衡选项并发布 delivery。
 
 缺少用户事实时，当前 Agent 通过 `ask_user` 中断；回答写入同一 Run 的 checkpoint 后继续。数据集选择也使用同一机制：先冻结候选，再用英文问题让用户选择，回答后由 Supervisor 映射到候选 ID 并由代码校验绑定。与系统无关的请求使用 Supervisor 的 `end` 工具结束。
 
@@ -69,7 +70,9 @@ Supervisor 先解析数据准备请求：请求中包含可读的原始目录时
 
 `specify` 生成带字段级来源证据的 Requirement，并保留开放式意图和用户提到的数据集名称。`discover_datasets` 扫描并校验 Catalog 与 Prepared 根目录，冻结候选 Card；它不替用户做选择。`select_datasets` 只绑定冻结候选 ID。随后代码生成并校验 `DatasetAccessReceipt`，模型不会决定路径、revision 或 digest。
 
-每个 annotation 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。Screening `keep` 只表示允许进入 Leaf 探索；Leaf 阶段可以在证据充分且没有有效 Leaf 时显式排除 Scenario，所有排除理由和证据都写入 canonical plan。完整计划的 canonical 文件位于 BIR 的 `datasets/<id>/planning/`；Run 目录中的 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 是派生视图。Generation 使用冻结 seed 在模板中可复现地抽取问题，Delivery 记录 Scenario、Leaf Task、Capability Category、TaskParadigm、OutputSpec、完整性、审计和短缺统计。
+每个 annotation 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。Screening `keep` 只表示允许进入 Leaf 探索；Leaf 阶段可以在证据充分且没有有效 Leaf 时显式排除 Scenario，所有排除理由和证据都写入 canonical plan。完整计划的 canonical 文件位于 BIR 的 `datasets/<id>/planning/`；Run 目录中的 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 是派生视图。
+
+所有选中数据集的 Plan 完成后，Allocation 使用每个 Leaf 的 `eligible_count` 计算一个全局配额，默认先均衡数据集再均衡数据集内 Leaf。Generation 按数据集消费该配额并写出 JSONL。Finalization 重新审计每个生成项，隔离非法项，检查每图上限和重复项，平衡 Closed VQA 选项位置，并发布统一的 `benchmark.jsonl`、`benchmark_manifest.json`、`audit_report.json` 和 `quarantine.jsonl`。
 
 Leaf design receives a bounded structured context containing the dataset
 revision, Evidence Catalog, source-backed annotation semantics, documented
