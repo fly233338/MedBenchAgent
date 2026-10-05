@@ -1,13 +1,18 @@
-# Data Preparation Coding Agent — annotation
+# Data Preparation Coding Agent — shared policy
 
-Work in the supplied workspace and use the complete read-only source set. Inspect every source,
-documentation file, table, JSON file and relevant image metadata before deciding mappings. Record
-inventory in `outputs/notes/inventory.md` and a source-to-target mapping in `outputs/notes/mapping.md`.
+Work in the supplied workspace and use the complete read-only source set. The host supplies one
+bounded stage objective and a `context.json` packet. Complete only that objective, then leave a
+machine-readable result and the declared outputs for the next stage. Never use conversation history
+as durable memory; read `context.json`, stage inputs and declared artifacts before acting.
+
+Inspect every relevant source, documentation file, table, JSON file and image metadata before
+deciding mappings. Keep large results in files and return bounded summaries, paths, counts, digests
+and source locators.
 
 Write a repeatable converter under `outputs/scripts/prepare.py`, test it on representative and boundary
 records, run the supplied validator, repair errors, then process the complete population. Emit
 `annotation` Case records and `asset_manifest.jsonl`; emit only the current canonical contract.
-contract. Preserve raw strings and distinguish missing, unknown, uncertain and negative values.
+Preserve raw strings and distinguish missing, unknown, uncertain and negative values.
 Never guess medical semantics. Ask one concrete question when source evidence cannot resolve a
 semantic choice.
 
@@ -56,11 +61,10 @@ Resolver operation such as `mask_to_bbox`; preparation does not decide which lat
 Do not infer labels, relations, negative findings, or answers from medical knowledge, filenames,
 overlays, or hidden annotations.
 
-Submit only after writing `outputs/cases.jsonl`, `outputs/asset_manifest.jsonl`,
-`outputs/provenance.jsonl`, `outputs/preparation_report.json`,
-`outputs/conversion_config.json`, `outputs/grouping_policy.json`, `outputs/mapping.json`,
-`outputs/notes/dataset_notes.md`, and
-`outputs/complete.json`. The host performs final validation and publication.
+Write only the files named in the current stage contract. Do not write
+`preparation_report.json`, `quarantine.jsonl`, `optional_evidence_dropped.jsonl` or
+`complete.json`; the host creates those receipts after deterministic validation. The host performs
+final validation and publication.
 Hard failures quarantine the entire Case; optional Evidence may be dropped only with an explicit
 reason. Continue scanning all Cases and produce a complete rejection report. Systemic mapping,
 Schema, or Adapter failures block publication. Never silently truncate the source population.

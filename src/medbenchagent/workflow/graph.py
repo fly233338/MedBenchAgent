@@ -8,7 +8,7 @@ from langchain_core.messages import convert_to_messages
 from langgraph.graph import StateGraph, START, END
 from medbenchagent.agents.generation import run_generation
 from medbenchagent.agents.allocation import allocate_benchmark
-from medbenchagent.agents.finalization import finalize_benchmark, restore_delivery
+from medbenchagent.agents.finalization import finalize_benchmark
 from medbenchagent.agents.templates import prepare_templates as run_templates
 from medbenchagent.agents.task_planning import compile_task_planning_agent, apply_template_feedback
 from medbenchagent.planning.dataset_selection import discover_dataset_candidates as run_discovery
@@ -901,6 +901,8 @@ def compile_benchmark_graph(*, checkpointer=None):
                     try:
                         finalized = finalize_prepared_dataset(candidate_path, output["context"])
                     except (ValueError, OSError) as exc:
+                        from medbenchagent.runtime.preparation_orchestrator import mark_preparation_blocked
+                        mark_preparation_blocked(output["context"].get("preparation_workspace", ""), "validation_failed")
                         if event_path:
                             record_event(event_path, "finalization_finished", operation="finalize_prepared_dataset",
                                          status="blocked", diagnostic=str(exc), **event_base)
@@ -911,6 +913,8 @@ def compile_benchmark_graph(*, checkpointer=None):
                                             "preparation_status": "blocked",
                                             "validation_error": str(exc),
                                             "preparation_feedback": str(exc)}}
+                    from medbenchagent.runtime.preparation_orchestrator import mark_preparation_complete
+                    mark_preparation_complete(output["context"].get("preparation_workspace", ""))
                     if event_path:
                         record_event(event_path, "finalization_finished", operation="finalize_prepared_dataset",
                                      status="complete", dataset_entry=finalized.get("dataset_entry"),

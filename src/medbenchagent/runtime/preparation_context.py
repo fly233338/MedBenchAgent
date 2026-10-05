@@ -1,7 +1,7 @@
 """Initialization of a Coding Session preparation run.
 
-This module owns run-frozen Source, backend and bundle context. It deliberately
-does not expose a stage scheduler.
+This module owns run-frozen Source, backend and bundle context. The stage
+orchestrator consumes this immutable preparation context.
 """
 
 from __future__ import annotations
@@ -79,6 +79,9 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
                     data_runtime=data_runtime,
                     coding_worker_max_iterations=get_settings().data_processing["coding_worker_max_iterations"],
                     coding_worker_timeout_seconds=get_settings().data_processing["coding_worker_timeout_seconds"],
+                    preparation_no_progress_limit=get_settings().data_processing.get("preparation_no_progress_limit", 8),
+                    preparation_tool_error_limit=get_settings().data_processing.get("preparation_tool_error_limit", 3),
+                    preparation_stage_budgets=get_settings().data_processing.get("preparation_stage_budgets", {}),
                     bundle_root=str(bundle), normalized_sources={}, source_scope=None,
                      source_roots={source.id: source.root for source in sources},
                      source_manifests={source.id: str(bundle / "source_manifests" / source.id) for source in sources})

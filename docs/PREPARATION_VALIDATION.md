@@ -27,7 +27,10 @@
 
 ## 恢复
 
-准备状态、Worker 会话、工具操作和 LangGraph checkpoint 都可以从新 Run 目录恢复。已完成的候选和发布 Bundle 保持内容摘要，重复恢复不会重新发布相同版本。
+准备状态、阶段 Worker attempt、工具操作和 LangGraph checkpoint 都可以从新 Run 目录恢复。
+Run 内 `workflow.json` 是 phase/status/termination 的来源，`memory.json` 保存带证据引用的
+事实、决定、问题和 validator feedback；conversation history 只作为诊断轨迹。阶段输入 digest
+未变化且 artifact 已通过检查时可以跳过阶段，重复恢复不会重新发布相同内容。
 
 详细字段契约见 [DATA_LAYER.md](DATA_LAYER.md)。
 # annotation validation

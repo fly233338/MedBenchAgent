@@ -61,10 +61,15 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 `presentation_manifest.jsonl`、`split_manifest.jsonl`、`sampling_manifest.jsonl` 和
 `preparation_report.json`。Mask geometry 作为带 Asset digest 的 Evidence feature 保存，
 Case grouping、Evidence ref 和 Asset 完整性由宿主确定性校验；
-OpenHands Coding Session 只负责在 Worker workspace 中探索来源和编写可重复转换器。旧的
-image-centric 产物不属于 数据处理运行时。
+OpenHands stage session 只在自己的 Worker workspace 中完成一个有界目标。宿主维护当前 Run 的
+`workflow.json`、`memory.json`、`progress.json` 和 artifact ledger；下一阶段只读取这些结构化
+引用和有界 evidence，不恢复上一阶段的完整 conversation。旧的 image-centric 产物不属于
+数据处理运行时。
 
-原始来源以只读方式访问。OpenHands Coding Session 在 Worker workspace 中探索来源、编写适配器并提交候选；宿主重新核验来源、locator、总体、annotation 和图像资产，再注册 Dataset、Profile、Card 和 Catalog。
+原始来源以只读方式访问。准备 phase 为 `bootstrap`、`inventory`、`semantic`、`adapter`、
+`candidate`、`validation` 和 `repair`。每个 phase/attempt 使用新的 OpenHands conversation；
+OpenHands persistence 只用于同一 attempt 的进程恢复。宿主重新核验来源、locator、总体、
+annotation 和图像资产，再注册 Dataset、Profile、Card 和 Catalog。
 
 Supervisor 先解析数据准备请求：请求中包含可读的原始目录时，规范化目录名后委派 `prepare_data`；缺少目录时只询问目录路径。目录清单、格式和 manifest 由 DataProcessingAgent 检查，目录不可读或无法解析数据集 ID 时才进入澄清。
 

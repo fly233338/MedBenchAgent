@@ -22,7 +22,9 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
     provenance = candidate / "provenance.jsonl"
     if not provenance.is_file():
         raise ValueError("provenance.jsonl is required")
-    required_receipts = ("conversion_config.json", "grouping_policy.json", "mapping.json", "complete.json")
+    # complete.json is a host receipt written after this validation succeeds;
+    # workers must not be able to claim publication by creating it themselves.
+    required_receipts = ("conversion_config.json", "grouping_policy.json", "mapping.json")
     missing_receipts = [name for name in required_receipts if not (candidate / name).is_file()]
     if missing_receipts:
         raise ValueError("Candidate is missing required outputs: " + ", ".join(missing_receipts))

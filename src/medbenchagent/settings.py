@@ -337,7 +337,10 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                          "coding_worker_image": _string(values["data_processing"]["coding_worker_image"], "data_processing.coding_worker_image"),
                          "coding_worker_max_iterations": _integer(values["data_processing"]["coding_worker_max_iterations"], "data_processing.coding_worker_max_iterations", minimum=1),
                          "coding_worker_timeout_seconds": _integer(values["data_processing"]["coding_worker_timeout_seconds"], "data_processing.coding_worker_timeout_seconds", minimum=1),
-                         "coding_worker_max_revisions": _integer(values["data_processing"]["coding_worker_max_revisions"], "data_processing.coding_worker_max_revisions", minimum=1)},
+                         "coding_worker_max_revisions": _integer(values["data_processing"]["coding_worker_max_revisions"], "data_processing.coding_worker_max_revisions", minimum=1),
+                         "preparation_no_progress_limit": _integer(values["data_processing"].get("preparation_no_progress_limit", 8), "data_processing.preparation_no_progress_limit", minimum=1),
+                         "preparation_tool_error_limit": _integer(values["data_processing"].get("preparation_tool_error_limit", 3), "data_processing.preparation_tool_error_limit", minimum=1),
+                         "preparation_stage_budgets": values["data_processing"].get("preparation_stage_budgets", {})},
         paths=PathSettings(
             **{key: _resolve_path(value, f"paths.{key}") for key, value in paths.items()}
         ),

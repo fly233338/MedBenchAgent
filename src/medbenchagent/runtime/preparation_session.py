@@ -1,4 +1,4 @@
-"""Persistent state and bounded context for long lived preparation sessions."""
+"""Small lifecycle facade for one bounded preparation stage attempt."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ SESSION_SCHEMA = "preparation-session"
 
 @dataclass(frozen=True)
 class CodingResult:
-    """Stable business result returned by a long-lived preparation session."""
+    """Stable business result returned by one preparation stage attempt."""
     status: str
     conversation_id: str
     workspace: str
@@ -24,12 +24,11 @@ class CodingResult:
     diagnostic: str = ""
 
 
-class CodingSession:
-    """Small resumable facade around the OpenHands task runner.
+class StageSession:
+    """Run exactly one bounded stage attempt.
 
-    ``runner`` receives the user-visible message and the persisted session state.
-    Keeping this adapter independent lets local and Docker workers share the same
-    lifecycle and makes the contract straightforward to test with a fake runner.
+    Continuation across stages is deliberately handled by the host state machine;
+    this facade never appends a second user turn to an old conversation.
     """
 
     def __init__(self, workspace: Path, conversation_id: str, runner):
@@ -40,9 +39,6 @@ class CodingSession:
 
     async def run(self, task: str) -> CodingResult:
         return await self._execute(task)
-
-    async def continue_with(self, message: str) -> CodingResult:
-        return await self._execute(message)
 
     async def _execute(self, message: str) -> CodingResult:
         if self._cancelled:
@@ -95,7 +91,7 @@ def _write(path: Path, value: Any) -> None:
 
 def session_paths(workspace: Path) -> dict[str, Path]:
     state = workspace / "state"
-    return {"state": state / "session.json"}
+    return {"state": state / "worker.json"}
 
 
 def load_session(workspace: Path) -> dict[str, Any]:

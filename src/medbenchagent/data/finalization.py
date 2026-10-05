@@ -20,6 +20,12 @@ def finalize_prepared_dataset(candidate, context):
     write_validation_report(candidate, report)
     if report["systemic_failure"] or not report["accepted_cases"]:
         raise ValueError("Prepared candidate cannot be published")
+    atomic_write_json(candidate / "complete.json", {
+        "status": "complete",
+        "accepted_cases": report["accepted_cases"],
+        "quarantined_cases": report["quarantined_cases"],
+        "preparation_report": str((candidate / "preparation_report.json").resolve()),
+    })
     bundle = Path(context["bundle_root"]).resolve()
     temporary = bundle.with_name(bundle.name + ".publishing")
     if temporary.exists():

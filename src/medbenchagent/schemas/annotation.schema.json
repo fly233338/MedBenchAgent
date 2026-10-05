@@ -75,7 +75,11 @@
         "physical_area": {"type": ["number", "null"], "exclusiveMinimum": 0},
         "physical_unit": {"type": ["string", "null"], "minLength": 1},
         "planes": {"type": "array", "items": {"$ref": "#/$defs/maskPlaneFeature"}}
-      }
+      },
+      "allOf": [
+        {"if": {"properties": {"shape": {"minItems": 3, "maxItems": 3}}},
+         "then": {"properties": {"planes": {"items": {"properties": {"axis": {"const": 2}}}}}}}
+      ]
     }
   }
 }

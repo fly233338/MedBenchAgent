@@ -20,7 +20,6 @@ from medbenchagent.data.sources import verify_source
 from medbenchagent.data.execution import ExecutionUnavailable, docker_image_id
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_llm_api_key, get_settings
-from medbenchagent.runtime.preparation_session import CodingSession, CodingResult  # noqa: F401
 
 
 class DatasetAgentTask(BaseModel):
@@ -49,6 +48,11 @@ class DatasetAgentTask(BaseModel):
     source_id: str = ""
     workflow_step: str = ""
     source_digest: str = ""
+    stage: str = "candidate"
+    context_path: str = ""
+    allowed_outputs: list[str] = Field(default_factory=list)
+    input_digest: str = ""
+    progress_guard: dict[str, int] = Field(default_factory=dict)
 
 
 class DatasetAgentResult(BaseModel):
@@ -63,7 +67,9 @@ class DatasetAgentResult(BaseModel):
                             "worker_execution_failed", "worker_output_invalid",
                             "source_changed", "source_semantics_unresolved"] = ""
     retryable: bool = False
-    state: Literal["running", "needs_user_input", "submitted", "validation_failed", "complete", "blocked"] = "complete"
+    state: Literal["running", "needs_user_input", "submitted", "validation_failed", "complete", "blocked", "failed"] = "complete"
+    termination_reason: str = ""
+    progress: dict = Field(default_factory=dict)
 
 
 class DatasetRuntimeProtocol(Protocol):
@@ -142,6 +148,8 @@ class OpenHandsDatasetRuntime:
             request.update(workspace="/workspace", source_root="/workspace/source",
                            conversation_id=conversation_id, base_url=_container_url(task.base_url),
                            construction_events_path="/workspace/logs/coding_events.jsonl")
+            if task.context_path:
+                request["context_path"] = "/workspace/inputs/context.json"
         else:
             request.update(workspace=str(workspace), source_root=str(source),
                            conversation_id=conversation_id, base_url=task.base_url,

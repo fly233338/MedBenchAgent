@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import filecmp
+import hashlib
 import os
 import shutil
 import subprocess
@@ -13,24 +14,47 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def normalize_tool_arguments(tool_name: str, arguments: dict) -> tuple[dict, list[str]]:
+    """Strip harmless gateway metadata before a tool retry."""
+    normalized = dict(arguments or {})
+    stripped = []
+    if tool_name in {"terminal", "file_editor"} and "description_note" in normalized:
+        normalized.pop("description_note", None)
+        stripped.append("description_note")
+    return normalized, stripped
+
+
+def validate_terminal_command(command: str) -> str:
+    """Reject dependency installation and unrelated network access in workers."""
+    lowered = (command or "").casefold()
+    forbidden = ("pip install", "python -m pip", "uv pip", "curl ", "wget ", "invoke-webrequest")
+    if any(token in lowered for token in forbidden):
+        return "Package installation and unrelated network access are disabled in preparation workers"
+    return ""
+
+
 def _litellm_model(model: str) -> str:
     """Return the provider-qualified model name required by LiteLLM."""
     return model if "/" in model else "openai/" + model
 
 
-def _write_session_state(workspace: Path, request: dict, *, status: str, summary: str = "") -> None:
+def _write_session_state(workspace: Path, request: dict, *, status: str, summary: str = "",
+                         termination_reason: str = "", progress: dict | None = None) -> None:
     bounded = (summary or "")[:6000]
     state = {"schema_version": "preparation-session", "task_id": request["task_id"],
              "kind": request["kind"], "source_root": request["source_root"],
              "source_digest": request.get("source_digest", ""),
              "workflow_step": request.get("workflow_step", ""),
+             "stage": request.get("stage", request.get("workflow_step", "candidate")),
              "conversation_id": request["conversation_id"], "attempt": request.get("attempt", 1),
              "status": status, "last_feedback": {"message": bounded} if bounded else {},
              "stop_reason": bounded if status in {"blocked", "failed"} else "",
-             "required_outputs": request.get("required_outputs", [])}
+             "required_outputs": request.get("required_outputs", []),
+             "termination_reason": termination_reason,
+             "progress": progress or {}}
     state_dir = workspace / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "session.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    (state_dir / "worker.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def replay_source_script(request: dict, workspace: Path) -> str:
@@ -99,13 +123,58 @@ def main(request_path: str, result_path: str) -> None:
     if event_path:
         event_path.parent.mkdir(parents=True, exist_ok=True)
 
+    progress = {"iterations": 0, "tool_errors": 0, "empty_responses": 0,
+                "no_progress": 0, "last_action": "", "artifact_digest": ""}
+    guard = request.get("progress_guard") or {}
+    previous_digest = ""
+
+    def artifact_digest() -> str:
+        digest = hashlib.sha256()
+        for root_name in ("state", "outputs"):
+            root = workspace / root_name
+            if not root.is_dir():
+                continue
+            for path in sorted(item for item in root.rglob("*") if item.is_file()):
+                digest.update(path.relative_to(workspace).as_posix().encode())
+                digest.update(path.read_bytes())
+        return digest.hexdigest()
+
     def on_event(event):
+        nonlocal previous_digest
+        event_name = type(event).__name__
+        if event_name == "ActionEvent":
+            action = getattr(event, "action", None)
+            tool_name = str(getattr(action, "name", getattr(action, "action", "")))
+            arguments = getattr(action, "arguments", getattr(action, "args", {})) or {}
+            normalized, stripped = normalize_tool_arguments(tool_name, arguments)
+            command = normalized.get("command", "") if isinstance(normalized, dict) else ""
+            if validate_terminal_command(command):
+                raise RuntimeError("Preparation stage guard: blocked_command")
+            if stripped:
+                progress["tool_metadata_stripped"] = progress.get("tool_metadata_stripped", 0) + len(stripped)
+        if event_name in {"ActionEvent", "ObservationEvent", "AgentErrorEvent"}:
+            progress["iterations"] += 1
+            progress["last_action"] = event_name
+            if "Error" in event_name:
+                progress["tool_errors"] += 1
+            current_digest = artifact_digest()
+            if current_digest == previous_digest:
+                progress["no_progress"] += 1
+            else:
+                progress["no_progress"] = 0
+                previous_digest = current_digest
+            progress["artifact_digest"] = current_digest
+            if progress["tool_errors"] >= int(guard.get("tool_error_limit", 3)):
+                raise RuntimeError("Preparation stage guard: tool_error_budget")
+            if progress["no_progress"] >= int(guard.get("no_progress_limit", 8)):
+                raise RuntimeError("Preparation stage guard: no_progress")
+        _write_session_state(workspace, request, status="running", progress=progress)
         if request.get("construction_events_path"):
             item = {"timestamp": datetime.now(timezone.utc).isoformat(),
                     "event_type": "coding_worker_event", "run_id": request["run_id"],
                     "agent": request.get("agent", "DatasetProcessingAgent"), "component": "OpenHandsCodingWorker",
                     "dataset_id": request["dataset_id"],
-                    "source_id": request["source_id"], "phase": "CandidateDiscovery",
+                    "source_id": request["source_id"], "phase": request.get("stage", "candidate"),
                     "attempt": request.get("attempt"), "conversation_id": request["conversation_id"],
                     "model": request.get("model"), "reasoning_effort": request.get("reasoning_effort") or None,
                     "operation": type(event).__name__,
@@ -119,16 +188,21 @@ def main(request_path: str, result_path: str) -> None:
                                 max_iteration_per_run=request["max_iterations"], stuck_detection=True,
                                 delete_on_close=False, callbacks=[on_event])
     outputs = ", ".join(request["required_outputs"])
-    workflow = """
-You are the long-lived MedBench preparation agent. Complete exploration, evidence capture, mapping,
-adapter implementation, execution, reconciliation, and repair in this same conversation. Use the workspace
-as durable memory and keep verified facts, inferences, user decisions, unresolved questions, validator feedback,
-and artifact paths separate. Read state/session.json and workspace reports before acting and do not repeat
-inspections whose fingerprint is unchanged. Keep large results in files and pass bounded excerpts only. Ask one concrete question
-when source evidence cannot prove a semantic choice. Never claim publication or medical correctness; deterministic
-MedBench validation controls acceptance. Repeated actions that produce no new information must stop with a blocker.
-"""
-    prompt = workflow + "\n\n" + (
+    stage = request.get("stage", "candidate")
+    stage_prompts = {
+        "inventory": "Inventory the complete source population and write only the declared inventory outputs. Do not design mappings or adapters.",
+        "semantic": "Use the supplied inventory and source evidence to write a source-grounded mapping proposal. Record unresolved semantic questions instead of guessing.",
+        "adapter": "Implement and test a deterministic adapter from the frozen semantic context. Keep trial outputs under work and do not publish candidate data.",
+        "candidate": "Run the deterministic adapter over the complete population and write the declared core candidate outputs incrementally.",
+        "repair": "Read the bounded validator feedback and repair only the responsible adapter or mapping. Re-run the affected checks and write the declared outputs.",
+    }
+    context_text = "{}"
+    if request.get("context_path"):
+        context_file = Path(request["context_path"])
+        if context_file.is_file():
+            context_text = context_file.read_text(encoding="utf-8")[:24000]
+    prompt = (
+        "You are a bounded MedBench preparation stage agent. Work only inside this workspace. "
         "You are the MedBench preparation coding agent. Work only inside this workspace. "
         f"The read-only source is at {request['source_root']} and additional inputs are in ./inputs. "
         "Write scratch files under ./work, persistent progress under ./state, and candidate files under ./outputs. "
@@ -143,21 +217,14 @@ MedBench validation controls acceptance. Repeated actions that produce no new in
         "Before finishing, run the script, inspect counts and outputs, fix failures, and run it again. "
         "Do not repeat an inspection whose result is already present in workspace/state or the supplied feedback. "
         "Do not claim publication or readiness; submit candidates and an explicit summary of unresolved questions. "
-        f"Objective: {request['objective']}\nRequired files under ./outputs: {outputs}. "
+        f"Stage: {stage}. Stage objective: {stage_prompts.get(stage, request['objective'])}\n"
+        f"Host context (authoritative references only): {context_text}\n"
+        f"Required files under ./outputs: {outputs}. "
     )
-    if request["kind"] == "source_inventory":
-        prompt += ("Inspect the complete relevant population, not a sample. Use source-relative paths "
-                   "in reports. State unresolved semantic questions in source_report.json uncertainties. "
-                   "Run outputs/inspect_source.py and check its results before finishing.")
-    elif request["kind"] == "preparation":
-        prompt += ("Complete the entire preparation workflow in this session. Write the required reports and "
-                   "candidate completion marker under ./outputs, and stop only for a concrete user question "
-                   "or after candidate/complete.json is ready.")
-    elif request["kind"] == "dataset_adapter":
-        prompt += ("Read inputs/adapter_contract.txt and inputs/spec.json. Test adapter.py using "
-                   "MEDBENCH_SOURCE_ROOT=$MEDBENCH_SOURCE_ROOT, MEDBENCH_SPEC_PATH=./inputs/spec.json, "
-                   "MEDBENCH_INPUTS_PATH=./inputs/adapter_inputs.json and a writable trial "
-                   "MEDBENCH_WORK_DIR. Keep trial outputs under ./work.")
+    if stage == "inventory":
+        prompt += " Inspect the complete population, use source-relative paths, and run the inspection script before finishing."
+    elif stage == "adapter":
+        prompt += " Test the adapter against representative and boundary records before finishing."
     if request["feedback"]:
         prompt += "\nValidator feedback to fix (full report is in workspace): " + request["feedback"][:6000]
     conversation.send_message(prompt)
@@ -166,22 +233,31 @@ MedBench validation controls acceptance. Repeated actions that produce no new in
     except Exception as exc:
         # Keep the process contract machine-readable while leaving the full
         # traceback in stderr for diagnosis.
-        result = {"status": "failed", "conversation_id": request["conversation_id"],
+        guarded = str(exc).startswith("Preparation stage guard:")
+        reason = str(exc).split(":", 1)[1].strip() if guarded else "worker_error"
+        result = {"status": "blocked" if guarded else "failed", "conversation_id": request["conversation_id"],
                   "outputs": {}, "question": "",
-                  "diagnostic": f"OpenHands conversation failed: {type(exc).__name__}: {exc}"}
-        _write_session_state(workspace, request, status="blocked", summary=result["diagnostic"])
+                  "diagnostic": f"OpenHands conversation failed: {type(exc).__name__}: {exc}",
+                  "termination_reason": reason, "progress": progress}
+        _write_session_state(workspace, request, status=result["status"], summary=result["diagnostic"],
+                             termination_reason=reason, progress=progress)
         Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        if guarded:
+            return
         raise
-    diagnostic = replay_source_script(request, workspace) if request["kind"] == "source_inventory" else ""
+    diagnostic = replay_source_script(request, workspace) if request.get("stage") == "inventory" else ""
     produced = {name: str((workspace / "outputs" / name).resolve()) for name in request["required_outputs"]
                 if (workspace / "outputs" / name).is_file()}
     complete = not diagnostic and len(produced) == len(request["required_outputs"])
     result = {"status": "complete" if complete else "failed",
               "conversation_id": request["conversation_id"], "outputs": produced,
               "question": "", "diagnostic": "" if complete else diagnostic or "Required worker outputs are missing",
-              "state": "submitted" if complete else "validation_failed"}
+              "state": "submitted" if complete else "validation_failed",
+              "termination_reason": "completed" if complete else "output_invalid",
+              "progress": progress}
     _write_session_state(workspace, request,
-                         status=result["state"], summary=result["diagnostic"])
+                         status=result["state"], summary=result["diagnostic"],
+                         termination_reason=result["termination_reason"], progress=progress)
     Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
 
 

@@ -80,7 +80,8 @@ class MaskFeatureSet(CanonicalModel):
             raise ValueError("Mask centroid requires normalized finite coordinates")
         if not math.isfinite(self.area_fraction) or not math.isfinite(self.equivalent_diameter_pixels):
             raise ValueError("Mask geometry must be finite")
-        expected = 2 * math.sqrt(self.pixel_count / math.pi)
+        expected = (2 * (3 * self.pixel_count / (4 * math.pi)) ** (1 / 3)
+                    if len(self.shape) == 3 else 2 * math.sqrt(self.pixel_count / math.pi))
         if not math.isclose(self.equivalent_diameter_pixels, expected, rel_tol=1e-6, abs_tol=1e-6):
             raise ValueError("Mask equivalent_diameter_pixels does not match pixel_count")
         if self.spacing is not None:
@@ -98,6 +99,8 @@ class MaskFeatureSet(CanonicalModel):
             raise ValueError("Mask planes must have unique (axis,index) pairs")
         if any(plane.axis >= len(self.shape) for plane in self.planes):
             raise ValueError("Mask plane axis is outside mask shape")
+        if len(self.shape) == 3 and any(plane.axis != 2 for plane in self.planes):
+            raise ValueError("Volume mask planes must use axis 2")
         if any(plane.index >= self.shape[plane.axis] for plane in self.planes):
             raise ValueError("Mask plane index is outside mask shape")
         return self
