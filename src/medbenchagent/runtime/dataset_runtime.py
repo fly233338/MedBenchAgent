@@ -149,7 +149,7 @@ class OpenHandsDatasetRuntime:
             forward_stop = threading.Event()
             forwarder = self._start_event_forwarder(workspace, request.construction_events_path, forward_stop)
             try:
-                return self._run_local(request, deployment, workspace, request_path, result_path, conversation_id, key)
+                return self._run_local(request, workspace, request_path, result_path, conversation_id, key)
             finally:
                 self._active.pop(conversation_id, None)
                 forward_stop.set()
