@@ -28,6 +28,7 @@ from medbenchagent.runtime.contexts import load_context, save_context, ROLES
 from medbenchagent.runtime.dependencies import publish, require, initialize_dependencies, verify_resume
 from medbenchagent.runtime.preflight import preflight_errors, rag_capability
 from medbenchagent.runtime.clarifications import inject_answers, new_issue, resolve_clarification, ResolveClarificationArguments
+from medbenchagent.runtime.source_discovery import dynamic_dataset_id, explicit_source_path
 from medbenchagent.planning.bir import BIRStore, digest_file
 
 
@@ -277,6 +278,20 @@ def automatic_supervisor_action(context):
             "arguments": {"issue_id": issue["issue_id"], "kind": "requirement_change"},
             "reason": "Apply the user's clarification before resuming the pipeline",
         }
+    # An explicit, readable raw path is already sufficient to discover and
+    # persist a source entry. Route it straight to preparation so the model
+    # cannot stop at an intermediate status check that reports the source as
+    # missing from static configuration.
+    if context.get("brief_ready") and not context.get("prepared_entries") and not _current(context, "Dataset"):
+        requirement = context.get("user_requirement", "")
+        root = explicit_source_path(requirement)
+        dataset_id = dynamic_dataset_id(requirement)
+        if root and dataset_id and Path(root).is_dir():
+            return {
+                "tool": "prepare_data",
+                "arguments": {"dataset_id": dataset_id, "mode": "reuse_or_prepare"},
+                "reason": "Prepare the explicitly provided raw dataset source",
+            }
     return None
 
 
