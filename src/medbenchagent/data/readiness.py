@@ -37,7 +37,18 @@ def prepared_directory_entries(context):
     return entries, errors
 
 
-def configured_source(dataset_id):
+def configured_source(dataset_id, context=None):
+    """Return the source bound to this run before falling back to settings.
+
+    Explicit raw paths are discovered during a run and kept in
+    ``discovered_sources`` until the experiment state is persisted.  Readiness
+    checks must see that binding; otherwise a failed preparation is reported
+    as a missing global ``dataset_sources`` entry and the user is asked for a
+    path that was already supplied.
+    """
+    discovered = (context or {}).get("discovered_sources", {}).get(dataset_id)
+    if discovered is not None:
+        return discovered
     return next((item for item in get_settings().dataset_sources if item["dataset_id"] == dataset_id), None)
 
 
@@ -63,7 +74,11 @@ def list_datasets(context, *, offset=0, limit=20, query=""):
         entries.setdefault(dataset_id, {"dataset_id": dataset_id, "name": dataset_id, "description": ""})
         entries[dataset_id]["available"] = False
         entries[dataset_id]["issues"] = [diagnostic]
-    for item in get_settings().dataset_sources:
+    sources = [*get_settings().dataset_sources]
+    for item in (context.get("discovered_sources") or {}).values():
+        if not any(existing["dataset_id"] == item["dataset_id"] for existing in sources):
+            sources.append(item)
+    for item in sources:
         entries.setdefault(item["dataset_id"], {key: item[key] for key in ("dataset_id", "name", "description")})
         entries[item["dataset_id"]]["configured_sources"] = True
     rows = [entries[key] for key in sorted(entries)
@@ -78,7 +93,7 @@ def dataset_status(context, dataset_id):
             entry = prepared_bundle_entry(dataset_id)
         except (ValueError, OSError, KeyError):
             entry = None
-    source = configured_source(dataset_id)
+    source = configured_source(dataset_id, context)
     errors = source_errors(source)
     status = {"dataset_id": dataset_id, "prepared": False, "available": entry["available"] if entry else None,
               "configured_sources": source is not None, "source_errors": errors, "issues": []}

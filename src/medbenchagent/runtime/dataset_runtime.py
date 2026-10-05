@@ -222,8 +222,8 @@ class OpenHandsDatasetRuntime:
                         request, "failed", "OpenHands container could not start: " +
                         (started.stderr.strip()[:300] or "see Docker daemon"), "environment_unavailable"))
             self._active[conversation_id] = ("docker", container_name)
-            completed = subprocess.run(["docker", "wait", container_name], capture_output=True,
-                                       text=True, timeout=request.budget.timeout_seconds, check=False)
+            subprocess.run(["docker", "wait", container_name], capture_output=True,
+                           text=True, timeout=request.budget.timeout_seconds, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             return self._record_result(workspace, request, self._failure(
                 request, "failed", f"OpenHands worker unavailable: {type(exc).__name__}", "worker_execution_failed"))
@@ -239,12 +239,9 @@ class OpenHandsDatasetRuntime:
         forward_stop.set()
         forwarder.join(timeout=2)
         self._forward_events(workspace, request.construction_events_path)
-        if completed.returncode or (getattr(completed, "stdout", "0") or "0").strip() != "0" or not result_path.is_file():
-            return self._record_result(workspace, request, self._failure(
-                request, "failed", self._failure_summary(workspace / "logs" / "stderr.log"), "worker_execution_failed"))
-        result = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
-        return self._record_result(request_workspace := workspace, request,
-                                   self._validate_outputs(request, result, request_workspace, conversation_id, runtime["backend"]))
+        return self._result_after_process(
+            request, workspace, result_path, conversation_id, runtime["backend"],
+        )
 
     @staticmethod
     def _start_event_forwarder(workspace: Path, destination: str, stop: threading.Event):
@@ -255,6 +252,23 @@ class OpenHandsDatasetRuntime:
         thread = threading.Thread(target=loop, name="openhands-event-forwarder", daemon=True)
         thread.start()
         return thread
+
+    def _result_after_process(self, request: StageRequest, workspace: Path, result_path: Path,
+                              conversation_id: str, backend: str) -> StageResult:
+        """Preserve a worker's structured failure before falling back to stderr."""
+        if result_path.is_file():
+            try:
+                result = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+                if result.conversation_id != conversation_id:
+                    raise ValueError("Worker returned another conversation identity")
+                if result.status != "submitted":
+                    return self._record_result(workspace, request, result)
+                return self._record_result(workspace, request,
+                                           self._validate_outputs(request, result, workspace, conversation_id, backend))
+            except (OSError, ValueError, TypeError):
+                pass
+        return self._record_result(workspace, request, self._failure(
+            request, "failed", self._failure_summary(workspace / "logs" / "stderr.log"), "worker_execution_failed"))
 
     @staticmethod
     def _record_result(workspace: Path, request: StageRequest, result: StageResult) -> StageResult:
@@ -315,12 +329,7 @@ class OpenHandsDatasetRuntime:
             return self._record_result(workspace, request, self._failure(
                 request, "blocked", f"OpenHands local dependencies unavailable: {type(exc).__name__}", "environment_unavailable"))
         self._forward_events(workspace, request.construction_events_path)
-        if process.returncode or not result_path.is_file():
-            return self._record_result(workspace, request, self._failure(
-                request, "failed", self._failure_summary(workspace / "logs" / "stderr.log"), "worker_execution_failed"))
-        result = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
-        return self._record_result(workspace, request,
-                                   self._validate_outputs(request, result, workspace, conversation_id, "local"))
+        return self._result_after_process(request, workspace, result_path, conversation_id, "local")
 
     def cancel(self, conversation_id: str) -> None:
         active = self._active.get(conversation_id)

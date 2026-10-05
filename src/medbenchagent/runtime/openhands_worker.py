@@ -160,6 +160,10 @@ def main(request_path: str, result_path: str) -> None:
         progress["events"] += 1
         if event_name == "ActionEvent":
             progress["tool_calls"] += 1
+            # A tool call is observable work even when it only inspects the
+            # source.  The output digest intentionally excludes read-only
+            # work, so reset the stalled-output counter here.
+            progress["no_progress"] = 0
             action = getattr(event, "action", None)
             tool_name = str(getattr(action, "name", getattr(action, "action", "")))
             arguments = getattr(action, "arguments", getattr(action, "args", {})) or {}
