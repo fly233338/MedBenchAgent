@@ -1,7 +1,7 @@
 """Initialization of a Coding Session preparation run.
 
-This module owns run-frozen Source, backend and bundle context. The stage
-orchestrator consumes this immutable preparation context.
+This module owns run-frozen Source, backend and bundle context. The preparation
+graph consumes this immutable context.
 """
 
 from __future__ import annotations

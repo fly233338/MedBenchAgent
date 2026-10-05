@@ -18,9 +18,10 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 ## 模块边界
 
-- `runtime/`：会话、Run、checkpoint、事件、Agent harness、依赖和运行产物。
+- `runtime/`：会话、Run、checkpoint、事件、Agent harness、依赖、部署运行时和运行产物。
 - `workflow/graph.py`：Supervisor 工具、产物就绪判断和子 Agent 委派。
-- `agents/`：数据处理、任务规划、模板、分配、生成和最终化 Agent。
+- `preparation/`：来源冻结、两阶段 preparation graph、context、worker 协议和宿主验收入口。
+- `agents/`：任务规划、模板、分配、生成和最终化 Agent。
 - `data/`：来源、annotation、图像、Profile、Card、Catalog 和确定性验证。
 - `planning/`：需求提取、数据集选择、任务树、协议和样本计数。
 - `generation/`、`audit/`、`rag/`、`evaluation/`：各自领域的执行和评测。

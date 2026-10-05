@@ -826,8 +826,8 @@ def compile_benchmark_graph(*, checkpointer=None):
 
     def prepare_data(context, *, dataset_id, mode="reuse_or_prepare", feedback=""):
         """Reuse valid prepared data or prepare configured sources. Use rebuild only for an explicit user request."""
-        from medbenchagent.runtime.preparation_context import initialize_preparation
-        from medbenchagent.agents.data_processing import compile_data_processing_agent
+        from medbenchagent.preparation.bootstrap import initialize_preparation
+        from medbenchagent.preparation.entrypoint import compile_preparation_agent
         if mode == "rebuild" and not _rebuild_requested(context):
             return result("failed", "Rebuild requires an explicit user request; use reuse_or_prepare or ask the user.")
         operation = Path(context["operation_directory"])
@@ -872,7 +872,7 @@ def compile_benchmark_graph(*, checkpointer=None):
             child["preparation_mode"] = mode
         child["feedback"] = feedback
         inject_answers(context, child, "DataProcessingAgent", dataset_id)
-        output = compile_data_processing_agent().invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
+        output = compile_preparation_agent().invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "preparation", output)
         if discovered is not None:
             outcome["updates"]["discovered_sources"] = {**context.get("discovered_sources", {}),
@@ -901,7 +901,7 @@ def compile_benchmark_graph(*, checkpointer=None):
                     try:
                         finalized = finalize_prepared_dataset(candidate_path, output["context"])
                     except (ValueError, OSError) as exc:
-                        from medbenchagent.runtime.preparation_orchestrator import mark_preparation_blocked
+                        from medbenchagent.preparation.entrypoint import mark_preparation_blocked
                         mark_preparation_blocked(output["context"].get("preparation_workspace", ""), "validation_failed")
                         if event_path:
                             record_event(event_path, "finalization_finished", operation="finalize_prepared_dataset",
@@ -913,7 +913,7 @@ def compile_benchmark_graph(*, checkpointer=None):
                                             "preparation_status": "blocked",
                                             "validation_error": str(exc),
                                             "preparation_feedback": str(exc)}}
-                    from medbenchagent.runtime.preparation_orchestrator import mark_preparation_complete
+                    from medbenchagent.preparation.entrypoint import mark_preparation_complete
                     mark_preparation_complete(output["context"].get("preparation_workspace", ""))
                     if event_path:
                         record_event(event_path, "finalization_finished", operation="finalize_prepared_dataset",

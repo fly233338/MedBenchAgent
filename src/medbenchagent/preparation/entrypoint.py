@@ -1,20 +1,23 @@
-"""Compatibility entrypoint for the host owned preparation graph.
+"""Supervisor-facing preparation entrypoint.
 
 The business state machine lives in :mod:`medbenchagent.preparation.graph`.
-This module keeps the existing DatasetProcessingAgent call surface while
-removing the old multi-stage loop and general-purpose memory file.
+This module freezes source inputs, invokes the two-stage graph, and exposes the
+small LangGraph wrapper consumed by the Supervisor workflow.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
+
+from langgraph.graph import END, START, StateGraph
 
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.sources import inventory_source, verify_source
 from medbenchagent.preparation.graph import run_preparation_graph
 from medbenchagent.preparation.worker import OpenHandsWorker
+from medbenchagent.runtime.construction import record_event
 from medbenchagent.runtime.dataset_runtime import dataset_runtime
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
@@ -65,7 +68,7 @@ def _persist_checkpoint(workspace: Path, state: dict[str, Any]) -> None:
     atomic_write_json(workspace / "checkpoint.json", safe)
 
 
-def run_preparation_orchestrator(context: dict[str, Any]) -> dict[str, Any]:
+def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
     """Run the two coding stages and return a candidate handoff."""
     context = dict(context)
     workspace = _workspace(context)
@@ -140,3 +143,56 @@ def mark_preparation_blocked(workspace: str | Path, reason: str = "validation_fa
     state = _load_checkpoint(Path(workspace))
     state.update({"status": "blocked", "termination_reason": reason})
     atomic_write_json(path, state)
+
+
+class PreparationAgentState(TypedDict, total=False):
+    context: dict[str, Any]
+    result: dict[str, Any]
+
+
+def _preparation_event(context: dict[str, Any], event_type: str, **values: object) -> None:
+    path = context.get("construction_events_path")
+    if not path:
+        return
+    payload = {
+        "run_id": context.get("run_id"),
+        "agent": "DatasetProcessingAgent",
+        "dataset_id": context.get("dataset_scope"),
+        "conversation_id": context.get("preparation_conversation_id"),
+        "workspace": context.get("preparation_workspace"),
+    }
+    payload.update(values)
+    record_event(path, event_type, **payload)
+
+
+def run_preparation_agent(context: dict[str, Any]) -> dict[str, Any]:
+    context = dict(context)
+    _preparation_event(context, "agent_started", operation="prepare_data", status="started",
+                       source_count=len(context.get("sources", [])))
+    try:
+        outcome = run_preparation(context)
+    except ValueError as exc:
+        outcome = {"status": "blocked", "summary": str(exc), "updates": {}}
+    updates = outcome.get("updates", {})
+    _preparation_event({**context, **updates}, "worker_result", operation="preparation_graph",
+                       status=outcome["status"], diagnostic=outcome.get("summary", ""),
+                       termination_reason=updates.get("preparation_termination_reason"))
+    _preparation_event({**context, **updates}, "agent_finished", operation="prepare_data",
+                       status=outcome["status"], diagnostic=outcome.get("summary", ""),
+                       candidate_path=(updates.get("preparation_candidate") or {}).get("candidate_path"))
+    return outcome
+
+
+def compile_preparation_agent(*, checkpointer=None):
+    def execute(state: PreparationAgentState):
+        context = dict(state["context"])
+        outcome = run_preparation_agent(context)
+        context.update(outcome.get("updates", {}))
+        context["preparation_agent_result"] = {key: value for key, value in outcome.items() if key != "updates"}
+        return {"context": context, "result": context["preparation_agent_result"]}
+
+    graph = StateGraph(PreparationAgentState)
+    graph.add_node("preparation_agent", execute)
+    graph.add_edge(START, "preparation_agent")
+    graph.add_edge("preparation_agent", END)
+    return graph.compile(checkpointer=checkpointer)

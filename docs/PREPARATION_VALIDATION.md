@@ -30,7 +30,7 @@
 
 准备状态、阶段 Worker attempt、工具操作和 LangGraph checkpoint 都可以从新 Run 目录恢复。
 每个 attempt 保存 `inputs/context.json`、`inputs/prompt.md`、`request.json`、`result.json` 和
-输出文件；不再维护通用 `memory.json`。阶段输入 digest、用户决策 digest、契约和执行环境
+输出文件；不再维护通用 memory 文件。阶段输入 digest、用户决策 digest、契约和执行环境
 组成稳定执行键；成功回执和文件 digest 有效时可以复用，重复恢复不会重新发布相同内容。
 
 详细字段契约见 [DATA_LAYER.md](DATA_LAYER.md)。

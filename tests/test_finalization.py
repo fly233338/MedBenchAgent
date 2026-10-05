@@ -6,7 +6,7 @@ from medbenchagent.data.models import AssetEntry, CaseRecord, Evidence
 from medbenchagent.data.bundle_catalog import verify_bundle
 from medbenchagent.data.dataset_catalog import prepared_bundle_entry, register_dataset, load_prepared
 from medbenchagent.data.contracts import Source
-from medbenchagent.runtime import preparation_context
+from medbenchagent.preparation import bootstrap as preparation_context
 from medbenchagent.data import readiness
 
 
