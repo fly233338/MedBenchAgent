@@ -43,7 +43,7 @@ def run_dataset_agent(context: dict):
     except ValueError as exc:
         outcome = {"status": "blocked", "summary": str(exc), "updates": {}}
     updates = outcome.get("updates", {})
-    _dataset_event({**context, **updates}, "worker_result", operation="preparation_orchestrator",
+    _dataset_event({**context, **updates}, "worker_result", operation="preparation_graph",
                    status=outcome["status"], diagnostic=outcome.get("summary", ""),
                    termination_reason=updates.get("preparation_termination_reason"))
     _dataset_event({**context, **updates}, "agent_finished", operation="prepare_data",

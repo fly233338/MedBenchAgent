@@ -82,7 +82,7 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
                     preparation_no_progress_limit=get_settings().data_processing.get("preparation_no_progress_limit", 8),
                     preparation_tool_error_limit=get_settings().data_processing.get("preparation_tool_error_limit", 3),
                     preparation_stage_budgets=get_settings().data_processing.get("preparation_stage_budgets", {}),
-                    bundle_root=str(bundle), normalized_sources={}, source_scope=None,
+                    bundle_root=str(bundle), source_scope=None,
                      source_roots={source.id: source.root for source in sources},
                      source_manifests={source.id: str(bundle / "source_manifests" / source.id) for source in sources})
     publish(prepared, "SourceSelection", {"sources": prepared["sources"]}, ())

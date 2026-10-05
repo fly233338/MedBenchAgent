@@ -4,12 +4,13 @@
 
 ## 来源与准备
 
-每个逻辑数据集由一个或多个 `Source` 组成。Source 保存稳定 ID、根目录、类型和可选 annotation 文件。准备阶段记录来源清单、文件摘要、总体数量、字段语义、适配器和执行回执。字段映射区分进入 `cases.jsonl` 的医学证据、仅用于分组/来源/资产复现的元数据，以及因无任务价值而排除的设备或行政噪声。年龄、性别、症状和病史等医学上下文可以保留在 Case 中；设备序列号、软件版本、主机名、UID 和无关时间戳默认不作为 Case Evidence。
+每个逻辑数据集由一个或多个 `Source` 组成。Source 保存稳定 ID、根目录、类型和可选 annotation 文件。`understand` 阶段记录来源清单、文件摘要、总体数量、字段语义、总体脚本和 mapping；`prepare` 阶段记录转换程序、执行回执、候选产物和 manifest。字段映射区分进入 `cases.jsonl` 的医学证据、仅用于分组/来源/资产复现的元数据，以及因无任务价值而排除的设备或行政噪声。年龄、性别、症状和病史等医学上下文可以保留在 Case 中；设备序列号、软件版本、主机名、UID 和无关时间戳默认不作为 Case Evidence。
 
-OpenHands stage session 只能在自己的 Worker workspace 中写声明的阶段文件。宿主验证来源 locator、
-记录身份、图像路径、finding 关系、缺失值和完整总体后，生成 `preparation_report.json`、
-`quarantine.jsonl`、`optional_evidence_dropped.jsonl` 和 `complete.json`，再发布 Dataset、
-Profile、Card 和 Catalog 条目。
+OpenHands worker 只能在自己的 attempt workspace 中写声明的阶段文件。宿主验证来源 locator、
+记录身份、图像路径、finding 关系、缺失值、manifest 依赖和完整总体后，生成
+`preparation_report.json`、`quarantine.jsonl`、`optional_evidence_dropped.jsonl` 和
+`complete.json`，再发布 Dataset、Profile、Card 和 Catalog 条目。Worker 的
+`submission.json` 只表达交付意图，不代表宿主验收或发布。
 
 ## Dataset Bundle
 

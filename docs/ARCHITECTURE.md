@@ -49,27 +49,28 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
     access.json
     evidence/
     planning outputs
-  workers/<dataset>/
-    inputs/ work/ outputs/ state/ logs/ conversations/
+  preparation/<dataset>/
+    inputs/ artifacts/ validation/ publication.json
+    attempts/<stage>/<attempt>/
+      inputs/ work/ outputs/ result.json logs/ conversations/
 ```
 
 `operations.jsonl` 保存工具调用、参数、依赖和结果，用于幂等重放。语义产物仍按 Agent 和数据集组织，便于审阅和恢复。
 
 ## 数据准备
 
-数据准备的 canonical 产物使用 `annotation`、`asset_manifest.jsonl`、可选的
-`presentation_manifest.jsonl`、`split_manifest.jsonl`、`sampling_manifest.jsonl` 和
-`preparation_report.json`。Mask geometry 作为带 Asset digest 的 Evidence feature 保存，
-Case grouping、Evidence ref 和 Asset 完整性由宿主确定性校验；
-OpenHands stage session 只在自己的 Worker workspace 中完成一个有界目标。宿主维护当前 Run 的
-`workflow.json`、`memory.json`、`progress.json` 和 artifact ledger；下一阶段只读取这些结构化
-引用和有界 evidence，不恢复上一阶段的完整 conversation。旧的 image-centric 产物不属于
-数据处理运行时。
+数据准备的 canonical 产物使用 `cases.jsonl`、`asset_manifest.jsonl`、
+`provenance.jsonl`、`output_manifest.json`、可选的 presentation/split/sampling manifest
+和宿主生成的 `preparation_report.json`。Mask geometry 作为带 Asset digest 的 Evidence
+feature 保存，Case grouping、Evidence ref、Asset 完整性和独立 population 对账由宿主确定性
+校验。
 
-原始来源以只读方式访问。准备 phase 为 `bootstrap`、`inventory`、`semantic`、`adapter`、
-`candidate`、`validation` 和 `repair`。每个 phase/attempt 使用新的 OpenHands conversation；
-OpenHands persistence 只用于同一 attempt 的进程恢复。宿主重新核验来源、locator、总体、
-annotation 和图像资产，再注册 Dataset、Profile、Card 和 Catalog。
+数据准备只有两个 OpenHands coding stage：`understand` 负责来源检查、总体和 mapping，
+`prepare` 负责转换实现、测试、全量执行和候选提交。每个 stage/attempt 使用自己的
+conversation；OpenHands persistence 只用于同一 attempt 的进程恢复。宿主通过保存的
+`inputs/context.json`、`inputs/prompt.md`、阶段交付和校验报告续接，不依赖通用 memory 或
+前一阶段的 conversation。原始来源以只读方式访问，再由宿主重新核验来源、locator、总体、
+annotation 和图像资产，最后注册 Dataset、Profile、Card 和 Catalog。
 
 Supervisor 先解析数据准备请求：请求中包含可读的原始目录时，规范化目录名后委派 `prepare_data`；缺少目录时只询问目录路径。目录清单、格式和 manifest 由 DataProcessingAgent 检查，目录不可读或无法解析数据集 ID 时才进入澄清。
 

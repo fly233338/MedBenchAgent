@@ -14,7 +14,8 @@
 ## 候选与执行
 
 - 固定算子和 generated adapter 都读取冻结输入并写入 Worker workspace。
-- 候选输出包含 annotation、image population、provenance 和完成回执。
+- 候选输出包含 canonical Case、Asset、provenance、执行报告和 output manifest。
+  `submission.json` 记录 coding agent 的实际提交状态；它不替代宿主验收回执。
 - 独立重复执行比较总体、记录身份、输出内容和质量账本。
 
 ## 发布前检查
@@ -28,9 +29,9 @@
 ## 恢复
 
 准备状态、阶段 Worker attempt、工具操作和 LangGraph checkpoint 都可以从新 Run 目录恢复。
-Run 内 `workflow.json` 是 phase/status/termination 的来源，`memory.json` 保存带证据引用的
-事实、决定、问题和 validator feedback；conversation history 只作为诊断轨迹。阶段输入 digest
-未变化且 artifact 已通过检查时可以跳过阶段，重复恢复不会重新发布相同内容。
+每个 attempt 保存 `inputs/context.json`、`inputs/prompt.md`、`request.json`、`result.json` 和
+输出文件；不再维护通用 `memory.json`。阶段输入 digest、用户决策 digest、契约和执行环境
+组成稳定执行键；成功回执和文件 digest 有效时可以复用，重复恢复不会重新发布相同内容。
 
 详细字段契约见 [DATA_LAYER.md](DATA_LAYER.md)。
 # annotation validation

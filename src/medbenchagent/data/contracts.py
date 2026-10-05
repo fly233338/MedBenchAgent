@@ -1,4 +1,4 @@
-"""Strict, versioned plans for source-supported data preparation."""
+"""Strict plans for source-supported data preparation."""
 
 from typing import Annotated, Literal
 
@@ -441,36 +441,6 @@ class Provenance(Contract):
     original_image_path: Text
     record_ref: Text
     plan_ref: Text
-
-
-class PreparedDatasetCandidate(Contract):
-    """Immutable candidate submitted by a Coding Session."""
-    candidate_path: Text
-    status: Literal["submitted"] = "submitted"
-    session_id: Text | None = None
-    source_ids: list[Name] = Field(default_factory=list)
-    validation_report: str | None = None
-
-
-class CodingResult(Contract):
-    """Business-facing result of one Coding Session turn."""
-    status: Literal["submitted", "needs_input", "blocked"]
-    conversation_id: Text
-    workspace: Text
-    candidate: PreparedDatasetCandidate | None = None
-    question: str = ""
-    diagnostic: str = ""
-
-
-class DataProcessingResult(Contract):
-    """Stable result exposed after deterministic finalization."""
-    status: Literal["complete", "needs_input", "blocked"]
-    dataset_id: Name
-    dataset_entry: dict[str, object] | None = None
-    card_path: str | None = None
-    cases_path: str | None = None
-    access_manifest: dict[str, object] | None = None
-    validation_report: str | None = None
 
 
 class SourcesArguments(Contract):

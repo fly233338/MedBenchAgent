@@ -12,7 +12,9 @@ from medbenchagent.data.sources import digest_file
 
 
 def validate_candidate(candidate: str | Path, *, source_root: str | Path | None = None,
-                          source_roots: dict[str, str | Path] | None = None) -> dict:
+                          source_roots: dict[str, str | Path] | None = None,
+                          population_path: str | Path | None = None,
+                          expected_mapping_digest: str | None = None) -> dict:
     """Validate every Case and return a complete acceptance/quarantine report."""
     candidate = Path(candidate)
     cases_path = candidate / "cases.jsonl"
@@ -24,7 +26,9 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
         raise ValueError("provenance.jsonl is required")
     # complete.json is a host receipt written after this validation succeeds;
     # workers must not be able to claim publication by creating it themselves.
-    required_receipts = ("conversion_config.json", "grouping_policy.json", "mapping.json")
+    required_receipts = ["conversion_config.json", "grouping_policy.json", "mapping.json"]
+    if (candidate / "submission.json").is_file():
+        required_receipts.extend(("execution_report.json", "output_manifest.json"))
     missing_receipts = [name for name in required_receipts if not (candidate / name).is_file()]
     if missing_receipts:
         raise ValueError("Candidate is missing required outputs: " + ", ".join(missing_receipts))
@@ -128,15 +132,104 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                         raise ValueError(f"split references unknown case: {record.case_id}")
         except Exception as exc:
             manifest_failures.append({"kind": "manifest_failure", "manifest": name, "error": str(exc)})
+    # A submitted output manifest is optional for older prepared bundles but
+    # authoritative when present.  Validate every registered file and its
+    # dependency reference before publication.
+    output_manifest = candidate / "output_manifest.json"
+    if output_manifest.is_file():
+        try:
+            payload = json.loads(output_manifest.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("files"), list):
+                raise ValueError("output_manifest.files must be a list")
+            seen_output_paths = set()
+            for entry in payload["files"]:
+                item = entry if isinstance(entry, dict) else {"path": entry}
+                relative = item.get("path")
+                if not isinstance(relative, str) or not relative:
+                    raise ValueError("output_manifest file entries require a path")
+                if relative in seen_output_paths:
+                    raise ValueError(f"output_manifest contains a duplicate path: {relative}")
+                seen_output_paths.add(relative)
+                path = Path(relative)
+                resolved = path.resolve() if path.is_absolute() else (candidate / path).resolve()
+                if not resolved.is_relative_to(candidate.resolve()) or not resolved.is_file():
+                    raise ValueError(f"output_manifest references a missing or external file: {relative}")
+                expected = item.get("digest") or item.get("file_digest")
+                if expected and digest_file(resolved) != expected:
+                    raise ValueError(f"output_manifest digest mismatch: {relative}")
+            required_files = ("cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl",
+                              "conversion_config.json", "grouping_policy.json", "execution_report.json")
+            missing_registered = [name for name in required_files if (candidate / name).is_file() and name not in seen_output_paths]
+            if missing_registered:
+                raise ValueError(f"output_manifest does not register required outputs: {missing_registered}")
+            dependencies = payload.get("dependencies", [])
+            if not isinstance(dependencies, list):
+                raise ValueError("output_manifest.dependencies must be a list")
+            for dependency in dependencies:
+                if not isinstance(dependency, dict) or not dependency.get("path"):
+                    raise ValueError("output_manifest dependency entries require a path")
+                dependency_path = Path(str(dependency["path"]))
+                resolved_dependency = dependency_path.resolve() if dependency_path.is_absolute() else (candidate / dependency_path).resolve()
+                if not resolved_dependency.is_relative_to(candidate.resolve()):
+                    raise ValueError(f"output_manifest dependency escapes candidate: {dependency['path']}")
+                if not resolved_dependency.exists():
+                    raise ValueError(f"output_manifest dependency is missing: {dependency['path']}")
+            if expected_mapping_digest and payload.get("mapping_digest") != expected_mapping_digest:
+                raise ValueError("output_manifest mapping digest does not match accepted mapping")
+        except Exception as exc:
+            manifest_failures.append({"kind": "output_manifest_failure", "manifest": "output_manifest.json", "error": str(exc)})
+
+    # Reconcile the independent population by stable source-unit identity when
+    # the understand stage supplied it.  Case count is intentionally not used
+    # as a proxy: several source units may legitimately form one Case.
+    population = Path(population_path) if population_path else candidate / "image_population.jsonl"
+    population_ids: set[str] = set()
+    if population.is_file():
+        try:
+            with population.open(encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, 1):
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    identity = item.get("source_unit_id") or item.get("unit_id") or item.get("image_id") or item.get("asset_id") or item.get("id")
+                    if not identity:
+                        raise ValueError(f"population record {line_number} has no stable identity")
+                    population_ids.add(str(identity))
+            accounted: set[str] = set()
+            with provenance.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    identity = item.get("source_unit_id") or item.get("unit_id") or item.get("image_id") or item.get("asset_id") or item.get("record_ref")
+                    if identity:
+                        accounted.add(str(identity))
+            missing_population = sorted(population_ids - accounted)
+            if missing_population:
+                provenance_failures.append({"kind": "population_reconciliation_failure", "error": f"Source units missing provenance: {missing_population[:20]}", "missing_count": len(missing_population)})
+        except Exception as exc:
+            provenance_failures.append({"kind": "population_reconciliation_failure", "error": str(exc)})
+    if output_manifest.is_file() and cases:
+        # New submissions must explicitly bind every accepted Case to at least
+        # one provenance row, even if an older bundle did not carry that field.
+        if provenance_cases:
+            missing_cases = sorted({case.case_id for case in cases} - provenance_cases)
+            if missing_cases:
+                provenance_failures.append({"kind": "provenance_failure", "error": f"accepted cases missing provenance: {missing_cases[:20]}"})
     return {
         "schema_version": "preparation-report",
-        "status": "failed" if failures and not cases else "complete",
+        "status": "failed" if (failures and not cases) or provenance_failures or manifest_failures else "complete",
         "input_units": len(cases) + len(failures),
         "input_cases": len(cases) + len(failures),
         "accepted_cases": len(cases),
         "quarantined_cases": len(failures),
         "failures": [*failures, *provenance_failures, *manifest_failures],
         "assets": len(assets),
+        "population": {
+            "expected_units": len(population_ids),
+            "accounted_units": len(population_ids) if population_ids else None,
+            "provenance_rows": provenance_count,
+        },
         "systemic_failure": bool(provenance_failures or manifest_failures) or provenance_count == 0,
     }
 

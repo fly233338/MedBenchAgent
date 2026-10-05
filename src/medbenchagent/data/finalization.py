@@ -16,6 +16,8 @@ def finalize_prepared_dataset(candidate, context):
         candidate,
         source_root=context.get("source_root"),
         source_roots=context.get("source_roots"),
+        population_path=context.get("preparation_population_path"),
+        expected_mapping_digest=context.get("preparation_mapping_digest"),
     )
     write_validation_report(candidate, report)
     if report["systemic_failure"] or not report["accepted_cases"]:
@@ -31,26 +33,18 @@ def finalize_prepared_dataset(candidate, context):
     if temporary.exists():
         shutil.rmtree(temporary)
     temporary.mkdir(parents=True)
-    names = (
-        "cases.jsonl",
-        "asset_manifest.jsonl",
-        "provenance.jsonl",
-        "preparation_report.json",
-        "quarantine.jsonl",
-        "optional_evidence_dropped.jsonl",
-        "conversion_config.json",
-        "grouping_policy.json",
-        "mapping.json",
-        "complete.json",
-    )
-    for name in names:
-        shutil.copy2(candidate / name, temporary / name)
-    for relative in ("scripts/prepare.py", "notes/inventory.md", "notes/mapping.md", "notes/dataset_notes.md"):
-        source = candidate / relative
-        if source.is_file():
-            target = temporary / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+    # The worker's output manifest may include generated assets, helper
+    # scripts, tests and optional manifests.  Copy the complete candidate
+    # tree so an unlisted file cannot silently disappear at publication.
+    host_receipts = {"preparation_report.json", "quarantine.jsonl",
+                     "optional_evidence_dropped.jsonl", "complete.json"}
+    for source in sorted(candidate.rglob("*")):
+        if not source.is_file() or source.name in host_receipts:
+            continue
+        relative = source.relative_to(candidate)
+        target = temporary / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
     optional_manifests = {
         "presentation_manifest.jsonl": PresentationRecord,
         "split_manifest.jsonl": SplitManifest,

@@ -41,11 +41,11 @@ def _litellm_model(model: str) -> str:
 def _write_session_state(workspace: Path, request: dict, *, status: str, summary: str = "",
                          termination_reason: str = "", progress: dict | None = None) -> None:
     bounded = (summary or "")[:6000]
-    state = {"schema_version": "preparation-session", "task_id": request["task_id"],
+    state = {"schema": "worker-attempt", "task_id": request["task_id"],
              "kind": request["kind"], "source_root": request["source_root"],
              "source_digest": request.get("source_digest", ""),
              "workflow_step": request.get("workflow_step", ""),
-             "stage": request.get("stage", request.get("workflow_step", "candidate")),
+             "stage": request.get("stage", request.get("workflow_step", "prepare")),
              "conversation_id": request["conversation_id"], "attempt": request.get("attempt", 1),
              "status": status, "last_feedback": {"message": bounded} if bounded else {},
              "stop_reason": bounded if status in {"blocked", "failed"} else "",
@@ -62,7 +62,7 @@ def replay_source_script(request: dict, workspace: Path) -> str:
     script = workspace / "outputs" / "inspect_source.py"
     if not script.is_file():
         return "Required inspection script is missing"
-    replay_marker = workspace / "state" / "source_inventory_replayed.json"
+    replay_marker = workspace / "state" / "source_replayed.json"
     replay_marker.unlink(missing_ok=True)
     replay = []
     source_root = Path(request.get("source_root", workspace / "source")).resolve()
@@ -123,14 +123,17 @@ def main(request_path: str, result_path: str) -> None:
     if event_path:
         event_path.parent.mkdir(parents=True, exist_ok=True)
 
-    progress = {"iterations": 0, "tool_errors": 0, "empty_responses": 0,
+    progress = {"iterations": 0, "model_turns": 0, "tool_calls": 0,
+                "events": 0, "tool_errors": 0, "empty_responses": 0,
                 "no_progress": 0, "last_action": "", "artifact_digest": ""}
     guard = request.get("progress_guard") or {}
     previous_digest = ""
 
     def artifact_digest() -> str:
         digest = hashlib.sha256()
-        for root_name in ("state", "outputs"):
+        # Runtime state, heartbeats and forwarding offsets describe liveness;
+        # they must not make a stalled task look like useful output progress.
+        for root_name in ("outputs",):
             root = workspace / root_name
             if not root.is_dir():
                 continue
@@ -142,18 +145,33 @@ def main(request_path: str, result_path: str) -> None:
     def on_event(event):
         nonlocal previous_digest
         event_name = type(event).__name__
+        progress["events"] += 1
         if event_name == "ActionEvent":
+            progress["tool_calls"] += 1
             action = getattr(event, "action", None)
             tool_name = str(getattr(action, "name", getattr(action, "action", "")))
             arguments = getattr(action, "arguments", getattr(action, "args", {})) or {}
             normalized, stripped = normalize_tool_arguments(tool_name, arguments)
+            # OpenHands executes the action object after callbacks.  Mutate the
+            # actual object when the SDK exposes a mutable arguments field so
+            # harmless gateway metadata cannot reach the executor.
+            if stripped and action is not None:
+                for attribute in ("arguments", "args"):
+                    if hasattr(action, attribute):
+                        try:
+                            setattr(action, attribute, normalized)
+                            break
+                        except Exception:
+                            continue
             command = normalized.get("command", "") if isinstance(normalized, dict) else ""
             if validate_terminal_command(command):
                 raise RuntimeError("Preparation stage guard: blocked_command")
             if stripped:
                 progress["tool_metadata_stripped"] = progress.get("tool_metadata_stripped", 0) + len(stripped)
-        if event_name in {"ActionEvent", "ObservationEvent", "AgentErrorEvent"}:
-            progress["iterations"] += 1
+        if event_name in {"AgentEvent", "AgentFinishEvent", "MessageEvent"}:
+            progress["model_turns"] += 1
+            progress["iterations"] = progress["model_turns"]
+        if event_name in {"ObservationEvent", "AgentErrorEvent"}:
             progress["last_action"] = event_name
             if "Error" in event_name:
                 progress["tool_errors"] += 1
@@ -174,11 +192,15 @@ def main(request_path: str, result_path: str) -> None:
                     "event_type": "coding_worker_event", "run_id": request["run_id"],
                     "agent": request.get("agent", "DatasetProcessingAgent"), "component": "OpenHandsCodingWorker",
                     "dataset_id": request["dataset_id"],
-                    "source_id": request["source_id"], "phase": request.get("stage", "candidate"),
+                     "source_id": request["source_id"], "phase": request.get("stage", "prepare"),
                     "attempt": request.get("attempt"), "conversation_id": request["conversation_id"],
                     "model": request.get("model"), "reasoning_effort": request.get("reasoning_effort") or None,
-                    "operation": type(event).__name__,
-                    "status": "running"}
+                     "operation": type(event).__name__,
+                     "status": "running",
+                     "tool_name": tool_name if event_name == "ActionEvent" else "",
+                     "command": command if event_name == "ActionEvent" else "",
+                     "progress": {"model_turns": progress["model_turns"], "tool_calls": progress["tool_calls"],
+                                  "tool_errors": progress["tool_errors"], "artifact_digest": progress["artifact_digest"]}}
             with event_path.open("a", encoding="utf-8") as events:
                 events.write(json.dumps(item, ensure_ascii=False) + "\n")
 
@@ -187,47 +209,12 @@ def main(request_path: str, result_path: str) -> None:
                                 conversation_id=__import__("uuid").UUID(request["conversation_id"]),
                                 max_iteration_per_run=request["max_iterations"], stuck_detection=True,
                                 delete_on_close=False, callbacks=[on_event])
-    outputs = ", ".join(request["required_outputs"])
-    stage = request.get("stage", "candidate")
-    stage_prompts = {
-        "inventory": "Inventory the complete source population and write only the declared inventory outputs. Do not design mappings or adapters.",
-        "semantic": "Use the supplied inventory and source evidence to write a source-grounded mapping proposal. Record unresolved semantic questions instead of guessing.",
-        "adapter": "Implement and test a deterministic adapter from the frozen semantic context. Keep trial outputs under work and do not publish candidate data.",
-        "candidate": "Run the deterministic adapter over the complete population and write the declared core candidate outputs incrementally.",
-        "repair": "Read the bounded validator feedback and repair only the responsible adapter or mapping. Re-run the affected checks and write the declared outputs.",
-    }
-    context_text = "{}"
-    if request.get("context_path"):
-        context_file = Path(request["context_path"])
-        if context_file.is_file():
-            context_text = context_file.read_text(encoding="utf-8")[:24000]
-    prompt = (
-        "You are a bounded MedBench preparation stage agent. Work only inside this workspace. "
-        "You are the MedBench preparation coding agent. Work only inside this workspace. "
-        f"The read-only source is at {request['source_root']} and additional inputs are in ./inputs. "
-        "Write scratch files under ./work, persistent progress under ./state, and candidate files under ./outputs. "
-        "The source is immutable: never edit, copy-over, delete, or rename source files. "
-        "Use only source files, frozen input documents, user clarifications, and tool results as evidence. "
-        "Never infer medical meaning, identity, labels, missingness, or population membership from general knowledge. "
-        "Preserve raw strings and distinguish missing from negative. Every image, mask, finding, and label must be "
-        "traceable to a source-relative locator. Cover the complete source population; if completeness cannot be "
-        "proved, record that explicitly and ask one concrete question naming the field/value, context, and consequence. "
-        "You may write and run a deterministic Python adapter for non-standard structures such as nested arrays or "
-        "ampersand-separated mask cells, but its output is only a candidate until MedBench validates it. "
-        "Before finishing, run the script, inspect counts and outputs, fix failures, and run it again. "
-        "Do not repeat an inspection whose result is already present in workspace/state or the supplied feedback. "
-        "Do not claim publication or readiness; submit candidates and an explicit summary of unresolved questions. "
-        f"Stage: {stage}. Stage objective: {stage_prompts.get(stage, request['objective'])}\n"
-        f"Host context (authoritative references only): {context_text}\n"
-        f"Required files under ./outputs: {outputs}. "
-    )
-    if stage == "inventory":
-        prompt += " Inspect the complete population, use source-relative paths, and run the inspection script before finishing."
-    elif stage == "adapter":
-        prompt += " Test the adapter against representative and boundary records before finishing."
-    if request["feedback"]:
-        prompt += "\nValidator feedback to fix (full report is in workspace): " + request["feedback"][:6000]
-    conversation.send_message(prompt)
+    prompt_path = Path(request.get("prompt_path") or "")
+    if not prompt_path.is_file():
+        raise RuntimeError(f"Worker prompt is missing: {prompt_path}")
+    prompt = prompt_path.read_text(encoding="utf-8")
+    if not request.get("resume_existing"):
+        conversation.send_message(prompt)
     try:
         conversation.run()
     except Exception as exc:
@@ -245,15 +232,35 @@ def main(request_path: str, result_path: str) -> None:
         if guarded:
             return
         raise
-    diagnostic = replay_source_script(request, workspace) if request.get("stage") == "inventory" else ""
-    produced = {name: str((workspace / "outputs" / name).resolve()) for name in request["required_outputs"]
-                if (workspace / "outputs" / name).is_file()}
-    complete = not diagnostic and len(produced) == len(request["required_outputs"])
-    result = {"status": "complete" if complete else "failed",
+    diagnostic = replay_source_script(request, workspace) if request.get("stage") == "understand" and (workspace / "outputs" / "inspect_source.py").is_file() else ""
+    produced = {}
+    allowed = set(request.get("allowed_outputs", [])) | set(request.get("required_outputs", []))
+    output_root = workspace / "outputs"
+    for path in sorted(item for item in output_root.rglob("*") if item.is_file()):
+        name = path.relative_to(output_root).as_posix()
+        # Every extra file is admissible only as a worker output under the
+        # declared output root; output_manifest.json records its dependency
+        # role and host validation decides whether it is publishable.
+        if name in allowed or "output_manifest.json" in allowed or path.name not in {"complete.json", "preparation_report.json", "quarantine.jsonl"}:
+            produced[name] = str(path.resolve())
+    submission_path = workspace / "outputs" / "submission.json"
+    submission = None
+    if submission_path.is_file():
+        try:
+            submission = json.loads(submission_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            diagnostic = f"Invalid submission.json: {exc}"
+    else:
+        diagnostic = diagnostic or "Required worker output is missing: submission.json"
+    complete = not diagnostic and set(request["required_outputs"]) <= set(produced)
+    requested = submission.get("requested_outcome") if isinstance(submission, dict) else "blocked"
+    result_status = "complete" if complete and requested == "submitted" else ("needs_input" if requested == "needs_input" else "blocked" if requested == "blocked" else "failed")
+    result = {"status": result_status,
               "conversation_id": request["conversation_id"], "outputs": produced,
-              "question": "", "diagnostic": "" if complete else diagnostic or "Required worker outputs are missing",
-              "state": "submitted" if complete else "validation_failed",
-              "termination_reason": "completed" if complete else "output_invalid",
+              "question": ",".join(submission.get("question_refs", [])) if isinstance(submission, dict) else "",
+              "diagnostic": "" if complete else diagnostic or (submission.get("summary", "") if isinstance(submission, dict) else "Required worker outputs are missing"),
+              "state": "submitted" if result_status == "complete" else result_status,
+              "termination_reason": "completed" if result_status == "complete" else "output_invalid",
               "progress": progress}
     _write_session_state(workspace, request,
                          status=result["state"], summary=result["diagnostic"],

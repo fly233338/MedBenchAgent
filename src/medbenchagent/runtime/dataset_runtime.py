@@ -1,4 +1,4 @@
-"""OpenHands candidate work in Docker with a read-only source mount."""
+"""OpenHands preparation work with a read-only source mount."""
 
 from __future__ import annotations
 
@@ -48,10 +48,14 @@ class DatasetAgentTask(BaseModel):
     source_id: str = ""
     workflow_step: str = ""
     source_digest: str = ""
-    stage: str = "candidate"
+    stage: str = "prepare"
     context_path: str = ""
+    prompt_path: str = ""
     allowed_outputs: list[str] = Field(default_factory=list)
     input_digest: str = ""
+    prompt_token_count: int | None = Field(default=None, ge=0)
+    execution_key: str = ""
+    resume_existing: bool = False
     progress_guard: dict[str, int] = Field(default_factory=dict)
 
 
@@ -93,7 +97,7 @@ def _mount(source: Path, target: str, *, readonly: bool = False) -> str:
 
 
 class OpenHandsDatasetRuntime:
-    """Run candidate coding on the backend frozen for the parent run."""
+    """Run one coding stage on the backend frozen for the parent run."""
 
     _requirements = (
         "openhands-sdk==1.49.6", "openhands-tools==1.49.6", "pandas==2.3.3",
@@ -125,9 +129,6 @@ class OpenHandsDatasetRuntime:
             raise ValueError("Worker workspace and original source must be separate")
         for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
             (workspace / name).mkdir(parents=True, exist_ok=True)
-        from medbenchagent.runtime.preparation_session import write_session
-        write_session(workspace, task=task.model_dump(), status="running", step=task.workflow_step,
-                      attempt=task.attempt, source_digest=task.source_digest)
         self._forward_events(workspace, task.construction_events_path)
         # Local workers read the frozen original source directly. Docker mounts
         # that same path read-only below; neither backend creates a source copy.
@@ -150,14 +151,33 @@ class OpenHandsDatasetRuntime:
                            construction_events_path="/workspace/logs/coding_events.jsonl")
             if task.context_path:
                 request["context_path"] = "/workspace/inputs/context.json"
+            if task.prompt_path:
+                request["prompt_path"] = "/workspace/inputs/prompt.md"
         else:
             request.update(workspace=str(workspace), source_root=str(source),
                            conversation_id=conversation_id, base_url=task.base_url,
                            construction_events_path=str(workspace / "logs" / "coding_events.jsonl"))
+            if task.prompt_path:
+                request["prompt_path"] = str((workspace / "inputs" / "prompt.md").resolve())
         request["backend"] = runtime["backend"]
         request["agent"] = "DatasetProcessingAgent"
         request_path = workspace / "state" / "task.json"
         result_path = workspace / "state" / "result.json"
+        if task.execution_key:
+            for receipt_path in sorted((workspace / "state").glob("coding_attempt_*.json")):
+                try:
+                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if receipt.get("execution_key") != task.execution_key or receipt.get("status") != "complete":
+                    continue
+                cached = DatasetAgentResult.model_validate({
+                    "status": "complete", "conversation_id": receipt.get("conversation_id", conversation_id),
+                    "outputs": receipt.get("outputs", {}), "diagnostic": receipt.get("diagnostic", ""),
+                    "state": "complete", "termination_reason": "completed",
+                })
+                cached = cached.model_copy(update={"conversation_id": conversation_id})
+                return self._validate_outputs(task, cached, workspace, conversation_id, runtime["backend"])
         if request_path.is_file() and json.loads(request_path.read_text(encoding="utf-8")) == request:
             if result_path.is_file():
                 cached = DatasetAgentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
@@ -285,12 +305,24 @@ class OpenHandsDatasetRuntime:
     @staticmethod
     def _record_result(workspace: Path, task: DatasetAgentTask, result: DatasetAgentResult) -> DatasetAgentResult:
         """Persist an immutable attempt receipt used by recovery and diagnosis."""
+        def file_digest(path: str) -> str:
+            candidate = Path(path)
+            if not candidate.is_file():
+                return ""
+            import hashlib
+            return hashlib.sha256(candidate.read_bytes()).hexdigest()
+
         receipt = {
             "task_id": task.task_id, "kind": task.kind, "attempt": task.attempt,
             "conversation_id": result.conversation_id, "status": result.status,
             "error_category": result.error_category, "retryable": result.retryable,
             "diagnostic": result.diagnostic, "outputs": result.outputs, "state": result.state,
             "model": task.model, "base_url": task.base_url,
+            "execution_key": task.execution_key,
+            "input_digest": task.input_digest,
+            "prompt_token_count": task.prompt_token_count,
+            "prompt_digest": file_digest(task.prompt_path),
+            "context_digest": file_digest(task.context_path),
         }
         atomic_write_json(workspace / "state" / f"coding_attempt_{task.attempt}.json", receipt)
         return result
@@ -393,14 +425,15 @@ class OpenHandsDatasetRuntime:
                           conversation_id: str, backend: str) -> DatasetAgentResult:
         if result.conversation_id != conversation_id:
             raise ValueError("Worker returned another conversation identity")
-        if result.status == "complete" and set(result.outputs) != set(task.required_outputs):
+        if result.status == "complete" and not set(task.required_outputs) <= set(result.outputs):
             raise ValueError("Worker did not return every required output")
         outputs = {}
         for name, path in result.outputs.items():
             expected = workspace / "outputs" / name
             valid_path = (path == f"/workspace/outputs/{name}" if backend == "docker"
                           else Path(path).resolve() == expected.resolve())
-            if name not in task.required_outputs or not valid_path or not expected.is_file():
+            relative_name = Path(name)
+            if relative_name.is_absolute() or ".." in relative_name.parts or not valid_path or not expected.is_file():
                 raise ValueError(f"Worker output is outside its contract: {name}")
             outputs[name] = str(expected.resolve())
         verify_source(task.source_manifest)
