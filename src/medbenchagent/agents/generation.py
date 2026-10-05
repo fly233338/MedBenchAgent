@@ -22,7 +22,10 @@ def run_generation(context, *, leaf_path=None, output_path=None, allocation=None
         resolver_context=ResolverContext.from_access(access),
         sampling_manifest=sampling_manifest,
     )
-    destination = output_path or str(Path(context["operation_directory"]) / "benchmark_items.jsonl")
+    # Callers may pass a pathlib.Path (the Supervisor does this). Results are
+    # persisted through the JSON operation log, so keep artifact references
+    # JSON-native at this boundary.
+    destination = str(output_path or (Path(context["operation_directory"]) / "benchmark_items.jsonl"))
     write_task_items(destination, items)
     task_counts = {}
     for item in items:
