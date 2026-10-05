@@ -19,9 +19,11 @@ def normalize_tool_arguments(tool_name: str, arguments: dict) -> tuple[dict, lis
     """Strip harmless gateway metadata before a tool retry."""
     normalized = dict(arguments or {})
     stripped = []
-    if tool_name in {"terminal", "file_editor"} and "description_note" in normalized:
-        normalized.pop("description_note", None)
-        stripped.append("description_note")
+    if tool_name in {"terminal", "file_editor"}:
+        for key in ("description_note", "description"):
+            if key in normalized:
+                normalized.pop(key, None)
+                stripped.append(key)
     return normalized, stripped
 
 

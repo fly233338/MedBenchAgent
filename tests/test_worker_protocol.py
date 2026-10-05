@@ -4,9 +4,9 @@ from medbenchagent.runtime.dataset_runtime import OpenHandsDatasetRuntime
 
 
 def test_tool_metadata_is_removed_without_touching_command():
-    args, stripped = normalize_tool_arguments("terminal", {"command": "python script.py", "description_note": "why"})
+    args, stripped = normalize_tool_arguments("terminal", {"command": "python script.py", "description_note": "why", "description": ""})
     assert args == {"command": "python script.py"}
-    assert stripped == ["description_note"]
+    assert stripped == ["description_note", "description"]
 
 
 def test_worker_rejects_dependency_install_and_network_commands():
