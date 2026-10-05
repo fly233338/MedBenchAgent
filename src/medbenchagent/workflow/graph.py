@@ -568,10 +568,8 @@ def compile_benchmark_graph(*, checkpointer=None):
         previous = context.get("child_states", {}).get(dataset_id, {}).get("planning")
         previous_draft = {}
         if previous and Path(previous).is_file():
-            try:
-                previous_draft = json.loads(Path(previous).read_text(encoding="utf-8")).get("task_plan", {})
-            except (OSError, ValueError):
-                previous_draft = {}
+            previous_context = load_context(previous, "planning", dataset_id)
+            previous_draft = previous_context.get("task_plan", {})
         output = planning.invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "planning", output)
         draft = output.get("context", {}).get("task_plan", {})

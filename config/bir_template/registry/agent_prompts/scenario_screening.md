@@ -153,7 +153,9 @@ Each item in `validated_clinical_targets` must contain:
 - `subject`: entity or Case to which the target applies;
 - `scope`: supported annotation scope;
 - `reference_kind`: `direct` or `derived`;
-- `reference_fields`: exact registered reference fields or assets.
+- `reference_fields`: exact names from the provided Evidence Catalog. `derived_capabilities` paths (for example `mask_geometry.area_fraction`) are capability coverage summaries, not Evidence names and must never be used here.
+
+`reference_fields` may only contain names listed in `allowed_reference_fields` and must match the provided Evidence Catalog exactly. For a derived target, use the registered mask or other reference Evidence name; the downstream Resolver reads the requested feature (such as `area_fraction`) from that Evidence.
 
 The target `name` must not be a task instruction.
 

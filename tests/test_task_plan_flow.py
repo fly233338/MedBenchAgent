@@ -110,7 +110,7 @@ def test_candidate_scenario_review_advances_the_explicit_scenario(tmp_path, monk
     scenario_id = task_planning._load_plan(context).scenario_review_pending_ids[0]
     captured = {}
 
-    def fake_complete_json(prompt, user_prompt, schema):
+    def fake_complete_json(prompt, user_prompt, schema, **kwargs):
         captured["payload"] = json.loads(user_prompt)
         return {"decision": "keep", "reason": "Suitable for review.", "validated_clinical_targets": [{
             "target_id": "finding_target", "name": "finding", "target_type": "finding",

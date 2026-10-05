@@ -1296,6 +1296,7 @@ def _screening_payload(context: dict[str, Any], plan: TaskPlanState, scenario) -
         "operation_definition": operation,
         "clinical_target_definition": _clinical_target_definition(context, scenario.clinical_target),
         "evidence_catalog": catalog,
+        "allowed_reference_fields": [item["name"] for item in catalog if item.get("name")],
         "field_semantics": _field_semantics(context, [item.get("name") for item in catalog if item.get("name")]),
         "relations": facts.get("relations", {}),
         "derived_capabilities": facts.get("derived_capabilities", {}),
@@ -1433,7 +1434,17 @@ def review_candidate_scenarios(context: dict[str, Any], *, scenario_id: str) -> 
     registry = _registry(context)
     payload = _screening_payload(context, plan, scenario)
     prompt = _stage_prompt(context, "scenario_screening") if registry else "Review one Scenario and return keep or exclude with a non-empty reason."
-    raw_review = complete_json(prompt, json.dumps(payload, ensure_ascii=False), ScenarioScreeningResult)
+    raw_review = complete_json(
+        prompt,
+        json.dumps(payload, ensure_ascii=False),
+        ScenarioScreeningResult,
+        validate=lambda review: _validate_screening_targets(
+            context,
+            plan,
+            scenario,
+            review.validated_clinical_targets,
+        ),
+    )
     if isinstance(raw_review, dict):
         raw_review = dict(raw_review)
         raw_review.setdefault("evidence_basis", [{
@@ -1441,7 +1452,6 @@ def review_candidate_scenarios(context: dict[str, Any], *, scenario_id: str) -> 
             "detail": raw_review.get("reason", "screening decision"),
         }])
     reviewed = ScenarioScreeningResult.model_validate(raw_review)
-    _validate_screening_targets(context, plan, scenario, reviewed.validated_clinical_targets)
     remaining = pending[1:]
     plan.scenario_review_pending_ids = remaining
     plan.scenario_review_completed_ids = [*plan.scenario_review_completed_ids, scenario.scenario_id]
