@@ -42,6 +42,27 @@ def test_generation_uses_resolver_and_hides_reference_from_inputs():
     assert items[0]["reference_evidence_ids"] == ["report-ev"]
 
 
+def test_single_input_leaf_does_not_require_sampling_manifest_for_viewed_case():
+    leaf = {
+        "leaf_task_id": "viewed-leaf", "name": "label", "scenario_id": "node-1", "clinical_target_id": "finding",
+        "question_templates": ["What is shown?"],
+        "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+        "target": "finding", "reference_rule": "Read label", "output_spec": "label",
+        "task_paradigm": "VQA", "capability_category": "Recognition",
+        "resolver": {
+            "inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],
+            "steps": [{"op": "read", "selector": {"role": "label", "name": "label", "evidence_type": "value"}}],
+            "output_spec": "label", "result_step": "step_0",
+        },
+    }
+    case = {"case_id": "case-1", "evidence": [
+        {"id": "image-ev", "type": "asset", "name": "image", "value": "asset-1", "view_id": "left"},
+        {"id": "label-ev", "type": "value", "name": "label", "value": "benign"},
+    ]}
+    items = generate_task_items([case], [leaf], "dataset")
+    assert len(items) == 1
+
+
 def test_generation_honors_allocation_and_case_order():
     leaf = {
         "leaf_task_id": "l", "name": "label", "scenario_id": "n", "clinical_target_id": "finding", "question_templates": ["What is shown?"],

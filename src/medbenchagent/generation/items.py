@@ -137,12 +137,11 @@ def generate_task_items(
             for item in case.get("evidence", [])
             if item.get("type") == "asset"
         )
-    requires_manifest = volume_input or any(
-        len(leaf.input) > 1
-        or any(item.get("view_id") for item in case.get("evidence", []) if isinstance(item, dict))
-        for leaf in parsed
-        for case in case_list
-    )
+    # A prepared Case may carry view identities even when a Leaf consumes one
+    # ordinary image.  Those identities alone do not make generation
+    # view-dependent: only multi-input Leaves and volume inputs need a frozen
+    # sampling order to bind their model inputs deterministically.
+    requires_manifest = volume_input or any(len(leaf.input) > 1 for leaf in parsed)
     if requires_manifest and sampling_manifest is None:
         raise ValueError("View-dependent Generation requires a SamplingManifest")
     for case, sampling_unit in _sampling_units(case_list, sampling_manifest):
