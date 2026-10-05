@@ -409,6 +409,16 @@ def _rebuild_requested(context: SupervisorContext) -> bool:
     return any(isinstance(text, str) and pattern.search(text) for text in texts)
 
 
+def _delivery_ready(context: SupervisorContext) -> bool:
+    """Require both the Delivery artifact and its complete output package."""
+    if not _current(context, "Delivery") or not context.get("delivery_path"):
+        return False
+    root = Path(context["delivery_path"])
+    return all((root / name).is_file() for name in (
+        "benchmark.jsonl", "benchmark_manifest.json", "audit_report.json", "quarantine.jsonl", "complete.json",
+    ))
+
+
 def available_stages(context: SupervisorContext):
     if context.get("global_issue"):
         issue = context["global_issue"]
@@ -444,7 +454,7 @@ def available_stages(context: SupervisorContext):
             return tools | {"allocate"}
         if pending["pending_generation_dataset_ids"]:
             return tools | {"generate"}
-        if not _current(context, "Delivery"):
+        if not _delivery_ready(context):
             return tools | {"finalize"}
         return tools | {"finish"}
     if any("planning" in state for state in context.get("child_states", {}).values()):
@@ -460,7 +470,7 @@ def available_stages(context: SupervisorContext):
         return tools | {"allocate"}
     if pending["pending_generation_dataset_ids"]:
         return tools | {"generate"}
-    return tools | ({"finish"} if _current(context, "Delivery") else {"finalize"})
+    return tools | ({"finish"} if _delivery_ready(context) else {"finalize"})
 
 
 SUPERVISOR_INSTRUCTIONS = """You coordinate a resumable medical VLM dataset-preparation and benchmark-construction run.
@@ -707,7 +717,8 @@ def compile_benchmark_graph(*, checkpointer=None):
         child["operation_directory"] = agent_operation(context, "GenerationAgent", dataset_id)
         counts = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))["counts"][dataset_id]
         leaf_path = child.get("leaf_tasks_path")
-        output_path = Path(child["operation_directory"]) / "benchmark_items.jsonl"
+        output_root = Path(context.get("experiment_output_directory") or child["operation_directory"])
+        output_path = output_root / dataset_id / "benchmark_items.jsonl"
         if sum(counts.values()):
             generated = run_generation(child, leaf_path=leaf_path, output_path=output_path, allocation=counts)
         else:
@@ -751,9 +762,14 @@ def compile_benchmark_graph(*, checkpointer=None):
         pending = pending_datasets(context)
         if pending["pending_generation_dataset_ids"]:
             raise ValueError("All dataset Generations must complete before Finalization")
-        if _current(context, "Delivery") and context.get("delivery_path"):
+        if _delivery_ready(context):
             return result("success", "Delivery is already current", delivery_path=context["delivery_path"], delivery_counts=context.get("delivery_counts", {}))
-        output = finalize_benchmark({**context, "operation_directory": agent_operation(context, "FinalizationAgent")})
+        output_root = Path(context.get("experiment_output_directory") or
+                           Path(context.get("run_directory", context["operation_directory"])))
+        output = finalize_benchmark(
+            {**context, "operation_directory": agent_operation(context, "FinalizationAgent")},
+            output_directory=output_root / "delivery",
+        )
         updates = dict(output["updates"])
         updates["manifest_path"] = updates.get("manifest_path")
         updates["audit_artifacts"] = {
@@ -941,7 +957,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         return outcome
 
     def finish(context):
-        if context.get("delivery_path"):
+        if _delivery_ready(context):
             return result("complete", f"Benchmark delivered; shortfall {context.get('delivery_counts', {}).get('shortfall', 0)}",
                           delivery_path=context["delivery_path"], delivery_counts=context.get("delivery_counts", {}),
                           manifest_path=context.get("manifest_path"))
@@ -949,9 +965,7 @@ def compile_benchmark_graph(*, checkpointer=None):
             if preparation_pending(context):
                 raise ValueError("Prepare and register the dataset first")
             return result("complete", "Dataset prepared and registered")
-        require(context, "Delivery")
-        delivery = restore_delivery(context)
-        return result("complete", f"Benchmark delivered; shortfall {delivery['total_shortfall']}", **delivery)
+        raise ValueError("Delivery is not complete; run Finalization before finishing")
 
     def end(context):
         if _construction_started(context):
@@ -999,12 +1013,18 @@ def compile_benchmark_graph(*, checkpointer=None):
         run = initialize_run(settings=settings, graph_overrides=overrides,
                              execution_runtime=execution_runtime, bir_path=bir_path,
                              experiment_name=experiment_name)
+        experiment_output_directory = (
+            experiment_path(experiment_name, experiments_root) / "outputs"
+            if experiment_name else None
+        )
         context = dict(run, **(defaults | overrides), user_requirement=requirement,
                        execution_runtime=execution_runtime,
                        operation_directory=str(Path(run["run_directory"]) / "agents" /
                                                "SupervisorAgent"), limits=settings.harness,
                        registration_catalog_path=str(settings.paths.dataset_catalog),
                        rag_capability=rag_capability(settings))
+        if experiment_output_directory:
+            context["experiment_output_directory"] = str(experiment_output_directory)
         context["experiment_name"] = state.get("experiment_name")
         context["experiments_root"] = state.get("experiments_root")
         context["configured_total_tasks_per_image"] = context["max_total_tasks_per_image"]

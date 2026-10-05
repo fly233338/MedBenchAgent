@@ -29,7 +29,9 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 ## 新运行布局
 
-新实验使用 `experiments/<experiment>/BIR/` 保存实验级 canonical 中间状态，Run 使用 `.runtime/` 保存 checkpoint、派生视图和结果引用。
+新实验使用 `experiments/<experiment>/BIR/` 保存实验级 canonical 中间状态，使用
+`experiments/<experiment>/outputs/` 保存 Generation 和 Finalization 的可交付产物；Run 使用
+`.runtime/` 保存 checkpoint、operation ledger、Agent 私有状态和其他运行时派生视图。
 
 ```text
 <run>/
