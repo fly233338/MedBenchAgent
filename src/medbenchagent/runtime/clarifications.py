@@ -181,7 +181,10 @@ def resolve_clarification(context, *, issue_id, kind):
         if answer not in user_inputs:
             user_inputs.append(answer)
     updates["user_inputs"] = user_inputs
-    if kind == "requirement_change":
+    control_response = any(marker in answer_text for marker in (
+        "continue", "retry", "继续", "重试", "stop here", "stop now", "you can stop", "please stop", "停止", "停下", "结束运行",
+    ))
+    if kind == "requirement_change" and not control_response:
         from medbenchagent.runtime.dependencies import publish
         clarification_text = "\n".join(f"Clarification question: {e['question']}\nUser answer: {e['answer']}" for e in exchanges)
         updates.update(user_requirement=context["user_requirement"] + "\n" + clarification_text,

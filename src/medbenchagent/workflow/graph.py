@@ -264,7 +264,20 @@ def required_field_action(context):
 
 def automatic_supervisor_action(context):
     """Route only code-created benchmark-field clarifications automatically."""
-    return required_field_action(context)
+    action = required_field_action(context)
+    if action:
+        return action
+    issue = context.get("global_issue") or {}
+    if issue.get("status") == "answered":
+        # Do not leave the Supervisor in a model-only clarification loop. A
+        # continuation/stop answer has already been collected; resolve it
+        # deterministically, then recompute the normal stage tool set.
+        return {
+            "tool": "resolve_clarification",
+            "arguments": {"issue_id": issue["issue_id"], "kind": "requirement_change"},
+            "reason": "Apply the user's clarification before resuming the pipeline",
+        }
+    return None
 
 
 def canonical_delegation(context, dataset=None):
