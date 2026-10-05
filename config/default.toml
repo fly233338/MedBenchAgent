@@ -59,12 +59,12 @@ max_reworks = 3
 [data_processing]
 backend = "local"
 image = "medbench-data:local"
-timeout_seconds = 600
+timeout_seconds = 1200
 memory_limit = "1GB"
 threads = 2
 container_memory = "4g"
 source_workspace_mode = "readonly_mount"
 coding_worker_image = "medbench-openhands:local"
-coding_worker_max_iterations = 40
-coding_worker_timeout_seconds = 1800
-coding_worker_max_revisions = 3
+coding_worker_max_iterations = 100
+coding_worker_timeout_seconds = 7200
+coding_worker_max_revisions = 5
