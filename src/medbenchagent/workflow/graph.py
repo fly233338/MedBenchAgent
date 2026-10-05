@@ -241,7 +241,8 @@ COMMON = ("run_id", "run_directory", "construction_events_path", "effective_conf
           "planning_extension_selections",
           "bir_path", "bir_revision", "bir_manifest_digest", "bir_template_revision",
           "registration_catalog_path", "sample_scope", "max_total_tasks_per_image", "allocation_preferences",
-          "execution_runtime")
+          "execution_runtime", "model", "base_url", "reasoning_effort", "llm_timeout_seconds",
+          "llm_max_retries")
 
 
 def required_field_action(context):
@@ -1038,6 +1039,11 @@ def compile_benchmark_graph(*, checkpointer=None):
         )
         context = dict(run, **(defaults | overrides), user_requirement=requirement,
                        execution_runtime=execution_runtime,
+                       model=settings.llm.model,
+                       base_url=settings.llm.base_url,
+                       reasoning_effort=settings.llm.reasoning_effort,
+                       llm_timeout_seconds=settings.llm.timeout_seconds,
+                       llm_max_retries=settings.llm.max_retries,
                        operation_directory=str(Path(run["run_directory"]) / "agents" /
                                                "SupervisorAgent"), limits=settings.harness,
                        registration_catalog_path=str(settings.paths.dataset_catalog),

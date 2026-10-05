@@ -1,17 +1,21 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.sources import inventory_source
 from medbenchagent.preparation.contracts import StageResult
+import medbenchagent.preparation.graph as preparation_graph
 from medbenchagent.preparation.graph import run_preparation_graph
 
 
 class _StageWorker:
     def __init__(self, *, blocking=False):
         self.blocking = blocking
+        self.requests = []
 
     def run(self, request):
+        self.requests.append(request)
         output_root = Path(request.workspace) / "outputs"
         output_root.mkdir(parents=True, exist_ok=True)
         if request.stage.value == "understand":
@@ -98,3 +102,22 @@ def test_blocking_semantic_question_stops_before_prepare(tmp_path):
     assert result["stage"] == "understand"
     assert result["pending_questions"][0]["issue_id"] == "question-1"
     assert not (tmp_path / "run" / "preparation" / "dataset" / "attempts" / "prepare").exists()
+
+
+def test_legacy_preparation_state_uses_run_frozen_worker_config(tmp_path, monkeypatch):
+    settings = SimpleNamespace(llm=SimpleNamespace(
+        model="frozen-chat", base_url="http://127.0.0.1:8005/v1",
+        reasoning_effort="medium", timeout_seconds=17.0, max_retries=2,
+    ))
+    monkeypatch.setattr(preparation_graph, "get_settings", lambda: settings)
+    worker = _StageWorker()
+
+    result = run_preparation_graph(_state(tmp_path), worker=worker)
+
+    assert result["status"] == "complete"
+    request = worker.requests[0]
+    assert request.model == "frozen-chat"
+    assert request.base_url == "http://127.0.0.1:8005/v1"
+    assert request.reasoning_effort == "medium"
+    assert request.llm_timeout_seconds == 17.0
+    assert request.llm_max_retries == 2

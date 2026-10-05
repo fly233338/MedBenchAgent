@@ -34,3 +34,19 @@ def test_runtime_validates_stage_result_paths_and_required_outputs(tmp_path):
     validated = OpenHandsDatasetRuntime._validate_outputs(request, result, workspace, "conversation", "local")
 
     assert validated.outputs["submission.json"] == str(output.resolve())
+
+
+def test_runtime_rejects_missing_worker_llm_configuration_before_launch(tmp_path):
+    request = StageRequest(
+        stage=Stage.UNDERSTAND, run_id="run", dataset_id="dataset", attempt=1,
+        conversation_id="conversation", execution_key="execution", workspace=str(tmp_path),
+        prompt_path=str(tmp_path / "inputs" / "prompt.md"),
+        context_path=str(tmp_path / "inputs" / "context.json"), input_digest="input",
+        required_outputs=["submission.json"], model="", base_url="",
+    )
+
+    result = OpenHandsDatasetRuntime(runtime={"backend": "local"}).run(request)
+
+    assert result.status == "blocked"
+    assert result.termination_reason == "model_unavailable"
+    assert "model is missing" in result.diagnostic

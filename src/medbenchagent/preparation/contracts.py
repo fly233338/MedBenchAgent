@@ -260,6 +260,8 @@ class StageRequest(Contract):
     model: str = ""
     base_url: str = ""
     reasoning_effort: str = "medium"
+    llm_timeout_seconds: float | None = Field(default=None, ge=0.000001)
+    llm_max_retries: int | None = Field(default=None, ge=0)
     agent: str = "DatasetProcessingAgent"
     resume_existing: bool = False
 

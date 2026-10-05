@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import filecmp
 import hashlib
+import math
 import os
 import shutil
 import subprocess
@@ -108,12 +109,23 @@ def main(request_path: str, result_path: str) -> None:
     os.environ.pop("MEDBENCH_LLM_API_KEY", None)
     # The run freezes the exact gateway model id.  LiteLLM needs an explicit
     # provider at this adapter boundary; the gateway still receives the raw id.
-    model = _litellm_model(request["model"])
+    model_name = str(request.get("model") or "").strip()
+    base_url = str(request.get("base_url") or "").strip()
+    if not model_name or not base_url:
+        raise RuntimeError("Coding worker requires a non-empty run-frozen model and base_url")
+    model = _litellm_model(model_name)
     # OpenHands 1.49.6 defaults this to "high". Reasoning levels are not
     # universal across gateways, so always use the run-frozen explicit value.
-    llm_kwargs = {"model": model, "base_url": request["base_url"],
+    timeout_seconds = max(1, math.ceil(float(request.get("llm_timeout_seconds") or 300)))
+    llm_kwargs = {"model": model, "base_url": base_url,
                   "max_output_tokens": 8192, "api_key": SecretStr(key),
-                  "usage_id": "medbench_coding_worker"}
+                  "usage_id": "medbench_coding_worker",
+                  # Let the stage supervisor own the retry budget.  OpenHands'
+                  # SDK default (five retries) can otherwise hide a bad endpoint
+                  # for most of the stage timeout.
+                  "num_retries": int(request.get("llm_max_retries") or 0),
+                  "timeout": timeout_seconds,
+                  }
     # OpenHands defaults to high, which is not accepted by this vLLM service;
     # keep the previously working explicit medium default.
     llm_kwargs["reasoning_effort"] = request.get("reasoning_effort") or "medium"

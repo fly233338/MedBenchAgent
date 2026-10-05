@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.settings import get_settings
 
 from .context import ContextBudgetError, build_stage_context
 from .contracts import ArtifactRef, Diagnostic, Stage, StageRequest, StageResult, STAGE_SPECS, digest_file
@@ -91,9 +92,31 @@ def _accepted_artifacts(result: StageResult, stage: Stage) -> dict[str, Artifact
     return values
 
 
+def _worker_llm_config(state: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the run-frozen Coding Worker configuration at the request boundary.
+
+    Older checkpoints do not contain these fields because they were omitted
+    from the specialist context.  The active settings context is the fallback
+    for those runs; new runs copy the same values into the child state.
+    """
+    settings = get_settings().llm
+    return {
+        "model": str(state.get("model") or settings.model or "").strip(),
+        "base_url": str(state.get("base_url") or settings.base_url or "").strip(),
+        "reasoning_effort": str(state.get("reasoning_effort") or settings.reasoning_effort or "medium"),
+        "llm_timeout_seconds": (state.get("llm_timeout_seconds")
+                                if state.get("llm_timeout_seconds") is not None
+                                else settings.timeout_seconds),
+        "llm_max_retries": (state.get("llm_max_retries")
+                            if state.get("llm_max_retries") is not None
+                            else settings.max_retries),
+    }
+
+
 def _request(state: dict[str, Any], stage: Stage, attempt: int, attempt_path: Path, packet, token_count: int, execution_key: str) -> StageRequest:
     roots = _source_roots(state)
     manifests = state.get("source_manifests") or {}
+    llm = _worker_llm_config(state)
     return StageRequest(
         stage=stage,
         run_id=str(state.get("run_id") or "run"),
@@ -113,9 +136,11 @@ def _request(state: dict[str, Any], stage: Stage, attempt: int, attempt_path: Pa
         optional_outputs=list(STAGE_SPECS[stage.value].optional_outputs),
         budget=__import__("medbenchagent.preparation.context", fromlist=["_budget"])._budget(state, stage),
         construction_events_path=str(state.get("construction_events_path") or ""),
-        model=str(state.get("model") or ""),
-        base_url=str(state.get("base_url") or ""),
-        reasoning_effort=str(state.get("reasoning_effort") or "medium"),
+        model=llm["model"],
+        base_url=llm["base_url"],
+        reasoning_effort=llm["reasoning_effort"],
+        llm_timeout_seconds=llm["llm_timeout_seconds"],
+        llm_max_retries=llm["llm_max_retries"],
         resume_existing=bool(state.get("resume_existing", False)),
     )
 

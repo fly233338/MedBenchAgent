@@ -43,6 +43,16 @@ def _mount(source: Path, target: str, *, readonly: bool = False) -> str:
     return f"type=bind,src={source},dst={target}" + (",readonly" if readonly else "")
 
 
+def _worker_llm_error(request: StageRequest) -> str:
+    """Return a deterministic configuration error before starting OpenHands."""
+    if not request.model.strip():
+        return "Coding worker model is missing from the run-frozen stage request"
+    parsed = urlsplit(request.base_url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "Coding worker base_url is missing or is not an HTTP(S) URL"
+    return ""
+
+
 class OpenHandsDatasetRuntime:
     """Run one OpenHands coding stage on the backend frozen for the parent run."""
 
@@ -76,6 +86,12 @@ class OpenHandsDatasetRuntime:
     def run(self, request: StageRequest) -> StageResult:
         settings = get_settings().data_processing
         runtime = self.runtime or {"backend": "docker", "requested_backend": "docker"}
+        workspace = Path(request.workspace).resolve()
+        if diagnostic := _worker_llm_error(request):
+            return self._record_result(
+                workspace, request,
+                self._failure(request, "blocked", diagnostic, "model_unavailable"),
+            )
         source_roots = {str(key): str(value) for key, value in request.source_roots.items()}
         if not source_roots:
             raise ValueError("Stage request requires at least one source root")
@@ -83,7 +99,6 @@ class OpenHandsDatasetRuntime:
             verify_source(manifest)
         primary_id = sorted(source_roots)[0]
         source_root = Path(source_roots[primary_id]).resolve()
-        workspace = Path(request.workspace).resolve()
         if any(workspace.is_relative_to(Path(root).resolve()) or Path(root).resolve().is_relative_to(workspace)
                for root in source_roots.values()):
             raise ValueError("Worker workspace and original source must be separate")
