@@ -45,10 +45,15 @@ def build_data_preparation_task(context: dict, workspace: Path, *, feedback: str
                                      f"{context['run_id']}:{context['dataset_scope']}:{stage}:{stage_attempt}"))
     context_path = context.get("preparation_context_path", "")
     stage_outputs = list(STAGE_OUTPUTS.get(stage, STAGE_OUTPUTS["candidate"]))
+    source_manifest = context.get("source_manifests", {}).get(primary["id"])
+    if not source_manifest:
+        source_manifest = context.get("source_manifest")
+    if not source_manifest:
+        raise ValueError(f"Missing source manifest for source {primary['id']!r}")
     return DatasetAgentTask(
         task_id=f"{context['run_id']}:{context['dataset_scope']}:preparation", kind="preparation",
         source_root=str(Path(primary["root"]).resolve()),
-        source_manifest=context.get("source_manifests", {}).get(primary["id"], context["source_manifest"]),
+        source_manifest=source_manifest,
         source_roots={item["id"]: item["root"] for item in sources},
         workspace=str(workspace), objective=objective,
          required_outputs=stage_outputs,
