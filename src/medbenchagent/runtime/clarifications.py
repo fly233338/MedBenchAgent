@@ -165,6 +165,15 @@ def resolve_clarification(context, *, issue_id, kind):
     updates = {"issues": {**context.get("issues", {}), issue_id: issue},
                "decisions": {**context.get("decisions", {}), issue_id: issue["answer_reference"]},
                "global_issue": None, "clarification": issue}
+    # A user may answer a failure clarification with an explicit request to
+    # stop (for example, "you can stop here"). Persist that decision in the
+    # run context so the Supervisor terminates instead of returning to decide
+    # and asking another model call.
+    answer_text = str(issue.get("answer_preview", "")).strip().lower()
+    if any(marker in answer_text for marker in (
+        "stop here", "stop now", "you can stop", "please stop", "停止", "停下", "结束运行",
+    )):
+        updates["stop_requested"] = True
     exchanges = answer_payload(context, issue)["exchanges"]
     user_inputs = list(context.get("user_inputs", [context["user_requirement"]]))
     for exchange in exchanges:

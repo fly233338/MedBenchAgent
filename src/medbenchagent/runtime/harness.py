@@ -130,6 +130,8 @@ def compile_agent(
 
     def decide(state: AgentState) -> dict:
         context = state["context"]
+        if context.get("stop_requested"):
+            return {"result": result("complete", "Stopped at the user's request.", stop_requested=True)}
         limits = context.get("limits", {})
         exceeded = (
             "max_calls" if state["step"] >= limits.get("max_calls", 60) else

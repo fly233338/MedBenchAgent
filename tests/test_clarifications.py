@@ -28,3 +28,15 @@ def test_resolution_closes_saved_origin_and_only_invalidates_changed_requirement
     if kind == "requirement_change":
         assert "What does 0 mean?" in context["user_requirement"]
     assert resolve_clarification(context, issue_id=key, kind=kind)["updates"] == {}
+
+
+def test_explicit_stop_answer_marks_run_for_termination(tmp_path):
+    context = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "resolve"), "user_requirement": "Build"}
+    issue = new_issue("SupervisorAgent", context, "generation_failure", "Generation failed. Continue or stop?")
+    key = issue["issue_id"]
+    context["issues"] = {key: record_answer(context, issue, "you can stop here")}
+    context["global_issue"] = context["issues"][key]
+
+    updates = resolve_clarification(context, issue_id=key, kind="requirement_change")["updates"]
+
+    assert updates["stop_requested"] is True
