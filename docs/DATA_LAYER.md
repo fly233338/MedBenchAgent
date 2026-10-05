@@ -34,9 +34,9 @@ Bundle、Profile、Card 和 Catalog 都使用内容摘要绑定输入。每个�
 
 Asset 处理保留原始来源引用。PNG/JPEG、单文件 DICOM、DICOM Series 和 NIfTI 通过统一 Asset Adapter 读取。Native Asset 与确定性的 Presentation 分离，显示窗口、维度和像素元数据作为独立决策保存。
 
-## Harmonization 与查询
+## 多来源映射与查询
 
-多来源字段通过显式 harmonization plan 合并、保留或排除。值映射、缺失状态、数组边界和来源空间都保留在计划和 provenance 中。
+多来源字段通过 understand 阶段的 accepted mapping 合并、保留或排除。值映射、缺失状态、数组边界和来源空间都保留在 mapping、provenance 和执行报告中。
 
 `DatasetQuery` 绑定一个 access manifest 和 cache revision，提供字段值、来源覆盖、记录采样、数组长度、配对和协议容量查询。查询返回准确总数和分页结果，供规划 Agent 使用。
 

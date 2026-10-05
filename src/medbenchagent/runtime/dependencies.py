@@ -11,30 +11,13 @@ from medbenchagent.runtime.construction import record_event
 
 CONTRACT_VERSION = "agent-runtime"
 
-SOURCE_KINDS = frozenset(
-    {
-        "Source",
-        "Inventory",
-        "Annotation",
-        "SourceFingerprint",
-        "SemanticPreparationSpec",
-        "DatasetAdapter",
-        "ExecutionPlan",
-        "CandidateExtraction",
-        "PopulationDecision",
-        "PreparationValidation",
-        "ImageInventory",
-        "ImagePlan",
-        "NormalizedSource",
-    }
-)
-
-
-DATASET_KINDS = SOURCE_KINDS | frozenset(
+DATASET_KINDS = frozenset(
     {
         "Dataset",
         "DatasetProfile",
         "DatasetCard",
+        "DatasetCandidates",
+        "DatasetSelection",
         "PlanningDraft",
         "Plan",
         "PlanningDelegation",
@@ -42,9 +25,11 @@ DATASET_KINDS = SOURCE_KINDS | frozenset(
         "Templates",
         "Generation",
         "GenerationCheck",
-        "Harmonization",
         "SourceSelection",
         "Documentation",
+        "Allocation",
+        "Delivery",
+        "PreparedCandidates",
     }
 )
 
@@ -52,13 +37,9 @@ DATASET_KINDS = SOURCE_KINDS | frozenset(
 def artifact_key(context, kind):
     if kind.startswith("dataset/"):
         return kind
-    scope = context.get("source_scope")
-    key = f"source/{scope}/{kind}" if scope and kind in SOURCE_KINDS else kind
     dataset = context.get("dataset_scope")
     return (
-        f"dataset/{dataset}/{key}"
-        if dataset and (kind in DATASET_KINDS or kind.startswith("source/"))
-        else key
+        f"dataset/{dataset}/{kind}" if dataset and kind in DATASET_KINDS else kind
     )
 
 

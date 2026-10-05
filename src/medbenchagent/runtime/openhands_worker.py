@@ -222,10 +222,13 @@ def main(request_path: str, result_path: str) -> None:
         # traceback in stderr for diagnosis.
         guarded = str(exc).startswith("Preparation stage guard:")
         reason = str(exc).split(":", 1)[1].strip() if guarded else "worker_error"
-        result = {"status": "blocked" if guarded else "failed", "conversation_id": request["conversation_id"],
-                  "outputs": {}, "question": "",
-                  "diagnostic": f"OpenHands conversation failed: {type(exc).__name__}: {exc}",
-                  "termination_reason": reason, "progress": progress}
+        result = {"stage": request["stage"], "attempt": request.get("attempt", 1),
+                  "conversation_id": request["conversation_id"], "execution_key": request["execution_key"],
+                  "status": "blocked" if guarded else "failed", "outputs": {}, "question_refs": [],
+                  "diagnostics": [], "diagnostic": f"OpenHands conversation failed: {type(exc).__name__}: {exc}",
+                  "termination_reason": reason, "progress": progress,
+                  "input_digest": request.get("input_digest", ""),
+                  "token_count": request.get("prompt_token_count")}
         _write_session_state(workspace, request, status=result["status"], summary=result["diagnostic"],
                              termination_reason=reason, progress=progress)
         Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
@@ -254,16 +257,19 @@ def main(request_path: str, result_path: str) -> None:
         diagnostic = diagnostic or "Required worker output is missing: submission.json"
     complete = not diagnostic and set(request["required_outputs"]) <= set(produced)
     requested = submission.get("requested_outcome") if isinstance(submission, dict) else "blocked"
-    result_status = "complete" if complete and requested == "submitted" else ("needs_input" if requested == "needs_input" else "blocked" if requested == "blocked" else "failed")
-    result = {"status": result_status,
-              "conversation_id": request["conversation_id"], "outputs": produced,
-              "question": ",".join(submission.get("question_refs", [])) if isinstance(submission, dict) else "",
+    result_status = "submitted" if complete and requested == "submitted" else ("needs_input" if requested == "needs_input" else "blocked" if requested == "blocked" else "failed")
+    result = {"stage": request["stage"], "attempt": request.get("attempt", 1),
+              "conversation_id": request["conversation_id"], "execution_key": request["execution_key"],
+              "status": result_status, "outputs": produced,
+              "question_refs": submission.get("question_refs", []) if isinstance(submission, dict) else [],
+              "diagnostics": [],
               "diagnostic": "" if complete else diagnostic or (submission.get("summary", "") if isinstance(submission, dict) else "Required worker outputs are missing"),
-              "state": "submitted" if result_status == "complete" else result_status,
-              "termination_reason": "completed" if result_status == "complete" else "output_invalid",
-              "progress": progress}
+              "termination_reason": "completed" if result_status == "submitted" else "output_invalid",
+              "progress": progress, "input_digest": request.get("input_digest", ""),
+              "submission_path": "/workspace/outputs/submission.json",
+              "token_count": request.get("prompt_token_count")}
     _write_session_state(workspace, request,
-                         status=result["state"], summary=result["diagnostic"],
+                         status=result["status"], summary=result["diagnostic"],
                          termination_reason=result["termination_reason"], progress=progress)
     Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
 

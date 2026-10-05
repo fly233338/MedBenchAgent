@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -11,10 +12,10 @@ import subprocess
 import threading
 import uuid
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from medbenchagent.preparation.contracts import StageRequest, StageResult
 
 from medbenchagent.data.sources import verify_source
 from medbenchagent.data.execution import ExecutionUnavailable, docker_image_id
@@ -22,62 +23,8 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_llm_api_key, get_settings
 
 
-class DatasetAgentTask(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    task_id: str
-    kind: Literal["preparation"]
-    source_root: str
-    source_manifest: str
-    source_roots: dict[str, str] = Field(default_factory=dict)
-    workspace: str
-    objective: str
-    required_outputs: list[str]
-    inputs: dict[str, str] = Field(default_factory=dict)
-    feedback: str = ""
-    attempt: int = Field(default=1, ge=1)
-    max_iterations: int = Field(default=40, ge=1)
-    timeout_seconds: int = Field(default=1800, ge=1)
-    conversation_id: str | None = None
-    model: str
-    base_url: str
-    reasoning_effort: str = "medium"
-    construction_events_path: str = ""
-    run_id: str = ""
-    dataset_id: str = ""
-    source_id: str = ""
-    workflow_step: str = ""
-    source_digest: str = ""
-    stage: str = "prepare"
-    context_path: str = ""
-    prompt_path: str = ""
-    allowed_outputs: list[str] = Field(default_factory=list)
-    input_digest: str = ""
-    prompt_token_count: int | None = Field(default=None, ge=0)
-    execution_key: str = ""
-    resume_existing: bool = False
-    progress_guard: dict[str, int] = Field(default_factory=dict)
-
-
-class DatasetAgentResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    status: Literal["complete", "needs_input", "blocked", "failed"]
-    conversation_id: str
-    outputs: dict[str, str] = Field(default_factory=dict)
-    question: str = ""
-    diagnostic: str = ""
-    error_category: Literal["", "environment_unavailable", "model_unavailable",
-                            "worker_execution_failed", "worker_output_invalid",
-                            "source_changed", "source_semantics_unresolved"] = ""
-    retryable: bool = False
-    state: Literal["running", "needs_user_input", "submitted", "validation_failed", "complete", "blocked", "failed"] = "complete"
-    termination_reason: str = ""
-    progress: dict = Field(default_factory=dict)
-
-
 class DatasetRuntimeProtocol(Protocol):
-    def run(self, task: DatasetAgentTask) -> DatasetAgentResult: ...
+    def run(self, request: StageRequest) -> StageResult: ...
 
 
 def _container_url(base_url: str) -> str:
@@ -97,7 +44,7 @@ def _mount(source: Path, target: str, *, readonly: bool = False) -> str:
 
 
 class OpenHandsDatasetRuntime:
-    """Run one coding stage on the backend frozen for the parent run."""
+    """Run one OpenHands coding stage on the backend frozen for the parent run."""
 
     _requirements = (
         "openhands-sdk==1.49.6", "openhands-tools==1.49.6", "pandas==2.3.3",
@@ -110,93 +57,105 @@ class OpenHandsDatasetRuntime:
 
     @classmethod
     def cancel_active_workers(cls) -> None:
-        """Stop in-flight preparation workers so a user stop is prompt."""
         for conversation_id in list(cls._active):
             cls().cancel(conversation_id)
 
     def __init__(self, runtime=None):
         self.runtime = runtime
 
-    def run(self, task: DatasetAgentTask) -> DatasetAgentResult:
-        verify_source(task.source_manifest)
+    def _failure(self, request: StageRequest, status: str, message: str, reason: str) -> StageResult:
+        return StageResult(stage=request.stage, attempt=request.attempt, conversation_id=request.conversation_id,
+                           execution_key=request.execution_key, status=status, diagnostic=message,
+                           termination_reason=reason, input_digest=request.input_digest,
+                           prompt_digest=hashlib.sha256(Path(request.prompt_path).read_bytes()).hexdigest()
+                           if Path(request.prompt_path).is_file() else "",
+                           context_digest=hashlib.sha256(Path(request.context_path).read_bytes()).hexdigest()
+                           if Path(request.context_path).is_file() else "",
+                           token_count=request.prompt_token_count)
+
+    def run(self, request: StageRequest) -> StageResult:
         settings = get_settings().data_processing
-        # Production callers pass the run-frozen resolver result. Direct worker use
-        # defaults to the Docker component so it never performs a second backend choice.
         runtime = self.runtime or {"backend": "docker", "requested_backend": "docker"}
-        workspace = Path(task.workspace).resolve()
-        source_root = Path(task.source_root).resolve()
-        if workspace.is_relative_to(source_root) or source_root.is_relative_to(workspace):
+        source_roots = {str(key): str(value) for key, value in request.source_roots.items()}
+        if not source_roots:
+            raise ValueError("Stage request requires at least one source root")
+        for manifest in request.source_manifests.values():
+            verify_source(manifest)
+        primary_id = sorted(source_roots)[0]
+        source_root = Path(source_roots[primary_id]).resolve()
+        workspace = Path(request.workspace).resolve()
+        if any(workspace.is_relative_to(Path(root).resolve()) or Path(root).resolve().is_relative_to(workspace)
+               for root in source_roots.values()):
             raise ValueError("Worker workspace and original source must be separate")
         for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
             (workspace / name).mkdir(parents=True, exist_ok=True)
-        self._forward_events(workspace, task.construction_events_path)
-        # Local workers read the frozen original source directly. Docker mounts
-        # that same path read-only below; neither backend creates a source copy.
-        source = source_root
-        for name, path in task.inputs.items():
-            destination = (workspace / "inputs" / name).resolve()
-            if not destination.is_relative_to(workspace / "inputs"):
-                raise ValueError("Worker input must stay under inputs/")
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, destination)
-        conversation_id = task.conversation_id or str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                                                  f"{task.task_id}:attempt:{task.attempt}"))
-        request = task.model_dump(exclude={"source_manifest", "inputs"})
-        # The frozen model identity is already OpenAI-compatible.  Do not add a
-        # provider prefix here: local gateways expose the exact id returned by
-        # /models and reject otherwise equivalent aliases.
+        self._forward_events(workspace, request.construction_events_path)
+        conversation_id = request.conversation_id
+        stage_value = request.stage.value
+        deployment = request.model_dump(mode="json")
+        deployment.update(
+            task_id=f"{request.run_id}:{request.dataset_id}:{stage_value}",
+            kind="preparation",
+            source_id=primary_id,
+            stage=stage_value,
+            workflow_step=stage_value,
+            source_root="/workspace/source" if runtime["backend"] == "docker" else str(source_root),
+            workspace="/workspace" if runtime["backend"] == "docker" else str(workspace),
+            conversation_id=conversation_id,
+            source_digest=request.input_digest,
+            max_iterations=request.budget.max_iterations,
+            timeout_seconds=request.budget.timeout_seconds,
+            allowed_outputs=request.required_outputs + request.optional_outputs,
+            progress_guard={"no_progress_limit": request.budget.no_progress_limit,
+                            "tool_error_limit": request.budget.tool_error_limit},
+            agent=request.agent,
+            backend=runtime["backend"],
+        )
         if runtime["backend"] == "docker":
-            request.update(workspace="/workspace", source_root="/workspace/source",
-                           conversation_id=conversation_id, base_url=_container_url(task.base_url),
-                           construction_events_path="/workspace/logs/coding_events.jsonl")
-            if task.context_path:
-                request["context_path"] = "/workspace/inputs/context.json"
-            if task.prompt_path:
-                request["prompt_path"] = "/workspace/inputs/prompt.md"
+            deployment.update(
+                base_url=_container_url(request.base_url),
+                construction_events_path="/workspace/logs/coding_events.jsonl",
+                context_path="/workspace/inputs/context.json",
+                prompt_path="/workspace/inputs/prompt.md",
+            )
         else:
-            request.update(workspace=str(workspace), source_root=str(source),
-                           conversation_id=conversation_id, base_url=task.base_url,
-                           construction_events_path=str(workspace / "logs" / "coding_events.jsonl"))
-            if task.prompt_path:
-                request["prompt_path"] = str((workspace / "inputs" / "prompt.md").resolve())
-        request["backend"] = runtime["backend"]
-        request["agent"] = "DatasetProcessingAgent"
-        request_path = workspace / "state" / "task.json"
+            deployment.update(
+                base_url=request.base_url,
+                construction_events_path=str(workspace / "logs" / "coding_events.jsonl"),
+                context_path=str((workspace / "inputs" / "context.json").resolve()),
+                prompt_path=str((workspace / "inputs" / "prompt.md").resolve()),
+            )
+        request_path = workspace / "state" / "request.json"
         result_path = workspace / "state" / "result.json"
-        if task.execution_key:
-            for receipt_path in sorted((workspace / "state").glob("coding_attempt_*.json")):
+        if request.execution_key:
+            receipt_path = workspace / "state" / f"coding_attempt_{request.attempt}.json"
+            if receipt_path.is_file():
                 try:
-                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    continue
-                if receipt.get("execution_key") != task.execution_key or receipt.get("status") != "complete":
-                    continue
-                cached = DatasetAgentResult.model_validate({
-                    "status": "complete", "conversation_id": receipt.get("conversation_id", conversation_id),
-                    "outputs": receipt.get("outputs", {}), "diagnostic": receipt.get("diagnostic", ""),
-                    "state": "complete", "termination_reason": "completed",
-                })
-                cached = cached.model_copy(update={"conversation_id": conversation_id})
-                return self._validate_outputs(task, cached, workspace, conversation_id, runtime["backend"])
-        if request_path.is_file() and json.loads(request_path.read_text(encoding="utf-8")) == request:
+                    cached = StageResult.model_validate_json(receipt_path.read_text(encoding="utf-8"))
+                    if cached.execution_key == request.execution_key and cached.status == "submitted":
+                        return self._validate_outputs(request, cached, workspace, conversation_id, runtime["backend"])
+                except ValueError:
+                    pass
+        if request_path.is_file() and json.loads(request_path.read_text(encoding="utf-8")) == deployment:
             if result_path.is_file():
-                cached = DatasetAgentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
-                if cached.status == "complete":
-                    return self._validate_outputs(task, cached, workspace, conversation_id, runtime["backend"])
+                cached = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+                if cached.status == "submitted":
+                    return self._validate_outputs(request, cached, workspace, conversation_id, runtime["backend"])
         result_path.unlink(missing_ok=True)
-        atomic_write_json(request_path, request)
+        atomic_write_json(request_path, deployment)
 
         key = get_llm_api_key()
         if runtime["backend"] == "local":
             forward_stop = threading.Event()
-            forwarder = self._start_event_forwarder(workspace, task.construction_events_path, forward_stop)
+            forwarder = self._start_event_forwarder(workspace, request.construction_events_path, forward_stop)
             try:
-                return self._run_local(task, workspace, request_path, result_path, conversation_id, key)
+                return self._run_local(request, deployment, workspace, request_path, result_path, conversation_id, key)
             finally:
                 self._active.pop(conversation_id, None)
                 forward_stop.set()
                 forwarder.join(timeout=2)
-                self._forward_events(workspace, task.construction_events_path)
+                self._forward_events(workspace, request.construction_events_path)
+
         image = settings["coding_worker_image"]
         try:
             image_id = docker_image_id(image)
@@ -204,9 +163,7 @@ class OpenHandsDatasetRuntime:
             if self.runtime is None:
                 image_id = image
             else:
-                return self._record_result(workspace, task, DatasetAgentResult(
-                    status="blocked", conversation_id=conversation_id,
-                    diagnostic=str(exc), error_category="environment_unavailable"))
+                return self._record_result(workspace, request, self._failure(request, "blocked", str(exc), "environment_unavailable"))
         probe = (
             "import json,os,sys,urllib.request;"
             "url,model=sys.argv[1:3];"
@@ -215,82 +172,64 @@ class OpenHandsDatasetRuntime:
             "headers=headers),timeout=15));"
             "assert model in [item['id'] for item in body['data']]"
         )
-        environment = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1",
-                       "MEDBENCH_LLM_API_KEY": key}
+        environment = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1", "MEDBENCH_LLM_API_KEY": key}
         try:
             check = subprocess.run(
                 ["docker", "run", "--rm", "--add-host", "host.docker.internal:host-gateway",
                  "-e", "MEDBENCH_LLM_API_KEY", image_id, "python", "-c", probe,
-                 request["base_url"], task.model],
+                 deployment["base_url"], request.model],
                 env=environment, capture_output=True, text=True, timeout=30, check=False)
             if check.returncode:
-                return self._record_result(workspace, task, DatasetAgentResult(
-                    status="blocked", conversation_id=conversation_id,
-                    diagnostic="OpenHands container cannot reach the frozen Chat model",
-                    error_category="model_unavailable"))
+                return self._record_result(workspace, request, self._failure(
+                    request, "blocked", "OpenHands container cannot reach the frozen Chat model", "model_unavailable"))
         except (OSError, subprocess.TimeoutExpired):
-            return self._record_result(workspace, task, DatasetAgentResult(
-                status="blocked", conversation_id=conversation_id,
-                diagnostic="OpenHands container cannot probe the frozen Chat model",
-                error_category="environment_unavailable"))
+            return self._record_result(workspace, request, self._failure(
+                request, "blocked", "OpenHands container cannot probe the frozen Chat model", "environment_unavailable"))
         forward_stop = threading.Event()
-        forwarder = self._start_event_forwarder(workspace, task.construction_events_path, forward_stop)
+        forwarder = self._start_event_forwarder(workspace, request.construction_events_path, forward_stop)
         container_name = "medbench-worker-" + uuid.uuid5(
-            uuid.NAMESPACE_URL, f"{task.task_id}:attempt:{task.attempt}").hex
+            uuid.NAMESPACE_URL, f"{deployment['task_id']}:attempt:{request.attempt}").hex
         command = ["docker", "run", "-d", "--pull=never", "--name", container_name,
-                   "--add-host", "host.docker.internal:host-gateway",
-                   "-e", "MEDBENCH_LLM_API_KEY", "-w", "/workspace", "--mount",
-                   _mount(source, "/workspace/source", readonly=True)]
-        for source_id, root in task.source_roots.items():
+                   "--add-host", "host.docker.internal:host-gateway", "-e", "MEDBENCH_LLM_API_KEY",
+                   "-w", "/workspace", "--mount", _mount(source_root, "/workspace/source", readonly=True)]
+        for source_id, root in source_roots.items():
             command.extend(["--mount", _mount(Path(root).resolve(), f"/workspace/sources/{source_id}", readonly=True)])
         for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
-            command.extend(["--mount", _mount(workspace / name, f"/workspace/{name}",
-                                              readonly=name == "inputs")])
-        command.extend([image_id, "python", "/app/openhands_worker.py",
-                        "/workspace/state/task.json",
-                        "/workspace/state/result.json"])
+            command.extend(["--mount", _mount(workspace / name, f"/workspace/{name}", readonly=name == "inputs")])
+        command.extend([image_id, "python", "/app/openhands_worker.py", "/workspace/state/request.json", "/workspace/state/result.json"])
         try:
             existing = subprocess.run(["docker", "container", "inspect", container_name],
                                       capture_output=True, text=True, timeout=15, check=False)
             if existing.returncode:
-                started = subprocess.run(command, env=environment, capture_output=True,
-                                         text=True, timeout=30, check=False)
+                started = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30, check=False)
                 if started.returncode:
-                    return self._record_result(workspace, task, DatasetAgentResult(
-                        status="failed", conversation_id=conversation_id,
-                        diagnostic="OpenHands container could not start: " +
-                        (started.stderr.strip()[:300] or "see Docker daemon"),
-                        error_category="environment_unavailable", retryable=True))
+                    return self._record_result(workspace, request, self._failure(
+                        request, "failed", "OpenHands container could not start: " +
+                        (started.stderr.strip()[:300] or "see Docker daemon"), "environment_unavailable"))
             self._active[conversation_id] = ("docker", container_name)
             completed = subprocess.run(["docker", "wait", container_name], capture_output=True,
-                                       text=True, timeout=task.timeout_seconds, check=False)
+                                       text=True, timeout=request.budget.timeout_seconds, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return self._record_result(workspace, task, DatasetAgentResult(
-                status="failed", conversation_id=conversation_id,
-                diagnostic=f"OpenHands worker unavailable: {type(exc).__name__}",
-                error_category="worker_execution_failed", retryable=True))
+            return self._record_result(workspace, request, self._failure(
+                request, "failed", f"OpenHands worker unavailable: {type(exc).__name__}", "worker_execution_failed"))
         finally:
             self._active.pop(conversation_id, None)
             try:
                 with (workspace / "logs" / "stdout.log").open("a", encoding="utf-8") as stdout, \
                         (workspace / "logs" / "stderr.log").open("a", encoding="utf-8") as stderr:
-                    subprocess.run(["docker", "logs", container_name], stdout=stdout, stderr=stderr,
-                                   timeout=30, check=False)
-                subprocess.run(["docker", "rm", "-f", container_name], capture_output=True,
-                               timeout=30, check=False)
+                    subprocess.run(["docker", "logs", container_name], stdout=stdout, stderr=stderr, timeout=30, check=False)
+                subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=30, check=False)
             except (OSError, subprocess.TimeoutExpired):
                 pass
         forward_stop.set()
         forwarder.join(timeout=2)
-        self._forward_events(workspace, task.construction_events_path)
+        self._forward_events(workspace, request.construction_events_path)
         if completed.returncode or (getattr(completed, "stdout", "0") or "0").strip() != "0" or not result_path.is_file():
-            return self._record_result(workspace, task, DatasetAgentResult(
-                status="failed", conversation_id=conversation_id,
-                diagnostic=self._failure_summary(workspace / "logs" / "stderr.log"),
-                error_category="worker_execution_failed", retryable=True))
-        result = DatasetAgentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
-        return self._record_result(workspace, task,
-                                   self._validate_outputs(task, result, workspace, conversation_id, runtime["backend"]))
+            return self._record_result(workspace, request, self._failure(
+                request, "failed", self._failure_summary(workspace / "logs" / "stderr.log"), "worker_execution_failed"))
+        result = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        return self._record_result(request_workspace := workspace, request,
+                                   self._validate_outputs(request, result, request_workspace, conversation_id, runtime["backend"]))
 
     @staticmethod
     def _start_event_forwarder(workspace: Path, destination: str, stop: threading.Event):
@@ -303,7 +242,7 @@ class OpenHandsDatasetRuntime:
         return thread
 
     @staticmethod
-    def _record_result(workspace: Path, task: DatasetAgentTask, result: DatasetAgentResult) -> DatasetAgentResult:
+    def _record_result(workspace: Path, request: StageRequest, result: StageResult) -> StageResult:
         """Persist an immutable attempt receipt used by recovery and diagnosis."""
         def file_digest(path: str) -> str:
             candidate = Path(path)
@@ -313,21 +252,20 @@ class OpenHandsDatasetRuntime:
             return hashlib.sha256(candidate.read_bytes()).hexdigest()
 
         receipt = {
-            "task_id": task.task_id, "kind": task.kind, "attempt": task.attempt,
+            "stage": request.stage.value, "attempt": request.attempt,
             "conversation_id": result.conversation_id, "status": result.status,
-            "error_category": result.error_category, "retryable": result.retryable,
-            "diagnostic": result.diagnostic, "outputs": result.outputs, "state": result.state,
-            "model": task.model, "base_url": task.base_url,
-            "execution_key": task.execution_key,
-            "input_digest": task.input_digest,
-            "prompt_token_count": task.prompt_token_count,
-            "prompt_digest": file_digest(task.prompt_path),
-            "context_digest": file_digest(task.context_path),
+            "diagnostic": result.diagnostic, "outputs": result.outputs,
+            "model": request.model, "base_url": request.base_url,
+            "execution_key": request.execution_key,
+            "input_digest": request.input_digest,
+            "prompt_token_count": request.prompt_token_count,
+            "prompt_digest": file_digest(request.prompt_path),
+            "context_digest": file_digest(request.context_path),
         }
-        atomic_write_json(workspace / "state" / f"coding_attempt_{task.attempt}.json", receipt)
+        atomic_write_json(workspace / "state" / f"coding_attempt_{request.attempt}.json", receipt)
         return result
 
-    def _run_local(self, task, workspace, request_path, result_path, conversation_id, key):
+    def _run_local(self, request, workspace, request_path, result_path, conversation_id, key):
         runner = Path(__file__).resolve().parents[1] / "runtime" / "openhands_worker.py"
         command = ["uv", "run", "--no-project", "--python", "3.12"]
         for package in self._requirements:
@@ -346,7 +284,7 @@ class OpenHandsDatasetRuntime:
                 )
                 self._active[conversation_id] = ("local", process)
                 try:
-                    process.wait(timeout=task.timeout_seconds)
+                    process.wait(timeout=request.budget.timeout_seconds)
                 except subprocess.TimeoutExpired:
                     timed_out = True
                     if os.name == "nt":
@@ -356,24 +294,18 @@ class OpenHandsDatasetRuntime:
                         os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
             if timed_out:
-                return self._record_result(workspace, task, DatasetAgentResult(
-                    status="failed", conversation_id=conversation_id,
-                    diagnostic="OpenHands worker exceeded its time budget",
-                    error_category="worker_execution_failed", retryable=True))
+                return self._record_result(workspace, request, self._failure(
+                    request, "failed", "OpenHands worker exceeded its time budget", "worker_execution_failed"))
         except OSError as exc:
-            return self._record_result(workspace, task, DatasetAgentResult(
-                status="blocked", conversation_id=conversation_id,
-                diagnostic=f"OpenHands local dependencies unavailable: {type(exc).__name__}",
-                error_category="environment_unavailable"))
-        self._forward_events(workspace, task.construction_events_path)
+            return self._record_result(workspace, request, self._failure(
+                request, "blocked", f"OpenHands local dependencies unavailable: {type(exc).__name__}", "environment_unavailable"))
+        self._forward_events(workspace, request.construction_events_path)
         if process.returncode or not result_path.is_file():
-            return self._record_result(workspace, task, DatasetAgentResult(
-                status="failed", conversation_id=conversation_id,
-                diagnostic=self._failure_summary(workspace / "logs" / "stderr.log"),
-                error_category="worker_execution_failed", retryable=True))
-        result = DatasetAgentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
-        return self._record_result(workspace, task,
-                                   self._validate_outputs(task, result, workspace, conversation_id, "local"))
+            return self._record_result(workspace, request, self._failure(
+                request, "failed", self._failure_summary(workspace / "logs" / "stderr.log"), "worker_execution_failed"))
+        result = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        return self._record_result(workspace, request,
+                                   self._validate_outputs(request, result, workspace, conversation_id, "local"))
 
     def cancel(self, conversation_id: str) -> None:
         active = self._active.get(conversation_id)
@@ -421,11 +353,11 @@ class OpenHandsDatasetRuntime:
         return "OpenHands worker failed; see logs/stderr.log for details"
 
     @staticmethod
-    def _validate_outputs(task: DatasetAgentTask, result: DatasetAgentResult, workspace: Path,
-                          conversation_id: str, backend: str) -> DatasetAgentResult:
+    def _validate_outputs(request: StageRequest, result: StageResult, workspace: Path,
+                          conversation_id: str, backend: str) -> StageResult:
         if result.conversation_id != conversation_id:
             raise ValueError("Worker returned another conversation identity")
-        if result.status == "complete" and not set(task.required_outputs) <= set(result.outputs):
+        if result.status == "submitted" and not set(request.required_outputs) <= set(result.outputs):
             raise ValueError("Worker did not return every required output")
         outputs = {}
         for name, path in result.outputs.items():
@@ -436,7 +368,8 @@ class OpenHandsDatasetRuntime:
             if relative_name.is_absolute() or ".." in relative_name.parts or not valid_path or not expected.is_file():
                 raise ValueError(f"Worker output is outside its contract: {name}")
             outputs[name] = str(expected.resolve())
-        verify_source(task.source_manifest)
+        for manifest in request.source_manifests.values():
+            verify_source(manifest)
         return result.model_copy(update={"outputs": outputs})
 
 

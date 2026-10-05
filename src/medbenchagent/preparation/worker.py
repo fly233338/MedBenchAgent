@@ -40,57 +40,12 @@ class OpenHandsWorker:
         except Exception as exc:
             return None, f"Invalid outputs/submission.json: {exc}"
 
-    @staticmethod
-    def _request_task(request: StageRequest):
-        from medbenchagent.runtime.dataset_runtime import DatasetAgentTask
-
-        if not request.source_roots:
-            raise ValueError("Stage request requires at least one source root")
-        primary_id = sorted(request.source_roots)[0]
-        manifest = request.source_manifests.get(primary_id, "")
-        if not manifest:
-            raise ValueError(f"Stage request is missing the manifest for source {primary_id}")
-        return DatasetAgentTask(
-            task_id=f"{request.run_id}:{request.dataset_id}:{request.stage.value}",
-            kind="preparation",
-            source_root=request.source_roots[primary_id],
-            source_manifest=manifest,
-            source_roots=request.source_roots,
-            workspace=request.workspace,
-            objective=request.stage.value,
-            required_outputs=request.required_outputs,
-            feedback="",
-            attempt=request.attempt,
-            max_iterations=request.budget.max_iterations,
-            timeout_seconds=request.budget.timeout_seconds,
-            conversation_id=request.conversation_id,
-            model=request.model,
-            base_url=request.base_url,
-            reasoning_effort=request.reasoning_effort,
-            construction_events_path=request.construction_events_path,
-            run_id=request.run_id,
-            dataset_id=request.dataset_id,
-            source_id=primary_id,
-            workflow_step=request.stage.value,
-            source_digest=request.input_digest,
-            stage=request.stage.value,
-            context_path=request.context_path,
-            prompt_path=request.prompt_path,
-            allowed_outputs=request.required_outputs + request.optional_outputs,
-            input_digest=request.input_digest,
-            prompt_token_count=request.prompt_token_count,
-            execution_key=request.execution_key,
-            resume_existing=request.resume_existing,
-            progress_guard={"no_progress_limit": request.budget.no_progress_limit, "tool_error_limit": request.budget.tool_error_limit},
-        )
-
     def run(self, request: StageRequest) -> StageResult:
         from medbenchagent.runtime.dataset_runtime import dataset_runtime
 
-        task = self._request_task(request)
         runtime = self.runtime or dataset_runtime({"execution_runtime": None})
         try:
-            result = runtime.run(task)
+            result = runtime.run(request)
         except Exception as exc:
             diagnostic = Diagnostic(stage=request.stage, code="worker_execution_failed", category="environment", blocking=True, message=str(exc))
             stage_result = StageResult(stage=request.stage, attempt=request.attempt, conversation_id=request.conversation_id,
@@ -100,10 +55,10 @@ class OpenHandsWorker:
             return stage_result
 
         submission, submission_error = self._submission(request)
-        status = {"complete": "submitted", "submitted": "submitted", "needs_input": "needs_input", "blocked": "blocked", "failed": "failed"}.get(result.status, "failed")
+        status = result.status
         diagnostics = []
         if result.diagnostic:
-            diagnostics.append(Diagnostic(stage=request.stage, code=result.error_category or "worker", category="environment" if result.error_category == "environment_unavailable" else "unknown", blocking=status != "submitted", message=result.diagnostic))
+            diagnostics.append(Diagnostic(stage=request.stage, code="worker", category="environment" if status == "failed" else "unknown", blocking=status != "submitted", message=result.diagnostic))
         if submission_error:
             diagnostics.append(Diagnostic(stage=request.stage, code="submission_invalid", category="contract", blocking=True, message=submission_error))
             if status == "submitted":

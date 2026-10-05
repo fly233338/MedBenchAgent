@@ -360,7 +360,7 @@ def compile_agent(
                     else:
                         invalid_issue = bool(arguments["issue_id"] and not issue)
                     issue = issue or new_issue(name, context, reference, question, subject_scope=arguments["subject_scope"],
-                                               source_ids=arguments["source_ids"], image_ids=arguments["image_ids"])
+                                               source_ids=arguments["source_ids"])
                     if name == "SupervisorAgent" and not issue.get("purpose"):
                         metadata = {
                             key: arguments[key]
@@ -411,7 +411,7 @@ def compile_agent(
                             if name != "SupervisorAgent":
                                 try:
                                     with event_context(construction_events_path=context["construction_events_path"], run_id=context["run_id"],
-                                                       agent=name, dataset_id=context.get("dataset_scope"), source_id=context.get("source_scope"), operation="resolve_display"):
+                                     agent=name, dataset_id=context.get("dataset_scope"), source_id=context.get("source_scope"), operation="resolve_semantic"):
                                         issue = resolve_semantic_answer(context, issue)
                                     decisions[decision_key] = issue["answer_reference"]
                                 except ValueError as exc:
