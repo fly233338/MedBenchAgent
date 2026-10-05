@@ -198,6 +198,14 @@ class GraphRunner:
         control = RunControl()
         self._control = control
         try:
+            def honor_stop() -> bool:
+                if stop_requested is None or not stop_requested():
+                    return False
+                from medbenchagent.runtime.dataset_runtime import OpenHandsDatasetRuntime
+                OpenHandsDatasetRuntime.cancel_active_workers()
+                control.request_drain("user_stop")
+                return True
+
             if resume:
                 runs_root = Path(run["runs_root"])
                 checkpoint_path = runs_root / "checkpoints.sqlite"
@@ -279,16 +287,14 @@ class GraphRunner:
                 while True:
                     interrupted = None
                     initializing = not resume and next_input is not None
-                    if stop_requested is not None and stop_requested():
-                        control.request_drain("user_stop")
+                    honor_stop()
                     # Freeze configuration before honoring a drain; an input-only checkpoint cannot resume.
                     for event in graph.stream(next_input, config,
                                               stream_mode=["tasks", "updates", "custom"],
                                               subgraphs=True, control=None if initializing else control,
                                               interrupt_after=["initialize"] if initializing else None,
                                               durability="sync"):
-                        if stop_requested is not None and stop_requested():
-                            control.request_drain("user_stop")
+                        honor_stop()
                         namespace, mode, payload = _event_parts(event)
                         if mode == "tasks":
                             name = payload.get("name")

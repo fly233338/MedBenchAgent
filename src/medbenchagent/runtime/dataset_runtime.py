@@ -98,6 +98,12 @@ class OpenHandsDatasetRuntime:
     )
     _active: dict[str, tuple[str, object]] = {}
 
+    @classmethod
+    def cancel_active_workers(cls) -> None:
+        """Stop in-flight preparation workers so a user stop is prompt."""
+        for conversation_id in list(cls._active):
+            cls().cancel(conversation_id)
+
     def __init__(self, runtime=None):
         self.runtime = runtime
 
