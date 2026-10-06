@@ -42,10 +42,10 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
         for line_number, line in enumerate(handle, 1):
             try:
                 item = json.loads(line)
-                if not isinstance(item, dict) or not item.get("source_id") or not item.get("record_ref"):
-                    raise ValueError("source_id and record_ref are required")
-                identity_value = item.get("source_unit_id") or item.get("record_ref")
-                identity = (item["source_id"], identity_value)
+                if (not isinstance(item, dict) or not item.get("source_id")
+                        or not item.get("source_unit_id") or not item.get("record_ref")):
+                    raise ValueError("source_id, source_unit_id and record_ref are required")
+                identity = (str(item["source_id"]), str(item["source_unit_id"]))
                 if item.get("status") in accounting:
                     if identity in accounted:
                         raise ValueError(f"duplicate provenance population identity: {identity}")
@@ -213,11 +213,9 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                     if not line.strip():
                         continue
                     item = json.loads(line)
-                    source_id = str(item.get("source_id") or "source")
-                    identity = item.get("source_unit_id") or item.get("unit_id") or item.get("image_id") or item.get("asset_id") or item.get("id")
-                    if not identity:
-                        raise ValueError(f"population record {line_number} has no stable identity")
-                    key = (source_id, str(identity))
+                    if not isinstance(item, dict) or not item.get("source_id") or not item.get("source_unit_id"):
+                        raise ValueError(f"population record {line_number} requires source_id and source_unit_id")
+                    key = (str(item["source_id"]), str(item["source_unit_id"]))
                     if key in population_ids:
                         raise ValueError(f"duplicate population identity: {key}")
                     population_ids.add(key)
@@ -226,13 +224,12 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                     if not line.strip():
                         continue
                     item = json.loads(line)
-                    source_id = str(item.get("source_id") or "source")
-                    identity = item.get("source_unit_id") or item.get("unit_id") or item.get("image_id") or item.get("asset_id") or item.get("record_ref")
-                    if identity:
-                        status = item.get("status")
-                        if status is not None and status not in {"retained", "quarantined", "excluded", "duplicate"}:
-                            raise ValueError(f"invalid population outcome status: {status}")
-                        accounted.add((source_id, str(identity)))
+                    if not isinstance(item, dict) or not item.get("source_id") or not item.get("source_unit_id"):
+                        raise ValueError("provenance requires source_id and source_unit_id")
+                    status = item.get("status")
+                    if status is not None and status not in {"retained", "quarantined", "excluded", "duplicate"}:
+                        raise ValueError(f"invalid population outcome status: {status}")
+                    accounted.add((str(item["source_id"]), str(item["source_unit_id"])))
             missing_population = sorted(population_ids - accounted)
             if missing_population:
                 provenance_failures.append({"kind": "population_reconciliation_failure", "error": f"Source units missing provenance: {missing_population[:20]}", "missing_count": len(missing_population)})

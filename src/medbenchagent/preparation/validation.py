@@ -10,13 +10,15 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
+from pydantic import ValidationError
+
 from medbenchagent.data.preparation_validation import validate_candidate
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 from .contracts import (
     CONTROL_MAPPING_REVISION_REQUIRED,
     SEMANTIC_REVISION_CODES,
-    AcceptedHandoff, ArtifactRef, DigestEntry, PreparationMapping, QuestionSet, Stage, SourceReport,
+    AcceptedHandoff, ArtifactRef, DigestEntry, PopulationRecord, PreparationMapping, QuestionSet, Stage, SourceReport,
     Submission, ValidationIssue, ValidationResult, STAGE_SPECS, UserDecision,
     digest_file, digest_payload,
 )
@@ -45,6 +47,18 @@ def read_question_set(path, *, stage):
     if any(item.stage is not stage for item in questions):
         raise ValueError("Question stage does not match the assigned stage")
     return [item.model_dump(mode="json") for item in questions]
+
+
+def read_population_records(path) -> list[PopulationRecord]:
+    records = []
+    for line_number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            records.append(PopulationRecord.model_validate_json(line))
+        except ValidationError as exc:
+            raise ValueError(f"Invalid population record at line {line_number}: {exc}") from exc
+    return records
 
 
 def build_digest_ledger(root, cached=None):
@@ -129,12 +143,14 @@ def validate_handoff(outputs, *, state=None, replay=True):
         mapping = PreparationMapping.model_validate_json(Path(outputs["mapping.json"]).read_text(encoding="utf-8"))
         if not mapping.fields or not mapping.population_policy or not mapping.case_identity or not mapping.grouping:
             raise ValueError("Mapping requires population policy, Case identity, grouping and field rules")
-        records = [json.loads(line) for line in Path(outputs["image_population.jsonl"]).read_text(encoding="utf-8").splitlines() if line.strip()]
-        identities = {(item["source_id"], item["source_unit_id"]) for item in records}
-        if not records or len(identities) != len(records) or any(not item.get("locator") for item in records):
+        records = read_population_records(outputs["image_population.jsonl"])
+        identities = {(record.source_id, record.source_unit_id) for record in records}
+        if not records or len(identities) != len(records):
             raise ValueError("Population requires unique source-unit identities and locators")
-        if any(item[0] not in state["source_roots"] for item in identities):
-            raise ValueError("Population references an unknown source")
+        source_roots = state.get("source_roots") or {}
+        unknown_sources = sorted({record.source_id for record in records if record.source_id not in source_roots})
+        if unknown_sources:
+            raise ValueError(f"Population references unknown sources: {unknown_sources}")
         if report.population.get("unit_count") != len(records):
             raise ValueError("Source report population count differs from the population")
         questions = read_question_set(outputs["semantic_questions.json"], stage=stage)
@@ -218,10 +234,8 @@ def validate_prepare_candidate(candidate, *, state=None, population_path=None):
                     shutil.copy2(artifact.path, target)
             population_file = Path(population_path or handoff.population.path)
             expected = set()
-            for line in population_file.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    item = json.loads(line)
-                    expected.add((str(item["source_id"]), str(item["source_unit_id"])))
+            for record in read_population_records(population_file):
+                expected.add((record.source_id, record.source_unit_id))
             accounted = set()
             for line_number, line in enumerate((root / "provenance.jsonl").read_text(encoding="utf-8").splitlines(), 1):
                 if not line.strip():

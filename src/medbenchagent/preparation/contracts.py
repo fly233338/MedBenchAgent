@@ -574,7 +574,9 @@ def contract_file_names(stage: Stage | str) -> list[str]:
     current = Stage(stage)
     common = ["rules.md", "submission.schema.json"]
     if current is Stage.UNDERSTAND:
-        return common + ["source_report.schema.json", "mapping.schema.json", "question.schema.json"]
+        return common + [
+            "source_report.schema.json", "population.schema.json", "mapping.schema.json", "question.schema.json",
+        ]
     return common + [
         "question.schema.json", "case.schema.json", "asset.schema.json", "presentation.schema.json", "split.schema.json",
         "sampling.schema.json", "execution_report.schema.json", "output_manifest.schema.json",

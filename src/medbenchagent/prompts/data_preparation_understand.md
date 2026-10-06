@@ -40,6 +40,21 @@ Procedure
    where the contract permits that state. If correct processing requires
    choosing an unsupported interpretation, record a blocking question.
 
+Population contract
+
+`mapping.population_policy` defines what counts as one source unit, how its
+stable identity is formed, and which source evidence supports that rule.
+`image_population.jsonl` must enumerate the complete population produced by
+applying that policy. Every line must validate against
+`inputs/contracts/population.schema.json`; its canonical identity is exactly
+`(source_id, source_unit_id)`. Do not substitute `unit_id`, `image_id`,
+`asset_id`, `id`, or `record_ref` for `source_unit_id`.
+
+For volume datasets such as Hippocampus, represent one logical sample or
+volume case as one source unit. The image volume and its corresponding label
+are related assets of that unit; do not count them as separate population
+units.
+
 5. Validate the handoff.
    Run the declared handoff validation command. Confirm that all sources
    and observed fields are covered, source-unit identities are unique,

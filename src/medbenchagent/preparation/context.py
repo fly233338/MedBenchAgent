@@ -145,13 +145,14 @@ def resolve_prompt_budget(state: dict[str, Any], stage: Stage | str = Stage.UNDE
 
 
 def _contract_payload(name: str) -> dict[str, Any]:
-    from .contracts import OutputManifest, Submission
+    from .contracts import OutputManifest, PopulationRecord, Submission
 
     mapping = {
         "submission.schema.json": Submission.model_json_schema(),
         "question.schema.json": QuestionSet.model_json_schema(),
         "output_manifest.schema.json": OutputManifest.model_json_schema(),
         "source_report.schema.json": SourceReport.model_json_schema(),
+        "population.schema.json": PopulationRecord.model_json_schema(),
         "mapping.schema.json": PreparationMapping.model_json_schema(),
         "execution_report.schema.json": ExecutionReport.model_json_schema(),
         "case.schema.json": CaseRecord.model_json_schema(),
