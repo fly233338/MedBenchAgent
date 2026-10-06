@@ -18,6 +18,7 @@ from medbenchagent.data.sources import digest_file, inventory_source
 from medbenchagent.runtime.dependencies import publish
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_settings
+from medbenchagent.runtime.dataset_runtime import WORKER_STARTUP_TIMEOUT_SECONDS
 
 
 def _coding_worker_identity() -> dict[str, str]:
@@ -34,7 +35,7 @@ def _coding_worker_identity() -> dict[str, str]:
         try:
             probe = subprocess.run(
                 [str(executable), "-c", "import importlib.metadata,sys; print(sys.version); print(importlib.metadata.version('openhands-sdk'))"],
-                capture_output=True, text=True, timeout=30, check=False,
+                capture_output=True, text=True, timeout=WORKER_STARTUP_TIMEOUT_SECONDS, check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             probe = None

@@ -21,6 +21,9 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_llm_api_key, get_settings
 
 
+WORKER_STARTUP_TIMEOUT_SECONDS = 180
+
+
 class DatasetRuntimeProtocol(Protocol):
     def run(self, request: StageRequest) -> StageResult: ...
 
@@ -63,7 +66,7 @@ def _worker_runtime_error(request: StageRequest) -> str:
     try:
         probe = subprocess.run(
             [str(executable), "-c", "import openhands.sdk"],
-            capture_output=True, text=True, timeout=30, check=False,
+            capture_output=True, text=True, timeout=WORKER_STARTUP_TIMEOUT_SECONDS, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"Coding worker interpreter cannot start: {type(exc).__name__}"
