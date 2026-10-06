@@ -98,7 +98,11 @@ class ConversationService:
                     if run is None:
                         return
                     try:
-                        settings = load_settings(sessions.config_path(self.name, root=self.root))
+                        experiment_config = sessions.config_path(self.name, root=self.root)
+                        settings = load_settings(experiment_config)
+                        from medbenchagent.runtime.environment import ensure_environment
+
+                        ensure_environment(experiment_config)
                     except Exception as exc:
                         event = RunEvent(run["id"], "error", {
                             "status": "blocked", "summary": f"Invalid experiment configuration: {exc}",
