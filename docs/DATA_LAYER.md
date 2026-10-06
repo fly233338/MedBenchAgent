@@ -4,6 +4,8 @@
 
 ## 来源与准备
 
+Understand 的总体使用一个 canonical `PopulationRecord` 序列。`image_population.jsonl` 和 `source_report.population` 都由该序列派生；报告中的 `unit_count`、`unit_type`、标签计数和 `source_counts` 不能由模型分别填写。Worker 与 Host 使用同一个确定性 validator 检查 schema、跨文件总体对账、来源身份和阻塞问题；独立来源路径检查与 Inspector replay 明确属于 Host-only 边界。
+
 每个逻辑数据集由一个或多个 `Source` 组成。Source 保存稳定 ID、根目录、类型和可选 annotation 文件。`understand` 阶段记录来源清单、文件摘要、总体数量、字段语义、总体脚本和 mapping；`prepare` 阶段记录转换程序、执行回执、候选产物和 manifest。字段映射区分进入 `cases.jsonl` 的医学证据、仅用于分组/来源/资产复现的元数据，以及因无任务价值而排除的设备或行政噪声。年龄、性别、症状和病史等医学上下文可以保留在 Case 中；设备序列号、软件版本、主机名、UID 和无关时间戳默认不作为 Case Evidence。
 
 OpenHands worker 只能在自己的 attempt workspace 中写声明的阶段文件。宿主验证来源 locator、

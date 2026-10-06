@@ -1,12 +1,21 @@
 import json
 from pathlib import Path
 
+import pytest
+
 import medbenchagent.preparation.validation as preparation_validation
 from medbenchagent.data.asset_manifest import digest_path
 from medbenchagent.data.models import AssetEntry, CaseRecord, Evidence
 from medbenchagent.data.preparation_validation import validate_candidate
-from medbenchagent.preparation.contracts import Stage, ValidationIssue
-from medbenchagent.preparation.validation import _semantic_control
+from medbenchagent.preparation.contracts import (
+    CaseIdentityRule, FieldRule, GroupingRule, PopulationPolicy, PopulationRecord,
+    PopulationSummary, PreparationMapping, QuestionSet, SemanticQuestion, SourceReport,
+    Stage, Submission, ValidationIssue,
+)
+from medbenchagent.preparation.validation import (
+    _semantic_control, build_population_summary, validate_handoff,
+    validate_understand_candidate, write_population_projection,
+)
 
 
 def _candidate(tmp_path: Path, *, record_ref="unit-1", dependency_path=None):
@@ -100,3 +109,100 @@ def test_output_manifest_mapping_failure_stays_in_prepare(tmp_path, monkeypatch)
 
     assert result.control is None
     assert result.status == "rejected"
+
+
+def _understand_candidate(tmp_path, *, report_count=2):
+    candidate = tmp_path / "understand"
+    candidate.mkdir()
+    records = [
+        PopulationRecord(source_id="source", source_unit_id="unit-1", locator="one.nii.gz", unit_type="volume_case"),
+        PopulationRecord(source_id="source", source_unit_id="unit-2", locator="two.nii.gz", unit_type="volume_case"),
+    ]
+    report = SourceReport(
+        sources=[{"source_id": "source"}], tables=[], documents=[], checks=[{"name": "inventory"}],
+        relationships=[], population=PopulationSummary(
+            unit_count=report_count, unit_type="volume_case", source_counts={"source": report_count},
+        ), limitations=[],
+    )
+    mapping = PreparationMapping(
+        population_policy=PopulationPolicy(
+            rule_id="population", unit_type="volume_case", source_ids=["source"],
+            identity_fields=["id"], inclusion="all", evidence_refs=["source:inventory"],
+        ),
+        case_identity=CaseIdentityRule(
+            rule_id="case", target_path="case_id", fields=["id"], evidence_refs=["source:inventory"],
+        ),
+        grouping=GroupingRule(
+            rule_id="group", case_unit="volume_case", key_fields=["id"], evidence_refs=["source:inventory"],
+        ),
+        fields=[FieldRule(
+            rule_id="field", source_path="id", disposition="grouping_metadata", source_type="string",
+            target_type="string", missingness="reject", reason="identity", scope="unit",
+            evidence_refs=["source:inventory"],
+        )],
+    )
+    (candidate / "source_report.json").write_text(report.model_dump_json(), encoding="utf-8")
+    (candidate / "mapping.json").write_text(mapping.model_dump_json(), encoding="utf-8")
+    (candidate / "image_population.jsonl").write_text(
+        "".join(record.model_dump_json() + "\n" for record in records), encoding="utf-8",
+    )
+    (candidate / "semantic_questions.json").write_text(QuestionSet(questions=[]).model_dump_json(), encoding="utf-8")
+    (candidate / "inspect_source.py").write_text("print('ok')\n", encoding="utf-8")
+    (candidate / "submission.json").write_text(Submission(requested_outcome="submitted").model_dump_json(), encoding="utf-8")
+    return candidate
+
+
+def test_population_summary_and_projection_share_one_source(tmp_path):
+    records = [
+        PopulationRecord(source_id="a", source_unit_id="1", locator="1", unit_type="case", label_status="labeled"),
+        PopulationRecord(source_id="a", source_unit_id="2", locator="2", unit_type="case", label_status="unlabeled"),
+    ]
+    summary = build_population_summary(records)
+    assert summary.unit_count == 2
+    assert summary.source_counts == {"a": 2}
+    report = write_population_projection(records, report={"sources": [{"source_id": "a"}], "checks": [{}]}, output_dir=tmp_path)
+    assert report["population"] == summary.model_dump(mode="json")
+    assert len((tmp_path / "image_population.jsonl").read_text(encoding="utf-8").splitlines()) == summary.unit_count
+
+
+def test_understand_validator_reports_structured_population_count_mismatch(tmp_path):
+    candidate = _understand_candidate(tmp_path, report_count=1)
+    result = validate_understand_candidate(
+        {path.name: str(path) for path in candidate.iterdir()}, known_source_ids=["source"],
+    )
+    issue = next(item for item in result.issues if item.code == "population_count_mismatch")
+    assert result.status == "rejected"
+    assert issue.expected == "image_population rows=2"
+    assert issue.observed == "report.population.unit_count=1"
+    assert issue.details == {"reported_unit_count": 1, "population_rows": 2}
+
+
+def test_source_report_requires_typed_population_summary():
+    with pytest.raises(ValueError):
+        SourceReport.model_validate({
+            "sources": [{"source_id": "source"}], "checks": [{}], "population": {},
+        })
+
+
+def test_host_and_worker_understand_validation_share_issue_code(tmp_path):
+    candidate = _understand_candidate(tmp_path, report_count=1)
+    outputs = {path.name: str(path) for path in candidate.iterdir()}
+    worker_result = validate_understand_candidate(outputs, known_source_ids=["source"])
+    host_result = validate_handoff(outputs, state={"source_roots": {"source": str(tmp_path)}}, replay=False)
+    assert [item.code for item in worker_result.issues] == [item.code for item in host_result.issues]
+
+
+def test_understand_validator_preserves_blocking_questions_as_needs_input(tmp_path):
+    candidate = _understand_candidate(tmp_path)
+    question = SemanticQuestion(
+        issue_id="meaning", stage=Stage.UNDERSTAND, question="What does this field mean?",
+        impact="changes grouping", blocking=True, resolved=False,
+    )
+    (candidate / "semantic_questions.json").write_text(
+        QuestionSet(questions=[question]).model_dump_json(), encoding="utf-8",
+    )
+    result = validate_understand_candidate(
+        {path.name: str(path) for path in candidate.iterdir()}, known_source_ids=["source"],
+    )
+    assert result.status == "needs_input"
+    assert result.questions[0].issue_id == "meaning"

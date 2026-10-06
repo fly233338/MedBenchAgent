@@ -129,6 +129,7 @@ class PopulationRecord(Contract):
     source_unit_id: str = Field(min_length=1)
     locator: str = Field(min_length=1)
     unit_type: str = Field(default="record", min_length=1)
+    label_status: Literal["labeled", "unlabeled", "unknown"] = "unknown"
     relation_refs: list[str] = Field(default_factory=list)
 
 
@@ -259,13 +260,33 @@ class OutputManifest(Contract):
     population_digest: str = ""
 
 
+class PopulationSummary(Contract):
+    """Deterministic summary projected from the canonical population rows."""
+
+    unit_count: int = Field(ge=1)
+    unit_type: str = Field(min_length=1)
+    labeled_count: int = Field(default=0, ge=0)
+    unlabeled_count: int = Field(default=0, ge=0)
+    source_counts: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_counts(self):
+        if self.labeled_count + self.unlabeled_count > self.unit_count:
+            raise ValueError("labeled and unlabeled population counts exceed unit_count")
+        if any(not key or value < 0 for key, value in self.source_counts.items()):
+            raise ValueError("source_counts keys must be non-empty and values non-negative")
+        if self.source_counts and sum(self.source_counts.values()) != self.unit_count:
+            raise ValueError("source_counts must sum to unit_count")
+        return self
+
+
 class SourceReport(Contract):
     sources: list[dict[str, Any]] = Field(default_factory=list)
     tables: list[dict[str, Any]] = Field(default_factory=list)
     documents: list[dict[str, Any]] = Field(default_factory=list)
     checks: list[dict[str, Any]] = Field(default_factory=list)
     relationships: list[dict[str, Any]] = Field(default_factory=list)
-    population: dict[str, Any] = Field(default_factory=dict)
+    population: PopulationSummary
     limitations: list[Any] = Field(default_factory=list)
 
 
@@ -343,6 +364,8 @@ class ValidationIssue(Contract):
     record_ref: str | None = None
     path: str | None = None
     details: dict[str, Any] = Field(default_factory=dict)
+    expected: str = ""
+    observed: str = ""
 
 
 class ValidationResult(Contract):
@@ -506,9 +529,12 @@ STAGE_SPECS: dict[str, StageSpec] = {
             {"path": "semantic_questions.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "stage", "validator": "questions"},
             {"path": "inspect_source.py", "format": "python", "required": True, "read_policy": "on_failure", "producer": "understand", "validator": "replay"},
         ],
-        commands=[["python", "outputs/inspect_source.py", "--input-config", "inputs/inspection_config.json", "--output-dir", "work/inspection", "--mode", "inventory"]],
+        commands=[
+            ["python", "outputs/inspect_source.py", "--input-config", "inputs/inspection_config.json", "--output-dir", "work/inspection", "--mode", "inventory"],
+            ["python", "-m", "medbenchagent.preparation.cli", "validate-understand", "--context", "inputs/context.json", "--candidate", "outputs", "--report", "work/validation.json"],
+        ],
         completion_by_outcome={
-            "submitted": ["source replay is deterministic", "all source units are accounted for", "no blocking questions remain"],
+            "submitted": ["shared Understand validator reports accepted", "source replay is deterministic", "all source units are accounted for", "no blocking questions remain"],
             "needs_input": ["question container is valid", "partial observations are preserved"],
             "blocked": ["diagnostic and recovery condition are recorded"],
         },
@@ -545,9 +571,10 @@ STAGE_SPECS: dict[str, StageSpec] = {
         commands=[
             ["python", "outputs/scripts/prepare.py", "--input-config", "inputs/preparation_config.json", "--output-dir", "work/sample", "--mode", "sample"],
             ["python", "outputs/scripts/prepare.py", "--input-config", "inputs/preparation_config.json", "--output-dir", "outputs", "--mode", "full"],
+            ["python", "-m", "medbenchagent.preparation.cli", "validate-candidate", "--context", "inputs/context.json", "--candidate", "outputs", "--report", "work/validation.json"],
         ],
         completion_by_outcome={
-            "submitted": ["sample and full execution evidence exists", "population is fully reconciled", "candidate validation passes"],
+            "submitted": ["sample and full execution evidence exists", "population is fully reconciled", "shared candidate validation passes"],
             "needs_input": ["current question set is valid", "partial work is preserved"],
             "blocked": ["diagnostic and recovery condition are recorded"],
         },
@@ -564,6 +591,7 @@ CONTRACT_RULES = """# Preparation contract rules
 - Source locators are source-relative and cannot escape the declared source root.
 - Every emitted Case and every accounted source population unit has provenance.
 - Population accounting distinguishes retained, isolated, excluded and duplicate units.
+- Understand population counts are projections of image_population.jsonl; do not independently author them.
 - Optional manifests reference existing Case, Asset and output files and preserve declared order.
 - mapping, grouping_policy and conversion_config must carry the accepted mapping identity.
 - output_manifest registers every submitted output and all file dependencies.

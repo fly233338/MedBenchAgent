@@ -111,7 +111,10 @@ def main(request_path: str, result_path: str) -> None:
     if event_path:
         event_path.parent.mkdir(parents=True, exist_ok=True)
 
-    progress = {"iterations": 0, "model_turns": 0, "tool_calls": 0, "events": 0, "tool_errors": 0}
+    progress = {
+        "iterations": 0, "model_turns": 0, "tool_calls": 0, "events": 0,
+        "tool_errors": 0, "recovered_tool_errors": 0,
+    }
 
     def on_event(event):
         event_name = type(event).__name__
@@ -120,6 +123,7 @@ def main(request_path: str, result_path: str) -> None:
         command = ""
         non_executable = False
         tool_call = None
+        event_error = ""
         if event_name == "ActionEvent":
             progress["tool_calls"] += 1
             action = getattr(event, "action", None)
@@ -130,20 +134,33 @@ def main(request_path: str, result_path: str) -> None:
                 # return the error to the model instead of aborting the run.
                 non_executable = True
                 progress["non_executable_tool_calls"] = progress.get("non_executable_tool_calls", 0) + 1
+                progress["tool_errors"] += 1
+                progress["recovered_tool_errors"] += 1
+                event_error = "tool_action_validation: missing typed action"
                 tool_call = serializable_tool_call(getattr(event, "tool_call", None))
             else:
-                tool_name, arguments, command = typed_action_payload(event)
-                _, stripped = normalize_tool_arguments(tool_name, arguments)
-                if validate_terminal_command(command):
-                    raise RuntimeError("Preparation stage guard: blocked_command")
-                if stripped:
-                    progress["tool_metadata_stripped"] = progress.get("tool_metadata_stripped", 0) + len(stripped)
+                try:
+                    tool_name, arguments, command = typed_action_payload(event)
+                    arguments, stripped = normalize_tool_arguments(tool_name, arguments)
+                    if validate_terminal_command(command):
+                        raise RuntimeError("Preparation stage guard: blocked_command")
+                    if stripped:
+                        progress["tool_metadata_stripped"] = progress.get("tool_metadata_stripped", 0) + len(stripped)
+                except RuntimeError:
+                    raise
+                except (TypeError, ValueError) as exc:
+                    non_executable = True
+                    progress["tool_errors"] += 1
+                    progress["recovered_tool_errors"] += 1
+                    event_error = f"tool_action_validation: {exc}"
         if event_name in {"AgentEvent", "AgentFinishEvent", "MessageEvent"}:
             progress["model_turns"] += 1
             progress["iterations"] = progress["model_turns"]
         if event_name in {"ObservationEvent", "AgentErrorEvent"}:
             if event_name == "AgentErrorEvent" or observation_failure(event):
                 progress["tool_errors"] += 1
+                if event_name == "ObservationEvent":
+                    progress["recovered_tool_errors"] += 1
         if event_path:
             item = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -164,7 +181,7 @@ def main(request_path: str, result_path: str) -> None:
                 "command": command,
                 "non_executable": non_executable,
                 "tool_call": tool_call,
-                "error": str(getattr(event, "error", "") or ""),
+                "error": event_error or str(getattr(event, "error", "") or ""),
                 "progress": dict(progress),
             }
             with event_path.open("a", encoding="utf-8") as events:
@@ -222,6 +239,14 @@ def main(request_path: str, result_path: str) -> None:
             diagnostic = f"Invalid submission.json: {exc}"
     else:
         diagnostic = "Required worker output is missing: submission.json"
+    if not diagnostic and submission and submission.get("requested_outcome") == "submitted":
+        validation_path = workspace / "work" / "validation.json"
+        try:
+            validation = json.loads(validation_path.read_text(encoding="utf-8"))
+            if validation.get("status") != "accepted":
+                diagnostic = "Shared stage validator did not accept the candidate"
+        except (OSError, json.JSONDecodeError, AttributeError):
+            diagnostic = "Shared stage validator result is missing or invalid: work/validation.json"
     complete = not diagnostic and set(request["required_outputs"]) <= set(produced)
     requested = submission.get("requested_outcome") if isinstance(submission, dict) else "blocked"
     result_status = "submitted" if complete and requested == "submitted" else ("needs_input" if requested == "needs_input" else "blocked" if requested == "blocked" else "failed")

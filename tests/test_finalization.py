@@ -50,7 +50,7 @@ def test_finalize_canonical_bundle(tmp_path):
                       evidence=[Evidence(id="a", type="asset", name="image", value="a1")])
     (candidate / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
     (candidate / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
-    (candidate / "provenance.jsonl").write_text('{"source_id":"s1","record_ref":"record:1"}\n', encoding="utf-8")
+    (candidate / "provenance.jsonl").write_text('{"source_id":"s1","source_unit_id":"unit-1","record_ref":"record:1"}\n', encoding="utf-8")
     (candidate / "conversion_config.json").write_text('{}', encoding="utf-8")
     (candidate / "grouping_policy.json").write_text('{}', encoding="utf-8")
     (candidate / "mapping.json").write_text('{}', encoding="utf-8")
@@ -74,7 +74,7 @@ def test_direct_prepared_bundle_is_catalog_reusable(tmp_path):
                       evidence=[Evidence(id="a", type="asset", name="image", value="a1")])
     (candidate / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
     (candidate / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
-    (candidate / "provenance.jsonl").write_text('{"source_id":"s1","record_ref":"record:1"}\n', encoding="utf-8")
+    (candidate / "provenance.jsonl").write_text('{"source_id":"s1","source_unit_id":"unit-1","record_ref":"record:1"}\n', encoding="utf-8")
     for name, value in (("conversion_config.json", "{}"), ("grouping_policy.json", "{}"),
                         ("mapping.json", "{}"), ("complete.json", '{"complete":true}')):
         (candidate / name).write_text(value, encoding="utf-8")
@@ -108,7 +108,7 @@ def test_prepared_directory_inventory_returns_valid_bundles_and_diagnostics(tmp_
                       evidence=[Evidence(id="a", type="asset", name="image", value="a1")])
     (candidate / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
     (candidate / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
-    (candidate / "provenance.jsonl").write_text('{"source_id":"s1","record_ref":"record:1"}\n', encoding="utf-8")
+    (candidate / "provenance.jsonl").write_text('{"source_id":"s1","source_unit_id":"unit-1","record_ref":"record:1"}\n', encoding="utf-8")
     for name, value in (("conversion_config.json", "{}"), ("grouping_policy.json", "{}"),
                         ("mapping.json", "{}"), ("complete.json", '{"complete":true}')):
         (candidate / name).write_text(value, encoding="utf-8")

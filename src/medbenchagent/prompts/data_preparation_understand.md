@@ -19,8 +19,11 @@ Procedure
    Implement inspect_source.py using the exact input-config, output-dir,
    and mode interface in context.execution. Include every configured source
    and register any helper dependencies. Do not hardcode an attempt path.
-   Run it and write the complete source report and population to the declared
-   directories. Measure schemas, field coverage, value states, duplicate
+   Build one in-memory `population_records` sequence and derive both
+   `image_population.jsonl` and `source_report.population` from it. Use the
+   supplied population projection helper when available; do not calculate the
+   report count independently. Run the inspector and write the complete
+   source report and population to the declared directories. Measure schemas, field coverage, value states, duplicate
    keys, join cardinalities, unmatched records, and relevant boundary cases.
    Keep observations deterministic; execution timestamps belong in receipts.
 
@@ -56,7 +59,8 @@ are related assets of that unit; do not count them as separate population
 units.
 
 5. Validate the handoff.
-   Run the declared handoff validation command. Confirm that all sources
+   Run the declared `validate-understand` command and inspect
+   `work/validation.json` before writing a submitted outcome. Confirm that all sources
    and observed fields are covered, source-unit identities are unique,
    evidence references resolve, dependencies are registered, and every
    rule is specific enough to implement. Confirm that the submitted report
@@ -65,7 +69,7 @@ units.
 
 Completion
 
-Use submitted only when the handoff completion checks pass and no unresolved
+Use submitted only when the shared validator reports `accepted`, the handoff completion checks pass, and no unresolved
 blocking question remains. Include semantic_questions.json even when its
 questions array is empty. The host independently replays the inspector and
 decides whether to accept the handoff.

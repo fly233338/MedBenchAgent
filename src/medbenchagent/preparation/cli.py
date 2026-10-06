@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,7 @@ from .validation import (
     project_grouping,
     validate_handoff,
     validate_prepare_candidate,
+    validate_understand_candidate,
 )
 
 
@@ -42,9 +45,36 @@ def validate_handoff_command(args: argparse.Namespace) -> int:
     return 0 if result.status == "accepted" else 2
 
 
+def validate_understand_command(args: argparse.Namespace) -> int:
+    """Run the worker-visible, side-effect-free Understand validator."""
+    candidate = Path(args.candidate).resolve()
+    context = _context(args.context)
+    source_ids = [item.get("source_id") for item in context.get("sources", []) if isinstance(item, dict)]
+    result = validate_understand_candidate(_files(candidate), known_source_ids=source_ids)
+    _write_report(args.report, result)
+    return 0 if result.status == "accepted" else 2
+
+
 def validate_candidate_command(args: argparse.Namespace) -> int:
     context = _context(args.context)
-    result = validate_prepare_candidate(args.candidate, state=context)
+    context["source_roots"] = {
+        item.get("source_id"): item.get("root")
+        for item in context.get("sources", [])
+        if isinstance(item, dict) and item.get("source_id") and item.get("root")
+    }
+    with tempfile.TemporaryDirectory(prefix="prepare-validation-") as temporary:
+        staged = Path(temporary) / "candidate"
+        shutil.copytree(Path(args.candidate), staged)
+        handoff = context.get("accepted_handoff") or {}
+        for field in ("source_report", "mapping", "population", "inspection_script"):
+            artifact = handoff.get(field) if isinstance(handoff, dict) else None
+            if isinstance(artifact, dict) and artifact.get("path") and artifact.get("name"):
+                source = Path(artifact["path"])
+                if source.is_file():
+                    shutil.copy2(source, staged / artifact["name"])
+        result = validate_prepare_candidate(
+            staged, state=context, persist=False, restore_accepted=False,
+        )
     _write_report(args.report, result)
     return 0 if result.status == "accepted" else 2
 
@@ -90,6 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
     handoff.add_argument("--report", required=True)
     handoff.add_argument("--replay", action="store_true")
     handoff.set_defaults(function=validate_handoff_command)
+    understand = sub.add_parser("validate-understand", help="validate worker-visible Understand invariants")
+    understand.add_argument("--context", required=True)
+    understand.add_argument("--candidate", required=True)
+    understand.add_argument("--report", required=True)
+    understand.set_defaults(function=validate_understand_command)
     candidate = sub.add_parser("validate-candidate", help="validate a prepare candidate")
     candidate.add_argument("--context", required=True)
     candidate.add_argument("--candidate", required=True)

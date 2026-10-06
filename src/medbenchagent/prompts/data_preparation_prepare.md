@@ -51,9 +51,11 @@ Procedure
    Verify schemas, IDs, relationships, source locators, asset digests,
    encoding preservation, provenance, rule coverage, and full population
    reconciliation. Use the supplied report and packaging helpers, then run
-   the candidate validation command. Register all output dependencies and
-   enabled optional manifests. Bind reports to the accepted mapping and
-   population using the exact schema fields supplied by the host.
+   the candidate validation command and inspect `work/validation.json`.
+   Register all output dependencies and enabled optional manifests. Bind
+   reports to the accepted mapping and population using the exact schema
+   fields supplied by the host. Do not submit unless the shared validator
+   reports `accepted`.
 
 Handling conflicts
 
