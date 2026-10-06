@@ -335,6 +335,10 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                          "timeout_seconds": _integer(values["data_processing"]["timeout_seconds"], "data_processing.timeout_seconds", minimum=1),
                          "source_workspace_mode": workspace_mode,
                          "coding_worker_image": _string(values["data_processing"]["coding_worker_image"], "data_processing.coding_worker_image"),
+                         "coding_worker_venv": str(_resolve_path(
+                             values["data_processing"].get("coding_worker_venv", ".venv-coding"),
+                             "data_processing.coding_worker_venv",
+                         )),
                          "coding_worker_max_iterations": _integer(values["data_processing"]["coding_worker_max_iterations"], "data_processing.coding_worker_max_iterations", minimum=1),
                          "coding_worker_timeout_seconds": _integer(values["data_processing"]["coding_worker_timeout_seconds"], "data_processing.coding_worker_timeout_seconds", minimum=1),
                          "preparation_attempt_limits": {

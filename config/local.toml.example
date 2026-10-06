@@ -35,4 +35,5 @@ question_template_count = 3
 # [data_processing]
 # backend = "local"  # auto, docker, or local
 # coding_worker_image = "medbench-openhands:local"
+# coding_worker_venv = ".venv-coding"  # local backend; install config/coding-worker.requirements.txt here
 # preparation_attempt_limits = { understand = 2, prepare = 2, mapping_revision_cycles = 1 }

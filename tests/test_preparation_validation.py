@@ -1,9 +1,12 @@
 import json
 from pathlib import Path
 
+import medbenchagent.preparation.validation as preparation_validation
 from medbenchagent.data.asset_manifest import digest_path
 from medbenchagent.data.models import AssetEntry, CaseRecord, Evidence
 from medbenchagent.data.preparation_validation import validate_candidate
+from medbenchagent.preparation.contracts import Stage, ValidationIssue
+from medbenchagent.preparation.validation import _semantic_control
 
 
 def _candidate(tmp_path: Path, *, record_ref="unit-1", dependency_path=None):
@@ -54,3 +57,46 @@ def test_output_manifest_dependency_must_exist_inside_candidate(tmp_path):
 
     assert report["systemic_failure"] is True
     assert any(item["kind"] == "output_manifest_failure" for item in report["failures"])
+
+
+def test_only_explicit_semantic_issue_codes_request_mapping_revision():
+    semantic = ValidationIssue(
+        stage=Stage.PREPARE, issue_id="semantic", code="grouping_semantics_conflict",
+        message="accepted grouping semantics conflict with source",
+    )
+    implementation = ValidationIssue(
+        stage=Stage.PREPARE, issue_id="manifest", code="output_manifest_failure",
+        message="output_manifest mapping digest does not match accepted mapping",
+    )
+
+    assert _semantic_control([semantic]) == "mapping_revision_required"
+    assert _semantic_control([implementation]) is None
+
+
+def test_output_manifest_mapping_failure_stays_in_prepare(tmp_path, monkeypatch):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    for name in (
+        "scripts/prepare.py", "cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl",
+        "conversion_config.json", "grouping_policy.json", "execution_report.json",
+        "output_manifest.json",
+    ):
+        path = candidate / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8")
+    (candidate / "submission.json").write_text(
+        json.dumps({"requested_outcome": "submitted"}), encoding="utf-8",
+    )
+    monkeypatch.setattr(preparation_validation, "validate_candidate", lambda *args, **kwargs: {
+        "failures": [{"kind": "output_manifest_failure",
+                       "error": "output_manifest mapping digest does not match accepted mapping"}],
+        "accepted_cases": 1, "systemic_failure": False,
+        "population": {"expected_units": 1, "accounted_units": 1, "unprocessed_units": 0},
+    })
+
+    result = preparation_validation.validate_prepare_candidate(
+        candidate, state={"preparation_root": str(tmp_path / "preparation")},
+    )
+
+    assert result.control is None
+    assert result.status == "rejected"

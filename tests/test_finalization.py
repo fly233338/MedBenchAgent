@@ -13,11 +13,30 @@ from medbenchagent.data import readiness
 
 def publish_candidate(candidate, context):
     report = validate_candidate(candidate)
+    ledger = DatasetPublisher._build_ledger(candidate)
     validation = ValidationResult(
         status="accepted", stage=Stage.PREPARE, report=report,
-        candidate_digest=DatasetPublisher._candidate_digest(candidate),
+        candidate_digest=DatasetPublisher._candidate_digest(candidate, ledger),
+        digest_ledger=ledger,
     )
     return DatasetPublisher(context["bundle_root"]).publish(candidate, context, validation)
+
+
+def test_candidate_digest_ledger_reuses_unchanged_files(tmp_path, monkeypatch):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    payload = candidate / "candidate.json"
+    payload.write_text("candidate", encoding="utf-8")
+    ledger = DatasetPublisher._build_ledger(candidate)
+
+    def fail_digest(_path):
+        raise AssertionError("unchanged candidate file should not be read again")
+
+    monkeypatch.setattr("medbenchagent.preparation.publisher.digest_file", fail_digest)
+
+    reused = DatasetPublisher._build_ledger(candidate, ledger)
+
+    assert reused["candidate.json"].digest == ledger["candidate.json"].digest
 
 
 def test_finalize_canonical_bundle(tmp_path):

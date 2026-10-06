@@ -1,6 +1,8 @@
 """Host-owned contracts and orchestration for two-stage data preparation."""
 
 from .contracts import (
+    CONTROL_MAPPING_REVISION_REQUIRED,
+    SEMANTIC_REVISION_CODES,
     STAGE_SPECS,
     AcceptedHandoff,
     ArtifactDependency,
@@ -9,6 +11,7 @@ from .contracts import (
     CaseIdentityRule,
     ContextPacket,
     Diagnostic,
+    DigestEntry,
     EvidenceRef,
     ExecutionReport,
     FieldRule,
@@ -40,9 +43,10 @@ from .contracts import (
 from .publisher import DatasetPublisher
 
 __all__ = [
-    "STAGE_SPECS", "AcceptedHandoff", "ArtifactDependency", "ArtifactRef",
+    "CONTROL_MAPPING_REVISION_REQUIRED", "SEMANTIC_REVISION_CODES", "STAGE_SPECS",
+    "AcceptedHandoff", "ArtifactDependency", "ArtifactRef",
     "AssetRule", "CaseIdentityRule", "ContextPacket", "Diagnostic", "EvidenceRef",
-    "ExecutionReport", "FieldRule", "GroupingRule", "InputBinding", "JoinRule",
+    "ExecutionReport", "FieldRule", "GroupingRule", "InputBinding", "JoinRule", "DigestEntry",
     "OutputFile", "OutputManifest", "PopulationOutcome", "PopulationPolicy",
     "PopulationRecord", "PreparationMapping", "QuestionSet", "SemanticQuestion",
     "SourceBinding", "SourceReport", "Stage", "StageBudget", "StageRequest",

@@ -58,6 +58,18 @@ The Supervisor can inspect registered datasets, prepare configured raw sources, 
 
 Raw-source preparation uses an OpenHands coding session. The source is read-only; candidates are validated deterministically before registration. Registered datasets are reused unless the request explicitly asks for a rebuild.
 
+The local preparation worker uses the fixed virtual environment configured by
+`data_processing.coding_worker_venv`. Create it once and install
+`config/coding-worker.requirements.txt` before using the local backend; Docker
+uses the configured coding-worker image instead.
+
+On Windows, the default setup is:
+
+```powershell
+uv venv .venv-coding
+uv pip install --python .venv-coding\Scripts\python.exe -r config\coding-worker.requirements.txt
+```
+
 ## Development
 
 ```powershell

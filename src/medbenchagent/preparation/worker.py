@@ -7,7 +7,14 @@ from typing import Any
 
 from medbenchagent.data.sources import digest_file
 
-from .contracts import Diagnostic, StageRequest, StageResult, Submission
+from .contracts import (
+    CONTROL_MAPPING_REVISION_REQUIRED,
+    Diagnostic,
+    Stage,
+    StageRequest,
+    StageResult,
+    Submission,
+)
 
 
 class OpenHandsWorker:
@@ -77,11 +84,21 @@ class OpenHandsWorker:
             for code in submission.diagnostic_codes:
                 diagnostics.append(Diagnostic(
                     stage=request.stage, code=code,
-                    category="mapping" if code == "mapping_revision_required" else "unknown",
+                    category="mapping" if code == CONTROL_MAPPING_REVISION_REQUIRED else "unknown",
                     blocking=True, message=f"Worker reported diagnostic code: {code}",
                 ))
-                if code == "mapping_revision_required":
-                    control = "mapping_revision_required"
+                if code == CONTROL_MAPPING_REVISION_REQUIRED:
+                    if request.stage is Stage.PREPARE:
+                        control = CONTROL_MAPPING_REVISION_REQUIRED
+                    else:
+                        diagnostics.append(Diagnostic(
+                            stage=request.stage, code="invalid_control_stage",
+                            category="contract", blocking=True,
+                            message=(f"{CONTROL_MAPPING_REVISION_REQUIRED} is only valid for prepare"),
+                        ))
+                        control = None
+                        if status == "submitted":
+                            status = "blocked"
         outputs = {name: str(Path(path).resolve()) for name, path in result.outputs.items()}
         stage_result = StageResult(
             stage=request.stage, run_id=request.run_id, dataset_id=request.dataset_id,

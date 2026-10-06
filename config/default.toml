@@ -65,6 +65,7 @@ threads = 2
 container_memory = "4g"
 source_workspace_mode = "readonly_mount"
 coding_worker_image = "medbench-openhands:local"
+coding_worker_venv = ".venv-coding"
 coding_worker_max_iterations = 100
 coding_worker_timeout_seconds = 7200
 preparation_attempt_limits = { understand = 2, prepare = 2, mapping_revision_cycles = 1 }

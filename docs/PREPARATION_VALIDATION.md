@@ -33,6 +33,11 @@
 输出文件；不再维护通用 memory、receipt 或 resume 文件。只有同一 stage、同一 attempt、同一 input digest 且状态仍为 running 时才续接 conversation；新的
 retry 或 mapping revision 创建新的 attempt identity。成功回执和文件 digest 有效时可以复用，重复恢复不会重新发布相同内容。
 
+Prepare 的 semantic revision 只由明确的 semantic issue code 或 worker 的
+`mapping_revision_required` control 触发。候选输出、manifest、schema、依赖和脚本错误继续在
+Prepare 内 retry。retry 使用 previous attempt 的只读 reference，不复制 `work` 或 `outputs`；
+reference 的 host path、worker path 和统计快照保存在 context 中，host 会在阶段结束时检查它没有被修改。
+
 详细字段契约见 [DATA_LAYER.md](DATA_LAYER.md)。
 # annotation validation
 
@@ -55,4 +60,4 @@ remain unavailable to an image-only benchmark model.
 
 ## Canonical validation and publication
 
-There are two host gates. `validate_handoff()` accepts an Understand candidate, checks the source report, population, mapping and questions, and performs one independent inspector replay. `validate_prepare_candidate()` runs candidate validation and population reconciliation once, then writes the report used by publication. `AcceptedHandoff` is created only after the first gate. `DatasetPublisher` consumes the second gate receipt, checks the candidate digest, materializes valid Cases and their reference closure, and advances the immutable revision and `current.json` pointer. It does not invoke a second validator.
+There are two host gates. `validate_handoff()` accepts an Understand candidate, checks the source report, population, mapping and questions, and performs one independent inspector replay. `validate_prepare_candidate()` runs candidate validation and population reconciliation once, then writes the report used by publication. `AcceptedHandoff` is created only after the first gate. The second receipt contains one candidate digest ledger; `DatasetPublisher` reuses unchanged file digests, checks changed files, materializes valid Cases and their reference closure, and advances the immutable revision and `current.json` pointer. It does not invoke a second validator.

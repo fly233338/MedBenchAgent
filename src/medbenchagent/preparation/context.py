@@ -201,11 +201,15 @@ def resolve_stage_inputs(stage: Stage | str, state: dict[str, Any]) -> dict[str,
         "sources": sources,
         "artifacts": artifacts,
         "handoff": handoff,
+        "revision_basis_handoff": (
+            state.get("revision_basis_handoff") if current is Stage.UNDERSTAND else None
+        ),
         "decisions": _decisions(state),
         "environment": _environment(state),
         "user_request": str(state.get("user_request") or state.get("user_requirement") or ""),
         "validation_feedback": dict(state.get("validation_feedback") or {}),
         "previous_attempt_root": state.get("previous_attempt_root"),
+        "preparation_root": state.get("preparation_root"),
         "source_manifests": manifests,
         "budget": _budget(state, current),
     }
@@ -221,6 +225,46 @@ def validate_input_identities(inputs: dict[str, Any]) -> None:
     for source_id, value in (inputs.get("source_manifests") or {}).items():
         if not Path(value).exists():
             raise ValueError(f"Source manifest is missing: {source_id}")
+
+
+def _reference_snapshot(root: Path, scopes: tuple[str, ...]) -> tuple[str, dict[str, Any]]:
+    entries: dict[str, Any] = {}
+    for scope in scopes:
+        candidate = root / scope
+        if not candidate.is_dir():
+            continue
+        for path in sorted(candidate.rglob("*")):
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            entries[path.relative_to(root).as_posix()] = {
+                "size_bytes": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+    return digest_payload(entries), entries
+
+
+def _validate_reference_root(inputs: dict[str, Any], value: str | Path) -> Path:
+    root = Path(value).resolve()
+    if not root.is_dir():
+        raise ValueError(f"Previous preparation attempt is missing: {root}")
+    preparation_root = inputs.get("preparation_root")
+    if preparation_root:
+        allowed = Path(preparation_root).resolve()
+        if not root.is_relative_to(allowed):
+            raise ValueError(f"Previous preparation attempt is outside the preparation root: {root}")
+    return root
+
+
+def verify_previous_reference(attempt_dir: str | Path) -> None:
+    reference_path = Path(attempt_dir) / "inputs" / "previous_reference.json"
+    if not reference_path.is_file():
+        return
+    reference = json.loads(reference_path.read_text(encoding="utf-8"))
+    root = Path(reference["host_root"])
+    _, current = _reference_snapshot(root, ("work", "outputs", "inputs/accepted"))
+    if current != reference.get("entries", {}):
+        raise ValueError("Previous preparation reference changed during the coding stage")
 
 
 def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -> MaterializedInputs:
@@ -283,21 +327,57 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
         values["accepted_artifacts"] = artifacts
 
     previous = inputs.get("previous_attempt_root")
-    if previous and Path(previous).is_dir():
-        # Only repair material is needed; copying nested input histories grows
-        # exponentially and copies unrelated conversations and logs.
-        previous_digests = {}
-        for child in Path(previous).iterdir():
-            if child.is_file():
-                (root / "previous" / child.name).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(child, root / "previous" / child.name)
-        for name in ("work", "outputs"):
-            folder = Path(previous) / name
-            if folder.is_dir():
-                previous_digests[name] = _copy_tree(folder, root / "previous" / name)
-        bindings.append(InputBinding(path="inputs/previous", digest=digest_payload(previous_digests),
-                                     role="previous", read_policy="on_failure", required=False,
-                                     reason="Previous stage work and outputs for repair."))
+    previous_root = None
+    if previous:
+        previous_root = _validate_reference_root(inputs, previous)
+        reference_digest, reference_entries = _reference_snapshot(
+            previous_root, ("work", "outputs", "inputs/accepted"),
+        )
+        worker_root = "/workspace/previous" if backend == "docker" else str(previous_root)
+        reference = {
+            "host_root": str(previous_root),
+            "worker_root": worker_root,
+            "digest": reference_digest,
+            "entries": reference_entries,
+        }
+        _write_json(root / "previous_reference.json", reference)
+        values["previous_reference"] = reference
+        bindings.append(InputBinding(
+            path="previous", worker_path=worker_root, host_path=str(previous_root),
+            digest=reference_digest, role="previous", read_policy="on_failure", required=False,
+            reason="Previous stage work and outputs are exposed through a read-only reference.",
+        ))
+
+    revision_handoff_value = inputs.get("revision_basis_handoff")
+    if revision_handoff_value and previous_root is not None:
+        revision_handoff = (
+            revision_handoff_value
+            if isinstance(revision_handoff_value, AcceptedHandoff)
+            else AcceptedHandoff.model_validate(revision_handoff_value, strict=False)
+        )
+        revision_basis = {}
+        for field in ("source_report", "mapping", "population", "inspection_script"):
+            artifact = getattr(revision_handoff, field)
+            candidate = previous_root / "inputs" / "accepted" / artifact.name
+            if not candidate.is_file():
+                raise ValueError(f"Revision basis artifact is missing: {artifact.name}")
+            worker_path = (
+                f"/workspace/previous/inputs/accepted/{artifact.name}"
+                if backend == "docker" else str(candidate)
+            )
+            revision_basis[field] = {
+                "name": artifact.name, "path": worker_path, "digest": artifact.digest,
+            }
+            bindings.append(InputBinding(
+                path=f"previous/inputs/accepted/{artifact.name}",
+                worker_path=worker_path, host_path=str(candidate), digest=artifact.digest,
+                role="revision_basis", read_policy="before_work", required=False,
+                reason="Previous accepted semantic artifact used as a revision basis.",
+            ))
+        values["revision_basis"] = {
+            "handoff_digest": revision_handoff.digest,
+            "artifacts": revision_basis,
+        }
 
     feedback = inputs.get("validation_feedback") or {}
     if feedback:
@@ -358,6 +438,14 @@ def _project_facts(stage: Stage, materialized: MaterializedInputs) -> dict[str, 
     if population.is_file():
         count = sum(1 for line in population.open(encoding="utf-8") if line.strip())
         facts["population_summary"] = {**dict(facts.get("population_summary", {})), "unit_count": count, "path": "inputs/accepted/image_population.jsonl", "digest": digest_file(population)}
+    if revision_basis := materialized.values.get("revision_basis"):
+        facts["revision_basis"] = revision_basis
+    if previous_reference := materialized.values.get("previous_reference"):
+        facts["previous_reference"] = {
+            "worker_root": previous_reference["worker_root"],
+            "digest": previous_reference["digest"],
+            "scopes": sorted({item.split("/", 1)[0] for item in previous_reference["entries"]}),
+        }
     return facts
 
 
@@ -365,11 +453,15 @@ def _project_files(stage: Stage, materialized: MaterializedInputs) -> list[Input
     required_roles = {"user_request", "source_index", "environment", "decisions", "contracts", "execution"}
     if stage is Stage.PREPARE:
         required_roles.add("accepted")
+    required_roles.add("revision_basis")
     return [
         binding.model_copy(update={"size_bytes": (
-            (materialized.root.parent / Path(binding.path).relative_to("inputs")).stat().st_size
-            if binding.path.startswith("inputs/") and (materialized.root.parent / Path(binding.path).relative_to("inputs")).is_file()
-            else 0
+            binding.size_bytes
+            or (Path(binding.host_path).stat().st_size if binding.host_path and Path(binding.host_path).is_file() else 0)
+            or ((materialized.root.parent / Path(binding.path).relative_to("inputs")).stat().st_size
+                if binding.path.startswith("inputs/")
+                and (materialized.root.parent / Path(binding.path).relative_to("inputs")).is_file()
+                else 0)
         )})
         for binding in materialized.bindings
         if binding.required or binding.role in required_roles or binding.role in {"previous", "validation"}
@@ -379,10 +471,19 @@ def _project_files(stage: Stage, materialized: MaterializedInputs) -> list[Input
 def stage_input_digest(stage: Stage | str, state: dict[str, Any]) -> str:
     current = Stage(stage)
     handoff = _handoff(state) if current is Stage.PREPARE else None
+    revision_basis = state.get("revision_basis_handoff")
+    if revision_basis:
+        revision_basis = (
+            revision_basis.digest if isinstance(revision_basis, AcceptedHandoff)
+            else AcceptedHandoff.model_validate(revision_basis, strict=False).digest
+        )
     return digest_payload({
         "stage": current.value,
         "source_snapshot_digest": state.get("source_snapshot_digest") or digest_payload(state.get("source_manifests", {})),
         "handoff": handoff.digest if handoff else None,
+        "revision_basis_handoff": revision_basis,
+        "previous_attempt_root": state.get("previous_attempt_root"),
+        "implementation_repair_root": state.get("implementation_repair_root"),
         "decisions": [item.digest for item in _decisions(state)],
         "validation_feedback": state.get("validation_feedback") or {},
         "user_request": state.get("user_request") or state.get("user_requirement") or "",
@@ -422,12 +523,23 @@ def project_context(stage: Stage | str, inputs: dict[str, Any], materialized: Ma
             "source_bindings": [item.model_dump(mode="json") for item in materialized.sources],
             "input_config": "inputs/inspection_config.json" if current is Stage.UNDERSTAND else "inputs/preparation_config.json",
             "output_dir": "outputs",
+            "previous_reference": (
+                {
+                    "worker_root": materialized.values["previous_reference"]["worker_root"],
+                    "digest": materialized.values["previous_reference"]["digest"],
+                }
+                if materialized.values.get("previous_reference") else {}
+            ),
+            "revision_basis": materialized.values.get("revision_basis", {}),
         },
         budgets=inputs["budget"].model_dump(mode="json"),
     )
 
 
 def render_attempt_mode(packet: ContextPacket) -> str:
+    if packet.facts.get("revision_basis"):
+        return ("This is a semantic mapping revision. Treat facts.revision_basis as the old semantic "
+                "baseline and validation_feedback as the conflict evidence; produce a new mapping.")
     if packet.validation_feedback:
         return "This is a repair attempt. Read the host validation feedback before changing files."
     if int(packet.identity.get("attempt", 1)) > 1:
@@ -464,7 +576,11 @@ Write outputs/submission.json using the supplied schema.
 - submitted: all required stage deliverables exist and the declared checks actually ran.
 - needs_input: a genuine missing user fact blocks correct processing; include question IDs.
 - blocked: a technical or contract failure prevents completion; include structured diagnostics.
-- In prepare, use diagnostic code mapping_revision_required when accepted semantics must change.
+- In prepare, use diagnostic code mapping_revision_required only when the accepted semantics are wrong.
+  The semantic conflict classes are semantic_conflict, population_definition_conflict,
+  grouping_semantics_conflict, and field_semantics_conflict. Output, schema, manifest,
+  dependency, and script failures stay implementation diagnostics and must be repaired in prepare.
+- A previous reference is read-only repair material. Do not modify files under its worker path.
 
 Never claim host acceptance or publication. After writing the submission and confirming that no command is running, call finish.""",
     ])

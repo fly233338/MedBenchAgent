@@ -16,6 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from medbenchagent.preparation.contracts import StageRequest, StageResult
 from medbenchagent.data.execution import ExecutionUnavailable, docker_image_id
+from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_llm_api_key, get_settings
 
@@ -50,20 +51,30 @@ def _worker_llm_error(request: StageRequest) -> str:
     return ""
 
 
+def _worker_runtime_error(request: StageRequest) -> str:
+    runtime = request.worker_runtime or {}
+    executable = Path(str(runtime.get("python") or ""))
+    if not executable.is_file():
+        return f"Coding worker interpreter is missing: {executable}"
+    requirements_digest = str(runtime.get("requirements_digest") or "")
+    requirements = Path(__file__).resolve().parents[3] / "config" / "coding-worker.requirements.txt"
+    if requirements_digest and requirements.is_file() and digest_file(requirements) != requirements_digest:
+        return "Coding worker requirements changed after the run was frozen"
+    try:
+        probe = subprocess.run(
+            [str(executable), "-c", "import openhands.sdk"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"Coding worker interpreter cannot start: {type(exc).__name__}"
+    if probe.returncode:
+        return "Coding worker interpreter is missing OpenHands dependencies"
+    return ""
+
+
 class OpenHandsDatasetRuntime:
     """Run one OpenHands coding stage on the backend frozen for the parent run."""
 
-    _requirements = tuple(
-        line.strip()
-        for line in (Path(__file__).resolve().parents[3] / "config" / "coding-worker.requirements.txt").read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ) if (Path(__file__).resolve().parents[3] / "config" / "coding-worker.requirements.txt").is_file() else (
-        "openhands-sdk==1.49.6", "openhands-tools==1.49.6", "pandas==2.3.3",
-        "openpyxl==3.1.5", "xlrd==2.0.2", "duckdb==1.5.4", "Pillow==12.3.0",
-        "pydicom==3.0.1", "pylibjpeg==2.1.0", "pylibjpeg-libjpeg==2.3.0",
-        "pylibjpeg-openjpeg==2.5.0", "nibabel==5.3.2", "pynrrd==1.1.3",
-        "SimpleITK==2.5.3",
-    )
     _active: dict[str, tuple[str, object]] = {}
     _event_forward_lock = threading.Lock()
 
@@ -95,6 +106,12 @@ class OpenHandsDatasetRuntime:
                 workspace, request,
                 self._failure(request, "blocked", diagnostic, "model_unavailable"),
             )
+        if runtime.get("backend") == "local":
+            if diagnostic := _worker_runtime_error(request):
+                return self._record_result(
+                    workspace, request,
+                    self._failure(request, "blocked", diagnostic, "environment_unavailable"),
+                )
         source_roots = {str(key): str(value) for key, value in request.source_roots.items()}
         if not source_roots:
             raise ValueError("Stage request requires at least one source root")
@@ -124,6 +141,8 @@ class OpenHandsDatasetRuntime:
             allowed_outputs=request.required_outputs + request.optional_outputs,
             agent=request.agent,
             backend=runtime["backend"],
+            previous_attempt_root=request.previous_attempt_root,
+            worker_runtime=request.worker_runtime,
         )
         if runtime["backend"] == "docker":
             deployment.update(
@@ -199,6 +218,8 @@ class OpenHandsDatasetRuntime:
                    "-w", "/workspace", "--mount", _mount(source_root, "/workspace/source", readonly=True)]
         for source_id, root in source_roots.items():
             command.extend(["--mount", _mount(Path(root).resolve(), f"/workspace/sources/{source_id}", readonly=True)])
+        if request.previous_attempt_root:
+            command.extend(["--mount", _mount(Path(request.previous_attempt_root).resolve(), "/workspace/previous", readonly=True)])
         for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
             command.extend(["--mount", _mount(workspace / name, f"/workspace/{name}", readonly=name == "inputs")])
         command.extend([image_id, "python", "/app/openhands_worker.py", "/workspace/state/request.json", "/workspace/state/result.json"])
@@ -265,12 +286,14 @@ class OpenHandsDatasetRuntime:
         atomic_write_json(workspace / "state" / "result.json", result.model_dump(mode="json"))
         return result
 
+    @staticmethod
+    def _local_command(request, runner: Path, request_path: Path, result_path: Path) -> list[str]:
+        worker_python = str((request.worker_runtime or {}).get("python") or "")
+        return [worker_python, str(runner), str(request_path), str(result_path)]
+
     def _run_local(self, request, workspace, request_path, result_path, conversation_id, key):
         runner = Path(__file__).resolve().parents[1] / "runtime" / "openhands_worker.py"
-        command = ["uv", "run", "--no-project", "--python", "3.12"]
-        for package in self._requirements:
-            command.extend(["--with", package])
-        command.extend(["python", str(runner), str(request_path), str(result_path)])
+        command = self._local_command(request, runner, request_path, result_path)
         environment = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1",
                        "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
                        "MEDBENCH_LLM_API_KEY": key}

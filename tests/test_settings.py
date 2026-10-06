@@ -43,6 +43,15 @@ def test_model_override_and_key_default(monkeypatch):
     assert get_llm_api_key() == "local-vllm"
 
 
+def test_coding_worker_virtualenv_is_resolved_from_project_config(tmp_path):
+    local = tmp_path / "worker.toml"
+    local.write_text("[data_processing]\ncoding_worker_venv = 'worker-env'\n", encoding="utf-8")
+
+    settings = load_settings(local)
+
+    assert settings.data_processing["coding_worker_venv"] == str((Path.cwd() / "worker-env").resolve())
+
+
 def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / ".env").write_text("MEDBENCH_LLM_MODEL=from-file\n", encoding="utf-8")
     monkeypatch.setattr("medbenchagent.settings.PROJECT_ROOT", tmp_path)

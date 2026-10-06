@@ -25,6 +25,15 @@ class Stage(StrEnum):
     PREPARE = "prepare"
 
 
+CONTROL_MAPPING_REVISION_REQUIRED = "mapping_revision_required"
+SEMANTIC_REVISION_CODES = frozenset({
+    "semantic_conflict",
+    "population_definition_conflict",
+    "grouping_semantics_conflict",
+    "field_semantics_conflict",
+})
+
+
 class ArtifactRef(Contract):
     name: str = Field(min_length=1)
     path: str = Field(min_length=1)
@@ -157,6 +166,14 @@ class InputBinding(Contract):
     schema_ref: str | None = None
     producer: str = "host"
     depends_on: list[str] = Field(default_factory=list)
+    host_path: str | None = None
+    worker_path: str | None = None
+
+
+class DigestEntry(Contract):
+    digest: str = Field(min_length=1)
+    size_bytes: int = Field(ge=0)
+    mtime_ns: int = Field(ge=0)
 
 
 class SourceBinding(Contract):
@@ -343,6 +360,7 @@ class ValidationResult(Contract):
     receipt_ref: str | None = None
     report: dict[str, Any] = Field(default_factory=dict)
     candidate_digest: str = ""
+    digest_ledger: dict[str, DigestEntry] = Field(default_factory=dict)
 
 
 class StageOutputs(Contract):
@@ -420,6 +438,8 @@ class StageRequest(Contract):
     resume_existing: bool = False
     validation_feedback: dict[str, Any] = Field(default_factory=dict)
     runtime_backend: str = ""
+    previous_attempt_root: str | None = None
+    worker_runtime: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def check_paths(self):

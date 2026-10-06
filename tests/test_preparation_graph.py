@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.sources import inventory_source
 from medbenchagent.preparation.contracts import Stage, StageResult, ValidationResult
+from medbenchagent.preparation.worker import OpenHandsWorker
 import medbenchagent.preparation.graph as preparation_graph
 from medbenchagent.preparation.graph import compile_preparation_graph
 
@@ -153,3 +154,83 @@ def test_mapping_revision_creates_new_understand_and_prepare_attempts(tmp_path, 
     assert [request.stage for request in worker.requests] == [Stage.UNDERSTAND, Stage.PREPARE, Stage.UNDERSTAND, Stage.PREPARE]
     assert [request.attempt for request in worker.requests] == [1, 1, 2, 2]
     assert result["mapping_revision_cycles"] == 1
+
+
+class _ProtocolRevisionRuntime:
+    def __init__(self):
+        self.requests = []
+
+    def run(self, request):
+        self.requests.append(request)
+        output_root = Path(request.workspace) / "outputs"
+        output_root.mkdir(parents=True, exist_ok=True)
+        if request.stage is Stage.PREPARE and len([item for item in self.requests if item.stage is Stage.PREPARE]) == 1:
+            path = output_root / "submission.json"
+            path.write_text(json.dumps({
+                "requested_outcome": "blocked",
+                "summary": "accepted semantics conflict",
+                "diagnostic_codes": ["mapping_revision_required"],
+            }), encoding="utf-8")
+            return StageResult(
+                stage=request.stage, attempt=request.attempt, attempt_id=request.attempt_id,
+                conversation_id=request.conversation_id, execution_key=request.execution_key,
+                status="blocked", outputs={"submission.json": str(path)},
+                input_digest=request.input_digest,
+            )
+        names = (STAGE_OUTPUTS[request.stage] if request.stage in STAGE_OUTPUTS else ())
+        outputs = {}
+        for name in names:
+            path = output_root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({"requested_outcome": "submitted"}) if name == "submission.json" else "{}\n",
+                encoding="utf-8",
+            )
+            outputs[name] = str(path)
+        return StageResult(
+            stage=request.stage, attempt=request.attempt, attempt_id=request.attempt_id,
+            conversation_id=request.conversation_id, execution_key=request.execution_key,
+            status="submitted", outputs=outputs, input_digest=request.input_digest,
+        )
+
+
+STAGE_OUTPUTS = {
+    Stage.UNDERSTAND: ("source_report.json", "image_population.jsonl", "mapping.json",
+                       "semantic_questions.json", "inspect_source.py", "submission.json"),
+    Stage.PREPARE: ("scripts/prepare.py", "cases.jsonl", "asset_manifest.jsonl",
+                    "provenance.jsonl", "conversion_config.json", "grouping_policy.json",
+                    "execution_report.json", "output_manifest.json", "submission.json"),
+}
+
+
+def test_real_worker_protocol_routes_mapping_revision_with_repair_bases(tmp_path, monkeypatch):
+    runtime = _ProtocolRevisionRuntime()
+    worker = OpenHandsWorker(runtime=runtime)
+    monkeypatch.setattr(preparation_graph, "validate_understand_submission", _accepted_handoff)
+    monkeypatch.setattr(
+        preparation_graph, "validate_candidate_submission",
+        lambda outputs, state: ValidationResult(status="accepted", stage=Stage.PREPARE, report={"accepted_cases": 1}),
+    )
+    monkeypatch.setattr(
+        preparation_graph, "publish_preparation",
+        lambda state, result, validation: {"status": "complete", "revision": "r1",
+                                            "bundle": str(tmp_path / "bundle"),
+                                            "dataset_entry": {"dataset_id": "dataset"},
+                                            "cases_path": "cases", "access_manifest": {},
+                                            "card_path": "card"},
+    )
+
+    result = compile_preparation_graph(worker=worker).invoke(_state(tmp_path))
+
+    assert result["status"] == "complete"
+    assert [item.stage for item in runtime.requests] == [Stage.UNDERSTAND, Stage.PREPARE, Stage.UNDERSTAND, Stage.PREPARE]
+    assert len({item.attempt_id for item in runtime.requests}) == 4
+    assert len({item.conversation_id for item in runtime.requests}) == 4
+    assert runtime.requests[2].previous_attempt_root == runtime.requests[1].workspace
+    assert runtime.requests[3].previous_attempt_root == runtime.requests[1].workspace
+    assert (Path(runtime.requests[2].workspace) / "inputs" / "previous_reference.json").is_file()
+    assert not (Path(runtime.requests[2].workspace) / "inputs" / "previous" / "outputs").exists()
+    context = json.loads((Path(runtime.requests[2].workspace) / "inputs" / "context.json").read_text(encoding="utf-8"))
+    assert context["facts"]["revision_basis"]["handoff_digest"]
+    assert context["facts"]["revision_basis"]["artifacts"]["mapping"]["path"].endswith("mapping.json")
+    assert context["validation_feedback"]["issues"]

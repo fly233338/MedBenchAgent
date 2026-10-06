@@ -14,7 +14,9 @@ from medbenchagent.data.preparation_validation import validate_candidate
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 from .contracts import (
-    AcceptedHandoff, ArtifactRef, PreparationMapping, QuestionSet, Stage, SourceReport,
+    CONTROL_MAPPING_REVISION_REQUIRED,
+    SEMANTIC_REVISION_CODES,
+    AcceptedHandoff, ArtifactRef, DigestEntry, PreparationMapping, QuestionSet, Stage, SourceReport,
     Submission, ValidationIssue, ValidationResult, STAGE_SPECS, UserDecision,
     digest_file, digest_payload,
 )
@@ -45,10 +47,40 @@ def read_question_set(path, *, stage):
     return [item.model_dump(mode="json") for item in questions]
 
 
-def candidate_digest(root):
+def build_digest_ledger(root, cached=None):
     root = Path(root)
-    return digest_payload({item.relative_to(root).as_posix(): digest_file(item)
-                           for item in sorted(root.rglob("*")) if item.is_file()})
+    cached = cached or {}
+    ledger = {}
+    for item in sorted(root.rglob("*")):
+        if not item.is_file():
+            continue
+        relative = item.relative_to(root).as_posix()
+        stat = item.stat()
+        previous = cached.get(relative)
+        if isinstance(previous, dict):
+            previous = DigestEntry.model_validate(previous, strict=False)
+        if (isinstance(previous, DigestEntry)
+                and previous.size_bytes == stat.st_size
+                and previous.mtime_ns == stat.st_mtime_ns):
+            ledger[relative] = previous
+        else:
+            ledger[relative] = DigestEntry(
+                digest=digest_file(item), size_bytes=stat.st_size, mtime_ns=stat.st_mtime_ns,
+            )
+    return ledger
+
+
+def candidate_digest(root, ledger=None):
+    current = build_digest_ledger(root, ledger)
+    return digest_payload({name: item.digest for name, item in current.items()})
+
+
+def _semantic_control(issues):
+    return (
+        CONTROL_MAPPING_REVISION_REQUIRED
+        if any(item.code in SEMANTIC_REVISION_CODES for item in issues)
+        else None
+    )
 
 
 def replay_inspector(outputs, *, state):
@@ -158,10 +190,10 @@ def validate_prepare_candidate(candidate, *, state=None, population_path=None):
         if missing:
             raise ValueError(f"Missing Prepare outputs: {missing}")
         submission = Submission.model_validate_json((root / "submission.json").read_text(encoding="utf-8"))
-        if "mapping_revision_required" in submission.diagnostic_codes:
+        if CONTROL_MAPPING_REVISION_REQUIRED in submission.diagnostic_codes:
             return _save(ValidationResult(
-                status="blocked", stage=stage, control="mapping_revision_required",
-                issues=[_issue(stage, "mapping_revision_required", submission.summary or "Mapping revision requested")],
+                status="blocked", stage=stage, control=CONTROL_MAPPING_REVISION_REQUIRED,
+                issues=[_issue(stage, CONTROL_MAPPING_REVISION_REQUIRED, submission.summary or "Mapping revision requested")],
             ), state, root)
         if submission.requested_outcome != "submitted":
             raise ValueError("Prepare gate requires a submitted candidate")
@@ -234,15 +266,15 @@ def validate_prepare_candidate(candidate, *, state=None, population_path=None):
         for line in provenance.read_text(encoding="utf-8").splitlines():
             if line.strip() and json.loads(line).get("status") in accounting:
                 accounting[json.loads(line)["status"]] += 1
+    ledger = build_digest_ledger(root)
     result = ValidationResult(
         status="accepted" if report["accepted_cases"] and not report["systemic_failure"] else "rejected",
         stage=stage,
-        control=("mapping_revision_required" if any(
-            "mapping" in (item.code + " " + item.message).lower() for item in issues
-        ) else None),
+        control=_semantic_control(issues),
         issues=issues, report=report, accounting=accounting,
         quarantined_cases=[item for item in report["failures"] if item["kind"] == "hard_case_failure"],
-        candidate_digest=candidate_digest(root),
+        candidate_digest=candidate_digest(root, ledger),
+        digest_ledger=ledger,
     )
     return _save(result, state, root)
 

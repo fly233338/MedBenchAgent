@@ -2,7 +2,7 @@ import pytest
 
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.sources import inventory_source
-from medbenchagent.preparation.context import ContextBudgetError, build_stage_context
+from medbenchagent.preparation.context import ContextBudgetError, build_stage_context, verify_previous_reference
 from medbenchagent.preparation.contracts import AcceptedHandoff, ArtifactRef, digest_file, digest_payload
 
 
@@ -26,7 +26,8 @@ def _inputs(tmp_path):
         files[name] = ArtifactRef(name=name, path=str(path), digest=digest_file(path), producer="host", stage="understand", status="accepted")
     previous = tmp_path / "previous"
     previous.mkdir()
-    (previous / "draft.json").write_text("draft", encoding="utf-8")
+    (previous / "outputs").mkdir()
+    (previous / "outputs" / "draft.json").write_text("draft", encoding="utf-8")
     return {
         "run_id": "run", "dataset_id": "dataset", "sources": [{"id": "source", "root": str(source_root)}],
         "source_manifests": {"source": str(manifest)},
@@ -49,7 +50,11 @@ def test_context_writes_complete_prompt_and_keeps_unaccepted_outputs_separate(tm
     assert (tmp_path / "attempt" / "inputs" / "context.json").is_file()
     assert (tmp_path / "attempt" / "inputs" / "prompt.md").is_file()
     assert (tmp_path / "attempt" / "inputs" / "accepted" / "mapping.json").is_file()
-    assert (tmp_path / "attempt" / "inputs" / "previous" / "draft.json").is_file()
+    assert (tmp_path / "attempt" / "inputs" / "previous_reference.json").is_file()
+    assert not (tmp_path / "attempt" / "inputs" / "previous" / "draft.json").exists()
+    previous = next(item for item in packet.files if item.role == "previous")
+    assert previous.host_path == str((tmp_path / "previous").resolve())
+    assert previous.worker_path == str((tmp_path / "previous").resolve())
     assert packet.identity["stage"] == "prepare"
 
 
@@ -58,3 +63,24 @@ def test_required_context_budget_fails_without_truncating_prompt(tmp_path):
     state["preparation_stage_budgets"] = {"prepare": {"initial_message_tokens": 256}}
     with pytest.raises(ContextBudgetError, match="required_context_too_large"):
         build_stage_context("prepare", state, tmp_path / "attempt")
+
+
+def test_previous_reference_detects_local_mutation(tmp_path):
+    state = _inputs(tmp_path)
+    attempt = tmp_path / "attempt"
+    build_stage_context("prepare", state, attempt)
+    (tmp_path / "previous" / "outputs" / "draft.json").write_text("changed", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="reference changed"):
+        verify_previous_reference(attempt)
+
+
+def test_previous_reference_uses_docker_worker_path(tmp_path):
+    state = _inputs(tmp_path)
+    state["execution_runtime"] = {"backend": "docker"}
+
+    packet, _, _, _ = build_stage_context("prepare", state, tmp_path / "attempt")
+
+    previous = next(item for item in packet.files if item.role == "previous")
+    assert previous.worker_path == "/workspace/previous"
+    assert packet.sources[0].root == "/workspace/sources/source"

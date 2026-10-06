@@ -7,15 +7,42 @@ graph consumes this immutable context.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.dataset_catalog import validate_dataset_id
 from medbenchagent.data.execution import data_dependency_identity, docker_image_id, select_backend
-from medbenchagent.data.sources import inventory_source
+from medbenchagent.data.sources import digest_file, inventory_source
 from medbenchagent.runtime.dependencies import publish
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_settings
+
+
+def _coding_worker_identity() -> dict[str, str]:
+    settings = get_settings().data_processing
+    venv = Path(settings.get("coding_worker_venv", ".venv-coding")).resolve()
+    executable = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    requirements = Path(__file__).resolve().parents[3] / "config" / "coding-worker.requirements.txt"
+    identity = {
+        "venv": str(venv),
+        "python": str(executable),
+        "requirements_digest": digest_file(requirements) if requirements.is_file() else "",
+    }
+    if executable.is_file():
+        try:
+            probe = subprocess.run(
+                [str(executable), "-c", "import importlib.metadata,sys; print(sys.version); print(importlib.metadata.version('openhands-sdk'))"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            probe = None
+        if probe is not None and probe.returncode == 0:
+            lines = probe.stdout.splitlines()
+            identity["python_version"] = lines[0] if lines else ""
+            identity["openhands_version"] = lines[1] if len(lines) > 1 else ""
+    return identity
 
 
 def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
@@ -23,7 +50,9 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
     validate_dataset_id(dataset_id)
     if not sources or len({source.id for source in sources}) != len(sources):
         raise ValueError("Provide nonempty sources with unique IDs within this dataset")
-    runtime = context.get("execution_runtime") or select_backend(get_settings().data_processing)
+    runtime = dict(context.get("execution_runtime") or select_backend(get_settings().data_processing))
+    if runtime.get("backend") == "local":
+        runtime["coding_worker"] = _coding_worker_identity()
     marker = Path(context["operation_directory"]) / "preparation.json"
     def configured_bundle() -> Path:
         return get_settings().paths.prepared_datasets_root / dataset_id

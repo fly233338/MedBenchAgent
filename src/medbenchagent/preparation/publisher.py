@@ -12,7 +12,7 @@ from medbenchagent.data.index import prepare_dataset
 from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-from .contracts import ValidationResult, digest_payload
+from .contracts import DigestEntry, ValidationResult, digest_payload
 
 
 class DatasetPublisher:
@@ -36,13 +36,15 @@ class DatasetPublisher:
         result = validation if isinstance(validation, ValidationResult) else ValidationResult.model_validate(validation)
         if result.status != "accepted" or not result.report:
             raise ValueError("DatasetPublisher requires an accepted prepare validation receipt")
-        if result.candidate_digest and result.candidate_digest != self._candidate_digest(candidate):
+        candidate_ledger = self._build_ledger(candidate, result.digest_ledger)
+        candidate_digest = self._digest_from_ledger(candidate_ledger)
+        if result.candidate_digest and result.candidate_digest != candidate_digest:
             raise ValueError("Candidate changed after prepare validation")
         report = dict(result.report)
         if report.get("systemic_failure") or not report.get("accepted_cases"):
             raise ValueError("Prepared candidate cannot be published")
         dataset_id = str(context.get("dataset_id") or context.get("dataset_scope") or self.bundle_root.name)
-        revision = self._revision(candidate, dataset_id, report)
+        revision = self._revision(candidate, dataset_id, report, candidate_ledger)
         transaction_id = f"publish-{revision}"
         self.revisions_root.mkdir(parents=True, exist_ok=True)
         self.staging_root.mkdir(parents=True, exist_ok=True)
@@ -54,8 +56,10 @@ class DatasetPublisher:
             return self._result(revision_target, dataset_id, revision, transaction_id, report)
         staging.mkdir(parents=True, exist_ok=True)
         try:
-            self._copy_candidate(candidate, staging)
+            copied_digests = self._copy_candidate(candidate, staging, candidate_ledger)
             self._filter_invalid_cases(staging, report)
+            for name in ("cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl"):
+                copied_digests.pop(name, None)
             atomic_write_json(staging / "preparation_report.json", report)
             (staging / "quarantine.jsonl").write_text(
                 "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in report.get("failures", []) if item.get("kind") == "hard_case_failure"),
@@ -74,10 +78,17 @@ class DatasetPublisher:
                     except ValueError:
                         continue
                     access[key] = str(revision_target / relative)
+            annotation_digest = copied_digests.get("cases.jsonl")
+            if annotation_digest is None:
+                annotation_digest = digest_file(staging / "cases.jsonl")
+            asset_manifest_digest = copied_digests.get("asset_manifest.jsonl")
+            if asset_manifest_digest is None:
+                asset_manifest_digest = digest_file(staging / "asset_manifest.jsonl")
             card = {
                 "schema_version": "dataset-card", "dataset_id": dataset_id, "name": dataset_id,
-                "description": "annotation dataset", "annotation_digest": digest_file(staging / "cases.jsonl"),
-                "asset_manifest_digest": digest_file(staging / "asset_manifest.jsonl"),
+                "description": "annotation dataset",
+                "annotation_digest": annotation_digest,
+                "asset_manifest_digest": asset_manifest_digest,
                 "profile_digest": digest_file(staging / "dataset_profile.json"),
                 "case_count": profile["case_count"], "patient_count": profile["patient_count"],
                 "evidence_profile": profile["evidence"], "asset_profile": profile["assets"],
@@ -94,7 +105,7 @@ class DatasetPublisher:
                 "schema_version": "dataset-bundle", "annotation_schema": "annotation",
                 "revision": revision, "access": access,
             })
-            self._write_final_manifest(staging)
+            self._write_final_manifest(staging, copied_digests)
             manifest_digest = digest_file(staging / "output_manifest.json")
             atomic_write_json(staging / "complete.json", {
                 "status": "complete", "revision": revision, "manifest_digest": manifest_digest,
@@ -113,11 +124,35 @@ class DatasetPublisher:
             raise
 
     @staticmethod
-    def _candidate_digest(root: Path) -> str:
-        return digest_payload({
-            path.relative_to(root).as_posix(): digest_file(path)
-            for path in sorted(root.rglob("*")) if path.is_file()
-        })
+    def _build_ledger(root: Path, cached=None) -> dict[str, DigestEntry]:
+        root = Path(root)
+        cached = cached or {}
+        ledger: dict[str, DigestEntry] = {}
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix()
+            stat = path.stat()
+            previous = cached.get(relative)
+            if isinstance(previous, dict):
+                previous = DigestEntry.model_validate(previous, strict=False)
+            if (isinstance(previous, DigestEntry)
+                    and previous.size_bytes == stat.st_size
+                    and previous.mtime_ns == stat.st_mtime_ns):
+                ledger[relative] = previous
+            else:
+                ledger[relative] = DigestEntry(
+                    digest=digest_file(path), size_bytes=stat.st_size, mtime_ns=stat.st_mtime_ns,
+                )
+        return ledger
+
+    @staticmethod
+    def _digest_from_ledger(ledger: dict[str, DigestEntry]) -> str:
+        return digest_payload({name: item.digest for name, item in ledger.items()})
+
+    @classmethod
+    def _candidate_digest(cls, root: Path, ledger=None) -> str:
+        return cls._digest_from_ledger(cls._build_ledger(Path(root), ledger))
 
     def recover(self) -> None:
         if not self.commit_root.is_dir():
@@ -136,13 +171,18 @@ class DatasetPublisher:
                 continue
 
     @staticmethod
-    def _copy_candidate(candidate: Path, target: Path) -> None:
+    def _copy_candidate(candidate: Path, target: Path, ledger=None) -> dict[str, str]:
+        copied: dict[str, str] = {}
         for source in sorted(candidate.rglob("*")):
             if not source.is_file() or source.name in {"complete.json", "preparation_report.json", "quarantine.jsonl", "optional_evidence_dropped.jsonl"}:
                 continue
-            destination = target / source.relative_to(candidate)
+            relative = source.relative_to(candidate).as_posix()
+            destination = target / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+            entry = (ledger or {}).get(relative)
+            copied[relative] = entry.digest if isinstance(entry, DigestEntry) else digest_file(source)
+        return copied
 
     @staticmethod
     def _filter_invalid_cases(root: Path, report: dict[str, Any]) -> None:
@@ -185,30 +225,42 @@ class DatasetPublisher:
                         kept.append(line)
             provenance_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8", newline="\n")
 
-    @staticmethod
-    def _revision(candidate: Path, dataset_id: str, report: dict[str, Any]) -> str:
+    @classmethod
+    def _revision(cls, candidate: Path, dataset_id: str, report: dict[str, Any], ledger=None) -> str:
+        ledger = ledger or cls._build_ledger(candidate)
         return digest_payload({
             "dataset_id": dataset_id, "report": report,
             "files": {
-                path.relative_to(candidate).as_posix(): digest_file(path)
-                for path in sorted(candidate.rglob("*"))
-                if path.is_file() and path.name not in {"complete.json", "preparation_report.json"}
+                name: entry.digest for name, entry in ledger.items()
+                if Path(name).name not in {"complete.json", "preparation_report.json"}
             },
         })[:32]
 
     @staticmethod
-    def _write_final_manifest(root: Path) -> None:
+    def _write_final_manifest(root: Path, digest_hints: dict[str, str] | None = None) -> None:
+        digest_hints = digest_hints or {}
         files = []
         for path in sorted(root.rglob("*")):
             if not path.is_file() or path.name in {"output_manifest.json", "submission.json", "complete.json"} or "cache" in path.relative_to(root).parts:
                 continue
-            files.append({"path": path.relative_to(root).as_posix(), "kind": "published", "digest": digest_file(path), "producer": "host"})
+            relative = path.relative_to(root).as_posix()
+            digest = digest_hints.get(relative)
+            if digest is None:
+                digest = digest_file(path)
+            files.append({"path": relative, "kind": "published",
+                          "digest": digest, "producer": "host"})
         mapping = root / "mapping.json"
         population = root / "image_population.jsonl"
+        mapping_digest = digest_hints.get("mapping.json")
+        if mapping_digest is None and mapping.is_file():
+            mapping_digest = digest_file(mapping)
+        population_digest = digest_hints.get("image_population.jsonl")
+        if population_digest is None and population.is_file():
+            population_digest = digest_file(population)
         atomic_write_json(root / "output_manifest.json", {
             "files": files, "dependencies": [],
-            "mapping_digest": digest_file(mapping) if mapping.is_file() else "",
-            "population_digest": digest_file(population) if population.is_file() else "",
+            "mapping_digest": mapping_digest or "",
+            "population_digest": population_digest or "",
         })
 
     def _materialize_current_projection(self, revision: Path) -> None:

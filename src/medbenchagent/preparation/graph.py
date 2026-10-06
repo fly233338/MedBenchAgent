@@ -13,8 +13,17 @@ from medbenchagent.runtime.construction import record_event
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_settings
 
-from .context import build_stage_context, resolve_prompt_budget, stage_input_digest
-from .contracts import AcceptedHandoff, Diagnostic, Stage, StageRequest, StageResult, ValidationResult, STAGE_SPECS
+from .context import build_stage_context, resolve_prompt_budget, stage_input_digest, verify_previous_reference
+from .contracts import (
+    CONTROL_MAPPING_REVISION_REQUIRED,
+    AcceptedHandoff,
+    Diagnostic,
+    Stage,
+    StageRequest,
+    StageResult,
+    ValidationResult,
+    STAGE_SPECS,
+)
 from .publisher import DatasetPublisher
 from .validation import create_accepted_handoff, read_question_set, validate_handoff, validate_prepare_candidate
 from .worker import OpenHandsWorker
@@ -48,6 +57,8 @@ class PreparationGraphState(TypedDict, total=False):
     diagnostics: list[dict[str, Any]]
     accepted_handoff: dict[str, Any] | None
     accepted_handoff_ref: str | None
+    revision_basis_handoff: dict[str, Any] | None
+    implementation_repair_root: str | None
     publication: dict[str, Any] | None
     preparation_attempt_limits: dict[str, int]
     preparation_stage_budgets: dict[str, Any]
@@ -79,11 +90,16 @@ def _limit(state, name):
 
 def _fresh_attempt(state, **updates):
     return {"attempt_id": "", "attempt_workspace": "", "attempt_input_digest": "",
-            "stage_result": None, "validation": None, "pending_questions": [], **updates}
+            "stage_result": None, "validation": None, "pending_questions": [],
+            "revision_basis_handoff": state.get("revision_basis_handoff"),
+            "implementation_repair_root": state.get("implementation_repair_root"),
+            **updates}
 
 
 def _retry(state, stage, issues):
-    allowed = state.get(f"{stage.value}_attempts", 0) < _limit(state, stage.value)
+    reference_changed = any(item.get("code") == "previous_reference_changed" for item in issues)
+    allowed = (not reference_changed
+               and state.get(f"{stage.value}_attempts", 0) < _limit(state, stage.value))
     return _fresh_attempt(
         state, status="running" if allowed else "blocked", stage=stage.value,
         previous_attempt_root=state.get("attempt_workspace"),
@@ -93,6 +109,8 @@ def _retry(state, stage, issues):
 
 def _revise_mapping(state, issues):
     cycle = state.get("mapping_revision_cycles", 0)
+    previous_prepare_root = state.get("attempt_workspace")
+    previous_handoff = state.get("accepted_handoff")
     if (cycle >= _limit(state, "mapping_revision_cycles")
             or state.get("understand_attempts", 0) >= _limit(state, "understand")
             or state.get("prepare_attempts", 0) >= _limit(state, "prepare")):
@@ -100,7 +118,9 @@ def _revise_mapping(state, issues):
     return _fresh_attempt(
         state, status="running", stage=Stage.UNDERSTAND.value,
         mapping_revision_cycles=cycle + 1, accepted_handoff=None, accepted_handoff_ref=None,
-        previous_attempt_root=state.get("attempt_workspace"),
+        revision_basis_handoff=previous_handoff,
+        implementation_repair_root=previous_prepare_root,
+        previous_attempt_root=previous_prepare_root,
         diagnostics=issues, validation_feedback={"issues": issues},
     )
 
@@ -161,7 +181,13 @@ def _run_stage(state, stage, worker):
     workspace = Path(state["preparation_root"]) / "attempts" / stage.value / attempt_id
     for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
         (workspace / name).mkdir(parents=True, exist_ok=True)
-    local = {**state, "stage": stage.value, "attempt": count, "attempt_id": attempt_id}
+    reference_root = state.get("previous_attempt_root")
+    if stage is Stage.UNDERSTAND and state.get("revision_basis_handoff"):
+        reference_root = state.get("implementation_repair_root") or reference_root
+    local = {
+        **state, "stage": stage.value, "attempt": count, "attempt_id": attempt_id,
+        "previous_attempt_root": reference_root,
+    }
     input_digest = stage_input_digest(stage, local)
     request_path, result_path = workspace / "state/request.json", workspace / "state/result.json"
     previous = json.loads(request_path.read_text(encoding="utf-8")) if request_path.is_file() else None
@@ -173,6 +199,7 @@ def _run_stage(state, stage, worker):
     )
     if previous and not same_attempt:
         raise ValueError("Attempt inputs changed; start a new preparation run")
+    verify_previous_reference(workspace)
     if same_attempt and result_path.is_file():
         result = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
         if result.input_digest != input_digest:
@@ -204,7 +231,10 @@ def _run_stage(state, stage, worker):
             llm_timeout_seconds=state.get("llm_timeout_seconds", settings.timeout_seconds),
             llm_max_retries=state.get("llm_max_retries", settings.max_retries),
             runtime_backend=state.get("execution_runtime", {}).get("backend", "local"),
-            resume_existing=same_attempt and any((workspace / "conversations").iterdir()),
+            previous_attempt_root=reference_root,
+            worker_runtime=state.get("execution_runtime", {}).get("coding_worker", {}),
+            resume_existing=(same_attempt and not result_path.is_file()
+                             and any((workspace / "conversations").iterdir())),
             validation_feedback=state.get("validation_feedback", {}),
         )
         atomic_write_json(request_path, request.model_dump(mode="json"))
@@ -219,6 +249,17 @@ def _run_stage(state, stage, worker):
                 diagnostics=[Diagnostic(stage=stage, code="worker_execution_failed",
                                         category="environment", blocking=True, message=str(exc))],
             )
+        else:
+            try:
+                verify_previous_reference(workspace)
+            except Exception as exc:
+                result = StageResult(
+                    stage=stage, attempt=count, attempt_id=attempt_id,
+                    conversation_id=request.conversation_id, execution_key=execution_key,
+                    input_digest=input_digest, status="failed", diagnostic=str(exc),
+                    diagnostics=[Diagnostic(stage=stage, code="previous_reference_changed",
+                                            category="contract", blocking=True, message=str(exc))],
+                )
         atomic_write_json(result_path, result.model_dump(mode="json"))
     return {
         "stage": stage.value, "status": "running", f"{stage.value}_attempts": count,
@@ -261,7 +302,7 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
         if not state.get("stage_result"):
             return {"status": "blocked"}
         result = StageResult.model_validate(state["stage_result"], strict=False)
-        if stage is Stage.PREPARE and result.control == "mapping_revision_required":
+        if stage is Stage.PREPARE and result.control == CONTROL_MAPPING_REVISION_REQUIRED:
             return _revise_mapping(state, _failure_issues(result))
         if result.status == "needs_input":
             try:
@@ -282,7 +323,7 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
             )
         _event(state, "stage_validated", status=validation.status)
         issues = [item.model_dump(mode="json") for item in validation.issues]
-        if stage is Stage.PREPARE and validation.control == "mapping_revision_required":
+        if stage is Stage.PREPARE and validation.control == CONTROL_MAPPING_REVISION_REQUIRED:
             return _revise_mapping(state, issues)
         if validation.status == "needs_input":
             return {"status": "needs_input",
@@ -295,7 +336,9 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
                 state, stage=Stage.PREPARE.value, status="running",
                 accepted_handoff=handoff.model_dump(mode="json"),
                 accepted_handoff_ref=str(Path(state["preparation_root"]) / "handoff" / f"{handoff.digest}.json"),
-                validation_feedback={}, diagnostics=[], previous_attempt_root=None,
+                validation_feedback={}, diagnostics=[],
+                previous_attempt_root=state.get("implementation_repair_root"),
+                revision_basis_handoff=None, implementation_repair_root=None,
             )
         return {"status": "validated", "validation": validation.model_dump(mode="json")}
 

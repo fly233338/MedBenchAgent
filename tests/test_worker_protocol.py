@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from medbenchagent.runtime.openhands_worker import normalize_tool_arguments, validate_terminal_command
 from medbenchagent.preparation.contracts import Stage, StageRequest, StageResult
 from medbenchagent.runtime.dataset_runtime import OpenHandsDatasetRuntime
+from medbenchagent.preparation.worker import OpenHandsWorker
 
 
 def test_tool_metadata_is_removed_without_touching_command():
@@ -75,3 +78,71 @@ def test_runtime_preserves_structured_worker_failure(tmp_path):
 
     assert result.termination_reason == "no_progress"
     assert result.diagnostic == "Preparation stage guard: no_progress"
+
+
+class _SubmissionRuntime:
+    def __init__(self, stage):
+        self.stage = stage
+
+    def run(self, request):
+        output = Path(request.workspace) / "outputs" / "submission.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            '{"requested_outcome":"blocked","summary":"accepted semantics conflict",'
+            '"diagnostic_codes":["mapping_revision_required"]}',
+            encoding="utf-8",
+        )
+        return StageResult(
+            stage=request.stage, attempt=request.attempt, attempt_id=request.attempt_id,
+            conversation_id=request.conversation_id, execution_key=request.execution_key,
+            status="blocked", outputs={"submission.json": str(output)},
+            input_digest=request.input_digest,
+        )
+
+
+def test_worker_projects_submission_control_for_prepare(tmp_path):
+    request = StageRequest(
+        stage=Stage.PREPARE, run_id="run", dataset_id="dataset", attempt=1,
+        conversation_id="conversation", execution_key="execution", workspace=str(tmp_path),
+        prompt_path=str(tmp_path / "prompt.md"), context_path=str(tmp_path / "context.json"),
+        input_digest="input", required_outputs=["submission.json"],
+    )
+
+    result = OpenHandsWorker(runtime=_SubmissionRuntime(Stage.PREPARE)).run(request)
+
+    assert result.control == "mapping_revision_required"
+    assert result.status == "blocked"
+    assert any(item.code == "mapping_revision_required" for item in result.diagnostics)
+
+
+def test_worker_rejects_mapping_control_for_understand(tmp_path):
+    request = StageRequest(
+        stage=Stage.UNDERSTAND, run_id="run", dataset_id="dataset", attempt=1,
+        conversation_id="conversation", execution_key="execution", workspace=str(tmp_path),
+        prompt_path=str(tmp_path / "prompt.md"), context_path=str(tmp_path / "context.json"),
+        input_digest="input", required_outputs=["submission.json"],
+    )
+
+    result = OpenHandsWorker(runtime=_SubmissionRuntime(Stage.UNDERSTAND)).run(request)
+
+    assert result.control is None
+    assert result.status == "blocked"
+    assert any(item.code == "invalid_control_stage" for item in result.diagnostics)
+
+
+def test_local_worker_command_uses_frozen_interpreter(tmp_path):
+    request = StageRequest(
+        stage=Stage.UNDERSTAND, run_id="run", dataset_id="dataset", attempt=1,
+        conversation_id="conversation", execution_key="execution", workspace=str(tmp_path),
+        prompt_path=str(tmp_path / "prompt.md"), context_path=str(tmp_path / "context.json"),
+        input_digest="input", required_outputs=["submission.json"],
+        worker_runtime={"python": str(tmp_path / "python.exe")},
+    )
+
+    command = OpenHandsDatasetRuntime._local_command(
+        request, tmp_path / "worker.py", tmp_path / "request.json", tmp_path / "result.json",
+    )
+
+    assert command == [str(tmp_path / "python.exe"), str(tmp_path / "worker.py"),
+                      str(tmp_path / "request.json"), str(tmp_path / "result.json")]
+    assert "uv" not in command
