@@ -1,10 +1,8 @@
-"""Canonical contracts for the two coding stages.
+"""Canonical contracts for the two preparation coding stages.
 
-These contracts are intentionally independent of an OpenHands SDK model.  The
-worker receives a :class:`StageRequest`, writes a machine readable submission,
-and returns a :class:`StageResult`; host validation decides whether files are
-accepted.  No conversation summary or general purpose memory is part of the
-contract.
+The worker boundary is deliberately small. A worker produces a candidate
+submission; the host owns the two validation gates, handoff acceptance and
+publication.
 """
 
 from __future__ import annotations
@@ -27,19 +25,7 @@ class Stage(StrEnum):
     PREPARE = "prepare"
 
 
-class AttemptMode(StrEnum):
-    INITIAL = "initial"
-    REPAIR = "repair"
-    CLARIFICATION = "clarification"
-    CONTINUE = "continue"
-
-
-ATTEMPT_MODES = tuple(item.value for item in AttemptMode)
-
-
 class ArtifactRef(Contract):
-    """A host-addressable file accepted or produced by a stage."""
-
     name: str = Field(min_length=1)
     path: str = Field(min_length=1)
     digest: str = Field(min_length=1)
@@ -51,8 +37,6 @@ class ArtifactRef(Contract):
 
 
 class EvidenceRef(Contract):
-    """A stable reference from a semantic rule to measured source evidence."""
-
     ref: str = Field(min_length=1)
     source_id: str = Field(min_length=1)
     locator: str = Field(min_length=1)
@@ -132,8 +116,6 @@ class AssetRule(Contract):
 
 
 class PopulationRecord(Contract):
-    """One frozen source unit.  The pair is the only population identity."""
-
     source_id: str = Field(min_length=1)
     source_unit_id: str = Field(min_length=1)
     locator: str = Field(min_length=1)
@@ -164,8 +146,6 @@ class PopulationOutcome(Contract):
 
 
 class InputBinding(Contract):
-    """A file the worker can read in its workspace."""
-
     path: str = Field(min_length=1)
     digest: str = Field(min_length=1)
     role: str = Field(min_length=1)
@@ -190,14 +170,6 @@ class SourceBinding(Contract):
 class StageBudget(Contract):
     max_iterations: int = Field(default=40, ge=1)
     timeout_seconds: int = Field(default=1800, ge=1)
-    no_progress_limit: int = Field(default=8, ge=1)
-    tool_error_limit: int = Field(default=3, ge=1)
-    repair_attempts: int = Field(default=2, ge=0)
-    transport_retries: int = Field(default=2, ge=0)
-    semantic_revision_cycles: int = Field(default=2, ge=0)
-    total_seconds: int = Field(default=14_400, ge=1)
-    total_iterations: int = Field(default=300, ge=1)
-    total_cost: float | None = Field(default=None, gt=0)
     initial_message_tokens: int = Field(default=12_000, ge=256)
     model_context_tokens: int | None = Field(default=None, ge=256)
     output_reserve_tokens: int = Field(default=4_096, ge=0)
@@ -224,8 +196,6 @@ class Diagnostic(Contract):
 
 
 class SemanticQuestion(Contract):
-    """A source-scoped question that can pause a stage."""
-
     issue_id: str = Field(min_length=1)
     stage: Stage
     source_ids: list[str] = Field(default_factory=list)
@@ -260,6 +230,7 @@ class OutputFile(Contract):
     path: str = Field(min_length=1)
     kind: str = Field(min_length=1)
     digest: str = Field(min_length=1)
+    producer: str = "worker"
     purpose: str = ""
     depends_on: list[str] = Field(default_factory=list)
 
@@ -282,18 +253,21 @@ class SourceReport(Contract):
 
 
 class PreparationMapping(Contract):
-    population_policy: PopulationPolicy | dict[str, Any] = Field(default_factory=dict)
-    case_identity: CaseIdentityRule | dict[str, Any] = Field(default_factory=dict)
-    grouping: GroupingRule | dict[str, Any] = Field(default_factory=dict)
-    joins: list[JoinRule | dict[str, Any]] = Field(default_factory=list)
-    fields: list[FieldRule | dict[str, Any]] = Field(default_factory=list)
-    asset_rules: list[AssetRule | dict[str, Any]] = Field(default_factory=list)
+    population_policy: PopulationPolicy
+    case_identity: CaseIdentityRule
+    grouping: GroupingRule
+    joins: list[JoinRule] = Field(default_factory=list)
+    fields: list[FieldRule] = Field(min_length=1)
+    asset_rules: list[AssetRule] = Field(default_factory=list)
     field_semantics: dict[str, Any] = Field(default_factory=dict)
     resolved_decision_refs: list[str] = Field(default_factory=list)
     limitations: list[Any] = Field(default_factory=list)
 
 
 class ExecutionReport(Contract):
+    mapping_digest: str = ""
+    population_digest: str = ""
+    input_digest: str = ""
     tests: list[dict[str, Any]] = Field(default_factory=list)
     full_execution: dict[str, Any] = Field(default_factory=dict)
     failed_checks: list[dict[str, Any]] = Field(default_factory=list)
@@ -326,86 +300,19 @@ class UserDecision(Contract):
         return self
 
 
-class AttemptContext(Contract):
-    mode: AttemptMode = AttemptMode.INITIAL
-    target_issue_ids: list[str] = Field(default_factory=list)
-    previous_outputs_root: str | None = None
-    resume_summary: str = ""
-    completed_work: list[str] = Field(default_factory=list)
-    remaining_work: list[str] = Field(default_factory=list)
-    invalidated_work: list[str] = Field(default_factory=list)
-    user_answer_refs: list[str] = Field(default_factory=list)
-    attempt_id: str = ""
-    session_seq: int = Field(default=0, ge=0)
-    parent_attempt_id: str | None = None
-    input_digest: str = ""
-    execution_key: str = ""
-    attempt_dir: str = ""
-    resume_state_ref: str | None = None
-    previous_root: str | None = None
-    completed_steps: list[str] = Field(default_factory=list)
-    remaining_steps: list[str] = Field(default_factory=list)
-    invalidated_steps: list[str] = Field(default_factory=list)
-
-
-class ResumeCommand(Contract):
-    argv: list[str] = Field(default_factory=list)
-    cwd: str = ""
-    status: Literal["not_started", "running", "succeeded", "failed", "cancelled", "unknown"] = "not_started"
-    process_ref: str = ""
-    execution_ref: str = ""
-
-
-class ResumeState(Contract):
-    stage: Stage
-    milestone: str = ""
-    attempt_id: str = Field(min_length=1)
-    session_seq: int = Field(default=0, ge=0)
-    input_digest: str = Field(min_length=1)
-    source_snapshot_digest: str = ""
-    accepted_handoff_ref: str | None = None
-    working_files: list[dict[str, Any]] = Field(default_factory=list)
-    completed_steps: list[dict[str, Any]] = Field(default_factory=list)
-    remaining_steps: list[dict[str, Any]] = Field(default_factory=list)
-    invalidated_steps: list[dict[str, Any]] = Field(default_factory=list)
-    active_issue_ids: list[str] = Field(default_factory=list)
-    applied_decision_ids: list[str] = Field(default_factory=list)
-    last_command: ResumeCommand = Field(default_factory=ResumeCommand)
-    next_action: str = ""
-
-
 class AcceptedHandoff(Contract):
-    """Host-owned semantic handoff.  A candidate can never stand in for it."""
+    """The small host-owned semantic boundary between the two sessions."""
 
-    handoff_id: str = Field(min_length=1)
+    handoff_id: str = ""
     dataset_id: str = Field(min_length=1)
     source_snapshot_digest: str = Field(min_length=1)
-    mapping_digest: str = Field(min_length=1)
-    population_digest: str = Field(min_length=1)
-    source_report_digest: str = Field(min_length=1)
-    decisions_digest: str = Field(min_length=1)
-    inspection_script_digest: str = Field(min_length=1)
-    inspection_dependency_digests: dict[str, str] = Field(default_factory=dict)
-    contract_digest: str = Field(min_length=1)
+    source_report: ArtifactRef
+    mapping: ArtifactRef
+    population: ArtifactRef
+    inspection_script: ArtifactRef
+    decisions: list[UserDecision] = Field(default_factory=list)
     validation_receipt_ref: str = Field(min_length=1)
-    artifact_refs: dict[str, ArtifactRef] = Field(min_length=1)
-    revision: str = Field(min_length=1)
-
-
-class AttemptReceipt(Contract):
-    """The one normalized runtime receipt used by recovery and diagnostics."""
-
-    request_identity: dict[str, Any]
-    result: "StageResult"
-    runtime: dict[str, Any] = Field(default_factory=dict)
-    prompt_digest: str = ""
-    context_digest: str = ""
-    contract_digest: str = ""
-    usage: dict[str, Any] = Field(default_factory=dict)
-    timing: dict[str, Any] = Field(default_factory=dict)
-    execution_refs: list[str] = Field(default_factory=list)
-    resume_state_ref: str | None = None
-    termination: dict[str, Any] = Field(default_factory=dict)
+    digest: str = Field(min_length=1)
 
 
 class ValidationIssue(Contract):
@@ -424,6 +331,7 @@ class ValidationIssue(Contract):
 class ValidationResult(Contract):
     status: Literal["accepted", "rejected", "needs_input", "blocked"]
     stage: Stage
+    control: Literal["mapping_revision_required"] | None = None
     issues: list[ValidationIssue] = Field(default_factory=list)
     questions: list[SemanticQuestion] = Field(default_factory=list)
     accepted_handoff: AcceptedHandoff | None = None
@@ -432,6 +340,9 @@ class ValidationResult(Contract):
     dropped_evidence: list[dict[str, Any]] = Field(default_factory=list)
     dependency_refs: list[str] = Field(default_factory=list)
     accounting: dict[str, int] = Field(default_factory=dict)
+    receipt_ref: str | None = None
+    report: dict[str, Any] = Field(default_factory=dict)
+    candidate_digest: str = ""
 
 
 class StageOutputs(Contract):
@@ -443,21 +354,19 @@ class StageOutputs(Contract):
 
 
 class ContextPacket(Contract):
-    """The bounded, serialisable projection sent to a coding worker."""
+    """The bounded serialisable projection sent to one coding session."""
 
     identity: dict[str, Any]
     task: dict[str, Any]
     sources: list[SourceBinding] = Field(default_factory=list)
-    bindings: dict[str, Any] = Field(default_factory=dict)
-    decisions: dict[str, Any] = Field(default_factory=dict)
+    accepted_handoff: AcceptedHandoff | None = None
+    decisions: list[UserDecision] = Field(default_factory=list)
     facts: dict[str, Any] = Field(default_factory=dict)
     files: list[InputBinding] = Field(default_factory=list)
     outputs: StageOutputs
-    attempt: AttemptContext = Field(default_factory=AttemptContext)
-    diagnostics: list[Diagnostic] = Field(default_factory=list)
+    validation_feedback: dict[str, Any] = Field(default_factory=dict)
     execution: dict[str, Any] = Field(default_factory=dict)
     budgets: dict[str, Any] = Field(default_factory=dict)
-    accepted_handoff_ref: str | None = None
 
     @model_validator(mode="after")
     def validate_identity(self):
@@ -471,15 +380,13 @@ class ContextPacket(Contract):
 
 
 class Submission(Contract):
-    """Worker's explicit stage handoff; it is not host acceptance."""
+    """Worker's explicit candidate handoff; it is not host acceptance."""
 
     requested_outcome: Literal["submitted", "needs_input", "blocked"]
     summary: str = ""
     outputs: list[str] = Field(default_factory=list)
     question_refs: list[str] = Field(default_factory=list)
     diagnostic_codes: list[str] = Field(default_factory=list)
-    completed_checks: list[str] = Field(default_factory=list)
-    remaining_work: list[str] = Field(default_factory=list)
 
 
 class StageRequest(Contract):
@@ -487,6 +394,7 @@ class StageRequest(Contract):
     run_id: str = Field(min_length=1)
     dataset_id: str = Field(min_length=1)
     attempt: int = Field(ge=1)
+    attempt_id: str = ""
     conversation_id: str = Field(min_length=1)
     execution_key: str = Field(min_length=1)
     workspace: str = Field(min_length=1)
@@ -510,12 +418,7 @@ class StageRequest(Contract):
     llm_max_retries: int | None = Field(default=None, ge=0)
     agent: str = "DatasetProcessingAgent"
     resume_existing: bool = False
-    attempt_id: str = ""
-    session_seq: int = Field(default=0, ge=0)
-    parent_attempt_id: str | None = None
-    resume_state_ref: str | None = None
-    contract_digest: str = ""
-    milestone: str = ""
+    validation_feedback: dict[str, Any] = Field(default_factory=dict)
     runtime_backend: str = ""
 
     @model_validator(mode="after")
@@ -530,10 +433,11 @@ class StageResult(Contract):
     run_id: str = ""
     dataset_id: str = ""
     attempt: int = Field(ge=1)
+    attempt_id: str = ""
     conversation_id: str = Field(min_length=1)
     execution_key: str = Field(min_length=1)
     status: Literal["submitted", "needs_input", "blocked", "failed", "cancelled"]
-    control: Literal["context_rollover"] | None = None
+    control: Literal["mapping_revision_required"] | None = None
     outputs: dict[str, str] = Field(default_factory=dict)
     question_refs: list[str] = Field(default_factory=list)
     diagnostics: list[Diagnostic] = Field(default_factory=list)
@@ -545,8 +449,6 @@ class StageResult(Contract):
     prompt_digest: str = ""
     context_digest: str = ""
     token_count: int | None = Field(default=None, ge=0)
-    attempt_id: str = ""
-    session_seq: int = Field(default=0, ge=0)
     usage: dict[str, Any] = Field(default_factory=dict)
     execution_refs: list[str] = Field(default_factory=list)
 
@@ -649,7 +551,6 @@ CONTRACT_RULES = """# Preparation contract rules
 
 
 def contract_file_names(stage: Stage | str) -> list[str]:
-    """Return stable contract document names for a stage."""
     current = Stage(stage)
     common = ["rules.md", "submission.schema.json"]
     if current is Stage.UNDERSTAND:
@@ -661,17 +562,9 @@ def contract_file_names(stage: Stage | str) -> list[str]:
 
 
 def digest_payload(value: Any) -> str:
-    """Hash JSON data deterministically for execution and decision identities."""
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
 def digest_file(path: str | Path) -> str:
-    """Hash a file without embedding host-specific paths in the digest."""
     with Path(path).open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
-# AttemptReceipt is declared before StageResult so the state model remains
-# grouped with the other host contracts.  Resolve its forward reference once
-# all canonical models are available.
-AttemptReceipt.model_rebuild()

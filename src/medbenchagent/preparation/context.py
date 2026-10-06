@@ -1,13 +1,7 @@
-"""Deterministic stage context construction.
-
-This module never calls an LLM.  It selects files from the frozen run state,
-projects small structured summaries, maps source paths to worker-visible paths,
-and renders the exact prompt saved for an attempt.
-"""
+"""Deterministic context construction for one preparation stage."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 from dataclasses import dataclass
@@ -19,35 +13,28 @@ from medbenchagent.data.models import AssetEntry, CaseRecord
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 from .contracts import (
-    ATTEMPT_MODES,
     CONTRACT_RULES,
     STAGE_SPECS,
+    AcceptedHandoff,
     ArtifactRef,
-    AttemptContext,
     ContextPacket,
-    Diagnostic,
+    ExecutionReport,
     InputBinding,
-    AttemptMode,
+    PreparationMapping,
+    QuestionSet,
     SourceBinding,
+    SourceReport,
     Stage,
     StageBudget,
     StageOutputs,
     UserDecision,
-    Submission,
-    QuestionSet,
-    OutputManifest,
-    SourceReport,
-    PreparationMapping,
-    ExecutionReport,
-    contract_file_names,
     digest_file,
     digest_payload,
+    contract_file_names,
 )
 
 
 class ContextBudgetError(ValueError):
-    """The required part of a stage context cannot fit the configured budget."""
-
     code = "required_context_too_large"
 
 
@@ -57,26 +44,8 @@ class MaterializedInputs:
     sources: list[SourceBinding]
     bindings: list[InputBinding]
     artifacts: dict[str, ArtifactRef]
+    handoff: AcceptedHandoff | None
     values: dict[str, Any]
-
-
-def _sha256_tree(path: str | Path) -> str:
-    target = Path(path)
-    digest = hashlib.sha256()
-    if target.is_file():
-        return digest_file(target)
-    if target.is_dir():
-        for child in sorted(item for item in target.rglob("*") if item.is_file()):
-            digest.update(child.relative_to(target).as_posix().encode("utf-8"))
-            digest.update(child.read_bytes())
-    return digest.hexdigest()
-
-
-def _safe_relative(path: str | Path) -> str:
-    value = Path(path).as_posix().lstrip("/")
-    if not value or value == "." or ".." in Path(value).parts:
-        raise ValueError(f"Worker input path must be relative: {path}")
-    return value
 
 
 def _copy_file(source: str | Path, destination: Path) -> str:
@@ -94,19 +63,21 @@ def _copy_tree(source: str | Path, destination: Path) -> str:
         raise ValueError(f"Required preparation input directory is missing: {source_path}")
     destination.mkdir(parents=True, exist_ok=True)
     for child in sorted(source_path.rglob("*")):
-        relative = child.relative_to(source_path)
-        target = destination / relative
+        target = destination / child.relative_to(source_path)
         if child.is_dir():
             target.mkdir(parents=True, exist_ok=True)
         elif child.is_file():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(child, target)
-    return _sha256_tree(source_path)
+    return digest_payload({
+        item.relative_to(source_path).as_posix(): digest_file(item)
+        for item in sorted(source_path.rglob("*")) if item.is_file()
+    })
 
 
-def _write_text(path: Path, text: str) -> str:
+def _write_text(path: Path, value: str) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+    path.write_text(value, encoding="utf-8", newline="\n")
     return digest_file(path)
 
 
@@ -115,10 +86,9 @@ def _write_json(path: Path, value: Any) -> str:
     return digest_file(path)
 
 
-def _source_items(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
-    values = graph_state.get("sources") or []
+def _source_items(state: dict[str, Any]) -> list[dict[str, Any]]:
     result = []
-    for item in values:
+    for item in state.get("sources") or []:
         if hasattr(item, "model_dump"):
             item = item.model_dump(mode="json")
         if not isinstance(item, dict) or not item.get("id") or not item.get("root"):
@@ -131,45 +101,12 @@ def _source_items(graph_state: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
-def _artifact_items(graph_state: dict[str, Any], *, accepted_only: bool = False) -> dict[str, ArtifactRef]:
-    # Accepted inputs have one authoritative container.  A plain ``artifacts``
-    # mapping is always a candidate projection and must never be promoted by
-    # a truthiness fallback.
-    values = graph_state.get("accepted_artifacts") if accepted_only else graph_state.get("artifacts")
-    values = values or {}
-    if isinstance(values, list):
-        values = {str(item.get("name")): item for item in values if isinstance(item, dict) and item.get("name")}
-    result: dict[str, ArtifactRef] = {}
-    for name, value in values.items():
-        if isinstance(value, ArtifactRef):
-            artifact = value
-        elif isinstance(value, dict):
-            payload = {"name": name, **value}
-            payload.setdefault("producer", "host" if accepted_only else "worker")
-            payload.setdefault("stage", "understand")
-            if not payload.get("status"):
-                payload["status"] = "candidate"
-            if not payload.get("digest") and payload.get("path") and Path(payload["path"]).is_file():
-                payload["digest"] = digest_file(payload["path"])
-            artifact = ArtifactRef.model_validate(payload)
-        else:
-            path = Path(str(value))
-            if not path.is_file():
-                continue
-            artifact = ArtifactRef(name=name, path=str(path), digest=digest_file(path), producer="worker",
-                                   stage="understand", status="candidate")
-        if accepted_only and artifact.status != "accepted":
-            continue
-        result[name] = artifact
-    return result
-
-
-def _source_manifest(graph_state: dict[str, Any], source_id: str) -> Path | None:
-    manifests = graph_state.get("source_manifests") or {}
+def _source_manifest(state: dict[str, Any], source_id: str) -> Path | None:
+    manifests = state.get("source_manifests") or {}
     value = manifests.get(source_id) if isinstance(manifests, dict) else None
     if value:
         return Path(value)
-    bundle = graph_state.get("bundle_root")
+    bundle = state.get("bundle_root")
     if bundle:
         candidate = Path(bundle) / "source_manifests" / source_id
         if candidate.exists():
@@ -177,545 +114,332 @@ def _source_manifest(graph_state: dict[str, Any], source_id: str) -> Path | None
     return None
 
 
-def _environment(graph_state: dict[str, Any]) -> dict[str, Any]:
-    environment = graph_state.get("environment") or graph_state.get("data_runtime") or graph_state.get("execution_runtime") or {}
-    if hasattr(environment, "model_dump"):
-        environment = environment.model_dump(mode="json")
-    return dict(environment) if isinstance(environment, dict) else {"value": str(environment)}
+def _environment(state: dict[str, Any]) -> dict[str, Any]:
+    value = state.get("environment") or state.get("data_runtime") or state.get("execution_runtime") or {}
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    return dict(value) if isinstance(value, dict) else {"value": str(value)}
 
 
-def _decisions(graph_state: dict[str, Any]) -> list[UserDecision]:
-    raw = graph_state.get("user_decisions") or graph_state.get("decisions") or []
-    if isinstance(raw, dict):
-        raw = [
-            (dict(value, issue_id=str(key), decision_id=str(value.get("decision_id") or key)) if isinstance(value, dict)
-             else {"issue_id": str(key), "decision_id": str(key), "answer_reference": str(value)})
-            for key, value in raw.items()
-        ]
-    result = []
-    issues = graph_state.get("issues") or {}
-    for value in raw:
-        if isinstance(value, UserDecision):
-            result.append(value)
-        elif isinstance(value, dict):
-            try:
-                result.append(UserDecision.model_validate(value))
-            except Exception:
-                # Clarification state stores an evidence reference.  Resolve
-                # the complete answer text here; previews and reference IDs
-                # are navigation metadata and cannot enter worker context.
-                answer = value.get("answer")
-                issue = issues.get(str(value.get("issue_id"))) if isinstance(issues, dict) else None
-                answer_reference = value.get("answer_reference") or (issue or {}).get("answer_reference")
-                if answer is None and answer_reference and issue:
-                    try:
-                        from medbenchagent.runtime.clarifications import answer_payload
-                        payload = answer_payload(graph_state, issue)
-                        answer = payload.get("text") or "\n".join(item.get("answer", "") for item in payload.get("exchanges", []))
-                    except Exception:
-                        answer = None
-                if value.get("issue_id") and isinstance(answer, str) and answer.strip():
-                    result.append(UserDecision(
-                        decision_id=str(value.get("decision_id") or value["issue_id"]),
-                        issue_id=str(value["issue_id"]),
-                        source_ids=[str(item) for item in value.get("source_ids", [])],
-                        fields=[str(item) for item in value.get("fields", [])],
-                        answer=answer,
-                        structured_value=value.get("structured_value"),
-                        evidence_refs=[str(item) for item in value.get("evidence_refs", [])],
-                    ))
-    return result
+def _decisions(state: dict[str, Any]) -> list[UserDecision]:
+    return [item if isinstance(item, UserDecision) else UserDecision.model_validate(item)
+            for item in state.get("user_decisions", [])]
 
 
-def _attempt(graph_state: dict[str, Any]) -> AttemptContext:
-    raw = graph_state.get("attempt_context") or graph_state.get("attempt") or {}
-    if isinstance(raw, AttemptContext):
-        return raw
-    if isinstance(raw, int):
-        raw = {}
-    raw = dict(raw) if isinstance(raw, dict) else {}
-    mode = raw.get("mode") or graph_state.get("attempt_mode") or "initial"
-    if mode not in ATTEMPT_MODES:
-        raise ValueError(f"Unknown preparation attempt mode: {mode}")
-    raw["mode"] = AttemptMode(mode)
-    return AttemptContext.model_validate(raw)
-
-
-def build_attempt_context(graph_state: dict[str, Any]) -> AttemptContext:
-    return _attempt(graph_state)
-
-
-def select_applicable_decisions(graph_state: dict[str, Any], stage: Stage | str) -> list[UserDecision]:
-    """Select decisions already scoped to the current source/field set."""
-    Stage(stage)
-    decisions = _decisions(graph_state)
-    source_ids = {str(item.get("id")) for item in graph_state.get("sources", []) if isinstance(item, dict)}
-    fields = {str(item) for item in graph_state.get("active_fields", [])}
-    issue_ids = {str(item) for item in graph_state.get("target_issue_ids", [])}
-    result = []
-    for item in decisions:
-        if item.source_ids and not source_ids.intersection(item.source_ids):
-            continue
-        if item.fields and fields and not fields.intersection(item.fields):
-            continue
-        if issue_ids and item.issue_id not in issue_ids and (item.source_ids or item.fields):
-            # Dataset-scoped decisions remain applicable even without an issue
-            # selector. A selector only narrows source/field issues.
-            continue
-        result.append(item)
-    return result
-
-
-def _budget(graph_state: dict[str, Any], stage: Stage) -> StageBudget:
-    configured = graph_state.get("preparation_stage_budgets") or {}
-    if hasattr(configured, "model_dump"):
-        configured = configured.model_dump(mode="json")
-    values = dict(configured.get(stage.value, {})) if isinstance(configured, dict) else {}
+def _budget(state: dict[str, Any], stage: Stage) -> StageBudget:
+    configured = state.get("preparation_stage_budgets") or {}
+    values = configured.get(stage.value, {}) if isinstance(configured, dict) else {}
     return StageBudget(
-        max_iterations=int(values.get("max_iterations", graph_state.get("stage_max_iterations", 40))),
-        timeout_seconds=int(values.get("timeout_seconds", graph_state.get("stage_timeout_seconds", 1800))),
-        no_progress_limit=int(values.get("no_progress_limit", graph_state.get("no_progress_limit", 8))),
-        tool_error_limit=int(values.get("tool_error_limit", graph_state.get("tool_error_limit", 3))),
-        repair_attempts=int(values.get("repair_attempts", graph_state.get("repair_attempts", 2))),
-        transport_retries=int(values.get("transport_retries", graph_state.get("transport_retries", 2))),
-        semantic_revision_cycles=int(values.get("semantic_revision_cycles", graph_state.get("semantic_revision_cycles", 2))),
-        total_seconds=int(values.get("total_seconds", graph_state.get("preparation_total_seconds", 14_400))),
-        total_iterations=int(values.get("total_iterations", graph_state.get("preparation_total_iterations", 300))),
-        total_cost=values.get("total_cost", graph_state.get("preparation_total_cost")),
-        initial_message_tokens=int(values.get("initial_message_tokens", graph_state.get("initial_message_tokens", 12_000))),
-        model_context_tokens=values.get("model_context_tokens", graph_state.get("model_context_tokens")),
-        output_reserve_tokens=int(values.get("output_reserve_tokens", graph_state.get("output_reserve_tokens", 4_096))),
-        conversation_reserve_tokens=int(values.get("conversation_reserve_tokens", graph_state.get("conversation_reserve_tokens", 8_192))),
-        safety_margin_tokens=int(values.get("safety_margin_tokens", graph_state.get("safety_margin_tokens", 1_024))),
+        max_iterations=int(values.get("max_iterations", state.get("stage_max_iterations", 40))),
+        timeout_seconds=int(values.get("timeout_seconds", state.get("stage_timeout_seconds", 1800))),
+        initial_message_tokens=int(values.get("initial_message_tokens", state.get("initial_message_tokens", 12_000))),
+        model_context_tokens=values.get("model_context_tokens", state.get("model_context_tokens")),
+        output_reserve_tokens=int(values.get("output_reserve_tokens", state.get("output_reserve_tokens", 4_096))),
+        conversation_reserve_tokens=int(values.get("conversation_reserve_tokens", state.get("conversation_reserve_tokens", 8_192))),
+        safety_margin_tokens=int(values.get("safety_margin_tokens", state.get("safety_margin_tokens", 1_024))),
     )
 
 
-def resolve_prompt_budget(graph_state: dict[str, Any], stage: Stage | str = Stage.UNDERSTAND) -> StageBudget:
-    """Resolve the configured initial-message and worker progress budget."""
-    return _budget(graph_state, Stage(stage))
+def resolve_prompt_budget(state: dict[str, Any], stage: Stage | str = Stage.UNDERSTAND) -> StageBudget:
+    return _budget(state, Stage(stage))
 
 
 def _contract_payload(name: str) -> dict[str, Any]:
-    if name == "submission.schema.json":
-        return Submission.model_json_schema()
-    if name == "question.schema.json":
-        return QuestionSet.model_json_schema()
-    if name == "output_manifest.schema.json":
-        return OutputManifest.model_json_schema()
-    if name == "source_report.schema.json":
-        return SourceReport.model_json_schema()
-    if name == "mapping.schema.json":
-        return PreparationMapping.model_json_schema()
-    if name == "execution_report.schema.json":
-        return ExecutionReport.model_json_schema()
-    if name == "case.schema.json":
-        return CaseRecord.model_json_schema()
-    if name == "asset.schema.json":
-        return AssetEntry.model_json_schema()
-    if name == "presentation.schema.json":
-        return PresentationRecord.model_json_schema()
-    if name == "split.schema.json":
-        return SplitManifest.model_json_schema()
-    if name == "sampling.schema.json":
-        return SamplingManifest.model_json_schema()
+    from .contracts import OutputManifest, Submission
+
+    mapping = {
+        "submission.schema.json": Submission.model_json_schema(),
+        "question.schema.json": QuestionSet.model_json_schema(),
+        "output_manifest.schema.json": OutputManifest.model_json_schema(),
+        "source_report.schema.json": SourceReport.model_json_schema(),
+        "mapping.schema.json": PreparationMapping.model_json_schema(),
+        "execution_report.schema.json": ExecutionReport.model_json_schema(),
+        "case.schema.json": CaseRecord.model_json_schema(),
+        "asset.schema.json": AssetEntry.model_json_schema(),
+        "presentation.schema.json": PresentationRecord.model_json_schema(),
+        "split.schema.json": SplitManifest.model_json_schema(),
+        "sampling.schema.json": SamplingManifest.model_json_schema(),
+    }
     if name == "rules.md":
         return {"text": CONTRACT_RULES}
-    raise ValueError(f"Unknown preparation contract file: {name}")
+    if name not in mapping:
+        raise ValueError(f"Unknown preparation contract file: {name}")
+    return mapping[name]
 
 
-def resolve_stage_inputs(stage: Stage | str, graph_state: dict[str, Any]) -> dict[str, Any]:
-    """Resolve only the inputs declared by the selected stage."""
-    current = Stage(stage.stage if hasattr(stage, "stage") else stage)
+def _handoff(state: dict[str, Any]) -> AcceptedHandoff | None:
+    value = state.get("accepted_handoff")
+    if not value:
+        return None
+    return value if isinstance(value, AcceptedHandoff) else AcceptedHandoff.model_validate(value)
+
+
+def resolve_stage_inputs(stage: Stage | str, state: dict[str, Any]) -> dict[str, Any]:
+    current = Stage(stage)
     spec = STAGE_SPECS[current.value]
-    sources = _source_items(graph_state)
-    # Only host-accepted artifacts enter the accepted input directory.  Drafts
-    # and failed candidates are copied through previous_outputs instead.
-    artifacts = _artifact_items(graph_state, accepted_only=True)
-    manifests = dict(graph_state.get("source_manifests") or {})
+    sources = _source_items(state)
+    manifests = dict(state.get("source_manifests") or {})
     for source in sources:
         if source["id"] not in manifests:
-            candidate = _source_manifest(graph_state, source["id"])
+            candidate = _source_manifest(state, source["id"])
             if candidate is not None:
                 manifests[source["id"]] = str(candidate)
+    handoff = _handoff(state)
+    artifacts: dict[str, ArtifactRef] = {}
+    if current is Stage.PREPARE:
+        if handoff is None:
+            raise ValueError("Prepare requires an accepted handoff")
+        artifacts = {
+            "source_report.json": handoff.source_report,
+            "mapping.json": handoff.mapping,
+            "image_population.jsonl": handoff.population,
+            "inspect_source.py": handoff.inspection_script,
+        }
     return {
         "stage": current,
         "spec": spec,
         "sources": sources,
         "artifacts": artifacts,
-        "decisions": select_applicable_decisions(graph_state, current),
-        "environment": _environment(graph_state),
-        "user_request": str(graph_state.get("user_request") or graph_state.get("user_requirement") or ""),
-        "validation": graph_state.get("validation_report") or graph_state.get("validation_path") or graph_state.get("preparation_validation_path"),
-        "previous_outputs": graph_state.get("previous_outputs_root") or graph_state.get("previous_attempt_root"),
-        "previous_work": graph_state.get("previous_work_root") or graph_state.get("previous_root"),
-        "target_issue_ids": list(graph_state.get("target_issue_ids") or []),
-        "completed_work": list(graph_state.get("completed_work") or []),
-        "remaining_work": list(graph_state.get("remaining_work") or []),
-        "invalidated_work": list(graph_state.get("invalidated_work") or []),
+        "handoff": handoff,
+        "decisions": _decisions(state),
+        "environment": _environment(state),
+        "user_request": str(state.get("user_request") or state.get("user_requirement") or ""),
+        "validation_feedback": dict(state.get("validation_feedback") or {}),
+        "previous_attempt_root": state.get("previous_attempt_root"),
         "source_manifests": manifests,
-        "attempt": _attempt(graph_state),
-        "budget": _budget(graph_state, current),
+        "budget": _budget(state, current),
     }
 
 
 def validate_input_identities(inputs: dict[str, Any]) -> None:
-    """Reject changed accepted files before constructing a worker prompt."""
     for name, artifact in inputs.get("artifacts", {}).items():
         path = Path(artifact.path)
         if not path.is_file():
             raise ValueError(f"Accepted artifact is missing: {name}")
-        actual = digest_file(path)
-        if artifact.digest and actual != artifact.digest:
+        if digest_file(path) != artifact.digest:
             raise ValueError(f"Accepted artifact digest changed: {name}")
     for source_id, value in (inputs.get("source_manifests") or {}).items():
-        path = Path(value)
-        if not path.exists():
+        if not Path(value).exists():
             raise ValueError(f"Source manifest is missing: {source_id}")
 
 
 def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -> MaterializedInputs:
-    """Create a read-only input snapshot for one attempt."""
     root = Path(destination)
     root.mkdir(parents=True, exist_ok=True)
-    sources: list[SourceBinding] = []
     bindings: list[InputBinding] = []
     values = dict(inputs)
-
     _write_json(root / "user_request.json", {"request": inputs.get("user_request", "")})
     bindings.append(InputBinding(path="inputs/user_request.json", digest=digest_file(root / "user_request.json"), role="user_request", reason="Original preparation request."))
     _write_json(root / "environment.json", inputs.get("environment", {}))
     bindings.append(InputBinding(path="inputs/environment.json", digest=digest_file(root / "environment.json"), role="environment", reason="Frozen execution environment."))
-    decisions = [item.model_dump(mode="json") if isinstance(item, UserDecision) else item for item in inputs.get("decisions", [])]
+    decisions = [item.model_dump(mode="json") for item in inputs.get("decisions", [])]
     _write_json(root / "decisions.json", {"decisions": decisions})
-    bindings.append(InputBinding(path="inputs/decisions.json", digest=digest_file(root / "decisions.json"), role="decisions", reason="Resolved decisions in scope for this stage."))
+    bindings.append(InputBinding(path="inputs/decisions.json", digest=digest_file(root / "decisions.json"), role="decisions", reason="Resolved user decisions."))
 
+    sources: list[SourceBinding] = []
     source_index = []
-    source_manifests = inputs.get("source_manifests") or {}
     backend = str((inputs.get("environment") or {}).get("backend", "local"))
     for source in inputs["sources"]:
         source_id = str(source["id"])
-        manifest = Path(source_manifests.get(source_id, "")) if source_manifests.get(source_id) else None
+        manifest = Path(inputs["source_manifests"].get(source_id, ""))
         manifest_destination = root / "sources" / source_id
-        manifest_digest = ""
-        if manifest and manifest.exists():
-            manifest_digest = _copy_tree(manifest, manifest_destination)
-            for child in sorted(manifest_destination.rglob("*")):
-                if child.is_file():
-                    bindings.append(InputBinding(path=f"inputs/sources/{source_id}/{child.relative_to(manifest_destination).as_posix()}", digest=digest_file(child), role="source_manifest", read_policy="stream_during_execution", reason=f"Frozen manifest for source {source_id}."))
-        worker_manifest = f"inputs/sources/{source_id}"
+        manifest_digest = _copy_tree(manifest, manifest_destination) if manifest.is_dir() else ""
+        for child in sorted(manifest_destination.rglob("*")):
+            if child.is_file():
+                bindings.append(InputBinding(
+                    path=f"inputs/sources/{source_id}/{child.relative_to(manifest_destination).as_posix()}",
+                    digest=digest_file(child), role="source_manifest",
+                    read_policy="stream_during_execution",
+                    reason=f"Frozen manifest for source {source_id}.",
+                ))
         worker_root = f"/workspace/sources/{source_id}" if backend == "docker" else str(Path(source["root"]).resolve())
-        binding = SourceBinding(source_id=source_id, root=worker_root, manifest=worker_manifest, digest=manifest_digest or digest_payload({key: value for key, value in source.items() if key != "root"}))
+        binding = SourceBinding(
+            source_id=source_id, root=worker_root,
+            manifest=f"inputs/sources/{source_id}", digest=manifest_digest or digest_payload(source),
+        )
         sources.append(binding)
-        source_index.append({"source_id": source_id, "root": binding.root, "manifest": worker_manifest, "digest": binding.digest, "identity": {key: value for key, value in source.items() if key != "root"}})
+        source_index.append({
+            "source_id": source_id, "root": binding.root,
+            "manifest": binding.manifest, "digest": binding.digest,
+            "identity": {key: value for key, value in source.items() if key != "root"},
+        })
     _write_json(root / "source_index.json", {"sources": source_index})
-    bindings.append(InputBinding(path="inputs/source_index.json", digest=digest_file(root / "source_index.json"), role="source_index", reason="All configured sources and worker-visible paths."))
+    bindings.append(InputBinding(path="inputs/source_index.json", digest=digest_file(root / "source_index.json"), role="source_index", reason="Frozen source bindings."))
 
     contracts_root = root / "contracts"
     contracts_root.mkdir(parents=True, exist_ok=True)
     for name in contract_file_names(inputs["stage"]):
         target = contracts_root / name
-        if name == "rules.md":
-            digest = _write_text(target, CONTRACT_RULES)
-        else:
-            digest = _write_json(target, _contract_payload(name))
+        digest = _write_text(target, CONTRACT_RULES) if name == "rules.md" else _write_json(target, _contract_payload(name))
         bindings.append(InputBinding(path=f"inputs/contracts/{name}", digest=digest, role="contracts", reason="Host-maintained output contract."))
 
-    for name, artifact in inputs.get("artifacts", {}).items():
-        source = Path(artifact.path)
-        target = root / "accepted" / name
-        digest = _copy_file(source, target)
-        accepted = artifact.model_copy(update={"path": f"inputs/accepted/{name}", "digest": digest, "status": "accepted"})
-        values.setdefault("accepted_artifacts", {})[name] = accepted
-        bindings.append(InputBinding(path=f"inputs/accepted/{name}", digest=digest, role="accepted", reason=f"Accepted upstream artifact {name}."))
+    artifacts = dict(inputs.get("artifacts") or {})
+    if artifacts:
+        accepted_root = root / "accepted"
+        for name, artifact in artifacts.items():
+            target = accepted_root / name
+            digest = _copy_file(artifact.path, target)
+            bindings.append(InputBinding(path=f"inputs/accepted/{name}", digest=digest, role="accepted", reason=f"Accepted handoff artifact {name}."))
+        values["accepted_artifacts"] = artifacts
 
-    previous = inputs.get("previous_outputs")
-    previous_work = inputs.get("previous_work")
-    if previous or previous_work:
-        previous_root = root / "previous"
-        previous_root.mkdir(parents=True, exist_ok=True)
-        copied = False
-        if previous:
-            previous_path = Path(previous)
-            if previous_path.is_dir():
-                _copy_tree(previous_path, previous_root / "outputs")
-                for child in previous_path.iterdir():
-                    target = previous_root / child.name
-                    if child.is_file():
-                        shutil.copy2(child, target)
-                copied = True
-        if previous_work:
-            previous_work_path = Path(previous_work)
-            if previous_work_path.is_dir():
-                _copy_tree(previous_work_path, previous_root / "work")
-                copied = True
-        if copied:
-            digest = _sha256_tree(previous_root)
-            bindings.append(InputBinding(path="inputs/previous", digest=digest, role="previous", read_policy="on_failure", required=False, reason="Selected work and outputs from the previous attempt."))
+    previous = inputs.get("previous_attempt_root")
+    if previous and Path(previous).is_dir():
+        # Only repair material is needed; copying nested input histories grows
+        # exponentially and copies unrelated conversations and logs.
+        previous_digests = {}
+        for child in Path(previous).iterdir():
+            if child.is_file():
+                (root / "previous" / child.name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(child, root / "previous" / child.name)
+        for name in ("work", "outputs"):
+            folder = Path(previous) / name
+            if folder.is_dir():
+                previous_digests[name] = _copy_tree(folder, root / "previous" / name)
+        bindings.append(InputBinding(path="inputs/previous", digest=digest_payload(previous_digests),
+                                     role="previous", read_policy="on_failure", required=False,
+                                     reason="Previous stage work and outputs for repair."))
 
-    validation = inputs.get("validation")
-    if validation:
-        if isinstance(validation, (dict, list)):
-            digest = _write_json(root / "validation.json", validation)
-        else:
-            digest = _copy_file(validation, root / "validation.json")
-        bindings.append(InputBinding(path="inputs/validation.json", digest=digest, role="validation", read_policy="before_work", reason="Structured issues assigned to this attempt."))
+    feedback = inputs.get("validation_feedback") or {}
+    if feedback:
+        digest = _write_json(root / "validation.json", feedback)
+        bindings.append(InputBinding(path="inputs/validation.json", digest=digest, role="validation", reason="Host validation feedback."))
 
     config_name = "inspection_config.json" if inputs["stage"] is Stage.UNDERSTAND else "preparation_config.json"
     config_payload = {
         "sources": [item.model_dump(mode="json") for item in sources],
         "source_manifests": {item.source_id: item.manifest for item in sources},
         "accepted_artifacts": {
-            name: (artifact.model_copy(update={"path": f"inputs/accepted/{name}"}).model_dump(mode="json") if isinstance(artifact, ArtifactRef) else {**artifact, "path": f"inputs/accepted/{name}"})
-            for name, artifact in values.get("accepted_artifacts", {}).items()
+            name: {"path": f"inputs/accepted/{name}", "digest": artifact.digest, "stage": artifact.stage, "status": "accepted"}
+            for name, artifact in artifacts.items()
         },
-        "input_digest": digest_payload({name: artifact.digest for name, artifact in values.get("accepted_artifacts", {}).items()}),
+        "input_digest": digest_payload({name: artifact.digest for name, artifact in artifacts.items()}),
         "options": {"mode": "inventory" if inputs["stage"] is Stage.UNDERSTAND else "sample_or_full"},
     }
-    config_digest = _write_json(root / config_name, config_payload)
-    bindings.append(InputBinding(path=f"inputs/{config_name}", digest=config_digest, role="execution", read_policy="before_work", reason="Host-generated fixed script input configuration."))
-
-    return MaterializedInputs(root=root, sources=sources, bindings=bindings, artifacts=values.get("accepted_artifacts", inputs.get("artifacts", {})), values=values)
+    digest = _write_json(root / config_name, config_payload)
+    bindings.append(InputBinding(path=f"inputs/{config_name}", digest=digest, role="execution", reason="Host-generated fixed script input configuration."))
+    handoff = inputs.get("handoff")
+    if handoff is not None:
+        updates = {}
+        for field in ("source_report", "mapping", "population", "inspection_script"):
+            artifact = getattr(handoff, field)
+            updates[field] = artifact.model_copy(update={"path": f"inputs/accepted/{artifact.name}"})
+        receipt_path = root / "handoff_validation.json"
+        if Path(handoff.validation_receipt_ref).is_file():
+            _copy_file(handoff.validation_receipt_ref, receipt_path)
+            updates["validation_receipt_ref"] = "inputs/handoff_validation.json"
+        handoff = handoff.model_copy(update=updates)
+    return MaterializedInputs(root=root, sources=sources, bindings=bindings, artifacts=artifacts,
+                              handoff=handoff, values=values)
 
 
 def _json_summary(path: Path, *, max_items: int = 8) -> Any:
-    full_ref = f"inputs/accepted/{path.name}"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {"full_ref": full_ref, "digest": digest_file(path)}
-    def bounded(item: Any) -> Any:
-        if not isinstance(item, list):
-            return item
-        return {
-            "count": len(item),
-            "sample": item[:max_items],
-            "truncated": len(item) > max_items,
-            "full_ref": full_ref,
-        }
+        return {"path": f"inputs/accepted/{path.name}", "digest": digest_file(path)}
+    if isinstance(value, list):
+        return {"count": len(value), "sample": value[:max_items], "truncated": len(value) > max_items, "path": f"inputs/accepted/{path.name}"}
     if isinstance(value, dict):
-        return {key: bounded(item) for key, item in value.items()}
-    return bounded(value)
+        return {key: (item[:max_items] if isinstance(item, list) else item) for key, item in value.items()}
+    return value
 
 
 def _project_facts(stage: Stage, materialized: MaterializedInputs) -> dict[str, Any]:
-    facts: dict[str, Any] = {
-        "environment": materialized.values.get("environment", {}),
-        "known_limitations": [],
-    }
+    facts: dict[str, Any] = {"environment": materialized.values.get("environment", {}), "known_limitations": []}
     accepted = materialized.root / "accepted"
     for name in ("source_report.json", "mapping.json", "execution_report.json"):
         candidate = accepted / name
         if candidate.is_file():
             summary = _json_summary(candidate)
-            if name == "source_report.json":
-                facts["source_report_summary"] = summary
-                if isinstance(summary, dict):
-                    facts["population_summary"] = summary.get("population", {})
-            elif name == "mapping.json":
-                if isinstance(summary, dict):
-                    facts["grouping_rules"] = summary.get("grouping", {})
-                    facts["join_rules"] = summary.get("joins", [])
-                    facts["mapping_summary"] = {key: summary.get(key) for key in ("population_policy", "case_identity", "grouping", "resolved_decision_refs", "limitations") if key in summary}
-            else:
-                facts["execution_summary"] = summary
+            facts[f"{name[:-5]}_summary"] = summary
+            if name == "source_report.json" and isinstance(summary, dict):
+                facts["population_summary"] = summary.get("population", {})
     population = accepted / "image_population.jsonl"
     if population.is_file():
-        with population.open(encoding="utf-8") as handle:
-            count = sum(1 for line in handle if line.strip())
+        count = sum(1 for line in population.open(encoding="utf-8") if line.strip())
         facts["population_summary"] = {**dict(facts.get("population_summary", {})), "unit_count": count, "path": "inputs/accepted/image_population.jsonl", "digest": digest_file(population)}
     return facts
 
 
-def _project_files(stage: Stage, materialized: MaterializedInputs, attempt: AttemptContext) -> list[InputBinding]:
-    files = list(materialized.bindings)
-    required_roles = {"source_index", "environment", "decisions", "contracts"}
+def _project_files(stage: Stage, materialized: MaterializedInputs) -> list[InputBinding]:
+    required_roles = {"user_request", "source_index", "environment", "decisions", "contracts", "execution"}
     if stage is Stage.PREPARE:
-        required_roles.update({"accepted"})
-    result = []
-    for binding in files:
-        if binding.role in required_roles or binding.role in {"previous", "validation"} or binding.required:
-            local = materialized.root.parent / Path(binding.path).relative_to("inputs") if binding.path.startswith("inputs/") else None
-            size = local.stat().st_size if local and local.is_file() else 0
-            result.append(binding.model_copy(update={"size_bytes": size}))
-    return result
+        required_roles.add("accepted")
+    return [
+        binding.model_copy(update={"size_bytes": (
+            (materialized.root.parent / Path(binding.path).relative_to("inputs")).stat().st_size
+            if binding.path.startswith("inputs/") and (materialized.root.parent / Path(binding.path).relative_to("inputs")).is_file()
+            else 0
+        )})
+        for binding in materialized.bindings
+        if binding.required or binding.role in required_roles or binding.role in {"previous", "validation"}
+    ]
 
 
-def project_context(stage: Stage | str, inputs: dict[str, Any], materialized: MaterializedInputs, graph_state: dict[str, Any]) -> ContextPacket:
+def stage_input_digest(stage: Stage | str, state: dict[str, Any]) -> str:
+    current = Stage(stage)
+    handoff = _handoff(state) if current is Stage.PREPARE else None
+    return digest_payload({
+        "stage": current.value,
+        "source_snapshot_digest": state.get("source_snapshot_digest") or digest_payload(state.get("source_manifests", {})),
+        "handoff": handoff.digest if handoff else None,
+        "decisions": [item.digest for item in _decisions(state)],
+        "validation_feedback": state.get("validation_feedback") or {},
+        "user_request": state.get("user_request") or state.get("user_requirement") or "",
+    })
+
+
+def project_context(stage: Stage | str, inputs: dict[str, Any], materialized: MaterializedInputs, state: dict[str, Any]) -> ContextPacket:
     current = Stage(stage)
     spec = STAGE_SPECS[current.value]
-    attempt = inputs["attempt"]
-    attempt_number = int(graph_state.get("preparation_attempt") or graph_state.get("attempt_number") or 1)
-    attempt_id = str(graph_state.get("attempt_id") or attempt_number)
-    session_seq = int(graph_state.get("session_seq", 0))
-    source_snapshot_digest = digest_payload({
+    attempt = int(state.get("attempt") or state.get("stage_attempt") or 1)
+    source_snapshot_digest = str(state.get("source_snapshot_digest") or digest_payload({
         "sources": [item.model_dump(mode="json") for item in materialized.sources],
         "manifests": inputs.get("source_manifests", {}),
-    })
-    input_payload = {
-        "stage": current.value,
-        "sources": [item.model_dump(mode="json") for item in materialized.sources],
-        "artifacts": {name: item.digest for name, item in inputs.get("artifacts", {}).items()},
-        "decisions": [item.digest for item in inputs.get("decisions", [])],
-        "validation": inputs.get("validation") or "",
-        "user_request": inputs.get("user_request", ""),
-    }
-    input_digest = digest_payload(input_payload)
+    }))
+    input_digest = stage_input_digest(current, state)
     identity = {
-        "run_id": str(graph_state.get("run_id") or "run"),
-        "dataset_id": str(graph_state.get("dataset_id") or graph_state.get("dataset_scope") or "dataset"),
+        "run_id": str(state.get("run_id") or "run"),
+        "dataset_id": str(state.get("dataset_id") or state.get("dataset_scope") or "dataset"),
         "stage": current.value,
-        "attempt": attempt_number,
-        "attempt_id": attempt_id,
-        "session_seq": session_seq,
+        "attempt": attempt,
+        "attempt_id": str(state.get("attempt_id") or f"{current.value}-{attempt}"),
         "input_digest": input_digest,
         "source_snapshot_digest": source_snapshot_digest,
-        "accepted_handoff_ref": graph_state.get("accepted_handoff_ref"),
-        "execution_environment_digest": digest_payload(inputs.get("environment", {})),
     }
-    decisions = [item.model_dump(mode="json") for item in inputs.get("decisions", [])]
-    active = decisions
-    bindings = {}
-    for name, artifact in inputs.get("artifacts", {}).items():
-        bindings[name] = {
-            "path": f"inputs/accepted/{name}", "digest": artifact.digest,
-            "stage": artifact.stage, "status": artifact.status,
-            "producer": artifact.producer, "acceptance_ref": graph_state.get("accepted_handoff_ref"),
-            "depends_on": list(artifact.depends_on),
-        }
-    attempt_payload = attempt.model_dump(mode="json")
-    attempt_payload.update({
-        "mode": AttemptMode(str(attempt_payload.get("mode", "initial"))),
-        "attempt_id": attempt_id,
-        "session_seq": session_seq,
-        "input_digest": input_digest,
-        "execution_key": str(graph_state.get("execution_key") or ""),
-        "attempt_dir": str(graph_state.get("preparation_workspace") or ""),
-        "resume_state_ref": graph_state.get("resume_state_ref"),
-        "previous_root": inputs.get("previous_outputs"),
-        "completed_steps": list(inputs.get("completed_work") or []),
-        "remaining_steps": list(inputs.get("remaining_work") or []),
-        "invalidated_steps": list(inputs.get("invalidated_work") or []),
-    })
-    packet = ContextPacket(
+    return ContextPacket(
         identity=identity,
-        task={
-            "objective": spec.objective,
-            "user_request": inputs.get("user_request", ""),
-            "success_conditions": spec.success_conditions,
-        },
+        task={"objective": spec.objective, "user_request": inputs.get("user_request", ""), "success_conditions": spec.success_conditions},
         sources=materialized.sources,
-        bindings=bindings,
-        decisions={"active": active, "full_path": "inputs/decisions.json"},
+        accepted_handoff=materialized.handoff,
+        decisions=inputs.get("decisions", []),
         facts=_project_facts(current, materialized),
-        files=_project_files(current, materialized, attempt),
+        files=_project_files(current, materialized),
         outputs=StageOutputs(root="outputs", required=spec.required_outputs, optional=spec.optional_outputs, contracts_root="inputs/contracts", files=spec.files),
-        attempt=AttemptContext.model_validate(attempt_payload),
-        diagnostics=_diagnostics(graph_state),
+        validation_feedback=inputs.get("validation_feedback") or {},
         execution={
-            "cwd": "outputs",
-            "python": "python",
-            "commands": STAGE_SPECS[current.value].commands,
+            "cwd": "outputs", "python": "python", "commands": spec.commands,
             "source_bindings": [item.model_dump(mode="json") for item in materialized.sources],
             "input_config": "inputs/inspection_config.json" if current is Stage.UNDERSTAND else "inputs/preparation_config.json",
             "output_dir": "outputs",
         },
         budgets=inputs["budget"].model_dump(mode="json"),
-        accepted_handoff_ref=graph_state.get("accepted_handoff_ref"),
     )
-    return packet
 
 
-def _diagnostics(graph_state: dict[str, Any]) -> list[Diagnostic]:
-    raw = graph_state.get("diagnostics") or graph_state.get("validation_diagnostics") or []
-    if isinstance(raw, dict):
-        raw = raw.get("issues", [])
-    result = []
-    for item in raw:
-        if isinstance(item, Diagnostic):
-            result.append(item)
-        elif isinstance(item, dict):
-            try:
-                result.append(Diagnostic.model_validate(item))
-            except Exception:
-                result.append(Diagnostic(stage=Stage.PREPARE, code=str(item.get("code") or item.get("kind") or "validation"), message=str(item.get("message") or item.get("error") or item), blocking=True))
-    return result
-
-
-_ATTEMPT_PROMPTS = {
-    "initial": """Attempt mode: initial
-
-Start the assigned stage from the current frozen inputs. Use accepted
-upstream artifacts only when the host has supplied their acceptance binding.
-Do not search previous conversations for missing context. Establish the
-stage checklist, perform the first unfinished step, and record progress
-and evidence in the declared working files.""",
-    "repair": """Attempt mode: repair
-
-Read the validator report, target issue IDs, ResumeState, and previous-work
-index before editing. If a required repair input is absent, report a contract
-blocker instead of reconstructing the failure from a short summary.
-
-Treat previous outputs as repair candidates. Verify their input and code
-identities, preserve unaffected work, and repair the responsible files.
-Rerun affected checks and record an execution or validation reference for
-each addressed issue. Keep unresolved issues explicit.
-
-In prepare, do not change accepted semantics to make validation pass.
-Request mapping_revision_required with evidence when semantic changes are
-needed. In understand, revise the affected draft rules and resubmit the
-handoff for host acceptance before prepare can continue.""",
-    "clarification": """Attempt mode: clarification
-
-Read the applicable decisions, including the complete answer text, issue
-references, scope, and frozen input identity. An answer reference is not
-the answer. If the text cannot be read, report the missing input.
-
-Apply each decision only to its declared scope. Revisit the invalidated work
-listed by the host and preserve independently valid work. Do not repeat an
-answered question. If a decision remains ambiguous or conflicts with the
-contract, state the remaining conflict with evidence.
-
-Continue the stage assigned by the host. A prepare-stage answer that changes
-accepted semantics must return through understand and handoff acceptance.""",
-    "continue": """Attempt mode: continue
-
-Continue the same semantic attempt in a fresh conversation. Read ResumeState,
-the accepted input bindings, relevant working files, execution references,
-and the remaining and invalidated steps.
-
-Verify reusable work against its input and code identities. Check whether
-the last command is complete, failed, cancelled, or still running. Do not
-launch a duplicate command or repeat successful work solely because this
-conversation is new.
-
-Resume the first unfinished or invalidated step. Treat narrative summaries
-as navigation aids. File contents, execution records, and host validation
-determine what is complete. Update progress before the next handoff.""",
-}
-
-
-def read_prompt(name: str) -> str:
-    path = Path(__file__).parents[1] / "prompts" / name
-    if not path.is_file():
-        raise FileNotFoundError(f"Preparation prompt is missing: {path}")
-    return path.read_text(encoding="utf-8")
-
-
-def render_attempt_mode(mode: str | AttemptContext) -> str:
-    value = mode.mode.value if isinstance(mode, AttemptContext) else str(mode)
-    if value not in _ATTEMPT_PROMPTS:
-        raise ValueError(f"Unknown preparation attempt mode: {value}")
-    return _ATTEMPT_PROMPTS[value]
+def render_attempt_mode(packet: ContextPacket) -> str:
+    if packet.validation_feedback:
+        return "This is a repair attempt. Read the host validation feedback before changing files."
+    if int(packet.identity.get("attempt", 1)) > 1:
+        return "This is a retry attempt. Preserve valid work and address the current failure."
+    return "This is the initial attempt for the assigned stage."
 
 
 def render_prompt(stage: Stage | str, packet: ContextPacket) -> str:
     current = Stage(stage)
-    stage_prompt_name = {
-        Stage.UNDERSTAND: "data_preparation_understand.md",
-        Stage.PREPARE: "data_preparation_prepare.md",
-    }[current]
+    names = {Stage.UNDERSTAND: "data_preparation_understand.md", Stage.PREPARE: "data_preparation_prepare.md"}
     common = read_prompt("data_preparation_agent.md")
-    stage_prompt = read_prompt(stage_prompt_name)
+    stage_prompt = read_prompt(names[current])
     spec = STAGE_SPECS[current.value]
     contract_text = json.dumps({
         "stage": spec.stage.value,
@@ -729,50 +453,30 @@ def render_prompt(stage: Stage | str, packet: ContextPacket) -> str:
     return "\n\n".join([
         common,
         stage_prompt,
-        render_attempt_mode(packet.attempt),
-        "StageSpec file and command contract:\n```json\n" + contract_text + "\n```",
-        "Current host context:",
-        "```json\n" + packet.model_dump_json(indent=2) + "\n```",
+        render_attempt_mode(packet),
+        "Stage contract:\n```json\n" + contract_text + "\n```",
+        "Current host context:\n```json\n" + packet.model_dump_json(indent=2) + "\n```",
         "The same context packet is available at ./inputs/context.json. Follow its file-reading requirements and output contracts.",
         """Submission protocol
 
-Write outputs/submission.json using the supplied schema and the current
-stage's outcome-specific requirements.
+Write outputs/submission.json using the supplied schema.
 
-- submitted: all required stage deliverables exist, the declared checks
-  actually ran and passed, and no unresolved blocking issue remains.
-- needs_input: a genuine missing user fact blocks correct processing;
-  include valid question IDs and preserve the useful partial work.
-- blocked: a technical or contract failure prevents completion; include
-  structured diagnostics and the condition required to resume.
+- submitted: all required stage deliverables exist and the declared checks actually ran.
+- needs_input: a genuine missing user fact blocks correct processing; include question IDs.
+- blocked: a technical or contract failure prevents completion; include structured diagnostics.
+- In prepare, use diagnostic code mapping_revision_required when accepted semantics must change.
 
-For a prepare-stage semantic conflict, use blocked and include
-mapping_revision_required with its required evidence and rule references.
-Do not fabricate success files to satisfy the submitted file list when
-requesting input or reporting a blocker.
-
-List only files that exist within the output contract. Register dependencies,
-reference actual checks, and identify remaining or partial work accurately.
-Never claim host acceptance or publication in the submission.
-
-After writing the submission and confirming that no command is still
-running, call finish. The host will validate the submission together with
-the process result, execution evidence, and independent artifact checks.""",
+Never claim host acceptance or publication. After writing the submission and confirming that no command is running, call finish.""",
     ])
 
 
 def _token_count(text: str) -> int:
-    # A conservative deterministic estimate.  If a tokenizer is configured
-    # by a caller it can replace this function; context correctness must not
-    # depend on an optional tokenizer package.
     return max(1, (len(text.encode("utf-8")) + 3) // 4)
 
 
 def fit_context_budget(packet: ContextPacket, *, budget: StageBudget, renderer=None) -> tuple[ContextPacket, str, int]:
-    """Fit non-critical summaries while preserving a complete valid packet."""
-    current = packet
     render = renderer or (lambda value: render_prompt(packet.identity["stage"], value))
-    prompt = render(current)
+    prompt = render(packet)
     token_count = _token_count(prompt)
     configured = budget.initial_message_tokens
     if budget.model_context_tokens is not None:
@@ -780,69 +484,51 @@ def fit_context_budget(packet: ContextPacket, *, budget: StageBudget, renderer=N
     if configured < 256:
         raise ContextBudgetError("required_context_too_large: configured model budget leaves no room for required context")
     if token_count <= configured:
-        return current, prompt, token_count
-
-    # Shrink only optional facts and diagnostic detail; required identities,
-    # rules, decisions, file bindings and outputs remain complete.
-    facts = dict(current.facts)
-    for key in ("source_report_summary", "execution_summary"):
+        return packet, prompt, token_count
+    facts = dict(packet.facts)
+    for key in ("source_report_summary", "execution_report_summary"):
         if key in facts:
-            facts[key] = {"summary": "See the complete file under inputs/accepted.", "path": f"inputs/accepted/{'source_report.json' if key == 'source_report_summary' else 'execution_report.json'}"}
-    if isinstance(facts.get("join_rules"), list):
-        facts["join_rules"] = facts["join_rules"][:4]
-    reduced = current.model_copy(update={"facts": facts})
+            facts[key] = {"path": f"inputs/accepted/{key.replace('_summary', '.json')}"}
+    reduced = packet.model_copy(update={"facts": facts})
     prompt = render(reduced)
     token_count = _token_count(prompt)
     if token_count <= configured:
         return reduced, prompt, token_count
-
-    if reduced.diagnostics:
-        diagnostics = []
-        for item in reduced.diagnostics:
-            diagnostics.append(item.model_copy(update={"message": item.message[:240]}))
-        reduced = reduced.model_copy(update={"diagnostics": diagnostics})
+    if reduced.validation_feedback:
+        reduced = reduced.model_copy(update={"validation_feedback": {"summary": "Read inputs/validation.json for the complete report."}})
         prompt = render(reduced)
         token_count = _token_count(prompt)
         if token_count <= configured:
             return reduced, prompt, token_count
-    raise ContextBudgetError("required_context_too_large: required rules, decisions, bindings and output contract exceed the stage budget")
+    raise ContextBudgetError("required_context_too_large: required stage context exceeds the stage budget")
 
 
-def _execution_key(stage: Stage, packet: ContextPacket, graph_state: dict[str, Any]) -> str:
-    payload = {
+def _execution_key(stage: Stage, packet: ContextPacket, state: dict[str, Any]) -> str:
+    return digest_payload({
         "stage": stage.value,
         "input_digest": packet.identity["input_digest"],
-        "source_snapshot_digest": packet.identity.get("source_snapshot_digest", ""),
-        "accepted_handoff_ref": packet.identity.get("accepted_handoff_ref", ""),
-        "decisions": packet.decisions,
-        "contract_digest": digest_payload(packet.outputs.model_dump(mode="json")),
-        "environment": packet.identity.get("execution_environment_digest", ""),
-        "validator_issues": graph_state.get("target_issue_ids", []),
-        "schema_digests": graph_state.get("schema_digests", {}),
-        "prompt_digest": digest_payload(render_prompt(stage, packet)),
-        "code_revision": graph_state.get("code_revision", ""),
-        "worker_dependency_digest": graph_state.get("worker_dependency_digest", ""),
-        "model": graph_state.get("model", ""),
-        "base_url": graph_state.get("base_url", ""),
-        "reasoning_effort": graph_state.get("reasoning_effort", ""),
-    }
-    return digest_payload(payload)
+        "source_snapshot_digest": packet.identity["source_snapshot_digest"],
+        "handoff": packet.accepted_handoff.digest if packet.accepted_handoff else "",
+        "decisions": [item.digest for item in packet.decisions],
+        "contract": packet.outputs.model_dump(mode="json"),
+        "prompt": digest_payload(render_prompt(stage, packet)),
+        "model": state.get("model", ""),
+        "base_url": state.get("base_url", ""),
+        "reasoning_effort": state.get("reasoning_effort", ""),
+    })
 
 
-def build_stage_context(stage: Stage | str, graph_state: dict[str, Any], attempt_dir: str | Path) -> tuple[ContextPacket, str, int, str]:
-    """Build and persist one attempt's input snapshot and exact task prompt."""
+def build_stage_context(stage: Stage | str, state: dict[str, Any], attempt_dir: str | Path) -> tuple[ContextPacket, str, int, str]:
     current = Stage(stage)
-    inputs = resolve_stage_inputs(current, graph_state)
+    inputs = resolve_stage_inputs(current, state)
     validate_input_identities(inputs)
     attempt_path = Path(attempt_dir)
-    input_root = attempt_path / "inputs"
-    materialized = materialize_worker_inputs(inputs, input_root)
-    packet = project_context(current, inputs, materialized, graph_state)
+    materialized = materialize_worker_inputs(inputs, attempt_path / "inputs")
+    packet = project_context(current, inputs, materialized, {**state, "attempt": state.get("attempt") or state.get("stage_attempt") or 1})
     packet, prompt, token_count = fit_context_budget(packet, budget=inputs["budget"])
     write_context_snapshot(attempt_path, packet)
     write_prompt_snapshot(attempt_path, prompt)
-    execution_key = _execution_key(current, packet, graph_state)
-    return packet, prompt, token_count, execution_key
+    return packet, prompt, token_count, _execution_key(current, packet, state)
 
 
 def write_context_snapshot(attempt_dir: str | Path, packet: ContextPacket) -> Path:
@@ -855,3 +541,10 @@ def write_prompt_snapshot(attempt_dir: str | Path, prompt: str) -> Path:
     path = Path(attempt_dir) / "inputs" / "prompt.md"
     _write_text(path, prompt)
     return path
+
+
+def read_prompt(name: str) -> str:
+    path = Path(__file__).parents[1] / "prompts" / name
+    if not path.is_file():
+        raise FileNotFoundError(f"Preparation prompt is missing: {path}")
+    return path.read_text(encoding="utf-8")

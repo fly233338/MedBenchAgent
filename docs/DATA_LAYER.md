@@ -74,4 +74,4 @@ index、时间或医学语义。
 
 ## Preparation revisions
 
-The host freezes a SourceSnapshot and AcceptedHandoff before prepare. Candidate files stay inside an attempt workspace. DatasetPublisher writes a complete immutable revision into `revisions/<revision>`, durable commit metadata, `preparation_report.json`, quarantine evidence and a final manifest, then advances `current.json` atomically. Uncommitted staging directories are never discoverable as ready bundles.
+The host freezes one SourceSnapshot and creates an AcceptedHandoff after the Understand gate. Candidate files stay inside an attempt workspace. The Prepare gate writes one validation receipt; DatasetPublisher consumes it and writes a complete immutable revision into `revisions/<revision>`, durable commit metadata, `preparation_report.json`, quarantine evidence and a final manifest, then advances `current.json` atomically. The Supervisor does not publish the candidate again.

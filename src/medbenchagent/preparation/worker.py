@@ -11,11 +11,7 @@ from .contracts import Diagnostic, StageRequest, StageResult, Submission
 
 
 class OpenHandsWorker:
-    """Invoke the run-frozen OpenHands deployment for one stage attempt.
-
-    The class contains no stage-specific model behaviour.  Stage differences
-    are expressed by the request's prompt, context and output contract.
-    """
+    """Run one stage and normalize its submission into a StageResult."""
 
     def __init__(self, runtime: Any | None = None):
         self.runtime = runtime
@@ -51,17 +47,26 @@ class OpenHandsWorker:
             result = runtime.run(request)
         except Exception as exc:
             diagnostic = Diagnostic(stage=request.stage, code="worker_execution_failed", category="environment", blocking=True, message=str(exc))
-            stage_result = StageResult(stage=request.stage, run_id=request.run_id, dataset_id=request.dataset_id, attempt=request.attempt, conversation_id=request.conversation_id,
-                                       execution_key=request.execution_key, status="failed", diagnostics=[diagnostic],
-                                       diagnostic=str(exc), termination_reason="worker_error", input_digest=request.input_digest)
+            stage_result = StageResult(
+                stage=request.stage, run_id=request.run_id, dataset_id=request.dataset_id,
+                attempt=request.attempt, attempt_id=request.attempt_id,
+                conversation_id=request.conversation_id, execution_key=request.execution_key,
+                status="failed", diagnostics=[diagnostic], diagnostic=str(exc),
+                termination_reason="worker_error", input_digest=request.input_digest,
+            )
             self._write_result(request, stage_result)
             return stage_result
 
         submission, submission_error = self._submission(request)
         status = result.status
-        diagnostics = []
+        diagnostics: list[Diagnostic] = []
+        control = result.control
         if result.diagnostic:
-            diagnostics.append(Diagnostic(stage=request.stage, code="worker", category="environment" if status == "failed" else "unknown", blocking=status != "submitted", message=result.diagnostic))
+            diagnostics.append(Diagnostic(
+                stage=request.stage, code="worker",
+                category="environment" if status == "failed" else "unknown",
+                blocking=status != "submitted", message=result.diagnostic,
+            ))
         if submission_error:
             diagnostics.append(Diagnostic(stage=request.stage, code="submission_invalid", category="contract", blocking=True, message=submission_error))
             if status == "submitted":
@@ -70,20 +75,19 @@ class OpenHandsWorker:
             status = submission.requested_outcome
         if submission:
             for code in submission.diagnostic_codes:
-                diagnostics.append(Diagnostic(stage=request.stage, code=code, category="mapping" if code == "mapping_revision_required" else "unknown",
-                                              blocking=True, message=f"Worker reported diagnostic code: {code}"))
+                diagnostics.append(Diagnostic(
+                    stage=request.stage, code=code,
+                    category="mapping" if code == "mapping_revision_required" else "unknown",
+                    blocking=True, message=f"Worker reported diagnostic code: {code}",
+                ))
+                if code == "mapping_revision_required":
+                    control = "mapping_revision_required"
         outputs = {name: str(Path(path).resolve()) for name, path in result.outputs.items()}
-        prompt_digest = digest_file(request.prompt_path) if Path(request.prompt_path).is_file() else ""
-        context_digest = digest_file(request.context_path) if Path(request.context_path).is_file() else ""
         stage_result = StageResult(
-            stage=request.stage,
-            run_id=request.run_id,
-            dataset_id=request.dataset_id,
-            attempt=request.attempt,
-            conversation_id=request.conversation_id,
-            execution_key=request.execution_key,
-            status=status,
-            outputs=outputs,
+            stage=request.stage, run_id=request.run_id, dataset_id=request.dataset_id,
+            attempt=request.attempt, attempt_id=request.attempt_id,
+            conversation_id=request.conversation_id, execution_key=request.execution_key,
+            status=status, control=control, outputs=outputs,
             question_refs=submission.question_refs if submission else [],
             diagnostics=diagnostics,
             diagnostic=(submission.summary if submission else result.diagnostic),
@@ -91,8 +95,8 @@ class OpenHandsWorker:
             progress=result.progress,
             submission_path=str((Path(request.workspace) / "outputs" / "submission.json").resolve()) if submission else None,
             input_digest=request.input_digest,
-            prompt_digest=prompt_digest,
-            context_digest=context_digest,
+            prompt_digest=digest_file(request.prompt_path) if Path(request.prompt_path).is_file() else "",
+            context_digest=digest_file(request.context_path) if Path(request.context_path).is_file() else "",
             token_count=request.prompt_token_count,
         )
         self._write_result(request, stage_result)
@@ -100,6 +104,6 @@ class OpenHandsWorker:
 
     @staticmethod
     def _write_result(request: StageRequest, result: StageResult) -> None:
-        path = Path(request.workspace) / "result.json"
+        path = Path(request.workspace) / "state" / "result.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(result.model_dump_json(indent=2) + "\n", encoding="utf-8")

@@ -20,7 +20,7 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 - `runtime/`：会话、Run、checkpoint、事件、Agent harness、依赖、部署运行时和运行产物。
 - `workflow/graph.py`：Supervisor 工具、产物就绪判断和子 Agent 委派。
-- `preparation/`：来源冻结、两阶段 preparation graph、context、worker 协议和宿主验收入口。
+- `preparation/`：来源冻结、唯一两阶段 preparation graph、context、worker 协议和宿主验收入口。
 - `agents/`：任务规划、模板、分配、生成和最终化 Agent。
 - `data/`：来源、annotation、图像、Profile、Card、Catalog 和确定性验证。
 - `planning/`：需求提取、数据集选择、任务树、协议和样本计数。
@@ -51,7 +51,7 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
     evidence/
     planning outputs
   preparation/<dataset>/
-    inputs/ artifacts/ validation/ publication.json
+    inputs/ handoff/ validation/ checkpoint.sqlite publication.json
     attempts/<stage>/<attempt>/
       inputs/ work/ outputs/ result.json logs/ conversations/
 ```
@@ -68,9 +68,10 @@ feature 保存，Case grouping、Evidence ref、Asset 完整性和独立 populat
 
 数据准备只有两个 OpenHands coding stage：`understand` 负责来源检查、总体和 mapping，
 `prepare` 负责转换实现、测试、全量执行和候选提交。每个 stage/attempt 使用自己的
-conversation；OpenHands persistence 只用于同一 attempt 的进程恢复。宿主通过保存的
-`inputs/context.json`、`inputs/prompt.md`、阶段交付和校验报告续接，不依赖通用 memory 或
-前一阶段的 conversation。原始来源以只读方式访问，再由宿主重新核验来源、locator、总体、
+conversation；OpenHands persistence 只用于同一 running attempt 的进程恢复。唯一 graph 通过
+`inputs/context.json`、`inputs/prompt.md`、阶段交付和 validation receipt 续接，不依赖通用
+attempt protocol 或前一阶段的 conversation。原始来源在 preparation 入口冻结一次并生成
+source snapshot digest，后续 stage 只引用冻结 manifest，再由宿主核验来源、locator、总体、
 annotation 和图像资产，最后注册 Dataset、Profile、Card 和 Catalog。
 
 Supervisor 先解析数据准备请求：请求中包含可读的原始目录时，规范化目录名后委派 `process_dataset`；缺少目录时只询问目录路径。目录清单、格式和 manifest 由 DataProcessingAgent 检查，目录不可读或无法解析数据集 ID 时才进入澄清。
@@ -140,4 +141,4 @@ type, reference fields, Resolver contract, capacity, and derived plan projection
 
 ## Preparation execution contract
 
-The public Supervisor operation is `process_dataset(dataset_id, mode, issue_ids, notes)`. The host selects `understand` or `prepare` from LangGraph checkpoint facts. Each attempt owns `inputs`, `work`, `outputs`, `state`, `logs`, and `conversations`; candidates become an `AcceptedHandoff` only after independent validation. Published data uses immutable revision directories and an atomic `current.json` pointer.
+The public Supervisor operation is `process_dataset(dataset_id, mode, issue_ids, notes)`. Its preparation adapter invokes one production graph: `understand → validate_understand → prepare → validate_prepare → publish`. `needs_input` returns to the Supervisor; the next invocation supplies `user_decisions[]`. Stage retries are bounded independently at two Understand attempts, two Prepare attempts and one mapping revision cycle. Each attempt owns `inputs`, `work`, `outputs`, `state`, `logs`, and `conversations`; `state/result.json` is its only result receipt. The DatasetPublisher is the sole bundle publication owner.

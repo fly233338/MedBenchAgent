@@ -1,4 +1,4 @@
-"""Atomic publication of validated prepared datasets."""
+"""Atomic publication of an already validated prepared candidate."""
 
 from __future__ import annotations
 
@@ -9,16 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from medbenchagent.data.index import prepare_dataset
-from medbenchagent.data.preparation_validation import validate_candidate, write_validation_report
 from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-from .contracts import digest_payload
-from .validation import validate_prepare_candidate
+from .contracts import ValidationResult, digest_payload
 
 
 class DatasetPublisher:
-    """Build an immutable revision and atomically advance the current pointer."""
+    """The only owner of immutable prepared-bundle publication."""
 
     def __init__(self, bundle_root: str | Path):
         self.bundle_root = Path(bundle_root).resolve()
@@ -26,22 +24,21 @@ class DatasetPublisher:
         self.staging_root = self.bundle_root / ".staging"
         self.commit_root = self.bundle_root / "commits"
 
-    def publish(self, candidate: str | Path, context: dict[str, Any]) -> dict[str, Any]:
+    def publish(
+        self,
+        candidate: str | Path,
+        context: dict[str, Any],
+        validation: ValidationResult | dict[str, Any],
+    ) -> dict[str, Any]:
         candidate = Path(candidate).resolve()
         if not candidate.is_dir():
             raise ValueError(f"Candidate directory is missing: {candidate}")
-        if context.get("canonical_validation"):
-            canonical = validate_prepare_candidate(candidate, state=context, population_path=context.get("preparation_population_path"))
-            if canonical.status != "accepted":
-                raise ValueError("Canonical candidate validation failed: " + "; ".join(item.message for item in canonical.issues))
-        report = validate_candidate(
-            candidate,
-            source_root=context.get("source_root"),
-            source_roots=context.get("source_roots"),
-            population_path=context.get("preparation_population_path"),
-            expected_mapping_digest=context.get("preparation_mapping_digest"),
-        )
-        write_validation_report(candidate, report)
+        result = validation if isinstance(validation, ValidationResult) else ValidationResult.model_validate(validation)
+        if result.status != "accepted" or not result.report:
+            raise ValueError("DatasetPublisher requires an accepted prepare validation receipt")
+        if result.candidate_digest and result.candidate_digest != self._candidate_digest(candidate):
+            raise ValueError("Candidate changed after prepare validation")
+        report = dict(result.report)
         if report.get("systemic_failure") or not report.get("accepted_cases"):
             raise ValueError("Prepared candidate cannot be published")
         dataset_id = str(context.get("dataset_id") or context.get("dataset_scope") or self.bundle_root.name)
@@ -103,18 +100,24 @@ class DatasetPublisher:
                 "status": "complete", "revision": revision, "manifest_digest": manifest_digest,
             })
             os.replace(staging, revision_target)
-            commit = {
+            atomic_write_json(self.commit_root / f"{transaction_id}.json", {
                 "transaction_id": transaction_id, "dataset_id": dataset_id, "revision": revision,
                 "status": "committed", "revision_path": str(revision_target),
                 "manifest_digest": manifest_digest,
-            }
-            atomic_write_json(self.commit_root / f"{transaction_id}.json", commit)
+            })
             self._advance_current(revision_target, dataset_id, revision, transaction_id, manifest_digest=manifest_digest)
             return self._result(revision_target, dataset_id, revision, transaction_id, report)
         except Exception:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
             raise
+
+    @staticmethod
+    def _candidate_digest(root: Path) -> str:
+        return digest_payload({
+            path.relative_to(root).as_posix(): digest_file(path)
+            for path in sorted(root.rglob("*")) if path.is_file()
+        })
 
     def recover(self) -> None:
         if not self.commit_root.is_dir():
@@ -143,7 +146,6 @@ class DatasetPublisher:
 
     @staticmethod
     def _filter_invalid_cases(root: Path, report: dict[str, Any]) -> None:
-        """Materialize only valid Cases and the asset/provenance closure."""
         invalid_lines = {
             int(item["line"])
             for item in report.get("failures", [])
@@ -170,43 +172,29 @@ class DatasetPublisher:
         if assets_path.is_file():
             kept = []
             for line in assets_path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                payload = json.loads(line)
-                if str(payload.get("asset_id")) in asset_ids:
+                if line.strip() and str(json.loads(line).get("asset_id")) in asset_ids:
                     kept.append(line)
             assets_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8", newline="\n")
         provenance_path = root / "provenance.jsonl"
         if provenance_path.is_file():
             kept = []
             for line in provenance_path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                payload = json.loads(line)
-                if not payload.get("case_id") or str(payload.get("case_id")) in case_ids:
-                    kept.append(line)
+                if line.strip():
+                    payload = json.loads(line)
+                    if not payload.get("case_id") or str(payload.get("case_id")) in case_ids:
+                        kept.append(line)
             provenance_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8", newline="\n")
 
     @staticmethod
     def _revision(candidate: Path, dataset_id: str, report: dict[str, Any]) -> str:
-        values = {
+        return digest_payload({
             "dataset_id": dataset_id, "report": report,
             "files": {
                 path.relative_to(candidate).as_posix(): digest_file(path)
                 for path in sorted(candidate.rglob("*"))
                 if path.is_file() and path.name not in {"complete.json", "preparation_report.json"}
             },
-        }
-        return digest_payload(values)[:32]
-
-    @staticmethod
-    def _manifest_digest(root: Path) -> str:
-        values = {
-            path.relative_to(root).as_posix(): digest_file(path)
-            for path in sorted(root.rglob("*"))
-            if path.is_file() and path.name not in {"output_manifest.json", "submission.json", "complete.json"}
-        }
-        return digest_payload(values)
+        })[:32]
 
     @staticmethod
     def _write_final_manifest(root: Path) -> None:
@@ -267,7 +255,3 @@ class DatasetPublisher:
                 "dataset_card_path": str(revision / "dataset_card.json"),
             },
         }
-
-
-def publish_prepared_dataset(candidate: str | Path, context: dict[str, Any]) -> dict[str, Any]:
-    return DatasetPublisher(context["bundle_root"]).publish(candidate, context)

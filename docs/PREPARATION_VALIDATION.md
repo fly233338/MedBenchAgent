@@ -29,9 +29,9 @@
 ## 恢复
 
 准备状态、阶段 Worker attempt、工具操作和 LangGraph checkpoint 都可以从新 Run 目录恢复。
-每个 attempt 保存 `inputs/context.json`、`inputs/prompt.md`、`request.json`、`result.json` 和
-输出文件；不再维护通用 memory 文件。阶段输入 digest、用户决策 digest、契约和执行环境
-组成稳定执行键；成功回执和文件 digest 有效时可以复用，重复恢复不会重新发布相同内容。
+每个 attempt 保存 `inputs/context.json`、`inputs/prompt.md`、`state/request.json`、`state/result.json` 和
+输出文件；不再维护通用 memory、receipt 或 resume 文件。只有同一 stage、同一 attempt、同一 input digest 且状态仍为 running 时才续接 conversation；新的
+retry 或 mapping revision 创建新的 attempt identity。成功回执和文件 digest 有效时可以复用，重复恢复不会重新发布相同内容。
 
 详细字段契约见 [DATA_LAYER.md](DATA_LAYER.md)。
 # annotation validation
@@ -55,4 +55,4 @@ remain unavailable to an image-only benchmark model.
 
 ## Canonical validation and publication
 
-`preparation.validation` is the shared validator used by worker CLI and host acceptance. It rejects bare artifact paths, duplicate `(source_id, source_unit_id)` identities, incomplete mapping rules, invalid question containers and missing execution evidence. `AcceptedHandoff` is created only after understand validation; `DatasetPublisher` materializes valid Cases and their reference closure before publishing an immutable revision.
+There are two host gates. `validate_handoff()` accepts an Understand candidate, checks the source report, population, mapping and questions, and performs one independent inspector replay. `validate_prepare_candidate()` runs candidate validation and population reconciliation once, then writes the report used by publication. `AcceptedHandoff` is created only after the first gate. `DatasetPublisher` consumes the second gate receipt, checks the candidate digest, materializes valid Cases and their reference closure, and advances the immutable revision and `current.json` pointer. It does not invoke a second validator.

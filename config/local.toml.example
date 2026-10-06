@@ -35,5 +35,4 @@ question_template_count = 3
 # [data_processing]
 # backend = "local"  # auto, docker, or local
 # coding_worker_image = "medbench-openhands:local"
-# preparation_no_progress_limit = 8
-# preparation_tool_error_limit = 3
+# preparation_attempt_limits = { understand = 2, prepare = 2, mapping_revision_cycles = 1 }

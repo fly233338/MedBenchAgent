@@ -14,9 +14,7 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-from medbenchagent.preparation.contracts import AttemptReceipt, StageRequest, StageResult
-
-from medbenchagent.data.sources import verify_source
+from medbenchagent.preparation.contracts import StageRequest, StageResult
 from medbenchagent.data.execution import ExecutionUnavailable, docker_image_id
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_llm_api_key, get_settings
@@ -78,7 +76,8 @@ class OpenHandsDatasetRuntime:
         self.runtime = runtime
 
     def _failure(self, request: StageRequest, status: str, message: str, reason: str) -> StageResult:
-        return StageResult(stage=request.stage, run_id=request.run_id, dataset_id=request.dataset_id, attempt=request.attempt, conversation_id=request.conversation_id,
+        return StageResult(stage=request.stage, run_id=request.run_id, dataset_id=request.dataset_id, attempt=request.attempt,
+                           attempt_id=request.attempt_id, conversation_id=request.conversation_id,
                            execution_key=request.execution_key, status=status, diagnostic=message,
                            termination_reason=reason, input_digest=request.input_digest,
                            prompt_digest=hashlib.sha256(Path(request.prompt_path).read_bytes()).hexdigest()
@@ -99,8 +98,6 @@ class OpenHandsDatasetRuntime:
         source_roots = {str(key): str(value) for key, value in request.source_roots.items()}
         if not source_roots:
             raise ValueError("Stage request requires at least one source root")
-        for manifest in request.source_manifests.values():
-            verify_source(manifest)
         primary_id = sorted(source_roots)[0]
         source_root = Path(source_roots[primary_id]).resolve()
         if any(workspace.is_relative_to(Path(root).resolve()) or Path(root).resolve().is_relative_to(workspace)
@@ -125,8 +122,6 @@ class OpenHandsDatasetRuntime:
             max_iterations=request.budget.max_iterations,
             timeout_seconds=request.budget.timeout_seconds,
             allowed_outputs=request.required_outputs + request.optional_outputs,
-            progress_guard={"no_progress_limit": request.budget.no_progress_limit,
-                            "tool_error_limit": request.budget.tool_error_limit},
             agent=request.agent,
             backend=runtime["backend"],
         )
@@ -146,27 +141,10 @@ class OpenHandsDatasetRuntime:
             )
         request_path = workspace / "state" / "request.json"
         result_path = workspace / "state" / "result.json"
-        if request.execution_key:
-            receipt_path = workspace / "state" / "receipt.json"
-            if receipt_path.is_file():
-                try:
-                    receipt = AttemptReceipt.model_validate_json(receipt_path.read_text(encoding="utf-8"))
-                    if receipt.request_identity.get("execution_key") == request.execution_key and receipt.result.status == "submitted":
-                        return self._validate_outputs(request, receipt.result, workspace, conversation_id, runtime["backend"])
-                except (OSError, ValueError, TypeError):
-                    pass
-            receipt_path = workspace / "state" / f"coding_attempt_{request.attempt}.json"
-            if receipt_path.is_file():
-                try:
-                    cached = StageResult.model_validate_json(receipt_path.read_text(encoding="utf-8"))
-                    if cached.execution_key == request.execution_key and cached.status == "submitted":
-                        return self._validate_outputs(request, cached, workspace, conversation_id, runtime["backend"])
-                except ValueError:
-                    pass
         if request_path.is_file() and json.loads(request_path.read_text(encoding="utf-8")) == deployment:
             if result_path.is_file():
                 cached = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
-                if cached.status == "submitted":
+                if cached.execution_key == request.execution_key:
                     return self._validate_outputs(request, cached, workspace, conversation_id, runtime["backend"])
         result_path.unlink(missing_ok=True)
         atomic_write_json(request_path, deployment)
@@ -268,27 +246,14 @@ class OpenHandsDatasetRuntime:
     def _result_after_process(self, request: StageRequest, workspace: Path, result_path: Path,
                               conversation_id: str, backend: str) -> StageResult:
         """Preserve a worker's structured failure before falling back to stderr."""
-        receipt_path = workspace / "state" / "receipt.json"
-        if receipt_path.is_file():
-            try:
-                receipt = AttemptReceipt.model_validate_json(receipt_path.read_text(encoding="utf-8"))
-                result = receipt.result
-                if result.conversation_id != conversation_id:
-                    raise ValueError("Worker returned another conversation identity")
-                if result.status != "submitted":
-                    return result
-                return self._validate_outputs(request, result, workspace, conversation_id, backend)
-            except (OSError, ValueError, TypeError):
-                pass
         if result_path.is_file():
             try:
                 result = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
                 if result.conversation_id != conversation_id:
                     raise ValueError("Worker returned another conversation identity")
                 if result.status != "submitted":
-                    return self._record_result(workspace, request, result)
-                return self._record_result(workspace, request,
-                                           self._validate_outputs(request, result, workspace, conversation_id, backend))
+                    return result
+                return self._record_result(workspace, request, self._validate_outputs(request, result, workspace, conversation_id, backend))
             except (OSError, ValueError, TypeError):
                 pass
         return self._record_result(workspace, request, self._failure(
@@ -296,31 +261,8 @@ class OpenHandsDatasetRuntime:
 
     @staticmethod
     def _record_result(workspace: Path, request: StageRequest, result: StageResult) -> StageResult:
-        """Persist an immutable attempt receipt used by recovery and diagnosis."""
-        def file_digest(path: str) -> str:
-            candidate = Path(path)
-            if not candidate.is_file():
-                return ""
-            import hashlib
-            return hashlib.sha256(candidate.read_bytes()).hexdigest()
-
-        receipt = AttemptReceipt(
-            request_identity={
-                "run_id": request.run_id, "dataset_id": request.dataset_id,
-                "stage": request.stage.value, "attempt": request.attempt,
-                "attempt_id": request.attempt_id, "session_seq": request.session_seq,
-                "conversation_id": request.conversation_id, "execution_key": request.execution_key,
-                "input_digest": request.input_digest,
-            },
-            result=result,
-            runtime={"backend": request.runtime_backend or "unknown", "model": request.model, "sanitized_endpoint": request.base_url},
-            prompt_digest=file_digest(request.prompt_path), context_digest=file_digest(request.context_path),
-            contract_digest=request.contract_digest,
-            usage=result.usage or {"estimated_input_tokens": request.prompt_token_count or 0},
-            timing={}, execution_refs=result.execution_refs, resume_state_ref=request.resume_state_ref,
-            termination={"reason": result.termination_reason},
-        )
-        atomic_write_json(workspace / "state" / "receipt.json", receipt.model_dump(mode="json"))
+        result = result.model_copy(update={"attempt_id": request.attempt_id, "execution_key": request.execution_key})
+        atomic_write_json(workspace / "state" / "result.json", result.model_dump(mode="json"))
         return result
 
     def _run_local(self, request, workspace, request_path, result_path, conversation_id, key):
@@ -456,8 +398,6 @@ class OpenHandsDatasetRuntime:
             if relative_name.is_absolute() or ".." in relative_name.parts or not valid_path or not expected.is_file():
                 raise ValueError(f"Worker output is outside its contract: {name}")
             outputs[name] = str(expected.resolve())
-        for manifest in request.source_manifests.values():
-            verify_source(manifest)
         return result.model_copy(update={"outputs": outputs})
 
 

@@ -832,7 +832,7 @@ stage through notes, user wording, or feedback. Use issue_ids only for
 host-registered issues belonging to this dataset. Notes provide context
 and cannot override routing, acceptance, or publication checks."""
         from medbenchagent.preparation.bootstrap import initialize_preparation
-        from medbenchagent.preparation.entrypoint import compile_preparation_agent
+        from medbenchagent.preparation.entrypoint import run_preparation_agent
         if mode == "rebuild" and not _rebuild_requested(context):
             return result("failed", "Rebuild requires an explicit affirmative request for this dataset.")
         operation = Path(context["operation_directory"])
@@ -877,10 +877,25 @@ and cannot override routing, acceptance, or publication checks."""
             child["preparation_mode"] = mode
         child["issue_ids"] = list(issue_ids or [])
         child["notes"] = str(notes or "")
-        child["canonical_publisher"] = True
-        child["strict_publication"] = True
         inject_answers(context, child, "DataProcessingAgent", dataset_id)
-        output = compile_preparation_agent().invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
+        raw = run_preparation_agent(child)
+        output_context = {**child, **raw.get("updates", {})}
+        if raw.get("status") == "needs_input":
+            pending = (raw.get("updates", {}).get("pending_questions") or [{"issue_id": "preparation", "question": raw.get("summary", "Preparation needs input")}])
+            question = pending[0] if isinstance(pending[0], dict) else {"issue_id": "preparation", "question": str(pending[0])}
+            source_ids = list(question.get("source_ids") or [])
+            subject_scope = "source" if len(source_ids) == 1 else "multi_source" if len(source_ids) > 1 else "dataset"
+            if len(source_ids) == 1:
+                output_context["source_scope"] = source_ids[0]
+            issue = new_issue(
+                "DataProcessingAgent", output_context, str(question.get("issue_id") or "preparation"),
+                str(question.get("question") or question.get("message") or raw.get("summary", "Preparation needs input")),
+                subject_scope=subject_scope, source_ids=source_ids,
+            )
+            issue.update(preparation_issue_id=str(question.get("issue_id") or "preparation"), fields=list(question.get("fields") or []), evidence_refs=list(question.get("evidence_refs") or []), impact=str(question.get("impact") or ""))
+            output_context["global_issue"] = issue
+            output_context["issues"] = {**output_context.get("issues", {}), issue["issue_id"]: issue}
+        output = {"context": output_context, "result": {"status": raw.get("status", "blocked"), "summary": raw.get("summary", "")}}
         outcome = child_result(context, dataset_id, "preparation", output)
         if discovered is not None:
             outcome["updates"]["discovered_sources"] = {**context.get("discovered_sources", {}),
@@ -889,76 +904,31 @@ and cannot override routing, acceptance, or publication checks."""
                 Path(context["run_directory"]) / "discovery" / "sources" /
                 dataset_id / "source_decision.json")
         if output["result"]["status"] == "complete":
-            # Coding Agent submissions are finalized deterministically by the
-            # host before they are exposed to planning.
-            if "dataset_entry" not in output["context"]:
-                from medbenchagent.data.finalization import finalize_prepared_dataset
-                from medbenchagent.runtime.construction import record_event
-                candidate = output["context"].get("preparation_candidate", {})
-                candidate_path = candidate.get("candidate_path") if isinstance(candidate, dict) else None
-                if candidate_path:
-                    event_path = output["context"].get("construction_events_path")
-                    event_base = {"run_id": output["context"].get("run_id"),
-                                  "agent": "DatasetProcessingAgent", "dataset_id": dataset_id,
-                                  "workspace": output["context"].get("preparation_workspace"),
-                                  "conversation_id": output["context"].get("preparation_conversation_id"),
-                                  "candidate_path": candidate_path}
-                    if event_path:
-                        record_event(event_path, "finalization_started", operation="finalize_prepared_dataset",
-                                     status="running", **event_base)
-                    try:
-                        finalized = finalize_prepared_dataset(candidate_path, output["context"])
-                    except (ValueError, OSError) as exc:
-                        from medbenchagent.preparation.entrypoint import mark_preparation_blocked
-                        mark_preparation_blocked(output["context"].get("preparation_workspace", ""), "validation_failed")
-                        if event_path:
-                            record_event(event_path, "finalization_finished", operation="finalize_prepared_dataset",
-                                         status="blocked", diagnostic=str(exc), **event_base)
-                        # Validation issues are persisted for the same Coding
-                        # Session; the next Supervisor turn performs continuation.
-                        return {"status": "blocked", "summary": str(exc),
-                                "updates": {**outcome.get("updates", {}),
-                                            "preparation_status": "blocked",
-                                            "validation_error": str(exc),
-                                            "preparation_validation_issues": str(exc)}}
-                    from medbenchagent.preparation.entrypoint import mark_preparation_complete
-                    mark_preparation_complete(output["context"].get("preparation_workspace", ""))
-                    if event_path:
-                        record_event(event_path, "finalization_finished", operation="finalize_prepared_dataset",
-                                     status="complete", dataset_entry=finalized.get("dataset_entry"),
-                                     validation_report=finalized.get("validation_report"), **event_base)
-                    from medbenchagent.data.dataset_catalog import register_dataset
-                    registered_entry = register_dataset(
-                        dataset_id, finalized["bundle"], catalog_path=context["registration_catalog_path"]
-                    )
-                    finalized["dataset_entry"] = registered_entry
-                    output["context"].update({"dataset_entry": registered_entry,
-                                               "cases_path": finalized["cases_path"],
-                                               "dataset_access_manifest": finalized["access_manifest"]})
-                    dataset_versions = publish(
-                        output["context"], "Dataset",
-                        {"cases": finalized["cases_path"], "access": finalized["access_manifest"]},
-                        ("DataConfig",),
-                    )
-                    profile_versions = publish(
-                        output["context"], "DatasetProfile",
-                        {"path": finalized["access_manifest"].get("profile_path")}, ("Dataset",),
-                    )
-                    card_versions = {} if finalized.get("annotation_schema") == "annotation" else publish(
-                        output["context"], "DatasetCard",
-                        {"path": finalized["card_path"]}, ("DatasetProfile",),
-                    )
-                    outcome["updates"].update({
-                        "dataset_entry": finalized["dataset_entry"],
-                        "cases_path": finalized["cases_path"],
-                        "dataset_access_manifest": finalized["access_manifest"],
-                        "artifact_versions": {
-                            **outcome["updates"].get("artifact_versions", {}),
-                            **dataset_versions.get("artifact_versions", {}),
-                            **profile_versions.get("artifact_versions", {}),
-                            **card_versions.get("artifact_versions", {}),
-                        },
-                    })
+            publication = output["context"].get("publication") or {}
+            finalized = dict(publication)
+            if "dataset_entry" not in finalized:
+                return {"status": "blocked", "summary": "Preparation graph completed without a publication", "updates": outcome.get("updates", {})}
+            from medbenchagent.data.dataset_catalog import register_dataset
+            registered_entry = register_dataset(dataset_id, finalized["bundle"], catalog_path=context["registration_catalog_path"])
+            output["context"].update({
+                "dataset_entry": registered_entry,
+                "cases_path": finalized["cases_path"],
+                "dataset_access_manifest": finalized["access_manifest"],
+            })
+            dataset_versions = publish(output["context"], "Dataset", {"cases": finalized["cases_path"], "access": finalized["access_manifest"]}, ("DataConfig",))
+            profile_versions = publish(output["context"], "DatasetProfile", {"path": finalized["access_manifest"].get("profile_path")}, ("Dataset",))
+            card_versions = publish(output["context"], "DatasetCard", {"path": finalized["card_path"]}, ("DatasetProfile",))
+            outcome["updates"].update({
+                "dataset_entry": registered_entry,
+                "cases_path": finalized["cases_path"],
+                "dataset_access_manifest": finalized["access_manifest"],
+                "artifact_versions": {
+                    **outcome["updates"].get("artifact_versions", {}),
+                    **dataset_versions.get("artifact_versions", {}),
+                    **profile_versions.get("artifact_versions", {}),
+                    **card_versions.get("artifact_versions", {}),
+                },
+            })
             entries = {**context.get("prepared_entries", {}), dataset_id: output["context"]["dataset_entry"]}
             outcome["updates"]["prepared_entries"] = entries
             outcome["updates"]["preparation_required"] = [

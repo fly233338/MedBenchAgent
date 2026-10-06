@@ -14,7 +14,8 @@ from medbenchagent.data.sources import digest_file
 def validate_candidate(candidate: str | Path, *, source_root: str | Path | None = None,
                           source_roots: dict[str, str | Path] | None = None,
                           population_path: str | Path | None = None,
-                          expected_mapping_digest: str | None = None) -> dict:
+                          expected_mapping_digest: str | None = None,
+                          expected_population_digest: str | None = None) -> dict:
     """Validate every Case and return a complete acceptance/quarantine report."""
     candidate = Path(candidate)
     cases_path = candidate / "cases.jsonl"
@@ -35,26 +36,39 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
     provenance_failures = []
     provenance_count = 0
     provenance_cases: set[str] = set()
+    accounted: set[tuple[str, str]] = set()
+    accounting = {"retained": 0, "quarantined": 0, "excluded": 0, "duplicate": 0}
     with provenance.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             try:
                 item = json.loads(line)
                 if not isinstance(item, dict) or not item.get("source_id") or not item.get("record_ref"):
                     raise ValueError("source_id and record_ref are required")
+                identity_value = item.get("source_unit_id") or item.get("record_ref")
+                identity = (item["source_id"], identity_value)
+                if item.get("status") in accounting:
+                    if identity in accounted:
+                        raise ValueError(f"duplicate provenance population identity: {identity}")
+                    accounted.add(identity)
+                    accounting[item["status"]] += 1
+                    if item["status"] == "retained" and not (item.get("case_ids") or item.get("case_id")):
+                        raise ValueError("Retained source units require case_ids")
                 if item.get("case_id"):
                     provenance_cases.add(str(item["case_id"]))
                 roots = source_roots or ({"source": source_root} if source_root is not None else {})
                 root = roots.get(str(item["source_id"]))
                 for locator in item.get("locators", []):
-                    if not isinstance(locator, dict) or not locator.get("path"):
-                        raise ValueError("provenance locators require a path")
+                    if isinstance(locator, dict):
+                        locator = locator.get("path")
+                    if not isinstance(locator, str) or not locator:
+                        raise ValueError("provenance locators require a source-relative path")
                     if root is not None:
-                        path = Path(locator["path"])
+                        path = Path(locator)
                         resolved = (Path(root).resolve() / path).resolve()
                         if path.is_absolute() or not resolved.is_relative_to(Path(root).resolve()):
                             raise ValueError("provenance locator escapes source root")
                         if not resolved.is_file():
-                            raise ValueError(f"provenance locator is missing: {locator['path']}")
+                            raise ValueError(f"provenance locator is missing: {locator}")
                 provenance_count += 1
             except Exception as exc:
                 provenance_failures.append({"line": line_number, "kind": "provenance_failure", "error": str(exc)})
@@ -132,9 +146,7 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                         raise ValueError(f"split references unknown case: {record.case_id}")
         except Exception as exc:
             manifest_failures.append({"kind": "manifest_failure", "manifest": name, "error": str(exc)})
-    # A submitted output manifest is optional for older prepared bundles but
-    # authoritative when present.  Validate every registered file and its
-    # dependency reference before publication.
+    # Validate registered outputs and their candidate-relative dependencies once.
     output_manifest = candidate / "output_manifest.json"
     if output_manifest.is_file():
         try:
@@ -143,7 +155,7 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                 raise ValueError("output_manifest.files must be a list")
             seen_output_paths = set()
             for entry in payload["files"]:
-                item = entry if isinstance(entry, dict) else {"path": entry}
+                item = entry
                 relative = item.get("path")
                 if not isinstance(relative, str) or not relative:
                     raise ValueError("output_manifest file entries require a path")
@@ -156,11 +168,12 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                 resolved = path.resolve() if path.is_absolute() else (candidate / path).resolve()
                 if not resolved.is_relative_to(candidate.resolve()) or not resolved.is_file():
                     raise ValueError(f"output_manifest references a missing or external file: {relative}")
-                expected = item.get("digest") or item.get("file_digest")
-                if expected and digest_file(resolved) != expected:
+                expected = item.get("digest")
+                if not expected or digest_file(resolved) != expected:
                     raise ValueError(f"output_manifest digest mismatch: {relative}")
             required_files = ("cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl",
-                              "conversion_config.json", "grouping_policy.json", "execution_report.json")
+                              "conversion_config.json", "grouping_policy.json", "execution_report.json",
+                              "scripts/prepare.py")
             missing_registered = [name for name in required_files if (candidate / name).is_file() and name not in seen_output_paths]
             if missing_registered:
                 raise ValueError(f"output_manifest does not register required outputs: {missing_registered}")
@@ -176,11 +189,13 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                     raise ValueError(f"output_manifest dependency escapes candidate: {dependency['path']}")
                 if not resolved_dependency.exists():
                     raise ValueError(f"output_manifest dependency is missing: {dependency['path']}")
-                expected_dependency = dependency.get("digest") or dependency.get("file_digest")
+                expected_dependency = dependency.get("digest")
                 if expected_dependency and resolved_dependency.is_file() and digest_file(resolved_dependency) != expected_dependency:
                     raise ValueError(f"output_manifest dependency digest mismatch: {dependency['path']}")
             if expected_mapping_digest and payload.get("mapping_digest") != expected_mapping_digest:
                 raise ValueError("output_manifest mapping digest does not match accepted mapping")
+            if expected_population_digest and payload.get("population_digest") != expected_population_digest:
+                raise ValueError("output_manifest population digest does not match accepted population")
         except Exception as exc:
             manifest_failures.append({"kind": "output_manifest_failure", "manifest": "output_manifest.json", "error": str(exc)})
 

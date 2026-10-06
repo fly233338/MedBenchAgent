@@ -13,7 +13,9 @@ Procedure
    execution interface, and output contract index. Confirm that the referenced
    files and identities match the host context. If the accepted handoff is
    missing or inconsistent, report a contract blocker; do not reconstruct
-   accepted semantics from a previous conversation.
+   accepted semantics from a previous conversation. Resolved answers are
+   supplied in inputs/decisions.json; they do not change the accepted mapping
+   unless the host routes the work back through understand.
 
 2. Index all mapping rules.
    Load the complete mapping programmatically and create a rule coverage

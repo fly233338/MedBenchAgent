@@ -37,7 +37,6 @@ def _write_report(path: str | Path, result: Any) -> None:
 def validate_handoff_command(args: argparse.Namespace) -> int:
     candidate = Path(args.candidate).resolve()
     context = _context(args.context)
-    context["canonical_validation"] = True
     result = validate_handoff(_files(candidate), state=context, replay=args.replay)
     _write_report(args.report, result)
     return 0 if result.status == "accepted" else 2
@@ -45,7 +44,6 @@ def validate_handoff_command(args: argparse.Namespace) -> int:
 
 def validate_candidate_command(args: argparse.Namespace) -> int:
     context = _context(args.context)
-    context["canonical_validation"] = True
     result = validate_prepare_candidate(args.candidate, state=context)
     _write_report(args.report, result)
     return 0 if result.status == "accepted" else 2

@@ -1,194 +1,134 @@
-"""Supervisor-facing preparation entrypoint.
-
-The business state machine lives in :mod:`medbenchagent.preparation.graph`.
-This module freezes source inputs, invokes the two-stage graph, and exposes the
-small LangGraph wrapper consumed by the Supervisor workflow.
-"""
+"""Freeze inputs and invoke the production preparation graph with checkpoints."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 
-from langgraph.graph import END, START, StateGraph
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.sources import inventory_source, verify_source
-from medbenchagent.preparation.graph import run_preparation_graph
-from medbenchagent.preparation.worker import OpenHandsWorker
+from medbenchagent.runtime.clarifications import answer_payload
 from medbenchagent.runtime.construction import record_event
 from medbenchagent.runtime.dataset_runtime import dataset_runtime
-from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.settings import get_settings
+
+from .contracts import UserDecision, digest_file, digest_payload
+from .graph import compile_preparation_graph
+from .worker import OpenHandsWorker
 
 
-def _workspace(context: dict[str, Any]) -> Path:
-    dataset_id = str(context.get("dataset_scope") or context.get("dataset_id") or "dataset")
-    return Path(context["run_directory"]) / "preparation" / dataset_id
-
-
-def _source_setup(context: dict[str, Any], workspace: Path) -> tuple[list[dict], dict[str, str]]:
-    sources = [Source.model_validate(item).model_dump(mode="json") for item in context.get("sources", [])]
-    if not sources:
-        raise ValueError("Dataset preparation requires at least one source")
-    bundle_root = workspace / "inputs"
-    manifests = dict(context.get("source_manifests") or {})
+def freeze_sources(context: dict[str, Any], workspace: Path):
+    """Inventory new sources or verify existing manifests once at entry."""
+    sources = [Source.model_validate(item) for item in context["sources"]]
+    if not sources or len({item.id for item in sources}) != len(sources):
+        raise ValueError("Preparation requires sources with unique IDs")
+    manifests = {}
+    digests = {}
     for source in sources:
-        manifest = Path(manifests.get(source["id"]) or bundle_root / "source_manifests" / source["id"])
-        inventory_source(Source.model_validate(source), manifest)
-        verify_source(manifest)
-        manifests[source["id"]] = str(manifest)
-    return sources, manifests
+        manifest = workspace / "inputs/source_manifests" / source.id
+        if (manifest / "source.json").is_file():
+            saved = Source.model_validate_json((manifest / "source.json").read_text(encoding="utf-8"))
+            if saved != source:
+                raise ValueError(f"Source identity changed: {source.id}")
+            verify_source(manifest)
+        else:
+            inventory_source(source, manifest)
+        manifests[source.id] = str(manifest)
+        digests[source.id] = digest_payload({
+            item.relative_to(manifest).as_posix(): digest_file(item)
+            for item in sorted(manifest.rglob("*")) if item.is_file()
+        })
+    return [item.model_dump(mode="json") for item in sources], manifests, digest_payload(digests)
 
 
-def _load_checkpoint(workspace: Path) -> dict[str, Any]:
-    path = workspace / "checkpoint.json"
-    if not path.is_file():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def _persist_checkpoint(workspace: Path, state: dict[str, Any]) -> None:
-    # This is a diagnostic projection. LangGraph's checkpoint remains the
-    # scheduler authority when the preparation graph is compiled by a caller.
-    def normalize(value):
-        if hasattr(value, "model_dump"):
-            return normalize(value.model_dump(mode="json"))
-        if isinstance(value, dict):
-            return {str(key): normalize(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [normalize(item) for item in value]
-        return value
-
-    safe = normalize({key: value for key, value in state.items() if key not in {"sources", "user_decisions"}})
-    atomic_write_json(workspace / "checkpoint.json", safe)
+def preparation_decisions(context):
+    decisions = {item["issue_id"]: item for item in context.get("user_decisions", [])
+                 if isinstance(item, dict) and item.get("issue_id")}
+    for issue in context.get("issues", {}).values():
+        if (issue.get("role") != "DataProcessingAgent"
+                or issue.get("dataset_id") != context["dataset_scope"]
+                or issue.get("status") != "resolved"):
+            continue
+        payload = answer_payload(context, issue)
+        issue_id = issue.get("preparation_issue_id", issue["issue_id"])
+        decisions[issue_id] = UserDecision(
+            issue_id=issue_id, decision_id=issue["issue_id"], dataset_id=context["dataset_scope"],
+            answer=payload["text"], exchanges=payload["exchanges"],
+            source_ids=issue.get("source_ids", []), fields=issue.get("fields", []),
+            evidence_refs=issue.get("evidence_refs", []),
+        ).model_dump(mode="json")
+    return list(decisions.values())
 
 
 def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
-    """Run the two coding stages and return a candidate handoff."""
-    context = dict(context)
-    workspace = _workspace(context)
+    dataset_id = context["dataset_scope"]
+    workspace = Path(context["run_directory"]) / "preparation" / dataset_id
     workspace.mkdir(parents=True, exist_ok=True)
-    sources, manifests = _source_setup(context, workspace)
-    # checkpoint.json is only a projection.  Reuse references after validating
-    # their content; never copy its stage/status/accepted flags into routing.
-    projection = _load_checkpoint(workspace)
-    checkpoint = {
-        key: projection[key]
-        for key in ("accepted_handoff_ref", "resume_state_ref", "attempt_id", "session_seq", "attempt_mode")
-        if key in projection
-    }
+    sources, manifests, source_digest = freeze_sources(context, workspace)
+    decisions = preparation_decisions(context)
+    settings = get_settings().data_processing
     state = {
-        **checkpoint,
-        **context,
-        "sources": sources,
+        "run_id": context["run_id"], "dataset_id": dataset_id,
+        "run_directory": context["run_directory"], "preparation_root": str(workspace),
+        "bundle_root": context["bundle_root"], "sources": sources,
         "source_roots": {item["id"]: item["root"] for item in sources},
-        "source_manifests": manifests,
-        "dataset_id": str(context.get("dataset_scope") or context.get("dataset_id") or "dataset"),
-        "preparation_root": str(workspace),
+        "source_manifests": manifests, "source_snapshot_digest": source_digest,
         "user_request": context.get("user_request") or context.get("user_requirement") or "",
-        "strict_publication": True,
-        "canonical_validation": True,
+        "user_decisions": decisions,
+        "preparation_attempt_limits": context.get("preparation_attempt_limits", settings["preparation_attempt_limits"]),
+        "preparation_stage_budgets": context.get("preparation_stage_budgets", settings["preparation_stage_budgets"]),
+        **{key: context[key] for key in (
+            "execution_runtime", "data_runtime", "construction_events_path", "model",
+            "base_url", "reasoning_effort", "llm_timeout_seconds", "llm_max_retries",
+        ) if key in context},
     }
-    state["notes"] = str(context.get("notes") or "")
-    state["target_issue_ids"] = list(context.get("issue_ids") or [])
-    runtime = dataset_runtime(context)
-    outcome = run_preparation_graph(state, worker=OpenHandsWorker(runtime=runtime), max_attempts=int(context.get("preparation_max_attempts", 3)))
-    _persist_checkpoint(workspace, outcome)
-    status = outcome.get("status", "blocked")
-    stage_result = outcome.get("stage_result") or {}
+    limits = state["preparation_attempt_limits"]
+    config = {"configurable": {"thread_id": dataset_id},
+              "recursion_limit": max(25, 2 * (limits["understand"] + limits["prepare"]) + 6)}
+    with SqliteSaver.from_conn_string(str(workspace / "checkpoint.sqlite")) as checkpointer:
+        graph = compile_preparation_graph(
+            worker=OpenHandsWorker(runtime=dataset_runtime(context)), checkpointer=checkpointer,
+        )
+        snapshot = graph.get_state(config)
+        if snapshot.values and snapshot.values["source_snapshot_digest"] != source_digest:
+            raise ValueError("Preparation source snapshot changed; start a new run")
+        if snapshot.values.get("status") == "complete":
+            outcome = snapshot.values
+        elif snapshot.next:
+            # LangGraph resumes the pending node. Runtime persistence continues
+            # only its unfinished conversation or reuses its saved result.
+            outcome = graph.invoke(None, config)
+        else:
+            outcome = graph.invoke({**snapshot.values, **state}, config)
+    status = outcome["status"]
     updates = {
-        "preparation_workspace": str(workspace),
-        "preparation_status": "complete" if status == "complete" else status,
-        "preparation_conversation_id": stage_result.get("conversation_id", ""),
-        "preparation_termination_reason": stage_result.get("termination_reason", ""),
+        "preparation_workspace": str(workspace), "preparation_status": status,
+        "source_snapshot_digest": source_digest, "user_decisions": decisions,
+        **{key: outcome[key] for key in (
+            "publication", "accepted_handoff_ref", "pending_questions", "diagnostics",
+        ) if key in outcome},
     }
-    if outcome.get("preparation_candidate"):
-        updates["preparation_candidate"] = outcome["preparation_candidate"]
-    accepted = outcome.get("accepted_artifacts") or {}
-    population = accepted.get("image_population.jsonl") if isinstance(accepted, dict) else None
-    mapping = accepted.get("mapping.json") if isinstance(accepted, dict) else None
-    if isinstance(population, dict):
-        updates["preparation_population_path"] = population.get("path")
-    if isinstance(mapping, dict):
-        updates["preparation_mapping_digest"] = mapping.get("digest")
-    if outcome.get("pending_questions"):
-        updates["preparation_question"] = outcome["pending_questions"]
-    if outcome.get("diagnostics"):
-        updates["preparation_validation_issues"] = json.dumps(outcome["diagnostics"], ensure_ascii=False)
     if status == "complete":
-        return {"status": "complete", "summary": "Preparation candidate submitted for host validation", "updates": updates}
+        return {"status": "complete", "summary": "Prepared dataset published", "updates": updates}
     if status == "needs_input":
-        return {"status": "needs_input", "summary": "Preparation is waiting for a source or semantic decision", "updates": updates}
-    return {"status": "blocked" if status == "blocked" else "failed", "summary": outcome.get("diagnostic") or "Preparation stage failed", "updates": updates}
+        return {"status": "needs_input", "summary": "Preparation needs a semantic decision", "updates": updates}
+    issues = outcome.get("diagnostics", [])
+    summary = "; ".join(item.get("message", "") for item in issues) or "Preparation stage blocked"
+    return {"status": "blocked", "summary": summary, "updates": updates}
 
 
-def mark_preparation_complete(workspace: str | Path) -> None:
-    path = Path(workspace) / "checkpoint.json"
-    state = _load_checkpoint(Path(workspace))
-    state.update({"status": "complete", "stage": "publish"})
-    atomic_write_json(path, state)
+def run_preparation_agent(context):
+    def event(kind, **values):
+        if path := context.get("construction_events_path"):
+            record_event(path, kind, run_id=context["run_id"], agent="DatasetProcessingAgent",
+                         dataset_id=context["dataset_scope"], operation="process_dataset", **values)
 
-
-def mark_preparation_blocked(workspace: str | Path, reason: str = "validation_failed") -> None:
-    path = Path(workspace) / "checkpoint.json"
-    state = _load_checkpoint(Path(workspace))
-    state.update({"status": "blocked", "termination_reason": reason})
-    atomic_write_json(path, state)
-
-
-class PreparationAgentState(TypedDict, total=False):
-    context: dict[str, Any]
-    result: dict[str, Any]
-
-
-def _preparation_event(context: dict[str, Any], event_type: str, **values: object) -> None:
-    path = context.get("construction_events_path")
-    if not path:
-        return
-    payload = {
-        "run_id": context.get("run_id"),
-        "agent": "DatasetProcessingAgent",
-        "dataset_id": context.get("dataset_scope"),
-        "conversation_id": context.get("preparation_conversation_id"),
-        "workspace": context.get("preparation_workspace"),
-    }
-    payload.update(values)
-    record_event(path, event_type, **payload)
-
-
-def run_preparation_agent(context: dict[str, Any]) -> dict[str, Any]:
-    context = dict(context)
-    _preparation_event(context, "agent_started", operation="process_dataset", status="started",
-                       source_count=len(context.get("sources", [])))
+    event("agent_started", status="running")
     try:
         outcome = run_preparation(context)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         outcome = {"status": "blocked", "summary": str(exc), "updates": {}}
-    updates = outcome.get("updates", {})
-    _preparation_event({**context, **updates}, "worker_result", operation="preparation_graph",
-                       status=outcome["status"], diagnostic=outcome.get("summary", ""),
-                       termination_reason=updates.get("preparation_termination_reason"))
-    _preparation_event({**context, **updates}, "agent_finished", operation="process_dataset",
-                       status=outcome["status"], diagnostic=outcome.get("summary", ""),
-                       candidate_path=(updates.get("preparation_candidate") or {}).get("candidate_path"))
+    event("agent_finished", status=outcome["status"], diagnostic=outcome["summary"])
     return outcome
-
-
-def compile_preparation_agent(*, checkpointer=None):
-    def execute(state: PreparationAgentState):
-        context = dict(state["context"])
-        outcome = run_preparation_agent(context)
-        context.update(outcome.get("updates", {}))
-        context["preparation_agent_result"] = {key: value for key, value in outcome.items() if key != "updates"}
-        return {"context": context, "result": context["preparation_agent_result"]}
-
-    graph = StateGraph(PreparationAgentState)
-    graph.add_node("preparation_agent", execute)
-    graph.add_edge(START, "preparation_agent")
-    graph.add_edge("preparation_agent", END)
-    return graph.compile(checkpointer=checkpointer)

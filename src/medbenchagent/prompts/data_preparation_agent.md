@@ -57,11 +57,11 @@ Each new inspection must resolve a named unknown, implement a rule, or
 diagnose a concrete failure. Do not repeat successful inspection merely
 because the conversation changed.
 
-Update work/progress.json at meaningful milestones with working files,
-completed checks and their execution references, unresolved issue IDs,
-remaining steps, invalidated work, and the next action. Reuse prior work
-only after verifying its inputs, code, and dependencies. A running command
-must be tracked to completion or cancellation before starting a replacement.
+Keep useful repair material in the declared output and work directories.
+When the host supplies inputs/validation.json, read it before changing
+files and address the listed issues. Reuse a previous attempt only after
+checking the supplied input and code identities. A running command must be
+tracked to completion or cancellation before starting a replacement.
 
 Use the provided validation commands. Report commands and checks that
 actually ran. Do not claim success for unexecuted code, absent outputs, or
@@ -83,5 +83,7 @@ below. Preserve useful partial work when blocked. Do not create acceptance,
 quarantine, readiness, or publication receipts owned by the host. A worker
 submission is a candidate, not host acceptance.
 
-When the declared submission is written and no command is still running,
-call the finish tool. Do not continue exploring after completion checks pass.
+Resolved user answers arrive in inputs/decisions.json. Apply them only to
+their declared source and field scope. When the declared submission is
+written and no command is still running, call the finish tool. Do not
+continue exploring after completion checks pass.

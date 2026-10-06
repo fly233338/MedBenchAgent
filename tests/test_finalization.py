@@ -1,13 +1,23 @@
 import json
 
 from medbenchagent.data.asset_manifest import digest_path
-from medbenchagent.data.finalization import finalize_prepared_dataset
+from medbenchagent.data.preparation_validation import validate_candidate
 from medbenchagent.data.models import AssetEntry, CaseRecord, Evidence
 from medbenchagent.data.bundle_catalog import verify_bundle
 from medbenchagent.data.dataset_catalog import prepared_bundle_entry, register_dataset, load_prepared
 from medbenchagent.data.contracts import Source
 from medbenchagent.preparation import bootstrap as preparation_context
+from medbenchagent.preparation import DatasetPublisher, Stage, ValidationResult
 from medbenchagent.data import readiness
+
+
+def publish_candidate(candidate, context):
+    report = validate_candidate(candidate)
+    validation = ValidationResult(
+        status="accepted", stage=Stage.PREPARE, report=report,
+        candidate_digest=DatasetPublisher._candidate_digest(candidate),
+    )
+    return DatasetPublisher(context["bundle_root"]).publish(candidate, context, validation)
 
 
 def test_finalize_canonical_bundle(tmp_path):
@@ -26,7 +36,7 @@ def test_finalize_canonical_bundle(tmp_path):
     (candidate / "grouping_policy.json").write_text('{}', encoding="utf-8")
     (candidate / "mapping.json").write_text('{}', encoding="utf-8")
     (candidate / "complete.json").write_text('{"complete":true}', encoding="utf-8")
-    result = finalize_prepared_dataset(candidate, {"bundle_root": str(tmp_path / "bundle")})
+    result = publish_candidate(candidate, {"bundle_root": str(tmp_path / "bundle")})
     assert result["status"] == "complete"
     assert (tmp_path / "bundle" / "ready.json").is_file()
     assert result["report"]["accepted_cases"] == 1
@@ -50,7 +60,7 @@ def test_direct_prepared_bundle_is_catalog_reusable(tmp_path):
                         ("mapping.json", "{}"), ("complete.json", '{"complete":true}')):
         (candidate / name).write_text(value, encoding="utf-8")
 
-    result = finalize_prepared_dataset(candidate, {"bundle_root": str(prepared), "dataset_id": "breast"})
+    result = publish_candidate(candidate, {"bundle_root": str(prepared), "dataset_id": "breast"})
     entry = prepared_bundle_entry("breast", prepared_root=tmp_path / "Prepared")
     catalog = tmp_path / "catalog.json"
     registered = register_dataset("breast", prepared, catalog_path=catalog)
@@ -83,7 +93,7 @@ def test_prepared_directory_inventory_returns_valid_bundles_and_diagnostics(tmp_
     for name, value in (("conversion_config.json", "{}"), ("grouping_policy.json", "{}"),
                         ("mapping.json", "{}"), ("complete.json", '{"complete":true}')):
         (candidate / name).write_text(value, encoding="utf-8")
-    finalize_prepared_dataset(candidate, {"bundle_root": str(prepared / "breast"), "dataset_id": "breast"})
+    publish_candidate(candidate, {"bundle_root": str(prepared / "breast"), "dataset_id": "breast"})
     (prepared / "broken").mkdir(parents=True)
     monkeypatch.setattr(readiness, "get_settings", lambda: type("Settings", (), {
         "paths": type("Paths", (), {"prepared_datasets_root": prepared})(),

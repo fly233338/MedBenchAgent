@@ -73,26 +73,25 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
         data_runtime = {**runtime, **component}
         atomic_write_json(runtime_path, data_runtime)
     manifest_root = run_workspace if context.get("run_directory") else bundle
+    manifest_base = manifest_root / ("inputs/source_manifests" if context.get("run_directory") else "source_manifests")
     for source in sources:
         if bundle.resolve().is_relative_to(Path(source.root).resolve()):
             raise ValueError("Configured prepared output overlaps a source directory")
-        inventory_source(source, manifest_root / ("inputs/source_manifests" if context.get("run_directory") else "source_manifests") / source.id)
+        manifest = manifest_base / source.id
+        if not all((manifest / name).is_file() for name in ("files.jsonl", "source.json", "used.sqlite")):
+            inventory_source(source, manifest)
     prepared = dict(context, sources=[source.model_dump() for source in sources], dataset_id=dataset_id,
                     dataset_scope=dataset_id, agent_role="DataProcessingAgent", execution_runtime=runtime,
                     data_runtime=data_runtime,
                     coding_worker_max_iterations=get_settings().data_processing["coding_worker_max_iterations"],
                     coding_worker_timeout_seconds=get_settings().data_processing["coding_worker_timeout_seconds"],
-                    preparation_no_progress_limit=get_settings().data_processing.get("preparation_no_progress_limit", 8),
-                    preparation_tool_error_limit=get_settings().data_processing.get("preparation_tool_error_limit", 3),
-                    preparation_transport_retries=get_settings().data_processing.get("preparation_transport_retries", 2),
-                    preparation_repair_attempts=get_settings().data_processing.get("preparation_repair_attempts", 2),
-                    preparation_semantic_revision_cycles=get_settings().data_processing.get("preparation_semantic_revision_cycles", 2),
-                    preparation_total_seconds=get_settings().data_processing.get("preparation_total_seconds", 14_400),
-                    preparation_total_iterations=get_settings().data_processing.get("preparation_total_iterations", 300),
+                    preparation_attempt_limits=get_settings().data_processing.get(
+                        "preparation_attempt_limits", {"understand": 2, "prepare": 2, "mapping_revision_cycles": 1}
+                    ),
                     preparation_stage_budgets=get_settings().data_processing.get("preparation_stage_budgets", {}),
                     bundle_root=str(bundle), source_scope=None,
                      source_roots={source.id: source.root for source in sources},
-                     source_manifests={source.id: str(manifest_root / ("inputs/source_manifests" if context.get("run_directory") else "source_manifests") / source.id) for source in sources},
+                     source_manifests={source.id: str(manifest_base / source.id) for source in sources},
                      preparation_root=str(run_workspace))
     publish(prepared, "SourceSelection", {"sources": prepared["sources"]}, ())
     return prepared
