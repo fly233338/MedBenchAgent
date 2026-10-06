@@ -56,3 +56,6 @@ scripts/
 # Evaluation outputs; keep the checked-in report summarizer.
 results/*
 
+
+# Isolated OpenHands coding worker environment
+.venv-coding/
