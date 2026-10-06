@@ -50,6 +50,20 @@ def typed_action_payload(event) -> tuple[str, dict, str]:
     return tool_name, arguments, ""
 
 
+def serializable_tool_call(value):
+    """Keep malformed tool calls observable without letting logging fail."""
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        try:
+            return value.model_dump(mode="json")
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, (dict, list, str, int, float, bool)):
+        return value
+    return str(value)
+
+
 def observation_failure(event) -> str:
     observation = getattr(event, "observation", None)
     if observation is None:
@@ -104,14 +118,26 @@ def main(request_path: str, result_path: str) -> None:
         progress["events"] += 1
         tool_name = ""
         command = ""
+        non_executable = False
+        tool_call = None
         if event_name == "ActionEvent":
             progress["tool_calls"] += 1
-            tool_name, arguments, command = typed_action_payload(event)
-            _, stripped = normalize_tool_arguments(tool_name, arguments)
-            if validate_terminal_command(command):
-                raise RuntimeError("Preparation stage guard: blocked_command")
-            if stripped:
-                progress["tool_metadata_stripped"] = progress.get("tool_metadata_stripped", 0) + len(stripped)
+            action = getattr(event, "action", None)
+            tool_name = str(getattr(event, "tool_name", "") or "")
+            if action is None:
+                # OpenHands emits this valid event before AgentErrorEvent when a
+                # tool call cannot be normalized or validated. Let the SDK
+                # return the error to the model instead of aborting the run.
+                non_executable = True
+                progress["non_executable_tool_calls"] = progress.get("non_executable_tool_calls", 0) + 1
+                tool_call = serializable_tool_call(getattr(event, "tool_call", None))
+            else:
+                tool_name, arguments, command = typed_action_payload(event)
+                _, stripped = normalize_tool_arguments(tool_name, arguments)
+                if validate_terminal_command(command):
+                    raise RuntimeError("Preparation stage guard: blocked_command")
+                if stripped:
+                    progress["tool_metadata_stripped"] = progress.get("tool_metadata_stripped", 0) + len(stripped)
         if event_name in {"AgentEvent", "AgentFinishEvent", "MessageEvent"}:
             progress["model_turns"] += 1
             progress["iterations"] = progress["model_turns"]
@@ -136,10 +162,13 @@ def main(request_path: str, result_path: str) -> None:
                 "status": "running",
                 "tool_name": tool_name,
                 "command": command,
+                "non_executable": non_executable,
+                "tool_call": tool_call,
+                "error": str(getattr(event, "error", "") or ""),
                 "progress": dict(progress),
             }
             with event_path.open("a", encoding="utf-8") as events:
-                events.write(json.dumps(item, ensure_ascii=False) + "\n")
+                events.write(json.dumps(item, ensure_ascii=False, default=str) + "\n")
 
     conversation = Conversation(
         agent=agent,
