@@ -150,6 +150,8 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                 if relative in seen_output_paths:
                     raise ValueError(f"output_manifest contains a duplicate path: {relative}")
                 seen_output_paths.add(relative)
+                if relative in {"output_manifest.json", "submission.json"}:
+                    raise ValueError("output_manifest must not register itself or submission.json")
                 path = Path(relative)
                 resolved = path.resolve() if path.is_absolute() else (candidate / path).resolve()
                 if not resolved.is_relative_to(candidate.resolve()) or not resolved.is_file():
@@ -174,6 +176,9 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                     raise ValueError(f"output_manifest dependency escapes candidate: {dependency['path']}")
                 if not resolved_dependency.exists():
                     raise ValueError(f"output_manifest dependency is missing: {dependency['path']}")
+                expected_dependency = dependency.get("digest") or dependency.get("file_digest")
+                if expected_dependency and resolved_dependency.is_file() and digest_file(resolved_dependency) != expected_dependency:
+                    raise ValueError(f"output_manifest dependency digest mismatch: {dependency['path']}")
             if expected_mapping_digest and payload.get("mapping_digest") != expected_mapping_digest:
                 raise ValueError("output_manifest mapping digest does not match accepted mapping")
         except Exception as exc:
@@ -183,7 +188,9 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
     # the understand stage supplied it.  Case count is intentionally not used
     # as a proxy: several source units may legitimately form one Case.
     population = Path(population_path) if population_path else candidate / "image_population.jsonl"
-    population_ids: set[str] = set()
+    population_ids: set[tuple[str, str]] = set()
+    accounted: set[tuple[str, str]] = set()
+    missing_population: list[tuple[str, str]] = []
     if population.is_file():
         try:
             with population.open(encoding="utf-8") as handle:
@@ -191,19 +198,26 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                     if not line.strip():
                         continue
                     item = json.loads(line)
+                    source_id = str(item.get("source_id") or "source")
                     identity = item.get("source_unit_id") or item.get("unit_id") or item.get("image_id") or item.get("asset_id") or item.get("id")
                     if not identity:
                         raise ValueError(f"population record {line_number} has no stable identity")
-                    population_ids.add(str(identity))
-            accounted: set[str] = set()
+                    key = (source_id, str(identity))
+                    if key in population_ids:
+                        raise ValueError(f"duplicate population identity: {key}")
+                    population_ids.add(key)
             with provenance.open(encoding="utf-8") as handle:
                 for line in handle:
                     if not line.strip():
                         continue
                     item = json.loads(line)
+                    source_id = str(item.get("source_id") or "source")
                     identity = item.get("source_unit_id") or item.get("unit_id") or item.get("image_id") or item.get("asset_id") or item.get("record_ref")
                     if identity:
-                        accounted.add(str(identity))
+                        status = item.get("status")
+                        if status is not None and status not in {"retained", "quarantined", "excluded", "duplicate"}:
+                            raise ValueError(f"invalid population outcome status: {status}")
+                        accounted.add((source_id, str(identity)))
             missing_population = sorted(population_ids - accounted)
             if missing_population:
                 provenance_failures.append({"kind": "population_reconciliation_failure", "error": f"Source units missing provenance: {missing_population[:20]}", "missing_count": len(missing_population)})
@@ -226,8 +240,9 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
         "failures": [*failures, *provenance_failures, *manifest_failures],
         "assets": len(assets),
         "population": {
-            "expected_units": len(population_ids),
-            "accounted_units": len(population_ids) if population_ids else None,
+                "expected_units": len(population_ids),
+                "accounted_units": len(accounted),
+                "unprocessed_units": len(missing_population),
             "provenance_rows": provenance_count,
         },
         "systemic_failure": bool(provenance_failures or manifest_failures) or provenance_count == 0,

@@ -35,6 +35,16 @@ def card_summary(card: dict) -> dict:
 def verify_bundle(bundle: str | Path) -> dict:
     bundle = Path(bundle).resolve()
     ready_path = bundle / "ready.json"
+    current_path = bundle / "current.json"
+    if current_path.is_file():
+        try:
+            current = json.loads(current_path.read_text(encoding="utf-8"))
+            revision = Path(current["revision_path"]).resolve()
+            if not revision.is_relative_to(bundle / "revisions") or not (revision / "ready.json").is_file():
+                raise ValueError("Current pointer does not reference a committed revision")
+            ready_path = revision / "ready.json"
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid dataset current pointer: {exc}") from exc
     if not ready_path.is_file():
         raise ValueError("Dataset bundle is not annotation; re-prepare the dataset")
     ready = json.loads(ready_path.read_text(encoding="utf-8"))
@@ -72,5 +82,16 @@ def verify_bundle(bundle: str | Path) -> dict:
     card = read_card(access["dataset_card_path"])
     if card["annotation_digest"] != access["annotation_digest"] or card["asset_manifest_digest"] != access["asset_manifest_digest"] or card["profile_digest"] != access["profile_digest"]:
         raise ValueError("Dataset Card facts do not match bundle")
+    if current_path.is_file():
+        projected = dict(ready)
+        projected["access"] = dict(ready["access"])
+        for key, value in list(projected["access"].items()):
+            if key.endswith("_path") and isinstance(value, str):
+                try:
+                    relative = Path(value).resolve().relative_to(ready_path.parent.resolve())
+                except ValueError:
+                    continue
+                projected["access"][key] = str(bundle / relative)
+        return {"ready": projected, "card": card}
     return {"ready": ready, "card": card}
 

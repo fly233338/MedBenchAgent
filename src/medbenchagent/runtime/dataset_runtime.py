@@ -6,7 +6,6 @@ import json
 import hashlib
 import os
 import re
-import shutil
 import signal
 import subprocess
 import threading
@@ -15,7 +14,7 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-from medbenchagent.preparation.contracts import StageRequest, StageResult
+from medbenchagent.preparation.contracts import AttemptReceipt, StageRequest, StageResult
 
 from medbenchagent.data.sources import verify_source
 from medbenchagent.data.execution import ExecutionUnavailable, docker_image_id
@@ -56,7 +55,11 @@ def _worker_llm_error(request: StageRequest) -> str:
 class OpenHandsDatasetRuntime:
     """Run one OpenHands coding stage on the backend frozen for the parent run."""
 
-    _requirements = (
+    _requirements = tuple(
+        line.strip()
+        for line in (Path(__file__).resolve().parents[3] / "config" / "coding-worker.requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ) if (Path(__file__).resolve().parents[3] / "config" / "coding-worker.requirements.txt").is_file() else (
         "openhands-sdk==1.49.6", "openhands-tools==1.49.6", "pandas==2.3.3",
         "openpyxl==3.1.5", "xlrd==2.0.2", "duckdb==1.5.4", "Pillow==12.3.0",
         "pydicom==3.0.1", "pylibjpeg==2.1.0", "pylibjpeg-libjpeg==2.3.0",
@@ -64,6 +67,7 @@ class OpenHandsDatasetRuntime:
         "SimpleITK==2.5.3",
     )
     _active: dict[str, tuple[str, object]] = {}
+    _event_forward_lock = threading.Lock()
 
     @classmethod
     def cancel_active_workers(cls) -> None:
@@ -74,7 +78,7 @@ class OpenHandsDatasetRuntime:
         self.runtime = runtime
 
     def _failure(self, request: StageRequest, status: str, message: str, reason: str) -> StageResult:
-        return StageResult(stage=request.stage, attempt=request.attempt, conversation_id=request.conversation_id,
+        return StageResult(stage=request.stage, run_id=request.run_id, dataset_id=request.dataset_id, attempt=request.attempt, conversation_id=request.conversation_id,
                            execution_key=request.execution_key, status=status, diagnostic=message,
                            termination_reason=reason, input_digest=request.input_digest,
                            prompt_digest=hashlib.sha256(Path(request.prompt_path).read_bytes()).hexdigest()
@@ -143,6 +147,14 @@ class OpenHandsDatasetRuntime:
         request_path = workspace / "state" / "request.json"
         result_path = workspace / "state" / "result.json"
         if request.execution_key:
+            receipt_path = workspace / "state" / "receipt.json"
+            if receipt_path.is_file():
+                try:
+                    receipt = AttemptReceipt.model_validate_json(receipt_path.read_text(encoding="utf-8"))
+                    if receipt.request_identity.get("execution_key") == request.execution_key and receipt.result.status == "submitted":
+                        return self._validate_outputs(request, receipt.result, workspace, conversation_id, runtime["backend"])
+                except (OSError, ValueError, TypeError):
+                    pass
             receipt_path = workspace / "state" / f"coding_attempt_{request.attempt}.json"
             if receipt_path.is_file():
                 try:
@@ -187,7 +199,7 @@ class OpenHandsDatasetRuntime:
             "headers=headers),timeout=15));"
             "assert model in [item['id'] for item in body['data']]"
         )
-        environment = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1", "MEDBENCH_LLM_API_KEY": key}
+        environment = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "MEDBENCH_LLM_API_KEY": key}
         try:
             check = subprocess.run(
                 ["docker", "run", "--rm", "--add-host", "host.docker.internal:host-gateway",
@@ -256,6 +268,18 @@ class OpenHandsDatasetRuntime:
     def _result_after_process(self, request: StageRequest, workspace: Path, result_path: Path,
                               conversation_id: str, backend: str) -> StageResult:
         """Preserve a worker's structured failure before falling back to stderr."""
+        receipt_path = workspace / "state" / "receipt.json"
+        if receipt_path.is_file():
+            try:
+                receipt = AttemptReceipt.model_validate_json(receipt_path.read_text(encoding="utf-8"))
+                result = receipt.result
+                if result.conversation_id != conversation_id:
+                    raise ValueError("Worker returned another conversation identity")
+                if result.status != "submitted":
+                    return result
+                return self._validate_outputs(request, result, workspace, conversation_id, backend)
+            except (OSError, ValueError, TypeError):
+                pass
         if result_path.is_file():
             try:
                 result = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
@@ -280,18 +304,23 @@ class OpenHandsDatasetRuntime:
             import hashlib
             return hashlib.sha256(candidate.read_bytes()).hexdigest()
 
-        receipt = {
-            "stage": request.stage.value, "attempt": request.attempt,
-            "conversation_id": result.conversation_id, "status": result.status,
-            "diagnostic": result.diagnostic, "outputs": result.outputs,
-            "model": request.model, "base_url": request.base_url,
-            "execution_key": request.execution_key,
-            "input_digest": request.input_digest,
-            "prompt_token_count": request.prompt_token_count,
-            "prompt_digest": file_digest(request.prompt_path),
-            "context_digest": file_digest(request.context_path),
-        }
-        atomic_write_json(workspace / "state" / f"coding_attempt_{request.attempt}.json", receipt)
+        receipt = AttemptReceipt(
+            request_identity={
+                "run_id": request.run_id, "dataset_id": request.dataset_id,
+                "stage": request.stage.value, "attempt": request.attempt,
+                "attempt_id": request.attempt_id, "session_seq": request.session_seq,
+                "conversation_id": request.conversation_id, "execution_key": request.execution_key,
+                "input_digest": request.input_digest,
+            },
+            result=result,
+            runtime={"backend": request.runtime_backend or "unknown", "model": request.model, "sanitized_endpoint": request.base_url},
+            prompt_digest=file_digest(request.prompt_path), context_digest=file_digest(request.context_path),
+            contract_digest=request.contract_digest,
+            usage=result.usage or {"estimated_input_tokens": request.prompt_token_count or 0},
+            timing={}, execution_refs=result.execution_refs, resume_state_ref=request.resume_state_ref,
+            termination={"reason": result.termination_reason},
+        )
+        atomic_write_json(workspace / "state" / "receipt.json", receipt.model_dump(mode="json"))
         return result
 
     def _run_local(self, request, workspace, request_path, result_path, conversation_id, key):
@@ -301,6 +330,7 @@ class OpenHandsDatasetRuntime:
             command.extend(["--with", package])
         command.extend(["python", str(runner), str(request_path), str(result_path)])
         environment = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1",
+                       "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
                        "MEDBENCH_LLM_API_KEY": key}
         try:
             timed_out = False
@@ -348,16 +378,46 @@ class OpenHandsDatasetRuntime:
 
     @staticmethod
     def _forward_events(workspace: Path, destination: str) -> None:
+        with OpenHandsDatasetRuntime._event_forward_lock:
+            OpenHandsDatasetRuntime._forward_events_unlocked(workspace, destination)
+
+    @staticmethod
+    def _forward_events_unlocked(workspace: Path, destination: str) -> None:
         events = workspace / "logs" / "coding_events.jsonl"
         marker = workspace / "state" / "events_forwarded.json"
         if not destination or not events.is_file():
             return
-        offset = (json.loads(marker.read_text(encoding="utf-8"))["offset"]
-                  if marker.is_file() else 0)
-        with events.open("rb") as source_events, Path(destination).open("ab") as run_events:
+        saved = json.loads(marker.read_text(encoding="utf-8")) if marker.is_file() else {}
+        offset = int(saved.get("offset", 0))
+        size = events.stat().st_size
+        if size < offset:
+            offset = 0
+            saved["source_generation"] = int(saved.get("source_generation", 0)) + 1
+        with events.open("rb") as source_events:
             source_events.seek(offset)
-            shutil.copyfileobj(source_events, run_events)
-            atomic_write_json(marker, {"offset": source_events.tell()})
+            data = source_events.read()
+            complete_length = data.rfind(b"\n") + 1
+            complete = data[:complete_length]
+            new_offset = offset + complete_length
+        if not complete:
+            atomic_write_json(marker, {**saved, "offset": offset})
+            return
+        destination_path = Path(destination)
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        with destination_path.open("ab") as run_events:
+            for raw_line in complete.splitlines(keepends=True):
+                line = raw_line.rstrip(b"\r\n")
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line.decode("utf-8", errors="strict"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = {"event_type": "invalid_event", "decode_error": True, "raw_digest": hashlib.sha256(line).hexdigest()}
+                if isinstance(payload, dict):
+                    payload.setdefault("event_id", hashlib.sha256(line).hexdigest())
+                    payload.setdefault("source_generation", saved.get("source_generation", 0))
+                    run_events.write((json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
+        atomic_write_json(marker, {**saved, "offset": new_offset})
 
     @staticmethod
     def _failure_summary(stderr: Path) -> str:
@@ -365,7 +425,11 @@ class OpenHandsDatasetRuntime:
         if stderr.is_file():
             with stderr.open("rb") as handle:
                 handle.seek(max(0, stderr.stat().st_size - 8000))
-                tail = handle.read().decode("utf-8", errors="replace")
+                raw = handle.read()
+                try:
+                    tail = raw.decode("utf-8", errors="strict")
+                except UnicodeDecodeError:
+                    return "OpenHands worker emitted invalid UTF-8 in stderr; see logs/stderr.log for raw bytes"
         if "ContextWindowExceeded" in tail or "LLMContextWindowExceedError" in tail:
             limit = re.search(r"maximum context length is (\d+)", tail)
             output = re.search(r"requested (\d+) output tokens", tail)

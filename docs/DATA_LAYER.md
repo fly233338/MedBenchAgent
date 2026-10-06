@@ -71,3 +71,7 @@ index、时间或医学语义。
 
 新运行存储在 `.runtime/<run>/control`、`inputs`、`agents` 和 `workers` 下。现有旧运行目录不属于当前运行时。
 
+
+## Preparation revisions
+
+The host freezes a SourceSnapshot and AcceptedHandoff before prepare. Candidate files stay inside an attempt workspace. DatasetPublisher writes a complete immutable revision into `revisions/<revision>`, durable commit metadata, `preparation_report.json`, quarantine evidence and a final manifest, then advances `current.json` atomically. Uncommitted staging directories are never discoverable as ready bundles.

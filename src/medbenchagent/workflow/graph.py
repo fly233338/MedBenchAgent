@@ -9,8 +9,7 @@ from langgraph.graph import StateGraph, START, END
 from medbenchagent.agents.generation import run_generation
 from medbenchagent.agents.allocation import allocate_benchmark
 from medbenchagent.agents.finalization import finalize_benchmark
-from medbenchagent.agents.templates import prepare_templates as run_templates
-from medbenchagent.agents.task_planning import compile_task_planning_agent, apply_template_feedback
+from medbenchagent.agents.task_planning import compile_task_planning_agent
 from medbenchagent.planning.dataset_selection import discover_dataset_candidates as run_discovery
 from medbenchagent.planning.dataset_selection import select_datasets as run_selection
 from medbenchagent.planning.extension_selection import discover_extension_candidates as run_extension_discovery
@@ -19,7 +18,7 @@ from medbenchagent.planning.benchmark_info import extract_benchmark_info, missin
 from medbenchagent.runtime.contexts import SupervisorContext
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.llm import StructuredOutputError
-from medbenchagent.runtime.tool_contracts import PrepareDataArguments, DatasetId, DelegationArguments, PageArguments, NoArguments, NonEmpty
+from medbenchagent.runtime.tool_contracts import ProcessDatasetArguments, DatasetId, DelegationArguments, PageArguments, NoArguments, NonEmpty
 from pydantic import Field
 from medbenchagent.data.readiness import list_datasets, inspect_dataset_status, dataset_status, configured_source, reuse_prepared
 from medbenchagent.runtime.run_artifacts import initialize_run
@@ -289,8 +288,8 @@ def automatic_supervisor_action(context):
         dataset_id = dynamic_dataset_id(requirement)
         if root and dataset_id and Path(root).is_dir():
             return {
-                "tool": "prepare_data",
-                "arguments": {"dataset_id": dataset_id, "mode": "reuse_or_prepare"},
+                "tool": "process_dataset",
+                "arguments": {"dataset_id": dataset_id, "mode": "reuse_or_process"},
                 "reason": "Prepare the explicitly provided raw dataset source",
             }
     return None
@@ -328,10 +327,8 @@ def child_context(context, dataset_id, role):
                  dataset_access_manifest=asset["access"], dataset_card_summary=asset["card_summary"],
                  planning_extension_selection=context.get("planning_extension_selections", {}).get(dataset_id, {}),
                  operation_directory=agent_operation(
-                     context, {"planning": "TaskPlanningAgent", "templates": "TaskPlanningAgent",
-                               "generation": "GenerationAgent"}[role], dataset_id, role))
-    return inject_answers(context, child, {"planning": "TaskPlanningAgent", "generation": "GenerationAgent",
-                                          "templates": "TaskPlanningAgent"}[role], dataset_id)
+                    context, {"planning": "TaskPlanningAgent", "generation": "GenerationAgent"}[role], dataset_id, role))
+    return inject_answers(context, child, {"planning": "TaskPlanningAgent", "generation": "GenerationAgent"}[role], dataset_id)
 
 
 def child_result(context, dataset_id, role, output):
@@ -359,7 +356,7 @@ def child_result(context, dataset_id, role, output):
 def describe(context: SupervisorContext):
     details = {key: context.get(key) for key in (
         "user_requirement", "benchmark_info", "brief_ready", "brief_missing_fields", "sample_count_source", "selected_dataset_ids",
-        "dataset_task_plans", "dataset_templates", "template_revision_requests", "dataset_generations", "delivery_counts", "allocation_path", "allocation", "prepared_entries",
+        "dataset_task_plans", "dataset_generations", "delivery_counts", "allocation_path", "allocation", "prepared_entries",
         "artifact_versions", "global_issue", "last_agent_result", "requested_dataset_ids",
         "dataset_candidates", "candidate_order", "preparation_candidates", "candidate_snapshot_path")}
     ids = set(context.get("selected_dataset_ids", [])) | set(context.get("prepared_entries", {}))
@@ -385,17 +382,12 @@ def preparation_pending(context):
 
 
 def pending_datasets(context):
-    pending = {"pending_plan_dataset_ids": [], "pending_templates_dataset_ids": [], "pending_generation_dataset_ids": []}
+    pending = {"pending_plan_dataset_ids": [], "pending_generation_dataset_ids": []}
     if not _current(context, "DatasetSelection"):
         return pending
     for dataset in context["selected_dataset_ids"]:
-        feedback = context.get("template_revision_requests", {}).get(dataset)
-        if not _current(context, f"dataset/{dataset}/Plan") or (feedback and feedback["plan_version"] == context["artifact_versions"].get(f"dataset/{dataset}/Plan")):
+        if not _current(context, f"dataset/{dataset}/Plan"):
             pending["pending_plan_dataset_ids"].append(dataset)
-        elif context.get("dataset_assets", {}).get(dataset, {}).get("access", {}).get("schema_version") == "annotation":
-            continue
-        elif not _current(context, f"dataset/{dataset}/Templates"):
-            pending["pending_templates_dataset_ids"].append(dataset)
     if not _current(context, "Allocation"):
         return pending
     allocation_path = context.get("allocation_path")
@@ -439,9 +431,9 @@ def available_stages(context: SupervisorContext):
     if context.get("global_issue"):
         issue = context["global_issue"]
         if issue.get("purpose") in {"dataset_selection", "planning_extension_selection"} and issue.get("status") == "answered":
-            return {"ask_user", "read_evidence", "prepare_data", "discover_datasets", "select_datasets", "discover_planning_extensions", "select_planning_extensions"}
+            return {"ask_user", "read_evidence", "process_dataset", "discover_datasets", "select_datasets", "discover_planning_extensions", "select_planning_extensions"}
         return {"resolve_clarification", "ask_user", "read_evidence"} if issue["status"] == "answered" else {"ask_user"}
-    tools = {"ask_user", "list_datasets", "inspect_dataset_status", "prepare_data", "discover_datasets"}
+    tools = {"ask_user", "list_datasets", "inspect_dataset_status", "process_dataset", "discover_datasets"}
     if not _construction_started(context):
         tools.add("end")
     if context.get("prepared_entries") and "Requirement" not in context.get("artifact_versions", {}):
@@ -476,11 +468,9 @@ def available_stages(context: SupervisorContext):
     if any("planning" in state for state in context.get("child_states", {}).values()):
         tools.add("plan")
     pending = pending_datasets(context)
-    if pending["pending_plan_dataset_ids"] or pending["pending_templates_dataset_ids"]:
+    if pending["pending_plan_dataset_ids"]:
         if pending["pending_plan_dataset_ids"]:
             tools.add("plan")
-        if pending["pending_templates_dataset_ids"]:
-            tools.add("prepare_templates")
         return tools
     if not _current(context, "Allocation"):
         return tools | {"allocate"}
@@ -497,13 +487,29 @@ Mission and boundaries:
 - Keep semantic interpretation in the model; let tools enforce IDs, schemas, digests, dependencies, and side effects.
 - For unrelated requests, call end without creating construction artifacts.
 
-Intake and preparation:
-- Read the complete user request and clarification history before choosing an action.
-- Call specify when the benchmark brief is missing or stale. It extracts explicit intent and preserves source evidence.
-- If preparation is requested, use a readable raw path from the request or configured source. Normalize a path-derived ID
-  only when needed and call prepare_data with reuse_or_prepare; use rebuild only for an explicit rebuild request.
-- Ask one focused English question for a missing or unreadable raw path. Do not ask the user to describe files that the
-  DataProcessingAgent can inspect itself.
+Dataset processing:
+- Read the complete current user request and the applicable clarification
+  history. Resolve the dataset and its configured or explicitly supplied
+  source paths from evidence.
+- Call process_dataset with reuse_or_process when the user requests data
+  processing or when a required dataset has configured raw sources but is
+  not ready. The host owns understand, prepare, validation, and publication.
+- Do not ask the user to describe files, fields, or formats that the data
+  processing worker can inspect. Ask a focused question only for a missing
+  path or a genuine fact that cannot be resolved from the available inputs.
+- Request rebuild only when the current user explicitly asks to rebuild
+  this dataset. Negated wording and quoted or historical requests do not
+  authorize rebuilding.
+- Treat a valid prepared bundle and an accepted understand handoff as
+  different states. The host decides which work can be reused.
+- On needs_input, present the host-registered question with its issue ID,
+  scope, evidence, alternatives, and processing impact. Route the answer
+  back through that issue; do not replace it with your own interpretation.
+- On blocked or failed, use the reported stage, reason, and next action.
+  Retry only when the host permits it or the blocking condition changes.
+  Do not infer a stage from the word "prepare" or from a free-text note.
+- Do not claim that data is ready or start planning against it until the
+  host returns a committed publication or a validated reusable bundle.
 
 Candidate discovery and selection:
 - After the brief is ready, call discover_datasets once. It freezes validated Prepared candidates and returns bounded
@@ -598,12 +604,6 @@ def compile_benchmark_graph(*, checkpointer=None):
             "max_seconds": max(base_limits.get("max_seconds", 3600), 14400),
         }
         publish(child, "PlanningDelegation", child["delegation"], ("Requirement",))
-        feedback = context.get("template_revision_requests", {}).get(dataset_id)
-        if feedback:
-            correction = apply_template_feedback(child, feedback)
-            if correction["status"] == "blocked":
-                return correction
-            child.update(correction["updates"])
         previous = context.get("child_states", {}).get(dataset_id, {}).get("planning")
         previous_draft = {}
         if previous and Path(previous).is_file():
@@ -680,9 +680,6 @@ def compile_benchmark_graph(*, checkpointer=None):
                 },
             )
         if output["result"]["status"] == "complete":
-            requests = dict(context.get("template_revision_requests", {}))
-            requests.pop(dataset_id, None)
-            outcome["updates"]["template_revision_requests"] = requests
             outcome["updates"]["dataset_task_plans"] = {
                 **context.get("dataset_task_plans", {}),
                 dataset_id: output["context"]["working_blueprint_path"],
@@ -819,35 +816,27 @@ def compile_benchmark_graph(*, checkpointer=None):
         versions = publish(context, "Delivery", refs, dependencies)
         return result("success", output["summary"], **updates, **bir_updates, **versions)
 
-    def prepare_templates(context, *, dataset_id):
-        """Review templates immediately after this Dataset's Plan; return task defects to Planning."""
-        require_pending(context, "templates", dataset_id)
-        child = child_context(context, dataset_id, "templates")
-        child["working_blueprint_path"] = context["dataset_task_plans"][dataset_id]
-        outcome = run_templates(child)
-        requests = dict(context.get("template_revision_requests", {}))
-        if feedback := outcome["updates"].pop("template_revision_request", None):
-            requests[dataset_id] = feedback
-        elif outcome["status"] == "success":
-            requests.pop(dataset_id, None)
-            outcome["updates"]["dataset_templates"] = {**context.get("dataset_templates", {}), dataset_id: outcome["updates"].pop("templates_path")}
-        outcome["updates"]["template_revision_requests"] = requests
-        child.update(outcome.get("updates", {}))
-        state_path = Path(child["operation_directory"]) / "state.json"
-        save_context(state_path, child, "templates", dataset_id)
-        states = {key: dict(value) for key, value in context.get("child_states", {}).items()}
-        states.setdefault(dataset_id, {})["templates"] = str(state_path)
-        outcome["updates"]["child_states"] = states
-        return outcome
+    def process_dataset(context, *, dataset_id, mode="reuse_or_process", issue_ids=None, notes=""):
+        """Process one dataset through the complete data workflow, or reuse an already
+validated dataset. For a new or changed source, the host runs understand,
+validates and accepts its handoff, runs prepare, validates the candidate,
+and publishes the accepted dataset.
 
-    def prepare_data(context, *, dataset_id, mode="reuse_or_prepare", feedback=""):
-        """Reuse valid prepared data or prepare configured sources. Use rebuild only for an explicit user request."""
+Use mode="reuse_or_process" by default. Use mode="rebuild" only for an
+explicit affirmative request to rebuild this dataset in the current user
+request. A request such as "prepare this dataset" refers to this complete
+workflow.
+
+The host selects the internal stage from validated state. Do not choose a
+stage through notes, user wording, or feedback. Use issue_ids only for
+host-registered issues belonging to this dataset. Notes provide context
+and cannot override routing, acceptance, or publication checks."""
         from medbenchagent.preparation.bootstrap import initialize_preparation
         from medbenchagent.preparation.entrypoint import compile_preparation_agent
         if mode == "rebuild" and not _rebuild_requested(context):
-            return result("failed", "Rebuild requires an explicit user request; use reuse_or_prepare or ask the user.")
+            return result("failed", "Rebuild requires an explicit affirmative request for this dataset.")
         operation = Path(context["operation_directory"])
-        if mode == "reuse_or_prepare" and (operation / "reused_dataset.json").is_file():
+        if mode == "reuse_or_process" and (operation / "reused_dataset.json").is_file():
             outcome = reuse_prepared(context, dataset_id)
             outcome.setdefault("updates", {})["preparation_required"] = [
                 item for item in context.get("preparation_required", []) if item != dataset_id
@@ -855,7 +844,7 @@ def compile_benchmark_graph(*, checkpointer=None):
             return outcome
         status = dataset_status(context, dataset_id)
         saved = context.get("child_states", {}).get(dataset_id, {}).get("preparation")
-        if not saved and not (operation / "preparation.json").is_file() and mode == "reuse_or_prepare":
+        if not saved and not (operation / "preparation.json").is_file() and mode == "reuse_or_process":
             if status["prepared"]:
                 outcome = reuse_prepared(context, dataset_id)
                 outcome.setdefault("updates", {})["preparation_required"] = [
@@ -886,7 +875,10 @@ def compile_benchmark_graph(*, checkpointer=None):
             child["operation_directory"] = agent_operation(context, "DataProcessingAgent", dataset_id)
             child = initialize_preparation(child, sources, dataset_id)
             child["preparation_mode"] = mode
-        child["feedback"] = feedback
+        child["issue_ids"] = list(issue_ids or [])
+        child["notes"] = str(notes or "")
+        child["canonical_publisher"] = True
+        child["strict_publication"] = True
         inject_answers(context, child, "DataProcessingAgent", dataset_id)
         output = compile_preparation_agent().invoke({"context": child}, config={"recursion_limit": 3 * context.get("limits", {}).get("max_calls", 60) + 10})
         outcome = child_result(context, dataset_id, "preparation", output)
@@ -922,13 +914,13 @@ def compile_benchmark_graph(*, checkpointer=None):
                         if event_path:
                             record_event(event_path, "finalization_finished", operation="finalize_prepared_dataset",
                                          status="blocked", diagnostic=str(exc), **event_base)
-                        # Validation feedback is persisted for the same Coding
+                        # Validation issues are persisted for the same Coding
                         # Session; the next Supervisor turn performs continuation.
                         return {"status": "blocked", "summary": str(exc),
                                 "updates": {**outcome.get("updates", {}),
                                             "preparation_status": "blocked",
                                             "validation_error": str(exc),
-                                            "preparation_feedback": str(exc)}}
+                                            "preparation_validation_issues": str(exc)}}
                     from medbenchagent.preparation.entrypoint import mark_preparation_complete
                     mark_preparation_complete(output["context"].get("preparation_workspace", ""))
                     if event_path:
@@ -999,16 +991,16 @@ def compile_benchmark_graph(*, checkpointer=None):
         "discover_planning_extensions": discover_planning_extensions,
         "select_planning_extensions": select_planning_extensions,
          "list_datasets": list_datasets, "inspect_dataset_status": inspect_dataset_status,
-         "prepare_data": prepare_data, "plan": plan, "prepare_templates": prepare_templates, "allocate": allocate, "generate": generate, "finalize": finalize},
+         "process_dataset": process_dataset, "plan": plan, "allocate": allocate, "generate": generate, "finalize": finalize},
         describe, finish, available_tools=available_stages, automatic_action=automatic_supervisor_action,
         read_tools=frozenset({"list_datasets", "inspect_dataset_status", "discover_datasets"}),
-        args_schemas={"resolve_clarification": ResolveClarificationArguments, "prepare_data": PrepareDataArguments,
+        args_schemas={"resolve_clarification": ResolveClarificationArguments, "process_dataset": ProcessDatasetArguments,
                       "list_datasets": PageArguments, "inspect_dataset_status": DatasetStatusArguments,
                       "select_datasets": DatasetSelectionArguments,
                       "discover_planning_extensions": ExtensionDiscoveryArguments,
                       "select_planning_extensions": ExtensionSelectionArguments,
                       "plan": PlanningArguments, "allocate": DelegationArguments,
-                      "generate": DatasetStatusArguments, "prepare_templates": DatasetStatusArguments})
+                      "generate": DatasetStatusArguments})
 
     def initialize(state):
         overrides = {k: state[k] for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature") if k in state}
@@ -1080,4 +1072,3 @@ def compile_benchmark_graph(*, checkpointer=None):
 
 
 benchmark_graph = compile_benchmark_graph()
-

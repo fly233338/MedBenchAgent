@@ -64,8 +64,8 @@ def test_supervisor_remains_first_decision_for_explicit_path(tmp_path):
     context = {"run_directory": str(tmp_path / "run"), "user_requirement": f"Prepare {root}"}
 
     assert automatic_supervisor_action(context) is None
-    assert {"ask_user", "prepare_data"} <= available_stages(context)
-    assert "DataProcessingAgent" in SUPERVISOR_INSTRUCTIONS
+    assert {"ask_user", "process_dataset"} <= available_stages(context)
+    assert "process_dataset" in SUPERVISOR_INSTRUCTIONS
     assert "Do not ask" in SUPERVISOR_INSTRUCTIONS
     assert "discover_datasets" in SUPERVISOR_INSTRUCTIONS
     assert "请" not in SUPERVISOR_INSTRUCTIONS

@@ -30,7 +30,17 @@ def run_task_space_pipeline(context, *, requested_count: int | None = None):
     from medbenchagent.data.index import DatasetIndex
     from medbenchagent.planning.resolver import ResolverContext
     from medbenchagent.data.manifests import SamplingManifest, load_manifest
-    cases = list(DatasetIndex(access).iter_cases())
+    index = DatasetIndex(access)
+    page_size = int(context.get("page_size", 512))
+    def pages():
+        offset = 0
+        while True:
+            page = index.sample(offset=offset, limit=page_size)
+            yield from page["values"]
+            if page["complete"]:
+                break
+            offset = page["next_offset"]
+    cases = pages()
     sampling_manifest = None
     if access.get("sampling_manifest_path"):
         sampling_manifest = load_manifest(access["sampling_manifest_path"], SamplingManifest)

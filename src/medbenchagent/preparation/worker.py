@@ -28,6 +28,9 @@ class OpenHandsWorker:
         try:
             submission = Submission.model_validate_json(path.read_text(encoding="utf-8"))
             output_root = Path(request.workspace) / "outputs"
+            unsafe = [name for name in submission.outputs if Path(name).is_absolute() or ".." in Path(name).parts]
+            if unsafe:
+                return None, f"Submission references paths outside outputs: {unsafe[:10]}"
             missing = [name for name in submission.outputs if not (output_root / name).is_file()]
             if missing:
                 return None, f"Submission references missing outputs: {missing[:10]}"
@@ -48,7 +51,7 @@ class OpenHandsWorker:
             result = runtime.run(request)
         except Exception as exc:
             diagnostic = Diagnostic(stage=request.stage, code="worker_execution_failed", category="environment", blocking=True, message=str(exc))
-            stage_result = StageResult(stage=request.stage, attempt=request.attempt, conversation_id=request.conversation_id,
+            stage_result = StageResult(stage=request.stage, run_id=request.run_id, dataset_id=request.dataset_id, attempt=request.attempt, conversation_id=request.conversation_id,
                                        execution_key=request.execution_key, status="failed", diagnostics=[diagnostic],
                                        diagnostic=str(exc), termination_reason="worker_error", input_digest=request.input_digest)
             self._write_result(request, stage_result)
@@ -74,6 +77,8 @@ class OpenHandsWorker:
         context_digest = digest_file(request.context_path) if Path(request.context_path).is_file() else ""
         stage_result = StageResult(
             stage=request.stage,
+            run_id=request.run_id,
+            dataset_id=request.dataset_id,
             attempt=request.attempt,
             conversation_id=request.conversation_id,
             execution_key=request.execution_key,

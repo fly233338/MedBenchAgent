@@ -52,3 +52,7 @@ records source-backed `semantic_role`, `value_kind`, `scope`, `unit`, `input_vis
 and missingness. Planning treats an absent semantic role as `unknown`; it never infers a clinical
 numeric reference from storage type or aggregate counts. Calibration-only and reference-only fields
 remain unavailable to an image-only benchmark model.
+
+## Canonical validation and publication
+
+`preparation.validation` is the shared validator used by worker CLI and host acceptance. It rejects bare artifact paths, duplicate `(source_id, source_unit_id)` identities, incomplete mapping rules, invalid question containers and missing execution evidence. `AcceptedHandoff` is created only after understand validation; `DatasetPublisher` materializes valid Cases and their reference closure before publishing an immutable revision.

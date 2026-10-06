@@ -60,7 +60,9 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
             )
         atomic_write_json(marker, {"sources": [source.model_dump() for source in sources],
                                    "dataset_id": dataset_id, "bundle": str(bundle), "runtime": runtime})
-    runtime_path = bundle / "execution_runtime.json"
+    run_workspace = Path(context.get("run_directory") or Path(context["operation_directory"]).parent) / "preparation" / dataset_id
+    run_workspace.mkdir(parents=True, exist_ok=True)
+    runtime_path = run_workspace / "inputs" / "execution_runtime.json"
     if runtime_path.is_file():
         data_runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
         if any(data_runtime.get(key) != value for key, value in runtime.items()):
@@ -70,10 +72,11 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
                       if runtime["backend"] == "docker" else {"packages": data_dependency_identity()})
         data_runtime = {**runtime, **component}
         atomic_write_json(runtime_path, data_runtime)
+    manifest_root = run_workspace if context.get("run_directory") else bundle
     for source in sources:
         if bundle.resolve().is_relative_to(Path(source.root).resolve()):
             raise ValueError("Configured prepared output overlaps a source directory")
-        inventory_source(source, bundle / "source_manifests" / source.id)
+        inventory_source(source, manifest_root / ("inputs/source_manifests" if context.get("run_directory") else "source_manifests") / source.id)
     prepared = dict(context, sources=[source.model_dump() for source in sources], dataset_id=dataset_id,
                     dataset_scope=dataset_id, agent_role="DataProcessingAgent", execution_runtime=runtime,
                     data_runtime=data_runtime,
@@ -81,9 +84,15 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
                     coding_worker_timeout_seconds=get_settings().data_processing["coding_worker_timeout_seconds"],
                     preparation_no_progress_limit=get_settings().data_processing.get("preparation_no_progress_limit", 8),
                     preparation_tool_error_limit=get_settings().data_processing.get("preparation_tool_error_limit", 3),
+                    preparation_transport_retries=get_settings().data_processing.get("preparation_transport_retries", 2),
+                    preparation_repair_attempts=get_settings().data_processing.get("preparation_repair_attempts", 2),
+                    preparation_semantic_revision_cycles=get_settings().data_processing.get("preparation_semantic_revision_cycles", 2),
+                    preparation_total_seconds=get_settings().data_processing.get("preparation_total_seconds", 14_400),
+                    preparation_total_iterations=get_settings().data_processing.get("preparation_total_iterations", 300),
                     preparation_stage_budgets=get_settings().data_processing.get("preparation_stage_budgets", {}),
                     bundle_root=str(bundle), source_scope=None,
                      source_roots={source.id: source.root for source in sources},
-                     source_manifests={source.id: str(bundle / "source_manifests" / source.id) for source in sources})
+                     source_manifests={source.id: str(manifest_root / ("inputs/source_manifests" if context.get("run_directory") else "source_manifests") / source.id) for source in sources},
+                     preparation_root=str(run_workspace))
     publish(prepared, "SourceSelection", {"sources": prepared["sources"]}, ())
     return prepared

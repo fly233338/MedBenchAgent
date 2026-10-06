@@ -11,7 +11,11 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_settings
 
 from .context import ContextBudgetError, build_stage_context
-from .contracts import ArtifactRef, Diagnostic, Stage, StageRequest, StageResult, STAGE_SPECS, digest_file
+from .contracts import (
+    AcceptedHandoff, ArtifactRef, Diagnostic, ResumeState,
+    Stage, StageRequest, StageResult, STAGE_SPECS, digest_file, digest_payload,
+)
+from .layout import WorkspaceLayout, validate_identifier
 from .worker import OpenHandsWorker
 
 
@@ -39,6 +43,18 @@ class PreparationGraphState(TypedDict, total=False):
     publication: dict[str, Any]
     preparation_workspace: str
     preparation_candidate: dict[str, Any]
+    attempt_id: str
+    session_seq: int
+    parent_attempt_id: str | None
+    execution_key: str
+    resume_state_ref: str | None
+    accepted_handoff: dict[str, Any]
+    accepted_handoff_ref: str
+    validation: dict[str, Any]
+    candidate_artifacts: dict[str, ArtifactRef | dict[str, Any]]
+    budgets: dict[str, Any]
+    publish_transaction: dict[str, Any]
+    current_milestone: str
 
 
 def preparation_root(state: dict[str, Any]) -> Path:
@@ -50,14 +66,20 @@ def preparation_root(state: dict[str, Any]) -> Path:
 
 
 def attempt_directory(state: dict[str, Any], stage: Stage, attempt: int) -> Path:
-    path = preparation_root(state) / "attempts" / stage.value / str(attempt)
-    while path.exists():
-        attempt += 1
-        path = preparation_root(state) / "attempts" / stage.value / str(attempt)
-    path.mkdir(parents=True, exist_ok=False)
-    for name in ("work", "outputs", "logs", "conversations"):
-        (path / name).mkdir(parents=True, exist_ok=True)
-    return path
+    # The checkpoint chooses the attempt identity.  Directory existence is a
+    # recovery signal, never a reason to invent a new attempt number.
+    attempt_id = str(state.get("attempt_id") or attempt)
+    validate_identifier(attempt_id, field="attempt_id")
+    layout = WorkspaceLayout.create(
+        preparation_root(state).parent.parent,
+        dataset_id=str(state.get("dataset_id") or state.get("dataset_scope") or "dataset"),
+        stage=stage,
+        attempt_id=attempt_id,
+        session_seq=int(state.get("session_seq", 0)),
+        source_roots=_source_roots(state),
+        backend=str((state.get("execution_runtime") or {}).get("backend", "local")),
+    )
+    return layout.attempt_root
 
 
 def _source_roots(state: dict[str, Any]) -> dict[str, str]:
@@ -79,17 +101,31 @@ def _event(state: dict[str, Any], event_type: str, *, stage: Stage | str | None 
     record_event(path, event_type,
                  run_id=state.get("run_id"), dataset_id=state.get("dataset_id") or state.get("dataset_scope"),
                  stage=stage_value, attempt=attempt if attempt is not None else state.get("attempt"),
+                 session_seq=state.get("session_seq"), milestone=state.get("current_milestone"),
                  conversation_id=conversation_id, **values)
 
 
-def _accepted_artifacts(result: StageResult, stage: Stage) -> dict[str, ArtifactRef]:
+def _candidate_artifacts(result: StageResult, stage: Stage) -> dict[str, ArtifactRef]:
     values = {}
     for name, path in result.outputs.items():
         candidate = Path(path)
         if not candidate.is_file():
             continue
-        values[name] = ArtifactRef(name=name, path=str(candidate.resolve()), digest=digest_file(candidate), producer="openhands", stage=stage.value, status="accepted")
+        values[name] = ArtifactRef(name=name, path=str(candidate.resolve()), digest=digest_file(candidate), producer="openhands", stage=stage.value, status="candidate")
     return values
+
+
+def _accepted_artifacts(result: StageResult, stage: Stage, *, handoff_id: str = "") -> dict[str, ArtifactRef]:
+    """Create accepted bindings only after the host validator succeeds."""
+    values = _candidate_artifacts(result, stage)
+    return {
+        name: artifact.model_copy(update={
+            "producer": "host",
+            "status": "accepted",
+            "purpose": f"Accepted {stage.value} handoff {handoff_id}" if handoff_id else f"Accepted {stage.value} artifact",
+        })
+        for name, artifact in values.items()
+    }
 
 
 def _worker_llm_config(state: dict[str, Any]) -> dict[str, Any]:
@@ -117,12 +153,18 @@ def _request(state: dict[str, Any], stage: Stage, attempt: int, attempt_path: Pa
     roots = _source_roots(state)
     manifests = state.get("source_manifests") or {}
     llm = _worker_llm_config(state)
+    attempt_id = str(state.get("attempt_id") or attempt_path.name)
+    session_seq = int(state.get("session_seq", 0))
+    conversation_id = __import__("uuid").uuid5(
+        __import__("uuid").NAMESPACE_URL,
+        f"{state.get('run_id','run')}:{state.get('dataset_id',state.get('dataset_scope','dataset'))}:{stage.value}:{attempt_id}:{session_seq}",
+    ).hex
     return StageRequest(
         stage=stage,
         run_id=str(state.get("run_id") or "run"),
         dataset_id=str(state.get("dataset_id") or state.get("dataset_scope") or "dataset"),
         attempt=attempt,
-        conversation_id=__import__("uuid").uuid5(__import__("uuid").NAMESPACE_URL, f"{state.get('run_id','run')}:{state.get('dataset_id',state.get('dataset_scope','dataset'))}:{stage.value}:{attempt}" ).hex,
+        conversation_id=conversation_id,
         execution_key=execution_key,
         workspace=str(attempt_path),
         prompt_path=str(attempt_path / "inputs" / "prompt.md"),
@@ -131,6 +173,7 @@ def _request(state: dict[str, Any], stage: Stage, attempt: int, attempt_path: Pa
         source_manifests={str(key): str(value) for key, value in manifests.items()},
         input_artifacts={name: ArtifactRef.model_validate(value) if not isinstance(value, ArtifactRef) else value for name, value in state.get("accepted_artifacts", {}).items()},
         input_digest=str(packet.identity["input_digest"]),
+        source_snapshot_digest=str(packet.identity.get("source_snapshot_digest", "")),
         prompt_token_count=token_count,
         required_outputs=list(STAGE_SPECS[stage.value].required_outputs),
         optional_outputs=list(STAGE_SPECS[stage.value].optional_outputs),
@@ -142,22 +185,38 @@ def _request(state: dict[str, Any], stage: Stage, attempt: int, attempt_path: Pa
         llm_timeout_seconds=llm["llm_timeout_seconds"],
         llm_max_retries=llm["llm_max_retries"],
         resume_existing=bool(state.get("resume_existing", False)),
+        attempt_id=attempt_id,
+        session_seq=session_seq,
+        parent_attempt_id=state.get("parent_attempt_id"),
+        resume_state_ref=state.get("resume_state_ref"),
+        contract_digest=digest_payload(STAGE_SPECS[stage.value].model_dump(mode="json")),
+        milestone=str(state.get("current_milestone") or ("inventory" if stage is Stage.UNDERSTAND else "implementation")),
+        runtime_backend=str((state.get("execution_runtime") or {}).get("backend", "")),
     )
 
 
 def _run_stage(state: dict[str, Any], stage: Stage, worker: OpenHandsWorker) -> dict[str, Any]:
-    attempt = int(state.get("attempt", 0)) + 1
+    # A continuation reuses the checkpoint-selected attempt/conversation;
+    # repairs create a fresh attempt.  The old "directory exists => +1"
+    # behaviour made recovery duplicate work and changed input identity.
+    resume_existing = bool(state.get("resume_existing"))
+    attempt = int(state.get("attempt", 0)) if resume_existing and state.get("attempt") else int(state.get("attempt", 0)) + 1
     attempt_path = attempt_directory(state, stage, attempt)
-    attempt = int(attempt_path.name)
+    try:
+        attempt = int(attempt_path.name)
+    except ValueError:
+        attempt = int(state.get("attempt", 0) or 1)
     local = dict(state)
     local["attempt_number"] = attempt
     local["preparation_attempt"] = attempt
+    local["attempt_id"] = attempt_path.name
+    local["current_milestone"] = "inventory" if stage is Stage.UNDERSTAND else "implementation"
     try:
         packet, _prompt, token_count, execution_key = build_stage_context(stage, local, attempt_path)
     except ContextBudgetError as exc:
         import uuid
-        conversation_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{state.get('run_id','run')}:{state.get('dataset_id',state.get('dataset_scope','dataset'))}:{stage.value}:{attempt}").hex
-        result = StageResult(stage=stage, attempt=attempt, conversation_id=conversation_id, execution_key="context-unavailable",
+        conversation_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{state.get('run_id','run')}:{state.get('dataset_id',state.get('dataset_scope','dataset'))}:{stage.value}:{attempt_path.name}:{state.get('session_seq', 0)}").hex
+        result = StageResult(stage=stage, run_id=str(state.get("run_id") or ""), dataset_id=str(state.get("dataset_id") or state.get("dataset_scope") or ""), attempt=attempt, conversation_id=conversation_id, execution_key="context-unavailable",
                              status="failed", diagnostic=str(exc), termination_reason="required_context_too_large",
                              diagnostics=[Diagnostic(stage=stage, code="required_context_too_large", category="contract", blocking=True, message=str(exc))])
         atomic_write_json(attempt_path / "result.json", result.model_dump(mode="json"))
@@ -173,7 +232,7 @@ def _run_stage(state: dict[str, Any], stage: Stage, worker: OpenHandsWorker) -> 
     except Exception as exc:
         code = "required_context_too_large" if isinstance(exc, ContextBudgetError) else "worker_execution_failed"
         reason = code
-        result = StageResult(stage=stage, attempt=attempt, conversation_id=request.conversation_id, execution_key=execution_key,
+        result = StageResult(stage=stage, run_id=request.run_id, dataset_id=request.dataset_id, attempt=attempt, conversation_id=request.conversation_id, execution_key=execution_key,
                              status="failed", diagnostic=str(exc), termination_reason=reason, input_digest=request.input_digest,
                              diagnostics=[Diagnostic(stage=stage, code=code, category="contract" if code == "required_context_too_large" else "environment", blocking=True, message=str(exc))])
     atomic_write_json(attempt_path / "result.json", result.model_dump(mode="json"))
@@ -186,20 +245,30 @@ def _run_stage(state: dict[str, Any], stage: Stage, worker: OpenHandsWorker) -> 
         "stage_result": result.model_dump(mode="json"),
         "preparation_workspace": str(attempt_path),
         "preparation_status": result.status,
+        "attempt_id": request.attempt_id,
+        "session_seq": request.session_seq,
+        "execution_key": request.execution_key,
     }
     if result.status == "submitted":
-        produced = _accepted_artifacts(result, stage)
-        if stage is Stage.UNDERSTAND:
-            updates["accepted_artifacts"] = produced
-            updates["artifacts"] = produced
-        else:
-            # Candidate files remain unaccepted until deterministic host
-            # validation succeeds.  They are carried as previous outputs on a
-            # repair attempt and never become upstream facts automatically.
-            updates["candidate_artifacts"] = {name: value.model_copy(update={"status": "candidate"}) for name, value in produced.items()}
-            updates["artifacts"] = updates["candidate_artifacts"]
+        produced = _candidate_artifacts(result, stage)
+        updates["candidate_artifacts"] = produced
+        updates["artifacts"] = produced
     if result.question_refs:
         updates["pending_questions"] = result.question_refs
+    # A worker declaration is a recoverable diagnostic projection.  Host
+    # validation and checkpoint state remain authoritative for completion.
+    try:
+        resume = ResumeState(
+            stage=stage, milestone="submission", attempt_id=request.attempt_id,
+            session_seq=request.session_seq, input_digest=request.input_digest,
+            accepted_handoff_ref=state.get("accepted_handoff_ref"),
+            active_issue_ids=[str(item.get("issue_id")) for item in state.get("diagnostics", []) if isinstance(item, dict) and item.get("issue_id")],
+            next_action="validate submission" if result.status == "submitted" else result.termination_reason,
+        )
+        atomic_write_json(attempt_path / "state" / "resume.json", resume.model_dump(mode="json"))
+        updates["resume_state_ref"] = str(attempt_path / "state" / "resume.json")
+    except Exception:
+        pass
     return updates
 
 
@@ -211,11 +280,17 @@ def run_preparation_graph(state: dict[str, Any], *, worker: OpenHandsWorker | No
     the same node functions and routing decisions.
     """
     current = dict(state)
-    current.setdefault("stage", Stage.UNDERSTAND.value)
+    current = resume_or_start(current)
     current.setdefault("status", "running")
     runner = worker or OpenHandsWorker()
-    for _ in range(max_attempts):
+    repair_attempts = int(current.get("repair_attempts", max_attempts))
+    stage_attempts = {Stage.UNDERSTAND.value: 0, Stage.PREPARE.value: 0}
+    for _ in range(max_attempts + repair_attempts + 2):
         stage = Stage(current["stage"])
+        stage_attempts[stage.value] += 1
+        if stage_attempts[stage.value] > max_attempts and current.get("attempt_mode") not in {"repair", "clarification"}:
+            current.update(status="blocked", diagnostics=[{"code": "stage_attempt_budget", "stage": stage.value, "message": "Stage attempt budget exhausted", "blocking": True}])
+            return current
         updates = _run_stage(current, stage, runner)
         current.update(updates)
         result = StageResult.model_validate(current["stage_result"], strict=False)
@@ -236,7 +311,15 @@ def run_preparation_graph(state: dict[str, Any], *, worker: OpenHandsWorker | No
             if handoff["status"] != "accepted":
                 current.update(status="blocked", diagnostics=handoff.get("issues", []), stage=Stage.UNDERSTAND.value)
                 return current
-            current.update(stage=Stage.PREPARE.value, attempt=0, attempt_mode="initial")
+            accepted = _accepted_artifacts(result, Stage.UNDERSTAND)
+            accepted_handoff = create_accepted_handoff(current, result, handoff)
+            current.update(
+                accepted_artifacts=accepted,
+                artifacts=accepted,
+                accepted_handoff=accepted_handoff.model_dump(mode="json"),
+                accepted_handoff_ref=str(preparation_root(current) / "handoff" / "understand" / f"{accepted_handoff.handoff_id}.json"),
+                stage=Stage.PREPARE.value, attempt=0, attempt_id="", session_seq=0, attempt_mode="initial",
+            )
             continue
         if stage is Stage.PREPARE:
             _materialize_accepted_handoff(current, result.outputs)
@@ -280,6 +363,15 @@ def _read_questions(path: str | None) -> list[dict[str, Any]]:
 
 def validate_understand_submission(outputs: dict[str, str], state: dict[str, Any] | None = None) -> dict[str, Any]:
     """Validate the structural handoff before ``prepare`` receives it."""
+    if state and state.get("canonical_validation"):
+        from .validation import validate_handoff
+        result = validate_handoff(outputs, state=state, replay=True)
+        return {
+            "status": result.status,
+            "issues": [item.model_dump(mode="json") for item in result.issues],
+            "questions": [item.model_dump(mode="json") for item in result.questions],
+            "validation_result": result.model_dump(mode="json"),
+        }
     required = [name for name in STAGE_SPECS[Stage.UNDERSTAND.value].required_outputs if name != "submission.json"]
     issues = []
     for name in required:
@@ -331,37 +423,142 @@ def validate_understand_submission(outputs: dict[str, str], state: dict[str, Any
     return {"status": "accepted", "issues": [], "questions": questions}
 
 
+def create_accepted_handoff(state: dict[str, Any], result: StageResult, validation: dict[str, Any]) -> AcceptedHandoff:
+    """Persist a host-owned immutable semantic handoff after validation."""
+    if result.stage is not Stage.UNDERSTAND or result.status != "submitted":
+        raise ValueError("Only a submitted understand result can create an AcceptedHandoff")
+    required = ("source_report.json", "image_population.jsonl", "mapping.json", "inspect_source.py")
+    missing = [name for name in required if not Path(result.outputs.get(name, "")).is_file()]
+    if missing:
+        raise ValueError(f"Cannot create AcceptedHandoff; missing {missing}")
+    dataset_id = str(state.get("dataset_id") or state.get("dataset_scope") or "dataset")
+    artifact_refs = {
+        name: artifact.model_copy(update={"producer": "host", "status": "accepted"})
+        for name, artifact in _candidate_artifacts(result, Stage.UNDERSTAND).items()
+        if name in {"source_report.json", "image_population.jsonl", "mapping.json", "semantic_questions.json", "inspect_source.py"}
+    }
+    def tree_digest(path: str) -> str:
+        root = Path(path)
+        if root.is_file():
+            return digest_file(root)
+        values = {
+            item.relative_to(root).as_posix(): digest_file(item)
+            for item in sorted(root.rglob("*")) if item.is_file()
+        }
+        return digest_payload(values)
+
+    source_payload = {
+        "sources": {key: tree_digest(value) for key, value in _source_roots(state).items()},
+        "manifests": {key: tree_digest(value) for key, value in (state.get("source_manifests") or {}).items()},
+    }
+    decisions = state.get("user_decisions") or state.get("decisions") or []
+    handoff_id = digest_payload({
+        "dataset_id": dataset_id,
+        "source_snapshot": source_payload,
+        "mapping": artifact_refs["mapping.json"].digest,
+        "population": artifact_refs["image_population.jsonl"].digest,
+        "decisions": decisions,
+    })[:32]
+    handoff = AcceptedHandoff(
+        handoff_id=handoff_id,
+        dataset_id=dataset_id,
+        source_snapshot_digest=digest_payload(source_payload),
+        mapping_digest=artifact_refs["mapping.json"].digest,
+        population_digest=artifact_refs["image_population.jsonl"].digest,
+        source_report_digest=artifact_refs["source_report.json"].digest,
+        decisions_digest=digest_payload(decisions),
+        inspection_script_digest=artifact_refs["inspect_source.py"].digest,
+        inspection_dependency_digests={},
+        contract_digest=digest_payload(STAGE_SPECS[Stage.UNDERSTAND.value].model_dump(mode="json")),
+        validation_receipt_ref=str(validation.get("receipt_ref") or (preparation_root(state) / "validation" / f"handoff-{handoff_id}.json")),
+        artifact_refs=artifact_refs,
+        revision=handoff_id,
+    )
+    receipt_path = Path(handoff.validation_receipt_ref)
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(receipt_path, {
+        "status": "accepted", "stage": "understand", "handoff_id": handoff.handoff_id,
+        "issues": validation.get("issues", []), "artifact_digests": {key: value.digest for key, value in artifact_refs.items()},
+    })
+    handoff_path = preparation_root(state) / "handoff" / "understand" / f"{handoff_id}.json"
+    atomic_write_json(handoff_path, handoff.model_dump(mode="json"))
+    return handoff
+
+
+def resume_or_start(state: dict[str, Any]) -> dict[str, Any]:
+    """Choose the next stage from durable facts, never from a UI projection."""
+    current = dict(state)
+    current.setdefault("status", "running")
+    resume_ref = current.get("resume_state_ref")
+    if resume_ref and Path(str(resume_ref)).is_file():
+        try:
+            resume = ResumeState.model_validate_json(Path(str(resume_ref)).read_text(encoding="utf-8"))
+            current.setdefault("stage", resume.stage.value)
+            current.setdefault("attempt_id", resume.attempt_id)
+            current.setdefault("session_seq", resume.session_seq)
+            current.setdefault("attempt", int(resume.attempt_id) if str(resume.attempt_id).isdigit() else 1)
+            current["resume_existing"] = resume.last_command.status == "running" or bool(current.get("attempt_id"))
+        except (OSError, ValueError):
+            current.pop("resume_state_ref", None)
+    if current.get("publication") and current.get("status") == "complete":
+        return current
+    accepted = current.get("accepted_handoff")
+    accepted_ref = current.get("accepted_handoff_ref")
+    if accepted_ref and not accepted:
+        path = Path(str(accepted_ref))
+        if path.is_file():
+            try:
+                accepted = AcceptedHandoff.model_validate_json(path.read_text(encoding="utf-8"))
+                current["accepted_handoff"] = accepted.model_dump(mode="json")
+            except ValueError:
+                accepted = None
+    if accepted:
+        accepted_model = AcceptedHandoff.model_validate(accepted)
+        for name, artifact in accepted_model.artifact_refs.items():
+            path = Path(artifact.path)
+            if not path.is_file() or digest_file(path) != artifact.digest or artifact.status != "accepted":
+                accepted = None
+                break
+    if accepted:
+        current.setdefault("stage", Stage.PREPARE.value)
+        if current.get("stage") not in {Stage.PREPARE.value, "publish"}:
+            current["stage"] = Stage.PREPARE.value
+    else:
+        current["stage"] = Stage.UNDERSTAND.value
+        current.pop("accepted_handoff", None)
+        current.pop("accepted_handoff_ref", None)
+    current.setdefault("attempt", 0)
+    current.setdefault("attempt_mode", "initial")
+    current.setdefault("session_seq", 0)
+    return current
+
+
 def _materialize_accepted_handoff(state: dict[str, Any], outputs: dict[str, str]) -> Path:
-    """Assemble accepted understand files beside the prepare candidate."""
+    """Expose accepted upstream files without replacing prepare-owned files."""
     candidate_root = Path(outputs["cases.jsonl"]).resolve().parent
-    for name, value in (state.get("accepted_artifacts") or {}).items():
+    handoff = state.get("accepted_handoff") or {}
+    source_artifacts = handoff.get("artifact_refs") if isinstance(handoff, dict) else None
+    source_artifacts = source_artifacts or state.get("accepted_artifacts") or {}
+    for name, value in source_artifacts.items():
         artifact = value if isinstance(value, ArtifactRef) else ArtifactRef.model_validate(value)
-        if name not in {"source_report.json", "image_population.jsonl", "mapping.json", "semantic_questions.json", "inspect_source.py"}:
+        if name not in {"source_report.json", "image_population.jsonl", "mapping.json", "inspect_source.py"}:
             continue
         source = Path(artifact.path)
         target = candidate_root / name
-        if source.is_file() and source.resolve() != target.resolve():
+        if source.is_file() and source.resolve() != target.resolve() and not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
-    manifest = candidate_root / "output_manifest.json"
-    if manifest.is_file():
-        try:
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
-            entries = payload.setdefault("files", [])
-            registered = {entry.get("path") if isinstance(entry, dict) else entry for entry in entries}
-            for name in ("source_report.json", "image_population.jsonl", "mapping.json", "semantic_questions.json", "inspect_source.py"):
-                target = candidate_root / name
-                if target.is_file() and name not in registered:
-                    entries.append({"path": name, "kind": "accepted_upstream", "digest": digest_file(target), "purpose": "Accepted understand-stage handoff."})
-            atomic_write_json(manifest, payload)
-        except (OSError, ValueError, TypeError):
-            # The normal validation path reports a precise manifest error.
-            pass
     return candidate_root
 
 
 def validate_candidate_submission(outputs: dict[str, str], state: dict[str, Any]) -> dict[str, Any]:
     """Perform the cheap host gate before the outer finalizer runs."""
+    if state.get("canonical_validation"):
+        from .validation import validate_prepare_candidate
+        result = validate_prepare_candidate(Path(outputs["cases.jsonl"]).parent, state=state,
+                                             population_path=state.get("preparation_population_path"))
+        return {"status": result.status, "issues": [item.model_dump(mode="json") for item in result.issues],
+                "validation_result": result.model_dump(mode="json")}
     required = STAGE_SPECS[Stage.PREPARE.value].required_outputs
     missing = [name for name in required if name != "submission.json" and name not in outputs]
     issues = [{"code": "missing_output", "stage": "prepare", "message": f"Missing submitted output: {name}", "path": name, "blocking": True} for name in missing]
@@ -412,6 +609,9 @@ validate_prepare_submission = validate_candidate_submission
 
 def publish_preparation(state: dict[str, Any], outputs: dict[str, str], validation: dict[str, Any]) -> dict[str, Any]:
     """Write a content-bound host publication receipt for a validated candidate."""
+    if state.get("strict_publication"):
+        from .publisher import DatasetPublisher
+        return DatasetPublisher(state["bundle_root"]).publish(Path(outputs["cases.jsonl"]).resolve().parent, state)
     root = preparation_root(state)
     candidate_root = Path(outputs["cases.jsonl"]).resolve().parent
     all_files = {
@@ -435,11 +635,14 @@ def publish_preparation(state: dict[str, Any], outputs: dict[str, str], validati
 
 
 def compile_preparation_graph(*, worker: OpenHandsWorker | None = None, checkpointer=None):
-    """Compile the explicit understand → validate → prepare → publish graph."""
+    """Compile the single production graph used by runtime and tests."""
     from langgraph.graph import END, START, StateGraph
     from langgraph.types import interrupt
 
     runner = worker or OpenHandsWorker()
+
+    def resume(state):
+        return resume_or_start(dict(state))
 
     def understand(state):
         return _run_stage(dict(state), Stage.UNDERSTAND, runner)
@@ -453,7 +656,12 @@ def compile_preparation_graph(*, worker: OpenHandsWorker | None = None, checkpoi
             return {"status": "needs_input", "pending_questions": handoff.get("issues", []), "stage": Stage.UNDERSTAND.value}
         if handoff["status"] != "accepted":
             return {"status": "blocked", "diagnostics": handoff.get("issues", [])}
-        return {"status": "running", "stage": Stage.PREPARE.value, "attempt": 0}
+        accepted = _accepted_artifacts(result, Stage.UNDERSTAND)
+        handoff = create_accepted_handoff(state, result, {**handoff, "receipt_ref": ""})
+        return {"status": "running", "stage": Stage.PREPARE.value, "attempt": 0,
+                "attempt_id": "", "accepted_artifacts": accepted, "artifacts": accepted,
+                "accepted_handoff": handoff.model_dump(mode="json"),
+                "accepted_handoff_ref": str(preparation_root(state) / "handoff" / "understand" / f"{handoff.handoff_id}.json")}
 
     def prepare(state):
         return _run_stage(dict(state), Stage.PREPARE, runner)
@@ -490,9 +698,10 @@ def compile_preparation_graph(*, worker: OpenHandsWorker | None = None, checkpoi
         return {"status": "complete", "stage": "publish", "publication": publish_preparation(state, result.outputs, validation)}
 
     graph = StateGraph(PreparationGraphState)
-    for name, fn in (("understand", understand), ("check_understand", check_understand), ("prepare", prepare), ("check_prepare", check_prepare), ("clarify", clarify), ("publish", publish)):
+    for name, fn in (("resume_or_start", resume), ("understand", understand), ("check_understand", check_understand), ("prepare", prepare), ("check_prepare", check_prepare), ("clarify", clarify), ("publish", publish)):
         graph.add_node(name, fn)
-    graph.add_edge(START, "understand")
+    graph.add_edge(START, "resume_or_start")
+    graph.add_conditional_edges("resume_or_start", lambda state: "publish" if state.get("status") == "complete" else "prepare" if state.get("stage") == Stage.PREPARE.value else "understand", {"understand": "understand", "prepare": "prepare", "publish": "publish"})
     graph.add_edge("understand", "check_understand")
     graph.add_conditional_edges("check_understand", lambda state: "clarify" if state.get("status") == "needs_input" else "prepare" if state.get("status") == "running" else END, {"clarify": "clarify", "prepare": "prepare", END: END})
     graph.add_conditional_edges("clarify", lambda state: "understand" if state.get("stage", "understand") == "understand" else "prepare", {"understand": "understand", "prepare": "prepare"})

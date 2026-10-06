@@ -2,76 +2,80 @@ Current stage: prepare
 
 Objective
 
-Implement, test, and execute the accepted preparation mapping over the
-complete source population. Perform coding, trial execution, full execution,
-inspection, and implementation repair within this conversation.
-
-Required deliverables
-
-- scripts/prepare.py
-- cases.jsonl
-- asset_manifest.jsonl
-- provenance.jsonl
-- conversion_config.json
-- grouping_policy.json
-- execution_report.json
-- output_manifest.json
-- submission.json
-
-Use the corresponding schemas and rules in inputs/contracts. Write
-deliverables under ./outputs. Register optional deliverables and every
-required file dependency in output_manifest.json.
+Implement, test, and execute the accepted mapping over the complete frozen
+source population, then submit a reproducible candidate for host validation.
+The accepted mapping defines semantics for this stage.
 
 Procedure
 
-1. Read the accepted handoff. Read the source report, mapping, population
-   contract, applicable user decisions, and output rules. Confirm their
-   identities against the context bindings.
-2. Plan implementation coverage. Inspect every mapping rule that applies to
-   each source/table before implementing that source/table. Track coverage by
-   rule_id. A rule not printed in the context packet still applies when it is
-   present in the accepted mapping.
-3. Implement a reproducible converter. Write scripts/prepare.py using the
-   invocation interface declared in the context. Use source-relative
-   identities and locators. Keep behavior determined by the frozen inputs,
-   accepted mapping, conversion configuration, and execution environment.
-4. Test representative and boundary cases. Cover relevant formats, null and
-   uncertain values, repeated keys, unmatched joins, multiple assets, masks,
-   and other boundary cases identified in the source report. Record the actual
-   checks and results. Use the supplied validation command if one is declared.
-5. Execute the complete population. Run the converter over all required
-   source units. Account for retained, excluded, duplicate, rejected, and
-   unprocessed units according to the accepted population policy. Do not use
-   a sample run as evidence of complete processing.
-6. Inspect and repair implementation. Check output structures, counts, IDs,
-   relationships, locators, asset digests, provenance, and population
-   reconciliation. Repair code and rerun affected checks when implementation
-   fails.
-7. Package the submission. Register every deliverable and dependency,
-   including generated assets, auxiliary scripts, and optional manifests.
-   Ensure paths remain valid under the declared bundle layout.
-   Include the accepted mapping and population digests in output_manifest.json
-   and execution_report.json; do not silently modify the accepted mapping.
+1. Establish the accepted inputs.
+   Read the AcceptedHandoff, the bounded source report, applicable decisions,
+   execution interface, and output contract index. Confirm that the referenced
+   files and identities match the host context. If the accepted handoff is
+   missing or inconsistent, report a contract blocker; do not reconstruct
+   accepted semantics from a previous conversation.
 
-Semantic changes
+2. Index all mapping rules.
+   Load the complete mapping programmatically and create a rule coverage
+   table. Read the details of every applicable rule before implementing its
+   source or rule group. Summaries and samples do not reduce the rule set.
+   Track the implementation and verification reference for each rule ID.
 
-- Treat the accepted mapping as read-only.
-- If source evidence contradicts the mapping or a required semantic choice is
-  missing, preserve the evidence and affected partial outputs. Identify the
-  mapping rule and the required change.
-- Report mapping_revision_required for a proposal that needs to return to the
-  understand stage.
-- Submit needs_input only when an actual missing user fact is required.
-- Do not silently reinterpret fields, change population selection, alter Case
-  grouping, or invent missing semantics.
+3. Implement the converter.
+   Create scripts/prepare.py with the exact input-config, output-dir, and
+   sample/full mode interface in context.execution. Use the declared source
+   paths and accepted population. Keep IDs, locators, grouping, joins,
+   missingness, raw values, units, and asset roles consistent with the mapping.
+   Register helper scripts and file dependencies. Generate grouping_policy
+   through the supplied projection helper rather than defining new semantics.
+
+4. Run representative and boundary tests.
+   Select cases covering the actual rule groups and observed boundaries:
+   null and uncertain values, duplicate keys, unmatched joins, multiple
+   assets, encodings, masks, volumes, and any additional relevant condition.
+   Run the sample command into work/sample and check results against the
+   accepted rules. Record real execution references and expected outcomes.
+   Repair implementation failures and rerun affected checks.
+
+5. Execute the complete population.
+   Run the full command into the declared output directory. Track it to
+   completion. Give every frozen source unit exactly one final accounting
+   outcome and preserve its Case relationships and provenance. A source
+   unit may produce multiple Cases, and a Case may combine source units.
+   Do not equate source-unit count with Case count or claim full completion
+   from a successful sample.
+
+6. Validate and package.
+   Verify schemas, IDs, relationships, source locators, asset digests,
+   encoding preservation, provenance, rule coverage, and full population
+   reconciliation. Use the supplied report and packaging helpers, then run
+   the candidate validation command. Register all output dependencies and
+   enabled optional manifests. Bind reports to the accepted mapping and
+   population using the exact schema fields supplied by the host.
+
+Handling conflicts
+
+Inspect source data only to implement or diagnose a specific rule. Do not
+restart open-ended source interpretation. Repair coding, test, and execution
+failures in this stage without changing the accepted mapping.
+
+If a rule contradicts source evidence, omits an essential semantic choice,
+or requires a change to population, grouping, or field meaning, preserve
+the affected work and submit blocked with mapping_revision_required.
+Include affected rule IDs, source evidence, observed versus expected
+behavior, and the change that needs understand-stage review.
+
+Use needs_input only when an actual missing user fact is required. Write
+the current question into this stage's semantic_questions.json and reference
+its issue ID. Do not overwrite or modify upstream questions or decisions.
 
 Completion
 
-- execution_report.json must distinguish tests, full execution, failed checks,
-  limitations, population accounting, and mapping-rule coverage.
-- Record the command and configuration needed to reproduce execution.
-- Submit only files that exist and report their actual status.
-- Do not create host validation, quarantine, readiness, or publication
-  receipts.
-- Submission means the candidate is ready for independent host validation; it
-  does not mean the dataset has been published.
+Use submitted only after relevant tests and the full run actually succeed,
+all source units are accounted for, all required mapping rules are covered,
+and the declared candidate checks pass without unresolved blocking issues.
+Record failed checks and limitations accurately. Do not write host-owned
+acceptance, quarantine, readiness, or publication receipts.
+
+Write the submission, ensure no command is still running, and call finish.
+The host independently validates and publishes the candidate.

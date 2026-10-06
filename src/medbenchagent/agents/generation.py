@@ -13,8 +13,18 @@ def run_generation(context, *, leaf_path=None, output_path=None, allocation=None
     if access.get("sampling_manifest_path"):
         sampling_manifest = load_manifest(access["sampling_manifest_path"], SamplingManifest)
     leaves = json.loads(Path(leaf_path or context["leaf_tasks_path"]).read_text(encoding="utf-8"))
+    index = DatasetIndex(access)
+    def pages():
+        offset = 0
+        while True:
+            page = index.sample(offset=offset, limit=page_size)
+            yield from page["values"]
+            if page["complete"]:
+                break
+            offset = page["next_offset"]
+
     items = generate_task_items(
-        list(DatasetIndex(access).iter_cases()),
+        pages(),
         leaves.values(),
         context.get("selected_dataset_id", "dataset"),
         allocation=allocation,

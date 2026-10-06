@@ -50,6 +50,119 @@ class ArtifactRef(Contract):
     purpose: str = ""
 
 
+class EvidenceRef(Contract):
+    """A stable reference from a semantic rule to measured source evidence."""
+
+    ref: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    locator: str = Field(min_length=1)
+    observation_digest: str = Field(min_length=1)
+    excerpt: str = ""
+
+
+class PopulationPolicy(Contract):
+    rule_id: str = Field(min_length=1)
+    unit_type: str = Field(min_length=1)
+    source_ids: list[str] = Field(min_length=1)
+    identity_fields: list[str] = Field(min_length=1)
+    inclusion: str = Field(min_length=1)
+    exclusion: str = ""
+    evidence_refs: list[str] = Field(min_length=1)
+
+
+class CaseIdentityRule(Contract):
+    rule_id: str = Field(min_length=1)
+    target_path: str = Field(min_length=1)
+    fields: list[str] = Field(min_length=1)
+    collision_policy: Literal["error", "merge", "split"] = "error"
+    evidence_refs: list[str] = Field(min_length=1)
+
+
+class GroupingRule(Contract):
+    rule_id: str = Field(min_length=1)
+    case_unit: str = Field(min_length=1)
+    key_fields: list[str] = Field(min_length=1)
+    conflict_policy: Literal["error", "separate", "prefer_source", "record_all"] = "error"
+    evidence_refs: list[str] = Field(min_length=1)
+    decision_id: str | None = None
+
+
+class JoinRule(Contract):
+    rule_id: str = Field(min_length=1)
+    left_scope: str = Field(min_length=1)
+    right_scope: str = Field(min_length=1)
+    keys: list[str] = Field(min_length=1)
+    cardinality: Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]
+    null_key_policy: Literal["reject", "unmatched", "match_null"] = "unmatched"
+    duplicate_key_policy: Literal["reject", "all", "first"] = "reject"
+    unmatched_policy: Literal["reject", "quarantine", "exclude"] = "reject"
+    measured: dict[str, int] = Field(default_factory=dict)
+    evidence_refs: list[str] = Field(min_length=1)
+
+
+class FieldRule(Contract):
+    rule_id: str = Field(min_length=1)
+    source_path: str = Field(min_length=1)
+    disposition: Literal[
+        "medical_evidence", "grouping_metadata", "provenance_metadata",
+        "asset_metadata", "exclude",
+    ]
+    target_path: str = ""
+    source_type: str = Field(min_length=1)
+    target_type: str = Field(min_length=1)
+    raw_value_path: str = ""
+    transform: str = "identity"
+    missingness: str = Field(min_length=1)
+    unit: str | None = None
+    reason: str = Field(min_length=1)
+    scope: str = Field(min_length=1)
+    evidence_refs: list[str] = Field(min_length=1)
+    decision_id: str | None = None
+
+
+class AssetRule(Contract):
+    rule_id: str = Field(min_length=1)
+    source_path: str = Field(min_length=1)
+    role: str = Field(min_length=1)
+    order: int = Field(ge=0)
+    coordinate_system: str = Field(min_length=1)
+    transform: str = "identity"
+    source_asset_field: str = Field(min_length=1)
+    evidence_refs: list[str] = Field(min_length=1)
+
+
+class PopulationRecord(Contract):
+    """One frozen source unit.  The pair is the only population identity."""
+
+    source_id: str = Field(min_length=1)
+    source_unit_id: str = Field(min_length=1)
+    locator: str = Field(min_length=1)
+    unit_type: str = Field(default="record", min_length=1)
+    relation_refs: list[str] = Field(default_factory=list)
+
+
+class PopulationOutcome(Contract):
+    source_id: str = Field(min_length=1)
+    source_unit_id: str = Field(min_length=1)
+    status: Literal["retained", "quarantined", "excluded", "duplicate"]
+    case_ids: list[str] = Field(default_factory=list)
+    record_refs: list[str] = Field(default_factory=list)
+    locators: list[str] = Field(default_factory=list)
+    rule_ids: list[str] = Field(default_factory=list)
+    reason: str = Field(min_length=1)
+    duplicate_of: str | None = None
+
+    @model_validator(mode="after")
+    def validate_status(self):
+        if self.status == "retained" and not self.case_ids:
+            raise ValueError("retained population outcomes require case_ids")
+        if self.status == "excluded" and not self.rule_ids:
+            raise ValueError("excluded population outcomes require rule_ids")
+        if self.status == "duplicate" and not self.duplicate_of:
+            raise ValueError("duplicate population outcomes require duplicate_of")
+        return self
+
+
 class InputBinding(Contract):
     """A file the worker can read in its workspace."""
 
@@ -59,13 +172,18 @@ class InputBinding(Contract):
     read_policy: Literal["before_work", "stream_during_execution", "on_failure", "optional"] = "before_work"
     required: bool = True
     reason: str = ""
+    size_bytes: int = Field(default=0, ge=0)
+    format: str = "file"
+    schema_ref: str | None = None
+    producer: str = "host"
+    depends_on: list[str] = Field(default_factory=list)
 
 
 class SourceBinding(Contract):
     source_id: str = Field(min_length=1)
     root: str = Field(min_length=1)
     manifest: str = Field(min_length=1)
-    digest: str = ""
+    digest: str = Field(min_length=1)
     read_only: bool = True
 
 
@@ -74,6 +192,12 @@ class StageBudget(Contract):
     timeout_seconds: int = Field(default=1800, ge=1)
     no_progress_limit: int = Field(default=8, ge=1)
     tool_error_limit: int = Field(default=3, ge=1)
+    repair_attempts: int = Field(default=2, ge=0)
+    transport_retries: int = Field(default=2, ge=0)
+    semantic_revision_cycles: int = Field(default=2, ge=0)
+    total_seconds: int = Field(default=14_400, ge=1)
+    total_iterations: int = Field(default=300, ge=1)
+    total_cost: float | None = Field(default=None, gt=0)
     initial_message_tokens: int = Field(default=12_000, ge=256)
     model_context_tokens: int | None = Field(default=None, ge=256)
     output_reserve_tokens: int = Field(default=4_096, ge=0)
@@ -91,6 +215,12 @@ class Diagnostic(Contract):
     field: str | None = None
     category: Literal["implementation", "mapping", "schema", "population", "environment", "contract", "unknown"] = "unknown"
     blocking: bool = False
+    rule_ids: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    observed: str = ""
+    expected: str = ""
+    affected_artifacts: list[str] = Field(default_factory=list)
+    requested_change: str = ""
 
 
 class SemanticQuestion(Contract):
@@ -107,6 +237,17 @@ class SemanticQuestion(Contract):
     blocking: bool = False
     resolved: bool = False
     decision_id: str | None = None
+
+
+class QuestionSet(Contract):
+    questions: list[SemanticQuestion]
+
+    @model_validator(mode="after")
+    def unique_ids(self):
+        ids = [item.issue_id for item in self.questions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("semantic question issue_id values must be unique")
+        return self
 
 
 class ArtifactDependency(Contract):
@@ -141,12 +282,12 @@ class SourceReport(Contract):
 
 
 class PreparationMapping(Contract):
-    population_policy: dict[str, Any] = Field(default_factory=dict)
-    case_identity: dict[str, Any] = Field(default_factory=dict)
-    grouping: dict[str, Any] = Field(default_factory=dict)
-    joins: list[dict[str, Any]] = Field(default_factory=list)
-    fields: list[dict[str, Any]] = Field(default_factory=list)
-    asset_rules: list[dict[str, Any]] = Field(default_factory=list)
+    population_policy: PopulationPolicy | dict[str, Any] = Field(default_factory=dict)
+    case_identity: CaseIdentityRule | dict[str, Any] = Field(default_factory=dict)
+    grouping: GroupingRule | dict[str, Any] = Field(default_factory=dict)
+    joins: list[JoinRule | dict[str, Any]] = Field(default_factory=list)
+    fields: list[FieldRule | dict[str, Any]] = Field(default_factory=list)
+    asset_rules: list[AssetRule | dict[str, Any]] = Field(default_factory=list)
     field_semantics: dict[str, Any] = Field(default_factory=dict)
     resolved_decision_refs: list[str] = Field(default_factory=list)
     limitations: list[Any] = Field(default_factory=list)
@@ -164,9 +305,13 @@ class ExecutionReport(Contract):
 class UserDecision(Contract):
     decision_id: str = Field(min_length=1)
     issue_id: str = Field(min_length=1)
+    dataset_id: str = ""
     source_ids: list[str] = Field(default_factory=list)
     fields: list[str] = Field(default_factory=list)
     answer: str = Field(min_length=1)
+    exchanges: list[dict[str, str]] = Field(default_factory=list)
+    source_snapshot_digest: str = ""
+    input_digest: str = ""
     structured_value: Any = None
     evidence_refs: list[str] = Field(default_factory=list)
     digest: str = ""
@@ -184,13 +329,109 @@ class UserDecision(Contract):
 class AttemptContext(Contract):
     mode: AttemptMode = AttemptMode.INITIAL
     target_issue_ids: list[str] = Field(default_factory=list)
-    feedback_path: str | None = None
     previous_outputs_root: str | None = None
     resume_summary: str = ""
     completed_work: list[str] = Field(default_factory=list)
     remaining_work: list[str] = Field(default_factory=list)
     invalidated_work: list[str] = Field(default_factory=list)
     user_answer_refs: list[str] = Field(default_factory=list)
+    attempt_id: str = ""
+    session_seq: int = Field(default=0, ge=0)
+    parent_attempt_id: str | None = None
+    input_digest: str = ""
+    execution_key: str = ""
+    attempt_dir: str = ""
+    resume_state_ref: str | None = None
+    previous_root: str | None = None
+    completed_steps: list[str] = Field(default_factory=list)
+    remaining_steps: list[str] = Field(default_factory=list)
+    invalidated_steps: list[str] = Field(default_factory=list)
+
+
+class ResumeCommand(Contract):
+    argv: list[str] = Field(default_factory=list)
+    cwd: str = ""
+    status: Literal["not_started", "running", "succeeded", "failed", "cancelled", "unknown"] = "not_started"
+    process_ref: str = ""
+    execution_ref: str = ""
+
+
+class ResumeState(Contract):
+    stage: Stage
+    milestone: str = ""
+    attempt_id: str = Field(min_length=1)
+    session_seq: int = Field(default=0, ge=0)
+    input_digest: str = Field(min_length=1)
+    source_snapshot_digest: str = ""
+    accepted_handoff_ref: str | None = None
+    working_files: list[dict[str, Any]] = Field(default_factory=list)
+    completed_steps: list[dict[str, Any]] = Field(default_factory=list)
+    remaining_steps: list[dict[str, Any]] = Field(default_factory=list)
+    invalidated_steps: list[dict[str, Any]] = Field(default_factory=list)
+    active_issue_ids: list[str] = Field(default_factory=list)
+    applied_decision_ids: list[str] = Field(default_factory=list)
+    last_command: ResumeCommand = Field(default_factory=ResumeCommand)
+    next_action: str = ""
+
+
+class AcceptedHandoff(Contract):
+    """Host-owned semantic handoff.  A candidate can never stand in for it."""
+
+    handoff_id: str = Field(min_length=1)
+    dataset_id: str = Field(min_length=1)
+    source_snapshot_digest: str = Field(min_length=1)
+    mapping_digest: str = Field(min_length=1)
+    population_digest: str = Field(min_length=1)
+    source_report_digest: str = Field(min_length=1)
+    decisions_digest: str = Field(min_length=1)
+    inspection_script_digest: str = Field(min_length=1)
+    inspection_dependency_digests: dict[str, str] = Field(default_factory=dict)
+    contract_digest: str = Field(min_length=1)
+    validation_receipt_ref: str = Field(min_length=1)
+    artifact_refs: dict[str, ArtifactRef] = Field(min_length=1)
+    revision: str = Field(min_length=1)
+
+
+class AttemptReceipt(Contract):
+    """The one normalized runtime receipt used by recovery and diagnostics."""
+
+    request_identity: dict[str, Any]
+    result: "StageResult"
+    runtime: dict[str, Any] = Field(default_factory=dict)
+    prompt_digest: str = ""
+    context_digest: str = ""
+    contract_digest: str = ""
+    usage: dict[str, Any] = Field(default_factory=dict)
+    timing: dict[str, Any] = Field(default_factory=dict)
+    execution_refs: list[str] = Field(default_factory=list)
+    resume_state_ref: str | None = None
+    termination: dict[str, Any] = Field(default_factory=dict)
+
+
+class ValidationIssue(Contract):
+    issue_id: str = Field(min_length=1)
+    code: str = Field(min_length=1)
+    stage: Stage
+    message: str = Field(min_length=1)
+    severity: Literal["error", "warning"] = "error"
+    rule_ids: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    record_ref: str | None = None
+    path: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ValidationResult(Contract):
+    status: Literal["accepted", "rejected", "needs_input", "blocked"]
+    stage: Stage
+    issues: list[ValidationIssue] = Field(default_factory=list)
+    questions: list[SemanticQuestion] = Field(default_factory=list)
+    accepted_handoff: AcceptedHandoff | None = None
+    valid_case_ids: list[str] = Field(default_factory=list)
+    quarantined_cases: list[dict[str, Any]] = Field(default_factory=list)
+    dropped_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    dependency_refs: list[str] = Field(default_factory=list)
+    accounting: dict[str, int] = Field(default_factory=dict)
 
 
 class StageOutputs(Contract):
@@ -198,6 +439,7 @@ class StageOutputs(Contract):
     required: list[str] = Field(default_factory=list)
     optional: list[str] = Field(default_factory=list)
     contracts_root: str = "inputs/contracts"
+    files: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ContextPacket(Contract):
@@ -213,6 +455,9 @@ class ContextPacket(Contract):
     outputs: StageOutputs
     attempt: AttemptContext = Field(default_factory=AttemptContext)
     diagnostics: list[Diagnostic] = Field(default_factory=list)
+    execution: dict[str, Any] = Field(default_factory=dict)
+    budgets: dict[str, Any] = Field(default_factory=dict)
+    accepted_handoff_ref: str | None = None
 
     @model_validator(mode="after")
     def validate_identity(self):
@@ -251,6 +496,7 @@ class StageRequest(Contract):
     source_manifests: dict[str, str] = Field(default_factory=dict)
     input_artifacts: dict[str, ArtifactRef] = Field(default_factory=dict)
     input_digest: str = Field(min_length=1)
+    source_snapshot_digest: str = ""
     prompt_token_count: int | None = Field(default=None, ge=0)
     required_outputs: list[str] = Field(default_factory=list)
     optional_outputs: list[str] = Field(default_factory=list)
@@ -264,6 +510,13 @@ class StageRequest(Contract):
     llm_max_retries: int | None = Field(default=None, ge=0)
     agent: str = "DatasetProcessingAgent"
     resume_existing: bool = False
+    attempt_id: str = ""
+    session_seq: int = Field(default=0, ge=0)
+    parent_attempt_id: str | None = None
+    resume_state_ref: str | None = None
+    contract_digest: str = ""
+    milestone: str = ""
+    runtime_backend: str = ""
 
     @model_validator(mode="after")
     def check_paths(self):
@@ -274,10 +527,13 @@ class StageRequest(Contract):
 
 class StageResult(Contract):
     stage: Stage
+    run_id: str = ""
+    dataset_id: str = ""
     attempt: int = Field(ge=1)
     conversation_id: str = Field(min_length=1)
     execution_key: str = Field(min_length=1)
-    status: Literal["submitted", "needs_input", "blocked", "failed"]
+    status: Literal["submitted", "needs_input", "blocked", "failed", "cancelled"]
+    control: Literal["context_rollover"] | None = None
     outputs: dict[str, str] = Field(default_factory=dict)
     question_refs: list[str] = Field(default_factory=list)
     diagnostics: list[Diagnostic] = Field(default_factory=list)
@@ -289,6 +545,10 @@ class StageResult(Contract):
     prompt_digest: str = ""
     context_digest: str = ""
     token_count: int | None = Field(default=None, ge=0)
+    attempt_id: str = ""
+    session_seq: int = Field(default=0, ge=0)
+    usage: dict[str, Any] = Field(default_factory=dict)
+    execution_refs: list[str] = Field(default_factory=list)
 
 
 class StageSpec(Contract):
@@ -298,6 +558,9 @@ class StageSpec(Contract):
     optional_outputs: list[str] = Field(default_factory=list)
     input_roles: list[str] = Field(default_factory=list)
     success_conditions: list[str] = Field(default_factory=list)
+    files: list[dict[str, Any]] = Field(default_factory=list)
+    commands: list[list[str]] = Field(default_factory=list)
+    completion_by_outcome: dict[str, list[str]] = Field(default_factory=dict)
 
 
 STAGE_SPECS: dict[str, StageSpec] = {
@@ -314,6 +577,19 @@ STAGE_SPECS: dict[str, StageSpec] = {
             "Mapping decisions have resolvable evidence references.",
             "Blocking questions are resolved before prepare starts.",
         ],
+        files=[
+            {"path": "source_report.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "understand", "validator": "source_report"},
+            {"path": "image_population.jsonl", "format": "jsonl", "required": True, "read_policy": "stream_during_execution", "producer": "understand", "validator": "population"},
+            {"path": "mapping.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "understand", "validator": "mapping"},
+            {"path": "semantic_questions.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "stage", "validator": "questions"},
+            {"path": "inspect_source.py", "format": "python", "required": True, "read_policy": "on_failure", "producer": "understand", "validator": "replay"},
+        ],
+        commands=[["python", "outputs/inspect_source.py", "--input-config", "inputs/inspection_config.json", "--output-dir", "work/inspection", "--mode", "inventory"]],
+        completion_by_outcome={
+            "submitted": ["source replay is deterministic", "all source units are accounted for", "no blocking questions remain"],
+            "needs_input": ["question container is valid", "partial observations are preserved"],
+            "blocked": ["diagnostic and recovery condition are recorded"],
+        },
     ),
     Stage.PREPARE.value: StageSpec(
         stage=Stage.PREPARE,
@@ -333,6 +609,26 @@ STAGE_SPECS: dict[str, StageSpec] = {
             "The complete population is reconciled by stable source-unit identity.",
             "Every candidate dependency is registered in output_manifest.json.",
         ],
+        files=[
+            {"path": "scripts/prepare.py", "format": "python", "required": True, "read_policy": "before_work", "producer": "prepare", "validator": "script"},
+            {"path": "cases.jsonl", "format": "jsonl", "required": True, "read_policy": "stream_during_execution", "producer": "converter", "validator": "case"},
+            {"path": "asset_manifest.jsonl", "format": "jsonl", "required": True, "read_policy": "stream_during_execution", "producer": "converter", "validator": "asset"},
+            {"path": "provenance.jsonl", "format": "jsonl", "required": True, "read_policy": "stream_during_execution", "producer": "converter", "validator": "provenance"},
+            {"path": "conversion_config.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "prepare", "validator": "identity"},
+            {"path": "grouping_policy.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "host", "validator": "grouping"},
+            {"path": "execution_report.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "runtime", "validator": "execution"},
+            {"path": "output_manifest.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "host", "validator": "manifest"},
+            {"path": "semantic_questions.json", "format": "json", "required": False, "read_policy": "on_failure", "producer": "stage", "validator": "questions"},
+        ],
+        commands=[
+            ["python", "outputs/scripts/prepare.py", "--input-config", "inputs/preparation_config.json", "--output-dir", "work/sample", "--mode", "sample"],
+            ["python", "outputs/scripts/prepare.py", "--input-config", "inputs/preparation_config.json", "--output-dir", "outputs", "--mode", "full"],
+        ],
+        completion_by_outcome={
+            "submitted": ["sample and full execution evidence exists", "population is fully reconciled", "candidate validation passes"],
+            "needs_input": ["current question set is valid", "partial work is preserved"],
+            "blocked": ["diagnostic and recovery condition are recorded"],
+        },
     ),
 }
 
@@ -359,7 +655,7 @@ def contract_file_names(stage: Stage | str) -> list[str]:
     if current is Stage.UNDERSTAND:
         return common + ["source_report.schema.json", "mapping.schema.json", "question.schema.json"]
     return common + [
-        "case.schema.json", "asset.schema.json", "presentation.schema.json", "split.schema.json",
+        "question.schema.json", "case.schema.json", "asset.schema.json", "presentation.schema.json", "split.schema.json",
         "sampling.schema.json", "execution_report.schema.json", "output_manifest.schema.json",
     ]
 
@@ -371,4 +667,11 @@ def digest_payload(value: Any) -> str:
 
 def digest_file(path: str | Path) -> str:
     """Hash a file without embedding host-specific paths in the digest."""
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    with Path(path).open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+# AttemptReceipt is declared before StageResult so the state model remains
+# grouped with the other host contracts.  Resolve its forward reference once
+# all canonical models are available.
+AttemptReceipt.model_rebuild()

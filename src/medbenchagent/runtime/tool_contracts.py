@@ -43,10 +43,6 @@ class AskUserArguments(NoArguments):
         return self
 
 
-class FeedbackArguments(NoArguments):
-    feedback: str = ""
-
-
 class AllocationPreference(NoArguments):
     id: NonEmpty
     description: NonEmpty
@@ -61,9 +57,13 @@ class DelegationArguments(NoArguments):
     delegation: Delegation = Field(default_factory=Delegation)
 
 
-class PrepareDataArguments(FeedbackArguments):
+class ProcessDatasetArguments(NoArguments):
+    """Only public data-processing tool contract."""
+
     dataset_id: DatasetId
-    mode: Literal["reuse_or_prepare", "rebuild"] = "reuse_or_prepare"
+    mode: Literal["reuse_or_process", "rebuild"] = "reuse_or_process"
+    issue_ids: list[NonEmpty] = Field(default_factory=list)
+    notes: str = ""
 
 
 class PageArguments(NoArguments):

@@ -67,6 +67,11 @@ source_workspace_mode = "readonly_mount"
 coding_worker_image = "medbench-openhands:local"
 coding_worker_max_iterations = 100
 coding_worker_timeout_seconds = 7200
-preparation_no_progress_limit = 8
-preparation_tool_error_limit = 3
+preparation_no_progress_limit = 20
+preparation_tool_error_limit = 5
+preparation_transport_retries = 2
+preparation_repair_attempts = 2
+preparation_semantic_revision_cycles = 2
+preparation_total_seconds = 14400
+preparation_total_iterations = 300
 preparation_stage_budgets = { understand = { max_iterations = 40, timeout_seconds = 1800 }, prepare = { max_iterations = 80, timeout_seconds = 3600 } }

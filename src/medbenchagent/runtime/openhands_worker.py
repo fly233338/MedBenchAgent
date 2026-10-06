@@ -7,7 +7,6 @@ import filecmp
 import hashlib
 import math
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,6 +32,41 @@ def validate_terminal_command(command: str) -> str:
     forbidden = ("pip install", "python -m pip", "uv pip", "curl ", "wget ", "invoke-webrequest")
     if any(token in lowered for token in forbidden):
         return "Package installation and unrelated network access are disabled in preparation workers"
+    return ""
+
+
+def typed_action_payload(event) -> tuple[str, dict, str]:
+    """Read the locked SDK ActionEvent fields without gateway shape guessing."""
+    tool_name = str(getattr(event, "tool_name", "") or "")
+    action = getattr(event, "action", None)
+    if not tool_name or action is None:
+        raise ValueError("ActionEvent is missing typed tool_name/action fields")
+    if tool_name == "terminal":
+        command = getattr(action, "command", None)
+        if not isinstance(command, str):
+            raise ValueError("terminal ActionEvent.action.command must be a string")
+        return tool_name, {"command": command}, command
+    if hasattr(action, "model_dump"):
+        arguments = action.model_dump(mode="json")
+    elif isinstance(action, dict):
+        arguments = dict(action)
+    else:
+        raise ValueError(f"{tool_name} ActionEvent has no typed argument payload")
+    if not isinstance(arguments, dict):
+        raise ValueError(f"{tool_name} ActionEvent arguments must be an object")
+    return tool_name, arguments, ""
+
+
+def observation_failure(event) -> str:
+    """Normalize typed terminal observation status; -1 means still running."""
+    observation = getattr(event, "observation", None)
+    if observation is None:
+        return ""
+    if bool(getattr(observation, "is_error", False)) or bool(getattr(observation, "error", False)):
+        return "tool_observation_error"
+    exit_code = getattr(observation, "exit_code", None)
+    if isinstance(exit_code, int) and exit_code not in {0, -1}:
+        return f"command_exit_{exit_code}"
     return ""
 
 
@@ -69,13 +103,16 @@ def replay_source_script(request: dict, workspace: Path) -> str:
     replay_marker.unlink(missing_ok=True)
     replay = []
     source_root = Path(request.get("source_root", workspace / "source")).resolve()
+    input_config = workspace / "inputs" / "inspection_config.json"
     with tempfile.TemporaryDirectory(dir=workspace / "work") as first, \
             tempfile.TemporaryDirectory(dir=workspace / "work") as second:
         for trial in (Path(first), Path(second)):
             environment = {**os.environ, "MEDBENCH_SOURCE_ROOT": str(source_root),
                            "MEDBENCH_WORK_DIR": str(trial)}
             try:
-                completed = subprocess.run([sys.executable, str(script)], cwd=workspace,
+                command = [sys.executable, str(script), "--input-config", str(input_config),
+                           "--output-dir", str(trial), "--mode", "inventory"]
+                completed = subprocess.run(command, cwd=workspace,
                                            env=environment, capture_output=True, text=True,
                                            encoding="utf-8", timeout=300, check=False)
             except subprocess.TimeoutExpired:
@@ -90,7 +127,9 @@ def replay_source_script(request: dict, workspace: Path) -> str:
                for left, right in zip(replay[0], replay[1], strict=True)):
             return "Inspection script produced different outputs on replay"
         for name in ("source_report.json", "image_population.jsonl"):
-            shutil.copyfile(Path(first) / name, workspace / "outputs" / name)
+            submitted = workspace / "outputs" / name
+            if submitted.is_file() and submitted.read_bytes() != (Path(first) / name).read_bytes():
+                return f"Submitted {name} differs from independent inspector replay"
     replay_marker.write_text(json.dumps({"task_id": request["task_id"]}), encoding="utf-8")
     return ""
 
@@ -120,7 +159,7 @@ def main(request_path: str, result_path: str) -> None:
     # universal across gateways, so always use the run-frozen explicit value.
     timeout_seconds = max(1, math.ceil(float(request.get("llm_timeout_seconds") or 300)))
     llm_kwargs = {"model": model, "base_url": base_url,
-                  "max_output_tokens": 8192, "api_key": SecretStr(key),
+                  "max_output_tokens": int(request.get("budget", {}).get("output_reserve_tokens", 4096) if isinstance(request.get("budget"), dict) else 4096), "api_key": SecretStr(key),
                   "usage_id": "medbench_coding_worker",
                   # Let the stage supervisor own the retry budget.  OpenHands'
                   # SDK default (five retries) can otherwise hide a bad endpoint
@@ -162,26 +201,9 @@ def main(request_path: str, result_path: str) -> None:
         progress["events"] += 1
         if event_name == "ActionEvent":
             progress["tool_calls"] += 1
-            # A tool call is observable work even when it only inspects the
-            # source.  The output digest intentionally excludes read-only
-            # work, so reset the stalled-output counter here.
             progress["no_progress"] = 0
-            action = getattr(event, "action", None)
-            tool_name = str(getattr(action, "name", getattr(action, "action", "")))
-            arguments = getattr(action, "arguments", getattr(action, "args", {})) or {}
+            tool_name, arguments, command = typed_action_payload(event)
             normalized, stripped = normalize_tool_arguments(tool_name, arguments)
-            # OpenHands executes the action object after callbacks.  Mutate the
-            # actual object when the SDK exposes a mutable arguments field so
-            # harmless gateway metadata cannot reach the executor.
-            if stripped and action is not None:
-                for attribute in ("arguments", "args"):
-                    if hasattr(action, attribute):
-                        try:
-                            setattr(action, attribute, normalized)
-                            break
-                        except Exception:
-                            continue
-            command = normalized.get("command", "") if isinstance(normalized, dict) else ""
             if validate_terminal_command(command):
                 raise RuntimeError("Preparation stage guard: blocked_command")
             if stripped:
@@ -191,8 +213,11 @@ def main(request_path: str, result_path: str) -> None:
             progress["iterations"] = progress["model_turns"]
         if event_name in {"ObservationEvent", "AgentErrorEvent"}:
             progress["last_action"] = event_name
-            if "Error" in event_name:
+            observation_error = observation_failure(event) if event_name == "ObservationEvent" else ""
+            if "Error" in event_name or observation_error:
                 progress["tool_errors"] += 1
+                if observation_error:
+                    progress["last_error"] = observation_error
             current_digest = artifact_digest()
             if current_digest == previous_digest:
                 progress["no_progress"] += 1
@@ -212,6 +237,7 @@ def main(request_path: str, result_path: str) -> None:
                     "dataset_id": request["dataset_id"],
                      "source_id": request["source_id"], "phase": request.get("stage", "prepare"),
                     "attempt": request.get("attempt"), "conversation_id": request["conversation_id"],
+                    "session_seq": request.get("session_seq", 0), "milestone": request.get("milestone", ""),
                     "model": request.get("model"), "reasoning_effort": request.get("reasoning_effort") or None,
                      "operation": type(event).__name__,
                      "status": "running",

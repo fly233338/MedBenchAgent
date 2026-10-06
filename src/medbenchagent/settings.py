@@ -339,6 +339,11 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                          "coding_worker_timeout_seconds": _integer(values["data_processing"]["coding_worker_timeout_seconds"], "data_processing.coding_worker_timeout_seconds", minimum=1),
                          "preparation_no_progress_limit": _integer(values["data_processing"].get("preparation_no_progress_limit", 8), "data_processing.preparation_no_progress_limit", minimum=1),
                          "preparation_tool_error_limit": _integer(values["data_processing"].get("preparation_tool_error_limit", 3), "data_processing.preparation_tool_error_limit", minimum=1),
+                         "preparation_transport_retries": _integer(values["data_processing"].get("preparation_transport_retries", 2), "data_processing.preparation_transport_retries", minimum=0),
+                         "preparation_repair_attempts": _integer(values["data_processing"].get("preparation_repair_attempts", 2), "data_processing.preparation_repair_attempts", minimum=0),
+                         "preparation_semantic_revision_cycles": _integer(values["data_processing"].get("preparation_semantic_revision_cycles", 2), "data_processing.preparation_semantic_revision_cycles", minimum=0),
+                         "preparation_total_seconds": _integer(values["data_processing"].get("preparation_total_seconds", 14400), "data_processing.preparation_total_seconds", minimum=1),
+                         "preparation_total_iterations": _integer(values["data_processing"].get("preparation_total_iterations", 300), "data_processing.preparation_total_iterations", minimum=1),
                          "preparation_stage_budgets": values["data_processing"].get("preparation_stage_budgets", {})},
         paths=PathSettings(
             **{key: _resolve_path(value, f"paths.{key}") for key, value in paths.items()}

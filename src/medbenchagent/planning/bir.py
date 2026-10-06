@@ -370,23 +370,29 @@ class BIRStore:
         return BIRValidationReport(not errors, int(manifest.get("revision", 0)), tuple(errors), tuple(warnings))
 
     def update(self, relative_path: str, value: dict[str, Any], *, run_id: str,
-               actor: str, expected_revision: int | None = None, dependencies: dict[str, str] | None = None) -> BIRCommit:
+               actor: str, expected_revision: int | None = None, dependencies: dict[str, str] | None = None,
+               expected_digest: str | None = None) -> BIRCommit:
         return self.transaction({relative_path: value}, run_id=run_id, actor=actor,
-                                 expected_revision=expected_revision, dependencies=dependencies)
+                                 expected_revision=expected_revision, dependencies=dependencies,
+                                 expected_digests={relative_path: expected_digest} if expected_digest else None)
 
     def transaction(self, changes: dict[str, dict[str, Any]], *, run_id: str, actor: str,
-                    expected_revision: int | None = None, dependencies: dict[str, str] | None = None) -> BIRCommit:
+                    expected_revision: int | None = None, dependencies: dict[str, str] | None = None,
+                    expected_digests: dict[str, str] | None = None) -> BIRCommit:
         if not changes:
             manifest = self._read_manifest()
             return BIRCommit(int(manifest["revision"]), digest_file(self.manifest_path), (), manifest.get("status", "empty"))
         with self.lock:
             manifest = self._read_manifest()
             actual = int(manifest.get("revision", 0))
-            # The lock is the serialization boundary.  A caller's revision is
-            # advisory only: agent contexts may legitimately lag behind the
-            # canonical BIR while another step commits an unrelated change.
-            # Keep the value available for diagnostics without rejecting the
-            # otherwise safe, atomic transaction.
+            if expected_revision is not None and actual != expected_revision:
+                raise ValueError(f"BIR revision conflict: expected {expected_revision}, found {actual}")
+            for relative, expected_digest in (expected_digests or {}).items():
+                if not expected_digest:
+                    continue
+                path = self._path(relative)
+                if not path.is_file() or digest_file(path) != expected_digest:
+                    raise ValueError(f"BIR digest conflict: {relative}")
             registry_changes = [path for path in changes if path.replace("\\", "/").startswith("registry/")]
             if registry_changes:
                 raise ValueError("BIR Registry is immutable after experiment creation")
@@ -436,16 +442,10 @@ class BIRStore:
         staging_root = self.root / ".staging"
         if not staging_root.is_dir():
             return
-        # A completed target replacement always has a current manifest.  Any
-        # leftover staging directory is therefore safe to discard; validation
-        # reports a digest mismatch if a process died before committing it.
-        for path in staging_root.iterdir():
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-        try:
-            staging_root.rmdir()
-        except OSError:
-            pass
+        # Keep interrupted staging trees so a caller can inspect or resume a
+        # transaction.  They are excluded from the canonical manifest and
+        # discovery, and a later explicit cleanup can remove them safely.
+        staging_root.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _status_for_paths(current: str, changes: dict[str, Any]) -> str:

@@ -31,7 +31,7 @@ def _source_setup(context: dict[str, Any], workspace: Path) -> tuple[list[dict],
     sources = [Source.model_validate(item).model_dump(mode="json") for item in context.get("sources", [])]
     if not sources:
         raise ValueError("Dataset preparation requires at least one source")
-    bundle_root = Path(context.get("bundle_root") or workspace / "inputs")
+    bundle_root = workspace / "inputs"
     manifests = dict(context.get("source_manifests") or {})
     for source in sources:
         manifest = Path(manifests.get(source["id"]) or bundle_root / "source_manifests" / source["id"])
@@ -74,17 +74,14 @@ def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
     workspace = _workspace(context)
     workspace.mkdir(parents=True, exist_ok=True)
     sources, manifests = _source_setup(context, workspace)
-    checkpoint = _load_checkpoint(workspace)
-    if checkpoint.get("status") == "complete" and checkpoint.get("preparation_candidate"):
-        return {
-            "status": "complete",
-            "summary": "Preparation already completed",
-            "updates": {
-                "preparation_workspace": str(workspace),
-                "preparation_candidate": checkpoint["preparation_candidate"],
-                "preparation_status": "complete",
-            },
-        }
+    # checkpoint.json is only a projection.  Reuse references after validating
+    # their content; never copy its stage/status/accepted flags into routing.
+    projection = _load_checkpoint(workspace)
+    checkpoint = {
+        key: projection[key]
+        for key in ("accepted_handoff_ref", "resume_state_ref", "attempt_id", "session_seq", "attempt_mode")
+        if key in projection
+    }
     state = {
         **checkpoint,
         **context,
@@ -94,12 +91,11 @@ def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
         "dataset_id": str(context.get("dataset_scope") or context.get("dataset_id") or "dataset"),
         "preparation_root": str(workspace),
         "user_request": context.get("user_request") or context.get("user_requirement") or "",
+        "strict_publication": True,
+        "canonical_validation": True,
     }
-    feedback = str(context.get("feedback") or context.get("preparation_feedback") or "")
-    if feedback:
-        previous = (checkpoint.get("preparation_candidate") or {}).get("candidate_path")
-        state.update({"stage": "prepare", "attempt_mode": "repair", "previous_outputs_root": previous,
-                      "diagnostics": [{"code": "validation", "stage": "prepare", "message": feedback, "blocking": True}]})
+    state["notes"] = str(context.get("notes") or "")
+    state["target_issue_ids"] = list(context.get("issue_ids") or [])
     runtime = dataset_runtime(context)
     outcome = run_preparation_graph(state, worker=OpenHandsWorker(runtime=runtime), max_attempts=int(context.get("preparation_max_attempts", 3)))
     _persist_checkpoint(workspace, outcome)
@@ -123,7 +119,7 @@ def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
     if outcome.get("pending_questions"):
         updates["preparation_question"] = outcome["pending_questions"]
     if outcome.get("diagnostics"):
-        updates["preparation_feedback"] = json.dumps(outcome["diagnostics"], ensure_ascii=False)
+        updates["preparation_validation_issues"] = json.dumps(outcome["diagnostics"], ensure_ascii=False)
     if status == "complete":
         return {"status": "complete", "summary": "Preparation candidate submitted for host validation", "updates": updates}
     if status == "needs_input":
@@ -167,7 +163,7 @@ def _preparation_event(context: dict[str, Any], event_type: str, **values: objec
 
 def run_preparation_agent(context: dict[str, Any]) -> dict[str, Any]:
     context = dict(context)
-    _preparation_event(context, "agent_started", operation="prepare_data", status="started",
+    _preparation_event(context, "agent_started", operation="process_dataset", status="started",
                        source_count=len(context.get("sources", [])))
     try:
         outcome = run_preparation(context)
@@ -177,7 +173,7 @@ def run_preparation_agent(context: dict[str, Any]) -> dict[str, Any]:
     _preparation_event({**context, **updates}, "worker_result", operation="preparation_graph",
                        status=outcome["status"], diagnostic=outcome.get("summary", ""),
                        termination_reason=updates.get("preparation_termination_reason"))
-    _preparation_event({**context, **updates}, "agent_finished", operation="prepare_data",
+    _preparation_event({**context, **updates}, "agent_finished", operation="process_dataset",
                        status=outcome["status"], diagnostic=outcome.get("summary", ""),
                        candidate_path=(updates.get("preparation_candidate") or {}).get("candidate_path"))
     return outcome

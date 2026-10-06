@@ -24,9 +24,9 @@ def test_bir_revision_conflict_and_digest_validation(tmp_path: Path):
     first = store.update("benchmark_info.json", {"schema_version": "benchmark-info", "value": 1},
                          run_id="r1", actor="test", expected_revision=0)
     assert first.revision == 1
-    second = store.update("benchmark_info.json", {"schema_version": "benchmark-info", "value": 2},
-                          run_id="r2", actor="test", expected_revision=0)
-    assert second.revision == 2
+    with pytest.raises(ValueError, match="revision conflict"):
+        store.update("benchmark_info.json", {"schema_version": "benchmark-info", "value": 2},
+                     run_id="r2", actor="test", expected_revision=0)
     assert store.validate().valid
     (tmp_path / "pilot" / "BIR" / "benchmark_info.json").write_text("{}", encoding="utf-8")
     assert not store.validate().valid

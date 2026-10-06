@@ -937,7 +937,8 @@ class ConversationScreen(Screen):
         if not isinstance(agent, str) or kind not in {
             "agent_step_started", "tool_started", "tool_result", "llm_call", "llm_validation_error",
             "coding_worker_event", "agent_started", "agent_finished", "worker_started", "worker_result",
-            "finalization_started", "finalization_finished", "candidate_submitted"
+            "finalization_started", "finalization_finished", "candidate_submitted",
+            "stage_started", "stage_validated", "stage_completed", "stage_paused"
         }:
             return
         operation = event.get("operation", "")
@@ -947,6 +948,11 @@ class ConversationScreen(Screen):
         time = timestamp[11:19] if isinstance(timestamp, str) else ""
         dataset = str(event.get("dataset_id") or "")
         source = str(event.get("source_id") or "")
+        stage = str(event.get("stage") or event.get("phase") or "")
+        attempt = event.get("attempt")
+        session_seq = event.get("session_seq")
+        milestone = str(event.get("milestone") or "")
+        progress_count = event.get("processed") or event.get("processed_count")
         if agent:
             self._context_agent = agent.removesuffix("Agent")
             self._render_status()
@@ -954,6 +960,16 @@ class ConversationScreen(Screen):
             operation = str(event.get("operation") or "event")
             detail = f"OpenHands · {operation.removesuffix('Event')}"
             status = event.get("status", "running")
+            suffix = f" · {stage}" if stage else ""
+            if attempt is not None:
+                suffix += f" attempt {attempt}"
+            if session_seq is not None:
+                suffix += f"/session {session_seq}"
+            if milestone:
+                suffix += f" · {milestone}"
+            if progress_count is not None:
+                suffix += f" · processed {progress_count}"
+            detail += suffix
         elif kind == "agent_step_started":
             detail = "deciding"
         elif kind == "tool_started":
@@ -968,6 +984,13 @@ class ConversationScreen(Screen):
             status = status or "running"
         elif kind in {"agent_finished", "worker_result", "finalization_finished", "candidate_submitted"}:
             detail = f"{operation} · {status}: {str(event.get('summary') or event.get('diagnostic') or '')[:240]}"
+        elif kind in {"stage_started", "stage_validated", "stage_completed", "stage_paused"}:
+            stage_label = f"{stage} " if stage else ""
+            detail = f"{stage_label}{kind.removeprefix('stage_')} · {status}"
+            if attempt is not None:
+                detail += f" · attempt {attempt}"
+            if session_seq is not None:
+                detail += f"/session {session_seq}"
         else:
             latency = event.get("latency_ms")
             duration = f" ({latency / 1000:.1f}s)" if isinstance(latency, (int, float)) else ""
@@ -983,9 +1006,9 @@ class ConversationScreen(Screen):
         self._add_agent(agent)
         self._update_agent_status(agent, dataset, source, str(status), str(operation), detail)
         self._append_progress(agent, f"{time}  {label}: {detail}", status, render=render)
-        if kind in {"agent_step_started", "tool_started", "coding_worker_event", "agent_started", "worker_started", "finalization_started"}:
+        if kind in {"agent_step_started", "tool_started", "coding_worker_event", "agent_started", "worker_started", "finalization_started", "stage_started"}:
             self.query_one("#active-agent", Static).update(f"Working: {label} · {operation}")
-        elif kind in {"tool_result", "llm_call", "agent_finished", "worker_result", "finalization_finished", "candidate_submitted"}:
+        elif kind in {"tool_result", "llm_call", "agent_finished", "worker_result", "finalization_finished", "candidate_submitted", "stage_validated", "stage_completed", "stage_paused"}:
             self.query_one("#active-agent", Static).update(f"Latest: {label} · {operation}")
 
     def _update_context_indicator(self) -> None:

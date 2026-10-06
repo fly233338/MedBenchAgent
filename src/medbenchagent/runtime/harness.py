@@ -324,7 +324,7 @@ def compile_agent(
             if include_inspection_tools:
                 allowed.update({"list_evidence", "read_evidence"})
             if pending and pending.get("purpose") == "dataset_selection" and pending.get("status") == "answered":
-                allowed.update({"prepare_data", "discover_datasets", "select_datasets"})
+                allowed.update({"process_dataset", "discover_datasets", "select_datasets"})
             if pending and pending.get("purpose") == "planning_extension_selection" and pending.get("status") == "answered":
                 allowed.update({"discover_planning_extensions", "select_planning_extensions"})
             if enabled is not None and tool_name not in enabled:

@@ -75,7 +75,7 @@ class PrivateState(BaseModel):
     context: dict[str, Any]
 
 
-ROLES = {"planning": "TaskPlanningAgent", "preparation": "DataProcessingAgent", "templates": "TaskPlanningAgent",
+ROLES = {"planning": "TaskPlanningAgent", "preparation": "DataProcessingAgent",
          "generation": "GenerationAgent", "allocation": "AllocationAgent", "finalization": "FinalizationAgent"}
 
 

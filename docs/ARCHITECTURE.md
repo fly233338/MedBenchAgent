@@ -73,9 +73,9 @@ conversation；OpenHands persistence 只用于同一 attempt 的进程恢复。�
 前一阶段的 conversation。原始来源以只读方式访问，再由宿主重新核验来源、locator、总体、
 annotation 和图像资产，最后注册 Dataset、Profile、Card 和 Catalog。
 
-Supervisor 先解析数据准备请求：请求中包含可读的原始目录时，规范化目录名后委派 `prepare_data`；缺少目录时只询问目录路径。目录清单、格式和 manifest 由 DataProcessingAgent 检查，目录不可读或无法解析数据集 ID 时才进入澄清。
+Supervisor 先解析数据准备请求：请求中包含可读的原始目录时，规范化目录名后委派 `process_dataset`；缺少目录时只询问目录路径。目录清单、格式和 manifest 由 DataProcessingAgent 检查，目录不可读或无法解析数据集 ID 时才进入澄清。
 
-有效的已登记数据默认复用。`prepare_data` 只有在用户明确要求时才使用 `rebuild`。数据源决议和准备候选绑定当前 Run，成功后才进入 benchmark 选择。
+有效的已登记数据默认复用。`process_dataset` 只有在用户明确要求时才使用 `rebuild`。数据源决议和准备候选绑定当前 Run，成功后才进入 benchmark 选择。
 
 ## Benchmark 构建
 
@@ -137,3 +137,7 @@ relax evidence grounding, Resolver validation, or output contracts.
 Scenario Screening records validated clinical targets rather than speculative task directions.
 Each Leaf references one `clinical_target_id` from its Scenario, and code validates the target
 type, reference fields, Resolver contract, capacity, and derived plan projections.
+
+## Preparation execution contract
+
+The public Supervisor operation is `process_dataset(dataset_id, mode, issue_ids, notes)`. The host selects `understand` or `prepare` from LangGraph checkpoint facts. Each attempt owns `inputs`, `work`, `outputs`, `state`, `logs`, and `conversations`; candidates become an `AcceptedHandoff` only after independent validation. Published data uses immutable revision directories and an atomic `current.json` pointer.

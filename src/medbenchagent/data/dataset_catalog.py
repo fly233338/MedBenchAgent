@@ -46,8 +46,8 @@ def prepared_bundle_entry(dataset_id, *, prepared_root=None):
     document = json.loads(ready.read_text(encoding="utf-8"))
     access = document.get("access", {})
     cases = Path(access.get("cases_path", ""))
-    if cases.parent.resolve() != bundle or not cases.is_file():
-        raise DatasetCatalogError("Prepared bundle cases_path must point to its direct bundle")
+    if not cases.is_file() or not cases.resolve().is_relative_to(bundle / "revisions") and cases.parent.resolve() != bundle:
+        raise DatasetCatalogError("Prepared bundle cases_path must point to a committed bundle revision")
     card = read_card(access.get("dataset_card_path", bundle / "dataset_card.json"))
     if card.get("dataset_id") != dataset_id:
         raise DatasetCatalogError("Prepared bundle Card dataset_id does not match its directory")
