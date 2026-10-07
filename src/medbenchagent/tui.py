@@ -428,6 +428,12 @@ class CreateExperimentScreen(Screen):
         if name == "/quit":
             self.app.pop_screen()
             return
+        try:
+            if sessions.experiment_path(name, self.app.experiments_root).exists():
+                raise ValueError(f"Experiment already exists: {name}")
+        except (ValueError, OSError) as exc:
+            self.query_one("#create-message", Static).update(Text(str(exc)))
+            return
         self.app.pop_screen()
         self.app.open_experiment(name, configure=True)
 

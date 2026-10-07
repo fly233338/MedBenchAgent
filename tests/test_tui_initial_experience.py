@@ -12,6 +12,31 @@ from medbenchagent import tui
 from medbenchagent.tui import MBAApp, ChatMessage, ConversationScreen, ExperimentMenu, RemoveExperimentScreen, _brand
 
 
+def test_new_rejects_existing_name_before_configuration(tmp_path):
+    (tmp_path / "existing").mkdir()
+
+    async def check():
+        app = MBAApp(experiments_root=tmp_path)
+        async with app.run_test() as pilot:
+            app.push_screen(tui.CreateExperimentScreen())
+            await pilot.pause()
+            screen = app.screen
+            field = screen.query_one("#new-name")
+            field.value = "existing"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.screen is screen
+            assert "Experiment already exists: existing" in str(screen.query_one("#create-message").content)
+            field.value = "fresh"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, tui.ConfigScreen)
+            assert app.screen.experiment_name == "fresh"
+            assert not (tmp_path / "fresh").exists()
+
+    asyncio.run(check())
+
+
 def test_plain_text_status_and_incremental_run_rows(tmp_path, monkeypatch):
     sessions.create_experiment("pilot", root=tmp_path)
 
