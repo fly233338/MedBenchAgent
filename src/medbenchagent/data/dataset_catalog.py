@@ -40,15 +40,10 @@ def prepared_bundle_entry(dataset_id, *, prepared_root=None):
     validate_dataset_id(dataset_id)
     root = Path(prepared_root or settings.get_settings().paths.prepared_datasets_root).resolve()
     bundle = root / dataset_id
-    ready = bundle / "ready.json"
-    if not ready.is_file():
-        raise DatasetCatalogError(f"Prepared bundle is unavailable: {bundle}")
-    document = json.loads(ready.read_text(encoding="utf-8"))
-    access = document.get("access", {})
-    cases = Path(access.get("cases_path", ""))
-    if not cases.is_file() or not cases.resolve().is_relative_to(bundle / "revisions") and cases.parent.resolve() != bundle:
-        raise DatasetCatalogError("Prepared bundle cases_path must point to a committed bundle revision")
-    card = read_card(access.get("dataset_card_path", bundle / "dataset_card.json"))
+    verified = verify_bundle(bundle)
+    access = verified["ready"]["access"]
+    cases = Path(access["cases_path"])
+    card = verified["card"]
     if card.get("dataset_id") != dataset_id:
         raise DatasetCatalogError("Prepared bundle Card dataset_id does not match its directory")
     value = {
@@ -57,9 +52,9 @@ def prepared_bundle_entry(dataset_id, *, prepared_root=None):
         "description": card["description"],
         "available": True,
         "cases_path": str(cases),
-        "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
-        "profile_path": str(bundle / "dataset_profile.json"),
-        "dataset_card_path": str(bundle / "dataset_card.json"),
+        "asset_manifest_path": access["asset_manifest_path"],
+        "profile_path": access["profile_path"],
+        "dataset_card_path": access["dataset_card_path"],
     }
     for name in ("presentation", "split", "sampling"):
         path_key = f"{name}_manifest_path"
@@ -108,19 +103,19 @@ def load_prepared(entry):
 def register_dataset(dataset_id, bundle, *, catalog_path=None):
     validate_dataset_id(dataset_id)
     bundle = Path(bundle).resolve()
-    card = json.loads((bundle / "dataset_card.json").read_text(encoding="utf-8"))
+    verified = verify_bundle(bundle)
+    card = verified["card"]
+    access = verified["ready"]["access"]
     entry = {
         "dataset_id": dataset_id,
         "name": card["name"],
         "description": card["description"],
         "available": True,
-        "cases_path": str(bundle / "cases.jsonl"),
-        "asset_manifest_path": str(bundle / "asset_manifest.jsonl"),
-        "profile_path": str(bundle / "dataset_profile.json"),
-        "dataset_card_path": str(bundle / "dataset_card.json"),
+        "cases_path": access["cases_path"],
+        "asset_manifest_path": access["asset_manifest_path"],
+        "profile_path": access["profile_path"],
+        "dataset_card_path": access["dataset_card_path"],
     }
-    ready = json.loads((bundle / "ready.json").read_text(encoding="utf-8")) if (bundle / "ready.json").is_file() else {}
-    access = ready.get("access", {})
     for name in ("presentation", "split", "sampling"):
         path_key = f"{name}_manifest_path"
         digest_key = f"{name}_manifest_digest"

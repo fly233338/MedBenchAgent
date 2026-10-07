@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from medbenchagent.data.index import prepare_dataset
+from medbenchagent.data.preparation_validation import validate_candidate
 from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
@@ -58,8 +59,15 @@ class DatasetPublisher:
         try:
             copied_digests = self._copy_candidate(candidate, staging, candidate_ledger)
             self._filter_invalid_cases(staging, report)
-            for name in ("cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl"):
+            for name in ("cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl",
+                         "presentation_manifest.jsonl", "sampling_manifest.jsonl", "split_manifest.jsonl"):
                 copied_digests.pop(name, None)
+            self._write_final_manifest(staging, copied_digests)
+            final_report = validate_candidate(
+                staging, source_root=context.get("source_root"), source_roots=context.get("source_roots"),
+            )
+            if final_report["status"] != "complete" or not final_report["accepted_cases"]:
+                raise ValueError(f"Final dataset consistency validation failed: {final_report['failures']}")
             atomic_write_json(staging / "preparation_report.json", report)
             (staging / "quarantine.jsonl").write_text(
                 "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in report.get("failures", []) if item.get("kind") == "hard_case_failure"),
@@ -221,9 +229,34 @@ class DatasetPublisher:
             for line in provenance_path.read_text(encoding="utf-8").splitlines():
                 if line.strip():
                     payload = json.loads(line)
-                    if not payload.get("case_id") or str(payload.get("case_id")) in case_ids:
-                        kept.append(line)
+                    if payload["status"] == "retained":
+                        payload["case_ids"] = [key for key in payload["case_ids"] if key in case_ids]
+                        if not payload["case_ids"]:
+                            payload.update(status="quarantined", reason="All referenced Cases were quarantined")
+                    kept.append(json.dumps(payload, ensure_ascii=False))
             provenance_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8", newline="\n")
+
+        from medbenchagent.data.manifests import PresentationRecord, SamplingManifest, SplitManifest, load_manifest
+        for name, model, field in (
+            ("presentation", PresentationRecord, None),
+            ("sampling", SamplingManifest, "units"),
+            ("split", SplitManifest, "records"),
+        ):
+            path = root / f"{name}_manifest.jsonl"
+            if not path.is_file():
+                continue
+            parsed = load_manifest(path, model)
+            if field:
+                rows = [row for row in getattr(parsed, field) if row.case_id in case_ids]
+                parsed = parsed.model_copy(update={field: rows})
+                path.write_text(parsed.model_dump_json() + "\n", encoding="utf-8")
+            else:
+                rows = parsed if isinstance(parsed, list) else [parsed]
+                rows = [row for row in rows if row.case_id in case_ids and row.asset_id in asset_ids]
+                if rows:
+                    path.write_text("".join(row.model_dump_json() + "\n" for row in rows), encoding="utf-8")
+                else:
+                    path.unlink()
 
     @classmethod
     def _revision(cls, candidate: Path, dataset_id: str, report: dict[str, Any], ledger=None) -> str:

@@ -338,7 +338,7 @@ def create_accepted_handoff(state, outputs, validation):
 
 
 def validate_prepare_candidate(candidate, *, state=None, population_path=None,
-                               persist=True, restore_accepted=True):
+                               persist=True):
     root, state, stage = Path(candidate).resolve(), state or {}, Stage.PREPARE
 
     def finish(result):
@@ -368,13 +368,10 @@ def validate_prepare_candidate(candidate, *, state=None, population_path=None,
         if handoff:
             # Packaging restores the accepted semantic files. A worker-modified
             # mapping is an implementation error, never implicit acceptance.
-            import shutil
             for artifact in (handoff.source_report, handoff.mapping, handoff.population, handoff.inspection_script):
                 target = root / artifact.name
-                if target.exists() and digest_file(target) != artifact.digest:
+                if not target.is_file() or digest_file(target) != artifact.digest:
                     raise ValueError(f"Prepare changed an accepted file: {artifact.name}")
-                if restore_accepted and not target.exists():
-                    shutil.copy2(artifact.path, target)
             population_file = Path(population_path or handoff.population.path)
             expected = set()
             for record in read_population_records(population_file):

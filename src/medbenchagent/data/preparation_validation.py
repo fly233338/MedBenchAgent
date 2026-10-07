@@ -9,6 +9,7 @@ from medbenchagent.data.asset_manifest import iter_asset_manifest
 from medbenchagent.data.models import CaseRecord, validate_case
 from medbenchagent.data.manifests import PresentationRecord, SamplingManifest, SplitManifest, load_manifest
 from medbenchagent.data.sources import digest_file
+from medbenchagent.preparation.contracts import PopulationOutcome
 
 
 def validate_candidate(candidate: str | Path, *, source_root: str | Path | None = None,
@@ -41,20 +42,17 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
     with provenance.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             try:
-                item = json.loads(line)
-                if (not isinstance(item, dict) or not item.get("source_id")
-                        or not item.get("source_unit_id") or not item.get("record_ref")):
-                    raise ValueError("source_id, source_unit_id and record_ref are required")
-                identity = (str(item["source_id"]), str(item["source_unit_id"]))
-                if item.get("status") in accounting:
-                    if identity in accounted:
-                        raise ValueError(f"duplicate provenance population identity: {identity}")
-                    accounted.add(identity)
-                    accounting[item["status"]] += 1
-                    if item["status"] == "retained" and not (item.get("case_ids") or item.get("case_id")):
-                        raise ValueError("Retained source units require case_ids")
-                if item.get("case_id"):
-                    provenance_cases.add(str(item["case_id"]))
+                outcome = PopulationOutcome.model_validate_json(line)
+                item = outcome.model_dump()
+                identity = (outcome.source_id, outcome.source_unit_id)
+                if identity in accounted:
+                    raise ValueError(f"duplicate provenance population identity: {identity}")
+                accounted.add(identity)
+                accounting[outcome.status] += 1
+                if not outcome.record_refs:
+                    raise ValueError("record_refs are required")
+                if outcome.status == "retained":
+                    provenance_cases.update(outcome.case_ids)
                 roots = source_roots or ({"source": source_root} if source_root is not None else {})
                 root = roots.get(str(item["source_id"]))
                 for locator in item.get("locators", []):
@@ -78,10 +76,14 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
     cases = []
     failures = []
     seen_cases = set()
+    declared_cases = set()
     with cases_path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             try:
-                case = CaseRecord.model_validate_json(line)
+                payload = json.loads(line)
+                if isinstance(payload, dict) and isinstance(payload.get("case_id"), str):
+                    declared_cases.add(payload["case_id"])
+                case = CaseRecord.model_validate(payload)
                 if case.case_id in seen_cases:
                     raise ValueError(f"duplicate case_id: {case.case_id}")
                 seen_cases.add(case.case_id)
@@ -90,11 +92,11 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                 failures.append({"line": line_number, "kind": "hard_case_failure", "error": str(exc)})
     if not cases and not failures:
         raise ValueError("cases.jsonl is empty")
-    if provenance_cases:
-        missing_cases = sorted({case.case_id for case in cases} - provenance_cases)
-        if missing_cases:
-            provenance_failures.append({"kind": "provenance_failure",
-                                        "error": f"accepted cases missing provenance: {missing_cases[:10]}"})
+    missing_cases = sorted({case.case_id for case in cases} - provenance_cases)
+    unknown_cases = sorted(provenance_cases - declared_cases)
+    if missing_cases or unknown_cases:
+        provenance_failures.append({"kind": "provenance_failure",
+            "error": f"Cases missing retained provenance: {missing_cases[:10]}; unknown Case refs: {unknown_cases[:10]}"})
     manifest_failures = []
     case_by_id = {case.case_id: case for case in cases}
     for name, model in (
@@ -111,7 +113,7 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                 records = parsed if isinstance(parsed, list) else [parsed]
                 seen = set()
                 for record in records:
-                    if record.case_id not in case_by_id:
+                    if record.case_id not in declared_cases:
                         raise ValueError(f"presentation references unknown case: {record.case_id}")
                     asset = assets.get(record.asset_id)
                     if asset is None:
@@ -133,6 +135,8 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                 for unit in parsed.units:
                     case = case_by_id.get(unit.case_id)
                     if case is None:
+                        if unit.case_id in declared_cases:
+                            continue
                         raise ValueError(f"sampling references unknown case: {unit.case_id}")
                     evidence_ids = {item.id for item in case.evidence}
                     if not set(unit.ordered_evidence_ids) <= evidence_ids:
@@ -142,7 +146,7 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                         raise ValueError(f"sampling references unknown view: {unit.sampling_unit_id}")
             else:
                 for record in parsed.records:
-                    if record.case_id not in case_by_id:
+                    if record.case_id not in declared_cases:
                         raise ValueError(f"split references unknown case: {record.case_id}")
         except Exception as exc:
             manifest_failures.append({"kind": "manifest_failure", "manifest": name, "error": str(exc)})
@@ -204,7 +208,6 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
     # as a proxy: several source units may legitimately form one Case.
     population = Path(population_path) if population_path else candidate / "image_population.jsonl"
     population_ids: set[tuple[str, str]] = set()
-    accounted: set[tuple[str, str]] = set()
     missing_population: list[tuple[str, str]] = []
     if population.is_file():
         try:
@@ -219,29 +222,13 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                     if key in population_ids:
                         raise ValueError(f"duplicate population identity: {key}")
                     population_ids.add(key)
-            with provenance.open(encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    item = json.loads(line)
-                    if not isinstance(item, dict) or not item.get("source_id") or not item.get("source_unit_id"):
-                        raise ValueError("provenance requires source_id and source_unit_id")
-                    status = item.get("status")
-                    if status is not None and status not in {"retained", "quarantined", "excluded", "duplicate"}:
-                        raise ValueError(f"invalid population outcome status: {status}")
-                    accounted.add((str(item["source_id"]), str(item["source_unit_id"])))
             missing_population = sorted(population_ids - accounted)
+            if accounted - population_ids:
+                raise ValueError("provenance references unknown population identities")
             if missing_population:
                 provenance_failures.append({"kind": "population_reconciliation_failure", "error": f"Source units missing provenance: {missing_population[:20]}", "missing_count": len(missing_population)})
         except Exception as exc:
             provenance_failures.append({"kind": "population_reconciliation_failure", "error": str(exc)})
-    if output_manifest.is_file() and cases:
-        # New submissions must explicitly bind every accepted Case to at least
-        # one provenance row, even if an older bundle did not carry that field.
-        if provenance_cases:
-            missing_cases = sorted({case.case_id for case in cases} - provenance_cases)
-            if missing_cases:
-                provenance_failures.append({"kind": "provenance_failure", "error": f"accepted cases missing provenance: {missing_cases[:20]}"})
     return {
         "schema_version": "preparation-report",
         "status": "failed" if (failures and not cases) or provenance_failures or manifest_failures else "complete",

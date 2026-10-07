@@ -6,7 +6,6 @@ import argparse
 import json
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -62,19 +61,9 @@ def validate_candidate_command(args: argparse.Namespace) -> int:
         for item in context.get("sources", [])
         if isinstance(item, dict) and item.get("source_id") and item.get("root")
     }
-    with tempfile.TemporaryDirectory(prefix="prepare-validation-") as temporary:
-        staged = Path(temporary) / "candidate"
-        shutil.copytree(Path(args.candidate), staged)
-        handoff = context.get("accepted_handoff") or {}
-        for field in ("source_report", "mapping", "population", "inspection_script"):
-            artifact = handoff.get(field) if isinstance(handoff, dict) else None
-            if isinstance(artifact, dict) and artifact.get("path") and artifact.get("name"):
-                source = Path(artifact["path"])
-                if source.is_file():
-                    shutil.copy2(source, staged / artifact["name"])
-        result = validate_prepare_candidate(
-            staged, state=context, persist=False, restore_accepted=False,
-        )
+    result = validate_prepare_candidate(
+        Path(args.candidate), state=context, persist=False,
+    )
     _write_report(args.report, result)
     return 0 if result.status == "accepted" else 2
 
@@ -82,6 +71,14 @@ def validate_candidate_command(args: argparse.Namespace) -> int:
 def package_command(args: argparse.Namespace) -> int:
     candidate = Path(args.candidate).resolve()
     context = _context(args.context)
+    for field in ("source_report", "mapping", "population", "inspection_script"):
+        artifact = context.get("accepted_handoff", {}).get(field)
+        if artifact:
+            target = candidate / artifact["name"]
+            if target.exists() and digest_file(target) != artifact["digest"]:
+                raise ValueError(f"Candidate changed accepted artifact: {artifact['name']}")
+            if not target.exists():
+                shutil.copy2(artifact["path"], target)
     mapping_path = candidate / "mapping.json"
     if not mapping_path.is_file():
         raise ValueError("package requires mapping.json")

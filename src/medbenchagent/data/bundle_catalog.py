@@ -82,16 +82,5 @@ def verify_bundle(bundle: str | Path) -> dict:
     card = read_card(access["dataset_card_path"])
     if card["annotation_digest"] != access["annotation_digest"] or card["asset_manifest_digest"] != access["asset_manifest_digest"] or card["profile_digest"] != access["profile_digest"]:
         raise ValueError("Dataset Card facts do not match bundle")
-    if current_path.is_file():
-        projected = dict(ready)
-        projected["access"] = dict(ready["access"])
-        for key, value in list(projected["access"].items()):
-            if key.endswith("_path") and isinstance(value, str):
-                try:
-                    relative = Path(value).resolve().relative_to(ready_path.parent.resolve())
-                except ValueError:
-                    continue
-                projected["access"][key] = str(bundle / relative)
-        return {"ready": projected, "card": card}
     return {"ready": ready, "card": card}
 

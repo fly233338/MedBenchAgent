@@ -65,3 +65,13 @@ There are two host gates. The worker-visible validators in `preparation.validati
 The Understand population is one canonical sequence of `PopulationRecord` values. `image_population.jsonl` and `source_report.population` are projections of that sequence. `PopulationSummary.unit_count` is required and must equal the number of non-empty population rows; a mismatch is reported with the expected row count, observed report count, path and details rather than a generic rejection. Worker completion requires the shared `validate-understand` command to return `accepted`; host-only replay remains an explicit boundary.
 
 The executable audit matrix is `PREPARATION_CONTRACT_AUDIT` in `preparation.validation`. Every entry names the stable check code, inputs, and whether it is worker-visible or Host-only. New acceptance checks must be added to that matrix and to the shared validator or be explicitly marked Host-only.
+
+
+## Final publication invariants
+
+Validation never restores or overwrites accepted files. Packaging explicitly materializes
+accepted inputs before both worker and host validate the same candidate. Population outcomes
+use only `case_ids` and `record_refs`: every source unit has one terminal disposition and every
+retained Case has a source. Quarantine filters all dependent manifests and updates dispositions
+in staging, then publication validates the final set again before advancing current. Catalog
+and access consumers retain the verified immutable revision paths; root projections are views.

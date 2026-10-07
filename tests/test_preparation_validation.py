@@ -30,8 +30,8 @@ def _candidate(tmp_path: Path, *, record_ref="unit-1", dependency_path=None):
     (candidate / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
     (candidate / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
     (candidate / "provenance.jsonl").write_text(
-        json.dumps({"source_id": "source", "record_ref": record_ref, "source_unit_id": record_ref,
-                    "case_id": "case-1"}) + "\n", encoding="utf-8")
+        json.dumps({"source_id": "source", "record_refs": [record_ref], "source_unit_id": record_ref,
+                    "case_ids": ["case-1"], "status": "retained", "reason": "mapped"}) + "\n", encoding="utf-8")
     for name in ("conversion_config.json", "grouping_policy.json", "execution_report.json", "mapping.json"):
         (candidate / name).write_text("{}", encoding="utf-8")
     population = tmp_path / "image_population.jsonl"
@@ -66,6 +66,57 @@ def test_output_manifest_dependency_must_exist_inside_candidate(tmp_path):
 
     assert report["systemic_failure"] is True
     assert any(item["kind"] == "output_manifest_failure" for item in report["failures"])
+
+
+@pytest.mark.parametrize("change", ["orphan_case", "orphan_source", "duplicate", "unknown_status", "singular"])
+def test_population_contract_rejects_incomplete_relations(tmp_path, change):
+    candidate, _ = _candidate(tmp_path)
+    (candidate / "output_manifest.json").unlink()
+    (candidate / "submission.json").unlink()
+    path = candidate / "provenance.jsonl"
+    row = json.loads(path.read_text(encoding="utf-8"))
+    if change == "orphan_case":
+        row.update(status="quarantined", case_ids=[])
+    elif change == "orphan_source":
+        row["case_ids"] = ["missing"]
+    elif change == "unknown_status":
+        row["status"] = "pending"
+    elif change == "singular":
+        row["case_id"] = row.pop("case_ids")[0]
+    path.write_text((json.dumps(row) + "\n") * (2 if change == "duplicate" else 1), encoding="utf-8")
+    assert validate_candidate(candidate)["systemic_failure"]
+
+
+def test_plural_population_contract_is_valid_and_validation_is_read_only(tmp_path):
+    candidate, _ = _candidate(tmp_path)
+    before = {p.name: p.read_bytes() for p in candidate.iterdir()}
+    assert validate_candidate(candidate)["status"] == "complete"
+    assert before == {p.name: p.read_bytes() for p in candidate.iterdir()}
+
+
+def test_quarantine_preserves_population_and_filters_sampling(tmp_path):
+    from medbenchagent.preparation.publisher import DatasetPublisher
+    candidate, _ = _candidate(tmp_path)
+    (candidate / "output_manifest.json").unlink()
+    (candidate / "submission.json").unlink()
+    with (candidate / "cases.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write('{"case_id":"bad","evidence":[{"invalid":true}]}\n')
+    row = {"source_id": "source", "source_unit_id": "bad", "record_refs": ["bad"],
+           "case_ids": ["bad"], "status": "retained", "reason": "mapped"}
+    with (candidate / "provenance.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row) + "\n")
+    path = candidate / "split_manifest.jsonl"
+    path.write_text(json.dumps({"schema_version": "split-manifest", "records": [
+        {"sampling_unit_id": "bad", "case_id": "bad", "split": "test", "group_id": "bad"},
+    ]}), encoding="utf-8")
+    report = validate_candidate(candidate)
+    assert not report["systemic_failure"]
+    DatasetPublisher._filter_invalid_cases(candidate, report)
+    assert validate_candidate(candidate)["status"] == "complete"
+    outcomes = [json.loads(line) for line in (candidate / "provenance.jsonl").read_text().splitlines()]
+    assert outcomes[1]["status"] == "quarantined"
+    assert outcomes[1]["case_ids"] == []
+    assert json.loads(path.read_text())["records"] == []
 
 
 def test_only_explicit_semantic_issue_codes_request_mapping_revision():
