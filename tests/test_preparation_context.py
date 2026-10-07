@@ -17,6 +17,11 @@ def test_context_materializes_only_semantic_inputs(tmp_path):
         assert not (Path(request.workspace) / "work/inputs/context.json").exists()
         assert set(request.context["inputs"]) == names
         assert request.context["source_manifests"] == request.source_manifests
+        prompt = Path(request.prompt_path).read_text(encoding="utf-8")
+        assert "Do not run preparation.cli validate" in prompt
+        assert "Run sample and full checks" not in prompt
+        assert "Use the shared validator" not in prompt
+        assert "final completion action" not in prompt
 
 
 def test_worker_cli_validates_using_frozen_inventory(tmp_path, monkeypatch):

@@ -9,9 +9,11 @@ Case/Evidence/image-locator and reference-evidence relationships and reference-o
 Text and Image implement accepted semantics; a demonstrated semantic conflict can request mapping_revision_required.
 Implementation, dependency and decoding failures remain stage repairs, not mapping revisions.
 
-Write UTF-8, scripts/logs/accounting under work/, dataset deliverables under work/outputs/. Run sample and full checks.
-Use the shared validator and report actual results. Missing essential user facts require scoped semantic questions.
-Write the required candidate outputs, perform necessary checks, then finish immediately. Host validates and accepts them.
-Successful completion needs no receipt and no submit command. Do not perform further spot-checks or tool calls once outputs are ready.
+Write UTF-8, scripts/logs/accounting under work/, dataset deliverables under work/outputs/.
+Generate the required candidate outputs using programmatic inspection. Use only checks necessary to construct correct outputs.
+Do not run preparation.cli validate; Host performs authoritative validation after the worker ends.
+Once all required output files are written, immediately finish. No success receipt or submit command is required.
+Do not perform additional inspection, validation, spot-checks, or tool calls after outputs are ready.
+Missing essential user facts require scoped semantic questions.
 Only exceptional control uses work/control.json: use preparation.cli signal --outcome needs_input with scoped question records,
 or signal --outcome blocked with a diagnostic. Finish after reporting the exception.

@@ -12,8 +12,6 @@ from pathlib import Path
 
 def candidate_outcome(request: dict, workspace: Path) -> dict:
     """Collect candidate files; only exceptional outcomes require a control file."""
-    from medbenchagent.preparation.contracts import StageControl
-
     produced = {}
     allowed = set(request.get("allowed_outputs", [])) | set(request.get("required_outputs", []))
     output_root = workspace / "work/outputs"
@@ -26,22 +24,33 @@ def candidate_outcome(request: dict, workspace: Path) -> dict:
     diagnostic = ""
     if control_path.is_file():
         try:
-            signal = StageControl.model_validate_json(control_path.read_text(encoding="utf-8"))
+            signal = json.loads(control_path.read_text(encoding="utf-8"))
+            # This script runs in the independent coding environment. Host owns
+            # the complete StageControl schema; only read transport fields here.
+            outcome = signal.get("requested_outcome") if isinstance(signal, dict) else None
+            if not isinstance(outcome, str) or outcome not in {"needs_input", "blocked"}:
+                raise ValueError("Control outcome must be needs_input or blocked")
+            if not isinstance(signal.get("summary", ""), str):
+                raise ValueError("Control summary must be a string")
+            refs = signal.get("question_refs", [])
+            if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):
+                raise ValueError("Control question_refs must be a list of strings")
         except (ValueError, OSError) as exc:
+            signal = None
             diagnostic = f"Invalid control.json: {exc}"
     missing = sorted(set(request["required_outputs"]) - set(produced))
     if diagnostic:
         status = "failed"
     elif signal:
-        status = signal.requested_outcome
+        status = signal["requested_outcome"]
     else:
         status = "failed" if missing else "submitted"
     if not signal and missing and not diagnostic:
         diagnostic = f"Missing required outputs: {missing}"
     return {
         "status": status, "outputs": produced,
-        "question_refs": signal.question_refs if signal else [],
-        "diagnostic": diagnostic or (signal.summary if signal else ""),
+        "question_refs": signal.get("question_refs", []) if isinstance(signal, dict) else [],
+        "diagnostic": diagnostic or (signal.get("summary", "") if isinstance(signal, dict) else ""),
         "termination_reason": "completed" if status == "submitted" else "control" if signal else "output_invalid",
         "control_path": str(control_path) if signal else None,
     }

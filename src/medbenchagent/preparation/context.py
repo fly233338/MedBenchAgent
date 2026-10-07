@@ -75,10 +75,11 @@ def build_stage_context(stage, state, workspace):
         (prompts / f"data_preparation_{stage.value}.md").read_text(encoding="utf-8"),
         json.dumps(visible, ensure_ascii=False, indent=2),
         "Inspect Python model schemas via medbenchagent.preparation.cli schema. "
-        "Generate the required candidate outputs and perform your necessary checks, then finish immediately. "
+        "Inspect enough to understand the source and generate the required candidate outputs programmatically. "
+        "Perform only necessary construction checks. Once all required output files are written, immediately finish. "
         "Host checks required files and validates their contents after the worker ends. "
-        "No success receipt or submit command is required. Do not use CLI validate as a final completion action. "
-        "Do not inspect, modify, spot-check, or call other tools after finishing your candidate outputs. "
+        "No success receipt or submit command is required. Do not run preparation.cli validate. "
+        "Do not perform additional inspection, validation, spot-checks, or tool calls after outputs are ready. "
         "For semantic clarification, write a JSON array of scoped question records (schema question), "
         "then run python -m medbenchagent.preparation.cli signal --outcome needs_input --questions-file work/questions.json. "
         "For blocking failures use signal --outcome blocked --summary 'diagnostic'; "

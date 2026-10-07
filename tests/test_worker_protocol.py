@@ -1,11 +1,33 @@
 from pathlib import Path
 import json
+import subprocess
+import sys
 import pytest
 
 from medbenchagent.runtime.openhands_worker import normalize_tool_arguments, validate_terminal_command
 from medbenchagent.preparation.contracts import Stage, StageRequest, StageResult
 from medbenchagent.runtime.dataset_runtime import OpenHandsDatasetRuntime
 from medbenchagent.preparation.worker import OpenHandsWorker
+
+
+@pytest.mark.parametrize("outcome", ["submitted", "needs_input", "blocked"])
+def test_candidate_collection_runs_without_main_application_package(tmp_path, outcome):
+    outputs = tmp_path / "work/outputs"
+    outputs.mkdir(parents=True)
+    (outputs / "mapping.json").write_text("{}", encoding="utf-8")
+    if outcome != "submitted":
+        (tmp_path / "work/control.json").write_text(json.dumps({"requested_outcome": outcome}), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / "src/medbenchagent/runtime/openhands_worker.py"
+    code = (
+        "import json, runpy, sys; from pathlib import Path; "
+        "import importlib.util; assert importlib.util.find_spec('medbenchagent') is None; "
+        "adapter = runpy.run_path(sys.argv[1]); "
+        "print(json.dumps(adapter['candidate_outcome']({'required_outputs': ['mapping.json']}, Path(sys.argv[2]))))"
+    )
+    process = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(script), str(tmp_path)],
+                             capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert process.returncode == 0, process.stderr
+    assert json.loads(process.stdout)["status"] == outcome
 
 
 @pytest.mark.parametrize("kind", ["complete", "missing", "blocked", "needs_input", "invalid"])
