@@ -67,3 +67,38 @@ def test_accounting_rejects_silent_truncation(tmp_path):
         "excluded":{}, "skipped":{}}), encoding="utf-8")
     with pytest.raises(ValueError, match="population"):
         validate_accounting(report, PreparationMapping.model_validate(mapping()), context["source_roots"], 6000)
+
+
+def test_image_expansion_uses_frozen_inventory_and_series_parents(tmp_path, monkeypatch):
+    from medbenchagent.data.contracts import Source
+    from medbenchagent.data.sources import inventory_source
+    from medbenchagent.preparation.contracts import PreparationMapping, ImageConversionPlan
+    from medbenchagent.preparation.images import mapped_images
+
+    context = state(tmp_path)
+    raw = Path(context["source_roots"]["s"])
+    series = raw / "study/series"
+    series.mkdir(parents=True)
+    (series / "slice.dcm").write_bytes(b"frozen slice")
+    manifest = inventory_source(Source(id="s", root=str(raw)), tmp_path / "series_inventory")
+    context["source_manifests"]["s"] = str(manifest)
+    # Added after freezing: broad rules must not discover this image.
+    (raw / "new.jpg").write_bytes((raw / "raw.jpg").read_bytes())
+    value = mapping(filename="*.jpg")
+    value["image_overrides"] = {"s:raw.jpg": {**value["image_rules"][0], "rule_id": "override"}}
+    value["image_rules"].append({"rule_id": "series", "source_id": "s", "pattern": "study/*",
+                                "source_format": "dicom_series", "policy_id": "native", "action": "convert"})
+    original_rglob = Path.rglob
+
+    def guarded_rglob(path, pattern):
+        if path == raw:
+            raise AssertionError("Source root must not be rescanned")
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", guarded_rglob)
+    images = mapped_images(PreparationMapping.model_validate(value),
+                           ImageConversionPlan(policies={"native": {}}), context)
+
+    assert {row[2] for row in images.values()} == {"raw.jpg", "study/series"}
+    assert images[str(raw / "raw.jpg").replace("\\", "/")][0].rule_id == "override"
+    assert len(images) == 2

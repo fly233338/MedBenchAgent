@@ -40,6 +40,8 @@ def build_stage_context(stage, state, workspace):
         "stage": stage.value, "dataset_id": state["dataset_id"],
         "bundle_root": state["bundle_root"], "locator_roots": state["source_roots"],
         "source_roots": {key: f"/workspace/sources/{key}" if docker else value for key, value in state["source_roots"].items()},
+        "source_manifests": {key: f"/workspace/source_manifests/{key}" if docker else value
+                             for key, value in state["source_manifests"].items()},
         "user_request": state.get("user_request", ""), "decisions": state.get("user_decisions", []),
         "feedback": state.get("validation_feedback", {}), "inputs": {}, "reference_digests": {},
         "outputs": list(STAGE_OUTPUTS[stage]),

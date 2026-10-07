@@ -1,5 +1,6 @@
 """Deterministic image rules shared by converters and host validation."""
 from fnmatch import fnmatchcase
+import json
 from pathlib import Path
 
 from medbenchagent.data.asset_adapters import contained_path
@@ -36,18 +37,28 @@ def resolve_image(mapping, plan, source_roots, bundle_root, source_id, source_pa
 
 
 def mapped_images(mapping, plan, state):
-    """Expand rules in deterministic host code, never in an LLM response."""
+    """Expand rules from the frozen inventory, including parent series directories."""
     result = {}
     folded = {}
     for source_id, root in state["source_roots"].items():
-        for source in sorted(Path(root).rglob("*")):
-            relative = source.relative_to(root).as_posix()
+        entries = {}
+        inventory = Path(state["source_manifests"][source_id]) / "files.jsonl"
+        with inventory.open(encoding="utf-8") as handle:
+            for line in handle:
+                relative_path = Path(json.loads(line)["path"])
+                entries[relative_path] = False
+                for parent in relative_path.parents:
+                    if parent != Path("."):
+                        entries[parent] = True
+        for relative_path, is_directory in sorted(entries.items()):
+            relative = relative_path.as_posix()
             rules = [r for r in mapping.image_rules if r.source_id == source_id and fnmatchcase(relative, r.pattern)]
             if not rules and f"{source_id}:{relative}" not in mapping.image_overrides:
                 continue
             rule = image_rule(mapping, source_id, relative)
-            if source.is_dir() != (rule.source_format == "dicom_series"):
+            if is_directory != (rule.source_format == "dicom_series"):
                 continue
+            source = contained_path(root, relative)
             policy = plan.policies.get(rule.policy_id)
             indices = policy.indices if rule.action == "convert" and policy.mode == "slices" else [None]
             for index in indices:

@@ -16,6 +16,25 @@ def test_context_materializes_only_semantic_inputs(tmp_path):
         assert actual == names
         assert not (Path(request.workspace) / "work/inputs/context.json").exists()
         assert set(request.context["inputs"]) == names
+        assert request.context["source_manifests"] == request.source_manifests
+
+
+def test_worker_cli_validates_using_frozen_inventory(tmp_path, monkeypatch):
+    from medbenchagent.preparation.cli import main
+
+    worker = Worker()
+    result = compile_preparation_graph(worker=worker).invoke(state(tmp_path))
+    assert result["status"] == "complete"
+    for request in worker.requests:
+        monkeypatch.chdir(request.workspace)
+        assert main(["validate"]) == 0
+
+
+def test_docker_context_exposes_mounted_inventory(tmp_path):
+    context = state(tmp_path)
+    context["execution_runtime"] = {"backend": "docker"}
+    visible, _, _, _ = build_stage_context(Stage.UNDERSTAND, context, tmp_path / "attempt")
+    assert visible["source_manifests"] == {"s": "/workspace/source_manifests/s"}
 
 
 def test_context_budget_fails_without_silent_truncation(tmp_path):

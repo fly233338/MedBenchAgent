@@ -26,7 +26,8 @@ from .contracts import (
     STAGE_OUTPUTS,
 )
 from .publisher import DatasetPublisher
-from .validation import validate_stage, accept_mapping, package_dataset, _load_inputs
+from .validation import validate_stage, accept_mapping, package_dataset, _load_inputs, read_cases
+from .images import mapped_images
 from .worker import OpenHandsWorker
 
 
@@ -327,8 +328,11 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
             names = ["cases.jsonl", "metadata.json"]
             artifacts = {name: ArtifactRef(name=name, path=str(root / name), digest=digest_file(root / name)).model_dump(mode="json")
                          for name in names if (root / name).is_file()}
-            mapping, _ = _load_inputs(state)
-            if not any(r.action == "convert" for r in [*mapping.image_rules, *mapping.image_overrides.values()]):
+            mapping, plan = _load_inputs(state)
+            mapped = mapped_images(mapping, plan, state)
+            cases = read_cases(root / "cases.jsonl")
+            if not any(mapped[e.value][0].action == "convert"
+                       for case in cases for e in case.evidence if e.type == "asset"):
                 return {"status": "validated", "text_root": str(root), "text_artifacts": artifacts}
             return _fresh_attempt(state, stage=Stage.PREPARE_IMAGE.value, status="running",
                                   text_root=str(root), text_artifacts=artifacts, previous_attempt_root=None)

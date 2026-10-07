@@ -62,7 +62,8 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 主线为 Understand → Prepare Text → 条件 Prepare Image → Package → Publish。
 Understand 交付图片路径规则 mapping 和 typed conversion plan；Text 保存最终 locator 并记录 runtime accounting。
-普通 JPEG/PNG/WebP 直接引用原来源，零复制；没有 convert 规则时跳过 Image。
+普通 JPEG/PNG/WebP 直接引用原来源，零复制；Cases 未引用任何 convert 图像时跳过 Image。
+图片规则基于 frozen source inventory 展开，DICOM series 目录由清单中的文件路径推导，不重复扫描 source root。
 转换 PNG 固定保存于 Prepared/<dataset>/images/，文件身份绑定来源内容、策略和切片。
 revision 仅保存 cases.jsonl、metadata.json、converted-only image_manifest.jsonl，不复制图片。
 metadata 绑定 direct 来源内容；访问时验证摘要，来源移动或修改会报错。

@@ -25,7 +25,7 @@ def main(argv=None):
     context = request["context"]
     # Paths in context are worker-relative, including in Docker.
     refs = {key: {"name": key, "path": value, "digest": __import__("hashlib").sha256(Path(value).read_bytes()).hexdigest()} for key, value in context["inputs"].items()}
-    state = {key: context[key] for key in ("source_roots", "locator_roots", "bundle_root")}
+    state = {key: context[key] for key in ("source_roots", "source_manifests", "locator_roots", "bundle_root")}
     if refs:
         state["accepted_handoff"] = {"dataset_id": context["dataset_id"], "source_snapshot_digest": request["source_snapshot_digest"],
             "mapping": refs["mapping.json"], "image_conversion_plan": refs["image_conversion_plan.json"], "digest": request["input_digest"]}

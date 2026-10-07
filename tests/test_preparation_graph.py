@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from PIL import Image
+import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from medbenchagent.preparation.graph import compile_preparation_graph
 from medbenchagent.preparation.contracts import Stage, StageResult, SemanticQuestion
@@ -23,10 +24,13 @@ def state(tmp_path):
     raw.mkdir()
     Image.new("RGB", (4, 4), "red").save(raw / "raw.jpg")
     (raw / "records.csv").write_text("id,label\nc,yes\n", encoding="utf-8")
+    from medbenchagent.data.contracts import Source
+    from medbenchagent.data.sources import inventory_source
+    manifest = inventory_source(Source(id="s", root=str(raw)), tmp_path / "source_manifests/s")
     return {"run_id": "r", "dataset_id": "d", "run_directory": str(tmp_path / "runtime"),
         "preparation_root": str(tmp_path / "runtime/preparation"), "bundle_root": str(tmp_path / "prepared/d"),
         "sources": [{"id": "s", "root": str(raw)}], "source_roots": {"s": str(raw)},
-        "source_manifests": {}, "source_snapshot_digest": "frozen"}
+        "source_manifests": {"s": str(manifest)}, "source_snapshot_digest": "frozen"}
 
 
 class Worker:
@@ -120,3 +124,38 @@ def test_direct_sources_skip_image_without_copy(tmp_path):
     assert (root / "image_manifest.jsonl").read_text() == ""
     case = json.loads((root / "cases.jsonl").read_text())
     assert Path(case["evidence"][0]["value"]) == Path(initial["source_roots"]["s"]) / "raw.jpg"
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_unused_conversion_rule_skips_image(tmp_path, override):
+    initial = state(tmp_path)
+    raw = Path(initial["source_roots"]["s"])
+    (raw / "unused.dcm").write_bytes(b"unused medical source")
+    from medbenchagent.data.contracts import Source
+    from medbenchagent.data.sources import inventory_source
+    manifest = inventory_source(Source(id="s", root=str(raw)), tmp_path / "updated_inventory")
+    initial["source_manifests"]["s"] = str(manifest)
+
+    class UnusedConversionWorker(Worker):
+        def run(self, request):
+            result = super().run(request)
+            if request.stage is Stage.UNDERSTAND:
+                path = Path(result.outputs["mapping.json"])
+                value = json.loads(path.read_text(encoding="utf-8"))
+                rule = {"rule_id": "unused", "source_id": "s", "pattern": "unused.dcm",
+                        "source_format": "dicom", "policy_id": "native", "action": "convert"}
+                if override:
+                    value["image_overrides"] = {"s:unused.dcm": rule}
+                else:
+                    value["image_rules"].append(rule)
+                path.write_text(json.dumps(value), encoding="utf-8")
+            return result
+
+    worker = UnusedConversionWorker()
+    result = compile_preparation_graph(worker=worker).invoke(initial)
+
+    assert result["status"] == "complete", result.get("diagnostics")
+    assert [request.stage for request in worker.requests] == [Stage.UNDERSTAND, Stage.PREPARE_TEXT]
+    assert not (Path(initial["bundle_root"]) / "images").exists()
+    root = Path(result["publication"]["revision_path"])
+    assert (root / "image_manifest.jsonl").read_text() == ""

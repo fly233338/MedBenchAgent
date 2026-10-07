@@ -221,6 +221,8 @@ class OpenHandsDatasetRuntime:
                    "-w", "/workspace", "--mount", _mount(source_root, "/workspace/source", readonly=True)]
         for source_id, root in source_roots.items():
             command.extend(["--mount", _mount(Path(root).resolve(), f"/workspace/sources/{source_id}", readonly=True)])
+        for source_id, manifest in request.source_manifests.items():
+            command.extend(["--mount", _mount(Path(manifest).resolve(), f"/workspace/source_manifests/{source_id}", readonly=True)])
         if request.previous_attempt_root:
             command.extend(["--mount", _mount(Path(request.previous_attempt_root).resolve(), "/workspace/previous", readonly=True)])
         command.extend(["--mount", _mount(workspace, "/workspace"),
