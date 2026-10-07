@@ -1,4 +1,4 @@
-"""Run-local immutable artifacts and their direct version dependencies."""
+"""Frozen execution configuration and resume checks; no business state."""
 
 from __future__ import annotations
 
@@ -11,112 +11,6 @@ from medbenchagent.runtime.construction import record_event
 
 CONTRACT_VERSION = "agent-runtime"
 
-
-
-def artifact_key(context, kind):
-    from medbenchagent.workflow.contracts import DATASET_KINDS
-    if kind.startswith("dataset/"):
-        return kind
-    dataset = context.get("dataset_scope")
-    return (
-        f"dataset/{dataset}/{kind}" if dataset and kind in DATASET_KINDS else kind
-    )
-
-
-def reference_digests(references):
-    from medbenchagent.data.sources import digest_file
-
-    digests = {}
-
-    # Prepared access manifests already bind the full annotation contents. Reuse that
-    # digest instead of scanning a large annotation again for every publication.
-    def known(value):
-        if isinstance(value, dict):
-            if "cases_path" in value and "annotation_digest" in value:
-                digests[str(Path(value["cases_path"]).resolve())] = value["annotation_digest"]
-            for child in value.values():
-                known(child)
-
-    known(references)
-
-    def visit(value, key=""):
-        if isinstance(value, dict):
-            for name, child in value.items():
-                visit(child, name)
-        elif isinstance(value, str) and (
-            key.endswith("_path")
-            or key in {"path", "blueprint", "raw", "audited", "report", "cases"}
-        ):
-            path = Path(value)
-            if path.is_file() and path.suffix in {".json", ".jsonl", ".py", ".toml"}:
-                canonical = str(path.resolve())
-                if canonical not in digests:
-                    digests[canonical] = digest_file(path)
-
-    visit(references)
-    return digests
-
-
-
-
-def index_path(context):
-    return Path(context["run_directory"]) / "control" / "artifacts.json"
-
-
-def read_index(context):
-    path = index_path(context)
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"versions": {}}
-
-
-def require(context, *kinds):
-    """Reject absent or stale artifacts, including transitive upstream revisions."""
-    index = read_index(context)["versions"]
-    current = context.get("artifact_versions", {})
-
-    def check(kind):
-        identifier = current.get(kind)
-        if identifier not in index:
-            raise ValueError(f"{kind} is required; complete its producing stage first")
-        record = index[identifier]
-        for dependency, version in record["dependencies"].items():
-            if current.get(dependency) != version:
-                raise ValueError(f"{kind} is stale after {dependency} changed; rebuild {kind}")
-            check(dependency)
-        return record
-
-    return {kind: check(artifact_key(context, kind)) for kind in kinds}
-
-
-def publish(context, kind, references, dependencies=()):
-    """Append a version; replay of the same operation and inputs returns that version."""
-    kinds = dependencies
-    kinds = tuple(artifact_key(context, k) for k in kinds)
-    kind = artifact_key(context, kind)
-    require(context, *kinds)
-    current = dict(context.get("artifact_versions", {}))
-    deps = {key: current[key] for key in kinds}
-    index = read_index(context)
-    identity = {
-        "kind": kind,
-        "references": references,
-        "dependencies": deps,
-        "content_digests": reference_digests(references),
-    }
-    existing = next(
-        (
-            key
-            for key, value in index["versions"].items()
-            if {k: value[k] for k in identity} == identity
-        ),
-        None,
-    )
-    identifier = existing or f"{kind}:{len(index['versions']) + 1}"
-    index["versions"][identifier] = dict(identity, id=identifier)
-    current[kind] = identifier
-    index["current"] = current
-    atomic_write_json(index_path(context), index)
-    context["artifact_versions"] = current
-    return {"artifact_versions": current}
 
 
 def code_identity():
@@ -187,34 +81,6 @@ def verify_resume(context):
 
 
 def initialize_dependencies(context, settings):
-    snapshot = settings.snapshot()["settings"]
-    configs = {
-        "DataConfig": {
-            "profile": snapshot["dataset_profile"],
-            "preparation": snapshot["data_processing"],
-            "runtime": context["execution_runtime"],
-        },
-        "PlanningConfig": {
-            "rag": snapshot["rag"],
-            "model": snapshot["llm"]["model"],
-            "temperature": snapshot["llm"]["default_temperature"],
-        },
-        "AllocationConfig": {"policy": "concept-dataset-leaf", "model": settings.llm.model},
-        "TemplateConfig": {
-            "count": settings.generation.question_template_count,
-            "temperature": context["question_temperature"],
-            "model": settings.llm.model,
-        },
-        "GenerationConfig": {
-            key: context.get(key)
-            for key in ("seed", "max_tasks_per_image", "max_total_tasks_per_image")
-        },
-        "FinalizationConfig": {"seed": context["seed"], "policy": "final-task"},
-    }
-    for kind, value in configs.items():
-        path = Path(context["run_directory"]) / "control" / "config" / f"{kind}.json"
-        atomic_write_json(path, value)
-        publish(context, kind, {"path": str(path)}, ())
     atomic_write_json(
         Path(context["run_directory"]) / "control" / "execution_runtime.json",
         context["execution_runtime"],

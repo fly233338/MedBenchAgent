@@ -4,7 +4,6 @@ from medbenchagent.runtime.harness import result
 
 def run_generation(context, *, output_path=None, allocation=None, page_size=512):
     from pathlib import Path
-    import json
     from medbenchagent.data.index import DatasetIndex
     from medbenchagent.data.manifests import SamplingManifest, load_manifest
     from medbenchagent.planning.resolver import ResolverContext
@@ -12,7 +11,8 @@ def run_generation(context, *, output_path=None, allocation=None, page_size=512)
     sampling_manifest = None
     if access.get("sampling_manifest_path"):
         sampling_manifest = load_manifest(access["sampling_manifest_path"], SamplingManifest)
-    leaves = json.loads(Path(context["task_plan_path"]).read_text(encoding="utf-8"))["leaf_tasks"]
+    from medbenchagent.planning.bir import BIRStore
+    leaves = BIRStore(context["bir_path"]).load(f"datasets/{context['dataset_scope']}/planning/task_plan.json")["leaf_tasks"]
     index = DatasetIndex(access)
     def pages():
         offset = 0

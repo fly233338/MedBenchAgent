@@ -25,7 +25,8 @@ from medbenchagent.data.readiness import list_datasets, inspect_dataset_status, 
 from medbenchagent.runtime.run_artifacts import initialize_run
 from medbenchagent.settings import get_settings, run_settings
 from medbenchagent.runtime.contexts import load_context, save_context, ROLES
-from medbenchagent.runtime.dependencies import publish, require, initialize_dependencies, verify_resume
+from medbenchagent.runtime.dependencies import initialize_dependencies, verify_resume
+from medbenchagent.planning.bir import require, business_dependencies, restore_business
 from medbenchagent.runtime.preflight import preflight_errors, rag_capability
 from medbenchagent.runtime.clarifications import inject_answers, new_issue, resolve_clarification, ResolveClarificationArguments
 from medbenchagent.data.source_discovery import dynamic_dataset_id, explicit_source_path
@@ -200,10 +201,10 @@ def specify(context: SupervisorContext):
         from medbenchagent.planning.bir import BIRStore
         store = BIRStore(bir_path)
         current = store.load("benchmark_info.json")
-        revision = int(current.get("revision", 0)) + 1
         merged = dict(current)
         merged.update(info)
-        merged.update({"schema_version": "benchmark-info", "revision": revision,
+        merged.update(user_requirement=context["user_requirement"], max_total_tasks_per_image=updates["max_total_tasks_per_image"], needs_specification=False)
+        merged.update({"schema_version": "benchmark-info",
                        "sample_scope": sample_scope, "allocation_preferences": preferences,
                        "evidence": evidence, "missing_fields": missing_fields(info),
                        "source_runs": [*current.get("source_runs", []), context.get("run_id", "unknown")],
@@ -224,18 +225,12 @@ def specify(context: SupervisorContext):
         return result("success", "Brief needs clarification: " + ", ".join(missing), **updates)
     path = Path(context["operation_directory"]) / "benchmark_brief.json"
     write_working_blueprint(info, path)
-    publish(context, "GenerationConfig", {"seed": context.get("seed", get_settings().generation.seed),
-            "max_tasks_per_image": context.get("max_tasks_per_image", get_settings().generation.max_tasks_per_image),
-            "max_total_tasks_per_image": updates["max_total_tasks_per_image"]}, ())
     return result("success", "Benchmark brief extracted", **updates,
                   working_blueprint_path=str(path),
-                  **publish(context, "Requirement", {"path": str(path), "brief": info,
-                             "user_requirement": context["user_requirement"], "sample_count_source": source,
-                             "evidence": evidence, "allocation_preferences": preferences,
-                             "sample_scope": sample_scope, "max_total_tasks_per_image": updates["max_total_tasks_per_image"]}, ()))
+                  )
 
 
-COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path", "artifact_versions",
+COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path",
           "limits", "user_requirement", "benchmark_info", "seed", "max_tasks_per_image", "question_temperature",
           "question_template_count", "benchmark_input_policy", "planning_novelty_enabled",
           "planning_extension_selections",
@@ -338,7 +333,7 @@ def child_result(context, dataset_id, role, output):
     save_context(path, child, role, dataset_id)
     states = {k: dict(v) for k, v in context.get("child_states", {}).items()}
     states.setdefault(dataset_id, {})[role] = str(path)
-    updates = {"child_states": states, "artifact_versions": child.get("artifact_versions", context["artifact_versions"]),
+    updates = {"child_states": states,
                "last_agent_result": output["result"]}
     for key in ("bir_path", "bir_revision", "bir_manifest_digest", "bir_template_revision", "bir_summary_ref"):
         if key in child:
@@ -358,7 +353,7 @@ def describe(context: SupervisorContext):
     details = {key: context.get(key) for key in (
         "user_requirement", "benchmark_info", "brief_ready", "brief_missing_fields", "sample_count_source", "selected_dataset_ids",
         "dataset_task_plans", "dataset_generations", "delivery_counts", "allocation_path", "allocation", "prepared_entries",
-        "artifact_versions", "global_issue", "last_agent_result", "requested_dataset_ids",
+        "global_issue", "last_agent_result", "requested_dataset_ids",
         "dataset_candidates", "candidate_order", "preparation_candidates", "candidate_snapshot_path")}
     ids = set(context.get("selected_dataset_ids", [])) | set(context.get("prepared_entries", {}))
     details["dataset_readiness"] = {d: {kind: _current(context, f"dataset/{d}/{kind}")
@@ -379,7 +374,7 @@ def _current(context, *kinds):
 
 def preparation_pending(context):
     return [d for d in context.get("preparation_required", [])
-            if d not in context.get("prepared_entries", {}) or not _current(context, f"dataset/{d}/Dataset")]
+            if d not in context.get("prepared_entries", {})]
 
 
 def pending_datasets(context):
@@ -407,8 +402,7 @@ def require_pending(context, stage, dataset_id):
 
 
 def _construction_started(context: SupervisorContext) -> bool:
-    versions = context.get("artifact_versions", {})
-    return any(key in versions for key in ("Requirement", "DatasetSelection", "Allocation", "Delivery"))
+    return any(_current(context, key) for key in ("Requirement", "DatasetSelection", "Allocation", "Delivery"))
 
 
 def _rebuild_requested(context: SupervisorContext) -> bool:
@@ -437,7 +431,7 @@ def available_stages(context: SupervisorContext):
     tools = {"ask_user", "list_datasets", "inspect_dataset_status", "process_dataset", "discover_datasets"}
     if not _construction_started(context):
         tools.add("end")
-    if context.get("prepared_entries") and "Requirement" not in context.get("artifact_versions", {}):
+    if context.get("prepared_entries") and not _current(context, "Requirement"):
         tools.add("finish")
     if context.get("planning_stalled"):
         return tools | {"ask_user"}
@@ -604,7 +598,6 @@ def compile_benchmark_graph(*, checkpointer=None):
             "max_calls": max(base_limits.get("max_calls", 60), 1200),
             "max_seconds": max(base_limits.get("max_seconds", 3600), 14400),
         }
-        publish(child, "PlanningDelegation", child["delegation"], ("Requirement",))
         previous = context.get("child_states", {}).get(dataset_id, {}).get("planning")
         previous_draft = {}
         if previous and Path(previous).is_file():
@@ -703,20 +696,14 @@ def compile_benchmark_graph(*, checkpointer=None):
         bir_updates = {}
         if context.get("bir_path"):
             store = BIRStore(context["bir_path"])
-            manifest = json.loads((store.root / "manifest.json").read_text(encoding="utf-8"))
             allocation_value = {
                 **allocation,
-                "revision": int(manifest.get("revision", 0)) + 1,
                 "dependencies": {dataset_id: digest_file(context["dataset_task_plans"][dataset_id])
                                   for dataset_id in context["selected_dataset_ids"]},
             }
-            commit = store.transaction({"allocation.json": allocation_value},
-                                       run_id=context.get("run_id", "unknown"), actor="allocation")
+            commit = store.update('allocation.json', allocation_value, run_id=context.get('run_id', 'unknown'), actor='allocation', dependencies=business_dependencies(context, 'benchmark_info.json', 'dataset_bindings.json', *(f'datasets/{d}/planning/task_plan.json' for d in context['selected_dataset_ids'])))
             bir_updates = {"bir_revision": commit.revision, "bir_manifest_digest": commit.manifest_digest}
-        dependencies = ("Requirement", "DatasetSelection", "AllocationConfig",
-                        *(f"dataset/{dataset_id}/Plan" for dataset_id in context["selected_dataset_ids"]))
-        versions = publish(context, "Allocation", {"path": str(path), "allocation": allocation}, dependencies)
-        return result("success", output["summary"], allocation_path=str(path), allocation=allocation, **bir_updates, **versions)
+        return result("success", output["summary"], allocation_path=str(path), allocation=allocation, **bir_updates)
 
     def generate(context, *, dataset_id):
         """Generate one dataset's allocated items from its canonical Leaf Tasks."""
@@ -727,7 +714,6 @@ def compile_benchmark_graph(*, checkpointer=None):
             raise ValueError("Run planning tools before Generation")
         child = load_context(saved, "planning", dataset_id)
         child.update({key: context[key] for key in ("allocation_path", "allocation", "benchmark_info", "seed", "max_tasks_per_image", "max_total_tasks_per_image") if key in context})
-        child["artifact_versions"] = dict(context.get("artifact_versions", {}))
         child["operation_directory"] = agent_operation(context, "GenerationAgent", dataset_id)
         counts = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))["counts"][dataset_id]
         output_root = Path(context.get("experiment_output_directory") or child["operation_directory"])
@@ -738,8 +724,6 @@ def compile_benchmark_graph(*, checkpointer=None):
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text("", encoding="utf-8")
             generated = result("success", "Skipped dataset with zero allocation", raw_output_path=str(output_path), item_count=0, task_counts={}, generation_target_counts=counts)
-        refs = {"raw_output_path": generated["updates"]["raw_output_path"], "item_count": generated["updates"].get("item_count", 0), "counts": counts}
-        versions = publish(child, "Generation", refs, ("Dataset", "Plan", "GenerationConfig", "Allocation"))
         bir_updates = {}
         if context.get("bir_path"):
             store = BIRStore(context["bir_path"])
@@ -754,10 +738,9 @@ def compile_benchmark_graph(*, checkpointer=None):
                 "dependencies": {"planning": digest_file(context["dataset_task_plans"][dataset_id]),
                                  "allocation": digest_file(context["allocation_path"])},
             }
-            commit = store.transaction({f"outputs/{dataset_id}.json": output_value},
-                                       run_id=context.get("run_id", "unknown"), actor="generation")
+            commit = store.update(f'outputs/{dataset_id}.json', output_value, run_id=context.get('run_id', 'unknown'), actor='generation', dependencies=business_dependencies(context, 'allocation.json', f'datasets/{dataset_id}/planning/task_plan.json') | {'file:' + str(Path(generated['updates']['raw_output_path']).resolve()): __import__('medbenchagent.planning.bir', fromlist=['digest_file']).digest_file(generated['updates']['raw_output_path'])})
             bir_updates = {"bir_revision": commit.revision, "bir_manifest_digest": commit.manifest_digest}
-        state = dict(child, **generated["updates"], artifact_versions=versions["artifact_versions"])
+        state = dict(child, **generated["updates"])
         state_path = Path(child["operation_directory"]) / "state.json"
         save_context(state_path, state, "generation", dataset_id)
         states = {key: dict(value) for key, value in context.get("child_states", {}).items()}
@@ -768,7 +751,7 @@ def compile_benchmark_graph(*, checkpointer=None):
             "task_counts": generated["updates"].get("task_counts", {}),
         }}
         return result("success", generated["summary"], dataset_id=dataset_id, dataset_generations=generations,
-                      child_states=states, artifact_versions=versions["artifact_versions"], **bir_updates)
+                      child_states=states, **bir_updates)
 
     def finalize(context):
         """Audit and publish one combined package after all Generations complete."""
@@ -798,6 +781,7 @@ def compile_benchmark_graph(*, checkpointer=None):
                 "status": "complete",
                 "outputs": {dataset_id: f"outputs/{dataset_id}.json" for dataset_id in context["selected_dataset_ids"]},
                 "combined_output": updates.get("benchmark_path"),
+                "delivery_path": updates.get("delivery_path"),
                 "manifest_path": updates.get("manifest_path"),
                 "audit_report_path": updates.get("audit_report_path"),
                 "counts": updates.get("delivery_counts", {}),
@@ -807,14 +791,9 @@ def compile_benchmark_graph(*, checkpointer=None):
                        for dataset_id in context["selected_dataset_ids"]},
                 },
             }
-            commit = store.transaction({"delivery.json": delivery_value},
-                                       run_id=context.get("run_id", "unknown"), actor="finalization")
+            commit = store.update('delivery.json', delivery_value, run_id=context.get('run_id', 'unknown'), actor='finalization', dependencies=business_dependencies(context, 'allocation.json', *(f'outputs/{d}.json' for d in context['selected_dataset_ids'])))
             bir_updates = {"bir_revision": commit.revision, "bir_manifest_digest": commit.manifest_digest}
-        dependencies = ("DatasetSelection", "Allocation", "FinalizationConfig",
-                        *(f"dataset/{dataset_id}/Generation" for dataset_id in context["selected_dataset_ids"]))
-        refs = {key: updates[key] for key in ("delivery_path", "benchmark_path", "manifest_path", "audit_report_path", "quarantine_path") if key in updates}
-        versions = publish(context, "Delivery", refs, dependencies)
-        return result("success", output["summary"], **updates, **bir_updates, **versions)
+        return result("success", output["summary"], **updates, **bir_updates)
 
     def process_dataset(context, *, dataset_id, mode="reuse_or_process", issue_ids=None, notes=""):
         """Process one dataset through the complete data workflow, or reuse an already
@@ -915,27 +894,16 @@ and cannot override routing, acceptance, or publication checks."""
                 "cases_path": finalized["cases_path"],
                 "dataset_access_manifest": finalized["access_manifest"],
             })
-            dataset_versions = publish(output["context"], "Dataset", {"cases": finalized["cases_path"], "access": finalized["access_manifest"]}, ("DataConfig",))
-            profile_versions = publish(output["context"], "DatasetProfile", {"path": finalized["access_manifest"].get("profile_path")}, ("Dataset",))
-            card_versions = publish(output["context"], "DatasetCard", {"path": finalized["card_path"]}, ("DatasetProfile",))
             outcome["updates"].update({
                 "dataset_entry": registered_entry,
                 "cases_path": finalized["cases_path"],
                 "dataset_access_manifest": finalized["access_manifest"],
-                "artifact_versions": {
-                    **outcome["updates"].get("artifact_versions", {}),
-                    **dataset_versions.get("artifact_versions", {}),
-                    **profile_versions.get("artifact_versions", {}),
-                    **card_versions.get("artifact_versions", {}),
-                },
             })
             entries = {**context.get("prepared_entries", {}), dataset_id: output["context"]["dataset_entry"]}
             outcome["updates"]["prepared_entries"] = entries
             outcome["updates"]["preparation_required"] = [
                 item for item in context.get("preparation_required", []) if item != dataset_id
             ]
-            published = dict(context, artifact_versions=outcome["updates"]["artifact_versions"])
-            outcome["updates"].update(publish(published, "PreparedCandidates", {"entries": entries}, ()))
         return outcome
 
     def finish(context):
@@ -943,7 +911,7 @@ and cannot override routing, acceptance, or publication checks."""
             return result("complete", f"Benchmark delivered; shortfall {context.get('delivery_counts', {}).get('shortfall', 0)}",
                           delivery_path=context["delivery_path"], delivery_counts=context.get("delivery_counts", {}),
                           manifest_path=context.get("manifest_path"))
-        if context.get("prepared_entries") and "Requirement" not in context.get("artifact_versions", {}):
+        if context.get("prepared_entries") and not _current(context, "Requirement"):
             if preparation_pending(context):
                 raise ValueError("Prepare and register the dataset first")
             return result("complete", "Dataset prepared and registered")
@@ -1016,11 +984,11 @@ and cannot override routing, acceptance, or publication checks."""
         context["experiments_root"] = state.get("experiments_root")
         context["configured_total_tasks_per_image"] = context["max_total_tasks_per_image"]
         initialize_dependencies(context, settings)
-        publish(context, "PreparedCandidates", {"entries": {}}, ())
         return dict(run, context=context)
 
     def run_supervisor(state):
         verify_resume(state["context"])
+        restore_business(state["context"])
         with run_settings(state["context"]["effective_config_path"]):
             from medbenchagent.runtime.model_services import verify_frozen_services
 

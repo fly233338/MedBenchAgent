@@ -10,10 +10,10 @@ from medbenchagent.data.dataset_catalog import load_dataset_catalog, load_prepar
 from medbenchagent.data.readiness import prepared_directory_entries
 from medbenchagent.data.bundle_catalog import card_summary
 from medbenchagent.data.sources import digest_file
-from medbenchagent.runtime.dependencies import publish, require
+from medbenchagent.planning.bir import require
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
-from medbenchagent.planning.bir import BIRStore
+from medbenchagent.planning.bir import BIRStore, business_dependencies
 
 
 class Selection(Contract):
@@ -43,7 +43,7 @@ def _snapshot_inputs(context):
 
 def _candidate_snapshot(context, path, *, refresh=False):
     requirement_version = require(context, "Requirement")["Requirement"]["id"]
-    prepared_version = context.get("artifact_versions", {}).get("PreparedCandidates")
+    prepared_version = json.dumps(context.get("prepared_entries", {}), sort_keys=True)
     if path.is_file():
         snapshot = json.loads(path.read_text(encoding="utf-8"))
         changed = (snapshot.get("schema_version") != "dataset-candidates"
@@ -113,8 +113,6 @@ def discover_dataset_candidates(context):
     folder = Path(context["operation_directory"])
     path = folder / "dataset_candidates.json"
     snapshot = _candidate_snapshot(context, path, refresh=True)
-    deps = ("Requirement", "PreparedCandidates") if "PreparedCandidates" in context.get("artifact_versions", {}) else ("Requirement",)
-    versions = publish(context, "DatasetCandidates", {"path": str(path)}, deps)
     candidates = [snapshot["candidates"][key]["summary"] for key in snapshot["candidate_order"]]
     return result(
         "success",
@@ -123,7 +121,6 @@ def discover_dataset_candidates(context):
         dataset_candidates=candidates,
         candidate_order=snapshot["candidate_order"],
         preparation_candidates=snapshot["preparation_candidates"],
-        **versions,
     )
 
 
@@ -161,17 +158,9 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
         card, access = load_prepared(candidate["entry"])
         asset = {"entry": candidate["entry"], "access": access, "card_summary": card_summary(card)}
         assets[identifier] = asset
-        child = dict(context, dataset_scope=identifier)
-        for kind, references in (
-            ("Dataset", {"cases": asset["entry"]["cases_path"], "access": access}),
-            ("DatasetProfile", {"path": asset["entry"]["profile_path"]}),
-            ("DatasetCard", {"path": asset["entry"]["dataset_card_path"]}),
-        ):
-            deps = ("DataConfig",) if kind == "Dataset" else ("Dataset",) if kind == "DatasetProfile" else ("DatasetProfile",)
-            context.update(publish(child, kind, references, deps))
     if context.get("bir_path"):
         store = BIRStore(context["bir_path"])
-        changes = {"benchmark_info.json": store.load("benchmark_info.json")}
+        bindings = {}
         for identifier in selection.selected_dataset_ids:
             asset = assets[identifier]
             entry = snapshot["candidates"][identifier]["entry"]
@@ -196,23 +185,14 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
                 "dataset_card_path": entry.get("dataset_card_path"),
                 "dataset_card_digest": snapshot["candidates"][identifier].get("card_digest"),
             }
-            changes[f"datasets/{identifier}/selection.json"] = {
-                "schema_version": "dataset-selection",
-                "dataset_id": identifier,
-                "selected": True,
-                "selection_reason": selection.selection_reason,
-                "candidate_snapshot_digest": digest_file(snapshot_path),
-                "dataset_card_digest": snapshot["candidates"][identifier].get("card_digest"),
-                "entry": entry,
-            }
-            changes[f"datasets/{identifier}/access.json"] = receipt
-        commit = store.transaction({key: value for key, value in changes.items() if key != "benchmark_info.json"},
-                                   run_id=context.get("run_id", "unknown"), actor="dataset_selection")
+            bindings[identifier] = {"access": receipt, "entry": entry,
+                "selection_reason": selection.selection_reason[identifier],
+                "candidate_snapshot_digest": digest_file(snapshot_path)}
+        commit = store.update("dataset_bindings.json", {"schema_version": "dataset-bindings", "datasets": bindings},
+            run_id=context.get("run_id", "unknown"), actor="dataset_selection",
+            dependencies=business_dependencies(context, "benchmark_info.json"))
         context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
     issue_updates = _selection_issue_updates(context, selection_issue_id)
-    versions = publish(context, "DatasetSelection", {"path": str(path)},
-                       ("Requirement", "DatasetCandidates",
-                        *(f"dataset/{key}/DatasetCard" for key in selection.selected_dataset_ids)))
     return result(
         "success",
         "Dataset selection published",
@@ -223,6 +203,5 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
         candidate_snapshot_path=str(snapshot_path),
         warnings=list(snapshot["excluded_candidates"].values()),
         **issue_updates,
-        **versions,
     )
 

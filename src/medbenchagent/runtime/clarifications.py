@@ -48,14 +48,17 @@ def validate_ask_user(context, role, arguments):
 
 
 def new_issue(role, context, reference, question, *, subject_scope=None, source_ids=None):
-    from medbenchagent.runtime.dependencies import artifact_key, require
+    from medbenchagent.planning.bir import require
     dataset = context.get("dataset_scope")
     scope, sources = resolve_subject(context, role, subject_scope, source_ids)
     kinds = []
     if not sources:
-        for kind in (("Dataset", "Documentation") if dataset else ("Requirement",)):
-            if artifact_key(context, kind) in context.get("artifact_versions", {}):
-                kinds.append(kind)
+        for kind in (("Dataset",) if dataset else ("Requirement",)):
+            try:
+                require(context, kind)
+            except ValueError:
+                continue
+            kinds.append(kind)
     records = require(context, *kinds) if kinds else {}
     versions = {r["kind"]: r["id"] for r in records.values()}
     identity = json.dumps([role, dataset, scope, sources, reference, question, versions], sort_keys=True, ensure_ascii=False)
@@ -81,7 +84,7 @@ def record_answer(context, issue, answer, *, question=None):
 
 
 def resolve_semantic_answer(context, issue):
-    from medbenchagent.runtime.dependencies import require
+    from medbenchagent.planning.bir import require
     current = require(context, *issue["input_versions"])
     if any(current[key]["id"] != value for key, value in issue["input_versions"].items()):
         raise ValueError("Clarification inputs changed; ask again for current facts")
@@ -139,11 +142,14 @@ def resolve_clarification(context, *, issue_id, kind):
         "continue", "retry", "继续", "重试", "stop here", "stop now", "you can stop", "please stop", "停止", "停下", "结束运行",
     ))
     if kind == "requirement_change" and not control_response:
-        from medbenchagent.runtime.dependencies import publish
         clarification_text = "\n".join(f"Clarification question: {e['question']}\nUser answer: {e['answer']}" for e in exchanges)
         updates.update(user_requirement=context["user_requirement"] + "\n" + clarification_text,
                        brief_ready=False, brief_missing_fields=[])
-        updates.update(publish(context, "Requirement", {"text": updates["user_requirement"]}, ()))
+        if context.get("bir_path"):
+            from medbenchagent.planning.bir import BIRStore
+            BIRStore(context["bir_path"]).update("benchmark_info.json",
+                {"schema_version": "benchmark-info", "user_requirement": updates["user_requirement"], "needs_specification": True},
+                run_id=context.get("run_id", "unknown"), actor="clarification")
     from pathlib import Path
     # Replace the saved private-state reference too; re-entry is not required to
     # close the issue, and an interrupted resolution can safely repeat this write.

@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 from medbenchagent.planning.bir import BIRStore
-from medbenchagent.runtime.dependencies import publish
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.data.contracts import Contract, Text
@@ -109,12 +108,6 @@ def select_extensions(context, *, dataset_id: str, extension_ids: list[str],
             "global_issue": None,
             "clarification": resolved,
         }
-    versions = publish(
-        context,
-        "PlanningExtensions",
-        {"path": str(selection_path), "dataset_id": dataset_id},
-        (),
-    ) if context.get("run_directory") else {}
     return result(
         "success",
         "Planning extensions selected",
@@ -122,5 +115,4 @@ def select_extensions(context, *, dataset_id: str, extension_ids: list[str],
         extension_selection_path=str(selection_path),
         extension_candidate_snapshot_path=str(snapshot_path),
         **issue_updates,
-        **versions,
     )

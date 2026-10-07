@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from pydantic import Field
-from medbenchagent.runtime.dependencies import require
+from medbenchagent.planning.bir import require
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.tool_contracts import NoArguments, NonEmpty
 

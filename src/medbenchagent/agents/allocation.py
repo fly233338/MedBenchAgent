@@ -1,6 +1,7 @@
 """Global Allocation stage for completed dataset-local Task Plans."""
 
 from __future__ import annotations
+from medbenchagent.planning.bir import BIRStore
 
 import json
 from pathlib import Path
@@ -75,7 +76,7 @@ def allocate_benchmark(context: dict[str, Any], *, output_path: str | Path | Non
     if not selected:
         raise ValueError("Dataset selection is required before allocation")
     plans = {
-        dataset_id: TaskPlanState.model_validate(json.loads(Path(context["dataset_task_plans"][dataset_id]).read_text(encoding="utf-8")))
+        dataset_id: TaskPlanState.model_validate(BIRStore(context["bir_path"]).load(f"datasets/{dataset_id}/planning/task_plan.json"))
         for dataset_id in selected
     }
     requested = context.get("benchmark_info", {}).get("sample_count")

@@ -58,7 +58,7 @@ def create_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT, template: Pat
         raise
     manifest = json.loads((folder / "BIR" / "manifest.json").read_text(encoding="utf-8"))
     record = {"schema_version": "mba-session", "name": name, "created_at": _now(),
-              "bir_path": str(folder / "BIR"), "bir_revision": manifest["revision"],
+              "bir_path": str(folder / "BIR"), "bir_revision": manifest.get("revision", 0),
               "bir_manifest_digest": bir.digest("manifest.json"),
               "messages": [], "runs": [], "pending_runs": []}
     atomic_write_json(folder / "session.json", record)

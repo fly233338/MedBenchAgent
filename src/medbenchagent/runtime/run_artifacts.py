@@ -74,7 +74,7 @@ def initialize_run(
         snapshot["bir"] = {
             "path": str(Path(bir_path).resolve()),
             "experiment_name": experiment_name,
-            "revision": manifest["revision"],
+            "revision": manifest.get("revision", 0),
             "template_revision": manifest.get("template_revision"),
             "manifest_digest": digest_file(Path(bir_path) / "manifest.json") if (Path(bir_path) / "manifest.json").is_file() else None,
         }

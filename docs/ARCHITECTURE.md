@@ -39,7 +39,6 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
   control/
     effective_config.json
     contract.json
-    artifacts.json
     events.jsonl
     operations.jsonl
   inputs/
@@ -135,7 +134,7 @@ type, reference fields, Resolver contract, capacity, and derived plan projection
 ## Ownership and task input resolution
 
 Source discovery belongs to data; Supervisor domain arguments and dependency defaults belong to workflow.
-Runtime retains execution, dependency checks, operation logs, checkpoint, interrupt and cancellation mechanics.
+Runtime retains execution, operation logs, checkpoint, interrupt and cancellation. BIR alone owns business dependency validation.
 Planning facts live in data.task_facts; BIR owns task-plan persistence. Axis/scenario/leaf/review exports
 are reproducible projections and are never read back as authority.
 
@@ -143,3 +142,7 @@ Planning, Generation and Audit share resolve_task_input. It binds a Case and Sam
 Evidence and verified image records. eligible_count counts eligible SamplingUnits.
 The benchmark item records input_images; consumers use those ordinary image files. Audit
 recomputes the bindings and digests, with reference-only masks excluded from model input.
+
+## BIR atomic ownership
+
+Each canonical business document carries its own _commit revision, content digest and bound dependencies. One locked atomic replace publishes payload and commit metadata together. manifest.json is immutable experiment/Registry identity; no global dynamic parts index or runtime artifacts.json exists. Dataset selections and access receipts live together in dataset_bindings.json. Plans, allocation, output receipts and delivery remain separate business documents. Unchanged updates are idempotent; stale readers and dependencies are rejected. Recovery reconstructs coordination summaries from BIR rather than promoting checkpoint copies to authority.

@@ -2,14 +2,17 @@
 import pytest
 
 from medbenchagent.runtime.clarifications import new_issue, inject_answers, resolve_clarification, record_answer
-from medbenchagent.runtime.dependencies import publish
+from medbenchagent.planning.bir import BIRStore
+from medbenchagent.runtime import sessions
 
 
 @pytest.mark.parametrize("kind", ["semantic", "requirement_change"])
 def test_resolution_closes_saved_origin_and_only_invalidates_changed_requirement(tmp_path, kind):
     context = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "resolve"), "user_requirement": "Build"}
-    publish(context, "Requirement", {"text": "Build"}, ())
-    before = context["artifact_versions"]["Requirement"]
+    context["bir_path"] = sessions.create_experiment("pilot", root=tmp_path)["bir_path"]
+    store = BIRStore(context["bir_path"])
+    store.update("benchmark_info.json", {"text":"Build"}, run_id="r", actor="test")
+    before = store.digest("benchmark_info.json")
     child_context = {**context, "dataset_scope": "a", "agent_role": "TaskPlanningAgent"}
     issue = new_issue("TaskPlanningAgent", child_context, "field", "What does 0 mean?")
     key = issue["issue_id"]
@@ -24,7 +27,7 @@ def test_resolution_closes_saved_origin_and_only_invalidates_changed_requirement
     assert child["global_issue"] is None and context["global_issue"] is None
     assert child["decisions"][key] == context["issues"][key]["answer_reference"]
     assert inject_answers(context, {}, "TaskPlanningAgent", "b")["decisions"] == {}
-    assert (context["artifact_versions"]["Requirement"] != before) == (kind == "requirement_change")
+    assert (store.digest("benchmark_info.json") != before) == (kind == "requirement_change")
     if kind == "requirement_change":
         assert "What does 0 mean?" in context["user_requirement"]
     assert resolve_clarification(context, issue_id=key, kind=kind)["updates"] == {}

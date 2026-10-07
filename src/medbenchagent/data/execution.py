@@ -167,8 +167,7 @@ def run(context, output, *, script=None, request=None, cases=None, specification
                 "cases_digest": digest_file(cases) if cases else None,
                 "specification": digest_file(specification) if specification else None,
                 "inputs": digest_file(inputs) if inputs else None,
-                "provenance": digest_file(provenance) if provenance else None,
-                "dependencies": context.get("artifact_versions", {})}
+                "provenance": digest_file(provenance) if provenance else None}
     if receipt.is_file():
         saved_receipt = json.loads(receipt.read_text(encoding="utf-8"))
         if saved_receipt["identity"] != identity:

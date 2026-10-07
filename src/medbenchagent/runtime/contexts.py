@@ -14,7 +14,6 @@ class SupervisorContext(TypedDict, total=False):
     bir_manifest_digest: str
     bir_template_revision: str
     bir_summary_ref: dict[str, Any]
-    artifact_versions: dict[str, str]
     child_states: dict[str, dict[str, str]]
     issues: dict[str, dict]
     evidence_index_path: str
@@ -24,7 +23,6 @@ class ContextBoundary(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
     run_directory: str
     operation_directory: str
-    artifact_versions: dict[str, str] = Field(default_factory=dict)
     dataset_scope: str | None = None
     selected_dataset_id: str | None = None
     source_scope: str | None = None

@@ -297,7 +297,8 @@ def compile_agent(
             scope = str(scope_path.relative_to(run_directory)).replace("\\", "/")
         except ValueError:
             scope = scope_path.name
-        dependencies = dict(context.get("artifact_versions", {}))
+        from medbenchagent.planning.bir import business_snapshot
+        dependencies = business_snapshot(context)
         try:
             arguments = schemas[tool_name].model_validate(arguments).model_dump()
             parameter_error = None

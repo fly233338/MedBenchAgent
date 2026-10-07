@@ -32,7 +32,7 @@ from medbenchagent.planning.task_space import (
     OutputSpec,
     ValidatedClinicalTarget,
 )
-from medbenchagent.runtime.dependencies import publish, require
+from medbenchagent.planning.bir import require
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.llm import complete_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
@@ -177,17 +177,11 @@ def _read(path: str | Path) -> dict[str, Any]:
 
 
 def _access(context: dict[str, Any]) -> dict[str, Any]:
-    access = context.get("dataset_access_manifest")
-    if access:
-        return access
     if context.get("bir_path") and context.get("dataset_scope"):
         store = BIRStore(context["bir_path"])
-        relative = f"datasets/{context['dataset_scope']}/access.json"
-        path = store.root / Path(*relative.split("/"))
-        if path.is_file():
-            value = store.load(relative)
-            return value.get("source_access", value)
-    return {}
+        value = store.load("dataset_bindings.json")["datasets"][context["dataset_scope"]]["access"]
+        return value.get("source_access", value)
+    return context.get("dataset_access_manifest", {})
 
 
 def _bir(context: dict[str, Any]) -> BIRStore | None:
@@ -721,7 +715,9 @@ def _load_plan(context: dict[str, Any]) -> TaskPlanState:
         dataset = context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))
         relative = f"datasets/{dataset}/planning/task_plan.json"
         if (bir.root / relative).is_file():
-            return TaskPlanState.model_validate(bir.load(relative))
+            value = bir.load(relative)
+            context["planning_read_digest"] = bir.digest(relative)
+            return TaskPlanState.model_validate(value)
     path = _plan_path(context)
     if not bir and path.is_file():
         return TaskPlanState.model_validate(_read(path))
@@ -774,13 +770,9 @@ def _initialize_planning_context(context: dict[str, Any]) -> dict[str, Any]:
         context.update(_write_artifacts(context, plan))
         return context
 
-    access_path = Path(context["operation_directory"]) / "access.json"
     bir = _bir(context)
-    if bir:
-        relative = f"datasets/{context['dataset_scope']}/access.json"
-        bir.transaction({relative: access}, run_id=context.get("run_id", "unknown"), actor="task_planning")
-        access_path = bir.root / relative
-    else:
+    access_path = bir.root / "dataset_bindings.json" if bir else Path(context["operation_directory"]) / "access.json"
+    if not bir:
         _write_json(access_path, access)
     plan = TaskPlanState(
         dataset={"dataset_id": context.get("dataset_scope", "dataset")},
@@ -1740,10 +1732,6 @@ def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
                         f"expected {expected_templates}"
                     )
     updates = _write_artifacts(context, plan)
-    versions = publish(
-        context, "Plan", {"task_plan": updates["task_plan_path"]},
-        ("Dataset", "PlanningConfig", "TemplateConfig"),
-    ) if context.get("run_directory") else {}
     executable_scenarios = [item for item in plan.scenarios.values() if not item.exclusion_reason]
     executable_leaves = [
         leaf_id for item in executable_scenarios for leaf_id in item.leaf_task_ids
@@ -1766,7 +1754,6 @@ def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
             context.get("dataset_scope", context.get("selected_dataset_id", "dataset")): updates["task_plan_path"]
         },
         **updates,
-        **versions,
     )
 
 

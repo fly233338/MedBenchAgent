@@ -57,6 +57,117 @@ def _canonical_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
+def business_dependencies(context, *paths, registry=False):
+    store = BIRStore(context["bir_path"])
+    dependencies = {path: store.digest(path) for path in paths}
+    if registry:
+        dependencies["registry"] = store.registry().digest
+    if config := context.get("effective_config_path"):
+        dependencies["file:" + str(Path(config).resolve())] = digest_file(config)
+    return dependencies
+
+
+def require(context, *kinds):
+    """Read business readiness from canonical documents, without a runtime version registry."""
+    result = {}
+    for requested in kinds:
+        dataset = context.get("dataset_scope")
+        kind = requested
+        if requested.startswith("dataset/"):
+            _, dataset, kind = requested.split("/", 2)
+        if kind.endswith("Config"):
+            path = context.get("effective_config_path")
+            if not path:
+                raise ValueError("Frozen configuration is required")
+            value, identity = {}, digest_file(path)
+        elif kind == "DatasetCandidates":
+            path = context.get("candidate_snapshot_path")
+            if not path:
+                raise ValueError("Dataset candidates are required")
+            value = json.loads(Path(path).read_text(encoding="utf-8"))
+            if value["requirement_version"] != require(context, "Requirement")["Requirement"]["id"]:
+                raise ValueError("Dataset candidates are stale")
+            identity = digest_file(path)
+        else:
+            if not context.get("bir_path"):
+                raise ValueError("Canonical BIR is required")
+            store = BIRStore(context["bir_path"])
+            paths = {"Requirement": "benchmark_info.json", "DatasetSelection": "dataset_bindings.json",
+                     "Dataset": "dataset_bindings.json", "DatasetProfile": "dataset_bindings.json",
+                     "DatasetCard": "dataset_bindings.json", "Plan": f"datasets/{dataset}/planning/task_plan.json",
+                     "Allocation": "allocation.json", "Generation": f"outputs/{dataset}.json", "Delivery": "delivery.json"}
+            if kind not in paths:
+                raise ValueError(f"Unknown business requirement: {kind}")
+            path = paths[kind]
+            try:
+                value = store.load(path)
+                identity = store.digest(path)
+            except OSError as exc:
+                raise ValueError(f"{kind} is required") from exc
+            commit = json.loads(store._path(path).read_text(encoding="utf-8"))["_commit"]
+            if commit["revision"] == 0:
+                raise ValueError(f"{kind} is not ready")
+            if kind == "Plan" and value.get("phase") != "complete":
+                raise ValueError("Task plan is incomplete")
+            if kind in {"Dataset", "DatasetCard", "DatasetProfile"}:
+                if dataset not in value.get("datasets", {}):
+                    raise ValueError("Dataset is not selected")
+                value = value["datasets"][dataset]
+            path = str(store._path(path))
+        key = f"dataset/{dataset}/{kind}" if dataset and kind in {"Dataset", "DatasetCard", "DatasetProfile", "Plan", "Generation"} else kind
+        result[key] = {"id": identity, "kind": key, "references": {"path": str(path), **value}}
+    return result
+
+
+def business_snapshot(context):
+    if not context.get("bir_path"):
+        return {}
+    store = BIRStore(context["bir_path"])
+    return {p.relative_to(store.root).as_posix(): digest_file(p) for p in store.root.rglob("*.json")
+            if not p.is_relative_to(store.root / "registry")}
+
+
+def restore_business(context):
+    """Rebuild coordination summaries from valid BIR state after checkpoint recovery."""
+    if not context.get("bir_path"):
+        return
+    store = BIRStore(context["bir_path"])
+    def available(kind):
+        try:
+            return require(context, kind)
+        except (OSError, ValueError):
+            return None
+    if available("Requirement"):
+        brief = store.load("benchmark_info.json")
+        for key in ("user_requirement", "sample_scope", "allocation_preferences", "max_total_tasks_per_image"):
+            if key in brief:
+                context[key] = brief[key]
+        context.update(benchmark_info=brief, brief_ready=not brief.get("needs_specification") and not brief.get("missing_fields"),
+                       brief_requirement=brief.get("user_requirement", context.get("user_requirement")))
+    context.update(selected_dataset_ids=[], dataset_assets={}, dataset_task_plans={}, dataset_generations={})
+    if available("DatasetSelection"):
+        from medbenchagent.data.dataset_catalog import load_prepared
+        from medbenchagent.data.bundle_catalog import card_summary
+        for dataset, binding in store.load("dataset_bindings.json")["datasets"].items():
+            card, access = load_prepared(binding["entry"])
+            context["selected_dataset_ids"].append(dataset)
+            context["dataset_assets"][dataset] = {"entry": binding["entry"], "access": access, "card_summary": card_summary(card)}
+            if available(f"dataset/{dataset}/Plan"):
+                context["dataset_task_plans"][dataset] = str(store.root / f"datasets/{dataset}/planning/task_plan.json")
+            if available(f"dataset/{dataset}/Generation"):
+                value = store.load(f"outputs/{dataset}.json")
+                context["dataset_generations"][dataset] = {"raw_output_path": value["benchmark_items_path"],
+                    "item_count": sum(value.get("counts", {}).values()), "task_counts": value.get("counts", {})}
+    context.pop("allocation_path", None)
+    context.pop("allocation", None)
+    if available("Allocation"):
+        context.update(allocation=store.load("allocation.json"), allocation_path=str(store.root / "allocation.json"))
+    context.pop("delivery_path", None)
+    if available("Delivery"):
+        value = store.load("delivery.json")
+        context.update(delivery_path=value["delivery_path"], delivery_counts=value["counts"], manifest_path=value["manifest_path"])
+
+
 def _digest_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
@@ -219,7 +330,6 @@ class BIRStore:
         self.lock = FileLock(str(self.root / ".bir.lock"))
         if not self.root.is_dir():
             raise ValueError(f"BIR directory does not exist: {self.root}")
-        self.recover()
 
     @classmethod
     def load_template(cls, template_dir: str | Path) -> BIRTemplate:
@@ -266,13 +376,13 @@ class BIRStore:
             "experiment_id": experiment_id,
             "template_revision": template.template_revision,
             "template_digest": template.digest,
-            "revision": 0,
-            "status": "empty",
-            "parts": {},
         }
         store._write_manifest(manifest)
-        store._refresh_parts(manifest)
-        store._write_manifest(manifest)
+        for part in target.rglob("*.json"):
+            if part.name != "manifest.json" and not part.is_relative_to(target / "registry"):
+                payload = json.loads(part.read_text(encoding="utf-8"))
+                payload["_commit"] = {"revision": 0, "digest": _digest_bytes(_canonical_bytes(payload)), "dependencies": {}}
+                _atomic_replace(part, _canonical_bytes(payload))
         return store
 
     @property
@@ -298,176 +408,95 @@ class BIRStore:
             raise ValueError(f"BIR path escapes root: {relative_path}")
         return path
 
-    def _refresh_parts(self, manifest: dict[str, Any], *, revision: int | None = None,
-                       changed_paths: Iterable[str] = ()) -> None:
-        changed = {PurePosixPath(item).as_posix() for item in changed_paths}
-        parts: dict[str, Any] = {}
-        for path in sorted(item for item in self.root.rglob("*") if item.is_file() and item.name != ".bir.lock"):
-            relative = path.relative_to(self.root).as_posix()
-            if relative in {"manifest.json"} or relative.startswith(".staging/"):
-                continue
-            schema = "text"
-            if path.suffix == ".json":
-                try:
-                    schema = _schema(json.loads(path.read_text(encoding="utf-8")))
-                except ValueError:
-                    schema = "invalid"
-            previous = manifest.get("parts", {}).get(relative, {})
-            parts[relative] = {
-                "schema_version": schema,
-                "digest": digest_file(path),
-                "revision": revision if relative in changed and revision is not None else previous.get("revision", 0),
-                "dependencies": previous.get("dependencies", {}),
-            }
-        manifest["parts"] = parts
-
-    def load(self, relative_path: str, *, expected_schema: str | None = None,
-             verify_digest: bool = True) -> dict[str, Any]:
+    def load(self, relative_path, *, expected_schema=None, verify_digest=True):
         path = self._path(relative_path)
-        if not path.is_file():
-            raise ValueError(f"BIR part does not exist: {relative_path}")
         value = json.loads(path.read_text(encoding="utf-8"))
+        if not relative_path.startswith("registry/") and relative_path != "manifest.json":
+            commit = value.pop("_commit", None)
+            if commit is None:
+                raise ValueError(f"BIR document has no atomic commit metadata: {relative_path}")
+            if verify_digest:
+                if commit["digest"] != _digest_bytes(_canonical_bytes(value)):
+                    raise ValueError(f"BIR content digest mismatch: {relative_path}")
+                for dependency, expected in commit["dependencies"].items():
+                    if dependency == "registry":
+                        actual = self.registry().digest
+                    elif dependency.startswith("file:"):
+                        actual = digest_file(dependency[5:])
+                    else:
+                        self.load(dependency)
+                        actual = self.digest(dependency)
+                    if actual != expected:
+                        raise ValueError(f"BIR dependency changed: {dependency}; rebuild {relative_path}")
         if expected_schema and value.get("schema_version") != expected_schema:
-            raise ValueError(f"BIR part {relative_path} has unexpected schema")
-        if verify_digest:
-            part = self._read_manifest().get("parts", {}).get(PurePosixPath(relative_path).as_posix())
-            if part and part.get("digest") != digest_file(path):
-                raise ValueError(f"BIR part digest mismatch: {relative_path}")
+            raise ValueError(f"Unexpected BIR schema: {relative_path}")
         return value
 
-    def registry(self) -> RegistrySnapshot:
+    def registry(self):
         return RegistrySnapshot.from_directory(self.root / "registry")
 
-    def digest(self, relative_path: str) -> str:
+    def digest(self, relative_path):
         return digest_file(self._path(relative_path))
 
-    def validate(self, *, scope: str = "full", expected_revision: int | None = None) -> BIRValidationReport:
-        manifest = self._read_manifest()
-        errors: list[str] = []
-        warnings: list[str] = []
-        if not manifest.get("template_revision") or not manifest.get("template_digest"):
-            errors.append("BIR manifest is missing frozen template metadata")
-        for required in ("benchmark_info.json", "allocation.json", "delivery.json"):
-            if not (self.root / required).is_file():
-                errors.append(f"Missing required BIR part: {required}")
-        if expected_revision is not None and manifest.get("revision") != expected_revision:
-            errors.append(f"Expected BIR revision {expected_revision}, found {manifest.get('revision')}")
-        for relative, part in manifest.get("parts", {}).items():
-            path = self._path(relative)
-            if not path.is_file():
-                errors.append(f"Missing BIR part: {relative}")
+    def validate(self, *, scope="full", expected_revision=None):
+        errors = []
+        for path in self.root.rglob("*.json"):
+            if path.is_relative_to(self.root / "registry"):
                 continue
-            if part.get("digest") != digest_file(path):
-                errors.append(f"Digest mismatch: {relative}")
-            if path.suffix == ".json":
-                parsed = None
-                try:
-                    parsed = json.loads(path.read_text(encoding="utf-8"))
-                except ValueError as exc:
-                    errors.append(f"Invalid JSON in {relative}: {exc}")
-                if relative.startswith("registry/") and parsed is not None and _contains_absolute_path(parsed):
-                    errors.append(f"Registry contains an absolute path: {relative}")
+            try:
+                self.load(path.relative_to(self.root).as_posix())
+            except (OSError, ValueError) as exc:
+                errors.append(str(exc))
         if scope == "full":
             try:
                 self.registry()
             except ValueError as exc:
                 errors.append(str(exc))
-        return BIRValidationReport(not errors, int(manifest.get("revision", 0)), tuple(errors), tuple(warnings))
+        return BIRValidationReport(not errors, 0, tuple(errors))
 
-    def update(self, relative_path: str, value: dict[str, Any], *, run_id: str,
-               actor: str, expected_revision: int | None = None, dependencies: dict[str, str] | None = None,
-               expected_digest: str | None = None) -> BIRCommit:
-        return self.transaction({relative_path: value}, run_id=run_id, actor=actor,
-                                 expected_revision=expected_revision, dependencies=dependencies,
-                                 expected_digests={relative_path: expected_digest} if expected_digest else None)
-
-    def transaction(self, changes: dict[str, dict[str, Any]], *, run_id: str, actor: str,
-                    expected_revision: int | None = None, dependencies: dict[str, str] | None = None,
-                    expected_digests: dict[str, str] | None = None) -> BIRCommit:
-        if not changes:
-            manifest = self._read_manifest()
-            return BIRCommit(int(manifest["revision"]), digest_file(self.manifest_path), (), manifest.get("status", "empty"))
+    def update(self, relative_path, value, *, run_id, actor, expected_revision=None,
+               dependencies=None, expected_digest=None):
+        if relative_path.startswith("registry/") or relative_path == "manifest.json":
+            raise ValueError("BIR Registry and experiment identity are immutable")
         with self.lock:
-            manifest = self._read_manifest()
-            actual = int(manifest.get("revision", 0))
-            if expected_revision is not None and actual != expected_revision:
-                raise ValueError(f"BIR revision conflict: expected {expected_revision}, found {actual}")
-            for relative, expected_digest in (expected_digests or {}).items():
-                if not expected_digest:
-                    continue
-                path = self._path(relative)
-                if not path.is_file() or digest_file(path) != expected_digest:
-                    raise ValueError(f"BIR digest conflict: {relative}")
-            registry_changes = [path for path in changes if path.replace("\\", "/").startswith("registry/")]
-            if registry_changes:
-                raise ValueError("BIR Registry is immutable after experiment creation")
-            staging = self.root / ".staging" / uuid.uuid4().hex
-            staging.mkdir(parents=True, exist_ok=False)
-            try:
-                for relative, value in changes.items():
-                    destination = self._path(relative)
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    staged = staging / Path(*_safe_relative(relative).parts)
-                    staged.parent.mkdir(parents=True, exist_ok=True)
-                    staged.write_bytes(_canonical_bytes(value))
-                    json.loads(staged.read_text(encoding="utf-8"))
-                new_revision = actual + 1
-                commit = {"revision": new_revision, "run_id": run_id, "actor": actor,
-                          "paths": sorted(changes), "dependencies": dependencies or {},
-                          "based_on_revision": expected_revision}
-                (staging / "commit.json").write_bytes(_canonical_bytes(commit))
-                for relative in changes:
-                    staged = staging / Path(*_safe_relative(relative).parts)
-                    _atomic_replace(self._path(relative), staged.read_bytes())
-                manifest["revision"] = new_revision
-                manifest["status"] = self._status_for_paths(manifest.get("status", "empty"), changes)
-                self._refresh_parts(manifest, revision=new_revision, changed_paths=changes)
-                for relative in changes:
-                    manifest["parts"][PurePosixPath(relative).as_posix()]["dependencies"] = dependencies or {}
-                self._write_manifest(manifest)
-                return BIRCommit(new_revision, digest_file(self.manifest_path), tuple(sorted(changes)), manifest["status"])
-            finally:
-                shutil.rmtree(staging, ignore_errors=True)
+            path = self._path(relative_path)
+            previous = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            previous_commit = previous.pop("_commit", {})
+            revision = previous_commit.get("revision", 0)
+            if expected_revision is not None and revision != expected_revision:
+                raise BIRConflictError("BIR revision conflict")
+            if expected_digest and (not path.exists() or digest_file(path) != expected_digest):
+                raise BIRConflictError("BIR digest conflict")
+            payload = dict(value)
+            payload.pop("_commit", None)
+            deps = dependencies or {}
+            if previous == payload and previous_commit.get("dependencies") == deps:
+                return BIRCommit(revision, digest_file(self.manifest_path), (), "unchanged")
+            # Validate dependencies before the single visible state transition.
+            for dependency, expected in deps.items():
+                if dependency == "registry":
+                    actual = self.registry().digest
+                elif dependency.startswith("file:"):
+                    actual = digest_file(dependency[5:])
+                else:
+                    if dependency == relative_path:
+                        raise ValueError("BIR document cannot depend on itself")
+                    self.load(dependency)
+                    actual = self.digest(dependency)
+                if actual != expected:
+                    raise BIRConflictError(f"Dependency changed before commit: {dependency}")
+            commit = {"revision": revision + 1, "digest": _digest_bytes(_canonical_bytes(payload)),
+                      "dependencies": deps, "run_id": run_id, "actor": actor}
+            _atomic_replace(path, _canonical_bytes({**payload, "_commit": commit}))
+            return BIRCommit(revision + 1, digest_file(self.manifest_path), (relative_path,), "committed")
 
-    def atomic_write(self, relative_path: str, value: dict[str, Any]) -> None:
-        manifest = self._read_manifest()
-        self.transaction(relative_path and {relative_path: value}, run_id="system",
-                         actor="atomic_write", expected_revision=int(manifest["revision"]))
+    def atomic_write(self, relative_path, value):
+        return self.update(relative_path, value, run_id="system", actor="atomic_write")
 
-    def materialize(self, relative_path: str, destination: str | Path) -> str:
-        source = self._path(relative_path)
-        if not source.is_file():
-            raise ValueError(f"BIR part does not exist: {relative_path}")
-        target = Path(destination)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_replace(target, source.read_bytes())
-        return str(target)
-
-    def recover(self) -> None:
-        staging_root = self.root / ".staging"
-        if not staging_root.is_dir():
-            return
-        # Keep interrupted staging trees so a caller can inspect or resume a
-        # transaction.  They are excluded from the canonical manifest and
-        # discovery, and a later explicit cleanup can remove them safely.
-        staging_root.mkdir(parents=True, exist_ok=True)
-
-    @staticmethod
-    def _status_for_paths(current: str, changes: dict[str, Any]) -> str:
-        paths = set(changes)
-        if "benchmark_info.json" in paths:
-            return "specified"
-        if any(path.endswith("/access.json") for path in paths):
-            return "datasets_ready"
-        if any("planning/" in path for path in paths):
-            return "planning"
-        if "allocation.json" in paths:
-            return "allocated"
-        if any(path.startswith("outputs/") for path in paths):
-            return "generated"
-        if "delivery.json" in paths:
-            return "delivered"
-        return current
+    def materialize(self, relative_path, destination):
+        # Explicit human-readable export, never a restore prerequisite.
+        _atomic_replace(Path(destination), _canonical_bytes(self.load(relative_path)))
+        return str(destination)
 
 
 def _contains_absolute_path(value: Any) -> bool:
@@ -500,18 +529,11 @@ def persist_task_plan(context, plan, *, plan_path, bir, access) -> dict[str, Any
     if bir:
         dataset_id = context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))
         prefix = f"datasets/{dataset_id}/planning/"
-        changes = {prefix + "task_plan.json": plan_value}
-        changed = {}
-        for relative, value in changes.items():
-            path = bir.root / Path(relative)
-            if not path.is_file() or json.loads(path.read_text(encoding="utf-8")) != value:
-                changed[relative] = value
-        if changed:
-            commit = bir.transaction(changed, run_id=context.get("run_id", "unknown"), actor="task_planning",
-                                     dependencies={"registry": bir.registry().digest, "access": access.get("revision", "")})
-            context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
-        if Path(plan_path).resolve() != (bir.root / prefix / "task_plan.json").resolve():
-            bir.materialize(prefix + "task_plan.json", plan_path)
+        commit = bir.update(prefix + "task_plan.json", plan_value, run_id=context.get("run_id", "unknown"), actor="task_planning",
+            dependencies=business_dependencies(context, "benchmark_info.json", "dataset_bindings.json", registry=True),
+            expected_digest=context.get("planning_read_digest"))
+        context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest,
+                       planning_read_digest=bir.digest(prefix + "task_plan.json"))
     else:
         atomic_write_json(plan_path, plan_value)
     return {

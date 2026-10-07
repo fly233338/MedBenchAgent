@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from medbenchagent.data.dataset_catalog import load_dataset_catalog, load_prepared, prepared_bundle_entry, resolve_path
-from medbenchagent.runtime.dependencies import publish
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import get_settings
@@ -137,13 +136,6 @@ def reuse_prepared(context, dataset_id):
         entry = {**entry, "dataset_card_path": str(card_path)}
         load_prepared(entry)
         atomic_write_json(path, entry)
-    _, access = load_prepared(entry)
-    child = dict(context, dataset_scope=dataset_id)
-    publish(child, "Dataset", {"cases": entry["cases_path"], "access": access}, ("DataConfig",))
-    publish(child, "DatasetProfile", {"path": entry["profile_path"]}, ("Dataset",))
-    publish(child, "DatasetCard", {"path": entry["dataset_card_path"]}, ("DatasetProfile",))
+    load_prepared(entry)
     entries = {**context.get("prepared_entries", {}), dataset_id: entry}
-    child.pop("dataset_scope")
-    publish(child, "PreparedCandidates", {"entries": entries}, ())
-    return result("success", "Reused validated prepared dataset", prepared_entries=entries,
-                  artifact_versions=child["artifact_versions"])
+    return result("success", "Reused validated prepared dataset", prepared_entries=entries)
