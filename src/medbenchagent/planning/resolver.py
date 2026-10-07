@@ -6,10 +6,68 @@ import json
 import math
 from dataclasses import dataclass, field
 from typing import Any, Literal, Union
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from medbenchagent.planning.task_space import OutputSpec, EvidenceSelector
+
+
+def resolve_task_input(case, leaf, sampling_unit, context):
+    """Resolve one frozen sampling unit, including the actual model-visible files."""
+    from dataclasses import replace
+    from medbenchagent.data.presentation import contained_path, verify_image
+    from medbenchagent.planning.sampling import case_for_unit
+
+    if sampling_unit is not None and (sampling_unit.case_id != case["case_id"] or not sampling_unit.eligible):
+        return NotApplicable(reason="invalid_sampling_unit")
+    context = replace(context, sampling_unit=sampling_unit) if context else ResolverContext(sampling_unit=sampling_unit)
+    ordered_case = case_for_unit(case, sampling_unit) if sampling_unit else case
+    resolved = resolve(ordered_case, leaf.resolver, resolver_context=context)
+    if isinstance(resolved, NotApplicable):
+        return resolved
+    by_id = {row["id"]: row for row in case["evidence"]}
+    records = context.manifests.get("presentation") or []
+    records = records if isinstance(records, list) else [records]
+    input_assets = [context.asset(by_id[key]["value"]) for key in resolved.input_evidence_ids if by_id[key]["type"] == "asset"]
+    if (len(input_assets) > 1 or any(asset and asset.get("kind") == "volume" for asset in input_assets)) and context.manifests.get("sampling") is None:
+        return NotApplicable(reason="missing_sampling_manifest")
+    presentations = []
+    for evidence_id in resolved.input_evidence_ids:
+        evidence = by_id[evidence_id]
+        if evidence["type"] != "asset":
+            continue
+        asset = context.asset(evidence["value"])
+        if not asset:
+            return NotApplicable(reason="missing_input_asset")
+        metadata = asset.get("metadata", {})
+        if metadata.get("input_visibility") == "reference_only" or metadata.get("semantic_role") in {"mask", "reference", "annotation", "label", "calibration"}:
+            return NotApplicable(reason="reference_only_asset_input")
+        matches = [r for r in records if r.case_id == case["case_id"] and r.asset_id == evidence["value"]]
+        if sampling_unit and sampling_unit.view_ids:
+            matches = [r for r in matches if r.view_id in sampling_unit.view_ids]
+        elif evidence.get("view_id"):
+            matches = [r for r in matches if r.view_id == evidence["view_id"]]
+        if sampling_unit and sampling_unit.panel_id:
+            matches = [r for r in matches if r.panel_id == sampling_unit.panel_id]
+        if not matches:
+            return NotApplicable(reason="missing_input_presentation")
+        view_order = context.ordered_views()
+        matches.sort(key=lambda r: (view_order.get(r.view_id, 0), r.order))
+        for record in matches:
+            if record.input_digest != asset["file_digest"]:
+                return NotApplicable(reason="presentation_source_digest_mismatch")
+            try:
+                path = contained_path(context.presentation_root, record.path)
+                info = verify_image(path, record.output_digest)
+                if asset["format"].lower() not in {"jpg", "jpeg", "png", "webp", "gif"} and info["format"] != "PNG":
+                    return NotApplicable(reason="medical_presentation_requires_png")
+            except (OSError, ValueError):
+                return NotApplicable(reason="invalid_input_presentation")
+            presentations.append({**record.model_dump(mode="json"), "path": str(path)})
+    if not presentations:
+        return NotApplicable(reason="missing_image_input")
+    return resolved.model_copy(update={"presentations": presentations})
 
 
 @dataclass
@@ -19,6 +77,8 @@ class ResolverContext:
     assets: dict[str, dict[str, Any]] = field(default_factory=dict)
     manifests: dict[str, Any] = field(default_factory=dict)
     cache: dict[tuple[Any, ...], Any] = field(default_factory=dict)
+    presentation_root: str = ""
+    sampling_unit: Any = None
 
     @classmethod
     def from_access(cls, access: dict[str, Any] | None) -> "ResolverContext":
@@ -56,30 +116,18 @@ class ResolverContext:
                 assets.setdefault(asset_id, asset)
             for name, manifest in nested_context.manifests.items():
                 manifests.setdefault(name, manifest)
-        return cls(assets=assets, manifests=manifests)
+        return cls(assets=assets, manifests=manifests, presentation_root=str(Path(access["cases_path"]).parent) if access.get("cases_path") else "")
 
     def asset(self, asset_id: str) -> dict[str, Any] | None:
         return self.assets.get(asset_id)
 
     def ordered_evidence(self) -> dict[str, int]:
-        mapping: dict[str, int] = {}
-        manifest = self.manifests.get("sampling")
-        if manifest is None:
-            return mapping
-        for unit in manifest.units:
-            for index, evidence_id in enumerate(unit.ordered_evidence_ids):
-                mapping.setdefault(evidence_id, index)
-        return mapping
+        unit = self.sampling_unit
+        return {key: index for index, key in enumerate(unit.ordered_evidence_ids)} if unit else {}
 
     def ordered_views(self) -> dict[str, int]:
-        mapping: dict[str, int] = {}
-        manifest = self.manifests.get("sampling")
-        if manifest is None:
-            return mapping
-        for unit in manifest.units:
-            for index, view_id in enumerate(unit.view_ids):
-                mapping.setdefault(view_id, index)
-        return mapping
+        unit = self.sampling_unit
+        return {key: index for index, key in enumerate(unit.view_ids)} if unit else {}
 
 
 class ResolvedTaskItem(BaseModel):
@@ -88,6 +136,7 @@ class ResolvedTaskItem(BaseModel):
     input_bindings: list[dict[str, Any]]
     reference: Any
     reference_evidence_ids: list[str]
+    presentations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class NotApplicable(BaseModel):
@@ -456,15 +505,21 @@ def resolve(
     asset_ids: set[str] = set()
     for selector in spec.inputs:
         rows = _evidence(case, selector, roles)
+        if resolver_context and resolver_context.sampling_unit:
+            unit = resolver_context.sampling_unit
+            if unit.ordered_evidence_ids or unit.view_ids:
+                rows = [row for row in rows if row["id"] in unit.ordered_evidence_ids
+                        or row.get("view_id") in unit.view_ids]
         ids = [item["id"] for item in rows]
         if not ids:
             return NotApplicable(reason="missing_input_evidence")
         if any(item.get("mask") is not None for item in rows):
             return NotApplicable(reason="reference_only_mask_input")
         if selector.evidence_type == "asset":
-            if asset_ids.intersection(ids):
+            selected_assets = [str(item["value"]) for item in rows]
+            if asset_ids.intersection(selected_assets) or len(set(selected_assets)) != len(selected_assets):
                 return NotApplicable(reason="duplicate_input_asset")
-            asset_ids.update(ids)
+            asset_ids.update(selected_assets)
         roles[selector.role] = ids
         input_bindings.append({"role": selector.role, "evidence_ids": ids})
         input_ids.extend(ids)

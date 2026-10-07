@@ -1,3 +1,4 @@
+from image_fixtures import image_context
 import json
 from pathlib import Path
 
@@ -167,6 +168,8 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
             ]}])
 
     monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", Query)
+    image_inputs = image_context(tmp_path / "images", list(Query(None).iter_cases()))
+    monkeypatch.setattr(task_planning.ResolverContext, "from_access", lambda access: image_inputs)
     plan = task_planning._load_plan(context)
     node_id = plan.scenario_review_pending_ids[0]
     screened = task_planning.screen_scenario(
@@ -232,6 +235,8 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
             ]}])
 
     monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", Query)
+    image_inputs = image_context(tmp_path / "images", list(Query(None).iter_cases()))
+    monkeypatch.setattr(task_planning.ResolverContext, "from_access", lambda access: image_inputs)
     plan = task_planning._load_plan(context)
     scenario_id = plan.scenario_review_pending_ids[0]
     screened = task_planning.screen_scenario(

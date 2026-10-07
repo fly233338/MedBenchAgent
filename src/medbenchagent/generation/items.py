@@ -8,7 +8,8 @@ import random
 from pathlib import Path
 from typing import Any, Iterable
 
-from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve
+from medbenchagent.planning.resolver import NotApplicable, ResolverContext, encode_closed_label, resolve_task_input
+from medbenchagent.planning.sampling import sampling_units
 from medbenchagent.planning.task_space import LeafTask, OutputSpec
 from medbenchagent.data.manifests import SamplingManifest, SamplingUnit
 
@@ -54,53 +55,6 @@ def _input_bindings(case: dict[str, Any], bindings: list[dict[str, Any]]) -> lis
     ]
 
 
-def _case_for_unit(case: dict[str, Any], unit: SamplingUnit) -> dict[str, Any]:
-    """Return a shallow Case view with manifest order applied to Evidence."""
-    if not unit.ordered_evidence_ids and not unit.view_ids:
-        return case
-    evidence = list(case.get("evidence", []))
-    evidence_order = {identifier: index for index, identifier in enumerate(unit.ordered_evidence_ids)}
-    view_order = {identifier: index for index, identifier in enumerate(unit.view_ids)}
-    original = {id(item): index for index, item in enumerate(evidence)}
-
-    def key(item):
-        if item.get("id") in evidence_order:
-            return (0, evidence_order[item["id"]])
-        if item.get("view_id") in view_order:
-            return (1, view_order[item["view_id"]])
-        return (2, original[id(item)])
-
-    return {**case, "evidence": sorted(evidence, key=key)}
-
-
-def _sampling_units(
-    cases: list[dict[str, Any]],
-    sampling_manifest: SamplingManifest | dict[str, Any] | Iterable[SamplingUnit | dict[str, Any]] | None,
-) -> list[tuple[dict[str, Any], SamplingUnit]]:
-    by_case = {case.get("case_id"): case for case in cases if isinstance(case.get("case_id"), str)}
-    if sampling_manifest is None:
-        return [
-            (case, SamplingUnit(
-                sampling_unit_id=str(case["case_id"]), case_id=str(case["case_id"]), split="unspecified",
-                view_ids=[], ordered_evidence_ids=[], panel_id=None, eligible=True, reason=None, order=index,
-            ))
-            for index, case in enumerate(cases)
-            if isinstance(case.get("case_id"), str) and case.get("case_id")
-        ]
-    if isinstance(sampling_manifest, SamplingManifest):
-        units = sampling_manifest.units
-    elif isinstance(sampling_manifest, dict):
-        units = SamplingManifest.model_validate(sampling_manifest).units
-    else:
-        units = [SamplingUnit.model_validate(unit) for unit in sampling_manifest]
-    result = []
-    for unit in sorted(units, key=lambda item: item.order):
-        case = by_case.get(unit.case_id)
-        if case is not None and unit.eligible:
-            result.append((_case_for_unit(case, unit), unit))
-    return result
-
-
 def _template_cycle(seed: int, dataset_id: str, leaf_id: str, count: int) -> list[int]:
     payload = json.dumps([seed, dataset_id, leaf_id], separators=(",", ":"), ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).digest()
@@ -128,23 +82,15 @@ def generate_task_items(
         for leaf in parsed
     }
     case_list = list(cases)
-    volume_input = False
-    if resolver_context is not None:
-        volume_input = any(
-            resolver_context.asset(str(item.get("value")))
-            and resolver_context.asset(str(item.get("value"))).get("kind") == "volume"
-            for case in case_list
-            for item in case.get("evidence", [])
-            if item.get("type") == "asset"
-        )
-    # A prepared Case may carry view identities even when a Leaf consumes one
-    # ordinary image.  Those identities alone do not make generation
-    # view-dependent: only multi-input Leaves and volume inputs need a frozen
-    # sampling order to bind their model inputs deterministically.
-    requires_manifest = volume_input or any(len(leaf.input) > 1 for leaf in parsed)
-    if requires_manifest and sampling_manifest is None:
-        raise ValueError("View-dependent Generation requires a SamplingManifest")
-    for case, sampling_unit in _sampling_units(case_list, sampling_manifest):
+    if sampling_manifest is not None:
+        from dataclasses import replace
+        manifest = (sampling_manifest if isinstance(sampling_manifest, SamplingManifest)
+                    else SamplingManifest.model_validate(sampling_manifest) if isinstance(sampling_manifest, dict)
+                    else SamplingManifest(dataset_id=dataset_id, revision="current", units=list(sampling_manifest)))
+        resolver_context = replace(resolver_context or ResolverContext(),
+                                   manifests={**(resolver_context.manifests if resolver_context else {}), "sampling": manifest})
+        sampling_manifest = manifest
+    for case, sampling_unit in sampling_units(case_list, sampling_manifest):
         case_id = case.get("case_id")
         if not isinstance(case_id, str) or not case_id:
             continue
@@ -152,7 +98,7 @@ def generate_task_items(
             limit = limits.get(leaf.leaf_task_id)
             if limit is not None and counts[leaf.leaf_task_id] >= limit:
                 continue
-            resolved = resolve(case, ResolverSpec.parse(leaf.resolver), resolver_context=resolver_context)
+            resolved = resolve_task_input(case, leaf, sampling_unit, resolver_context)
             if isinstance(resolved, NotApplicable):
                 continue
             answer = resolved.reference
@@ -177,6 +123,7 @@ def generate_task_items(
                 "capability_category": leaf.capability_category.value,
                 "task_paradigm": leaf.task_paradigm.value,
                 "options": list(leaf.options) if leaf.options is not None else None,
+                "input_presentations": resolved.presentations,
                 "input_bindings": _input_bindings(case, resolved.input_bindings),
                 "input_assets": _input_assets(case, resolved.input_evidence_ids),
                 "input_evidence_ids": resolved.input_evidence_ids,

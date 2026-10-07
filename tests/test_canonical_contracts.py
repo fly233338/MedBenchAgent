@@ -79,7 +79,7 @@ def test_argmax_requires_frozen_order_and_rejects_ties():
         revision="1",
         units=[SamplingUnit(sampling_unit_id="unit-1", case_id="case-1", split="test", view_ids=["v0"], ordered_evidence_ids=["area", "area-2"], eligible=True, order=0)],
     )
-    context = ResolverContext(manifests={"sampling": manifest})
+    context = ResolverContext(manifests={"sampling": manifest}, sampling_unit=manifest.units[0])
     assert resolve(case, spec, resolver_context=context).reference == 0
     assert resolve({**case, "evidence": [*case["evidence"], {"id": "area-2", "type": "value", "name": "area", "value": 0.25, "ref": ["image"], "view_id": "v0"}]}, spec, resolver_context=context).reason == "argmax_tie"
 

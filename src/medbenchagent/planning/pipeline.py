@@ -95,11 +95,17 @@ def run_pipeline(
             "evidence_names": evidence_names,
             "evidence_catalog": (node_context or {}).get("evidence_catalog", {}),
         })
-    from medbenchagent.planning.resolver import NotApplicable, ResolverSpec, resolve
+    from medbenchagent.planning.resolver import NotApplicable, resolve_task_input
+    from medbenchagent.planning.sampling import sampling_units
+    if sampling_manifest is not None:
+        from dataclasses import replace
+        from medbenchagent.planning.resolver import ResolverContext
+        resolver_context = replace(resolver_context or ResolverContext(),
+            manifests={**(resolver_context.manifests if resolver_context else {}), "sampling": sampling_manifest})
     parsed_leaves = [
         leaf.model_copy(update={"eligible_count": sum(
-            not isinstance(resolve(case, ResolverSpec.parse(leaf.resolver), resolver_context=resolver_context), NotApplicable)
-            for case in case_list
+            not isinstance(resolve_task_input(case, leaf, unit, resolver_context), NotApplicable)
+            for case, unit in sampling_units(case_list, sampling_manifest)
         )})
         for leaf in parsed_leaves
     ]

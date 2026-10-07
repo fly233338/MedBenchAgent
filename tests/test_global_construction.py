@@ -1,3 +1,4 @@
+from image_fixtures import image_context
 import json
 
 from medbenchagent.agents.finalization import balance_option_positions
@@ -89,11 +90,15 @@ def test_finalization_merges_and_audits_dataset_output(tmp_path):
     ])
     (bundle / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
     (bundle / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
+    images = image_context(bundle, [case.model_dump(mode="json")])
+    asset = asset.model_copy(update={"file_digest": images.assets["asset-1"]["file_digest"]})
+    (bundle / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
+    (bundle / "presentation_manifest.jsonl").write_text("".join(r.model_dump_json() + "\n" for r in images.manifests["presentation"]), encoding="utf-8")
     _, access = prepare_dataset(bundle / "cases.jsonl", bundle / "asset_manifest.jsonl", bundle / "cache")
     plan = _plan("d", {"leaf": 1})
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
-    items = generate_task_items([case.model_dump(mode="json")], plan.leaf_tasks.values(), "d", allocation={"leaf": 1})
+    items = generate_task_items([case.model_dump(mode="json")], plan.leaf_tasks.values(), "d", allocation={"leaf": 1}, resolver_context=images)
     raw = tmp_path / "generated.jsonl"
     write_task_items(raw, items)
     allocation_path = tmp_path / "allocation.json"

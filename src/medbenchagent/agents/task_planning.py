@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from medbenchagent.planning.sampling import sampling_units
+
 import json
 import difflib
 from collections import Counter
@@ -13,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from medbenchagent.data.task_facts import _asset_role, build_dataset_facts, case_facts
 from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.access import DatasetAccessReceipt
-from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve
+from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve_task_input
 from medbenchagent.planning.bir import BIRStore, RegistrySnapshot
 from medbenchagent.planning.extensions import PlanningExtensionCatalog
 from medbenchagent.planning.task_discovery import leaf_identity, validate_candidate_leaf, validate_task_tree
@@ -1303,7 +1305,7 @@ def _screening_payload(context: dict[str, Any], plan: TaskPlanState, scenario) -
         "annotation_semantics": _documented_annotation_semantics(context),
         "count_semantics": {
             "feasible_case_count": "Cases satisfying structural Scenario constraints; not a question or Leaf count.",
-            "eligible_count": "Cases for which a submitted deterministic Resolver returns an answer.",
+            "eligible_count": "SamplingUnits with valid model images and a deterministic answer.",
             "review": "Model review checks task meaning, wording, reference validity and template applicability.",
         },
         "benchmark_brief": _benchmark_brief(context),
@@ -1879,27 +1881,9 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
     resolver_context = ResolverContext.from_access(_access(context))
     operation_mode = (_registry(context).answer_options_mode(scenario.operation)
                       if _registry(context) else ("required" if scenario.operation in {"recognize", "compare", "align"} else "forbidden"))
-    for case in cases:
-        selected_primary = [
-            item for item in case.get("evidence", [])
-            if item.get("type") == "asset" and item.get("name") in {selector.name for selector in parsed.input}
-            and item.get("name", "").casefold() not in {"mask", "segmentation", "annotation", "roi"}
-        ]
-        required_structure = scenario.input_structure
-        if required_structure == "single-image" and len(selected_primary) != 1:
-            resolution_reasons["input_structure_single_image_mismatch"] += 1
-            continue
-        if required_structure in {"multi-image", "multi-view"} and len(selected_primary) < 2:
-            resolution_reasons["input_structure_multiple_image_mismatch"] += 1
-            continue
-        if required_structure == "volume" and not any(item.get("kind") == "volume" for item in selected_primary):
-            resolution_reasons["input_structure_volume_mismatch"] += 1
-            continue
-        resolved = resolve(
-            case,
-            ResolverSpec.parse(parsed.resolver),
-            resolver_context=resolver_context,
-        )
+    units = sampling_units(cases, resolver_context.manifests.get("sampling"))
+    for case, unit in units:
+        resolved = resolve_task_input(case, parsed, unit, resolver_context)
         if isinstance(resolved, NotApplicable):
             resolution_reasons[resolved.reason] += 1
         elif operation_mode == "required" and parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
@@ -1913,7 +1897,7 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
                         str(exc), path="options",
                         repair_hint="Use string options matching the deterministic Resolver answer encoding.",
                     )
-    eligible = len(cases) - sum(resolution_reasons.values())
+    eligible = len(units) - sum(resolution_reasons.values())
     if eligible <= 0:
         common = ", ".join(f"{reason}={count}" for reason, count in resolution_reasons.most_common())
         _raise_leaf_failure(
@@ -1986,12 +1970,9 @@ def _leaf_validation_summary(context: dict[str, Any], leaf: LeafTask) -> dict[st
     answers = Counter()
     examples = []
     resolver_context = ResolverContext.from_access(access)
-    for case in cases:
-        resolved = resolve(
-            case,
-            ResolverSpec.parse(leaf.resolver),
-            resolver_context=resolver_context,
-        )
+    units = sampling_units(cases, resolver_context.manifests.get("sampling"))
+    for case, unit in units:
+        resolved = resolve_task_input(case, leaf, unit, resolver_context)
         if isinstance(resolved, NotApplicable):
             failures[resolved.reason] += 1
             continue
@@ -2013,8 +1994,8 @@ def _leaf_validation_summary(context: dict[str, Any], leaf: LeafTask) -> dict[st
             })
     summary.update({
         "case_count": len(cases),
-        "successful_case_count": len(cases) - sum(failures.values()),
-        "eligible_count": len(cases) - sum(failures.values()),
+        "successful_unit_count": len(units) - sum(failures.values()),
+        "eligible_count": len(units) - sum(failures.values()),
         "all_cases_eligible": not failures,
         "failure_reasons": dict(failures),
         "answer_distribution": dict(answers),
@@ -2173,7 +2154,7 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview |
                 "cross_scenario_leaf_summaries": _cross_scenario_leaf_summaries(plan, scenario.scenario_id),
                 "count_semantics": {
                     "feasible_case_count": "Structural Scenario capacity, not generated question count.",
-                    "eligible_count": "Resolver-successful Cases for this Leaf.",
+                    "eligible_count": "Resolver-successful SamplingUnits for this Leaf.",
                     "review": "Semantic validity of task, wording and reference contract.",
                 },
                 "benchmark_brief": _benchmark_brief(context),

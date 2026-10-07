@@ -1,3 +1,4 @@
+from image_fixtures import image_context
 import pytest
 
 from medbenchagent.planning.node_builder import build_task_scenarios
@@ -246,6 +247,8 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
                 {"id": "report", "type": "text", "name": "report", "value": "Clear", "ref": ["asset"]},
             ]}]}
     monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", FakeQuery)
+    image_inputs = image_context(tmp_path / "images", FakeQuery(None).sample()["values"])
+    monkeypatch.setattr(task_planning.ResolverContext, "from_access", lambda access: image_inputs)
     leaf = {"leaf_task_id": "leaf-1", "name": "report", "scenario_id": node_id, "clinical_target_id": "finding_report", "question_templates": ["Describe the finding."],
             "input": [{"role": "image", "name": "image", "evidence_type": "asset"}], "target": "finding",
             "reference_rule": "Read the paired report", "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],

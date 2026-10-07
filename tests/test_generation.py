@@ -1,3 +1,4 @@
+from image_fixtures import image_context
 from medbenchagent.generation.items import generate_task_items
 from medbenchagent.audit.task_items import audit_task_items
 from medbenchagent.data.manifests import SamplingManifest, SamplingUnit
@@ -16,7 +17,7 @@ def _sampling(case_id="c", evidence_ids=None):
     )
 
 
-def test_generation_uses_resolver_and_hides_reference_from_inputs():
+def test_generation_uses_resolver_and_hides_reference_from_inputs(tmp_path):
     leaf = {
         "leaf_task_id": "report-leaf", "name": "report", "scenario_id": "node-1", "clinical_target_id": "finding",
         "question_templates": ["Describe the study."], "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
@@ -34,7 +35,7 @@ def test_generation_uses_resolver_and_hides_reference_from_inputs():
         {"id": "image-ev", "type": "asset", "name": "image", "value": "asset-1", "ref": []},
         {"id": "report-ev", "type": "text", "name": "report", "value": "Clear.", "ref": ["image-ev"]},
     ]}
-    items = generate_task_items([case], [leaf], "dataset")
+    items = generate_task_items([case], [leaf], "dataset", resolver_context=image_context(tmp_path, [case]))
     assert len(items) == 1
     assert items[0]["answer"] == "Clear."
     assert items[0]["input_assets"] == ["asset-1"]
@@ -42,7 +43,7 @@ def test_generation_uses_resolver_and_hides_reference_from_inputs():
     assert items[0]["reference_evidence_ids"] == ["report-ev"]
 
 
-def test_single_input_leaf_does_not_require_sampling_manifest_for_viewed_case():
+def test_single_input_leaf_does_not_require_sampling_manifest_for_viewed_case(tmp_path):
     leaf = {
         "leaf_task_id": "viewed-leaf", "name": "label", "scenario_id": "node-1", "clinical_target_id": "finding",
         "question_templates": ["What is shown?"],
@@ -59,11 +60,11 @@ def test_single_input_leaf_does_not_require_sampling_manifest_for_viewed_case():
         {"id": "image-ev", "type": "asset", "name": "image", "value": "asset-1", "view_id": "left"},
         {"id": "label-ev", "type": "value", "name": "label", "value": "benign"},
     ]}
-    items = generate_task_items([case], [leaf], "dataset")
+    items = generate_task_items([case], [leaf], "dataset", resolver_context=image_context(tmp_path, [case]))
     assert len(items) == 1
 
 
-def test_generation_honors_allocation_and_case_order():
+def test_generation_honors_allocation_and_case_order(tmp_path):
     leaf = {
         "leaf_task_id": "l", "name": "label", "scenario_id": "n", "clinical_target_id": "finding", "question_templates": ["What is shown?"],
         "input": [{"role": "image", "name": "image", "evidence_type": "asset"}],
@@ -77,11 +78,11 @@ def test_generation_honors_allocation_and_case_order():
                                                 {"id": "l", "type": "value", "name": "label", "value": "yes"}]},
              {"case_id": "a", "evidence": [{"id": "i", "type": "asset", "name": "image", "value": "a"},
                                                 {"id": "l", "type": "value", "name": "label", "value": "yes"}]}]
-    items = generate_task_items(cases, [leaf], "d", allocation={"l": 1})
+    items = generate_task_items(cases, [leaf], "d", resolver_context=image_context(tmp_path, cases), allocation={"l": 1})
     assert len(items) == 1 and items[0]["case_id"] == "b"
 
 
-def test_generation_uses_reproducible_balanced_template_cycle():
+def test_generation_uses_reproducible_balanced_template_cycle(tmp_path):
     leaf = {
         "leaf_task_id": "l", "name": "label", "scenario_id": "n", "clinical_target_id": "finding",
         "question_templates": ["What is shown?", "Which finding is present?", "Identify the finding."],
@@ -102,8 +103,8 @@ def test_generation_uses_reproducible_balanced_template_cycle():
         for index in range(6)
     ]
 
-    first = generate_task_items(cases, [leaf], "d", seed=11)
-    second = generate_task_items(cases, [leaf], "d", seed=11)
+    first = generate_task_items(cases, [leaf], "d", resolver_context=image_context(tmp_path, cases), seed=11)
+    second = generate_task_items(cases, [leaf], "d", resolver_context=image_context(tmp_path, cases), seed=11)
 
     assert [(item["case_id"], item["template_index"], item["question"]) for item in first] == [
         (item["case_id"], item["template_index"], item["question"]) for item in second
@@ -112,7 +113,7 @@ def test_generation_uses_reproducible_balanced_template_cycle():
     assert all(item["template_count"] == 3 for item in first)
 
 
-def test_generation_preserves_input_role_order_and_derived_label_options():
+def test_generation_preserves_input_role_order_and_derived_label_options(tmp_path):
     leaf = {
         "leaf_task_id": "compare-leaf", "name": "compare", "scenario_id": "scenario-compare", "clinical_target_id": "finding",
         "question_templates": ["Is Image A larger than Image B?"],
@@ -143,7 +144,7 @@ def test_generation_preserves_input_role_order_and_derived_label_options():
         {"id": "a-value", "type": "value", "name": "measurement_a", "value": 3, "ref": ["a-image"]},
     ]}
 
-    items = generate_task_items([case], [leaf], "dataset", sampling_manifest=_sampling("c", ["a-image", "b-image", "a-value", "b-value"]))
+    items = generate_task_items([case], [leaf], "dataset", resolver_context=image_context(tmp_path, [case]), sampling_manifest=_sampling("c", ["a-image", "b-image", "a-value", "b-value"]))
 
     assert items[0]["answer"] == "true"
     assert items[0]["options"] == ["true", "false"]
@@ -155,7 +156,7 @@ def test_generation_preserves_input_role_order_and_derived_label_options():
     ]
 
 
-def test_generation_and_audit_use_map_label_output_domain():
+def test_generation_and_audit_use_map_label_output_domain(tmp_path):
     leaf = {
         "leaf_task_id": "margin-parent", "name": "margin", "scenario_id": "scenario-margin", "clinical_target_id": "finding",
         "question_templates": ["How is the margin classified?"],
@@ -179,12 +180,12 @@ def test_generation_and_audit_use_map_label_output_domain():
         {"id": "image", "type": "asset", "name": "image", "value": "asset", "ref": []},
         {"id": "margin", "type": "value", "name": "margin", "value": "not circumscribed - angular", "ref": []},
     ]}
-    items = generate_task_items([case], [leaf], "dataset")
+    items = generate_task_items([case], [leaf], "dataset", resolver_context=image_context(tmp_path, [case]))
     assert items[0]["answer"] == "not circumscribed"
-    assert audit_task_items([case], items, [leaf])["accepted"] == 1
+    assert audit_task_items([case], items, [leaf], resolver_context=image_context(tmp_path, [case]))["accepted"] == 1
 
 
-def test_generation_rejects_duplicate_asset_binding_across_roles():
+def test_generation_rejects_duplicate_asset_binding_across_roles(tmp_path):
     leaf = {
         "leaf_task_id": "duplicate-assets", "name": "compare", "scenario_id": "scenario-compare", "clinical_target_id": "finding",
         "question_templates": ["Compare A and B."],
@@ -213,10 +214,10 @@ def test_generation_rejects_duplicate_asset_binding_across_roles():
         {"id": "b", "type": "value", "name": "value_b", "value": 2, "ref": ["image"]},
     ]}
 
-    assert generate_task_items([case], [leaf], "dataset", sampling_manifest=_sampling("c", ["image", "a", "b"])) == []
+    assert generate_task_items([case], [leaf], "dataset", resolver_context=image_context(tmp_path, [case]), sampling_manifest=_sampling("c", ["image", "a", "b"])) == []
 
 
-def test_leaf_rejects_unresolved_question_placeholders():
+def test_leaf_rejects_unresolved_question_placeholders(tmp_path):
     leaf = {
         "leaf_task_id": "placeholder", "name": "label", "scenario_id": "scenario", "clinical_target_id": "finding",
         "question_templates": ["Is {{image_a}} larger than {{image_b}}?"],

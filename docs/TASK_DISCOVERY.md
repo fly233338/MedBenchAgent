@@ -181,3 +181,13 @@ filtered by stage and appended at the end of the core Prompt. Extensions may
 add or tighten constraints but cannot relax evidence grounding, Resolver
 validation, or the output contract. Deterministic code still owns all structural
 and Resolver validation.
+
+
+## Actual task inputs
+
+Planning capacity, Generation and Audit call resolve_task_input(case, leaf, sampling_unit, context).
+Ordering is scoped to that Case/unit; input selectors cannot consume another unit's views.
+Distinct input assets use Asset IDs rather than Evidence IDs. Every eligible task includes a
+verified ordinary image Presentation, with medical sources rendered as PNG. Reference-only masks
+stay hidden. eligible_count counts successful SamplingUnits, not Cases. Items include ordered
+input_presentations, which Audit recomputes including file digests. Missing images are ineligible.

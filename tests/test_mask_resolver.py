@@ -1,3 +1,4 @@
+from image_fixtures import image_context
 import hashlib
 import math
 import pytest
@@ -112,6 +113,7 @@ def test_generation_and_audit_keep_mask_out_of_model_inputs(tmp_path):
         "capability_category": CapabilityCategory.LOCALIZATION.value,
     }
     context = _mask_context(tmp_path)
+    context = image_context(tmp_path / "presentations", [_case()], context)
     items = generate_task_items([_case()], [leaf], "dataset", resolver_context=context)
     assert len(items) == 1
     assert items[0]["answer"] == [0.3, 0.25, 0.8, 0.75]

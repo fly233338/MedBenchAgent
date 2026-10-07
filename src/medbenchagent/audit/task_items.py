@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any, Iterable
 
-from medbenchagent.generation.items import _case_for_unit, _input_assets, _input_bindings
-from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve
+from medbenchagent.generation.items import _input_assets, _input_bindings
+from medbenchagent.planning.resolver import NotApplicable, ResolverContext, encode_closed_label, resolve_task_input
 from medbenchagent.planning.task_space import LeafTask, OutputSpec
 
 
@@ -58,9 +58,7 @@ def audit_task_items(
                     errors.append("unknown_sampling_unit")
                 elif sampling_unit.case_id != case.get("case_id") or not sampling_unit.eligible:
                     errors.append("invalid_sampling_unit")
-                else:
-                    case = _case_for_unit(case, sampling_unit)
-            resolved = resolve(case, ResolverSpec.parse(leaf.resolver), resolver_context=resolver_context) if not errors else None
+            resolved = resolve_task_input(case, leaf, sampling_unit, resolver_context) if not errors else None
             if isinstance(resolved, NotApplicable):
                 errors.append(resolved.reason)
             elif resolved is not None:
@@ -70,6 +68,8 @@ def audit_task_items(
                         expected = encode_closed_label(expected)
                     except ValueError:
                         errors.append("invalid_label_encoding")
+                if item.get("input_presentations") != resolved.presentations:
+                    errors.append("input_presentation_mismatch")
                 expected_bindings = _input_bindings(case, resolved.input_bindings)
                 template_index = item.get("template_index", -1)
                 expected_question = (
