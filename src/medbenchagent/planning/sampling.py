@@ -49,3 +49,14 @@ def sampling_units(
     return result
 
 
+
+
+def input_evidence_for_unit(rows, unit):
+    if unit is None:
+        return rows
+    # ordered_evidence_ids may freeze reference collections (e.g. argmax),
+    # while view_ids independently define the allowed visual input.
+    if unit.view_ids:
+        return [row for row in rows if row.get("view_id") in unit.view_ids
+                or row["type"] != "asset" and row["id"] in unit.ordered_evidence_ids]
+    return [row for row in rows if not unit.ordered_evidence_ids or row["id"] in unit.ordered_evidence_ids]

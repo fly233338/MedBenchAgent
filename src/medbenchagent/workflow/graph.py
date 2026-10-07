@@ -719,7 +719,7 @@ def compile_benchmark_graph(*, checkpointer=None):
         output_root = Path(context.get("experiment_output_directory") or child["operation_directory"])
         output_path = output_root / dataset_id / "benchmark_items.jsonl"
         if sum(counts.values()):
-            generated = run_generation(child, output_path=output_path, allocation=counts)
+            generated = run_generation(child, output_path=output_path)
         else:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text("", encoding="utf-8")

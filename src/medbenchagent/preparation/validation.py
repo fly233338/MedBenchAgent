@@ -90,7 +90,9 @@ def validate_stage(root, stage, state):
                 if set(images) != needed:
                     raise ValueError("Converted manifest differs from required converted locators")
                 for locator, image in images.items():
-                    rule, source, relative, _ = mapped[locator]
+                    rule, source, relative, index = mapped[locator]
+                    if image.metadata.get("conversion") != plan.policies[rule.policy_id].model_dump(mode="json") or image.metadata.get("slice_index") != index:
+                        raise ValueError("Converted image policy or slice identity mismatch")
                     if (image.source_id, image.source_path, image.source_digest) != (rule.source_id, relative, digest_path(source)):
                         raise ValueError("Converted source identity or digest mismatch")
                     if Path(locator).suffix != ".png":

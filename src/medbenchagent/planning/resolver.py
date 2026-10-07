@@ -21,6 +21,14 @@ def resolve_task_input(case, leaf, sampling_unit, context):
 
     if sampling_unit is not None and (sampling_unit.case_id != case["case_id"] or not sampling_unit.eligible):
         return NotApplicable(reason="invalid_sampling_unit")
+    if sampling_unit is not None:
+        ids = {e["id"] for e in case["evidence"]}
+        views = {e.get("view_id") for e in case["evidence"]}
+        if not set(sampling_unit.ordered_evidence_ids) <= ids or not set(sampling_unit.view_ids) <= views:
+            return NotApplicable(reason="unknown_sampling_evidence_or_view")
+        if sampling_unit.view_ids and any(e["type"] == "asset" and e["id"] in sampling_unit.ordered_evidence_ids
+                and e.get("view_id") not in sampling_unit.view_ids for e in case["evidence"]):
+            return NotApplicable(reason="sampling_order_outside_allowed_views")
     context = replace(context, sampling_unit=sampling_unit) if context else ResolverContext(sampling_unit=sampling_unit)
     ordered_case = case_for_unit(case, sampling_unit) if sampling_unit else case
     resolved = resolve(ordered_case, leaf.resolver, resolver_context=context)
@@ -35,7 +43,8 @@ def resolve_task_input(case, leaf, sampling_unit, context):
         image = context.asset(evidence["value"])
         if not image:
             return NotApplicable(reason="missing_input_image")
-        if image.get("metadata", {}).get("input_visibility") == "reference_only" or evidence.get("mask"):
+        from medbenchagent.data.task_facts import _asset_role
+        if _asset_role(evidence, context.assets) == "reference" or evidence.get("mask"):
             return NotApplicable(reason="reference_only_asset_input")
         try:
             path = (Path(context.dataset_root) / evidence["value"]).resolve()
@@ -46,6 +55,32 @@ def resolve_task_input(case, leaf, sampling_unit, context):
                               "evidence_id": evidence_id, "view_id": evidence.get("view_id")})
     if not presentations:
         return NotApplicable(reason="missing_image_input")
+    scenario = context.scenarios.get(leaf.scenario_id)
+    structure = scenario.get("input_structure") if isinstance(scenario, dict) else getattr(scenario, "input_structure", None)
+    selected = [by_id[p["evidence_id"]] for p in presentations]
+    sources = {(context.asset(e["value"]).get("source_id"), context.asset(e["value"]).get("source_path")) for e in selected}
+    if structure == "single-image" and len(presentations) != 1:
+        return NotApplicable(reason="single_image_requires_one_presentation")
+    if structure == "multi-image" and len(sources) < 2:
+        return NotApplicable(reason="multi_image_requires_distinct_sources")
+    if structure == "multi-view":
+        views = [e.get("view_id") for e in selected]
+        if len(views) < 2 or None in views or len(set(views)) != len(views) or sampling_unit is None or not sampling_unit.view_ids:
+            return NotApplicable(reason="multi_view_requires_explicit_views")
+        selected_ids = {e["id"] for e in selected}
+        if not any(selected_ids <= set(e.get("ref", [])) for e in case["evidence"]):
+            return NotApplicable(reason="multi_view_requires_correspondence")
+    if structure == "volume" and (len(presentations) < 2 or len(sources) != 1 or sampling_unit is None
+            or not sampling_unit.ordered_evidence_ids
+            or any(context.asset(e["value"]).get("kind") != "volume" for e in selected)):
+        return NotApplicable(reason="volume_requires_ordered_slices")
+    physical = any(step.get("op") == "read_mask_feature" and step.get("feature") == "physical_area"
+                   for step in leaf.resolver.get("steps", []))
+    physical |= any(by_id[e].get("unit") in {"mm", "cm", "mm2", "cm2", "mm^2", "cm^2", "mm3"}
+                    for e in resolved.reference_evidence_ids)
+    if physical and not any(by_id[e].get("unit") in {"mm/pixel", "mm/voxel", "cm/pixel"}
+                            for e in resolved.input_evidence_ids if by_id[e]["type"] != "asset"):
+        return NotApplicable(reason="physical_calibration_not_visible")
     return resolved.model_copy(update={"presentations": presentations})
 
 
@@ -58,6 +93,7 @@ class ResolverContext:
     cache: dict[tuple[Any, ...], Any] = field(default_factory=dict)
     dataset_root: str = ""
     sampling_unit: Any = None
+    scenarios: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_access(cls, access: dict[str, Any] | None) -> "ResolverContext":
@@ -480,27 +516,24 @@ def resolve(
     roles: dict[str, list[str]] = {}
     input_bindings: list[dict[str, Any]] = []
     input_ids: list[str] = []
-    asset_ids: set[tuple[str, str | None]] = set()
+    asset_ids: set[str] = set()
     for selector in spec.inputs:
         rows = _evidence(case, selector, roles)
-        if resolver_context and resolver_context.sampling_unit:
-            unit = resolver_context.sampling_unit
-            if unit.ordered_evidence_ids or unit.view_ids:
-                rows = [row for row in rows if row["id"] in unit.ordered_evidence_ids
-                        or row.get("view_id") in unit.view_ids]
+        from medbenchagent.planning.sampling import input_evidence_for_unit
+        rows = input_evidence_for_unit(rows, resolver_context.sampling_unit if resolver_context else None)
         ids = [item["id"] for item in rows]
         if not ids:
             return NotApplicable(reason="missing_input_evidence")
         if any(item.get("mask") is not None for item in rows):
             return NotApplicable(reason="reference_only_mask_input")
-        if selector.evidence_type == "asset":
+        if any(item["type"] == "asset" for item in rows):
             selected_assets = []
             for item in rows:
+                if item["type"] != "asset":
+                    continue
                 identifier = str(item["value"])
-                asset = resolver_context.asset(identifier) if resolver_context else None
-                # Explicit views of one volume are different presentations, not different Assets.
-                view = item.get("view_id") if asset and asset.get("kind") == "volume" else None
-                selected_assets.append((identifier, view))
+                root = resolver_context.dataset_root if resolver_context else ""
+                selected_assets.append(str((Path(root) / identifier).resolve()).casefold())
             if asset_ids.intersection(selected_assets) or len(set(selected_assets)) != len(selected_assets):
                 return NotApplicable(reason="duplicate_input_asset")
             asset_ids.update(selected_assets)

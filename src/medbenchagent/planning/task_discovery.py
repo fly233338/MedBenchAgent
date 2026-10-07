@@ -287,7 +287,7 @@ def node_statistics(nodes: dict[str, TaskScenario]) -> dict[str, Any]:
     }
 
 
-def summarize_leaf(access, leaf, *, cases=None):
+def summarize_leaf(access, leaf, *, cases=None, scenarios=None):
     """Capacity and review facts share one sampling/input resolution pass."""
     from medbenchagent.data.index import DatasetIndex
     from .sampling import sampling_units
@@ -298,6 +298,7 @@ def summarize_leaf(access, leaf, *, cases=None):
                     "answer_distribution": {}, "successful_examples": []}
         cases = list(DatasetIndex(access).iter_cases())
     context = ResolverContext.from_access(access)
+    context.scenarios = scenarios or {}
     units = sampling_units(cases, context.manifests.get("sampling"))
     failures, answers, examples = Counter(), Counter(), []
     for case, unit in units:
@@ -405,3 +406,51 @@ def validate_leaf_design(leaf, plan, *, facts, access, registry, expected_templa
     ):
         fail( "duplicate_leaf", "Duplicate Leaf Task semantics", repair_hint="Reuse or skip the existing Leaf Task when the semantics are already present; do not alter target or resolver semantics to bypass deduplication.")
     return parsed
+
+
+def _cross_scenario_leaf_summaries(plan: TaskPlanState, scenario_id: str) -> list[dict[str, Any]]:
+    current = plan.scenarios.get(scenario_id)
+    if not current:
+        return []
+    current_ids = set(current.leaf_task_ids)
+    current_leaves = [plan.leaf_tasks[item] for item in current_ids if item in plan.leaf_tasks]
+    current_names = {
+        selector.name for leaf in current_leaves for selector in leaf.input if selector.name
+    }
+    current_targets = {leaf.clinical_target_id for leaf in current_leaves}
+    summaries = []
+    for other_scenario in plan.scenarios.values():
+        if other_scenario.scenario_id == scenario_id or other_scenario.exclusion_reason:
+            continue
+        for leaf_id in other_scenario.leaf_task_ids:
+            leaf = plan.leaf_tasks.get(leaf_id)
+            if not leaf:
+                continue
+            names = {selector.name for selector in leaf.input if selector.name}
+            same_target = leaf.clinical_target_id in current_targets
+            same_contract = bool(names & current_names) and any(
+                candidate.output_spec == leaf.output_spec and candidate.task_paradigm == leaf.task_paradigm
+                for candidate in current_leaves
+            )
+            if not (same_target or same_contract):
+                continue
+            summaries.append({
+                "scenario": {
+                    "scenario_id": other_scenario.scenario_id,
+                    "operation": other_scenario.operation,
+                    "clinical_target": other_scenario.clinical_target,
+                    "input_structure": other_scenario.input_structure,
+                },
+                "leaf_task_id": leaf.leaf_task_id,
+                "name": leaf.name,
+                "clinical_target_id": leaf.clinical_target_id,
+                "target": leaf.target,
+                "input": [item.model_dump(mode="json") for item in leaf.input],
+                "reference_rule": leaf.reference_rule,
+                "resolver": leaf.resolver,
+                "output_spec": leaf.output_spec.value,
+                "task_paradigm": leaf.task_paradigm.value,
+                "options": leaf.options,
+                "eligible_count": leaf.eligible_count,
+            })
+    return summaries[:20]

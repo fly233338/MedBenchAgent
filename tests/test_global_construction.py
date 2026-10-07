@@ -97,13 +97,21 @@ def test_finalization_merges_and_audits_dataset_output(tmp_path):
     plan = _plan("d", {"leaf": 1})
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
+    from medbenchagent.planning.bir import BIRStore
+    store = BIRStore.initialize(tmp_path / "BIR", "config/bir_template", "test")
+    store.update("datasets/d/planning/task_plan.json", plan.model_dump(mode="json"), run_id="r", actor="test")
+
     items = generate_task_items([case.model_dump(mode="json")], plan.leaf_tasks.values(), "d", allocation={"leaf": 1}, resolver_context=images)
     raw = tmp_path / "generated.jsonl"
     write_task_items(raw, items)
     allocation_path = tmp_path / "allocation.json"
     allocation_path.write_text(json.dumps({"requested_count": 1, "counts": {"d": {"leaf": 1}}}), encoding="utf-8")
     from medbenchagent.agents.finalization import finalize_benchmark
-    result = finalize_benchmark({
+    from medbenchagent.data.sources import digest_file
+    store.update("dataset_bindings.json", {"datasets":{"d":{"access":access}}}, run_id="r", actor="test")
+    store.update("allocation.json", {"requested_count":1, "counts":{"d":{"leaf":1}}}, run_id="r", actor="test")
+    store.update("outputs/d.json", {"benchmark_items_path":str(raw), "benchmark_items_digest":digest_file(raw)}, run_id="r", actor="test")
+    result = finalize_benchmark({"bir_path": str(store.root),
         "selected_dataset_ids": ["d"],
         "allocation_path": str(allocation_path),
         "dataset_task_plans": {"d": str(plan_path)},

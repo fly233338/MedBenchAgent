@@ -27,6 +27,10 @@ class BIRConflictError(ValueError):
     """Raised when a writer is based on an older BIR revision."""
 
 
+class BIRStaleError(ValueError):
+    """Valid content whose producing business inputs have changed."""
+
+
 @dataclass(frozen=True)
 class BIRCommit:
     revision: int
@@ -105,6 +109,10 @@ def require(context, *kinds):
             except OSError as exc:
                 raise ValueError(f"{kind} is required") from exc
             commit = json.loads(store._path(path).read_text(encoding="utf-8"))["_commit"]
+            if config := context.get("effective_config_path"):
+                for dependency, digest in commit["dependencies"].items():
+                    if dependency.startswith("file:") and Path(dependency[5:]).name == "effective_config.json" and digest_file(config) != digest:
+                        raise ValueError(f"{kind} is stale after configuration changed")
             if commit["revision"] == 0:
                 raise ValueError(f"{kind} is not ready")
             if kind == "Plan" and value.get("phase") != "complete":
@@ -376,6 +384,7 @@ class BIRStore:
             "experiment_id": experiment_id,
             "template_revision": template.template_revision,
             "template_digest": template.digest,
+            "registry_digest": RegistrySnapshot.from_directory(target / "registry").digest,
         }
         store._write_manifest(manifest)
         for part in target.rglob("*.json"):
@@ -427,13 +436,16 @@ class BIRStore:
                         self.load(dependency)
                         actual = self.digest(dependency)
                     if actual != expected:
-                        raise ValueError(f"BIR dependency changed: {dependency}; rebuild {relative_path}")
+                        raise BIRStaleError(f"BIR dependency changed: {dependency}; rebuild {relative_path}")
         if expected_schema and value.get("schema_version") != expected_schema:
             raise ValueError(f"Unexpected BIR schema: {relative_path}")
         return value
 
     def registry(self):
-        return RegistrySnapshot.from_directory(self.root / "registry")
+        snapshot = RegistrySnapshot.from_directory(self.root / "registry")
+        if snapshot.digest != self._read_manifest()["registry_digest"]:
+            raise ValueError("Frozen BIR Registry changed")
+        return snapshot
 
     def digest(self, relative_path):
         return digest_file(self._path(relative_path))

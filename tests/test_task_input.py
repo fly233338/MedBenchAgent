@@ -55,7 +55,7 @@ def test_duplicate_asset_and_missing_or_corrupt_image_are_ineligible(tmp_path):
     assert resolve_task_input(case, leaf(), None, context).reason == "duplicate_input_asset"
 
 
-def test_volume_views_keep_one_asset_and_two_presentations(tmp_path):
+def test_volume_view_ids_cannot_duplicate_the_same_image(tmp_path):
     case = {"case_id": "c", "evidence": [
         {"id": "i1", "type": "asset", "name": "image", "value": "volume", "view_id": "v1"},
         {"id": "i2", "type": "asset", "name": "image", "value": "volume", "view_id": "v2"},
@@ -68,7 +68,27 @@ def test_volume_views_keep_one_asset_and_two_presentations(tmp_path):
     manifest = SamplingManifest(dataset_id="d", revision="r", units=[unit])
     context.manifests["sampling"] = manifest
     items = generate_task_items([case], [leaf()], "d", resolver_context=context, sampling_manifest=manifest)
-    assert len(items) == 1
-    assert items[0]["input_assets"] == ["volume"]
-    assert [r["view_id"] for r in items[0]["input_images"]] == ["v2", "v1"]
-    assert audit_task_items([case], items, [leaf()], context)["accepted"] == 1
+    assert items == []
+    assert resolve_task_input(case, leaf(), unit, context).reason == "duplicate_input_asset"
+
+
+def test_hidden_calibration_and_physical_units_are_not_image_inputs(tmp_path):
+    case = {"case_id":"c", "evidence":[
+        {"id":"i", "type":"asset", "name":"image", "value":"image.png"},
+        {"id":"l", "type":"value", "name":"label", "value":"yes", "unit":"mm"}]}
+    context = image_context(tmp_path, [case])
+    assert resolve_task_input(case, leaf(), None, context).reason == "physical_calibration_not_visible"
+    case["evidence"][1].pop("unit")
+    context.assets["image.png"]["metadata"]["semantic_role"] = "calibration"
+    assert resolve_task_input(case, leaf(), None, context).reason == "reference_only_asset_input"
+
+
+def test_sampling_evidence_cannot_override_allowed_view(tmp_path):
+    case = {"case_id":"c", "evidence":[
+        {"id":"i1", "type":"asset", "name":"image", "value":"one.png", "view_id":"v1"},
+        {"id":"i2", "type":"asset", "name":"image", "value":"two.png", "view_id":"v2"},
+        {"id":"l", "type":"value", "name":"label", "value":"yes"}]}
+    context = image_context(tmp_path, [case])
+    unit = SamplingUnit(sampling_unit_id="u", case_id="c", split="test", eligible=True,
+        view_ids=["v1"], ordered_evidence_ids=["i2"], order=0)
+    assert isinstance(resolve_task_input(case, leaf(), unit, context), NotApplicable)

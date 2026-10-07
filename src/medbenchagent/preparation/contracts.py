@@ -149,7 +149,9 @@ class ImageRule(Contract):
 class RecordSource(Contract):
     source_id: str
     path: str
-    format: Literal["csv", "jsonl", "json"]
+    format: Literal["csv", "tsv", "xlsx", "xls", "jsonl", "json"]
+    sheet: str | int | None = None
+    records_field: str | None = None
 
 
 class PreparationMapping(Contract):

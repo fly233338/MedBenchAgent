@@ -11,14 +11,16 @@ from medbenchagent.data.asset_adapters import (
 
 
 @pytest.mark.parametrize("encoding", ["PNG", "JPEG"])
-def test_png_jpeg_copy_is_content_based_and_byte_identical(tmp_path, encoding):
+def test_explicit_raster_conversion_writes_real_png(tmp_path, encoding):
     source = tmp_path / ("source.png" if encoding == "PNG" else "source.jpg")
     Image.new("RGB", (3, 2), (90, 20, 70)).save(source, format=encoding)
-    target = tmp_path / ("output.png" if encoding == "PNG" else "output.jpg")
+    target = tmp_path / "output.png"
     asset = AssetEntry(asset_id="source", kind="image", format=detect_format(source).split(":")[-1],
                        source_path=source.name, file_digest=digest_file(source))
     materialize_image(asset, PresentationSpec(), target, source_root=tmp_path)
-    assert target.read_bytes() == source.read_bytes()
+    with Image.open(target) as rendered, Image.open(source) as original:
+        assert rendered.format == "PNG"
+        np.testing.assert_array_equal(np.asarray(rendered), np.asarray(original))
 
 
 def test_uint16_tiff_retains_bit_depth_and_pixel_values(tmp_path):

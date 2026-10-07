@@ -4,8 +4,6 @@ from PIL import Image
 from langgraph.checkpoint.memory import InMemorySaver
 from medbenchagent.preparation.graph import compile_preparation_graph
 from medbenchagent.preparation.contracts import Stage, StageResult, SemanticQuestion
-from medbenchagent.data.sources import digest_file
-from medbenchagent.data.models import ImageEntry
 
 
 def mapping(filename="raw.jpg", convert=False):
@@ -63,12 +61,12 @@ class Worker:
             (root.parent / "accounting.json").write_text(json.dumps({"records_seen":1, "records_consumed":1,
                 "cases_emitted":1, "excluded":{}, "skipped":{}}), encoding="utf-8")
         else:
-            source = Path(request.source_roots["s"]) / "raw.jpg"
+            from medbenchagent.preparation.images import materialize_mapped_image
+            row = materialize_mapped_image(PreparationMapping.model_validate(mapping(convert=self.convert)),
+                ImageConversionPlan(policies={"native": {}}),
+                {"source_roots": request.source_roots, "bundle_root": request.context["bundle_root"]},
+                "s", "raw.jpg", root)
             target = root / "images" / Path(locator).name
-            target.parent.mkdir()
-            Image.open(source).save(target, format="PNG")
-            row = ImageEntry(path=locator, format="png", width=4, height=4, file_digest=digest_file(target),
-                             source_id="s", source_path="raw.jpg", source_digest=digest_file(source))
             (root / "image_manifest.jsonl").write_text(row.model_dump_json() + "\n", encoding="utf-8")
             if self.fail_image and request.attempt == 1:
                 target.write_bytes(b"bad")

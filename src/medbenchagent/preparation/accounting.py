@@ -8,13 +8,20 @@ from medbenchagent.data.asset_adapters import contained_path
 def records(mapping, source_roots):
     for source in mapping.record_sources:
         path = contained_path(source_roots[source.source_id], source.path)
+        if source.format in {"xlsx", "xls"}:
+            from medbenchagent.data.preparation_ops import _read_table
+            yield from _read_table(path, sheet=source.sheet).to_dict(orient="records")
+            continue
         with path.open(encoding="utf-8-sig", newline="") as stream:
-            if source.format == "csv":
-                yield from csv.DictReader(stream)
+            if source.format in {"csv", "tsv"}:
+                yield from csv.DictReader(stream, delimiter="\t" if source.format == "tsv" else ",")
             elif source.format == "jsonl":
                 yield from (json.loads(line) for line in stream if line.strip())
             else:
                 value = json.load(stream)
+                if source.records_field:
+                    for key in source.records_field.split("."):
+                        value = value[key]
                 if not isinstance(value, list):
                     raise ValueError("Accounting JSON source must be an array of records")
                 yield from value
@@ -52,7 +59,16 @@ class TextAccounting:
 
 def validate_accounting(path, mapping, source_roots, case_count):
     report = json.loads(Path(path).read_text(encoding="utf-8"))
-    total = sum(1 for _ in records(mapping, source_roots))
+    total, groups = 0, set()
+    count_groups = (len(mapping.record_sources) == 1 and mapping.case_identity.collision_policy != "split"
+                    and mapping.grouping.conflict_policy != "separate")
+    for row in records(mapping, source_roots):
+        total += 1
+        if count_groups:
+            try:
+                groups.add(json.dumps([row[key] for key in mapping.grouping.key_fields], sort_keys=True))
+            except KeyError:
+                count_groups = False
     counts = [report[key] for key in ("records_seen", "records_consumed", "cases_emitted")]
     for name in ("excluded", "skipped"):
         for reason, count in report[name].items():
@@ -65,3 +81,5 @@ def validate_accounting(path, mapping, source_roots, case_count):
         raise ValueError("Accounting differs from source population or emitted Cases")
     if report["records_consumed"] + sum(report["excluded"].values()) + sum(report["skipped"].values()) != total:
         raise ValueError("Unaccounted source records")
+    if count_groups and not report["excluded"] and not report["skipped"] and case_count != len(groups):
+        raise ValueError("Case count differs from accepted source grouping")

@@ -4,23 +4,23 @@
 
 ## 数据集内容与派生视图
 
-Case/Evidence 的 asset value 直接保存最终普通图片相对路径；image_manifest.jsonl 以相同路径为键，
-记录实测内容摘要、格式、尺寸以及来源身份。不存在 asset → request → presentation 的解析链。
-Mask 是附带来源 digest 的 Case/reference feature，不强制生成 mask 文件或单独 feature manifest。
+Case/Evidence 的 asset value 直接保存最终 locator。普通 JPEG/PNG/WebP 引用原 source，零复制。
+转换图片固定保存于 Prepared/<dataset>/images/，image_manifest.jsonl 只登记这些实际 PNG。
+没有 convert 规则时跳过 Image；混合数据只转换需要转换的部分。
+Mask 是附带来源 digest 的 Case/reference feature，不进入模型输入。
 
-Understand 只冻结 mapping 和 image_conversion_plan。Text 生成 Cases，Image 生成实际图片和唯一 manifest。
-验证只读；最后组包 cross-check 后 Publisher 原子提交，不修改 Case、不隔离或修复 manifest。
-Published revision 为 cases.jsonl、image_manifest.jsonl、images/ 和必要的 metadata.json。
-metadata 保留字段语义与采样/分组顺序；mapping、转换策略和观测材料留在 runtime。
+Understand 冻结路径规则 mapping 和 typed conversion plan。Text 生成 Cases，并将 accounting 留在 runtime。
+Published revision 只有 cases.jsonl、image_manifest.jsonl、metadata.json；不包含图片副本。
+metadata 保存来源绑定和 direct 图片集合摘要、字段语义及 sampling/split。访问时验证来源和 converted 图片内容。
 
 Profile、Card、DuckDB/access 缓存在 revision 外的 .derived/，可删除重建。DatasetAccess 始终绑定
 immutable revision 的 cases/image manifest，根目录 current.json 仅作为指针，不保存图片 projection。
 
 ## 多来源映射与查询
 
-多来源字段通过 understand 阶段的 accepted mapping 合并、保留或排除。值映射、缺失状态、数组边界和来源空间都保留在 mapping、provenance 和运行诊断中。
+多来源字段通过 understand 阶段的 accepted mapping 合并、保留或排除。值映射、缺失状态、数组边界和来源空间都保留在 mapping 和运行诊断中。
 
-`DatasetQuery` 绑定一个 access manifest 和 cache revision，提供字段值、来源覆盖、记录采样、数组长度、配对和协议容量查询。查询返回准确总数和分页结果，供规划 Agent 使用。
+`DatasetIndex` 绑定一个 access manifest 和 cache revision，提供字段值、来源覆盖、记录采样、数组长度、配对和协议容量查询。查询返回准确总数和分页结果，供规划 Agent 使用。
 
 Evidence Catalog 是完整数据事实清单，不是任务候选清单。Task Planning 需要区分图像可观察证据、患者/临床上下文、设备/行政元数据和仅用于校准的 spacing 等字段；字段存在本身不能支持一个 Axis 或 Leaf Task。
 
@@ -45,7 +45,7 @@ index、时间或医学语义。
 
 ## 运行契约
 
-准备和构建使用 Run 冻结的配置、Catalog snapshot、Card 副本、事件日志和 operation ledger。产物依赖由 `runtime/dependencies.py` 校验；工具调用按参数和依赖幂等重放。
+准备和构建使用 Run 冻结的配置、Catalog snapshot、Card 副本、事件日志和 operation ledger。业务依赖由 BIR canonical 文档校验；工具调用按参数和依赖幂等重放。
 
 实验级 BIR 位于 `experiments/<experiment>/BIR/`，保存 Dataset Selection、冻结的
 `DatasetAccessReceipt` 和规划 Evidence 的 canonical 引用。Run 只保存 BIR 路径、revision

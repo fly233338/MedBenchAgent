@@ -462,24 +462,16 @@ def verify_image(path, expected_digest=None):
 
 
 def materialize_image(asset, spec, destination, *, source_root):
-    """Preserve ordinary native images; render medical sources using shared adapters."""
-    import shutil
-
+    """Render an explicitly requested derived image as PNG; direct images never call this."""
     destination = Path(destination)
+    if destination.suffix.lower() != ".png":
+        raise ValueError("Converted images require a .png target")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    source = contained_path(source_root, asset.source_path)
-    native = asset.format.lower() in {"jpg", "jpeg", "png", "webp", "gif"}
-    if native and spec.mode == "native" and not any((spec.window, spec.resize, spec.crop)):
-        verify_image(source, asset.file_digest)
-        shutil.copyfile(source, destination)
-    else:
-        if destination.suffix.lower() != ".png":
-            raise ValueError("Derived medical presentations require PNG")
-        pixels = adapter_for(asset).present(asset, spec, source_root=source_root).data
-        if spec.mode == "slices":
-            if np.asarray(pixels).shape[0] != 1:
-                raise ValueError("Each image mapping must select one slice, or an explicit montage")
-            pixels = pixels[0]
-        image = pixels if isinstance(pixels, Image.Image) else Image.fromarray(np.asarray(pixels))
-        image.save(destination, format="PNG")
+    pixels = adapter_for(asset).present(asset, spec, source_root=source_root).data
+    if spec.mode == "slices":
+        if np.asarray(pixels).shape[0] != 1:
+            raise ValueError("Select one slice per PNG, or use an explicit montage")
+        pixels = pixels[0]
+    image = pixels if isinstance(pixels, Image.Image) else Image.fromarray(np.asarray(pixels))
+    image.save(destination, format="PNG")
     return {**verify_image(destination), "output_digest": digest_file(destination)}

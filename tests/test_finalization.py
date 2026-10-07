@@ -58,11 +58,19 @@ def test_minimal_bundle_drives_planning_generation_and_delivery(tmp_path):
     plan.leaf_tasks["l"] = task.model_copy(update={"eligible_count": 1})
     plan_path = tmp_path / "task_plan.json"
     plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
+    from medbenchagent.planning.bir import BIRStore
+    store = BIRStore.initialize(tmp_path / "BIR", "config/bir_template", "test")
+    store.update("datasets/d/planning/task_plan.json", plan.model_dump(mode="json"), run_id="r", actor="test")
+
     raw = tmp_path / "generated.jsonl"
     write_task_items(raw, built["items"])
     allocation = tmp_path / "allocation.json"
     allocation.write_text(json.dumps({"requested_count": 1, "counts": {"d": {"l": 1}}}), encoding="utf-8")
-    finalize_benchmark({"selected_dataset_ids": ["d"], "allocation_path": str(allocation),
+    from medbenchagent.data.sources import digest_file
+    store.update("dataset_bindings.json", {"datasets":{"d":{"access":access}}}, run_id="r", actor="test")
+    store.update("allocation.json", {"requested_count":1, "counts":{"d":{"l":1}}}, run_id="r", actor="test")
+    store.update("outputs/d.json", {"benchmark_items_path":str(raw), "benchmark_items_digest":digest_file(raw)}, run_id="r", actor="test")
+    finalize_benchmark({"bir_path": str(store.root), "selected_dataset_ids": ["d"], "allocation_path": str(allocation),
         "dataset_task_plans": {"d": str(plan_path)}, "dataset_generations": {"d": {"raw_output_path": str(raw)}},
         "dataset_assets": {"d": {"access": access}}, "operation_directory": str(tmp_path), "seed": 0,
     }, output_directory=tmp_path / "delivery")

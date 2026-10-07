@@ -72,7 +72,10 @@ Do not use medical importance or invent priorities.""",
 def allocate_benchmark(context: dict[str, Any], *, output_path: str | Path | None = None,
                        dataset_weights: dict[str, float] | None = None,
                        leaf_weights: dict[str, dict[str, float]] | None = None) -> dict[str, Any]:
-    selected = list(context.get("selected_dataset_ids", []))
+    store = BIRStore(context["bir_path"])
+    selected = list(store.load("dataset_bindings.json")["datasets"])
+    brief = store.load("benchmark_info.json")
+    context = {**context, "benchmark_info": brief, "allocation_preferences": brief.get("allocation_preferences", [])}
     if not selected:
         raise ValueError("Dataset selection is required before allocation")
     plans = {

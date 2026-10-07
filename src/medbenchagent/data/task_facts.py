@@ -5,6 +5,8 @@ infer medical labels or treat annotation masks as additional model inputs.
 """
 
 from __future__ import annotations
+import json
+from pathlib import Path
 
 from collections import Counter, defaultdict
 from typing import Any, Iterable
@@ -384,3 +386,123 @@ def compact_catalog_entry(entry: dict[str, Any], meaning: str | None = None) -> 
     if meaning:
         item["meaning"] = meaning
     return item
+
+
+def annotation_metadata_path(access):
+    from pathlib import Path
+    if path := access.get("mapping_path"):
+        return Path(path)
+    if access.get("cases_path"):
+        candidate = Path(access["cases_path"]).parent / "metadata.json"
+        if candidate.is_file():
+            return candidate
+    return None
+
+def _field_meanings(access: dict[str, Any]) -> dict[str, str]:
+    path = annotation_metadata_path(access)
+    if not path:
+        return {}
+    value = json.loads(path.read_text(encoding="utf-8"))
+    meanings = {}
+    for name, item in value.get("field_semantics", {}).items():
+        text = item if isinstance(item, str) else item.get("meaning", item.get("description", ""))
+        if text:
+            meanings[name] = text
+    for item in value.get("fields", []):
+        name = item.get("target_path") or item.get("source_path")
+        if name and item.get("reason"):
+            meanings.setdefault(name, item["reason"])
+    return meanings
+
+
+def _documented_annotation_semantics(access: dict[str, Any]) -> dict[str, Any]:
+    """Return bounded, source-backed mapping semantics for Leaf design."""
+    path = annotation_metadata_path(access)
+    if not path:
+        return {"status": "unavailable", "source": None}
+    try:
+        mapping = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"status": "unavailable", "source": str(path)}
+    if not isinstance(mapping, dict):
+        return {"status": "unavailable", "source": str(path)}
+    selected = {}
+    for key in ("entity_meanings", "fields", "field_semantics", "relationships", "missing", "findings", "spatial", "invariant_fields"):
+        if key in mapping:
+            value = mapping[key]
+            if isinstance(value, list):
+                value = value[:50]
+            selected[key] = compact_scalar(value, limit=240)
+    return {"status": "available", "source": str(path), "content": selected}
+
+def _field_semantics(access: dict[str, Any], names: list[str]) -> dict[str, Any]:
+    """Return normalized source-backed field semantics without count inference."""
+    path = annotation_metadata_path(access)
+    mapping = {}
+    if path:
+        try:
+            mapping = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            mapping = {}
+    sections = []
+    if isinstance(mapping, dict):
+        for key in ("fields", "field_meanings", "field_semantics", "mapping"):
+            section = mapping.get(key)
+            if isinstance(section, dict):
+                sections.append(section)
+    try:
+        profile = json.loads(Path(access["profile_path"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError, TypeError):
+        profile = {}
+    profile_entries = {
+        item.get("name"): item
+        for item in (profile.get("evidence", []) if isinstance(profile, dict) else [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    result = {}
+    for name in names:
+        item = next((section.get(name) for section in sections if name in section), None)
+        if not isinstance(item, dict):
+            item = profile_entries.get(name, {})
+        if not isinstance(item, dict):
+            item = {}
+        value_types = item.get("value_types", {})
+        if isinstance(value_types, dict) and len(value_types) == 1:
+            value_kind = next(iter(value_types))
+        else:
+            value_kind = item.get("value_kind", "unknown")
+        selected = {
+            "semantic_role": item.get("semantic_role", "unknown"),
+            "value_kind": value_kind,
+            "scope": item.get("scope", item.get("entity_scope", "unknown")),
+            "input_visibility": item.get("input_visibility", "unknown"),
+            "coverage": item.get("coverage", item.get("cases")),
+        }
+        for key in ("meaning", "description", "entity", "object", "unit", "relation", "missing"):
+            if key in item:
+                selected[key] = compact_scalar(item[key], limit=180)
+        selected = {key: value for key, value in selected.items() if value not in (None, "")}
+        if selected:
+            result[name] = selected
+    return result
+
+def _case_evidence_names(access: dict[str, Any]) -> set[str]:
+    try:
+        from medbenchagent.data.index import DatasetIndex
+        query = DatasetIndex(access)
+        if hasattr(query, "iter_cases"):
+            cases = []
+            for case in query.iter_cases():
+                cases.append(case)
+                if len(cases) >= 64:
+                    break
+        else:
+            cases = list(query.sample(offset=0, limit=64).get("values", []))
+        return {
+            item.get("name")
+            for case in cases
+            for item in case.get("evidence", [])
+            if item.get("name")
+        }
+    except Exception:
+        return set()

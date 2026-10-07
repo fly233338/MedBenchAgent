@@ -1,6 +1,7 @@
 """Deterministic global Finalization stage."""
 
 from __future__ import annotations
+from medbenchagent.planning.bir import BIRStore
 
 import hashlib
 import json
@@ -252,13 +253,16 @@ def _manifest(context: dict[str, Any], plans: dict[str, TaskPlanState], allocati
 
 
 def finalize_benchmark(context: dict[str, Any], *, output_directory: str | Path | None = None) -> dict[str, Any]:
-    selected = list(context.get("selected_dataset_ids", []))
-    allocation_path = context.get("allocation_path")
-    if not selected or not allocation_path or not Path(allocation_path).is_file():
-        raise ValueError("Dataset selection and global allocation are required before finalization")
-    allocation = json.loads(Path(allocation_path).read_text(encoding="utf-8"))
+    store = BIRStore(context["bir_path"])
+    bindings = store.load("dataset_bindings.json")["datasets"]
+    selected = list(bindings)
+    if not selected:
+        raise ValueError("Dataset selection is required before finalization")
+    allocation = store.load("allocation.json")
+    assets = {key: {"access": value["access"].get("source_access", value["access"])} for key, value in bindings.items()}
+    context = {**context, "dataset_assets": assets}
     plans = {
-        dataset_id: TaskPlanState.model_validate(json.loads(Path(context["dataset_task_plans"][dataset_id]).read_text(encoding="utf-8")))
+        dataset_id: TaskPlanState.model_validate(BIRStore(context["bir_path"]).load(f"datasets/{dataset_id}/planning/task_plan.json"))
         for dataset_id in selected
     }
     root = Path(output_directory or Path(context.get("run_directory", context["operation_directory"])) / "delivery")
@@ -268,8 +272,11 @@ def finalize_benchmark(context: dict[str, Any], *, output_directory: str | Path 
 
     for dataset_id in selected:
         counts = allocation.get("counts", {}).get(dataset_id, {})
-        generation = context.get("dataset_generations", {}).get(dataset_id, {})
-        raw_path = generation.get("raw_output_path") if isinstance(generation, dict) else generation
+        receipt = store.load(f"outputs/{dataset_id}.json")
+        raw_path = receipt["benchmark_items_path"]
+        from medbenchagent.data.sources import digest_file
+        if digest_file(raw_path) != receipt["benchmark_items_digest"]:
+            raise ValueError("Generation output digest changed")
         if not sum(counts.values()):
             reports[dataset_id] = {"generated": 0, "accepted": 0, "rejected": 0, "shortfall": 0, "status": "skipped"}
             continue
@@ -278,6 +285,7 @@ def finalize_benchmark(context: dict[str, Any], *, output_directory: str | Path 
         cases = list(DatasetIndex(context["dataset_assets"][dataset_id]["access"]).iter_cases())
         from medbenchagent.planning.resolver import ResolverContext
         resolver_context = ResolverContext.from_access(context["dataset_assets"][dataset_id]["access"])
+        resolver_context.scenarios = plans[dataset_id].scenarios
         _verify_dataset_manifests(context["dataset_assets"][dataset_id]["access"])
         raw_items = _read_jsonl(raw_path)
         raw_generated_count = len(raw_items)

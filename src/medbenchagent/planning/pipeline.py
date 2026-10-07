@@ -102,6 +102,9 @@ def run_pipeline(
         from medbenchagent.planning.resolver import ResolverContext
         resolver_context = replace(resolver_context or ResolverContext(),
             manifests={**(resolver_context.manifests if resolver_context else {}), "sampling": sampling_manifest})
+    from medbenchagent.planning.resolver import ResolverContext
+    resolver_context = resolver_context or ResolverContext()
+    resolver_context.scenarios = scenarios
     parsed_leaves = [
         leaf.model_copy(update={"eligible_count": sum(
             not isinstance(resolve_task_input(case, leaf, unit, resolver_context), NotApplicable)

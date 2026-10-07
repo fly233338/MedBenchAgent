@@ -59,3 +59,29 @@ def mapped_images(mapping, plan, state):
                 folded[target.casefold()] = identity
                 result[target] = (rule, source, relative, index)
     return result
+
+
+def materialize_mapped_image(mapping, plan, state, source_id, source_path, output_root, *, index=None):
+    """Produce one converted candidate and its measured record using accepted identities."""
+    from medbenchagent.data.models import AssetEntry, ImageEntry
+    from medbenchagent.data.asset_adapters import materialize_image, adapter_for
+    rule = image_rule(mapping, source_id, source_path)
+    if rule.action != "convert":
+        raise ValueError("Only convert rules may materialize files")
+    locator = resolve_image(mapping, plan, state["source_roots"], state["bundle_root"],
+        source_id, source_path, index=index, locator_roots=state.get("locator_roots"))
+    root = state["source_roots"][source_id]
+    source_digest = digest_path(contained_path(root, source_path))
+    asset = AssetEntry(asset_id=f"{source_id}:{source_path}", source_id=source_id, source_path=source_path,
+        format=rule.source_format, file_digest=source_digest,
+        kind="volume" if rule.source_format in {"nifti", "nrrd", "itk", "dicom_series"} else "image")
+    policy = plan.policies[rule.policy_id]
+    spec = policy.model_copy(update={"indices": [index]}) if index is not None else policy
+    info = materialize_image(asset, spec, Path(output_root) / "images" / Path(locator).name, source_root=root)
+    geometry = adapter_for(asset).inspect(asset, source_root=root) if asset.kind == "volume" else {}
+    # Medical backends may expose numpy values; keep manifest metadata JSON-native.
+    import json
+    geometry = json.loads(json.dumps(geometry, default=lambda value: value.tolist()))
+    return ImageEntry(path=locator, file_digest=info["output_digest"], format="png", width=info["width"], height=info["height"],
+        source_id=source_id, source_path=source_path, source_digest=source_digest, kind=asset.kind,
+        metadata={"geometry": geometry, "conversion": policy.model_dump(mode="json"), "slice_index": index})
