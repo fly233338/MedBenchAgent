@@ -11,4 +11,5 @@ Implementation, dependency and decoding failures remain stage repairs, not mappi
 
 Write UTF-8, scripts/logs/accounting under work/, dataset deliverables under work/outputs/. Run sample and full checks.
 Use the shared validator and report actual results. Missing essential user facts require scoped semantic questions.
-Control status and questions go in work/submission.json (Submission schema), not dataset outputs. Submit after commands finish; Host publishes.
+Use preparation.cli submit after commands finish; it validates and records the handoff. Host accepts and publishes.
+Use submit --outcome needs_input with scoped question records, or --outcome blocked with a diagnostic, for unfinished work.

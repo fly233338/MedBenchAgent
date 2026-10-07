@@ -94,7 +94,7 @@ class FieldRule(Contract):
 
 
 class StageBudget(Contract):
-    max_iterations: int = Field(default=40, ge=1)
+    max_iterations: int = Field(default=60, ge=1)
     timeout_seconds: int = Field(default=1800, ge=1)
     initial_message_tokens: int = Field(default=12_000, ge=256)
     model_context_tokens: int | None = Field(default=None, ge=256)

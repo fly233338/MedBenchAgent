@@ -74,7 +74,13 @@ def build_stage_context(stage, state, workspace):
         (prompts / "data_preparation_agent.md").read_text(encoding="utf-8"),
         (prompts / f"data_preparation_{stage.value}.md").read_text(encoding="utf-8"),
         json.dumps(visible, ensure_ascii=False, indent=2),
-        "Inspect Python model schemas via medbenchagent.preparation.cli schema. Validate with its validate command. Write work/submission.json, then finish.",
+        "Inspect Python model schemas via medbenchagent.preparation.cli schema. "
+        "When outputs are ready, run python -m medbenchagent.preparation.cli submit, then finish. "
+        "This command validates candidates and records the stage handoff automatically. "
+        "For semantic clarification, write a JSON array of scoped question records (schema question), "
+        "then run submit --outcome needs_input --questions-file work/questions.json. "
+        "For blocking failures use submit --outcome blocked --summary 'diagnostic'; "
+        "add --diagnostic-code mapping_revision_required only for demonstrated semantic conflicts.",
     ))
     budget = resolve_prompt_budget(state, stage)
     tokens = (len(prompt.encode()) + 3) // 4
