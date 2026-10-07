@@ -7,6 +7,20 @@ from medbenchagent.planning.bir import BIRStore
 from medbenchagent.runtime import sessions
 
 
+def test_restore_business_preserves_current_run_request(tmp_path, monkeypatch):
+    from medbenchagent.planning import bir
+
+    sessions.create_experiment("pilot", root=tmp_path)
+    store = BIRStore(tmp_path / "pilot/BIR")
+    store.update("benchmark_info.json", {"schema_version": "benchmark-info", "user_requirement": "Build old benchmark"},
+                 run_id="old", actor="test")
+    monkeypatch.setattr(bir, "require", lambda _context, kind: {kind: {}} if kind == "Requirement" else None)
+    context = {"bir_path": str(store.root), "user_requirement": "Prepare new dataset"}
+    bir.restore_business(context)
+    assert context["user_requirement"] == "Prepare new dataset"
+    assert context["brief_requirement"] == "Build old benchmark"
+
+
 def test_new_experiment_initializes_bir_directory_and_manifest(tmp_path: Path):
     record = sessions.create_experiment("pilot", root=tmp_path)
     bir = tmp_path / "pilot" / "BIR"

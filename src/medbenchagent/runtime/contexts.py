@@ -7,6 +7,8 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 
 class SupervisorContext(TypedDict, total=False):
+    request_intent: dict[str, Any]
+    intent_requirement: str
     run_directory: str
     operation_directory: str
     bir_path: str

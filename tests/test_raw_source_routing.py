@@ -5,6 +5,7 @@ import pytest
 from medbenchagent.data.dataset_catalog import normalize_dataset_id
 from medbenchagent.data import source_discovery
 from medbenchagent.workflow.graph import SUPERVISOR_INSTRUCTIONS, automatic_supervisor_action, available_stages
+from medbenchagent.workflow import graph as workflow
 
 
 def test_dynamic_dataset_id_uses_directory_name(tmp_path):
@@ -17,6 +18,15 @@ def test_dynamic_dataset_id_uses_directory_name(tmp_path):
 
 def test_normalize_dataset_id_lowercases_names():
     assert normalize_dataset_id("BrEaST") == "breast"
+
+
+def test_catalog_loading_does_not_require_redundant_image_manifest_field(tmp_path):
+    from medbenchagent.data.dataset_catalog import load_dataset_catalog
+
+    path = tmp_path / "catalog.json"
+    entry = {"dataset_id": "breast", "available": True, "cases_path": "cases.jsonl"}
+    path.write_text(json.dumps({"datasets": [entry]}), encoding="utf-8")
+    assert load_dataset_catalog(path) == [entry]
 
 
 def test_discover_source_uses_explicit_path_without_llm(tmp_path, monkeypatch):
@@ -57,18 +67,106 @@ def test_discover_source_does_not_cache_conflicting_registration(tmp_path, monke
     assert not (tmp_path / "run" / "discovery" / "sources" / "breast" / "source_decision.json").exists()
 
 
-def test_supervisor_remains_first_decision_for_explicit_path(tmp_path):
+def test_prepare_only_routes_directly_and_finishes_without_benchmark_fields(tmp_path, monkeypatch):
     root = tmp_path / "BrEaST"
     root.mkdir()
     (root / "image.png").write_bytes(b"pixels")
     context = {"run_directory": str(tmp_path / "run"), "user_requirement": f"Prepare {root}"}
+    monkeypatch.setattr(workflow, "complete_validated_json", lambda _prompt, _request, schema:
+                        schema(goal="preparation_only", preparation_dataset_ids=["breast"]))
+    context = workflow.initialize_supervisor_intent(context)
 
-    assert automatic_supervisor_action(context) is None
+    action = automatic_supervisor_action(context)
+    assert action["tool"] == "process_dataset"
+    assert action["arguments"] == {"dataset_id": "breast", "mode": "reuse_or_process"}
     assert {"ask_user", "process_dataset"} <= available_stages(context)
+    assert "specify" not in available_stages(context)
+    assert "discover_datasets" not in available_stages(context)
+    context["prepared_entries"] = {"breast": {"dataset_id": "breast"}}
+    assert automatic_supervisor_action(context)["tool"] == "finish"
+    assert available_stages(context) == {"finish"}
+    assert workflow.finish_supervisor(context)["status"] == "complete"
     assert "process_dataset" in SUPERVISOR_INSTRUCTIONS
     assert "Do not ask" in SUPERVISOR_INSTRUCTIONS
-    assert "discover_datasets" in SUPERVISOR_INSTRUCTIONS
+    assert "Discover candidates once" in SUPERVISOR_INSTRUCTIONS
     assert "请" not in SUPERVISOR_INSTRUCTIONS
+
+
+@pytest.mark.parametrize("prepare", [False, True])
+def test_benchmark_and_joint_requests_require_benchmark_flow(tmp_path, monkeypatch, prepare):
+    root = tmp_path / "BrEaST"
+    root.mkdir()
+    (root / "image.png").write_bytes(b"pixels")
+    requirement = (f"Prepare dataset BrEaST from {root} and then use it for a Chinese benchmark"
+                   if prepare else "Build a Chinese benchmark using dataset BrEaST")
+    monkeypatch.setattr(workflow, "complete_validated_json", lambda _prompt, _request, schema:
+                        schema(goal="benchmark", preparation_dataset_ids=["breast"] if prepare else []))
+    context = workflow.initialize_supervisor_intent({"user_requirement": requirement})
+    action = automatic_supervisor_action(context)
+    assert (action["tool"] if action else None) == ("process_dataset" if prepare else None)
+    context["prepared_entries"] = {"breast": {"dataset_id": "breast"}}
+    assert automatic_supervisor_action(context) is None
+    assert "specify" in available_stages(context)
+    assert "finish" not in available_stages(context)
+    with pytest.raises(ValueError, match="Delivery is not complete"):
+        workflow.finish_supervisor(context)
+
+
+def test_preparation_clarification_and_requested_dataset_completion(monkeypatch):
+    context = {"user_requirement": "Prepare dataset X",
+               "request_intent": {"goal": "preparation_only", "preparation_dataset_ids": ["x"]},
+               "prepared_entries": {"other": {"dataset_id": "other"}}}
+    assert "finish" not in available_stages(context)
+    with pytest.raises(ValueError, match="requested datasets"):
+        workflow.finish_supervisor(context)
+    context["global_issue"] = {"status": "pending", "issue_id": "semantic", "question": "Which scope?"}
+    assert available_stages(context) == {"ask_user"}
+    assert automatic_supervisor_action(context) is None
+    context["global_issue"]["status"] = "answered"
+    assert automatic_supervisor_action(context)["tool"] == "resolve_clarification"
+
+
+def test_request_intent_is_reused_on_resume(monkeypatch):
+    context = {"user_requirement": "Prepare X", "intent_requirement": "Prepare X",
+               "request_intent": {"goal": "preparation_only", "preparation_dataset_ids": ["x"]}}
+    monkeypatch.setattr(workflow, "complete_validated_json", lambda *_args: pytest.fail("unchanged intent reclassified"))
+    assert workflow.initialize_supervisor_intent(context) == context
+
+
+def test_preparation_only_harness_never_calls_specify_or_asks_language(tmp_path, monkeypatch):
+    from medbenchagent.runtime.harness import compile_agent, result
+
+    root = tmp_path / "raw"
+    root.mkdir()
+    (root / "image.png").write_bytes(b"pixels")
+    calls = []
+    monkeypatch.setattr(workflow, "complete_validated_json", lambda _prompt, _request, schema:
+                        schema(goal="preparation_only", preparation_dataset_ids=["raw"]))
+    monkeypatch.setattr("medbenchagent.runtime.harness.complete_validated_json",
+                        lambda *_args, **_kwargs: pytest.fail("No Supervisor model action or benchmark question expected"))
+
+    def process(context, **arguments):
+        calls.append(arguments)
+        return result("success", "Validated and registered", prepared_entries={"raw": {"dataset_id": "raw"}})
+
+    graph = compile_agent(
+        "SupervisorAgent", workflow._supervisor_instructions,
+        {"process_dataset": process, "specify": lambda _: pytest.fail("specify called")},
+        lambda _: {}, workflow.finish_supervisor,
+        available_tools=workflow.available_stages,
+        automatic_action=workflow.automatic_supervisor_action,
+        initialize_context=workflow.initialize_supervisor_intent,
+        args_schemas={"process_dataset": workflow.ProcessDatasetArguments},
+    )
+    output = graph.invoke({"context": {
+        "run_id": "test", "run_directory": str(tmp_path / "run"),
+        "operation_directory": str(tmp_path / "run/ops"),
+        "construction_events_path": str(tmp_path / "events.jsonl"),
+        "user_requirement": f"Prepare dataset raw from {root}",
+    }})
+    assert output["result"]["status"] == "complete"
+    assert len(calls) == 1
+    assert calls[0]["dataset_id"] == "raw"
 
 
 def test_source_discovery_still_reports_unusable_path(tmp_path):

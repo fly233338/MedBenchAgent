@@ -75,8 +75,6 @@ def load_dataset_catalog(catalog_path=None):
     entries = value.get("datasets", [])
     for entry in entries:
         validate_dataset_id(entry["dataset_id"])
-        if "image_manifest_path" not in entry:
-            raise DatasetCatalogError("Catalog entries require image_manifest_path")
     return entries
 
 

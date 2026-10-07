@@ -4,6 +4,11 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 ## 运行流程
 
+Supervisor 先由模型解析完整请求与澄清历史，并将经结构校验的请求意图保存在 checkpoint。
+仅准备数据的请求不提取 benchmark brief，不询问 benchmark language，也不进入选择、规划或生成；
+显式可读 raw source 直接进入 preparation，所请求的数据集验证并登记后 finish。
+联合准备和 benchmark 请求先准备原始数据，再提取 brief 并继续 benchmark 流程；benchmark 只有 validated delivery 后才完成。
+
 一次请求对应一个可恢复的 Run。Supervisor 可以在同一 Run 内：
 
 1. 检查 Catalog、已登记数据集和配置来源；

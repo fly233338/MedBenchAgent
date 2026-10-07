@@ -147,7 +147,7 @@ def restore_business(context):
             return None
     if available("Requirement"):
         brief = store.load("benchmark_info.json")
-        for key in ("user_requirement", "sample_scope", "allocation_preferences", "max_total_tasks_per_image"):
+        for key in ("sample_scope", "allocation_preferences", "max_total_tasks_per_image"):
             if key in brief:
                 context[key] = brief[key]
         context.update(benchmark_info=brief, brief_ready=not brief.get("needs_specification") and not brief.get("missing_fields"),
