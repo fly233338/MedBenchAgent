@@ -88,7 +88,7 @@ def test_prepare_only_routes_directly_and_finishes_without_benchmark_fields(tmp_
     assert workflow.finish_supervisor(context)["status"] == "complete"
     assert "process_dataset" in SUPERVISOR_INSTRUCTIONS
     assert "Do not ask" in SUPERVISOR_INSTRUCTIONS
-    assert "Discover candidates once" in SUPERVISOR_INSTRUCTIONS
+    assert "Call `discover_datasets` to freeze validated Prepared candidates." in SUPERVISOR_INSTRUCTIONS
     assert "请" not in SUPERVISOR_INSTRUCTIONS
 
 
