@@ -8,6 +8,8 @@ place.
 
 from __future__ import annotations
 
+from medbenchagent.runtime.run_artifacts import atomic_write_json
+
 import hashlib
 import json
 import os
@@ -190,9 +192,12 @@ class RegistrySnapshot:
     def resolver_policy(self) -> dict[str, Any]:
         return self.documents["resolver_policy.json"]
 
-    def prompt(self, name: str) -> str:
+    def prompt(self, name: str, *, include_shared: bool = True) -> str:
         try:
-            return self.prompts[name]
+            prompt = self.prompts[name]
+            if include_shared and name in {"task_planning", "axis_analysis", "scenario_screening", "leaf_task_design", "scenario_review"}:
+                return self.prompts["shared_planning_policy"] + "\n\n" + prompt
+            return prompt
         except KeyError as exc:
             raise ValueError(f"BIR prompt is missing: {name}") from exc
 
@@ -485,3 +490,95 @@ def _atomic_replace(destination: Path, data: bytes) -> None:
     finally:
         temporary.unlink(missing_ok=True)
 
+
+
+def persist_task_plan(context, plan, *, plan_path, bir, access) -> dict[str, Any]:
+    directory = Path(context["operation_directory"])
+    directory.mkdir(parents=True, exist_ok=True)
+    plan_value = plan.model_dump(mode="json")
+    axis_path = directory / "axis_decisions.json"
+    scenarios_path = directory / "task_scenarios.json"
+    exclusions_path = directory / "scenario_exclusions.json"
+    leaves_path = directory / "leaf_tasks.json"
+    extension_selection_path = directory / "extension_selection.json"
+    axis_value = {key: [item.model_dump(mode="json") for item in value] for key, value in plan.axis_decisions.items()}
+    scenarios_value = {
+        key: {
+            "scenario_id": value.scenario_id,
+            "input_structure": value.input_structure,
+            "operation": value.operation,
+            "clinical_target": value.clinical_target,
+            "capability_category": value.capability_category.value,
+            "feasible_case_count": value.feasible_case_count,
+            "status": value.status,
+            "exclusion_reason": value.exclusion_reason,
+            "leaf_task_ids": value.leaf_task_ids,
+            "screening_decision": value.screening_decision,
+            "screening_reason": value.screening_reason,
+            "screening_supporting_fields": value.screening_supporting_fields,
+            "validated_clinical_targets": [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value.validated_clinical_targets],
+        }
+        for key, value in plan.scenarios.items()
+        if not value.exclusion_reason
+    }
+    exclusions_value = {
+        key: {
+            "scenario_id": value.scenario_id,
+            "input_structure": value.input_structure,
+            "operation": value.operation,
+            "clinical_target": value.clinical_target,
+            "feasible_case_count": value.feasible_case_count,
+            "stage": value.exclusion_stage,
+            "reason": value.exclusion_reason,
+            "evidence_basis": [item.model_dump(mode="json") for item in value.exclusion_evidence],
+            "screening_decision": value.screening_decision,
+            "screening_reason": value.screening_reason,
+            "screening_supporting_fields": value.screening_supporting_fields,
+            "validated_clinical_targets": [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value.validated_clinical_targets],
+        }
+        for key, value in plan.scenarios.items()
+        if value.exclusion_reason
+    }
+    leaves_value = {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()}
+    reviews_value = {key: value.model_dump(mode="json") for key, value in plan.reviews.items()}
+    if bir:
+        dataset_id = context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))
+        prefix = f"datasets/{dataset_id}/planning/"
+        changes = {prefix + "task_plan.json": plan_value}
+        changed = {}
+        for relative, value in changes.items():
+            path = bir.root / Path(relative)
+            if not path.is_file() or json.loads(path.read_text(encoding="utf-8")) != value:
+                changed[relative] = value
+        if changed:
+            commit = bir.transaction(changed, run_id=context.get("run_id", "unknown"), actor="task_planning",
+                                     dependencies={"registry": bir.registry().digest, "access": access.get("revision", "")})
+            context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
+        if Path(plan_path).resolve() != (bir.root / prefix / "task_plan.json").resolve():
+            bir.materialize(prefix + "task_plan.json", plan_path)
+    else:
+        atomic_write_json(plan_path, plan_value)
+    atomic_write_json(axis_path, axis_value)
+    atomic_write_json(scenarios_path, scenarios_value)
+    atomic_write_json(exclusions_path, exclusions_value)
+    atomic_write_json(leaves_path, leaves_value)
+    atomic_write_json(extension_selection_path, plan.extension_selection)
+    atomic_write_json(directory / "reviews.json", reviews_value)
+    return {
+        "task_plan_path": str(bir.root / prefix / "task_plan.json") if bir else str(plan_path),
+        "task_plan": plan.model_dump(mode="json"),
+        "axis_decisions_path": str(axis_path),
+        "task_scenarios_path": str(scenarios_path),
+        "scenario_exclusions_path": str(exclusions_path),
+        "leaf_tasks_path": str(leaves_path),
+        "extension_selection_path": str(extension_selection_path),
+        "extension_selection": plan.extension_selection,
+        "reviews_path": str(directory / "reviews.json"),
+        "task_scenarios": scenarios_value,
+        "leaf_tasks": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
+        "task_nodes_path": str(scenarios_path),
+        "task_nodes": scenarios_value,
+        "task_leaves": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
+        "bir_summary_ref": ({"revision": context.get("bir_revision"), "dataset_id": context.get("dataset_scope"),
+                              "task_plan": str(plan_path)} if context.get("bir_path") else None),
+    }

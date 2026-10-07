@@ -46,7 +46,7 @@ def resolve_task_input(case, leaf, sampling_unit, context):
         matches = [r for r in records if r.case_id == case["case_id"] and r.asset_id == evidence["value"]]
         if sampling_unit and sampling_unit.view_ids:
             matches = [r for r in matches if r.view_id in sampling_unit.view_ids]
-        elif evidence.get("view_id"):
+        if evidence.get("view_id"):
             matches = [r for r in matches if r.view_id == evidence["view_id"]]
         if sampling_unit and sampling_unit.panel_id:
             matches = [r for r in matches if r.panel_id == sampling_unit.panel_id]
@@ -502,7 +502,7 @@ def resolve(
     roles: dict[str, list[str]] = {}
     input_bindings: list[dict[str, Any]] = []
     input_ids: list[str] = []
-    asset_ids: set[str] = set()
+    asset_ids: set[tuple[str, str | None]] = set()
     for selector in spec.inputs:
         rows = _evidence(case, selector, roles)
         if resolver_context and resolver_context.sampling_unit:
@@ -516,7 +516,13 @@ def resolve(
         if any(item.get("mask") is not None for item in rows):
             return NotApplicable(reason="reference_only_mask_input")
         if selector.evidence_type == "asset":
-            selected_assets = [str(item["value"]) for item in rows]
+            selected_assets = []
+            for item in rows:
+                identifier = str(item["value"])
+                asset = resolver_context.asset(identifier) if resolver_context else None
+                # Explicit views of one volume are different presentations, not different Assets.
+                view = item.get("view_id") if asset and asset.get("kind") == "volume" else None
+                selected_assets.append((identifier, view))
             if asset_ids.intersection(selected_assets) or len(set(selected_assets)) != len(selected_assets):
                 return NotApplicable(reason="duplicate_input_asset")
             asset_ids.update(selected_assets)

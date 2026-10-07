@@ -123,7 +123,7 @@ class OpenHandsDatasetRuntime:
         if any(workspace.is_relative_to(Path(root).resolve()) or Path(root).resolve().is_relative_to(workspace)
                for root in source_roots.values()):
             raise ValueError("Worker workspace and original source must be separate")
-        for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
+        for name in ("work/inputs", "work/outputs", "work/logs", "work/conversations"):
             (workspace / name).mkdir(parents=True, exist_ok=True)
         self._forward_events(workspace, request.construction_events_path)
         conversation_id = request.conversation_id
@@ -150,19 +150,19 @@ class OpenHandsDatasetRuntime:
         if runtime["backend"] == "docker":
             deployment.update(
                 base_url=_container_url(request.base_url),
-                construction_events_path="/workspace/logs/coding_events.jsonl",
-                context_path="/workspace/inputs/context.json",
-                prompt_path="/workspace/inputs/prompt.md",
+                construction_events_path="/workspace/work/logs/coding_events.jsonl",
+                context_path="/workspace/work/inputs/context.json",
+                prompt_path="/workspace/prompt.md",
             )
         else:
             deployment.update(
                 base_url=request.base_url,
-                construction_events_path=str(workspace / "logs" / "coding_events.jsonl"),
-                context_path=str((workspace / "inputs" / "context.json").resolve()),
-                prompt_path=str((workspace / "inputs" / "prompt.md").resolve()),
+                construction_events_path=str(workspace / "work" / "logs" / "coding_events.jsonl"),
+                context_path=str((workspace / "work" / "inputs" / "context.json").resolve()),
+                prompt_path=str((workspace / "prompt.md").resolve()),
             )
-        request_path = workspace / "state" / "request.json"
-        result_path = workspace / "state" / "result.json"
+        request_path = workspace / "work" / "deployment.json"
+        result_path = workspace / "result.json"
         if request_path.is_file() and json.loads(request_path.read_text(encoding="utf-8")) == deployment:
             if result_path.is_file():
                 cached = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
@@ -223,9 +223,9 @@ class OpenHandsDatasetRuntime:
             command.extend(["--mount", _mount(Path(root).resolve(), f"/workspace/sources/{source_id}", readonly=True)])
         if request.previous_attempt_root:
             command.extend(["--mount", _mount(Path(request.previous_attempt_root).resolve(), "/workspace/previous", readonly=True)])
-        for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
-            command.extend(["--mount", _mount(workspace / name, f"/workspace/{name}", readonly=name == "inputs")])
-        command.extend([image_id, "python", "/app/openhands_worker.py", "/workspace/state/request.json", "/workspace/state/result.json"])
+        command.extend(["--mount", _mount(workspace, "/workspace"),
+                        "--mount", _mount(workspace / "work" / "inputs", "/workspace/work/inputs", readonly=True)])
+        command.extend([image_id, "python", "/app/openhands_worker.py", "/workspace/work/deployment.json", "/workspace/result.json"])
         try:
             existing = subprocess.run(["docker", "container", "inspect", container_name],
                                       capture_output=True, text=True, timeout=15, check=False)
@@ -244,8 +244,8 @@ class OpenHandsDatasetRuntime:
         finally:
             self._active.pop(conversation_id, None)
             try:
-                with (workspace / "logs" / "stdout.log").open("a", encoding="utf-8") as stdout, \
-                        (workspace / "logs" / "stderr.log").open("a", encoding="utf-8") as stderr:
+                with (workspace / "work" / "logs" / "stdout.log").open("a", encoding="utf-8") as stdout, \
+                        (workspace / "work" / "logs" / "stderr.log").open("a", encoding="utf-8") as stderr:
                     subprocess.run(["docker", "logs", container_name], stdout=stdout, stderr=stderr, timeout=30, check=False)
                 subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=30, check=False)
             except (OSError, subprocess.TimeoutExpired):
@@ -281,12 +281,12 @@ class OpenHandsDatasetRuntime:
             except (OSError, ValueError, TypeError):
                 pass
         return self._record_result(workspace, request, self._failure(
-            request, "failed", self._failure_summary(workspace / "logs" / "stderr.log"), "worker_execution_failed"))
+            request, "failed", self._failure_summary(workspace / "work" / "logs" / "stderr.log"), "worker_execution_failed"))
 
     @staticmethod
     def _record_result(workspace: Path, request: StageRequest, result: StageResult) -> StageResult:
         result = result.model_copy(update={"attempt_id": request.attempt_id, "execution_key": request.execution_key})
-        atomic_write_json(workspace / "state" / "result.json", result.model_dump(mode="json"))
+        atomic_write_json(workspace / "result.json", result.model_dump(mode="json"))
         return result
 
     @staticmethod
@@ -302,8 +302,8 @@ class OpenHandsDatasetRuntime:
                        "MEDBENCH_LLM_API_KEY": key}
         try:
             timed_out = False
-            with (workspace / "logs" / "stdout.log").open("a", encoding="utf-8") as stdout, \
-                    (workspace / "logs" / "stderr.log").open("a", encoding="utf-8") as stderr:
+            with (workspace / "work" / "logs" / "stdout.log").open("a", encoding="utf-8") as stdout, \
+                    (workspace / "work" / "logs" / "stderr.log").open("a", encoding="utf-8") as stderr:
                 process = subprocess.Popen(
                     command, cwd=workspace, env=environment, stdout=stdout, stderr=stderr,
                     start_new_session=os.name != "nt",
@@ -351,8 +351,8 @@ class OpenHandsDatasetRuntime:
 
     @staticmethod
     def _forward_events_unlocked(workspace: Path, destination: str) -> None:
-        events = workspace / "logs" / "coding_events.jsonl"
-        marker = workspace / "state" / "events_forwarded.json"
+        events = workspace / "work" / "logs" / "coding_events.jsonl"
+        marker = workspace / "work" / "events_forwarded.json"
         if not destination or not events.is_file():
             return
         saved = json.loads(marker.read_text(encoding="utf-8")) if marker.is_file() else {}
@@ -417,8 +417,8 @@ class OpenHandsDatasetRuntime:
             raise ValueError("Worker did not return every required output")
         outputs = {}
         for name, path in result.outputs.items():
-            expected = workspace / "outputs" / name
-            valid_path = (path == f"/workspace/outputs/{name}" if backend == "docker"
+            expected = workspace / "work" / "outputs" / name
+            valid_path = (path == f"/workspace/work/outputs/{name}" if backend == "docker"
                           else Path(path).resolve() == expected.resolve())
             relative_name = Path(name)
             if relative_name.is_absolute() or ".." in relative_name.parts or not valid_path or not expected.is_file():

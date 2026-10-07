@@ -43,29 +43,6 @@ class AskUserArguments(NoArguments):
         return self
 
 
-class AllocationPreference(NoArguments):
-    id: NonEmpty
-    description: NonEmpty
-    quote: NonEmpty
-
-
-class Delegation(NoArguments):
-    revision_notes: str = ""
-
-
-class DelegationArguments(NoArguments):
-    delegation: Delegation = Field(default_factory=Delegation)
-
-
-class ProcessDatasetArguments(NoArguments):
-    """Only public data-processing tool contract."""
-
-    dataset_id: DatasetId
-    mode: Literal["reuse_or_process", "rebuild"] = "reuse_or_process"
-    issue_ids: list[NonEmpty] = Field(default_factory=list)
-    notes: str = ""
-
-
 class PageArguments(NoArguments):
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=20, ge=1, le=50)

@@ -27,7 +27,7 @@ def freeze_sources(context: dict[str, Any], workspace: Path):
     manifests = {}
     digests = {}
     for source in sources:
-        manifest = workspace / "inputs/source_manifests" / source.id
+        manifest = workspace / "work/inputs/source_manifests" / source.id
         if (manifest / "source.json").is_file():
             saved = Source.model_validate_json((manifest / "source.json").read_text(encoding="utf-8"))
             if saved != source:

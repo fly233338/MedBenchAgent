@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from medbenchagent.data.task_facts import _asset_role, build_dataset_facts, case_facts
+from medbenchagent.data.task_facts import _asset_rows, build_dataset_facts, case_facts, compact_case, compact_catalog_entry, compact_scalar
 from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.access import DatasetAccessReceipt
 from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve_task_input
@@ -314,16 +314,6 @@ def _field_meanings(context: dict[str, Any]) -> dict[str, str]:
     return meanings
 
 
-def _compact_scalar(value: Any, *, limit: int = 180) -> Any:
-    if isinstance(value, str) and len(value) > limit:
-        return value[:limit] + "…"
-    if isinstance(value, list):
-        return [_compact_scalar(item, limit=limit) for item in value[:8]]
-    if isinstance(value, dict):
-        return {key: _compact_scalar(item, limit=limit) for key, item in list(value.items())[:12]}
-    return value
-
-
 _LEAF_CONTEXT_CHAR_BUDGET = 64000
 
 
@@ -470,60 +460,6 @@ def _case_evidence_names(context: dict[str, Any]) -> set[str]:
         return set()
 
 
-def _asset_rows(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = []
-    for item in case.get("evidence", []):
-        if item.get("type") != "asset" or item.get("value") not in assets:
-            continue
-        asset = assets[item["value"]]
-        if asset.get("kind") not in {"image", "volume"}:
-            continue
-        if _asset_role(item, assets) != "primary":
-            continue
-        rows.append(item)
-    return rows
-
-
-def _compact_case(
-    case: dict[str, Any],
-    assets: dict[str, dict[str, Any]],
-    *,
-    names: set[str] | None = None,
-    reference_names: set[str] | None = None,
-) -> dict[str, Any]:
-    primary = _asset_rows(case, assets)
-    primary_ids = {item.get("id") for item in primary}
-    rows = []
-    for item in case.get("evidence", []):
-        name = item.get("name")
-        if item.get("type") == "asset" and item in primary:
-            rows.append(item)
-            continue
-        if item.get("mask") is not None or (reference_names and name in reference_names):
-            continue
-        if reference_names is not None and item.get("type") in {"value", "text", "region"} and item.get("input_visibility") != "model_visible":
-            continue
-        if names and name not in names:
-            continue
-        refs = set(item.get("ref", []))
-        if item.get("type") in {"value", "text", "region"} and (refs & primary_ids or not primary_ids):
-            rows.append({**item, "value": _compact_scalar(item.get("value"))})
-    return {"evidence": rows[:20]}
-
-
-def _compact_catalog_entry(entry: dict[str, Any], meaning: str | None = None) -> dict[str, Any]:
-    item = {key: entry[key] for key in ("name", "cases", "types", "units", "value_count") if key in entry}
-    if entry.get("observed_values"):
-        item["observed_values"] = [
-            {**value, "value": _compact_scalar(value.get("value"))}
-            for value in entry["observed_values"][:8]
-            if isinstance(value, dict)
-        ]
-    if meaning:
-        item["meaning"] = meaning
-    return item
-
-
 def _scenario_context_payload(context: dict[str, Any], plan: TaskPlanState, scenario: Any, raw: dict[str, Any]) -> dict[str, Any]:
     from medbenchagent.data.index import DatasetIndex
 
@@ -540,11 +476,11 @@ def _scenario_context_payload(context: dict[str, Any], plan: TaskPlanState, scen
     ordered_names = [name for name in input_names if name in catalog]
     ordered_names.extend(name for name in raw_entries if name in catalog and name not in ordered_names)
     ordered_names.extend(name for name in catalog if name not in ordered_names)
-    evidence = [_compact_catalog_entry(catalog[name], meanings.get(name) or catalog[name].get("meaning")) for name in ordered_names[:30]]
+    evidence = [compact_catalog_entry(catalog[name], meanings.get(name) or catalog[name].get("meaning")) for name in ordered_names[:30]]
     assets = {row.get("asset_id"): row for row in DatasetIndex(_access(context)).assets()}
     candidate_names = {item.get("name") for item in evidence if item.get("name")}
     samples = [
-        _compact_case(
+        compact_case(
             case,
             assets,
             names=candidate_names,
@@ -587,7 +523,7 @@ def _documented_annotation_semantics(context: dict[str, Any]) -> dict[str, Any]:
             value = mapping[key]
             if isinstance(value, list):
                 value = value[:50]
-            selected[key] = _compact_scalar(value, limit=240)
+            selected[key] = compact_scalar(value, limit=240)
     return {"status": "available", "source": str(path), "content": selected}
 
 
@@ -636,7 +572,7 @@ def _field_semantics(context: dict[str, Any], names: list[str]) -> dict[str, Any
         }
         for key in ("meaning", "description", "entity", "object", "unit", "relation", "missing"):
             if key in item:
-                selected[key] = _compact_scalar(item[key], limit=180)
+                selected[key] = compact_scalar(item[key], limit=180)
         selected = {key: value for key, value in selected.items() if value not in (None, "")}
         if selected:
             result[name] = selected
@@ -649,12 +585,12 @@ def _leaf_context(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any
     scenario_id = scenario.scenario_id if scenario else None
     cache = _bound_cache(context, plan, scenario_id)
     catalog = list(cache.get("planning_evidence") or [
-        _compact_catalog_entry(item, item.get("meaning"))
+        compact_catalog_entry(item, item.get("meaning"))
         for item in list(_catalog_map(facts.get("evidence_catalog", {})).values())[:30]
     ])
     for name, item in cache.get("catalog_fields", {}).items():
         if name not in {entry.get("name") for entry in catalog}:
-            compact = _compact_catalog_entry(item, item.get("meaning"))
+            compact = compact_catalog_entry(item, item.get("meaning"))
             if item.get("field_values"):
                 compact["field_values"] = item["field_values"][:20]
             if item.get("case_samples"):
@@ -674,7 +610,7 @@ def _leaf_context(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any
         from medbenchagent.data.index import DatasetIndex
         asset_rows = {row.get("asset_id"): row for row in DatasetIndex(_access(context)).assets()}
         representative = [
-            _compact_case(
+            compact_case(
                 case,
                 asset_rows,
                 names={item.get("name") for item in case.get("evidence", []) if item.get("name")},
@@ -747,7 +683,7 @@ def _leaf_diagnostics(context: dict[str, Any], plan: TaskPlanState, raw_leaf: An
     return {
         "attempted_leaf": attempted,
         "errors": errors,
-        "relevant_evidence": [_compact_catalog_entry(item, item.get("meaning")) for item in list(catalog.values())[:20]],
+        "relevant_evidence": [compact_catalog_entry(item, item.get("meaning")) for item in list(catalog.values())[:20]],
         "repair_hint": repair_hint,
     }
 
@@ -783,8 +719,14 @@ def _benchmark_brief(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_plan(context: dict[str, Any]) -> TaskPlanState:
+    bir = _bir(context)
+    if bir:
+        dataset = context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))
+        relative = f"datasets/{dataset}/planning/task_plan.json"
+        if (bir.root / relative).is_file():
+            return TaskPlanState.model_validate(bir.load(relative))
     path = _plan_path(context)
-    if path.is_file():
+    if not bir and path.is_file():
         return TaskPlanState.model_validate(_read(path))
     return TaskPlanState(
         dataset={"dataset_id": context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))}
@@ -921,172 +863,9 @@ def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) ->
     return paths
 
 
-def _write_artifacts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
-    directory = Path(context["operation_directory"])
-    directory.mkdir(parents=True, exist_ok=True)
-    plan_path = _plan_path(context)
-    plan_value = plan.model_dump(mode="json")
-    axis_path = directory / "axis_decisions.json"
-    scenarios_path = directory / "task_scenarios.json"
-    exclusions_path = directory / "scenario_exclusions.json"
-    leaves_path = directory / "leaf_tasks.json"
-    extension_selection_path = directory / "extension_selection.json"
-    axis_value = {key: [item.model_dump(mode="json") for item in value] for key, value in plan.axis_decisions.items()}
-    scenarios_value = {
-        key: {
-            "scenario_id": value.scenario_id,
-            "input_structure": value.input_structure,
-            "operation": value.operation,
-            "clinical_target": value.clinical_target,
-            "capability_category": value.capability_category.value,
-            "feasible_case_count": value.feasible_case_count,
-            "status": value.status,
-            "exclusion_reason": value.exclusion_reason,
-            "leaf_task_ids": value.leaf_task_ids,
-            "screening_decision": value.screening_decision,
-            "screening_reason": value.screening_reason,
-            "screening_supporting_fields": value.screening_supporting_fields,
-            "validated_clinical_targets": [_target_dump(item) for item in value.validated_clinical_targets],
-        }
-        for key, value in plan.scenarios.items()
-        if not value.exclusion_reason
-    }
-    exclusions_value = {
-        key: {
-            "scenario_id": value.scenario_id,
-            "input_structure": value.input_structure,
-            "operation": value.operation,
-            "clinical_target": value.clinical_target,
-            "feasible_case_count": value.feasible_case_count,
-            "stage": value.exclusion_stage,
-            "reason": value.exclusion_reason,
-            "evidence_basis": [item.model_dump(mode="json") for item in value.exclusion_evidence],
-            "screening_decision": value.screening_decision,
-            "screening_reason": value.screening_reason,
-            "screening_supporting_fields": value.screening_supporting_fields,
-            "validated_clinical_targets": [_target_dump(item) for item in value.validated_clinical_targets],
-        }
-        for key, value in plan.scenarios.items()
-        if value.exclusion_reason
-    }
-    leaves_value = {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()}
-    reviews_value = {key: value.model_dump(mode="json") for key, value in plan.reviews.items()}
-    bir = _bir(context)
-    if bir:
-        dataset_id = context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))
-        prefix = f"datasets/{dataset_id}/planning/"
-        changes = {
-            prefix + "task_plan.json": plan_value,
-            prefix + "axis_decisions.json": axis_value,
-            prefix + "scenarios.json": scenarios_value,
-            prefix + "scenario_exclusions.json": exclusions_value,
-            prefix + "leaf_tasks.json": leaves_value,
-            prefix + "reviews.json": reviews_value,
-            prefix + "extension_selection.json": plan.extension_selection,
-        }
-        changed = {}
-        for relative, value in changes.items():
-            path = bir.root / Path(*_safe_parts(relative))
-            if not path.is_file() or json.loads(path.read_text(encoding="utf-8")) != value:
-                changed[relative] = value
-        if changed:
-            commit = bir.transaction(changed, run_id=context.get("run_id", "unknown"), actor="task_planning",
-                                     dependencies={"registry": bir.registry().digest, "access": _access(context).get("revision", "")})
-            context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
-        bir.materialize(prefix + "task_plan.json", plan_path)
-    else:
-        _write_json(plan_path, plan_value)
-    _write_json(axis_path, axis_value)
-    _write_json(scenarios_path, scenarios_value)
-    _write_json(exclusions_path, exclusions_value)
-    _write_json(leaves_path, leaves_value)
-    _write_json(extension_selection_path, plan.extension_selection)
-    return {
-        "task_plan_path": str(plan_path),
-        "task_plan": plan.model_dump(mode="json"),
-        "axis_decisions_path": str(axis_path),
-        "task_scenarios_path": str(scenarios_path),
-        "scenario_exclusions_path": str(exclusions_path),
-        "leaf_tasks_path": str(leaves_path),
-        "extension_selection_path": str(extension_selection_path),
-        "extension_selection": plan.extension_selection,
-        "reviews_path": str((Path(context.get("bir_path")) / "datasets" / context.get("dataset_scope", "dataset") / "planning" / "reviews.json") if context.get("bir_path") else directory / "reviews.json"),
-        "task_scenarios": scenarios_value,
-        "leaf_tasks": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
-        "task_nodes_path": str(scenarios_path),
-        "task_nodes": scenarios_value,
-        "task_leaves": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
-        "bir_summary_ref": ({"revision": context.get("bir_revision"), "dataset_id": context.get("dataset_scope"),
-                              "task_plan": str(plan_path)} if context.get("bir_path") else None),
-    }
-
-
-def _safe_parts(relative: str) -> tuple[str, ...]:
-    return tuple(part for part in relative.replace("\\", "/").split("/") if part)
-
-
-def _assert_derived_artifact_consistency(context: dict[str, Any], plan: TaskPlanState) -> None:
-    """Ensure published plan views are exact projections of one canonical plan."""
-
-    directory = Path(context["operation_directory"])
-    scenarios_path = directory / "task_scenarios.json"
-    exclusions_path = directory / "scenario_exclusions.json"
-    leaves_path = directory / "leaf_tasks.json"
-    extension_selection_path = directory / "extension_selection.json"
-    if (not scenarios_path.is_file() or not exclusions_path.is_file()
-            or not leaves_path.is_file() or not extension_selection_path.is_file()):
-        raise ValueError("Task Plan derived artifacts are missing")
-    expected_scenarios = {
-        key: {
-            "scenario_id": value.scenario_id,
-            "input_structure": value.input_structure,
-            "operation": value.operation,
-            "clinical_target": value.clinical_target,
-            "capability_category": value.capability_category.value,
-            "feasible_case_count": value.feasible_case_count,
-            "status": value.status,
-            "exclusion_reason": value.exclusion_reason,
-            "leaf_task_ids": value.leaf_task_ids,
-            "screening_decision": value.screening_decision,
-            "screening_reason": value.screening_reason,
-            "screening_supporting_fields": value.screening_supporting_fields,
-            "validated_clinical_targets": [_target_dump(item) for item in value.validated_clinical_targets],
-        }
-        for key, value in plan.scenarios.items()
-        if not value.exclusion_reason
-    }
-    expected_leaves = {
-        key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()
-    }
-    expected_exclusions = {
-        key: {
-            "scenario_id": value.scenario_id,
-            "input_structure": value.input_structure,
-            "operation": value.operation,
-            "clinical_target": value.clinical_target,
-            "feasible_case_count": value.feasible_case_count,
-            "stage": value.exclusion_stage,
-            "reason": value.exclusion_reason,
-            "evidence_basis": [item.model_dump(mode="json") for item in value.exclusion_evidence],
-            "screening_decision": value.screening_decision,
-            "screening_reason": value.screening_reason,
-            "screening_supporting_fields": value.screening_supporting_fields,
-            "validated_clinical_targets": [_target_dump(item) for item in value.validated_clinical_targets],
-        }
-        for key, value in plan.scenarios.items()
-        if value.exclusion_reason
-    }
-    if _read(scenarios_path) != expected_scenarios:
-        raise ValueError("task_scenarios.json is inconsistent with task_plan.json")
-    if _read(leaves_path) != expected_leaves:
-        raise ValueError("leaf_tasks.json is inconsistent with task_plan.json")
-    if _read(exclusions_path) != expected_exclusions:
-        raise ValueError("scenario_exclusions.json is inconsistent with task_plan.json")
-    if _read(extension_selection_path) != plan.extension_selection:
-        raise ValueError("extension_selection.json is inconsistent with task_plan.json")
-
-
-_write_derived_artifacts = _write_artifacts
+def _write_artifacts(context, plan):
+    from medbenchagent.planning.bir import persist_task_plan
+    return persist_task_plan(context, plan, plan_path=_plan_path(context), bir=_bir(context), access=_access(context))
 
 
 def _initialize_planning_context(context: dict[str, Any]) -> dict[str, Any]:
@@ -1271,7 +1050,7 @@ def _screening_payload(context: dict[str, Any], plan: TaskPlanState, scenario) -
     meanings = _field_meanings(context)
     catalog = []
     for entry in list(_catalog_map(facts.get("evidence_catalog", {})).values())[:80]:
-        item = _compact_catalog_entry(entry, meanings.get(entry.get("name")) or entry.get("meaning"))
+        item = compact_catalog_entry(entry, meanings.get(entry.get("name")) or entry.get("meaning"))
         item["annotation_semantics"] = {
             "scope": "documented in mapping.json when available",
             "missing": "unavailable unless documented; missing evidence is not negative",
@@ -1624,7 +1403,7 @@ def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=
     payload = {
         "revision": _read(paths["catalog"]).get("revision"),
         "query": {"offset": offset, "limit": limit, "names": requested},
-        "entries": [_compact_catalog_entry(item, item.get("meaning")) for item in page],
+        "entries": [compact_catalog_entry(item, item.get("meaning")) for item in page],
         "total": len(entries),
         "next_offset": offset + limit if offset + limit < len(entries) else None,
         "unmatched_names": unmatched,
@@ -1640,7 +1419,7 @@ def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=
             compact_values = []
             truncated = False
             for item in value_page.get("values", []):
-                value = _compact_scalar(item.get("value"), limit=180)
+                value = compact_scalar(item.get("value"), limit=180)
                 truncated = truncated or value != item.get("value")
                 compact_values.append({"value": value, "count": item.get("count", 0)})
             values[name] = {
@@ -1649,7 +1428,7 @@ def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=
                 "truncated": truncated,
             }
             cases = query_index.sample(evidence_name=name, limit=3).get("values", [])
-            samples[name] = [_compact_case(case, assets, names={name}) for case in cases]
+            samples[name] = [compact_case(case, assets, names={name}) for case in cases]
         payload["field_values"] = values
         payload["case_samples"] = samples
     cached = state["catalog_cache"].get(query)
@@ -2290,7 +2069,7 @@ def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
                         f"expected {expected_templates}"
                     )
     updates = _write_artifacts(context, plan)
-    _assert_derived_artifact_consistency(context, plan)
+    _write_artifacts(context, plan)
     versions = publish(
         context, "Plan", {"task_plan": updates["task_plan_path"]},
         ("Dataset", "PlanningConfig", "TemplateConfig"),
@@ -2488,7 +2267,7 @@ def _planning_instructions(context: dict[str, Any]) -> str:
         runtime += "\nReview exactly one pending Scenario with review_candidate_scenarios, passing its scenario_id. Do not design Leaf Tasks until all Scenario Reviews are complete."
     if plan.phase == "leaves" and store:
         coordinator = base
-        leaf = _render_leaf_prompt(context, plan, store.registry().prompt("leaf_task_design"))
+        leaf = _render_leaf_prompt(context, plan, store.registry().prompt("leaf_task_design", include_shared=False))
         return "\n\n".join((coordinator, runtime, leaf))
     return base + runtime
 

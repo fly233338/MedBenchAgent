@@ -217,6 +217,34 @@ def test_population_summary_and_projection_share_one_source(tmp_path):
     assert len((tmp_path / "image_population.jsonl").read_text(encoding="utf-8").splitlines()) == summary.unit_count
 
 
+def test_inspector_replay_uses_current_attempt_layout(tmp_path):
+    from medbenchagent.preparation.validation import replay_inspector
+    workspace = tmp_path / "attempt"
+    output = workspace / "work" / "outputs"
+    inputs = workspace / "work" / "inputs"
+    output.mkdir(parents=True)
+    inputs.mkdir(parents=True)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "record.txt").write_text("record", encoding="utf-8")
+    (inputs / "inspection_config.json").write_text(json.dumps({"sources": [{"source_id": "s"}]}), encoding="utf-8")
+    script = output / "inspect_source.py"
+    script.write_text(
+        "import argparse, json\nfrom pathlib import Path\n"
+        "p=argparse.ArgumentParser()\n"
+        "p.add_argument('--input-config'); p.add_argument('--output-dir'); p.add_argument('--mode')\n"
+        "a=p.parse_args(); config=json.loads(Path(a.input_config).read_text())\n"
+        "files=sorted(x.name for x in Path(config['sources'][0]['root']).iterdir())\n"
+        "for name in ['source_report.json','image_population.jsonl']:\n"
+        "    (Path(a.output_dir)/name).write_text(json.dumps(files), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    for name in ("source_report.json", "image_population.jsonl"):
+        (output / name).write_text(json.dumps(["record.txt"]), encoding="utf-8")
+    replay_inspector({p.name: str(p) for p in output.iterdir()},
+                     state={"source_roots": {"s": str(raw)}, "source_manifests": {"s": str(raw)}})
+
+
 def test_understand_validator_reports_structured_population_count_mismatch(tmp_path):
     candidate = _understand_candidate(tmp_path, report_count=1)
     result = validate_understand_candidate(

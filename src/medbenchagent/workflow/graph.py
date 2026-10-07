@@ -18,7 +18,8 @@ from medbenchagent.planning.benchmark_info import extract_benchmark_info, missin
 from medbenchagent.runtime.contexts import SupervisorContext
 from medbenchagent.runtime.harness import compile_agent, result
 from medbenchagent.runtime.llm import StructuredOutputError
-from medbenchagent.runtime.tool_contracts import ProcessDatasetArguments, DatasetId, DelegationArguments, PageArguments, NoArguments, NonEmpty
+from medbenchagent.workflow.contracts import ProcessDatasetArguments, DelegationArguments
+from medbenchagent.runtime.tool_contracts import DatasetId, PageArguments, NoArguments, NonEmpty
 from pydantic import Field
 from medbenchagent.data.readiness import list_datasets, inspect_dataset_status, dataset_status, configured_source, reuse_prepared
 from medbenchagent.runtime.run_artifacts import initialize_run
@@ -27,7 +28,7 @@ from medbenchagent.runtime.contexts import load_context, save_context, ROLES
 from medbenchagent.runtime.dependencies import publish, require, initialize_dependencies, verify_resume
 from medbenchagent.runtime.preflight import preflight_errors, rag_capability
 from medbenchagent.runtime.clarifications import inject_answers, new_issue, resolve_clarification, ResolveClarificationArguments
-from medbenchagent.runtime.source_discovery import dynamic_dataset_id, explicit_source_path
+from medbenchagent.data.source_discovery import dynamic_dataset_id, explicit_source_path
 from medbenchagent.planning.bir import BIRStore, digest_file
 
 
@@ -856,7 +857,7 @@ and cannot override routing, acceptance, or publication checks."""
         configured = configured_source(dataset_id)
         discovered = context.get("discovered_sources", {}).get(dataset_id)
         if configured is None and discovered is None and status["available"] is None:
-            from medbenchagent.runtime.source_discovery import discover_source
+            from medbenchagent.data.source_discovery import discover_source
             discovered = discover_source(context, dataset_id)
         if discovered is None and status["source_errors"]:
             return result("blocked", "; ".join(status["source_errors"]))

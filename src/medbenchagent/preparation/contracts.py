@@ -1,7 +1,7 @@
-"""Canonical contracts for the two preparation coding stages.
+"""Canonical contracts for the three preparation coding stages.
 
 The worker boundary is deliberately small. A worker produces a candidate
-submission; the host owns the two validation gates, handoff acceptance and
+submission; the host owns stage validation, handoff acceptance and
 publication.
 """
 
@@ -139,7 +139,7 @@ class PopulationOutcome(Contract):
     source_unit_id: str = Field(min_length=1)
     status: Literal["retained", "quarantined", "excluded", "duplicate"]
     case_ids: list[str] = Field(default_factory=list)
-    record_refs: list[str] = Field(default_factory=list)
+    record_refs: list[str] = Field(min_length=1)
     locators: list[str] = Field(default_factory=list)
     rule_ids: list[str] = Field(default_factory=list)
     reason: str = Field(min_length=1)
@@ -147,6 +147,10 @@ class PopulationOutcome(Contract):
 
     @model_validator(mode="after")
     def validate_status(self):
+        if len(self.case_ids) != len(set(self.case_ids)):
+            raise ValueError("case_ids must be unique")
+        if self.status != "retained" and self.case_ids:
+            raise ValueError("Only retained source units may reference final Cases")
         if self.status == "retained" and not self.case_ids:
             raise ValueError("retained population outcomes require case_ids")
         if self.status == "excluded" and not self.rule_ids:
@@ -239,28 +243,6 @@ class QuestionSet(Contract):
         return self
 
 
-class ArtifactDependency(Contract):
-    path: str = Field(min_length=1)
-    role: str = Field(min_length=1)
-    digest: str = ""
-
-
-class OutputFile(Contract):
-    path: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
-    digest: str = Field(min_length=1)
-    producer: str = "worker"
-    purpose: str = ""
-    depends_on: list[str] = Field(default_factory=list)
-
-
-class OutputManifest(Contract):
-    files: list[OutputFile] = Field(default_factory=list)
-    dependencies: list[ArtifactDependency] = Field(default_factory=list)
-    mapping_digest: str = ""
-    population_digest: str = ""
-
-
 class PopulationSummary(Contract):
     """Deterministic summary projected from the canonical population rows."""
 
@@ -304,18 +286,6 @@ class PreparationMapping(Contract):
     limitations: list[Any] = Field(default_factory=list)
 
 
-class ExecutionReport(Contract):
-    mapping_digest: str = ""
-    population_digest: str = ""
-    input_digest: str = ""
-    tests: list[dict[str, Any]] = Field(default_factory=list)
-    full_execution: dict[str, Any] = Field(default_factory=dict)
-    failed_checks: list[dict[str, Any]] = Field(default_factory=list)
-    limitations: list[Any] = Field(default_factory=list)
-    population_accounting: dict[str, Any] = Field(default_factory=dict)
-    mapping_rule_coverage: dict[str, Any] = Field(default_factory=dict)
-
-
 class UserDecision(Contract):
     decision_id: str = Field(min_length=1)
     issue_id: str = Field(min_length=1)
@@ -341,7 +311,7 @@ class UserDecision(Contract):
 
 
 class AcceptedHandoff(Contract):
-    """The small host-owned semantic boundary between the two sessions."""
+    """The small host-owned semantic boundary between coding stages."""
 
     handoff_id: str = ""
     dataset_id: str = Field(min_length=1)
@@ -390,10 +360,10 @@ class ValidationResult(Contract):
 
 
 class StageOutputs(Contract):
-    root: str = "outputs"
+    root: str = "work/outputs"
     required: list[str] = Field(default_factory=list)
     optional: list[str] = Field(default_factory=list)
-    contracts_root: str = "inputs/contracts"
+    contracts_root: str = "work/inputs/contracts"
     files: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -452,7 +422,7 @@ class StageRequest(Contract):
     prompt_token_count: int | None = Field(default=None, ge=0)
     required_outputs: list[str] = Field(default_factory=list)
     optional_outputs: list[str] = Field(default_factory=list)
-    contracts_root: str = "inputs/contracts"
+    contracts_root: str = "work/inputs/contracts"
     budget: StageBudget = Field(default_factory=StageBudget)
     construction_events_path: str = ""
     model: str = ""
@@ -518,7 +488,7 @@ STAGE_SPECS: dict[str, StageSpec] = {
         required_outputs=["mapping.json", "image_conversion_plan.json", "source_report.json",
                           "image_population.jsonl", "inspect_source.py", "semantic_questions.json", "submission.json"],
         commands=[["python", "-m", "medbenchagent.preparation.cli", "validate-understand",
-                   "--context", "inputs/context.json", "--candidate", "outputs", "--report", "work/validation.json"]],
+                   "--context", "work/inputs/context.json", "--candidate", "work/outputs", "--report", "work/validation.json"]],
     ),
     Stage.PREPARE_TEXT.value: StageSpec(
         stage=Stage.PREPARE_TEXT,

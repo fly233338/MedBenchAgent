@@ -182,7 +182,7 @@ def _run_stage(state, stage, worker):
         }], "stage_result": None}
     attempt_id = f"{stage.value}-{count}"
     workspace = Path(state["preparation_root"]) / "attempts" / stage.value / attempt_id
-    for name in ("inputs", "work", "outputs", "state", "logs", "conversations"):
+    for name in ("work/inputs", "work/outputs", "work/logs", "work/conversations"):
         (workspace / name).mkdir(parents=True, exist_ok=True)
     reference_root = state.get("previous_attempt_root")
     if stage is Stage.UNDERSTAND and state.get("revision_basis_handoff"):
@@ -192,7 +192,7 @@ def _run_stage(state, stage, worker):
         "previous_attempt_root": reference_root,
     }
     input_digest = stage_input_digest(stage, local)
-    request_path, result_path = workspace / "state/request.json", workspace / "state/result.json"
+    request_path, result_path = workspace / "request.json", workspace / "result.json"
     previous = json.loads(request_path.read_text(encoding="utf-8")) if request_path.is_file() else None
     same_attempt = bool(
         state.get("status") == "running" and previous
@@ -226,7 +226,7 @@ def _run_stage(state, stage, worker):
             conversation_id=uuid.uuid5(uuid.NAMESPACE_URL, f"{state['run_id']}:{state['dataset_id']}:{attempt_id}").hex,
             execution_key=execution_key, input_digest=packet.identity["input_digest"],
             source_snapshot_digest=state["source_snapshot_digest"], workspace=str(workspace),
-            prompt_path=str(workspace / "inputs/prompt.md"), context_path=str(workspace / "inputs/context.json"),
+            prompt_path=str(workspace / "prompt.md"), context_path=str(workspace / "work/inputs/context.json"),
             source_roots=state["source_roots"], source_manifests=state["source_manifests"],
             input_artifacts=artifacts, required_outputs=spec.required_outputs,
             optional_outputs=spec.optional_outputs, prompt_token_count=tokens,
@@ -241,7 +241,7 @@ def _run_stage(state, stage, worker):
             previous_attempt_root=reference_root,
             worker_runtime=state.get("execution_runtime", {}).get("coding_worker", {}),
             resume_existing=(same_attempt and not result_path.is_file()
-                             and any((workspace / "conversations").iterdir())),
+                             and any((workspace / "work" / "conversations").iterdir())),
             validation_feedback=state.get("validation_feedback", {}),
         )
         atomic_write_json(request_path, request.model_dump(mode="json"))
@@ -326,7 +326,7 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
         else:
             handoff = _handoff(state)
             validation = validate_candidate_submission(
-                {"root": str(Path(state["attempt_workspace"]) / "outputs")}, state,
+                {"root": str(Path(state["attempt_workspace"]) / "work" / "outputs")}, state,
             )
         _event(state, "stage_validated", status=validation.status)
         issues = [item.model_dump(mode="json") for item in validation.issues]
@@ -348,7 +348,7 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
                 revision_basis_handoff=None, implementation_repair_root=None,
             )
         if stage is Stage.PREPARE_TEXT:
-            root = Path(state["attempt_workspace"]) / "outputs"
+            root = Path(state["attempt_workspace"]) / "work" / "outputs"
             names = ["cases.jsonl", "provenance.jsonl", "image_requests.jsonl", "sampling_manifest.jsonl", "split_manifest.jsonl"]
             artifacts = {name: ArtifactRef(name=name, path=str(root / name), digest=digest_file(root / name),
                          producer="prepare_text", stage="prepare_text", status="accepted").model_dump(mode="json")

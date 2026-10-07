@@ -316,3 +316,67 @@ def build_dataset_facts(
         "representative_case": select_representative_case(case_list),
     }
 
+
+
+def compact_scalar(value: Any, *, limit: int = 180) -> Any:
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + "…"
+    if isinstance(value, list):
+        return [compact_scalar(item, limit=limit) for item in value[:8]]
+    if isinstance(value, dict):
+        return {key: compact_scalar(item, limit=limit) for key, item in list(value.items())[:12]}
+    return value
+
+
+def _asset_rows(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for item in case.get("evidence", []):
+        if item.get("type") != "asset" or item.get("value") not in assets:
+            continue
+        asset = assets[item["value"]]
+        if asset.get("kind") not in {"image", "volume"}:
+            continue
+        if _asset_role(item, assets) != "primary":
+            continue
+        rows.append(item)
+    return rows
+
+
+def compact_case(
+    case: dict[str, Any],
+    assets: dict[str, dict[str, Any]],
+    *,
+    names: set[str] | None = None,
+    reference_names: set[str] | None = None,
+) -> dict[str, Any]:
+    primary = _asset_rows(case, assets)
+    primary_ids = {item.get("id") for item in primary}
+    rows = []
+    for item in case.get("evidence", []):
+        name = item.get("name")
+        if item.get("type") == "asset" and item in primary:
+            rows.append(item)
+            continue
+        if item.get("mask") is not None or (reference_names and name in reference_names):
+            continue
+        if reference_names is not None and item.get("type") in {"value", "text", "region"} and item.get("input_visibility") != "model_visible":
+            continue
+        if names and name not in names:
+            continue
+        refs = set(item.get("ref", []))
+        if item.get("type") in {"value", "text", "region"} and (refs & primary_ids or not primary_ids):
+            rows.append({**item, "value": compact_scalar(item.get("value"))})
+    return {"evidence": rows[:20]}
+
+
+def compact_catalog_entry(entry: dict[str, Any], meaning: str | None = None) -> dict[str, Any]:
+    item = {key: entry[key] for key in ("name", "cases", "types", "units", "value_count") if key in entry}
+    if entry.get("observed_values"):
+        item["observed_values"] = [
+            {**value, "value": compact_scalar(value.get("value"))}
+            for value in entry["observed_values"][:8]
+            if isinstance(value, dict)
+        ]
+    if meaning:
+        item["meaning"] = meaning
+    return item

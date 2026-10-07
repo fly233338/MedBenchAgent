@@ -190,7 +190,7 @@ def main(request_path: str, result_path: str) -> None:
     conversation = Conversation(
         agent=agent,
         workspace=workspace,
-        persistence_dir=workspace / "conversations",
+        persistence_dir=workspace / "work" / "conversations",
         conversation_id=__import__("uuid").UUID(request["conversation_id"]),
         max_iteration_per_run=request["budget"]["max_iterations"],
         stuck_detection=True,
@@ -224,12 +224,12 @@ def main(request_path: str, result_path: str) -> None:
 
     produced = {}
     allowed = set(request.get("allowed_outputs", [])) | set(request.get("required_outputs", []))
-    output_root = workspace / "outputs"
+    output_root = workspace / "work" / "outputs"
     for path in sorted(item for item in output_root.rglob("*") if item.is_file()):
         name = path.relative_to(output_root).as_posix()
         if name in allowed or "output_manifest.json" in allowed or path.name not in {"complete.json", "preparation_report.json", "quarantine.jsonl"}:
             produced[name] = str(path.resolve())
-    submission_path = workspace / "outputs" / "submission.json"
+    submission_path = workspace / "work" / "outputs" / "submission.json"
     submission = None
     diagnostic = ""
     if submission_path.is_file():
@@ -259,7 +259,7 @@ def main(request_path: str, result_path: str) -> None:
         "diagnostics": [], "diagnostic": "" if complete else diagnostic or submission.get("summary", ""),
         "termination_reason": "completed" if result_status == "submitted" else "output_invalid",
         "progress": progress, "input_digest": request.get("input_digest", ""),
-        "submission_path": "/workspace/outputs/submission.json",
+        "submission_path": "/workspace/work/outputs/submission.json",
         "token_count": request.get("prompt_token_count"),
     }
     Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")

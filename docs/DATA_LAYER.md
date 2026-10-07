@@ -2,43 +2,27 @@
 
 数据层把只读来源转换为可查询、可追溯的 Dataset Bundle。LangGraph 负责协调，数据模块负责确定性执行和验证。
 
-## 来源与准备
+## 来源、准备与发布
 
-Understand 的总体使用一个 canonical `PopulationRecord` 序列。`image_population.jsonl` 和 `source_report.population` 都由该序列派生；报告中的 `unit_count`、`unit_type`、标签计数和 `source_counts` 不能由模型分别填写。Worker 与 Host 使用同一个确定性 validator 检查 schema、跨文件总体对账、来源身份和阻塞问题；独立来源路径检查与 Inspector replay 明确属于 Host-only 边界。
+The production graph is understand → prepare_text → prepare_image → package → publish.
+Understand freezes mapping.json and image_conversion_plan.json. A deterministic inspector
+enumerates the population and is replayed by Host. Text emits Cases, provenance and image_requests;
+Image consumes those requests and emits assets, presentations and digest-bound mask features.
+Host assembles the results, validates the final set and atomically publishes an immutable revision.
+Each coding stage has two attempts; one evidence-backed mapping revision invalidates Text/Image.
 
-每个逻辑数据集由一个或多个 `Source` 组成。Source 保存稳定 ID、根目录、类型和可选 annotation 文件。`understand` 阶段记录来源清单、文件摘要、总体数量、字段语义、总体脚本和 mapping；`prepare` 阶段记录转换程序、执行回执、候选产物和 manifest。字段映射区分进入 `cases.jsonl` 的医学证据、仅用于分组/来源/资产复现的元数据，以及因无任务价值而排除的设备或行政噪声。年龄、性别、症状和病史等医学上下文可以保留在 Case 中；设备序列号、软件版本、主机名、UID 和无关时间戳默认不作为 Case Evidence。
-
-OpenHands worker 只能在自己的 attempt workspace 中写声明的阶段文件。宿主验证来源 locator、
-记录身份、图像路径、finding 关系、缺失值、manifest 依赖和完整总体后，生成
-`preparation_report.json`、`quarantine.jsonl`、`optional_evidence_dropped.jsonl` 和
-`complete.json`，再发布 Dataset、Profile、Card 和 Catalog 条目。Worker 的
-`submission.json` 只表达交付意图，不代表宿主验收或发布。
-
-## Dataset Bundle
-
-已发布 Bundle 提供（annotation）：
-
-- `cases.jsonl`：以 Case/Evidence 为核心的 canonical 记录；
-- `asset_manifest.jsonl`：image/volume Asset、来源和完整性摘要；
-- `presentation_manifest.jsonl`、`split_manifest.jsonl`、`sampling_manifest.jsonl`：可选但带 digest 的展示、来源分组和冻结采样顺序；
-- `preparation_report.json`：完整输入、接收、隔离和失败账本；
-- Profile：字段、结构、覆盖率、值分布和容量索引；
-- Card：数据集范围、模态、字段角色和来源证据；
-- preparation metadata：执行计划、来源摘要、验证回执和 provenance。
-
-Bundle、Profile、Card 和 Catalog 都使用内容摘要绑定输入。每个数据集固定发布到 `Prepared/<dataset_id>/`，有效 Bundle 直接复用，只有显式 rebuild 才会替换。
-
-## 执行与验证
-
-固定算子和 generated Python adapter 使用相同的输入、输出和 provenance 契约。Adapter 输出候选 annotation 与 provenance；它不发布 namespace、可信 provenance、Catalog 或完成标记。
-
-总体检查器生成完整 Case/Asset population。框架逐项对账候选记录，验证 source locator、Evidence ref、Asset digest、重复身份和缺失资产。影响医学语义完整性的错误按整 Case 隔离，数量账本区分接收、隔离和可选 Evidence 丢弃。
-
-Asset 处理保留原始来源引用。PNG/JPEG、单文件 DICOM、DICOM Series 和 NIfTI 通过统一 Asset Adapter 读取。Native Asset 与确定性的 Presentation 分离，显示窗口、维度和像素元数据作为独立决策保存。
+Case/Evidence retain Asset identities. Presentations are model-visible ordinary images:
+JPEG/PNG without transforms preserve original bytes; medical images, slices and montages use PNG.
+Shared target_path assigns paths before conversion. Reference masks never become model input.
+Published bundles retain Cases, provenance, mapping/conversion policy, Asset/Presentation manifests,
+required sampling/split manifests, actual images and Card/Profile/commit metadata. Scripts, prompts,
+population working files and detailed reports stay in runtime. No image manifest duplicates Presentation.
+Validators do not repair candidates. Quarantine updates all references and dispositions before final
+validation. Catalog and consumers use verified revision paths, never root projections.
 
 ## 多来源映射与查询
 
-多来源字段通过 understand 阶段的 accepted mapping 合并、保留或排除。值映射、缺失状态、数组边界和来源空间都保留在 mapping、provenance 和执行报告中。
+多来源字段通过 understand 阶段的 accepted mapping 合并、保留或排除。值映射、缺失状态、数组边界和来源空间都保留在 mapping、provenance 和运行诊断中。
 
 `DatasetQuery` 绑定一个 access manifest 和 cache revision，提供字段值、来源覆盖、记录采样、数组长度、配对和协议容量查询。查询返回准确总数和分页结果，供规划 Agent 使用。
 
@@ -72,23 +56,3 @@ index、时间或医学语义。
 和摘要；Evidence、规划和交付阶段通过 BIRStore 读取并以 revision/digest 校验写回。
 
 新运行存储在 `.runtime/<run>/control`、`inputs`、`agents` 和 `workers` 下。现有旧运行目录不属于当前运行时。
-
-
-
-## Canonical preparation flow
-
-The production graph is understand → prepare_text → prepare_image → package → publish.
-Understand freezes mapping.json and image_conversion_plan.json. A deterministic inspector
-enumerates the population and is replayed by Host. Text emits Cases, provenance and image_requests;
-Image consumes those requests and emits assets, presentations and digest-bound mask features.
-Host assembles the results, validates the final set and atomically publishes an immutable revision.
-Each coding stage has two attempts; one evidence-backed mapping revision invalidates Text/Image.
-
-Case/Evidence retain Asset identities. Presentations are model-visible ordinary images:
-JPEG/PNG without transforms preserve original bytes; medical images, slices and montages use PNG.
-Shared target_path assigns paths before conversion. Reference masks never become model input.
-Published bundles retain Cases, provenance, mapping/conversion policy, Asset/Presentation manifests,
-required sampling/split manifests, actual images and Card/Profile/commit metadata. Scripts, prompts,
-population working files and detailed reports stay in runtime. No image manifest duplicates Presentation.
-Validators do not repair candidates. Quarantine updates all references and dispositions before final
-validation. Catalog and consumers use verified revision paths, never root projections.

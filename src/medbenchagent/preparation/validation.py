@@ -31,33 +31,6 @@ def _issue(stage, code, message, **values):
                            issue_id=f"{stage.value}:{code}", **values)
 
 
-# The acceptance surface is kept next to the validators so adding a host check
-# without making its worker visibility explicit is easy to detect in review.
-PREPARATION_CONTRACT_AUDIT = (
-    {"stage": "understand", "code": "missing_output", "inputs": ["required outputs"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "source_report_schema", "inputs": ["source_report.json"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "source_report_incomplete", "inputs": ["source_report.json"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "mapping_schema", "inputs": ["mapping.json"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "mapping_incomplete", "inputs": ["mapping.json"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "population_schema", "inputs": ["image_population.jsonl"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "population_empty", "inputs": ["image_population.jsonl"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "population_duplicate_identity", "inputs": ["image_population.jsonl"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "population_unknown_source", "inputs": ["image_population.jsonl", "source_index.json"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "population_count_mismatch", "inputs": ["source_report.json", "image_population.jsonl"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "question_schema", "inputs": ["semantic_questions.json"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "question_stage_mismatch", "inputs": ["semantic_questions.json"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "submission_schema", "inputs": ["submission.json"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "submission_outcome", "inputs": ["submission.json"], "worker_visible": True, "host_only": False},
-    {"stage": "understand", "code": "inspector_replay", "inputs": ["inspect_source.py", "source_index.json"], "worker_visible": False, "host_only": True},
-    {"stage": "prepare", "code": "candidate_invalid", "inputs": ["cases.jsonl", "provenance.jsonl", "output_manifest.json"], "worker_visible": True, "host_only": False},
-    {"stage": "prepare", "code": "submission_outcome", "inputs": ["submission.json"], "worker_visible": True, "host_only": False},
-    {"stage": "prepare", "code": "accepted_artifact_immutable", "inputs": ["accepted handoff", "outputs"], "worker_visible": True, "host_only": False},
-    {"stage": "prepare", "code": "population_reconciliation_failure", "inputs": ["image_population.jsonl", "provenance.jsonl"], "worker_visible": True, "host_only": False},
-    {"stage": "prepare", "code": "execution_report_failure", "inputs": ["execution_report.json"], "worker_visible": True, "host_only": False},
-    {"stage": "prepare", "code": "grouping_policy_failure", "inputs": ["grouping_policy.json", "mapping.json"], "worker_visible": True, "host_only": False},
-    {"stage": "prepare", "code": "output_manifest_failure", "inputs": ["output_manifest.json"], "worker_visible": True, "host_only": False},
-)
-
 
 def _json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -161,22 +134,6 @@ def _semantic_control(issues):
     )
 
 
-def _prepare_failure_code(message: str) -> str:
-    if message.startswith("Prepare changed an accepted file:"):
-        return "accepted_artifact_immutable"
-    if (message.startswith("duplicate provenance population identity")
-            or message.startswith("provenance references unknown population identity")
-            or message.startswith("population coverage incomplete")):
-        return "population_reconciliation_failure"
-    if message.startswith("Execution report requires"):
-        return "execution_report_failure"
-    if message.startswith("Grouping policy differs"):
-        return "grouping_policy_failure"
-    if message.startswith("Prepare gate requires"):
-        return "submission_outcome"
-    return "candidate_invalid"
-
-
 def validate_understand_candidate(
     outputs: dict[str, str], *, known_source_ids: Iterable[str] = (),
 ) -> ValidationResult:
@@ -266,10 +223,10 @@ def validate_understand_candidate(
 def replay_inspector(outputs, *, state):
     """One host replay using host-visible sources, including Docker submissions."""
     script = Path(outputs["inspect_source.py"]).resolve()
-    workspace = script.parent.parent
+    workspace = script.parents[2]
     with tempfile.TemporaryDirectory(dir=workspace / "work") as temporary:
         replay_root = Path(temporary)
-        config = _json(workspace / "inputs/inspection_config.json")
+        config = _json(workspace / "work/inputs/inspection_config.json")
         for source in config["sources"]:
             source["root"] = state["source_roots"][source["source_id"]]
             source["manifest"] = state["source_manifests"][source["source_id"]]
@@ -359,28 +316,3 @@ def validate_prepare_candidate(candidate, *, state=None, population_path=None, p
     except (ValueError, KeyError, OSError) as exc:
         result = ValidationResult(stage=stage, status="rejected", issues=[_issue(stage, "candidate_invalid", str(exc))])
     return _save(result, state, root) if persist else result
-
-
-def project_grouping(mapping: dict[str, Any] | PreparationMapping, *, mapping_digest=""):
-    payload = mapping.model_dump(mode="json") if isinstance(mapping, PreparationMapping) else mapping
-    grouping = payload["grouping"]
-    return {
-        "rule_id": grouping["rule_id"], "case_unit": grouping["case_unit"],
-        "key_fields": list(grouping["key_fields"]),
-        "conflict_policy": grouping.get("conflict_policy", "error"),
-        "mapping_digest": mapping_digest or digest_payload(payload),
-    }
-
-
-def build_execution_report(execution_records: Iterable[dict[str, Any]], coverage, accounting, *,
-                           mapping_digest="", population_digest="", input_digest=""):
-    records = list(execution_records)
-    tests = [item for item in records if item.get("kind") in {"test", "sample"}]
-    full = next((item for item in records if item.get("kind") == "full"), None)
-    if not tests or full is None or any(item.get("status") != "succeeded" for item in [*tests, full]):
-        raise ValueError("Successful sample/test and full execution records are required")
-    return {
-        "mapping_digest": mapping_digest, "population_digest": population_digest, "input_digest": input_digest,
-        "tests": tests, "full_execution": full, "mapping_rule_coverage": coverage,
-        "population_accounting": accounting, "failed_checks": [], "limitations": [],
-    }

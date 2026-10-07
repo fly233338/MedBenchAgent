@@ -72,7 +72,7 @@ def test_axis_evidence_exposes_catalog_counts_and_semantics(tmp_path):
     plan.dataset_facts["evidence_catalog"] = {
         "report": {"name": "report", "cases": 1, "types": {"text": 1}, "units": {}}
     }
-    task_planning._write_derived_artifacts(context, plan)
+    task_planning._write_artifacts(context, plan)
     result = task_planning.read_axis_evidence(context, axis="input_structure")
     payload = __import__("json").loads(result["summary"])
     assert payload["evidence_catalog"][0]["cases"] == 1
@@ -155,7 +155,7 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     context = _context(tmp_path)
     for axis, values in (("input_structure", ["single-image"]), ("operation", ["describe"]), ("clinical_target", ["finding"])):
         task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
-        context.update(task_planning._write_derived_artifacts(context, task_planning._load_plan(context)))
+        context.update(task_planning._write_artifacts(context, task_planning._load_plan(context)))
 
     class Query:
         def __init__(self, _access):
@@ -183,7 +183,7 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     plan = task_planning._load_plan(context)
     node_id = plan.pending_scenario_ids[0]
     plan.current_scenario_id = node_id
-    task_planning._write_derived_artifacts(context, plan)
+    task_planning._write_artifacts(context, plan)
     leaf = {
         "leaf_task_id": "leaf-1", "name": "report", "scenario_id": node_id,
         "question_templates": ["Describe the finding."],
@@ -222,7 +222,7 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
     context["question_template_count"] = 3
     for axis, values in (("input_structure", ["single-image"]), ("operation", ["describe"]), ("clinical_target", ["finding"])):
         task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
-        context.update(task_planning._write_derived_artifacts(context, task_planning._load_plan(context)))
+        context.update(task_planning._write_artifacts(context, task_planning._load_plan(context)))
 
     class Query:
         def __init__(self, _access):
@@ -249,7 +249,7 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
     context.update(screened["updates"])
     plan = task_planning._load_plan(context)
     plan.current_scenario_id = scenario_id
-    task_planning._write_derived_artifacts(context, plan)
+    task_planning._write_artifacts(context, plan)
 
     def leaf(leaf_id, target):
         return {
@@ -301,22 +301,20 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
     assert plan.reviews[scenario_id].discarded_leaf_tasks[0].leaf_task_id == "bad"
 
 
-def test_derived_plan_views_must_match_canonical_plan(tmp_path):
+def test_derived_plan_views_are_rebuilt_from_canonical_plan(tmp_path):
     context = _context(tmp_path)
     for axis, values in (("input_structure", ["single-image"]), ("operation", ["describe"]), ("clinical_target", ["finding"])):
         task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
     plan = task_planning._load_plan(context)
-    task_planning._write_derived_artifacts(context, plan)
-    task_planning._assert_derived_artifact_consistency(context, plan)
-
+    task_planning._write_artifacts(context, plan)
     path = Path(context["operation_directory"]) / "task_scenarios.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    scenario_id = next(iter(payload))
-    payload[scenario_id]["status"] = "completed"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="task_scenarios.json is inconsistent"):
-        task_planning._assert_derived_artifact_consistency(context, plan)
+    expected = path.read_bytes()
+    path.write_text("corrupted", encoding="utf-8")
+    task_planning._write_artifacts(context, task_planning._load_plan(context))
+    assert path.read_bytes() == expected
+    path.unlink()
+    task_planning._write_artifacts(context, task_planning._load_plan(context))
+    assert path.read_bytes() == expected
 
 
 def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_path, monkeypatch):

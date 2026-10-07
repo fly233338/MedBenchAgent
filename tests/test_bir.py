@@ -39,6 +39,25 @@ def test_bir_rejects_path_escape(tmp_path: Path):
         store.load("../outside.json")
 
 
+def test_task_plan_is_only_planning_authority(tmp_path):
+    from medbenchagent.agents import task_planning
+    from medbenchagent.planning.task_space import TaskPlanState
+    record = sessions.create_experiment("pilot", root=tmp_path)
+    operation = tmp_path / "operation"
+    context = {"bir_path": record["bir_path"], "dataset_scope": "demo", "run_id": "r",
+               "operation_directory": str(operation), "dataset_access_manifest": {"revision": "r"}}
+    plan = TaskPlanState(dataset={"dataset_id": "demo"})
+    result = task_planning._write_artifacts(context, plan)
+    assert Path(result["task_plan_path"]).is_relative_to(Path(record["bir_path"]))
+    assert list((Path(record["bir_path"]) / "datasets/demo/planning").glob("*.json")) == [Path(result["task_plan_path"])]
+    (operation / "task_plan.json").write_text("corrupted", encoding="utf-8")
+    (operation / "leaf_tasks.json").unlink()
+    recovered = task_planning._load_plan(context)
+    assert recovered == plan
+    task_planning._write_artifacts(context, recovered)
+    assert json.loads((operation / "leaf_tasks.json").read_text()) == {}
+
+
 def test_bir_json_is_readable_and_failed_transaction_preserves_previous_file(tmp_path: Path):
     sessions.create_experiment("pilot", root=tmp_path)
     store = BIRStore(tmp_path / "pilot" / "BIR")

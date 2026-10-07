@@ -92,7 +92,7 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
                                    "dataset_id": dataset_id, "bundle": str(bundle), "runtime": runtime})
     run_workspace = Path(context.get("run_directory") or Path(context["operation_directory"]).parent) / "preparation" / dataset_id
     run_workspace.mkdir(parents=True, exist_ok=True)
-    runtime_path = run_workspace / "inputs" / "execution_runtime.json"
+    runtime_path = run_workspace / "work" / "inputs" / "execution_runtime.json"
     if runtime_path.is_file():
         data_runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
         if any(data_runtime.get(key) != value for key, value in runtime.items()):
@@ -103,7 +103,7 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
         data_runtime = {**runtime, **component}
         atomic_write_json(runtime_path, data_runtime)
     manifest_root = run_workspace if context.get("run_directory") else bundle
-    manifest_base = manifest_root / ("inputs/source_manifests" if context.get("run_directory") else "source_manifests")
+    manifest_base = manifest_root / ("work/inputs/source_manifests" if context.get("run_directory") else "source_manifests")
     for source in sources:
         if bundle.resolve().is_relative_to(Path(source.root).resolve()):
             raise ValueError("Configured prepared output overlaps a source directory")

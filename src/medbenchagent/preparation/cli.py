@@ -73,9 +73,9 @@ def validate_stage_command(args):
     if args.stage is Stage.PREPARE_IMAGE:
         accepted = Path(args.context).parent / "accepted"
         context["text_root"] = str(accepted)
-        context["text_artifacts"] = {name: {"path": str(accepted / name), "digest": value["digest"]}
-            for name, value in context.get("artifacts", {}).items()
-            if name in {"cases.jsonl", "provenance.jsonl", "image_requests.jsonl"}}
+        context["text_artifacts"] = {Path(row["path"]).name: {"path": row["path"], "digest": row["digest"]}
+            for row in context.get("files", []) if row.get("role") == "accepted"
+            and Path(row["path"]).name in {"cases.jsonl", "provenance.jsonl", "image_requests.jsonl", "sampling_manifest.jsonl", "split_manifest.jsonl"}}
     result = validate_stage_outputs(args.candidate, args.stage, context)
     _write_report(args.report, result)
     return 0 if result.status == "accepted" else 2

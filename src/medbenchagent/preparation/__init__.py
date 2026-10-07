@@ -1,11 +1,10 @@
-"""Host-owned contracts and orchestration for two-stage data preparation."""
+"""Host-owned contracts and orchestration for three-stage data preparation."""
 
 from .contracts import (
     CONTROL_MAPPING_REVISION_REQUIRED,
     SEMANTIC_REVISION_CODES,
     STAGE_SPECS,
     AcceptedHandoff,
-    ArtifactDependency,
     ArtifactRef,
     AssetRule,
     CaseIdentityRule,
@@ -13,13 +12,10 @@ from .contracts import (
     Diagnostic,
     DigestEntry,
     EvidenceRef,
-    ExecutionReport,
     FieldRule,
     GroupingRule,
     InputBinding,
     JoinRule,
-    OutputFile,
-    OutputManifest,
     PopulationOutcome,
     PopulationPolicy,
     PopulationRecord,
@@ -45,10 +41,10 @@ from .publisher import DatasetPublisher
 
 __all__ = [
     "CONTROL_MAPPING_REVISION_REQUIRED", "SEMANTIC_REVISION_CODES", "STAGE_SPECS",
-    "AcceptedHandoff", "ArtifactDependency", "ArtifactRef",
+    "AcceptedHandoff", "ArtifactRef",
     "AssetRule", "CaseIdentityRule", "ContextPacket", "Diagnostic", "EvidenceRef",
-    "ExecutionReport", "FieldRule", "GroupingRule", "InputBinding", "JoinRule", "DigestEntry",
-    "OutputFile", "OutputManifest", "PopulationOutcome", "PopulationPolicy",
+    "FieldRule", "GroupingRule", "InputBinding", "JoinRule", "DigestEntry",
+    "PopulationOutcome", "PopulationPolicy",
     "PopulationRecord", "PopulationSummary", "PreparationMapping", "QuestionSet", "SemanticQuestion",
     "SourceBinding", "SourceReport", "Stage", "StageBudget", "StageRequest",
     "StageResult", "StageSpec", "Submission", "UserDecision", "ValidationIssue",

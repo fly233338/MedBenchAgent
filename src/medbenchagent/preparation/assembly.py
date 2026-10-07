@@ -79,6 +79,14 @@ def validate_stage_outputs(root, stage, state):
             asset_map = {asset.asset_id: asset for asset in assets}
             if len(asset_map) != len(assets):
                 raise ValueError("Duplicate Asset IDs")
+            if set(asset_map) != {r.asset_id for r in requests}:
+                raise ValueError("Asset set differs from Text requests")
+            for request in requests:
+                asset = asset_map[request.asset_id]
+                if (asset.source_id, asset.source_path, asset.format.lower()) != (request.source_id, request.source_path, request.source_format.lower()):
+                    raise ValueError("Image stage changed source Asset identity")
+                if request.reference_only and asset.metadata.get("input_visibility") != "reference_only":
+                    raise ValueError("Reference-only request must retain hidden Asset visibility")
             presentations = rows(root / "presentation_manifest.jsonl", PresentationRecord)
             by_key = {(r.case_id, r.asset_id, r.view_id, r.order): r for r in presentations}
             visible = [r for r in requests if not r.reference_only]
@@ -91,6 +99,11 @@ def validate_stage_outputs(root, stage, state):
                 if record.path != request.target_path or record.input_digest != asset_map[record.asset_id].file_digest:
                     raise ValueError("Presentation identity/digest differs from request")
                 info = verify_image(contained_path(root, record.path), record.output_digest)
+                policy = plan.policies[request.policy_id]
+                if request.source_format.lower() in {"png", "jpg", "jpeg", "webp", "gif"} and not any(
+                    policy.get(key) for key in ("window", "resize", "crop", "indices")
+                ) and record.output_digest != asset_map[record.asset_id].file_digest:
+                    raise ValueError("Native untransformed image bytes must be preserved")
                 if request.source_format.lower() not in {"png", "jpg", "jpeg", "webp", "gif"} and info["format"] != "PNG":
                     raise ValueError("Medical source must produce PNG")
             for line in (root / "mask_features.jsonl").read_text(encoding="utf-8").splitlines():
@@ -111,8 +124,11 @@ def validate_stage_outputs(root, stage, state):
 
 def assemble_candidate(state):
     """Copy accepted stage outputs into a fresh final candidate and attach measured features."""
-    text, images = Path(state["text_root"]), Path(state["attempt_workspace"]) / "outputs"
-    destination = Path(state["attempt_workspace"]) / "work" / "package"
+    text, images = Path(state["text_root"]), Path(state["attempt_workspace"]) / "work" / "outputs"
+    workspace = Path(state["attempt_workspace"]).resolve()
+    destination = (workspace / "work" / "package").resolve()
+    if not destination.is_relative_to(workspace):
+        raise ValueError("Package path escapes attempt workspace")
     if destination.exists():
         shutil.rmtree(destination)
     destination.mkdir(parents=True)

@@ -25,12 +25,12 @@ class OpenHandsWorker:
 
     @staticmethod
     def _submission(request: StageRequest) -> tuple[Submission | None, str]:
-        path = Path(request.workspace) / "outputs" / "submission.json"
+        path = Path(request.workspace) / "work" / "outputs" / "submission.json"
         if not path.is_file():
-            return None, "Worker did not write outputs/submission.json"
+            return None, "Worker did not write work/outputs/submission.json"
         try:
             submission = Submission.model_validate_json(path.read_text(encoding="utf-8"))
-            output_root = Path(request.workspace) / "outputs"
+            output_root = Path(request.workspace) / "work" / "outputs"
             unsafe = [name for name in submission.outputs if Path(name).is_absolute() or ".." in Path(name).parts]
             if unsafe:
                 return None, f"Submission references paths outside outputs: {unsafe[:10]}"
@@ -44,7 +44,7 @@ class OpenHandsWorker:
                     return None, f"Submitted outcome is missing required outputs: {absent}"
             return submission, ""
         except Exception as exc:
-            return None, f"Invalid outputs/submission.json: {exc}"
+            return None, f"Invalid work/outputs/submission.json: {exc}"
 
     def run(self, request: StageRequest) -> StageResult:
         from medbenchagent.runtime.dataset_runtime import dataset_runtime
@@ -94,7 +94,7 @@ class OpenHandsWorker:
                         diagnostics.append(Diagnostic(
                             stage=request.stage, code="invalid_control_stage",
                             category="contract", blocking=True,
-                            message=(f"{CONTROL_MAPPING_REVISION_REQUIRED} is only valid for prepare"),
+                            message=(f"{CONTROL_MAPPING_REVISION_REQUIRED} is only valid for Text or Image"),
                         ))
                         control = None
                         if status == "submitted":
@@ -110,7 +110,7 @@ class OpenHandsWorker:
             diagnostic=(submission.summary if submission else result.diagnostic),
             termination_reason=result.termination_reason or ("completed" if status == "submitted" else "worker_error"),
             progress=result.progress,
-            submission_path=str((Path(request.workspace) / "outputs" / "submission.json").resolve()) if submission else None,
+            submission_path=str((Path(request.workspace) / "work" / "outputs" / "submission.json").resolve()) if submission else None,
             input_digest=request.input_digest,
             prompt_digest=digest_file(request.prompt_path) if Path(request.prompt_path).is_file() else "",
             context_digest=digest_file(request.context_path) if Path(request.context_path).is_file() else "",
@@ -121,6 +121,6 @@ class OpenHandsWorker:
 
     @staticmethod
     def _write_result(request: StageRequest, result: StageResult) -> None:
-        path = Path(request.workspace) / "state" / "result.json"
+        path = Path(request.workspace) / "result.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(result.model_dump_json(indent=2) + "\n", encoding="utf-8")

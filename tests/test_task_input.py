@@ -53,3 +53,22 @@ def test_duplicate_asset_and_missing_or_corrupt_image_are_ineligible(tmp_path):
     assert resolve_task_input(case, leaf(), None, context).reason == "invalid_input_presentation"
     case["evidence"].append({"id": "alias", "type": "asset", "name": "image", "value": "a"})
     assert resolve_task_input(case, leaf(), None, context).reason == "duplicate_input_asset"
+
+
+def test_volume_views_keep_one_asset_and_two_presentations(tmp_path):
+    case = {"case_id": "c", "evidence": [
+        {"id": "i1", "type": "asset", "name": "image", "value": "volume", "view_id": "v1"},
+        {"id": "i2", "type": "asset", "name": "image", "value": "volume", "view_id": "v2"},
+        {"id": "label", "type": "value", "name": "label", "value": "yes"},
+    ]}
+    context = image_context(tmp_path, [case])
+    context.assets["volume"].update(kind="volume", format="nifti")
+    unit = SamplingUnit(sampling_unit_id="u", case_id="c", split="test", eligible=True,
+                        view_ids=["v2", "v1"], ordered_evidence_ids=["i2", "i1"], order=0)
+    manifest = SamplingManifest(dataset_id="d", revision="r", units=[unit])
+    context.manifests["sampling"] = manifest
+    items = generate_task_items([case], [leaf()], "d", resolver_context=context, sampling_manifest=manifest)
+    assert len(items) == 1
+    assert items[0]["input_assets"] == ["volume"]
+    assert [r["view_id"] for r in items[0]["input_presentations"]] == ["v2", "v1"]
+    assert audit_task_items([case], items, [leaf()], context)["accepted"] == 1

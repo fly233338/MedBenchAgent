@@ -3,7 +3,7 @@ import json
 import pytest
 
 from medbenchagent.data.dataset_catalog import normalize_dataset_id
-from medbenchagent.runtime import source_discovery
+from medbenchagent.data import source_discovery
 from medbenchagent.workflow.graph import SUPERVISOR_INSTRUCTIONS, automatic_supervisor_action, available_stages
 
 

@@ -32,11 +32,11 @@ def _identity(
 
 def _input_assets(case: dict[str, Any], evidence_ids: list[str]) -> list[str]:
     by_id = {item.get("id"): item for item in case.get("evidence", [])}
-    return [
+    return list(dict.fromkeys(
         str(by_id[evidence_id]["value"])
         for evidence_id in evidence_ids
         if evidence_id in by_id and by_id[evidence_id].get("type") == "asset"
-    ]
+    ))
 
 
 def _input_bindings(case: dict[str, Any], bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:

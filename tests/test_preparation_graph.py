@@ -18,7 +18,7 @@ class _StageWorker:
 
     def run(self, request):
         self.requests.append(request)
-        output_root = Path(request.workspace) / "outputs"
+        output_root = Path(request.workspace) / "work" / "outputs"
         output_root.mkdir(parents=True, exist_ok=True)
         if request.stage is Stage.UNDERSTAND:
             values = {
@@ -164,7 +164,7 @@ class _ProtocolRevisionRuntime:
 
     def run(self, request):
         self.requests.append(request)
-        output_root = Path(request.workspace) / "outputs"
+        output_root = Path(request.workspace) / "work" / "outputs"
         output_root.mkdir(parents=True, exist_ok=True)
         if request.stage is Stage.PREPARE_TEXT and len([item for item in self.requests if item.stage is Stage.PREPARE_TEXT]) == 1:
             path = output_root / "submission.json"
@@ -231,9 +231,9 @@ def test_real_worker_protocol_routes_mapping_revision_with_repair_bases(tmp_path
     assert len({item.conversation_id for item in runtime.requests}) == 5
     assert runtime.requests[2].previous_attempt_root == runtime.requests[1].workspace
     assert runtime.requests[3].previous_attempt_root == runtime.requests[1].workspace
-    assert (Path(runtime.requests[2].workspace) / "inputs" / "previous_reference.json").is_file()
-    assert not (Path(runtime.requests[2].workspace) / "inputs" / "previous" / "outputs").exists()
-    context = json.loads((Path(runtime.requests[2].workspace) / "inputs" / "context.json").read_text(encoding="utf-8"))
+    assert (Path(runtime.requests[2].workspace) / "work" / "inputs" / "previous_reference.json").is_file()
+    assert not (Path(runtime.requests[2].workspace) / "work" / "inputs" / "previous" / "work" / "outputs").exists()
+    context = json.loads((Path(runtime.requests[2].workspace) / "work" / "inputs" / "context.json").read_text(encoding="utf-8"))
     assert context["facts"]["revision_basis"]["handoff_digest"]
     assert context["facts"]["revision_basis"]["artifacts"]["mapping"]["path"].endswith("mapping.json")
     assert context["validation_feedback"]["issues"]

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 from medbenchagent.planning.scope import ScopeRequirement
-from medbenchagent.runtime.tool_contracts import AllocationPreference
+from medbenchagent.workflow.contracts import AllocationPreference
 
 from medbenchagent.runtime.llm import complete_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
@@ -217,7 +217,7 @@ def _validate_extraction(result, existing, user_inputs):
     preferences = result.get("allocation_preferences", [])
     if not isinstance(preferences, list):
         raise ValueError("allocation_preferences must be a list")
-    from medbenchagent.runtime.tool_contracts import AllocationPreference
+    from medbenchagent.workflow.contracts import AllocationPreference
     preferences = [AllocationPreference.model_validate(p).model_dump() for p in preferences]
     if len({p["id"] for p in preferences}) != len(preferences) or any(not any(p["quote"] in text for text in user_inputs) for p in preferences):
         raise ValueError("Allocation preferences require unique IDs and exact user quotations")

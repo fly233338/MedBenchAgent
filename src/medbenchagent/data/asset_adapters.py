@@ -317,12 +317,8 @@ class DicomSeriesAdapter(AssetAdapter):
                 raise AssetAdapterError("Multiframe DICOM must be represented as a separate volume Asset")
             if str(getattr(ds, "PhotometricInterpretation", "")) not in {"MONOCHROME1", "MONOCHROME2"}:
                 raise AssetAdapterError("Unsupported DICOM Series photometric interpretation")
-            try:
-                pixels = ds.pixel_array.astype(np.float32)
-            except Exception as exc:
-                transfer = getattr(getattr(ds, "file_meta", None), "TransferSyntaxUID", "unknown")
-                raise AssetAdapterError(f"DICOM pixel decoder unavailable for transfer syntax {transfer}: {exc}") from exc
-            pixels = pixels * float(getattr(ds, "RescaleSlope", 1.0)) + float(getattr(ds, "RescaleIntercept", 0.0))
+            from .readers import DicomReader
+            pixels, _, _, _ = DicomReader().read_pixels(ds.filename)
             arrays.append(pixels)
         shapes = {tuple(array.shape) for array in arrays}
         if len(shapes) != 1:

@@ -20,13 +20,13 @@ def test_worker_rejects_dependency_install_and_network_commands():
 
 def test_runtime_validates_stage_result_paths_and_required_outputs(tmp_path):
     workspace = tmp_path / "attempt"
-    output = workspace / "outputs" / "submission.json"
+    output = workspace / "work" / "outputs" / "submission.json"
     output.parent.mkdir(parents=True)
     output.write_text("{}", encoding="utf-8")
     request = StageRequest(
         stage=Stage.UNDERSTAND, run_id="run", dataset_id="dataset", attempt=1,
         conversation_id="conversation", execution_key="execution", workspace=str(workspace),
-        prompt_path=str(workspace / "inputs" / "prompt.md"), context_path=str(workspace / "inputs" / "context.json"),
+        prompt_path=str(workspace / "prompt.md"), context_path=str(workspace / "work" / "inputs" / "context.json"),
         input_digest="input", required_outputs=["submission.json"],
     )
     result = StageResult(
@@ -43,8 +43,8 @@ def test_runtime_rejects_missing_worker_llm_configuration_before_launch(tmp_path
     request = StageRequest(
         stage=Stage.UNDERSTAND, run_id="run", dataset_id="dataset", attempt=1,
         conversation_id="conversation", execution_key="execution", workspace=str(tmp_path),
-        prompt_path=str(tmp_path / "inputs" / "prompt.md"),
-        context_path=str(tmp_path / "inputs" / "context.json"), input_digest="input",
+        prompt_path=str(tmp_path / "prompt.md"),
+        context_path=str(tmp_path / "work" / "inputs" / "context.json"), input_digest="input",
         required_outputs=["submission.json"], model="", base_url="",
     )
 
@@ -57,13 +57,13 @@ def test_runtime_rejects_missing_worker_llm_configuration_before_launch(tmp_path
 
 def test_runtime_preserves_structured_worker_failure(tmp_path):
     workspace = tmp_path / "attempt"
-    result_path = workspace / "state" / "result.json"
+    result_path = workspace / "result.json"
     result_path.parent.mkdir(parents=True)
     request = StageRequest(
         stage=Stage.UNDERSTAND, run_id="run", dataset_id="dataset", attempt=1,
         conversation_id="conversation", execution_key="execution", workspace=str(workspace),
-        prompt_path=str(workspace / "inputs" / "prompt.md"),
-        context_path=str(workspace / "inputs" / "context.json"), input_digest="input",
+        prompt_path=str(workspace / "prompt.md"),
+        context_path=str(workspace / "work" / "inputs" / "context.json"), input_digest="input",
         required_outputs=["submission.json"],
     )
     result_path.write_text(StageResult(
@@ -85,7 +85,7 @@ class _SubmissionRuntime:
         self.stage = stage
 
     def run(self, request):
-        output = Path(request.workspace) / "outputs" / "submission.json"
+        output = Path(request.workspace) / "work" / "outputs" / "submission.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(
             '{"requested_outcome":"blocked","summary":"accepted semantics conflict",'

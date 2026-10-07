@@ -27,8 +27,8 @@ def _inputs(tmp_path):
         files[name] = ArtifactRef(name=name, path=str(path), digest=digest_file(path), producer="host", stage="understand", status="accepted")
     previous = tmp_path / "previous"
     previous.mkdir()
-    (previous / "outputs").mkdir()
-    (previous / "outputs" / "draft.json").write_text("draft", encoding="utf-8")
+    (previous / "work" / "outputs").mkdir(parents=True)
+    (previous / "work" / "outputs" / "draft.json").write_text("draft", encoding="utf-8")
     return {
         "run_id": "run", "dataset_id": "dataset", "sources": [{"id": "source", "root": str(source_root)}],
         "source_manifests": {"source": str(manifest)},
@@ -49,11 +49,11 @@ def test_context_writes_complete_prompt_and_keeps_unaccepted_outputs_separate(tm
     assert "You are the MedBench data preparation coding agent." in prompt
     assert "Current stage: prepare" in prompt
     assert token_count > 0 and key
-    assert (tmp_path / "attempt" / "inputs" / "context.json").is_file()
-    assert (tmp_path / "attempt" / "inputs" / "prompt.md").is_file()
-    assert (tmp_path / "attempt" / "inputs" / "accepted" / "mapping.json").is_file()
-    assert (tmp_path / "attempt" / "inputs" / "previous_reference.json").is_file()
-    assert not (tmp_path / "attempt" / "inputs" / "previous" / "draft.json").exists()
+    assert (tmp_path / "attempt" / "work" / "inputs" / "context.json").is_file()
+    assert (tmp_path / "attempt" / "prompt.md").is_file()
+    assert (tmp_path / "attempt" / "work" / "inputs" / "accepted" / "mapping.json").is_file()
+    assert (tmp_path / "attempt" / "work" / "inputs" / "previous_reference.json").is_file()
+    assert not (tmp_path / "attempt" / "work" / "inputs" / "previous" / "draft.json").exists()
     previous = next(item for item in packet.files if item.role == "previous")
     assert previous.host_path == str((tmp_path / "previous").resolve())
     assert previous.worker_path == str((tmp_path / "previous").resolve())
@@ -71,7 +71,7 @@ def test_previous_reference_detects_local_mutation(tmp_path):
     state = _inputs(tmp_path)
     attempt = tmp_path / "attempt"
     build_stage_context("prepare_text", state, attempt)
-    (tmp_path / "previous" / "outputs" / "draft.json").write_text("changed", encoding="utf-8")
+    (tmp_path / "previous" / "work" / "outputs" / "draft.json").write_text("changed", encoding="utf-8")
 
     with pytest.raises(ValueError, match="reference changed"):
         verify_previous_reference(attempt)

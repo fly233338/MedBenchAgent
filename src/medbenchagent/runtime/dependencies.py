@@ -11,30 +11,10 @@ from medbenchagent.runtime.construction import record_event
 
 CONTRACT_VERSION = "agent-runtime"
 
-DATASET_KINDS = frozenset(
-    {
-        "Dataset",
-        "DatasetProfile",
-        "DatasetCard",
-        "DatasetCandidates",
-        "DatasetSelection",
-        "PlanningDraft",
-        "Plan",
-        "PlanningDelegation",
-        "Materials",
-        "Templates",
-        "Generation",
-        "GenerationCheck",
-        "SourceSelection",
-        "Documentation",
-        "Allocation",
-        "Delivery",
-        "PreparedCandidates",
-    }
-)
 
 
 def artifact_key(context, kind):
+    from medbenchagent.workflow.dependencies import DATASET_KINDS
     if kind.startswith("dataset/"):
         return kind
     dataset = context.get("dataset_scope")
@@ -77,15 +57,6 @@ def reference_digests(references):
     return digests
 
 
-DEPENDENCIES = {
-    "Dataset": ("DataConfig",),
-    "Plan": ("Requirement", "Dataset", "Materials", "PlanningConfig"),
-    "Templates": ("Plan", "TemplateConfig"),
-    # Task Plan now owns the reviewed question templates and resolver
-    # contract.  Annotation generation therefore has no separate Templates
-    # artifact dependency.
-    "Generation": ("Dataset", "Plan", "GenerationConfig", "Allocation"),
-}
 
 
 def index_path(context):
@@ -118,7 +89,8 @@ def require(context, *kinds):
 
 def publish(context, kind, references, dependencies=None):
     """Append a version; replay of the same operation and inputs returns that version."""
-    kinds = DEPENDENCIES.get(kind, ()) if dependencies is None else dependencies
+    from medbenchagent.workflow.dependencies import dependencies_for
+    kinds = dependencies_for(kind) if dependencies is None else dependencies
     kinds = tuple(artifact_key(context, k) for k in kinds)
     kind = artifact_key(context, kind)
     require(context, *kinds)

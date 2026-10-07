@@ -18,7 +18,6 @@ from .contracts import (
     AcceptedHandoff,
     ArtifactRef,
     ContextPacket,
-    ExecutionReport,
     InputBinding,
     PreparationMapping,
     QuestionSet,
@@ -145,7 +144,7 @@ def resolve_prompt_budget(state: dict[str, Any], stage: Stage | str = Stage.UNDE
 
 
 def _contract_payload(name: str) -> dict[str, Any]:
-    from .contracts import OutputManifest, PopulationRecord, Submission, ImageConversionPlan, ImageRequest, PopulationOutcome
+    from .contracts import PopulationRecord, Submission, ImageConversionPlan, ImageRequest, PopulationOutcome
 
     mapping = {
         "image_conversion_plan.schema.json": ImageConversionPlan.model_json_schema(),
@@ -153,11 +152,9 @@ def _contract_payload(name: str) -> dict[str, Any]:
         "population_outcome.schema.json": PopulationOutcome.model_json_schema(),
         "submission.schema.json": Submission.model_json_schema(),
         "question.schema.json": QuestionSet.model_json_schema(),
-        "output_manifest.schema.json": OutputManifest.model_json_schema(),
         "source_report.schema.json": SourceReport.model_json_schema(),
         "population.schema.json": PopulationRecord.model_json_schema(),
         "mapping.schema.json": PreparationMapping.model_json_schema(),
-        "execution_report.schema.json": ExecutionReport.model_json_schema(),
         "case.schema.json": CaseRecord.model_json_schema(),
         "asset.schema.json": AssetEntry.model_json_schema(),
         "presentation.schema.json": PresentationRecord.model_json_schema(),
@@ -248,6 +245,7 @@ def _reference_snapshot(root: Path, scopes: tuple[str, ...]) -> tuple[str, dict[
             entries[path.relative_to(root).as_posix()] = {
                 "size_bytes": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
+                "digest": digest_file(path),
             }
     return digest_payload(entries), entries
 
@@ -265,12 +263,12 @@ def _validate_reference_root(inputs: dict[str, Any], value: str | Path) -> Path:
 
 
 def verify_previous_reference(attempt_dir: str | Path) -> None:
-    reference_path = Path(attempt_dir) / "inputs" / "previous_reference.json"
+    reference_path = Path(attempt_dir) / "work" / "inputs" / "previous_reference.json"
     if not reference_path.is_file():
         return
     reference = json.loads(reference_path.read_text(encoding="utf-8"))
     root = Path(reference["host_root"])
-    _, current = _reference_snapshot(root, ("work", "outputs", "inputs/accepted"))
+    _, current = _reference_snapshot(root, ("work/outputs", "work/inputs/accepted", "work/scripts"))
     if current != reference.get("entries", {}):
         raise ValueError("Previous preparation reference changed during the coding stage")
 
@@ -281,12 +279,12 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
     bindings: list[InputBinding] = []
     values = dict(inputs)
     _write_json(root / "user_request.json", {"request": inputs.get("user_request", "")})
-    bindings.append(InputBinding(path="inputs/user_request.json", digest=digest_file(root / "user_request.json"), role="user_request", reason="Original preparation request."))
+    bindings.append(InputBinding(path="work/inputs/user_request.json", digest=digest_file(root / "user_request.json"), role="user_request", reason="Original preparation request."))
     _write_json(root / "environment.json", inputs.get("environment", {}))
-    bindings.append(InputBinding(path="inputs/environment.json", digest=digest_file(root / "environment.json"), role="environment", reason="Frozen execution environment."))
+    bindings.append(InputBinding(path="work/inputs/environment.json", digest=digest_file(root / "environment.json"), role="environment", reason="Frozen execution environment."))
     decisions = [item.model_dump(mode="json") for item in inputs.get("decisions", [])]
     _write_json(root / "decisions.json", {"decisions": decisions})
-    bindings.append(InputBinding(path="inputs/decisions.json", digest=digest_file(root / "decisions.json"), role="decisions", reason="Resolved user decisions."))
+    bindings.append(InputBinding(path="work/inputs/decisions.json", digest=digest_file(root / "decisions.json"), role="decisions", reason="Resolved user decisions."))
 
     sources: list[SourceBinding] = []
     source_index = []
@@ -299,7 +297,7 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
         for child in sorted(manifest_destination.rglob("*")):
             if child.is_file():
                 bindings.append(InputBinding(
-                    path=f"inputs/sources/{source_id}/{child.relative_to(manifest_destination).as_posix()}",
+                    path=f"work/inputs/sources/{source_id}/{child.relative_to(manifest_destination).as_posix()}",
                     digest=digest_file(child), role="source_manifest",
                     read_policy="stream_during_execution",
                     reason=f"Frozen manifest for source {source_id}.",
@@ -307,7 +305,7 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
         worker_root = f"/workspace/sources/{source_id}" if backend == "docker" else str(Path(source["root"]).resolve())
         binding = SourceBinding(
             source_id=source_id, root=worker_root,
-            manifest=f"inputs/sources/{source_id}", digest=manifest_digest or digest_payload(source),
+            manifest=f"work/inputs/sources/{source_id}", digest=manifest_digest or digest_payload(source),
         )
         sources.append(binding)
         source_index.append({
@@ -316,14 +314,14 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
             "identity": {key: value for key, value in source.items() if key != "root"},
         })
     _write_json(root / "source_index.json", {"sources": source_index})
-    bindings.append(InputBinding(path="inputs/source_index.json", digest=digest_file(root / "source_index.json"), role="source_index", reason="Frozen source bindings."))
+    bindings.append(InputBinding(path="work/inputs/source_index.json", digest=digest_file(root / "source_index.json"), role="source_index", reason="Frozen source bindings."))
 
     contracts_root = root / "contracts"
     contracts_root.mkdir(parents=True, exist_ok=True)
     for name in contract_file_names(inputs["stage"]):
         target = contracts_root / name
         digest = _write_text(target, CONTRACT_RULES) if name == "rules.md" else _write_json(target, _contract_payload(name))
-        bindings.append(InputBinding(path=f"inputs/contracts/{name}", digest=digest, role="contracts", reason="Host-maintained output contract."))
+        bindings.append(InputBinding(path=f"work/inputs/contracts/{name}", digest=digest, role="contracts", reason="Host-maintained output contract."))
 
     artifacts = dict(inputs.get("artifacts") or {})
     if artifacts:
@@ -331,7 +329,7 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
         for name, artifact in artifacts.items():
             target = accepted_root / name
             digest = _copy_file(artifact.path, target)
-            bindings.append(InputBinding(path=f"inputs/accepted/{name}", digest=digest, role="accepted", reason=f"Accepted handoff artifact {name}."))
+            bindings.append(InputBinding(path=f"work/inputs/accepted/{name}", digest=digest, role="accepted", reason=f"Accepted handoff artifact {name}."))
         values["accepted_artifacts"] = artifacts
 
     previous = inputs.get("previous_attempt_root")
@@ -339,7 +337,7 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
     if previous:
         previous_root = _validate_reference_root(inputs, previous)
         reference_digest, reference_entries = _reference_snapshot(
-            previous_root, ("work", "outputs", "inputs/accepted"),
+            previous_root, ("work/outputs", "work/inputs/accepted", "work/scripts"),
         )
         worker_root = "/workspace/previous" if backend == "docker" else str(previous_root)
         reference = {
@@ -366,18 +364,18 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
         revision_basis = {}
         for field in ("source_report", "mapping", "population", "inspection_script", "image_conversion_plan"):
             artifact = getattr(revision_handoff, field)
-            candidate = previous_root / "inputs" / "accepted" / artifact.name
+            candidate = previous_root / "work" / "inputs" / "accepted" / artifact.name
             if not candidate.is_file():
                 raise ValueError(f"Revision basis artifact is missing: {artifact.name}")
             worker_path = (
-                f"/workspace/previous/inputs/accepted/{artifact.name}"
+                f"/workspace/previous/work/inputs/accepted/{artifact.name}"
                 if backend == "docker" else str(candidate)
             )
             revision_basis[field] = {
                 "name": artifact.name, "path": worker_path, "digest": artifact.digest,
             }
             bindings.append(InputBinding(
-                path=f"previous/inputs/accepted/{artifact.name}",
+                path=f"previous/work/inputs/accepted/{artifact.name}",
                 worker_path=worker_path, host_path=str(candidate), digest=artifact.digest,
                 role="revision_basis", read_policy="before_work", required=False,
                 reason="Previous accepted semantic artifact used as a revision basis.",
@@ -390,31 +388,31 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
     feedback = inputs.get("validation_feedback") or {}
     if feedback:
         digest = _write_json(root / "validation.json", feedback)
-        bindings.append(InputBinding(path="inputs/validation.json", digest=digest, role="validation", reason="Host validation feedback."))
+        bindings.append(InputBinding(path="work/inputs/validation.json", digest=digest, role="validation", reason="Host validation feedback."))
 
     config_name = "inspection_config.json" if inputs["stage"] is Stage.UNDERSTAND else "preparation_config.json"
     config_payload = {
         "sources": [item.model_dump(mode="json") for item in sources],
         "source_manifests": {item.source_id: item.manifest for item in sources},
         "accepted_artifacts": {
-            name: {"path": f"inputs/accepted/{name}", "digest": artifact.digest, "stage": artifact.stage, "status": "accepted"}
+            name: {"path": f"work/inputs/accepted/{name}", "digest": artifact.digest, "stage": artifact.stage, "status": "accepted"}
             for name, artifact in artifacts.items()
         },
         "input_digest": digest_payload({name: artifact.digest for name, artifact in artifacts.items()}),
         "options": {"mode": "inventory" if inputs["stage"] is Stage.UNDERSTAND else "sample_or_full"},
     }
     digest = _write_json(root / config_name, config_payload)
-    bindings.append(InputBinding(path=f"inputs/{config_name}", digest=digest, role="execution", reason="Host-generated fixed script input configuration."))
+    bindings.append(InputBinding(path=f"work/inputs/{config_name}", digest=digest, role="execution", reason="Host-generated fixed script input configuration."))
     handoff = inputs.get("handoff")
     if handoff is not None:
         updates = {}
         for field in ("source_report", "mapping", "population", "inspection_script", "image_conversion_plan"):
             artifact = getattr(handoff, field)
-            updates[field] = artifact.model_copy(update={"path": f"inputs/accepted/{artifact.name}"})
+            updates[field] = artifact.model_copy(update={"path": f"work/inputs/accepted/{artifact.name}"})
         receipt_path = root / "handoff_validation.json"
         if Path(handoff.validation_receipt_ref).is_file():
             _copy_file(handoff.validation_receipt_ref, receipt_path)
-            updates["validation_receipt_ref"] = "inputs/handoff_validation.json"
+            updates["validation_receipt_ref"] = "work/inputs/handoff_validation.json"
         handoff = handoff.model_copy(update=updates)
     return MaterializedInputs(root=root, sources=sources, bindings=bindings, artifacts=artifacts,
                               handoff=handoff, values=values)
@@ -424,9 +422,9 @@ def _json_summary(path: Path, *, max_items: int = 8) -> Any:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {"path": f"inputs/accepted/{path.name}", "digest": digest_file(path)}
+        return {"path": f"work/inputs/accepted/{path.name}", "digest": digest_file(path)}
     if isinstance(value, list):
-        return {"count": len(value), "sample": value[:max_items], "truncated": len(value) > max_items, "path": f"inputs/accepted/{path.name}"}
+        return {"count": len(value), "sample": value[:max_items], "truncated": len(value) > max_items, "path": f"work/inputs/accepted/{path.name}"}
     if isinstance(value, dict):
         return {key: (item[:max_items] if isinstance(item, list) else item) for key, item in value.items()}
     return value
@@ -435,7 +433,7 @@ def _json_summary(path: Path, *, max_items: int = 8) -> Any:
 def _project_facts(stage: Stage, materialized: MaterializedInputs) -> dict[str, Any]:
     facts: dict[str, Any] = {"environment": materialized.values.get("environment", {}), "known_limitations": []}
     accepted = materialized.root / "accepted"
-    for name in ("source_report.json", "mapping.json", "execution_report.json"):
+    for name in ("source_report.json", "mapping.json", "image_conversion_plan.json"):
         candidate = accepted / name
         if candidate.is_file():
             summary = _json_summary(candidate)
@@ -445,7 +443,7 @@ def _project_facts(stage: Stage, materialized: MaterializedInputs) -> dict[str, 
     population = accepted / "image_population.jsonl"
     if population.is_file():
         count = sum(1 for line in population.open(encoding="utf-8") if line.strip())
-        facts["population_summary"] = {**dict(facts.get("population_summary", {})), "unit_count": count, "path": "inputs/accepted/image_population.jsonl", "digest": digest_file(population)}
+        facts["population_summary"] = {**dict(facts.get("population_summary", {})), "unit_count": count, "path": "work/inputs/accepted/image_population.jsonl", "digest": digest_file(population)}
     if revision_basis := materialized.values.get("revision_basis"):
         facts["revision_basis"] = revision_basis
     if previous_reference := materialized.values.get("previous_reference"):
@@ -466,9 +464,9 @@ def _project_files(stage: Stage, materialized: MaterializedInputs) -> list[Input
         binding.model_copy(update={"size_bytes": (
             binding.size_bytes
             or (Path(binding.host_path).stat().st_size if binding.host_path and Path(binding.host_path).is_file() else 0)
-            or ((materialized.root.parent / Path(binding.path).relative_to("inputs")).stat().st_size
-                if binding.path.startswith("inputs/")
-                and (materialized.root.parent / Path(binding.path).relative_to("inputs")).is_file()
+            or ((materialized.root / Path(binding.path).relative_to("work/inputs")).stat().st_size
+                if binding.path.startswith("work/inputs/")
+                and (materialized.root / Path(binding.path).relative_to("work/inputs")).is_file()
                 else 0)
         )})
         for binding in materialized.bindings
@@ -525,13 +523,13 @@ def project_context(stage: Stage | str, inputs: dict[str, Any], materialized: Ma
         decisions=inputs.get("decisions", []),
         facts=_project_facts(current, materialized),
         files=_project_files(current, materialized),
-        outputs=StageOutputs(root="outputs", required=spec.required_outputs, optional=spec.optional_outputs, contracts_root="inputs/contracts", files=spec.files),
+        outputs=StageOutputs(root="work/outputs", required=spec.required_outputs, optional=spec.optional_outputs, contracts_root="work/inputs/contracts", files=spec.files),
         validation_feedback=inputs.get("validation_feedback") or {},
         execution={
-            "cwd": "outputs", "python": "python", "commands": spec.commands,
+            "cwd": ".", "python": "python", "commands": spec.commands,
             "source_bindings": [item.model_dump(mode="json") for item in materialized.sources],
-            "input_config": "inputs/inspection_config.json" if current is Stage.UNDERSTAND else "inputs/preparation_config.json",
-            "output_dir": "outputs",
+            "input_config": "work/inputs/inspection_config.json" if current is Stage.UNDERSTAND else "work/inputs/preparation_config.json",
+            "output_dir": "work/outputs",
             "previous_reference": (
                 {
                     "worker_root": materialized.values["previous_reference"]["worker_root"],
@@ -577,10 +575,10 @@ def render_prompt(stage: Stage | str, packet: ContextPacket) -> str:
         render_attempt_mode(packet),
         "Stage contract:\n```json\n" + contract_text + "\n```",
         "Current host context:\n```json\n" + packet.model_dump_json(indent=2) + "\n```",
-        "The same context packet is available at ./inputs/context.json. Follow its file-reading requirements and output contracts.",
+        "The same context packet is available at ./work/inputs/context.json. Follow its file-reading requirements and output contracts.",
         """Submission protocol
 
-Write outputs/submission.json using the supplied schema.
+Write work/outputs/submission.json using the supplied schema.
 
 - submitted: all required stage deliverables exist and the declared checks actually ran.
 - needs_input: a genuine missing user fact blocks correct processing; include question IDs.
@@ -611,16 +609,16 @@ def fit_context_budget(packet: ContextPacket, *, budget: StageBudget, renderer=N
     if token_count <= configured:
         return packet, prompt, token_count
     facts = dict(packet.facts)
-    for key in ("source_report_summary", "execution_report_summary"):
+    for key in ("source_report_summary", "image_conversion_plan_summary"):
         if key in facts:
-            facts[key] = {"path": f"inputs/accepted/{key.replace('_summary', '.json')}"}
+            facts[key] = {"path": f"work/inputs/accepted/{key.replace('_summary', '.json')}"}
     reduced = packet.model_copy(update={"facts": facts})
     prompt = render(reduced)
     token_count = _token_count(prompt)
     if token_count <= configured:
         return reduced, prompt, token_count
     if reduced.validation_feedback:
-        reduced = reduced.model_copy(update={"validation_feedback": {"summary": "Read inputs/validation.json for the complete report."}})
+        reduced = reduced.model_copy(update={"validation_feedback": {"summary": "Read work/inputs/validation.json for the complete report."}})
         prompt = render(reduced)
         token_count = _token_count(prompt)
         if token_count <= configured:
@@ -648,7 +646,7 @@ def build_stage_context(stage: Stage | str, state: dict[str, Any], attempt_dir: 
     inputs = resolve_stage_inputs(current, state)
     validate_input_identities(inputs)
     attempt_path = Path(attempt_dir)
-    materialized = materialize_worker_inputs(inputs, attempt_path / "inputs")
+    materialized = materialize_worker_inputs(inputs, attempt_path / "work" / "inputs")
     packet = project_context(current, inputs, materialized, {**state, "attempt": state.get("attempt") or state.get("stage_attempt") or 1})
     packet, prompt, token_count = fit_context_budget(packet, budget=inputs["budget"])
     write_context_snapshot(attempt_path, packet)
@@ -657,13 +655,13 @@ def build_stage_context(stage: Stage | str, state: dict[str, Any], attempt_dir: 
 
 
 def write_context_snapshot(attempt_dir: str | Path, packet: ContextPacket) -> Path:
-    path = Path(attempt_dir) / "inputs" / "context.json"
+    path = Path(attempt_dir) / "work" / "inputs" / "context.json"
     _write_json(path, packet.model_dump(mode="json"))
     return path
 
 
 def write_prompt_snapshot(attempt_dir: str | Path, prompt: str) -> Path:
-    path = Path(attempt_dir) / "inputs" / "prompt.md"
+    path = Path(attempt_dir) / "prompt.md"
     _write_text(path, prompt)
     return path
 

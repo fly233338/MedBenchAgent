@@ -30,7 +30,10 @@ def test_text_image_package_publish_preserves_native_bytes(tmp_path, format, suf
     state["accepted_handoff"] = handoff.model_dump(mode="json")
     text = tmp_path / "text"
     text.mkdir()
-    case = {"case_id": "case", "evidence": [{"id": "image", "type": "asset", "name": "image", "value": "asset"}]}
+    case = {"case_id": "case", "evidence": [
+        {"id": "image", "type": "asset", "name": "image", "value": "asset"},
+        {"id": "label", "type": "value", "name": "label", "value": "yes"},
+    ]}
     (text / "cases.jsonl").write_text(json.dumps(case) + "\n", encoding="utf-8")
     (text / "provenance.jsonl").write_text("".join(json.dumps({"source_id": "source", "source_unit_id": f"unit-{i}",
         "case_ids": ["case"], "record_refs": [f"row-{i}"], "status": "retained", "reason": "mapped"}) + "\n" for i in (1, 2)), encoding="utf-8")
@@ -42,7 +45,7 @@ def test_text_image_package_publish_preserves_native_bytes(tmp_path, format, suf
     state["text_root"] = str(text)
     state["text_artifacts"] = {p.name: ArtifactRef(name=p.name, path=str(p), digest=digest_file(p), producer="text", stage="prepare_text").model_dump(mode="json") for p in text.iterdir()}
     attempt = tmp_path / "image"
-    images = attempt / "outputs"
+    images = attempt / "work" / "outputs"
     images.mkdir(parents=True)
     asset = AssetEntry(asset_id="asset", source_id="source", kind="image", format=suffix, source_path=image.name,
                        file_digest=digest_file(image), metadata={"input_visibility": "model_visible"})
@@ -61,6 +64,39 @@ def test_text_image_package_publish_preserves_native_bytes(tmp_path, format, suf
     published = DatasetPublisher(state["bundle_root"]).publish(package, state, validation)
     assert (Path(published["revision_path"]) / target).read_bytes() == image.read_bytes()
     assert not (Path(published["revision_path"]) / "submission.json").exists()
+    from medbenchagent.data.dataset_catalog import register_dataset, load_prepared
+    from medbenchagent.planning.resolver import ResolverContext
+    from medbenchagent.planning.pipeline import run_pipeline
+    from medbenchagent.planning.task_space import TaskPlanState, TaskScenario
+    from medbenchagent.agents.finalization import finalize_benchmark
+    from medbenchagent.generation.items import write_task_items
+    from test_task_input import leaf
+    entry = register_dataset("demo", state["bundle_root"], catalog_path=tmp_path / "catalog.json")
+    _, access = load_prepared(entry)
+    task = leaf().model_copy(update={"options": ["yes", "no"]})
+    plan = TaskPlanState(dataset={"dataset_id": "demo"}, phase="complete", leaf_tasks={"l": task}, scenarios={
+        "s": TaskScenario(scenario_id="s", input_structure="single-image", operation="recognize", clinical_target="finding",
+            capability_category="Recognition", leaf_task_ids=["l"], status="completed",
+            validated_clinical_targets=[{"target_id": "finding", "name": "finding", "target_type": "finding",
+                "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["label"]}]),
+    })
+    built = run_pipeline(dataset={"dataset_id": "demo"}, plan=plan, cases=[case], requested_count=1,
+                         resolver_context=ResolverContext.from_access(access))
+    assert built["audit"]["accepted"] == 1
+    task = task.model_copy(update={"eligible_count": 1})
+    plan.leaf_tasks["l"] = task
+    plan_path = tmp_path / "task_plan.json"
+    plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
+    raw = tmp_path / "generated.jsonl"
+    write_task_items(raw, built["items"])
+    allocation = tmp_path / "allocation.json"
+    allocation.write_text(json.dumps({"requested_count": 1, "counts": {"demo": {"l": 1}}}), encoding="utf-8")
+    finalize_benchmark({"selected_dataset_ids": ["demo"], "allocation_path": str(allocation),
+        "dataset_task_plans": {"demo": str(plan_path)}, "dataset_generations": {"demo": {"raw_output_path": str(raw)}},
+        "dataset_assets": {"demo": {"access": access}}, "operation_directory": str(tmp_path), "seed": 0,
+    }, output_directory=tmp_path / "delivery")
+    delivered = json.loads((tmp_path / "delivery" / "benchmark.jsonl").read_text(encoding="utf-8"))
+    assert verify_image(delivered["input_presentations"][0]["path"])["format"] == format
     (images / target).write_bytes(b"bad image")
     assert validate_stage_outputs(images, Stage.PREPARE_IMAGE, state).status == "rejected"
 
