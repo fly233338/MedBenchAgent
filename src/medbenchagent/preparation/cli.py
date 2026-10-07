@@ -63,6 +63,9 @@ def main(argv=None):
         state["text_artifacts"] = {name: ref for name, ref in refs.items() if name in {"cases.jsonl", "metadata.json"}}
     result = validate_stage(args.candidate, Stage(request["stage"]), state)
     print(result.model_dump_json(indent=2))
+    if args.command == "validate":
+        print("Candidate validation only.\nThis does NOT submit the stage.\n"
+              "Final worker action must be:\npython -m medbenchagent.preparation.cli submit")
     if args.command == "submit" and result.status == "accepted":
         candidate = Path(args.candidate)
         outputs = sorted(path.relative_to(candidate).as_posix() for path in candidate.rglob("*") if path.is_file())
