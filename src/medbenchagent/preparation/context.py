@@ -75,16 +75,15 @@ def build_stage_context(stage, state, workspace):
         (prompts / f"data_preparation_{stage.value}.md").read_text(encoding="utf-8"),
         json.dumps(visible, ensure_ascii=False, indent=2),
         "Inspect Python model schemas via medbenchagent.preparation.cli schema. "
+        "Generate the required candidate outputs and perform your necessary checks, then finish immediately. "
+        "Host checks required files and validates their contents after the worker ends. "
+        "No success receipt or submit command is required. Do not use CLI validate as a final completion action. "
+        "Do not inspect, modify, spot-check, or call other tools after finishing your candidate outputs. "
         "For semantic clarification, write a JSON array of scoped question records (schema question), "
-        "then run submit --outcome needs_input --questions-file work/questions.json. "
-        "For blocking failures use submit --outcome blocked --summary 'diagnostic'; "
-        "add --diagnostic-code mapping_revision_required only for demonstrated semantic conflicts.\n\n"
-        "When all candidate outputs are ready and your own checks pass, immediately run:\n\n"
-        "python -m medbenchagent.preparation.cli submit\n\n"
-        "Do NOT run preparation.cli validate as the final validation step. "
-        "submit already performs the authoritative candidate validation and writes the stage submission receipt. "
-        "If submit exits with code 0, your stage work is complete; finish immediately. "
-        "Do not inspect, modify, validate, spot-check, or call any other tool after a successful submit.",
+        "then run python -m medbenchagent.preparation.cli signal --outcome needs_input --questions-file work/questions.json. "
+        "For blocking failures use signal --outcome blocked --summary 'diagnostic'; "
+        "add --diagnostic-code mapping_revision_required only for demonstrated semantic conflicts. "
+        "Only exceptional control uses work/control.json; finish after reporting it.",
     ))
     budget = resolve_prompt_budget(state, stage)
     tokens = (len(prompt.encode()) + 3) // 4

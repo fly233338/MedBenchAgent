@@ -10,6 +10,43 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def candidate_outcome(request: dict, workspace: Path) -> dict:
+    """Collect candidate files; only exceptional outcomes require a control file."""
+    from medbenchagent.preparation.contracts import StageControl
+
+    produced = {}
+    allowed = set(request.get("allowed_outputs", [])) | set(request.get("required_outputs", []))
+    output_root = workspace / "work/outputs"
+    for path in sorted(item for item in output_root.rglob("*") if item.is_file()):
+        name = path.relative_to(output_root).as_posix()
+        if name in allowed or name.startswith("images/"):
+            produced[name] = str(path.resolve())
+    control_path = workspace / "work/control.json"
+    signal = None
+    diagnostic = ""
+    if control_path.is_file():
+        try:
+            signal = StageControl.model_validate_json(control_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:
+            diagnostic = f"Invalid control.json: {exc}"
+    missing = sorted(set(request["required_outputs"]) - set(produced))
+    if diagnostic:
+        status = "failed"
+    elif signal:
+        status = signal.requested_outcome
+    else:
+        status = "failed" if missing else "submitted"
+    if not signal and missing and not diagnostic:
+        diagnostic = f"Missing required outputs: {missing}"
+    return {
+        "status": status, "outputs": produced,
+        "question_refs": signal.question_refs if signal else [],
+        "diagnostic": diagnostic or (signal.summary if signal else ""),
+        "termination_reason": "completed" if status == "submitted" else "control" if signal else "output_invalid",
+        "control_path": str(control_path) if signal else None,
+    }
+
+
 def normalize_tool_arguments(tool_name: str, arguments: dict) -> tuple[dict, list[str]]:
     normalized = dict(arguments or {})
     stripped = []
@@ -222,36 +259,13 @@ def main(request_path: str, result_path: str) -> None:
             return
         raise
 
-    produced = {}
-    allowed = set(request.get("allowed_outputs", [])) | set(request.get("required_outputs", []))
-    output_root = workspace / "work" / "outputs"
-    for path in sorted(item for item in output_root.rglob("*") if item.is_file()):
-        name = path.relative_to(output_root).as_posix()
-        if name in allowed or name.startswith("images/"):
-            produced[name] = str(path.resolve())
-    submission_path = workspace / "work" / "submission.json"
-    submission = None
-    diagnostic = ""
-    if submission_path.is_file():
-        try:
-            submission = json.loads(submission_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            diagnostic = f"Invalid submission.json: {exc}"
-    else:
-        diagnostic = "Required worker output is missing: submission.json"
-    complete = not diagnostic and set(request["required_outputs"]) <= set(produced)
-    requested = submission.get("requested_outcome") if isinstance(submission, dict) else "blocked"
-    result_status = "submitted" if complete and requested == "submitted" else ("needs_input" if requested == "needs_input" else "blocked" if requested == "blocked" else "failed")
+    outcome = candidate_outcome(request, workspace)
     result = {
         "stage": request["stage"], "attempt": request.get("attempt", 1),
         "attempt_id": request.get("attempt_id", ""),
         "conversation_id": request["conversation_id"], "execution_key": request["execution_key"],
-        "status": result_status, "outputs": produced,
-        "question_refs": submission.get("question_refs", []) if isinstance(submission, dict) else [],
-        "diagnostics": [], "diagnostic": "" if complete else diagnostic or submission.get("summary", ""),
-        "termination_reason": "completed" if result_status == "submitted" else "output_invalid",
+        **outcome, "diagnostics": [],
         "progress": progress, "input_digest": request.get("input_digest", ""),
-        "submission_path": "/workspace/work/submission.json",
         "token_count": request.get("prompt_token_count"),
     }
     Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
@@ -259,4 +273,3 @@ def main(request_path: str, result_path: str) -> None:
 
 if __name__ == "__main__":
     main(sys.argv[1], sys.argv[2])
-

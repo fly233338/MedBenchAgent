@@ -37,49 +37,15 @@ def test_docker_context_exposes_mounted_inventory(tmp_path):
     assert visible["source_manifests"] == {"s": "/workspace/source_manifests/s"}
 
 
-def test_submit_validates_and_writes_handoff_for_each_stage(tmp_path, monkeypatch):
-    from medbenchagent.preparation.cli import main
-    from medbenchagent.preparation.worker import OpenHandsWorker
-
-    worker = Worker(convert=True)
-    result = compile_preparation_graph(worker=worker).invoke(state(tmp_path))
-    assert result["status"] == "complete"
-    for request in worker.requests:
-        monkeypatch.chdir(request.workspace)
-        receipt = Path("work/submission.json")
-        assert main(["validate"]) == 0
-        assert not receipt.exists()
-        assert main(["submit"]) == 0
-        submission, error = OpenHandsWorker._submission(request)
-        assert not error
-        assert submission.requested_outcome == "submitted"
-        assert set(request.required_outputs) <= set(submission.outputs)
-        assert "Write work/submission.json" not in Path(request.prompt_path).read_text(encoding="utf-8")
-        assert "preparation.cli submit" in Path(request.prompt_path).read_text(encoding="utf-8")
-
-
-def test_rejected_submit_removes_stale_success_receipt(tmp_path, monkeypatch):
-    from medbenchagent.preparation.cli import main
-
-    worker = Worker()
-    compile_preparation_graph(worker=worker).invoke(state(tmp_path))
-    request = worker.requests[0]
-    monkeypatch.chdir(request.workspace)
-    assert main(["submit"]) == 0
-    Path("work/outputs/mapping.json").write_text("{}", encoding="utf-8")
-    assert main(["submit"]) == 2
-    assert not Path("work/submission.json").exists()
-
-
 @pytest.mark.parametrize("outcome", ["needs_input", "blocked"])
-def test_submit_records_clarification_and_blocking_without_candidate_outputs(tmp_path, monkeypatch, outcome):
+def test_signal_records_clarification_and_blocking_without_candidate_outputs(tmp_path, monkeypatch, outcome):
     import json
     from medbenchagent.preparation.cli import main
-    from medbenchagent.preparation.contracts import Submission
+    from medbenchagent.preparation.contracts import StageControl
 
     monkeypatch.chdir(tmp_path)
     Path("request.json").write_text('{"stage":"understand"}', encoding="utf-8")
-    arguments = ["submit", "--outcome", outcome, "--summary", "Need source meaning"]
+    arguments = ["signal", "--outcome", outcome, "--summary", "Need source meaning"]
     if outcome == "needs_input":
         questions = [{"issue_id": "meaning", "stage": "understand", "question": "Which label?", "impact": "mapping"}]
         Path("questions.json").write_text(json.dumps(questions), encoding="utf-8")
@@ -87,10 +53,10 @@ def test_submit_records_clarification_and_blocking_without_candidate_outputs(tmp
     else:
         arguments += ["--diagnostic-code", "mapping_revision_required"]
     assert main(arguments) == 0
-    submission = Submission.model_validate_json(Path("work/submission.json").read_text(encoding="utf-8"))
-    assert submission.requested_outcome == outcome
-    assert bool(submission.questions) == (outcome == "needs_input")
-    assert submission.outputs == []
+    signal = StageControl.model_validate_json(Path("work/control.json").read_text(encoding="utf-8"))
+    assert signal.requested_outcome == outcome
+    assert bool(signal.questions) == (outcome == "needs_input")
+    assert not Path("work/outputs").exists()
 
 
 def test_context_budget_fails_without_silent_truncation(tmp_path):

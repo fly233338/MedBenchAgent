@@ -67,6 +67,8 @@ Supervisor 先由模型解析完整请求与澄清历史，并将经结构校验
 
 主线为 Understand → Prepare Text → 条件 Prepare Image → Package → Publish。
 Understand 交付图片路径规则 mapping 和 typed conversion plan；Text 保存最终 locator 并记录 runtime accounting。
+Worker 正常结束只交付候选文件；Host 检查必需文件和内容，验收通过才推进阶段。成功不需要额外 receipt；
+仅 needs_input / blocked 使用 work/control.json，异常控制优先于候选文件，失败候选继续沿用原有 retry。
 普通 JPEG/PNG/WebP 直接引用原来源，零复制；Cases 未引用任何 convert 图像时跳过 Image。
 图片规则基于 frozen source inventory 展开，DICOM series 目录由清单中的文件路径推导，不重复扫描 source root。
 转换 PNG 固定保存于 Prepared/<dataset>/images/，文件身份绑定来源内容、策略和切片。

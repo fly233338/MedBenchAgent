@@ -1,7 +1,7 @@
 """Canonical contracts for the three preparation coding stages.
 
-The worker boundary is deliberately small. A worker produces a candidate
-submission; the host owns stage validation, handoff acceptance and
+The worker boundary is deliberately small. A worker produces candidate
+files; the host owns stage validation, handoff acceptance and
 publication.
 """
 
@@ -208,12 +208,11 @@ class ValidationResult(Contract):
     candidate_digest: str = ""
 
 
-class Submission(Contract):
-    """Worker's explicit candidate handoff; it is not host acceptance."""
+class StageControl(Contract):
+    """Optional exceptional control message; successful output needs no receipt."""
 
-    requested_outcome: Literal["submitted", "needs_input", "blocked"]
+    requested_outcome: Literal["needs_input", "blocked"]
     summary: str = ""
-    outputs: list[str] = Field(default_factory=list)
     question_refs: list[str] = Field(default_factory=list)
     diagnostic_codes: list[str] = Field(default_factory=list)
     questions: list[SemanticQuestion] = Field(default_factory=list)
@@ -276,7 +275,7 @@ class StageResult(Contract):
     diagnostic: str = ""
     termination_reason: str = ""
     progress: dict[str, Any] = Field(default_factory=dict)
-    submission_path: str | None = None
+    control_path: str | None = None
     input_digest: str = ""
     prompt_digest: str = ""
     context_digest: str = ""

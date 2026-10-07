@@ -13,38 +13,30 @@ from .contracts import (
     Stage,
     StageRequest,
     StageResult,
-    Submission,
+    StageControl,
 )
 
 
 class OpenHandsWorker:
-    """Run one stage and normalize its submission into a StageResult."""
+    """Return candidate outputs and optional exceptional control for Host validation."""
 
     def __init__(self, runtime: Any | None = None):
         self.runtime = runtime
 
     @staticmethod
-    def _submission(request: StageRequest) -> tuple[Submission | None, str]:
-        path = Path(request.workspace) / "work" / "submission.json"
+    def _control(request: StageRequest) -> tuple[StageControl | None, str]:
+        path = Path(request.workspace) / "work" / "control.json"
         if not path.is_file():
-            return None, "Worker did not write work/submission.json"
+            return None, ""
         try:
-            submission = Submission.model_validate_json(path.read_text(encoding="utf-8"))
-            output_root = Path(request.workspace) / "work" / "outputs"
-            unsafe = [name for name in submission.outputs if Path(name).is_absolute() or ".." in Path(name).parts]
-            if unsafe:
-                return None, f"Submission references paths outside outputs: {unsafe[:10]}"
-            missing = [name for name in submission.outputs if not (output_root / name).is_file()]
-            if missing:
-                return None, f"Submission references missing outputs: {missing[:10]}"
-            if submission.requested_outcome == "submitted":
-                required = [name for name in request.required_outputs if name != "submission.json"]
-                absent = [name for name in required if not (output_root / name).is_file()]
-                if absent:
-                    return None, f"Submitted outcome is missing required outputs: {absent}"
-            return submission, ""
+            signal = StageControl.model_validate_json(path.read_text(encoding="utf-8"))
+            if any(question.stage != request.stage for question in signal.questions):
+                return None, "Control questions must belong to the current stage"
+            if signal.requested_outcome == "needs_input" and not signal.questions:
+                return None, "needs_input control requires scoped questions"
+            return signal, ""
         except Exception as exc:
-            return None, f"Invalid work/submission.json: {exc}"
+            return None, f"Invalid work/control.json: {exc}"
 
     def run(self, request: StageRequest) -> StageResult:
         from medbenchagent.runtime.dataset_runtime import dataset_runtime
@@ -64,7 +56,7 @@ class OpenHandsWorker:
             self._write_result(request, stage_result)
             return stage_result
 
-        submission, submission_error = self._submission(request)
+        signal, signal_error = self._control(request)
         status = result.status
         diagnostics: list[Diagnostic] = []
         control = result.control
@@ -74,14 +66,21 @@ class OpenHandsWorker:
                 category="environment" if status == "failed" else "unknown",
                 blocking=status != "submitted", message=result.diagnostic,
             ))
-        if submission_error:
-            diagnostics.append(Diagnostic(stage=request.stage, code="submission_invalid", category="contract", blocking=True, message=submission_error))
-            if status == "submitted":
+        if signal_error:
+            diagnostics.append(Diagnostic(stage=request.stage, code="control_invalid", category="contract", blocking=True, message=signal_error))
+            if status not in {"failed", "cancelled"}:
                 status = "failed"
-        elif submission and submission.requested_outcome != "submitted" and status == "submitted":
-            status = submission.requested_outcome
-        if submission:
-            for code in submission.diagnostic_codes:
+        elif signal and status not in {"failed", "cancelled"}:
+            status = signal.requested_outcome
+        if status == "submitted":
+            missing = [name for name in request.required_outputs
+                       if name not in result.outputs or not (Path(request.workspace) / "work/outputs" / name).is_file()]
+            if missing:
+                status = "failed"
+                diagnostics.append(Diagnostic(stage=request.stage, code="output_missing", category="contract",
+                                              blocking=True, message=f"Missing required outputs: {missing}"))
+        if signal:
+            for code in signal.diagnostic_codes:
                 diagnostics.append(Diagnostic(
                     stage=request.stage, code=code,
                     category="mapping" if code == CONTROL_MAPPING_REVISION_REQUIRED else "unknown",
@@ -105,13 +104,13 @@ class OpenHandsWorker:
             attempt=request.attempt, attempt_id=request.attempt_id,
             conversation_id=request.conversation_id, execution_key=request.execution_key,
             status=status, control=control, outputs=outputs,
-            question_refs=submission.question_refs if submission else [],
-            questions=submission.questions if submission else [],
+            question_refs=signal.question_refs if signal else [],
+            questions=signal.questions if signal else [],
             diagnostics=diagnostics,
-            diagnostic=(submission.summary if submission else result.diagnostic),
+            diagnostic=(signal.summary if signal else signal_error or result.diagnostic),
             termination_reason=result.termination_reason or ("completed" if status == "submitted" else "worker_error"),
             progress=result.progress,
-            submission_path=str((Path(request.workspace) / "work" / "submission.json").resolve()) if submission else None,
+            control_path=str((Path(request.workspace) / "work" / "control.json").resolve()) if signal else None,
             input_digest=request.input_digest,
             prompt_digest=digest_file(request.prompt_path) if Path(request.prompt_path).is_file() else "",
             context_digest=digest_file(request.context_path) if Path(request.context_path).is_file() else "",

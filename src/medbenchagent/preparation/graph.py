@@ -131,11 +131,11 @@ def _revise_mapping(state, issues):
     )
 
 
-def validate_understand_submission(outputs, state):
+def validate_understand_outputs(outputs, state):
     return validate_stage(Path(outputs["mapping.json"]).parent, Stage.UNDERSTAND, state)
 
 
-def validate_candidate_submission(outputs, state):
+def validate_candidate_outputs(outputs, state):
     return validate_stage(Path(outputs["root"]), Stage(state["stage"]), state)
 
 
@@ -301,10 +301,10 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
                 return {"status": "blocked", "diagnostics": _failure_issues(result)}
             return _retry(state, stage, _failure_issues(result))
         if stage is Stage.UNDERSTAND:
-            validation = validate_understand_submission(result.outputs, state)
+            validation = validate_understand_outputs(result.outputs, state)
         else:
             handoff = _handoff(state)
-            validation = validate_candidate_submission(
+            validation = validate_candidate_outputs(
                 {"root": str(Path(state["attempt_workspace"]) / "work" / "outputs")}, state,
             )
         _event(state, "stage_validated", status=validation.status)
