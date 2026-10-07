@@ -148,3 +148,43 @@ def iter_image_manifest(path):
 
 def write_image_manifest(path, entries):
     Path(path).write_text("".join(row.model_dump_json() + "\n" for row in entries), encoding="utf-8")
+
+
+def dataset_images(cases_path, manifest_path):
+    """Resolve converted records and derive ordinary source access without a second manifest."""
+    from .models import CaseRecord, ImageEntry
+    from .asset_adapters import verify_image
+    import hashlib
+    root = Path(cases_path).parent
+    metadata_path = root / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
+    images = {row.path: row for row in iter_image_manifest(manifest_path)}
+    needed = {e.value for line in Path(cases_path).read_text(encoding="utf-8").splitlines() if line.strip()
+              for e in CaseRecord.model_validate_json(line).evidence if e.type == "asset" and e.mask is None}
+    if not set(images) <= needed:
+        raise ValueError("Converted manifest contains unreferenced images")
+    direct = {}
+    for locator in sorted(needed - images.keys()):
+        path = Path(locator)
+        if not path.is_absolute():
+            raise ValueError("Direct image must reference its original absolute source path")
+        sources = [(key, Path(value).resolve()) for key, value in metadata.get("source_roots", {}).items()
+                   if path.resolve().is_relative_to(Path(value).resolve())]
+        if len(sources) != 1:
+            raise ValueError("Direct image must belong to one frozen source")
+        source_id, source_root = sources[0]
+        info = verify_image(path)
+        digest = digest_file(path)
+        direct[locator] = digest
+        images[locator] = ImageEntry(path=locator, file_digest=digest, format=info["format"].lower(),
+            width=info["width"], height=info["height"], source_id=source_id,
+            source_path=path.resolve().relative_to(source_root).as_posix(), source_digest=digest)
+    if "direct_images_digest" in metadata:
+        actual = hashlib.sha256(json.dumps(direct, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        if actual != metadata["direct_images_digest"]:
+            raise ValueError("Direct image source content changed")
+        for image in images.values():
+            verify_image(root / image.path, image.file_digest)
+    elif direct:
+        raise ValueError("Direct image content binding is missing")
+    return images

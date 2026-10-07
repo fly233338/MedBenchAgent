@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from medbenchagent.data.models import PresentationSpec
 
 
 class Contract(BaseModel):
@@ -134,14 +135,21 @@ class SemanticQuestion(Contract):
     decision_id: str | None = None
 
 
-class ImageSource(Contract):
+class ImageRule(Contract):
+    rule_id: str = Field(min_length=1)
     source_id: str = Field(min_length=1)
-    source_path: str = Field(min_length=1)
+    pattern: str = "*"
+    path_field: str | None = None
     source_format: str = Field(min_length=1)
-    policy_id: str = Field(min_length=1)
-    required: bool = True
-    reference_only: bool = False
+    action: Literal["direct", "convert", "reference_only"]
+    policy_id: str | None = None
     notes: str = ""
+
+
+class RecordSource(Contract):
+    source_id: str
+    path: str
+    format: Literal["csv", "jsonl", "json"]
 
 
 class PreparationMapping(Contract):
@@ -150,7 +158,9 @@ class PreparationMapping(Contract):
     grouping: GroupingRule
     joins: list[JoinRule] = Field(default_factory=list)
     fields: list[FieldRule] = Field(min_length=1)
-    images: dict[str, ImageSource] = Field(default_factory=dict)
+    image_rules: list[ImageRule] = Field(min_length=1)
+    image_overrides: dict[str, ImageRule] = Field(default_factory=dict)
+    record_sources: list[RecordSource] = Field(min_length=1)
     field_semantics: dict[str, Any] = Field(default_factory=dict)
     resolved_decision_refs: list[str] = Field(default_factory=list)
     limitations: list[Any] = Field(default_factory=list)
@@ -280,8 +290,10 @@ STAGE_OUTPUTS = {
 }
 
 
+
+
 class ImageConversionPlan(Contract):
-    policies: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    policies: dict[str, PresentationSpec] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
 
 

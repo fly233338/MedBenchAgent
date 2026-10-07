@@ -1,6 +1,6 @@
-Consume accepted mapping, conversion plan and cases.jsonl. Do not change Case semantics.
-For each non-mask image locator referenced by Cases, prepare that exact path under work/outputs/images/.
-Use data.asset_adapters.materialize_image: preserve ordinary JPEG/PNG bytes without transforms; medical displays use PNG.
-Write one image_manifest.jsonl with ImageEntry records keyed by final path, measured output digest/dimensions and bound source identity/digest.
-Do not emit asset/presentation/request/mask-feature sidecars. Cases already contain reference mask features.
-Use explicit conversion decisions; missing window or slice semantics requires clarification, not guessing. Validate actual outputs before submission.
+Consume accepted mapping, typed conversion plan and cases.jsonl. Do not change Case semantics.
+Only materialize referenced convert images; never copy direct source images. Resolve targets with preparation.images.resolve_image.
+Write candidate PNGs under work/outputs/images/<final basename>.png using data.asset_adapters.materialize_image and accepted policy.
+Write image_manifest.jsonl only for converted outputs. ImageEntry.path is the final host locator, not the candidate path; record actual digest, dimensions and source identity/digest.
+Host validates and atomically installs files into fixed Prepared/<dataset>/images/. Do not write directly to final destinations.
+Cases already contain reference mask features. Missing window/slice semantics requires clarification. No sidecar manifests.

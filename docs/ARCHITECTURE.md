@@ -61,16 +61,13 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 ## 数据准备
 
-唯一主线为 Understand → Prepare Text → Prepare Image → Package → Publish。
-Understand 只交付 mapping 和 image_conversion_plan；mapping 明确最终图片相对路径与来源的对应关系。
-Text 生成直接引用这些路径的 Cases，mask 几何直接附加到 reference Evidence。
-Image 生成普通图片和唯一 image_manifest。已有 JPEG/PNG 不无谓转码，医学展示生成 PNG。
-Package 完成最终 cross-check；Publisher 只按已验证 digest 原子提交，不修改数据。
-
-Published revision 只有 cases.jsonl、image_manifest.jsonl、images/、metadata.json。
-metadata 保留字段语义和需要时的 sampling/split；原始 mapping、转换计划和工作报告留在 runtime。
-Card/Profile/DuckDB 在 revision 外的 .derived/ 按需重建，发布回执在 .commits/，current.json 只指向 immutable revision。
-根目录不再复制数据集。详细契约见 PREPARATION_VALIDATION.md。
+主线为 Understand → Prepare Text → 条件 Prepare Image → Package → Publish。
+Understand 交付图片路径规则 mapping 和 typed conversion plan；Text 保存最终 locator 并记录 runtime accounting。
+普通 JPEG/PNG/WebP 直接引用原来源，零复制；没有 convert 规则时跳过 Image。
+转换 PNG 固定保存于 Prepared/<dataset>/images/，文件身份绑定来源内容、策略和切片。
+revision 仅保存 cases.jsonl、metadata.json、converted-only image_manifest.jsonl，不复制图片。
+metadata 绑定 direct 来源内容；访问时验证摘要，来源移动或修改会报错。
+Card/Profile/DuckDB 是可重建缓存。详细契约见 PREPARATION_VALIDATION.md。
 
 ## Benchmark 构建
 

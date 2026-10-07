@@ -16,7 +16,7 @@ def resolve_prompt_budget(state, stage):
 
 def stage_input_digest(stage, state):
     return digest_payload({key: state.get(key) for key in (
-        "source_snapshot_digest", "accepted_handoff", "text_artifacts", "user_decisions",
+        "source_snapshot_digest", "bundle_root", "source_roots", "accepted_handoff", "text_artifacts", "user_decisions",
         "validation_feedback", "previous_attempt_root", "revision_basis_handoff", "execution_runtime", "model", "base_url",
     )} | {"stage": str(stage)})
 
@@ -38,6 +38,7 @@ def build_stage_context(stage, state, workspace):
     docker = state.get("execution_runtime", {}).get("backend") == "docker"
     context = {
         "stage": stage.value, "dataset_id": state["dataset_id"],
+        "bundle_root": state["bundle_root"], "locator_roots": state["source_roots"],
         "source_roots": {key: f"/workspace/sources/{key}" if docker else value for key, value in state["source_roots"].items()},
         "user_request": state.get("user_request", ""), "decisions": state.get("user_decisions", []),
         "feedback": state.get("validation_feedback", {}), "inputs": {}, "reference_digests": {},

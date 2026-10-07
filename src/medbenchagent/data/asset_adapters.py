@@ -147,7 +147,7 @@ class NiftiVolumeAdapter(AssetAdapter):
         if data.ndim < 3:
             raise AssetAdapterError("NIfTI asset is not a volume")
         return LoadedAsset(data, {"shape": list(image.shape), "dtype": str(data.dtype), "spacing": list(image.header.get_zooms()),
-                                  "origin": [0.0, 0.0, 0.0], "direction": None, "affine": image.affine.tolist(),
+                                  "origin": image.affine[:3, 3].tolist(), "direction": None, "affine": image.affine.tolist(),
                                   "axis_order": list(range(data.ndim)), "slice_count": int(data.shape[2]),
                                   "frame_count": int(data.shape[3]) if data.ndim > 3 else 1})
 
@@ -161,30 +161,28 @@ class NrrdVolumeAdapter(AssetAdapter):
 
     def load(self, asset_spec: AssetEntry, *, source_root=None) -> LoadedAsset:
         path = _asset_path(asset_spec, source_root)
-        try:
-            import nrrd
-            data, header = nrrd.read(str(path))
-            array = np.asarray(data)
-            metadata = {"shape": list(array.shape), "dtype": str(array.dtype),
-                        "spacing": list(header.get("spacings", [])),
-                        "origin": header.get("space origin"), "direction": header.get("space directions"),
-                        "axis_order": list(range(array.ndim)), "slice_count": int(array.shape[0])}
-            if array.ndim < 3:
-                raise AssetAdapterError("NRRD asset is not a volume")
-            return LoadedAsset(array, metadata)
-        except ImportError:
+        if path.suffix.lower() in {".nrrd", ".nhdr"}:
+            try:
+                import nrrd
+            except ImportError as exc:
+                raise AssetAdapterError("pynrrd is required for NRRD assets") from exc
+            array, header = nrrd.read(str(path), index_order="F")
+            directions = header.get("space directions")
+            metadata = {"spacing": np.linalg.norm(directions, axis=1).tolist() if directions is not None else list(header.get("spacings", [])),
+                        "origin": header.get("space origin"), "direction": directions}
+        else:
             try:
                 import SimpleITK as sitk
             except ImportError as exc:
-                raise AssetAdapterError("Install pynrrd or SimpleITK for NRRD/ITK assets") from exc
+                raise AssetAdapterError("SimpleITK is required for ITK assets") from exc
             image = sitk.ReadImage(str(path))
-            array = np.asarray(sitk.GetArrayFromImage(image))
-            if array.ndim < 3:
-                raise AssetAdapterError("ITK asset is not a volume")
-            return LoadedAsset(array, {"shape": list(array.shape), "dtype": str(array.dtype),
-                                       "spacing": list(image.GetSpacing()), "origin": list(image.GetOrigin()),
-                                       "direction": list(image.GetDirection()),
-                                       "axis_order": list(range(array.ndim)), "slice_count": int(array.shape[0])})
+            array = np.asarray(sitk.GetArrayFromImage(image)).transpose()
+            metadata = {"spacing": list(image.GetSpacing()), "origin": list(image.GetOrigin()),
+                        "direction": np.asarray(image.GetDirection()).reshape(image.GetDimension(), -1).T.tolist()}
+        if array.ndim != 3:
+            raise AssetAdapterError("Expected a three-dimensional volume")
+        return LoadedAsset(array, {**metadata, "shape": list(array.shape), "dtype": str(array.dtype),
+                                  "axis_order": [0, 1, 2], "slice_count": int(array.shape[2])})
 
     def inspect(self, asset_spec: AssetEntry, *, source_root=None) -> dict[str, Any]:
         return self.load(asset_spec, source_root=source_root).metadata
@@ -248,7 +246,7 @@ class DicomSeriesAdapter(AssetAdapter):
         if len(shapes) != 1:
             raise AssetAdapterError("DICOM Series has inconsistent geometry")
         positions = [getattr(ds, "ImagePositionPatient", None) for ds in datasets]
-        if all(position is not None for position in positions) and len(positions) > 2:
+        if all(position is not None for position in positions) and len(positions) >= 2:
             distances = [float(np.dot(normal, np.asarray(positions[i + 1], dtype=float) - np.asarray(positions[i], dtype=float))) for i in range(len(positions) - 1)]
             if any(abs(distance) < 1e-9 for distance in distances):
                 raise AssetAdapterError("DICOM Series contains duplicate slice positions")

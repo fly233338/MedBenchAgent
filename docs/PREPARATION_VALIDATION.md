@@ -1,57 +1,9 @@
-# Preparation: semantic decisions, data, and runtime state
+# Preparation contracts
 
-## One owner per boundary
+Understand produces mapping.json (image rules, optional exact overrides, record_sources and annotation semantics) and typed image_conversion_plan.json. Image rules are expanded by code; models do not enumerate images.
 
-The graph runs Understand → Prepare Text → Prepare Image → Package → Publish.
-Understand accepts only mapping.json and image_conversion_plan.json. `mapping.images` maps final
-relative locators to source_id/source_path/source_format/policy_id; source references and policies
-are checked. There is no host-generated target-path convention overriding these decisions.
-Inspection scripts, measurements and population notes are optional runtime work, not handoff dependencies.
+Text writes final locators into Cases. Ordinary images reference original absolute source files without copies. Converted locators use Prepared/<dataset>/images/<source-policy-slice identity>.png. The shared resolver separates mounted read paths from host locators. Text writes runtime work/accounting.json; Host independently counts declared records and checks seen/consumed/excluded/skipped/emitted totals, allowing joins and splits.
 
-Text produces cases.jsonl. Asset Evidence.value is the final ordinary-image locator. Source mask
-features are computed with mask_geometry and attached directly to reference-only Case Evidence.
-Text checks schema, unique Case IDs, required mapped coverage, locators and mask source digests.
-Detailed annotation accounting belongs in runtime and is not a published contract.
-Optional sampling/split semantics are supplied in metadata.json; their existing typed contracts remain.
+Image is skipped when no convert rules exist. Otherwise it emits only required converted PNG candidates and image_manifest.jsonl. Package validates candidates and atomically installs fixed images without overwriting conflicting content. Immutable revisions contain only cases.jsonl, metadata.json and image_manifest.jsonl; metadata binds direct source contents, while the manifest binds converted contents. No images are copied into revisions. Source files must remain available and unchanged.
 
-Image consumes accepted mapping, conversion plan and Cases. It writes images/ and image_manifest.jsonl.
-Each ImageEntry contains the final path, measured format/dimensions/digest, source identity/digest and
-necessary geometry metadata. Native untransformed JPEG/PNG bytes are preserved. Medical displays
-require real PNG. Stage checks reject missing, extra, changed or inconsistent outputs without repairing them.
-
-Package copies only referenced image files, Cases and their single manifest, projects needed field
-semantics and sampling/split data into metadata.json, then performs one final cross-file check.
-Publisher only verifies the validated content digest, copies to the destination filesystem and atomically
-commits the directory. It performs no quarantine, Case rewrite, manifest repair, indexing or profiling.
-Invalid candidates must be repaired by their producing stage; they are never silently changed during publish.
-
-## Persisted file inventory
-
-Published revision:
-
-```
-cases.jsonl
-image_manifest.jsonl
-metadata.json
-images/<actual ordinary images>
-```
-
-Metadata is dataset content: dataset identity, field meanings/missingness needed for planning and optional
-sampling/split semantics. Original mapping and conversion policy remain in preparation runtime.
-
-Outside revisions, current.json and .commits/ record publication; .derived/ holds rebuildable DuckDB,
-Profile, Card and access projections. No full current projection or second image copy is generated.
-Deleting .derived/ cannot lose dataset content; catalog loading reconstructs it from immutable inputs.
-
-An attempt has request.json (including context), prompt.md, result.json and work/. The only copied inputs
-are accepted mapping, conversion plan and, for Image, Cases plus optional metadata. No context packet,
-per-file schema bundle, source-report receipt, inspection script or population handoff is materialized.
-work/submission.json carries worker control/questions and is not a dataset output. Checkpoint owns graph
-progress. CLI schema inspection prints the canonical Python schemas without creating per-attempt files.
-
-## Verification
-
-Tests cover the actual graph with deterministic workers, image-stage retry, mapping revision, semantic
-question resume, native image byte preservation, real medical decoding, immutable/idempotent publication,
-minimal revision file sets, stale/corrupt file rejection, cache reconstruction and benchmark delivery.
-External model/OpenHands services and Docker execution are verified separately when configured.
+Workers and Host use the same read-only stage checks. Package performs final consistency checks; Publisher commits unchanged validated metadata. Runtime owns scripts, accounting, logs and semantic plans. Existing runs are not migrated.

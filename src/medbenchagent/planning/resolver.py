@@ -16,7 +16,7 @@ from medbenchagent.planning.task_space import OutputSpec, EvidenceSelector
 def resolve_task_input(case, leaf, sampling_unit, context):
     """Resolve one frozen sampling unit, including the actual model-visible files."""
     from dataclasses import replace
-    from medbenchagent.data.asset_adapters import contained_path, verify_image
+    from medbenchagent.data.asset_adapters import verify_image
     from medbenchagent.planning.sampling import case_for_unit
 
     if sampling_unit is not None and (sampling_unit.case_id != case["case_id"] or not sampling_unit.eligible):
@@ -38,7 +38,7 @@ def resolve_task_input(case, leaf, sampling_unit, context):
         if image.get("metadata", {}).get("input_visibility") == "reference_only" or evidence.get("mask"):
             return NotApplicable(reason="reference_only_asset_input")
         try:
-            path = contained_path(context.dataset_root, evidence["value"])
+            path = (Path(context.dataset_root) / evidence["value"]).resolve()
             verify_image(path, image["file_digest"])
         except (OSError, ValueError):
             return NotApplicable(reason="invalid_input_image")
@@ -65,11 +65,11 @@ class ResolverContext:
         manifest_path = access.get("image_manifest_path")
         assets: dict[str, dict[str, Any]] = {}
         if manifest_path:
-            from medbenchagent.data.manifests import iter_image_manifest
+            from medbenchagent.data.manifests import dataset_images
             try:
                 assets = {
                     entry.path: entry.model_dump(mode="json")
-                    for entry in iter_image_manifest(manifest_path)
+                    for entry in dataset_images(access["cases_path"], manifest_path).values()
                 }
             except (OSError, ValueError):
                 assets = {}

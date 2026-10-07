@@ -8,7 +8,7 @@ from pathlib import Path
 
 import duckdb
 
-from medbenchagent.data.manifests import iter_image_manifest
+from medbenchagent.data.manifests import dataset_images
 from medbenchagent.data.sources import digest_file
 from medbenchagent.data.models import CaseRecord, validate_case
 
@@ -40,6 +40,7 @@ def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refr
     profile_path = cache / "dataset_profile.json"
     access_path = cache / "dataset_access_manifest.json"
     manifest_access = _manifest_access(cases_file.parent, cache)
+    assets = dataset_images(cases_file, manifest)
     if access_path.is_file():
         try:
             access = json.loads(access_path.read_text(encoding="utf-8"))
@@ -55,7 +56,6 @@ def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refr
             and all((key in manifest_access) == (key in access) for name in ("sampling", "split") for key in (f"{name}_manifest_path", f"{name}_manifest_digest"))
         ):
             return json.loads(profile_path.read_text(encoding="utf-8")), access
-    assets = {entry.path: entry for entry in iter_image_manifest(manifest)}
     cases = []
     with cases_file.open(encoding="utf-8") as source:
         for line in source:

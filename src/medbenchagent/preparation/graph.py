@@ -26,7 +26,7 @@ from .contracts import (
     STAGE_OUTPUTS,
 )
 from .publisher import DatasetPublisher
-from .validation import validate_stage, accept_mapping, package_dataset
+from .validation import validate_stage, accept_mapping, package_dataset, _load_inputs
 from .worker import OpenHandsWorker
 
 
@@ -327,6 +327,9 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
             names = ["cases.jsonl", "metadata.json"]
             artifacts = {name: ArtifactRef(name=name, path=str(root / name), digest=digest_file(root / name)).model_dump(mode="json")
                          for name in names if (root / name).is_file()}
+            mapping, _ = _load_inputs(state)
+            if not any(r.action == "convert" for r in [*mapping.image_rules, *mapping.image_overrides.values()]):
+                return {"status": "validated", "text_root": str(root), "text_artifacts": artifacts}
             return _fresh_attempt(state, stage=Stage.PREPARE_IMAGE.value, status="running",
                                   text_root=str(root), text_artifacts=artifacts, previous_attempt_root=None)
         return {"status": "validated", "validation": validation.model_dump(mode="json")}
@@ -335,7 +338,7 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
         try:
             root, digest = package_dataset(state)
         except (OSError, ValueError, KeyError) as exc:
-            return _retry(state, Stage.PREPARE_IMAGE, [{"code": "final_consistency", "message": str(exc)}])
+            return _retry(state, Stage(state["stage"]), [{"code": "final_consistency", "message": str(exc)}])
         validation = ValidationResult(status="accepted", stage=Stage.PREPARE_IMAGE, candidate_digest=digest)
         return {"status": "packaged", "package_root": str(root), "validation": validation.model_dump(mode="json")}
 

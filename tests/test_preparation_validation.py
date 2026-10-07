@@ -23,12 +23,12 @@ def test_understand_has_only_two_semantic_outputs_and_rejects_bad_source(tmp_pat
 
 @pytest.mark.parametrize("change", ["missing_image", "duplicate_case", "orphan_image", "changed_image"])
 def test_final_cross_check_rejects_inconsistent_dataset(tmp_path, change):
-    result = compile_preparation_graph(worker=Worker()).invoke(state(tmp_path))
+    result = compile_preparation_graph(worker=Worker(convert=True)).invoke(state(tmp_path))
     root = Path(result["package_root"])
     if change == "missing_image":
-        (root / "images/view.jpg").unlink()
+        Path(json.loads((root / "image_manifest.jsonl").read_text())["path"]).unlink()
     elif change == "changed_image":
-        (root / "images/view.jpg").write_bytes(b"corrupt")
+        Path(json.loads((root / "image_manifest.jsonl").read_text())["path"]).write_bytes(b"corrupt")
     elif change == "duplicate_case":
         p = root / "cases.jsonl"
         p.write_bytes(p.read_bytes() * 2)
@@ -55,3 +55,15 @@ def test_publisher_only_commits_unchanged_staging_and_is_idempotent(tmp_path):
     with pytest.raises(ValueError, match="unchanged"):
         publisher.publish(root, context, receipt)
     assert (Path(context["bundle_root"]) / "current.json").read_bytes() == current
+
+def test_accounting_rejects_silent_truncation(tmp_path):
+    from medbenchagent.preparation.accounting import validate_accounting
+    from medbenchagent.preparation.contracts import PreparationMapping
+    context = state(tmp_path)
+    source = Path(context["source_roots"]["s"]) / "records.csv"
+    source.write_text("id,label\n" + "c,yes\n" * 10000, encoding="utf-8")
+    report = tmp_path / "accounting.json"
+    report.write_text(json.dumps({"records_seen":6000, "records_consumed":6000, "cases_emitted":6000,
+        "excluded":{}, "skipped":{}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="population"):
+        validate_accounting(report, PreparationMapping.model_validate(mapping()), context["source_roots"], 6000)

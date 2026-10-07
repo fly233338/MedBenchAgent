@@ -33,7 +33,9 @@ def test_real_medical_readers_materialize_png(tmp_path, format):
     if format == "nifti":
         nib = pytest.importorskip("nibabel")
         path = source / "volume.nii.gz"
-        nib.save(nib.Nifti1Image(data, np.eye(4)), path)
+        affine = np.eye(4)
+        affine[:3, 3] = [11, -7, 3]
+        nib.save(nib.Nifti1Image(data, affine), path)
     elif format == "nrrd":
         nrrd = pytest.importorskip("nrrd")
         path = source / "volume.nrrd"
@@ -80,3 +82,16 @@ def test_real_medical_readers_materialize_png(tmp_path, format):
             expected = 255 - expected
         np.testing.assert_array_equal(np.asarray(image), expected)
 
+
+    if format == "nifti":
+        from medbenchagent.data.asset_adapters import NiftiVolumeAdapter
+        assert NiftiVolumeAdapter().load(asset, source_root=source).metadata["origin"] == [11, -7, 3]
+    if format == "dicom_series":
+        from medbenchagent.data.asset_adapters import DicomSeriesAdapter, AssetAdapterError
+        (path / "2.dcm").unlink()
+        ds = pydicom.dcmread(path / "1.dcm")
+        ds.ImagePositionPatient = [0, 0, 0]
+        ds.save_as(path / "1.dcm", enforce_file_format=True)
+        asset = asset.model_copy(update={"file_digest": digest_path(path)})
+        with pytest.raises(AssetAdapterError, match="duplicate slice"):
+            DicomSeriesAdapter().load(asset, source_root=source)
