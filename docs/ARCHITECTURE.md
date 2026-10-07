@@ -51,7 +51,7 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
     evidence/
     planning outputs
   preparation/<dataset>/
-    work/inputs/ handoff/ validation/ checkpoint.sqlite publication.json
+    source snapshot / checkpoint.sqlite
     attempts/<stage>/<attempt>/
       request.json prompt.md result.json
       work/inputs/ work/outputs/ work/logs/ work/conversations/
@@ -61,27 +61,22 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 ## 数据准备
 
-The production graph is understand → prepare_text → prepare_image → package → publish.
-Understand freezes mapping.json and image_conversion_plan.json. A deterministic inspector
-enumerates the population and is replayed by Host. Text emits Cases, provenance and image_requests;
-Image consumes those requests and emits assets, presentations and digest-bound mask features.
-Host assembles the results, validates the final set and atomically publishes an immutable revision.
-Each coding stage has two attempts; one evidence-backed mapping revision invalidates Text/Image.
+唯一主线为 Understand → Prepare Text → Prepare Image → Package → Publish。
+Understand 只交付 mapping 和 image_conversion_plan；mapping 明确最终图片相对路径与来源的对应关系。
+Text 生成直接引用这些路径的 Cases，mask 几何直接附加到 reference Evidence。
+Image 生成普通图片和唯一 image_manifest。已有 JPEG/PNG 不无谓转码，医学展示生成 PNG。
+Package 完成最终 cross-check；Publisher 只按已验证 digest 原子提交，不修改数据。
 
-Case/Evidence retain Asset identities. Presentations are model-visible ordinary images:
-JPEG/PNG without transforms preserve original bytes; medical images, slices and montages use PNG.
-Shared target_path assigns paths before conversion. Reference masks never become model input.
-Published bundles retain Cases, provenance, mapping/conversion policy, Asset/Presentation manifests,
-required sampling/split manifests, actual images and Card/Profile/commit metadata. Scripts, prompts,
-population working files and detailed reports stay in runtime. No image manifest duplicates Presentation.
-Validators do not repair candidates. Quarantine updates all references and dispositions before final
-validation. Catalog and consumers use verified revision paths, never root projections.
+Published revision 只有 cases.jsonl、image_manifest.jsonl、images/、metadata.json。
+metadata 保留字段语义和需要时的 sampling/split；原始 mapping、转换计划和工作报告留在 runtime。
+Card/Profile/DuckDB 在 revision 外的 .derived/ 按需重建，发布回执在 .commits/，current.json 只指向 immutable revision。
+根目录不再复制数据集。详细契约见 PREPARATION_VALIDATION.md。
 
 ## Benchmark 构建
 
 `specify` 生成带字段级来源证据的 Requirement，并保留开放式意图和用户提到的数据集名称。`discover_datasets` 扫描并校验 Catalog 与 Prepared 根目录，冻结候选 Card；它不替用户做选择。`select_datasets` 只绑定冻结候选 ID。随后代码生成并校验 `DatasetAccessReceipt`，模型不会决定路径、revision 或 digest。
 
-每个 annotation 数据集由 TaskPlanningAgent 分阶段读取规划证据：Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。Screening `keep` 只表示允许进入 Leaf 探索；Leaf 阶段可以在证据充分且没有有效 Leaf 时显式排除 Scenario，所有排除理由和证据都写入 canonical plan。完整计划唯一 canonical 文件位于 BIR 的 `datasets/<id>/planning/task_plan.json`；Run 目录中的 `task_plan.json`、`task_scenarios.json` 和 `leaf_tasks.json` 是派生视图。
+每个 annotation 数据集由 TaskPlanningAgent 分阶段读取规划证据：按需查询得到的 Dataset Overview、Evidence Catalog、Relation Summary 和有界 Case Samples。模型按 Registry 中的 Axis 和 Axis Value 做判断；代码组合为 Task Scenario，模型只处理当前 Scenario 并提出 Leaf Task、配置数量的等价问题模板，随后确定 Task Paradigm。Capability Category 由 Registry 中的 Operation 映射派生。Screening `keep` 只表示允许进入 Leaf 探索；Leaf 阶段可以在证据充分且没有有效 Leaf 时显式排除 Scenario，所有排除理由和证据都写入 canonical plan。完整计划唯一 canonical 文件位于 BIR 的 `datasets/<id>/planning/task_plan.json`；不会默认写 axis/scenario/leaf/review 导出文件；消费者直接读取 Task Plan。
 
 所有选中数据集的 Plan 完成后，Allocation 使用每个 Leaf 的 `eligible_count` 计算一个全局配额，默认先均衡数据集再均衡数据集内 Leaf。Generation 按数据集消费该配额和冻结的 Sampling manifest，并写出 JSONL。Finalization 重新审计每个生成项，隔离非法项，检查每图上限、manifest 引用和重复项，保留 shortfall，平衡 Closed VQA 选项位置，并发布统一的 `benchmark.jsonl`、`benchmark_manifest.json`、`audit_report.json` 和 `quarantine.jsonl`。
 
@@ -148,6 +143,6 @@ Planning facts live in data.task_facts; BIR owns task-plan persistence. Axis/sce
 are reproducible projections and are never read back as authority.
 
 Planning, Generation and Audit share resolve_task_input. It binds a Case and SamplingUnit to ordered
-Evidence, Asset and verified Presentation records. eligible_count counts eligible SamplingUnits.
-The benchmark item records input_presentations; consumers use those ordinary image files. Audit
+Evidence and verified image records. eligible_count counts eligible SamplingUnits.
+The benchmark item records input_images; consumers use those ordinary image files. Audit
 recomputes the bindings and digests, with reference-only masks excluded from model input.

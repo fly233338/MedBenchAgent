@@ -20,23 +20,23 @@ def test_worker_rejects_dependency_install_and_network_commands():
 
 def test_runtime_validates_stage_result_paths_and_required_outputs(tmp_path):
     workspace = tmp_path / "attempt"
-    output = workspace / "work" / "outputs" / "submission.json"
+    output = workspace / "work" / "outputs" / "mapping.json"
     output.parent.mkdir(parents=True)
     output.write_text("{}", encoding="utf-8")
     request = StageRequest(
         stage=Stage.UNDERSTAND, run_id="run", dataset_id="dataset", attempt=1,
         conversation_id="conversation", execution_key="execution", workspace=str(workspace),
         prompt_path=str(workspace / "prompt.md"), context_path=str(workspace / "work" / "inputs" / "context.json"),
-        input_digest="input", required_outputs=["submission.json"],
+        input_digest="input", required_outputs=["mapping.json"],
     )
     result = StageResult(
         stage=Stage.UNDERSTAND, attempt=1, conversation_id="conversation", execution_key="execution",
-        status="submitted", outputs={"submission.json": str(output)}, input_digest="input",
+        status="submitted", outputs={"mapping.json": str(output)}, input_digest="input",
     )
 
     validated = OpenHandsDatasetRuntime._validate_outputs(request, result, workspace, "conversation", "local")
 
-    assert validated.outputs["submission.json"] == str(output.resolve())
+    assert validated.outputs["mapping.json"] == str(output.resolve())
 
 
 def test_runtime_rejects_missing_worker_llm_configuration_before_launch(tmp_path):
@@ -85,7 +85,7 @@ class _SubmissionRuntime:
         self.stage = stage
 
     def run(self, request):
-        output = Path(request.workspace) / "work" / "outputs" / "submission.json"
+        output = Path(request.workspace) / "work" / "submission.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(
             '{"requested_outcome":"blocked","summary":"accepted semantics conflict",'

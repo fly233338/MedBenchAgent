@@ -1,246 +1,102 @@
-import pytest
 import json
+import shutil
 from pathlib import Path
-from types import SimpleNamespace
-
-from medbenchagent.data.contracts import Source
-from medbenchagent.data.sources import inventory_source
-from medbenchagent.preparation.contracts import Stage, StageResult, ValidationResult
-from medbenchagent.preparation.worker import OpenHandsWorker
-import medbenchagent.preparation.graph as preparation_graph
+from PIL import Image
+from langgraph.checkpoint.memory import InMemorySaver
 from medbenchagent.preparation.graph import compile_preparation_graph
+from medbenchagent.preparation.contracts import Stage, StageResult, SemanticQuestion
+from medbenchagent.data.sources import digest_file
+from medbenchagent.data.models import ImageEntry
 
 
-class _StageWorker:
-    def __init__(self, *, blocking=False):
-        self.blocking = blocking
+def mapping(filename="raw.jpg", target="images/view.jpg"):
+    return {"population_policy": {"rule_id": "population", "unit_type": "case", "source_ids": ["s"],
+        "identity_fields": ["id"], "inclusion": "all", "evidence_refs": ["s:annotation"]},
+        "case_identity": {"rule_id": "id", "target_path": "case_id", "fields": ["id"], "evidence_refs": ["s:annotation"]},
+        "grouping": {"rule_id": "group", "case_unit": "case", "key_fields": ["id"], "evidence_refs": ["s:annotation"]},
+        "fields": [{"rule_id": "label", "source_path": "label", "disposition": "medical_evidence", "source_type": "string",
+            "target_type": "string", "missingness": "unknown", "reason": "reference", "scope": "case", "evidence_refs": ["s:annotation"]}],
+        "images": {target: {"source_id": "s", "source_path": filename, "source_format": "jpeg", "policy_id": "native"}},
+        "field_semantics": {"label": "documented finding"}}
+
+
+def state(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    Image.new("RGB", (4, 4), "red").save(raw / "raw.jpg")
+    return {"run_id": "r", "dataset_id": "d", "run_directory": str(tmp_path / "runtime"),
+        "preparation_root": str(tmp_path / "runtime/preparation"), "bundle_root": str(tmp_path / "prepared/d"),
+        "sources": [{"id": "s", "root": str(raw)}], "source_roots": {"s": str(raw)},
+        "source_manifests": {}, "source_snapshot_digest": "frozen"}
+
+
+class Worker:
+    def __init__(self, fail_image=False, question=False, revise=False):
         self.requests = []
+        self.fail_image, self.question, self.revise = fail_image, question, revise
 
     def run(self, request):
         self.requests.append(request)
-        output_root = Path(request.workspace) / "work" / "outputs"
-        output_root.mkdir(parents=True, exist_ok=True)
+        root = Path(request.workspace) / "work/outputs"
+        root.mkdir(parents=True, exist_ok=True)
+        if self.question and request.stage is Stage.UNDERSTAND and request.attempt == 1:
+            return StageResult(stage=request.stage, attempt=request.attempt, conversation_id=request.conversation_id,
+                execution_key=request.execution_key, status="needs_input", questions=[SemanticQuestion(issue_id="meaning",
+                    stage=request.stage, question="Which finding?", impact="mapping", blocking=True)])
+        if self.revise and request.stage is Stage.PREPARE_TEXT and request.attempt == 1:
+            return StageResult(stage=request.stage, attempt=request.attempt, conversation_id=request.conversation_id,
+                execution_key=request.execution_key, status="blocked", control="mapping_revision_required", diagnostic="source conflict")
         if request.stage is Stage.UNDERSTAND:
-            values = {
-                "source_report.json": "{}",
-                "image_population.jsonl": "{}\n",
-                "mapping.json": "{}",
-                "image_conversion_plan.json": "{}",
-                "semantic_questions.json": json.dumps({"questions": []}),
-                "inspect_source.py": "print('ok')\n",
-                "submission.json": json.dumps({"requested_outcome": "submitted"}),
-            }
+            (root / "mapping.json").write_text(json.dumps(mapping()), encoding="utf-8")
+            (root / "image_conversion_plan.json").write_text('{"policies":{"native":{}}}', encoding="utf-8")
+        elif request.stage is Stage.PREPARE_TEXT:
+            (root / "cases.jsonl").write_text(json.dumps({"case_id":"c", "evidence":[
+                {"id":"i", "type":"asset", "name":"image", "value":"images/view.jpg"},
+                {"id":"l", "type":"value", "name":"label", "value":"yes"}]}) + "\n", encoding="utf-8")
         else:
-            values = {
-                "scripts/prepare.py": "print('prepare')\n",
-                "cases.jsonl": "{}\n",
-                "asset_manifest.jsonl": "{}\n",
-                "provenance.jsonl": "{}\n",
-                "conversion_config.json": "{}",
-                "grouping_policy.json": "{}",
-                "execution_report.json": "{}",
-                "output_manifest.json": "{}",
-                "submission.json": json.dumps({"requested_outcome": "submitted"}),
-            }
-        outputs = {}
-        for name, value in values.items():
-            path = output_root / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(value, encoding="utf-8")
-            outputs[name] = str(path)
-        status = "needs_input" if self.blocking and request.stage is Stage.UNDERSTAND else "submitted"
-        return StageResult(
-            stage=request.stage, run_id=request.run_id, dataset_id=request.dataset_id,
-            attempt=request.attempt, attempt_id=request.attempt_id,
-            conversation_id=request.conversation_id, execution_key=request.execution_key,
-            status=status, outputs=outputs, input_digest=request.input_digest,
-            token_count=request.prompt_token_count,
-            question_refs=["question-1"] if status == "needs_input" else [],
-        )
+            source = Path(request.source_roots["s"]) / "raw.jpg"
+            target = root / "images/view.jpg"
+            target.parent.mkdir()
+            shutil.copy2(source, target)
+            row = ImageEntry(path="images/view.jpg", format="jpeg", width=4, height=4, file_digest=digest_file(target),
+                             source_id="s", source_path="raw.jpg", source_digest=digest_file(source))
+            (root / "image_manifest.jsonl").write_text(row.model_dump_json() + "\n", encoding="utf-8")
+            if self.fail_image and request.attempt == 1:
+                target.write_bytes(b"bad")
+        return StageResult(stage=request.stage, attempt=request.attempt, conversation_id=request.conversation_id,
+            execution_key=request.execution_key, input_digest=request.input_digest, status="submitted",
+            outputs={p.relative_to(root).as_posix(): str(p) for p in root.rglob("*") if p.is_file()})
 
 
-def _state(tmp_path):
-    source_root = tmp_path / "source"
-    source_root.mkdir()
-    (source_root / "records.txt").write_text("record", encoding="utf-8")
-    manifest = tmp_path / "manifest"
-    inventory_source(Source(id="source", root=str(source_root)), manifest)
-    return {
-        "run_id": "run", "dataset_id": "dataset", "run_directory": str(tmp_path / "run"),
-        "preparation_root": str(tmp_path / "run" / "preparation" / "dataset"),
-        "source_snapshot_digest": "snapshot",
-        "sources": [Source(id="source", root=str(source_root)).model_dump()],
-        "source_roots": {"source": str(source_root)},
-        "source_manifests": {"source": str(manifest)},
-        "preparation_attempt_limits": {"understand": 2, "prepare_text": 2, "prepare_image": 2, "mapping_revision_cycles": 1},
-    }
+def test_three_stages_publish_minimal_dataset_and_recover(tmp_path):
+    worker = Worker(fail_image=True)
+    graph = compile_preparation_graph(worker=worker, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id":"d"}}
+    initial = state(tmp_path)
+    result = graph.invoke(initial, config)
+    assert result["status"] == "complete", result.get("diagnostics")
+    assert [r.stage for r in worker.requests] == [Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.PREPARE_IMAGE, Stage.PREPARE_IMAGE]
+    root = Path(result["publication"]["revision_path"])
+    assert {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()} == {
+        "cases.jsonl", "image_manifest.jsonl", "metadata.json", "images/view.jpg"}
+    assert (root / "images/view.jpg").read_bytes() == (Path(initial["source_roots"]["s"]) / "raw.jpg").read_bytes()
+    assert not (Path(initial["bundle_root"]) / "cases.jsonl").exists()
+    graph.invoke(result, config)
+    assert len(worker.requests) == 4
 
 
-def _accepted_handoff(outputs, state):
-    return ValidationResult(status="accepted", stage=Stage.UNDERSTAND, receipt_ref=str(Path(state["preparation_root"]) / "validation" / "understand.json"))
-
-
-def _accepted_candidate(outputs, state):
-    return ValidationResult(status="accepted", stage=Stage.PREPARE_TEXT, report={"accepted_cases": 1}, candidate_digest="")
-
-
-def test_two_stage_graph_uses_one_production_orchestrator(tmp_path, monkeypatch):
-    worker = _StageWorker()
-    monkeypatch.setattr(preparation_graph, "validate_understand_submission", _accepted_handoff)
-    monkeypatch.setattr(preparation_graph, "validate_candidate_submission", _accepted_candidate)
-    monkeypatch.setattr(preparation_graph, "publish_preparation", lambda state, result, validation: {"status": "complete", "bundle": str(tmp_path / "bundle"), "dataset_entry": {"dataset_id": "dataset"}, "cases_path": "cases", "access_manifest": {}, "card_path": "card"})
-    result = compile_preparation_graph(worker=worker).invoke(_state(tmp_path))
-
+def test_mapping_revision_invalidates_text(tmp_path):
+    worker = Worker(revise=True)
+    result = compile_preparation_graph(worker=worker).invoke(state(tmp_path))
     assert result["status"] == "complete"
-    assert [request.stage for request in worker.requests] == [Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.PREPARE_IMAGE]
-    assert result["accepted_handoff"]["mapping"]["name"] == "mapping.json"
+    assert [r.stage for r in worker.requests] == [Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.PREPARE_IMAGE]
 
 
-def test_blocking_semantic_question_stops_before_prepare(tmp_path):
-    worker = _StageWorker(blocking=True)
-    state = _state(tmp_path)
-    result = compile_preparation_graph(worker=worker).invoke(state)
-
+def test_semantic_question_resumes_same_graph(tmp_path):
+    worker = Worker(question=True)
+    graph = compile_preparation_graph(worker=worker)
+    result = graph.invoke(state(tmp_path))
     assert result["status"] == "needs_input"
-    assert result["stage"] == "understand"
-    assert not (Path(state["preparation_root"]) / "attempts" / "prepare_text").exists()
-
-
-def test_resume_uses_run_frozen_worker_config(tmp_path, monkeypatch):
-    settings = SimpleNamespace(llm=SimpleNamespace(
-        model="frozen-chat", base_url="http://127.0.0.1:8005/v1",
-        reasoning_effort="medium", timeout_seconds=17.0, max_retries=2,
-    ))
-    monkeypatch.setattr(preparation_graph, "get_settings", lambda: settings)
-    monkeypatch.setattr(preparation_graph, "validate_understand_submission", _accepted_handoff)
-    monkeypatch.setattr(preparation_graph, "validate_candidate_submission", _accepted_candidate)
-    monkeypatch.setattr(preparation_graph, "publish_preparation", lambda state, result, validation: {"status": "complete", "bundle": str(tmp_path / "bundle"), "dataset_entry": {"dataset_id": "dataset"}, "cases_path": "cases", "access_manifest": {}, "card_path": "card"})
-    worker = _StageWorker()
-
-    result = compile_preparation_graph(worker=worker).invoke(_state(tmp_path))
-
+    result["user_decisions"] = [{"issue_id":"meaning", "answer":"finding"}]
+    result = graph.invoke(result)
     assert result["status"] == "complete"
-    request = worker.requests[0]
-    assert request.model == "frozen-chat"
-    assert request.base_url == "http://127.0.0.1:8005/v1"
-    assert request.reasoning_effort == "medium"
-    assert request.llm_timeout_seconds == 17.0
-    assert request.llm_max_retries == 2
-
-
-def test_mapping_revision_creates_new_understand_and_prepare_text_attempts(tmp_path, monkeypatch):
-    class RevisionWorker(_StageWorker):
-        def run(self, request):
-            result = super().run(request)
-            if request.stage is Stage.PREPARE_TEXT and len([item for item in self.requests if item.stage is Stage.PREPARE_TEXT]) == 1:
-                return result.model_copy(update={
-                    "status": "blocked", "control": "mapping_revision_required",
-                    "diagnostic": "accepted mapping conflicts with source evidence",
-                })
-            return result
-
-    worker = RevisionWorker()
-    monkeypatch.setattr(preparation_graph, "validate_understand_submission", _accepted_handoff)
-    monkeypatch.setattr(
-        preparation_graph, "validate_candidate_submission",
-        lambda outputs, state: ValidationResult(status="accepted", stage=Stage.PREPARE_TEXT, report={"accepted_cases": 1}),
-    )
-    monkeypatch.setattr(
-        preparation_graph, "publish_preparation",
-        lambda state, result, validation: {"status": "complete", "revision": "r1", "bundle": str(tmp_path / "bundle"), "dataset_entry": {"dataset_id": "dataset"}, "cases_path": "cases", "access_manifest": {}, "card_path": "card"},
-    )
-
-    result = compile_preparation_graph(worker=worker).invoke(_state(tmp_path))
-
-    assert result["status"] == "complete"
-    assert [request.stage for request in worker.requests] == [Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.PREPARE_IMAGE]
-    assert [request.attempt for request in worker.requests] == [1, 1, 2, 2, 1]
-    assert result["mapping_revision_cycles"] == 1
-
-
-class _ProtocolRevisionRuntime:
-    def __init__(self):
-        self.requests = []
-
-    def run(self, request):
-        self.requests.append(request)
-        output_root = Path(request.workspace) / "work" / "outputs"
-        output_root.mkdir(parents=True, exist_ok=True)
-        if request.stage is Stage.PREPARE_TEXT and len([item for item in self.requests if item.stage is Stage.PREPARE_TEXT]) == 1:
-            path = output_root / "submission.json"
-            path.write_text(json.dumps({
-                "requested_outcome": "blocked",
-                "summary": "accepted semantics conflict",
-                "diagnostic_codes": ["mapping_revision_required"],
-            }), encoding="utf-8")
-            return StageResult(
-                stage=request.stage, attempt=request.attempt, attempt_id=request.attempt_id,
-                conversation_id=request.conversation_id, execution_key=request.execution_key,
-                status="blocked", outputs={"submission.json": str(path)},
-                input_digest=request.input_digest,
-            )
-        names = (STAGE_OUTPUTS[request.stage] if request.stage in STAGE_OUTPUTS else ())
-        outputs = {}
-        for name in names:
-            path = output_root / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps({"requested_outcome": "submitted"}) if name == "submission.json" else "{}\n",
-                encoding="utf-8",
-            )
-            outputs[name] = str(path)
-        return StageResult(
-            stage=request.stage, attempt=request.attempt, attempt_id=request.attempt_id,
-            conversation_id=request.conversation_id, execution_key=request.execution_key,
-            status="submitted", outputs=outputs, input_digest=request.input_digest,
-        )
-
-
-STAGE_OUTPUTS = {
-    Stage.UNDERSTAND: ("source_report.json", "image_population.jsonl", "mapping.json", "image_conversion_plan.json",
-                       "semantic_questions.json", "inspect_source.py", "submission.json"),
-    Stage.PREPARE_IMAGE: ("asset_manifest.jsonl", "presentation_manifest.jsonl", "mask_features.jsonl", "submission.json"),
-    Stage.PREPARE_TEXT: ("image_requests.jsonl", "scripts/prepare.py", "cases.jsonl", "asset_manifest.jsonl",
-                    "provenance.jsonl", "conversion_config.json", "grouping_policy.json",
-                    "execution_report.json", "output_manifest.json", "submission.json"),
-}
-
-
-def test_real_worker_protocol_routes_mapping_revision_with_repair_bases(tmp_path, monkeypatch):
-    runtime = _ProtocolRevisionRuntime()
-    worker = OpenHandsWorker(runtime=runtime)
-    monkeypatch.setattr(preparation_graph, "validate_understand_submission", _accepted_handoff)
-    monkeypatch.setattr(
-        preparation_graph, "validate_candidate_submission",
-        lambda outputs, state: ValidationResult(status="accepted", stage=Stage.PREPARE_TEXT, report={"accepted_cases": 1}),
-    )
-    monkeypatch.setattr(
-        preparation_graph, "publish_preparation",
-        lambda state, result, validation: {"status": "complete", "revision": "r1",
-                                            "bundle": str(tmp_path / "bundle"),
-                                            "dataset_entry": {"dataset_id": "dataset"},
-                                            "cases_path": "cases", "access_manifest": {},
-                                            "card_path": "card"},
-    )
-
-    result = compile_preparation_graph(worker=worker).invoke(_state(tmp_path))
-
-    assert result["status"] == "complete"
-    assert [item.stage for item in runtime.requests] == [Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.PREPARE_IMAGE]
-    assert len({item.attempt_id for item in runtime.requests}) == 5
-    assert len({item.conversation_id for item in runtime.requests}) == 5
-    assert runtime.requests[2].previous_attempt_root == runtime.requests[1].workspace
-    assert runtime.requests[3].previous_attempt_root == runtime.requests[1].workspace
-    assert (Path(runtime.requests[2].workspace) / "work" / "inputs" / "previous_reference.json").is_file()
-    assert not (Path(runtime.requests[2].workspace) / "work" / "inputs" / "previous" / "work" / "outputs").exists()
-    context = json.loads((Path(runtime.requests[2].workspace) / "work" / "inputs" / "context.json").read_text(encoding="utf-8"))
-    assert context["facts"]["revision_basis"]["handoff_digest"]
-    assert context["facts"]["revision_basis"]["artifacts"]["mapping"]["path"].endswith("mapping.json")
-    assert context["validation_feedback"]["issues"]
-
-
-@pytest.fixture(autouse=True)
-def isolate_packaging_in_graph_routing_tests(monkeypatch, tmp_path):
-    monkeypatch.setattr(preparation_graph, "assemble_candidate", lambda state: tmp_path)
-    monkeypatch.setattr(preparation_graph, "validate_prepare_candidate", lambda *args, **kwargs:
-        ValidationResult(status="accepted", stage=Stage.PREPARE_IMAGE, report={"accepted_cases": 1}))

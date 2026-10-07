@@ -68,7 +68,7 @@ def audit_task_items(
                         expected = encode_closed_label(expected)
                     except ValueError:
                         errors.append("invalid_label_encoding")
-                if item.get("input_presentations") != resolved.presentations:
+                if item.get("input_images") != resolved.presentations:
                     errors.append("input_presentation_mismatch")
                 expected_bindings = _input_bindings(case, resolved.input_bindings)
                 template_index = item.get("template_index", -1)

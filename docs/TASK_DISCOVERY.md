@@ -190,4 +190,10 @@ Ordering is scoped to that Case/unit; input selectors cannot consume another uni
 Distinct input assets use Asset IDs rather than Evidence IDs. Every eligible task includes a
 verified ordinary image Presentation, with medical sources rendered as PNG. Reference-only masks
 stay hidden. eligible_count counts successful SamplingUnits, not Cases. Items include ordered
-input_presentations, which Audit recomputes including file digests. Missing images are ineligible.
+input_images, which Audit recomputes including file digests. Missing images are ineligible.
+
+
+Planning evidence is queried from DatasetIndex and cached only in Agent-private runtime state, not
+published as a second BIR evidence tree. BIR keeps access and task_plan as authority; Generation reads
+leaf_tasks from task_plan. Axis/scenario/leaf/review projections are not written by default.
+Leaf structural validation and input-capacity summaries live in planning.task_discovery.

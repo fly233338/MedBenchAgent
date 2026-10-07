@@ -58,9 +58,9 @@ def test_mask_feature_is_digest_bound_and_resolves_without_file_access():
     assert result.reference == [0.3, 0.25, 0.8, 0.75]
     assert result.reference_evidence_ids == ["mask"]
 
-    bad = case.model_copy(update={"evidence": [case.evidence[0], case.evidence[1].model_copy(update={"mask": _mask("wrong")}), case.evidence[2]]})
-    with pytest.raises(ValueError, match="source_digest"):
-        validate_case(bad, assets)
+    # Geometry is sealed in Case content; source digest is checked during Text preparation.
+    with pytest.raises(ValueError):
+        MaskFeatureSet.model_validate({**case.evidence[1].mask.model_dump(), "source_digest": ""})
 
 
 def test_argmax_requires_frozen_order_and_rejects_ties():

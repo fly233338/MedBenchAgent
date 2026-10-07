@@ -51,6 +51,10 @@ def case_facts(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> dict[
     ]
     primary_images = [row for row in image_rows if _asset_role(row, assets) == "primary"]
     annotation_images = [row for row in image_rows if _asset_role(row, assets) == "reference"]
+    def source_identity(row):
+        image = assets.get(row.get("value"), {})
+        return (image["source_id"], image["source_path"]) if image.get("source_id") and image.get("source_path") else (row.get("value"),)
+    primary_sources = {source_identity(row) for row in primary_images}
     primary_ids = {row["id"] for row in primary_images}
 
     explicit_groups = [set(row.get("ref", [])) for row in rows]
@@ -113,9 +117,9 @@ def case_facts(case: dict[str, Any], assets: dict[str, dict[str, Any]]) -> dict[
         "evidence_names": sorted({r.get("name") for r in rows if _semantic_evidence_name(r.get("name")) and r.get("name")}),
         "assets": {
             "image_assets": len(image_rows),
-            "primary_image_assets": len(primary_images),
+            "primary_image_assets": len(primary_sources),
             "annotation_image_assets": len(annotation_images),
-            "multi_image_cases": int(len(primary_images) >= 2),
+            "multi_image_cases": int(len(primary_sources) >= 2),
             "related_image_cases": int(bool(related_image_groups)),
             "volume_assets": sum(
                 assets[row["value"]].get("kind") == "volume"

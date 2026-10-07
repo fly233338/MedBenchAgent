@@ -3,7 +3,7 @@ import json
 
 from medbenchagent.agents.finalization import balance_option_positions
 from medbenchagent.data.index import prepare_dataset
-from medbenchagent.data.models import AssetEntry, CaseRecord, Evidence
+from medbenchagent.data.models import ImageEntry, CaseRecord, Evidence
 from medbenchagent.generation.items import generate_task_items, write_task_items
 from medbenchagent.planning.allocation import allocate_task_plans
 from medbenchagent.planning.task_space import (
@@ -82,19 +82,18 @@ def test_option_balancing_preserves_answer_and_balances_positions():
 def test_finalization_merges_and_audits_dataset_output(tmp_path):
     bundle = tmp_path / "bundle"
     bundle.mkdir()
-    asset = AssetEntry(asset_id="asset-1", kind="image", format="png", source_path="image.png",
+    asset = ImageEntry(path="asset-1", source_id="s", source_digest="raw", kind="image", format="png", source_path="image.png",
                        file_digest="sha256:image", width=4, height=4)
     case = CaseRecord(case_id="case-1", patient_id=None, evidence=[
         Evidence(id="image", type="asset", name="image", value="asset-1"),
         Evidence(id="label", type="value", name="label", value="yes"),
     ])
     (bundle / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
-    (bundle / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
+    (bundle / "image_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
     images = image_context(bundle, [case.model_dump(mode="json")])
     asset = asset.model_copy(update={"file_digest": images.assets["asset-1"]["file_digest"]})
-    (bundle / "asset_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
-    (bundle / "presentation_manifest.jsonl").write_text("".join(r.model_dump_json() + "\n" for r in images.manifests["presentation"]), encoding="utf-8")
-    _, access = prepare_dataset(bundle / "cases.jsonl", bundle / "asset_manifest.jsonl", bundle / "cache")
+    (bundle / "image_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
+    _, access = prepare_dataset(bundle / "cases.jsonl", bundle / "image_manifest.jsonl", bundle / "cache")
     plan = _plan("d", {"leaf": 1})
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(plan.model_dump_json(), encoding="utf-8")

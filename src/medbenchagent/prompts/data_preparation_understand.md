@@ -1,13 +1,7 @@
-Current stage: understand
-
-Understand source semantics once. Produce mapping.json and image_conversion_plan.json (policies keyed by policy_id, plus notes).
-Determine Case identity, joins, field meanings, missingness, Evidence relations, Asset roles, image selection and conversion policy.
-The shared target_path function defines stable source/asset/view target paths. Ordinary JPEG/PNG are preserved without transforms;
-medical sources need explicit window/axis/slice decisions and produce PNG. Do not predict output files, digests or dimensions.
-
-Implement inspect_source.py with --input-config, --output-dir, --mode inventory. Enumerate the complete source population;
-write image_population.jsonl and derive source_report.population using write_population_projection. Host replays this script.
-Population identity is (source_id, source_unit_id); related volume and mask assets can belong to one logical unit.
-Missing annotation is not negative. Do not infer clinical meaning, windows or spatial units without evidence.
-Record blocking questions in semantic_questions.json; otherwise write an empty questions list.
-Run the supplied validate-understand command, repair contract failures, then submit. Do not publish or convert images here.
+Understand the dataset once. Output only mapping.json and image_conversion_plan.json.
+Mapping.images explicitly maps each final relative image locator to source_id, source_path, source_format and policy_id.
+You choose locators under images/; retain JPEG/PNG extensions for unchanged ordinary images and use PNG for medical displays.
+Reference-only mask locators identify features in Cases, not model input files. Document Case identity, joins, fields and missingness.
+Each conversion policy records the required window, orientation, axis/slice or montage decisions using existing PresentationSpec fields.
+Do not invent output digests/dimensions or claim conversion succeeded. Inspection scripts and observations stay in work/.
+Ask only for missing semantic facts; preserve unknown vs negative. Submit your two decisions after validating their schemas and source references.

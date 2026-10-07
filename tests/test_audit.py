@@ -24,7 +24,7 @@ def test_audit_reconstructs_reference_and_rejects_leakage(tmp_path):
     }
     bad = {**good, "id": "bad", "input_evidence_ids": ["a", "r"]}
     context = image_context(tmp_path, [case])
-    good["input_presentations"] = resolve_task_input(case, LeafTask.model_validate(leaf), None, context).presentations
+    good["input_images"] = resolve_task_input(case, LeafTask.model_validate(leaf), None, context).presentations
     report = audit_task_items([case], [good, bad], [leaf], resolver_context=context)
     assert report["accepted"] == 1 and report["rejected"] == 1
     assert report["reason_counts"]["input_reference_leakage"] == 1

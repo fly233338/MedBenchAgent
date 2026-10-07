@@ -24,8 +24,8 @@ def test_presentation_applies_window_crop_resize_before_slicing():
 
 @pytest.mark.parametrize("format", ["nifti", "nrrd", "dicom", "dicom_series"])
 def test_real_medical_readers_materialize_png(tmp_path, format):
-    from medbenchagent.data.asset_manifest import digest_path
-    from medbenchagent.data.presentation import materialize_presentation
+    from medbenchagent.data.sources import digest_path
+    from medbenchagent.data.asset_adapters import materialize_image
     from PIL import Image
     source = tmp_path / "raw"
     source.mkdir()
@@ -68,7 +68,7 @@ def test_real_medical_readers_materialize_png(tmp_path, format):
     spec = PresentationSpec(mode="native", window=(-10, 100)) if format == "dicom" else PresentationSpec(
         mode="slices", axis=0 if format == "dicom_series" else 2, indices=[1], window=(-10, 100))
     output = tmp_path / "display.png"
-    info = materialize_presentation(asset, spec, output, source_root=source)
+    info = materialize_image(asset, spec, output, source_root=source)
     assert info["format"] == "PNG"
     with Image.open(output) as image:
         assert image.size == (4, 4)

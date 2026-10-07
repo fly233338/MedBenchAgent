@@ -8,7 +8,7 @@ from medbenchagent.cli import _parser, run_command
 
 
 def _environment_config(args):
-    if args.command in {"register", "refresh-card"}:
+    if args.command in {"register"}:
         return None
     if args.command in {"run", "resume"}:
         from medbenchagent.runtime.sessions import config_path
@@ -22,7 +22,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.config and not args.config.is_file():
         parser.error(f"Configuration template does not exist: {args.config}")
-    if args.command not in {"register", "refresh-card"}:
+    if args.command not in {"register"}:
         from medbenchagent.runtime.environment import ensure_environment
 
         ensure_environment(_environment_config(args))

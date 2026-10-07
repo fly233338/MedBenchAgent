@@ -20,39 +20,6 @@ class SupervisorContext(TypedDict, total=False):
     evidence_index_path: str
 
 
-class TaskPlanningContext(SupervisorContext, total=False):
-    dataset_scope: str
-    dataset_access_manifest: dict
-    draft_path: str
-
-
-class DataProcessingContext(SupervisorContext, total=False):
-    dataset_scope: str
-    source_scope: str | None
-    bundle_root: str
-    sources: list[dict[str, Any]]
-    source_roots: dict[str, str]
-    source_manifests: dict[str, str]
-    preparation_workspace: str | None
-    preparation_candidate: dict[str, Any] | None
-    preparation_population_path: str | None
-    preparation_mapping_digest: str | None
-
-
-class AllocationContext(SupervisorContext, total=False):
-    selected_dataset_ids: list[str]
-    allocation_preferences: list[dict]
-    allocation_path: str
-    allocation: dict[str, Any]
-
-
-class FinalizationContext(AllocationContext, total=False):
-    dataset_checks: dict
-    delivery_path: str
-    dataset_generations: dict[str, dict[str, Any]]
-    delivery_counts: dict[str, Any]
-
-
 class ContextBoundary(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
     run_directory: str

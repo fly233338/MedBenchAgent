@@ -1,12 +1,10 @@
 from image_fixtures import image_context
-import hashlib
 import math
 import pytest
 from PIL import Image
 
 from medbenchagent.audit.task_items import audit_task_items
-from medbenchagent.data.asset_manifest import write_asset_manifest
-from medbenchagent.data.models import AssetEntry, MaskFeatureSet
+from medbenchagent.data.models import MaskFeatureSet
 from medbenchagent.generation.items import generate_task_items
 from medbenchagent.planning.resolver import ResolverContext, ResolverSpec, resolve
 from medbenchagent.planning.task_space import CapabilityCategory, OutputSpec, TaskParadigm
@@ -22,17 +20,7 @@ def _mask_context(tmp_path):
         for x in range(3, 8):
             pixels[x, y] = (255, 255, 255, 255)
     image.save(mask_path)
-    digest = hashlib.sha256(mask_path.read_bytes()).hexdigest()
-    manifest = bundle / "asset_manifest.jsonl"
-    write_asset_manifest(manifest, [AssetEntry(
-        asset_id="mask-1", kind="image", format="png", source_path="mask.png",
-        file_digest=digest, width=10, height=8,
-    )])
-    context = ResolverContext.from_access({
-        "asset_manifest_path": str(manifest),
-        "cases_path": str(bundle / "cases.jsonl"),
-    })
-    context.assets["mask-1"]["file_digest"] = "mask-digest"
+    context = ResolverContext(assets={"mask-1": {"file_digest": "mask-digest"}})
     return context
 
 

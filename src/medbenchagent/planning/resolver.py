@@ -16,7 +16,7 @@ from medbenchagent.planning.task_space import OutputSpec, EvidenceSelector
 def resolve_task_input(case, leaf, sampling_unit, context):
     """Resolve one frozen sampling unit, including the actual model-visible files."""
     from dataclasses import replace
-    from medbenchagent.data.presentation import contained_path, verify_image
+    from medbenchagent.data.asset_adapters import contained_path, verify_image
     from medbenchagent.planning.sampling import case_for_unit
 
     if sampling_unit is not None and (sampling_unit.case_id != case["case_id"] or not sampling_unit.eligible):
@@ -27,44 +27,23 @@ def resolve_task_input(case, leaf, sampling_unit, context):
     if isinstance(resolved, NotApplicable):
         return resolved
     by_id = {row["id"]: row for row in case["evidence"]}
-    records = context.manifests.get("presentation") or []
-    records = records if isinstance(records, list) else [records]
-    input_assets = [context.asset(by_id[key]["value"]) for key in resolved.input_evidence_ids if by_id[key]["type"] == "asset"]
-    if (len(input_assets) > 1 or any(asset and asset.get("kind") == "volume" for asset in input_assets)) and context.manifests.get("sampling") is None:
-        return NotApplicable(reason="missing_sampling_manifest")
     presentations = []
     for evidence_id in resolved.input_evidence_ids:
         evidence = by_id[evidence_id]
         if evidence["type"] != "asset":
             continue
-        asset = context.asset(evidence["value"])
-        if not asset:
-            return NotApplicable(reason="missing_input_asset")
-        metadata = asset.get("metadata", {})
-        if metadata.get("input_visibility") == "reference_only" or metadata.get("semantic_role") in {"mask", "reference", "annotation", "label", "calibration"}:
+        image = context.asset(evidence["value"])
+        if not image:
+            return NotApplicable(reason="missing_input_image")
+        if image.get("metadata", {}).get("input_visibility") == "reference_only" or evidence.get("mask"):
             return NotApplicable(reason="reference_only_asset_input")
-        matches = [r for r in records if r.case_id == case["case_id"] and r.asset_id == evidence["value"]]
-        if sampling_unit and sampling_unit.view_ids:
-            matches = [r for r in matches if r.view_id in sampling_unit.view_ids]
-        if evidence.get("view_id"):
-            matches = [r for r in matches if r.view_id == evidence["view_id"]]
-        if sampling_unit and sampling_unit.panel_id:
-            matches = [r for r in matches if r.panel_id == sampling_unit.panel_id]
-        if not matches:
-            return NotApplicable(reason="missing_input_presentation")
-        view_order = context.ordered_views()
-        matches.sort(key=lambda r: (view_order.get(r.view_id, 0), r.order))
-        for record in matches:
-            if record.input_digest != asset["file_digest"]:
-                return NotApplicable(reason="presentation_source_digest_mismatch")
-            try:
-                path = contained_path(context.presentation_root, record.path)
-                info = verify_image(path, record.output_digest)
-                if asset["format"].lower() not in {"jpg", "jpeg", "png", "webp", "gif"} and info["format"] != "PNG":
-                    return NotApplicable(reason="medical_presentation_requires_png")
-            except (OSError, ValueError):
-                return NotApplicable(reason="invalid_input_presentation")
-            presentations.append({**record.model_dump(mode="json"), "path": str(path)})
+        try:
+            path = contained_path(context.dataset_root, evidence["value"])
+            verify_image(path, image["file_digest"])
+        except (OSError, ValueError):
+            return NotApplicable(reason="invalid_input_image")
+        presentations.append({"path": str(path), "file_digest": image["file_digest"],
+                              "evidence_id": evidence_id, "view_id": evidence.get("view_id")})
     if not presentations:
         return NotApplicable(reason="missing_image_input")
     return resolved.model_copy(update={"presentations": presentations})
@@ -77,28 +56,27 @@ class ResolverContext:
     assets: dict[str, dict[str, Any]] = field(default_factory=dict)
     manifests: dict[str, Any] = field(default_factory=dict)
     cache: dict[tuple[Any, ...], Any] = field(default_factory=dict)
-    presentation_root: str = ""
+    dataset_root: str = ""
     sampling_unit: Any = None
 
     @classmethod
     def from_access(cls, access: dict[str, Any] | None) -> "ResolverContext":
         access = access or {}
-        manifest_path = access.get("asset_manifest_path")
+        manifest_path = access.get("image_manifest_path")
         assets: dict[str, dict[str, Any]] = {}
         if manifest_path:
-            from medbenchagent.data.asset_manifest import iter_asset_manifest
+            from medbenchagent.data.manifests import iter_image_manifest
             try:
                 assets = {
-                    entry.asset_id: entry.model_dump(mode="json")
-                    for entry in iter_asset_manifest(manifest_path)
+                    entry.path: entry.model_dump(mode="json")
+                    for entry in iter_image_manifest(manifest_path)
                 }
             except (OSError, ValueError):
                 assets = {}
         manifests: dict[str, Any] = {}
-        from medbenchagent.data.manifests import load_manifest, PresentationRecord, SamplingManifest, SplitManifest, verify_manifest_digest
+        from medbenchagent.data.manifests import load_manifest, SamplingManifest, SplitManifest, verify_manifest_digest
 
         for name, model in (
-            ("presentation", PresentationRecord),
             ("split", SplitManifest),
             ("sampling", SamplingManifest),
         ):
@@ -116,7 +94,7 @@ class ResolverContext:
                 assets.setdefault(asset_id, asset)
             for name, manifest in nested_context.manifests.items():
                 manifests.setdefault(name, manifest)
-        return cls(assets=assets, manifests=manifests, presentation_root=str(Path(access["cases_path"]).parent) if access.get("cases_path") else "")
+        return cls(assets=assets, manifests=manifests, dataset_root=str(Path(access["cases_path"]).parent) if access.get("cases_path") else "")
 
     def asset(self, asset_id: str) -> dict[str, Any] | None:
         return self.assets.get(asset_id)

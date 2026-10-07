@@ -125,7 +125,7 @@ class Evidence(CanonicalModel):
         if self.type == "text" and not isinstance(self.value, str):
             raise ValueError("text Evidence requires a string value")
         if self.type == "asset" and (not isinstance(self.value, str) or not self.value):
-            raise ValueError("asset Evidence requires an asset_id string")
+            raise ValueError("asset Evidence requires an final image locator")
         if self.mask is not None and self.type != "asset":
             raise ValueError("Mask features are only valid on asset Evidence")
         if self.view_id is not None and not self.view_id.strip():
@@ -177,6 +177,27 @@ class AssetEntry(CanonicalModel):
         return self
 
 
+class ImageEntry(CanonicalModel):
+    path: str = Field(min_length=1)
+    file_digest: str = Field(min_length=1)
+    format: str = Field(min_length=1)
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    source_id: str = Field(min_length=1)
+    source_path: str = Field(min_length=1)
+    source_digest: str = Field(min_length=1)
+    kind: Literal["image", "volume"] = "image"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+    @model_validator(mode="after")
+    def visible_image(self):
+        if self.metadata.get("input_visibility") == "reference_only":
+            raise ValueError("Reference-only features belong in Case Evidence, not the image manifest")
+        self.metadata.setdefault("input_visibility", "model_visible")
+        return self
+
+
 class PresentationSpec(CanonicalModel):
     mode: Literal["native", "slices", "montage"] = "native"
     axis: int | None = Field(default=None, ge=0, le=2)
@@ -199,58 +220,15 @@ class PresentationSpec(CanonicalModel):
         return self
 
 
-class EvidenceProfile(CanonicalModel):
-    name: str
-    cases: int = 0
-    types: dict[str, int] = Field(default_factory=dict)
-    value_types: dict[str, int] = Field(default_factory=dict)
-    units: dict[str, int] = Field(default_factory=dict)
-    has_time: int = 0
-    has_ref: int = 0
-
-
-class AssetProfile(CanonicalModel):
-    kinds: dict[str, int] = Field(default_factory=dict)
-    formats: dict[str, int] = Field(default_factory=dict)
-    assets_per_case: dict[int, int] = Field(default_factory=dict)
-    volume_properties: dict[str, Any] = Field(default_factory=dict)
-
-
-class DatasetProfile(CanonicalModel):
-    case_count: int = 0
-    patient_count: int = 0
-    cases_per_patient: dict[str, int] = Field(default_factory=dict)
-    evidence: list[EvidenceProfile] = Field(default_factory=list)
-    assets: AssetProfile = Field(default_factory=AssetProfile)
-
-
-def validate_case(case: CaseRecord, assets: dict[str, AssetEntry] | None = None) -> CaseRecord:
+def validate_case(case: CaseRecord, assets: dict[str, ImageEntry] | None = None) -> CaseRecord:
     ids = {item.id for item in case.evidence}
     if len(ids) != len(case.evidence):
         raise ValueError(f"Duplicate Evidence ID in Case {case.case_id}")
     for item in case.evidence:
         if any(ref not in ids for ref in item.ref):
             raise ValueError(f"Evidence {item.id} references an unknown Evidence")
-        if item.type == "asset" and assets is not None and item.value not in assets:
-            raise ValueError(f"Evidence {item.id} references an unknown Asset")
-        if item.mask is not None and item.type == "asset" and assets is not None:
-            asset = assets.get(item.value)
-            if asset is None:
-                raise ValueError(f"Evidence {item.id} mask references an unknown Asset")
-            if item.mask.source_digest != asset.file_digest:
-                raise ValueError(
-                    f"Evidence {item.id} mask source_digest does not match Asset {asset.asset_id}"
-                )
-            if asset.kind == "image" and len(item.mask.shape) != 2:
-                raise ValueError(f"Evidence {item.id} image mask shape must be [height,width]")
-            if asset.kind == "volume" and len(item.mask.shape) < 3:
-                raise ValueError(f"Evidence {item.id} volume mask shape must include three dimensions")
-            expected_shape = asset.metadata.get("shape") if isinstance(asset.metadata, dict) else None
-            if expected_shape and list(expected_shape) != item.mask.shape:
-                raise ValueError(f"Evidence {item.id} mask shape does not match Asset metadata")
-            if asset.kind == "image" and asset.width and asset.height:
-                if item.mask.shape != [asset.height, asset.width]:
-                    raise ValueError(f"Evidence {item.id} mask shape does not match Asset dimensions")
+        if item.type == "asset" and item.mask is None and assets is not None and item.value not in assets:
+            raise ValueError(f"Evidence {item.id} references an unknown image path")
         if item.id in item.ref or len(item.ref) != len(set(item.ref)):
             raise ValueError("Self or duplicate Evidence ref")
         if item.type == "region":
@@ -259,8 +237,6 @@ def validate_case(case: CaseRecord, assets: dict[str, AssetEntry] | None = None)
                 raise ValueError("Region must reference exactly one Asset Evidence")
             if assets and linked[0].value not in assets:
                 raise ValueError(f"Region {item.id} references an unknown Asset")
-            if assets and assets[linked[0].value].kind != "image":
-                raise ValueError("2D Region requires an image Asset")
     graph = {item.id: item.ref for item in case.evidence}
     def visit(identifier, path):
         if identifier in path:

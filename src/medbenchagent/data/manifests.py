@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable, Literal, TypeVar
+from typing import Iterable, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -19,33 +19,6 @@ from medbenchagent.data.sources import digest_file
 
 class ManifestModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-
-
-class PresentationRecord(ManifestModel):
-    schema_version: Literal["presentation-record"] = "presentation-record"
-    presentation_id: str = Field(min_length=1)
-    case_id: str = Field(min_length=1)
-    asset_id: str = Field(min_length=1)
-    path: str = Field(min_length=1)
-    input_digest: str = Field(min_length=1)
-    output_digest: str = Field(min_length=1)
-    mode: Literal["native", "slices", "montage"]
-    view_id: str | None = None
-    panel_id: str | None = None
-    axis: int | None = Field(default=None, ge=0)
-    index: int | None = Field(default=None, ge=0)
-    order: int = Field(ge=0)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def validate_identity(self):
-        if self.view_id is not None and not self.view_id.strip():
-            raise ValueError("Presentation view_id must be non-empty when supplied")
-        if self.panel_id is not None and not self.panel_id.strip():
-            raise ValueError("Presentation panel_id must be non-empty when supplied")
-        if self.mode == "slices" and self.index is None:
-            raise ValueError("Slice PresentationRecord requires an index")
-        return self
 
 
 class SplitRecord(ManifestModel):
@@ -135,13 +108,6 @@ def load_manifest(path: str | Path, model: type[ManifestT]) -> ManifestT:
         return model.model_validate(payload)
     if not isinstance(payload, list):
         raise ValueError(f"Manifest must contain an object or JSONL records: {source}")
-    if model is PresentationRecord:
-        records = [PresentationRecord.model_validate(item) for item in payload]
-        return records  # type: ignore[return-value]
-    if model is SplitManifest:
-        return model.model_validate({"records": payload})
-    if model is SamplingManifest:
-        return model.model_validate({"dataset_id": "dataset", "revision": "1", "units": payload})
     return model.model_validate(payload)
 
 
@@ -165,3 +131,20 @@ def write_jsonl(path: str | Path, records: Iterable[BaseModel]) -> str:
         for record in records:
             handle.write(record.model_dump_json() + "\n")
     return str(destination)
+
+
+def iter_image_manifest(path):
+    from .models import ImageEntry
+    seen = set()
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        image = ImageEntry.model_validate_json(line)
+        if image.path.casefold() in seen:
+            raise ValueError("Duplicate image path")
+        seen.add(image.path.casefold())
+        yield image
+
+
+def write_image_manifest(path, entries):
+    Path(path).write_text("".join(row.model_dump_json() + "\n" for row in entries), encoding="utf-8")

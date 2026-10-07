@@ -123,7 +123,7 @@ def generate_task_items(
                 "capability_category": leaf.capability_category.value,
                 "task_paradigm": leaf.task_paradigm.value,
                 "options": list(leaf.options) if leaf.options is not None else None,
-                "input_presentations": resolved.presentations,
+                "input_images": resolved.presentations,
                 "input_bindings": _input_bindings(case, resolved.input_bindings),
                 "input_assets": _input_assets(case, resolved.input_evidence_ids),
                 "input_evidence_ids": resolved.input_evidence_ids,

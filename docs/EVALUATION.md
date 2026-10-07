@@ -5,15 +5,11 @@ Evaluation is provisioned separately on the model-serving host. The main
 ignored repository-root `evaluation/` overlay beside the checkout before running
 these commands.
 
-The evaluation loader accepts `benchmark-manifest` and the `asset_manifest.jsonl`. Legacy
-legacy construction artifacts are outside the supported workflow.
-
-The evaluation overlay runs generated benchmark artifacts against local Medical
-VLM checkpoints. Use the audited JSONL when available. The loader requires the
-matching `benchmark_manifest.json` and the registered dataset's
-`asset_manifest.jsonl`; it validates task and asset contracts and resolves every asset by
-`asset_id`. Source paths stored in manifests are never
-used for inference.
+The construction contract now supplies `image_manifest.jsonl`, keyed by final relative image path,
+and each benchmark item contains verified `input_images`. Cases directly reference these image paths.
+Source paths are provenance and must not be used for inference. The external evaluation overlay must
+consume this contract; it is not maintained or migrated by the main package. Verify its loader/CLI
+against the installed overlay before using the serving examples below.
 
 Run evaluation in a separate Conda environment rather than the project's locked
 `uv` environment:
@@ -148,7 +144,6 @@ PYTHONPATH=src:. python -m torch.distributed.run \
   --model-path /path/to/Qwen2.5-VL-7B-Instruct \
   --benchmark /path/to/benchmark.jsonl \
   --benchmark-manifest /path/to/benchmark_manifest.json \
-  --asset-manifest /path/to/asset_manifest.jsonl \
   --output-specs label labels number text bbox index \
   --output results/qwen2_5_vl_7b_instruct.json \
   --batch-size 4

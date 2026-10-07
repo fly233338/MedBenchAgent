@@ -206,16 +206,14 @@ def test_canonical_planner_axis_and_node_tools_persist_bounded_artifacts(tmp_pat
         "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"},
     }
     monkeypatch.setattr(task_planning, "require", lambda *_args: None)
-    monkeypatch.setattr(task_planning, "_profile", lambda _context: {
-        "schema_version": "dataset-profile",
-        "assets": {"kinds": {"image": 1}, "assets_per_case": {1: 1}},
-        "evidence": [{"name": "label", "types": {"value": 1}, "has_ref": 0}],
-    })
+    context["dataset_facts"] = {"revision":"7", "assets":{"primary_image_assets":1},
+        "evidence_names":["label"], "evidence_catalog":{"label":{"name":"label", "types":{"value":1}}},
+        "evidence":{"value":1}, "relations":{}}
     analysis = _analysis(input_structure=["single-image"], operation=["recognize"], clinical_target=["finding"]).model_copy(update={"dataset_revision": "7"}).model_dump()
     saved = task_planning.analyze_axes(context, analysis=analysis)
     context.update(saved["updates"])
     built = task_planning.build_nodes(context)
-    assert built["updates"]["task_nodes_path"]
+    assert built["updates"]["task_plan_path"]
     assert built["updates"]["task_nodes"]
 
 
@@ -225,10 +223,9 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
     context = {"operation_directory": str(tmp_path),
                "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"}}
     monkeypatch.setattr(task_planning, "require", lambda *_args: None)
-    monkeypatch.setattr(task_planning, "_profile", lambda _context: {
-        "schema_version": "dataset-profile", "assets": {"kinds": {"image": 1}, "assets_per_case": {1: 1}},
-        "evidence": [{"name": "report", "types": {"text": 1}, "has_ref": 1}],
-    })
+    context["dataset_facts"] = {"revision":"7", "assets":{"primary_image_assets":1},
+        "evidence_names":["image", "report"], "evidence_catalog":{"report":{"name":"report", "types":{"text":1}}},
+        "evidence":{"text":1}, "relations":{"paired_text":1}}
     axis = _analysis(input_structure=["single-image"], operation=["describe"], clinical_target=["finding"]).model_copy(update={"dataset_revision": "7"}).model_dump()
     context.update(task_planning.analyze_axes(context, analysis=axis)["updates"])
     context.update(task_planning.build_nodes(context)["updates"])
@@ -246,9 +243,9 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
                 {"id": "asset", "type": "asset", "name": "image", "value": "a1", "ref": []},
                 {"id": "report", "type": "text", "name": "report", "value": "Clear", "ref": ["asset"]},
             ]}]}
-    monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", FakeQuery)
+    monkeypatch.setattr("medbenchagent.data.index.DatasetIndex", FakeQuery)
     image_inputs = image_context(tmp_path / "images", FakeQuery(None).sample()["values"])
-    monkeypatch.setattr(task_planning.ResolverContext, "from_access", lambda access: image_inputs)
+    monkeypatch.setattr("medbenchagent.planning.resolver.ResolverContext.from_access", lambda access: image_inputs)
     leaf = {"leaf_task_id": "leaf-1", "name": "report", "scenario_id": node_id, "clinical_target_id": "finding_report", "question_templates": ["Describe the finding."],
             "input": [{"role": "image", "name": "image", "evidence_type": "asset"}], "target": "finding",
             "reference_rule": "Read the paired report", "resolver": {"inputs": [{"role": "image", "name": "image", "evidence_type": "asset"}],

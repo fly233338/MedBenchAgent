@@ -2,23 +2,19 @@
 
 数据层把只读来源转换为可查询、可追溯的 Dataset Bundle。LangGraph 负责协调，数据模块负责确定性执行和验证。
 
-## 来源、准备与发布
+## 数据集内容与派生视图
 
-The production graph is understand → prepare_text → prepare_image → package → publish.
-Understand freezes mapping.json and image_conversion_plan.json. A deterministic inspector
-enumerates the population and is replayed by Host. Text emits Cases, provenance and image_requests;
-Image consumes those requests and emits assets, presentations and digest-bound mask features.
-Host assembles the results, validates the final set and atomically publishes an immutable revision.
-Each coding stage has two attempts; one evidence-backed mapping revision invalidates Text/Image.
+Case/Evidence 的 asset value 直接保存最终普通图片相对路径；image_manifest.jsonl 以相同路径为键，
+记录实测内容摘要、格式、尺寸以及来源身份。不存在 asset → request → presentation 的解析链。
+Mask 是附带来源 digest 的 Case/reference feature，不强制生成 mask 文件或单独 feature manifest。
 
-Case/Evidence retain Asset identities. Presentations are model-visible ordinary images:
-JPEG/PNG without transforms preserve original bytes; medical images, slices and montages use PNG.
-Shared target_path assigns paths before conversion. Reference masks never become model input.
-Published bundles retain Cases, provenance, mapping/conversion policy, Asset/Presentation manifests,
-required sampling/split manifests, actual images and Card/Profile/commit metadata. Scripts, prompts,
-population working files and detailed reports stay in runtime. No image manifest duplicates Presentation.
-Validators do not repair candidates. Quarantine updates all references and dispositions before final
-validation. Catalog and consumers use verified revision paths, never root projections.
+Understand 只冻结 mapping 和 image_conversion_plan。Text 生成 Cases，Image 生成实际图片和唯一 manifest。
+验证只读；最后组包 cross-check 后 Publisher 原子提交，不修改 Case、不隔离或修复 manifest。
+Published revision 为 cases.jsonl、image_manifest.jsonl、images/ 和必要的 metadata.json。
+metadata 保留字段语义与采样/分组顺序；mapping、转换策略和观测材料留在 runtime。
+
+Profile、Card、DuckDB/access 缓存在 revision 外的 .derived/，可删除重建。DatasetAccess 始终绑定
+immutable revision 的 cases/image manifest，根目录 current.json 仅作为指针，不保存图片 projection。
 
 ## 多来源映射与查询
 
@@ -43,7 +39,7 @@ voxel-edge normalization，centroid 使用 voxel-center normalization，volume c
 未知 role、visibility、关系或 manifest 顺序保持 unknown 并由规划代码保守排除，不能用字段数量或整数值猜测
 index、时间或医学语义。
 
-规划上下文可以引用准备阶段保存的 `mapping.json` 和语义证据。宿主将字段含义、
+规划上下文可以引用准备阶段保存的 `mapping.json` 和语义证据。字段语义来自 metadata.json；宿主将字段含义、
 关系说明、覆盖限制和代表性 Case 组织成有界结构化 `leaf_context`；缺失的语义保持
 显式缺失。该上下文与 Evidence Catalog 一起传给 Leaf 设计，不依赖被截断的历史工具摘要。
 

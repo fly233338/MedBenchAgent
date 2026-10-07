@@ -9,6 +9,6 @@ Case/Evidence/Asset relationships and reference-only masks. Do not infer clinica
 Text and Image implement accepted semantics; a demonstrated semantic conflict can request mapping_revision_required.
 Implementation, dependency and decoding failures remain stage repairs, not mapping revisions.
 
-Write UTF-8, scripts and logs under work/, deliverables under work/outputs/. Run sample and full execution checks.
+Write UTF-8, scripts/logs/accounting under work/, dataset deliverables under work/outputs/. Run sample and full checks.
 Use the shared validator and report actual results. Missing essential user facts require scoped semantic questions.
-Submit only after required files exist and commands finish. Host alone accepts, assembles and publishes.
+Control status and questions go in work/submission.json (Submission schema), not dataset outputs. Submit after commands finish; Host publishes.

@@ -38,7 +38,7 @@ def test_sampling_units_select_views_and_all_consumers_agree(tmp_path):
     assert capacity == len(items) == 3
     assert [row["input_assets"] for row in items] == [["a2"], ["a1"], ["b1"]]
     assert audit_task_items(cases, items, [task], context)["accepted"] == 3
-    items[0]["input_presentations"][0]["path"] = "wrong.png"
+    items[0]["input_images"][0]["path"] = "wrong.png"
     assert audit_task_items(cases, items, [task], context)["rejected"] == 1
 
 
@@ -49,8 +49,8 @@ def test_duplicate_asset_and_missing_or_corrupt_image_are_ineligible(tmp_path):
     ]}
     context = image_context(tmp_path, [case])
     assert not isinstance(resolve_task_input(case, leaf(), None, context), NotApplicable)
-    (tmp_path / "a.png").write_bytes(b"corrupt")
-    assert resolve_task_input(case, leaf(), None, context).reason == "invalid_input_presentation"
+    (tmp_path / "a").write_bytes(b"corrupt")
+    assert resolve_task_input(case, leaf(), None, context).reason == "invalid_input_image"
     case["evidence"].append({"id": "alias", "type": "asset", "name": "image", "value": "a"})
     assert resolve_task_input(case, leaf(), None, context).reason == "duplicate_input_asset"
 
@@ -70,5 +70,5 @@ def test_volume_views_keep_one_asset_and_two_presentations(tmp_path):
     items = generate_task_items([case], [leaf()], "d", resolver_context=context, sampling_manifest=manifest)
     assert len(items) == 1
     assert items[0]["input_assets"] == ["volume"]
-    assert [r["view_id"] for r in items[0]["input_presentations"]] == ["v2", "v1"]
+    assert [r["view_id"] for r in items[0]["input_images"]] == ["v2", "v1"]
     assert audit_task_items([case], items, [leaf()], context)["accepted"] == 1

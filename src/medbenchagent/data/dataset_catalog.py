@@ -52,11 +52,11 @@ def prepared_bundle_entry(dataset_id, *, prepared_root=None):
         "description": card["description"],
         "available": True,
         "cases_path": str(cases),
-        "asset_manifest_path": access["asset_manifest_path"],
+        "image_manifest_path": access["image_manifest_path"],
         "profile_path": access["profile_path"],
         "dataset_card_path": access["dataset_card_path"],
     }
-    for name in ("presentation", "split", "sampling"):
+    for name in ("split", "sampling"):
         path_key = f"{name}_manifest_path"
         digest_key = f"{name}_manifest_digest"
         if access.get(path_key):
@@ -75,8 +75,8 @@ def load_dataset_catalog(catalog_path=None):
     entries = value.get("datasets", [])
     for entry in entries:
         validate_dataset_id(entry["dataset_id"])
-        if "asset_manifest_path" not in entry:
-            raise DatasetCatalogError("Catalog entries require asset_manifest_path")
+        if "image_manifest_path" not in entry:
+            raise DatasetCatalogError("Catalog entries require image_manifest_path")
     return entries
 
 
@@ -95,7 +95,7 @@ def load_prepared(entry):
     access = verified["ready"]["access"]
     frozen_card_path = resolve_path(entry.get("dataset_card_path", access["dataset_card_path"]))
     card = verified["card"] if frozen_card_path == resolve_path(access["dataset_card_path"]) else read_card(frozen_card_path)
-    if card.get("annotation_digest") != access["annotation_digest"] or card.get("asset_manifest_digest") != access["asset_manifest_digest"]:
+    if card.get("annotation_digest") != access["annotation_digest"] or card.get("image_manifest_digest") != access["image_manifest_digest"]:
         raise DatasetCatalogError("Frozen Dataset Card does not match annotation bundle")
     return card, access
 
@@ -112,11 +112,11 @@ def register_dataset(dataset_id, bundle, *, catalog_path=None):
         "description": card["description"],
         "available": True,
         "cases_path": access["cases_path"],
-        "asset_manifest_path": access["asset_manifest_path"],
+        "image_manifest_path": access["image_manifest_path"],
         "profile_path": access["profile_path"],
         "dataset_card_path": access["dataset_card_path"],
     }
-    for name in ("presentation", "split", "sampling"):
+    for name in ("split", "sampling"):
         path_key = f"{name}_manifest_path"
         digest_key = f"{name}_manifest_digest"
         if access.get(path_key):

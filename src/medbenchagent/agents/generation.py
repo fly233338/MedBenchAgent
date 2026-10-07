@@ -2,7 +2,7 @@
 from medbenchagent.generation.items import generate_task_items, write_task_items
 from medbenchagent.runtime.harness import result
 
-def run_generation(context, *, leaf_path=None, output_path=None, allocation=None, page_size=512):
+def run_generation(context, *, output_path=None, allocation=None, page_size=512):
     from pathlib import Path
     import json
     from medbenchagent.data.index import DatasetIndex
@@ -12,7 +12,7 @@ def run_generation(context, *, leaf_path=None, output_path=None, allocation=None
     sampling_manifest = None
     if access.get("sampling_manifest_path"):
         sampling_manifest = load_manifest(access["sampling_manifest_path"], SamplingManifest)
-    leaves = json.loads(Path(leaf_path or context["leaf_tasks_path"]).read_text(encoding="utf-8"))
+    leaves = json.loads(Path(context["task_plan_path"]).read_text(encoding="utf-8"))["leaf_tasks"]
     index = DatasetIndex(access)
     def pages():
         offset = 0
@@ -48,7 +48,3 @@ def run_generation(context, *, leaf_path=None, output_path=None, allocation=None
         task_counts=task_counts,
         generation_target_counts=dict(allocation or {}),
     )
-
-def compile_generation_agent(*, checkpointer=None):
-    raise ValueError("Generation is executed by the Task Space pipeline")
-

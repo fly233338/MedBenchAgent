@@ -1,318 +1,162 @@
-"""Two host gates: accept Understand semantics, then validate Prepare data."""
-
-from __future__ import annotations
-
+"""Read-only stage checks and one final cross-file validation."""
 import json
-import os
-import subprocess
-import sys
-import tempfile
-from collections import Counter
+import shutil
 from pathlib import Path
-from typing import Any, Iterable
 
-from pydantic import ValidationError
-
-from medbenchagent.data.preparation_validation import validate_candidate
-from medbenchagent.runtime.run_artifacts import atomic_write_json
-
-from .contracts import (
-    CONTROL_MAPPING_REVISION_REQUIRED,
-    SEMANTIC_REVISION_CODES,
-    AcceptedHandoff, ArtifactRef, DigestEntry, PopulationRecord, PopulationSummary,
-    PreparationMapping, QuestionSet, Stage, SourceReport,
-    Submission, ImageConversionPlan, ValidationIssue, ValidationResult, STAGE_SPECS, UserDecision,
-    digest_file, digest_payload,
-)
+from medbenchagent.data.models import CaseRecord, validate_case
+from medbenchagent.data.manifests import iter_image_manifest, SamplingManifest, SplitManifest
+from medbenchagent.data.asset_adapters import contained_path, verify_image
+from .contracts import (Stage, STAGE_OUTPUTS, PreparationMapping, ImageConversionPlan,
+                        AcceptedHandoff, ArtifactRef, Diagnostic, ValidationResult, digest_file, digest_payload)
 
 
-def _issue(stage, code, message, **values):
-    return ValidationIssue(stage=stage, code=code, message=message,
-                           issue_id=f"{stage.value}:{code}", **values)
+def read_cases(path):
+    cases = [CaseRecord.model_validate_json(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not cases or len({case.case_id for case in cases}) != len(cases):
+        raise ValueError("Cases must be nonempty with unique IDs")
+    return cases
 
 
-
-def _json(path):
-    return json.loads(Path(path).read_text(encoding="utf-8"))
-
-
-def read_population_records(path) -> list[PopulationRecord]:
-    records = []
-    for line_number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            records.append(PopulationRecord.model_validate_json(line))
-        except ValidationError as exc:
-            raise ValueError(f"Invalid population record at line {line_number}: {exc}") from exc
-    return records
+def _load_inputs(state):
+    handoff = AcceptedHandoff.model_validate(state["accepted_handoff"], strict=False)
+    for ref in (handoff.mapping, handoff.image_conversion_plan):
+        if digest_file(ref.path) != ref.digest:
+            raise ValueError("Accepted semantics changed")
+    return (PreparationMapping.model_validate_json(Path(handoff.mapping.path).read_text(encoding="utf-8")),
+            ImageConversionPlan.model_validate_json(Path(handoff.image_conversion_plan.path).read_text(encoding="utf-8")))
 
 
-def build_population_summary(records: Iterable[PopulationRecord], *, unit_type: str | None = None) -> PopulationSummary:
-    """Build the report projection from one canonical population sequence."""
-    rows = list(records)
-    if not rows:
-        raise ValueError("Cannot summarize an empty population")
-    observed_types = {row.unit_type for row in rows}
-    summary_type = unit_type or (next(iter(observed_types)) if len(observed_types) == 1 else "mixed")
-    labels = Counter(row.label_status for row in rows)
-    return PopulationSummary(
-        unit_count=len(rows), unit_type=summary_type,
-        labeled_count=labels.get("labeled", 0), unlabeled_count=labels.get("unlabeled", 0),
-        source_counts=dict(sorted(Counter(row.source_id for row in rows).items())),
-    )
-
-
-def write_population_projection(
-    records: Iterable[PopulationRecord], *, report: dict[str, Any], output_dir: str | Path,
-) -> dict[str, Any]:
-    """Write image_population.jsonl and source_report.json from one row sequence."""
-    rows = list(records)
-    summary = build_population_summary(rows)
-    root = Path(output_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "image_population.jsonl").write_text(
-        "".join(row.model_dump_json() + "\n" for row in rows), encoding="utf-8",
-    )
-    projected = dict(report)
-    projected["population"] = summary.model_dump(mode="json")
-    (root / "source_report.json").write_text(
-        json.dumps(projected, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8",
-    )
-    return projected
-
-
-def _save(result, state, candidate):
-    root = Path(state.get("preparation_root") or Path(candidate).parent)
-    attempt_id = state.get("attempt_id") or result.stage.value
-    receipt = root / "validation" / f"{attempt_id}.json"
-    result = result.model_copy(update={"receipt_ref": str(receipt)})
-    atomic_write_json(receipt, result.model_dump(mode="json"))
-    return result
-
-
-def read_question_set(path, *, stage):
-    questions = QuestionSet.model_validate_json(Path(path).read_text(encoding="utf-8")).questions
-    if any(item.stage is not stage for item in questions):
-        raise ValueError("Question stage does not match the assigned stage")
-    return [item.model_dump(mode="json") for item in questions]
-
-
-def build_digest_ledger(root, cached=None):
-    root = Path(root)
-    cached = cached or {}
-    ledger = {}
-    for item in sorted(root.rglob("*")):
-        if not item.is_file():
-            continue
-        relative = item.relative_to(root).as_posix()
-        stat = item.stat()
-        previous = cached.get(relative)
-        if isinstance(previous, dict):
-            previous = DigestEntry.model_validate(previous, strict=False)
-        if (isinstance(previous, DigestEntry)
-                and previous.size_bytes == stat.st_size
-                and previous.mtime_ns == stat.st_mtime_ns):
-            ledger[relative] = previous
+def validate_stage(root, stage, state):
+    root, stage = Path(root), Stage(stage)
+    try:
+        for name in STAGE_OUTPUTS[stage]:
+            if not (root / name).is_file():
+                raise ValueError(f"Missing output: {name}")
+        if stage is Stage.UNDERSTAND:
+            mapping = PreparationMapping.model_validate_json((root / "mapping.json").read_text(encoding="utf-8"))
+            plan = ImageConversionPlan.model_validate_json((root / "image_conversion_plan.json").read_text(encoding="utf-8"))
+            paths = set()
+            for target, source in mapping.images.items():
+                canonical = contained_path(root, target).relative_to(root.resolve()).as_posix()
+                if canonical != target or (not source.reference_only and not target.startswith("images/")):
+                    raise ValueError("Image locators must be canonical relative paths under images/")
+                if canonical.casefold() in paths:
+                    raise ValueError("Case-insensitive image target collision")
+                paths.add(canonical.casefold())
+                if source.policy_id not in plan.policies:
+                    raise ValueError("Image mapping references missing conversion policy")
+                locator = contained_path(state["source_roots"][source.source_id], source.source_path)
+                if not locator.exists():
+                    raise ValueError(f"Missing mapped source: {source.source_path}")
+        elif stage is Stage.PREPARE_TEXT:
+            mapping, _ = _load_inputs(state)
+            cases = read_cases(root / "cases.jsonl")
+            referenced = {e.value for c in cases for e in c.evidence if e.type == "asset"}
+            if not referenced <= mapping.images.keys():
+                raise ValueError("Case image locator is absent from accepted mapping")
+            required = {path for path, source in mapping.images.items() if source.required}
+            if not required <= referenced:
+                raise ValueError("Mapped source coverage is incomplete")
+            for case in cases:
+                for evidence in case.evidence:
+                    if evidence.type == "asset" and mapping.images[evidence.value].reference_only and evidence.mask is None:
+                        raise ValueError("Reference mask features must be attached directly to Case Evidence")
+                    if evidence.mask is not None:
+                        if not mapping.images[evidence.value].reference_only:
+                            raise ValueError("Mask feature must match reference-only mapping")
+                        from medbenchagent.data.sources import digest_path
+                        source = mapping.images[evidence.value]
+                        if evidence.mask.source_digest != digest_path(contained_path(state["source_roots"][source.source_id], source.source_path)):
+                            raise ValueError("Mask feature source_digest mismatch")
         else:
-            ledger[relative] = DigestEntry(
-                digest=digest_file(item), size_bytes=stat.st_size, mtime_ns=stat.st_mtime_ns,
-            )
-    return ledger
-
-
-def candidate_digest(root, ledger=None):
-    current = build_digest_ledger(root, ledger)
-    return digest_payload({name: item.digest for name, item in current.items()})
-
-
-def _semantic_control(issues):
-    return (
-        CONTROL_MAPPING_REVISION_REQUIRED
-        if any(item.code in SEMANTIC_REVISION_CODES for item in issues)
-        else None
-    )
-
-
-def validate_understand_candidate(
-    outputs: dict[str, str], *, known_source_ids: Iterable[str] = (),
-) -> ValidationResult:
-    """Validate worker-visible Understand invariants without host side effects."""
-    stage = Stage.UNDERSTAND
-    issues: list[ValidationIssue] = []
-    required = STAGE_SPECS[stage.value].required_outputs
-    missing = [name for name in required if name not in outputs or not Path(outputs[name]).is_file()]
-    if missing:
-        issues.append(_issue(
-            stage, "missing_output", f"Missing Understand outputs: {missing}",
-            path="outputs", expected="all required outputs", observed=str(missing),
-        ))
-        return ValidationResult(status="rejected", stage=stage, issues=issues)
-
-    try:
-        report = SourceReport.model_validate_json(Path(outputs["source_report.json"]).read_text(encoding="utf-8"))
-    except (OSError, ValueError, ValidationError) as exc:
-        report = None
-        issues.append(_issue(stage, "source_report_schema", str(exc), path="source_report.json"))
-    if report is not None and (not report.sources or not report.checks or not report.population):
-        issues.append(_issue(
-            stage, "source_report_incomplete",
-            "Source report requires measured sources, checks and population",
-            path="source_report.json",
-        ))
-
-    try:
-        mapping = PreparationMapping.model_validate_json(Path(outputs["mapping.json"]).read_text(encoding="utf-8"))
-        if not mapping.fields or not mapping.population_policy or not mapping.case_identity or not mapping.grouping:
-            issues.append(_issue(stage, "mapping_incomplete", "Mapping requires population policy, Case identity, grouping and field rules", path="mapping.json"))
-    except (OSError, ValueError, ValidationError) as exc:
-        issues.append(_issue(stage, "mapping_schema", str(exc), path="mapping.json"))
-
-    try:
-        ImageConversionPlan.model_validate_json(Path(outputs["image_conversion_plan.json"]).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        issues.append(_issue(stage, "image_conversion_plan_invalid", str(exc)))
-
-    records: list[PopulationRecord] = []
-    try:
-        records = read_population_records(outputs["image_population.jsonl"])
-    except (OSError, ValueError) as exc:
-        issues.append(_issue(stage, "population_schema", str(exc), path="image_population.jsonl"))
-    if not records:
-        issues.append(_issue(stage, "population_empty", "Population must contain at least one source unit", path="image_population.jsonl"))
-    identities = [(record.source_id, record.source_unit_id) for record in records]
-    if len(set(identities)) != len(identities):
-        issues.append(_issue(stage, "population_duplicate_identity", "Population requires unique source-unit identities", path="image_population.jsonl"))
-    known = set(known_source_ids)
-    unknown = sorted({record.source_id for record in records if known and record.source_id not in known})
-    if unknown:
-        issues.append(_issue(stage, "population_unknown_source", f"Population references unknown sources: {unknown}", path="image_population.jsonl", expected=str(sorted(known)), observed=str(unknown)))
-    if report is not None and records and report.population.unit_count != len(records):
-        issues.append(_issue(
-            stage, "population_count_mismatch",
-            "Source report population count differs from population",
-            path="source_report.json#/population/unit_count",
-            expected=f"image_population rows={len(records)}",
-            observed=f"report.population.unit_count={report.population.unit_count}",
-            details={"reported_unit_count": report.population.unit_count, "population_rows": len(records)},
-        ))
-
-    try:
-        questions = QuestionSet.model_validate_json(Path(outputs["semantic_questions.json"]).read_text(encoding="utf-8"))
-        if any(item.stage is not stage for item in questions.questions):
-            issues.append(_issue(stage, "question_stage_mismatch", "Question stage does not match Understand", path="semantic_questions.json"))
-    except (OSError, ValueError, ValidationError) as exc:
-        questions = None
-        issues.append(_issue(stage, "question_schema", str(exc), path="semantic_questions.json"))
-
-    try:
-        submission = Submission.model_validate_json(Path(outputs["submission.json"]).read_text(encoding="utf-8"))
-        if submission.requested_outcome != "submitted":
-            issues.append(_issue(stage, "submission_outcome", "Understand gate requires a submitted candidate", path="submission.json", expected="submitted", observed=submission.requested_outcome))
-    except (OSError, ValueError, ValidationError) as exc:
-        submission = None
-        issues.append(_issue(stage, "submission_schema", str(exc), path="submission.json"))
-
-    if questions is not None:
-        blocking = [item for item in questions.questions if item.blocking and not item.resolved]
-        if blocking and not issues:
-            return ValidationResult(status="needs_input", stage=stage, issues=issues, questions=blocking)
-    return ValidationResult(status="rejected" if issues else "accepted", stage=stage, issues=issues)
-
-
-def replay_inspector(outputs, *, state):
-    """One host replay using host-visible sources, including Docker submissions."""
-    script = Path(outputs["inspect_source.py"]).resolve()
-    workspace = script.parents[2]
-    with tempfile.TemporaryDirectory(dir=workspace / "work") as temporary:
-        replay_root = Path(temporary)
-        config = _json(workspace / "work/inputs/inspection_config.json")
-        for source in config["sources"]:
-            source["root"] = state["source_roots"][source["source_id"]]
-            source["manifest"] = state["source_manifests"][source["source_id"]]
-        config["source_manifests"] = state["source_manifests"]
-        config_path = replay_root / "inspection_config.json"
-        atomic_write_json(config_path, config)
-        environment = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-        completed = subprocess.run(
-            [sys.executable, str(script), "--input-config", str(config_path),
-             "--output-dir", str(replay_root), "--mode", "inventory"],
-            cwd=workspace, env=environment, capture_output=True, text=True,
-            encoding="utf-8", timeout=300, check=False,
-        )
-        if completed.returncode:
-            raise ValueError(f"Inspector replay failed: {completed.stderr[-1000:]}")
-        for name in ("source_report.json", "image_population.jsonl"):
-            file = replay_root / name
-            if not file.is_file() or file.read_bytes() != Path(outputs[name]).read_bytes():
-                raise ValueError(f"Inspector replay does not match submitted {name}")
-
-
-def validate_handoff(outputs, *, state=None, replay=True):
-    state = state or {}
-    root = Path(outputs) if isinstance(outputs, (str, Path)) else Path(outputs["submission.json"]).parent
-    if isinstance(outputs, (str, Path)):
-        outputs = {item.relative_to(root).as_posix(): str(item)
-                   for item in root.rglob("*") if item.is_file()}
-    stage = Stage.UNDERSTAND
-    known_source_ids = (state.get("source_roots") or {}).keys()
-    result = validate_understand_candidate(outputs, known_source_ids=known_source_ids)
-    if result.status == "needs_input":
-        return _save(result, state, root)
-    if result.status != "accepted":
-        return _save(result, state, root)
-    try:
-        if replay:
-            replay_inspector(outputs, state=state)
-    except (ValueError, KeyError, OSError, subprocess.TimeoutExpired) as exc:
-        result = ValidationResult(
-            status="rejected", stage=stage,
-            issues=[_issue(stage, "inspector_replay", str(exc))],
-        )
-    return _save(result, state, root)
-
-
-def create_accepted_handoff(state, outputs, validation):
-    if validation.status != "accepted":
-        raise ValueError("Understand validation must be accepted before creating a handoff")
-    fields = {
-        "source_report": "source_report.json", "mapping": "mapping.json",
-        "population": "image_population.jsonl", "inspection_script": "inspect_source.py",
-        "image_conversion_plan": "image_conversion_plan.json",
-    }
-    refs = {field: ArtifactRef(name=name, path=str(Path(outputs[name]).resolve()),
-                              digest=digest_file(outputs[name]), producer="host",
-                              stage=Stage.UNDERSTAND.value, status="accepted")
-            for field, name in fields.items()}
-    payload = {
-        "dataset_id": state["dataset_id"], "source_snapshot_digest": state["source_snapshot_digest"],
-        **refs,
-        "decisions": [UserDecision.model_validate(item) for item in state.get("user_decisions", [])],
-        "validation_receipt_ref": validation.receipt_ref,
-    }
-    digest = digest_payload({
-        **payload, **{key: value.model_dump(mode="json") for key, value in refs.items()},
-        "decisions": [item.model_dump(mode="json") for item in payload["decisions"]],
-    })
-    handoff = AcceptedHandoff(handoff_id=digest[:32], digest=digest, **payload)
-    atomic_write_json(Path(state["preparation_root"]) / "handoff" / f"{digest}.json",
-                      handoff.model_dump(mode="json"))
-    return handoff
-
-
-def validate_prepare_candidate(candidate, *, state=None, population_path=None, persist=True):
-    """Read-only validation of a fully assembled candidate."""
-    state = state or {}
-    stage = Stage.PREPARE_IMAGE
-    root = Path(candidate)
-    try:
-        report = validate_candidate(root, source_roots=state.get("source_roots"), population_path=population_path)
-        issues = [_issue(stage, item["kind"], item["error"]) for item in report["failures"]]
-        ledger = build_digest_ledger(root)
-        result = ValidationResult(
-            stage=stage, status="accepted" if report["accepted_cases"] and not report["systemic_failure"] else "rejected",
-            report=report, issues=issues, candidate_digest=candidate_digest(root, ledger), digest_ledger=ledger,
-        )
+            mapping, plan = _load_inputs(state)
+            for ref in state["text_artifacts"].values():
+                if digest_file(ref["path"]) != ref["digest"]:
+                    raise ValueError("Accepted Text changed")
+            images = {row.path: row for row in iter_image_manifest(root / "image_manifest.jsonl")}
+            cases = read_cases(Path(state["text_root"]) / "cases.jsonl")
+            needed = {e.value for c in cases for e in c.evidence if e.type == "asset" and e.mask is None}
+            if set(images) != needed:
+                raise ValueError("Image manifest differs from Case locators")
+            for path, image in images.items():
+                source = mapping.images[path]
+                if (source.source_id, source.source_path) != (image.source_id, image.source_path):
+                    raise ValueError("Image source differs from accepted mapping")
+                info = verify_image(contained_path(root, path), image.file_digest)
+                if (info["width"], info["height"], info["format"].lower()) != (image.width, image.height, image.format.lower()):
+                    raise ValueError("Image metadata differs from decoded output")
+                from medbenchagent.data.sources import digest_path
+                if digest_path(contained_path(state["source_roots"][source.source_id], source.source_path)) != image.source_digest:
+                    raise ValueError("Image source digest changed")
+                ordinary = source.source_format.lower() in {"png", "jpg", "jpeg", "webp", "gif"}
+                if not ordinary and info["format"] != "PNG":
+                    raise ValueError("Medical displays must be PNG")
+                if ordinary and not any(plan.policies[source.policy_id].get(k) for k in ("window", "crop", "resize", "indices")):
+                    if image.file_digest != image.source_digest:
+                        raise ValueError("Untransformed ordinary images must preserve source bytes")
+        return ValidationResult(status="accepted", stage=stage)
     except (ValueError, KeyError, OSError) as exc:
-        result = ValidationResult(stage=stage, status="rejected", issues=[_issue(stage, "candidate_invalid", str(exc))])
-    return _save(result, state, root) if persist else result
+        return ValidationResult(status="rejected", stage=stage, issues=[Diagnostic(stage=stage, code="invalid_output", message=str(exc))])
+
+
+def accept_mapping(root, state):
+    root = Path(root)
+    refs = {name: ArtifactRef(name=filename, path=str(root / filename), digest=digest_file(root / filename))
+            for name, filename in (("mapping", "mapping.json"), ("image_conversion_plan", "image_conversion_plan.json"))}
+    return AcceptedHandoff(dataset_id=state["dataset_id"], source_snapshot_digest=state["source_snapshot_digest"],
+        **refs, digest=digest_payload({name: ref.digest for name, ref in refs.items()}))
+
+
+def bundle_digest(root):
+    root = Path(root)
+    return digest_payload({p.relative_to(root).as_posix(): digest_file(p) for p in sorted(root.rglob("*")) if p.is_file()})
+
+
+def validate_bundle(root):
+    root = Path(root)
+    cases = read_cases(root / "cases.jsonl")
+    images = {image.path: image for image in iter_image_manifest(root / "image_manifest.jsonl")}
+    needed = {e.value for c in cases for e in c.evidence if e.type == "asset" and e.mask is None}
+    if needed != set(images):
+        raise ValueError("Case/image manifest coverage mismatch")
+    expected = {"cases.jsonl", "image_manifest.jsonl", "metadata.json", *needed}
+    actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+    if actual != expected:
+        raise ValueError("Dataset contains unregistered or non-dataset files")
+    for case in cases:
+        validate_case(case, images)
+    for image in images.values():
+        verify_image(contained_path(root, image.path), image.file_digest)
+    metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+    ids = {case.case_id for case in cases}
+    for name, model, field in (("sampling", SamplingManifest, "units"), ("split", SplitManifest, "records")):
+        if name in metadata:
+            manifest = model.model_validate(metadata[name])
+            if any(row.case_id not in ids for row in getattr(manifest, field)):
+                raise ValueError(f"Unknown Case in {name}")
+    return bundle_digest(root)
+
+
+def package_dataset(state):
+    """Assemble immutable stage results; publication never repairs them."""
+    text = Path(state["text_root"])
+    images = Path(state["attempt_workspace"]) / "work/outputs"
+    root = Path(state["attempt_workspace"]) / "work/package"
+    root.mkdir(parents=True, exist_ok=True)
+    # A retry owns a fresh attempt directory; no stale files are merged.
+    for name in ("cases.jsonl",):
+        shutil.copy2(text / name, root / name)
+    shutil.copy2(images / "image_manifest.jsonl", root / "image_manifest.jsonl")
+    for image in iter_image_manifest(images / "image_manifest.jsonl"):
+        destination = contained_path(root, image.path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(contained_path(images, image.path), destination)
+    mapping, _ = _load_inputs(state)
+    metadata = {"dataset_id": state["dataset_id"], "field_semantics": mapping.field_semantics,
+                "fields": [rule.model_dump(mode="json") for rule in mapping.fields if rule.disposition == "medical_evidence"]}
+    if (text / "metadata.json").is_file():
+        extra = json.loads((text / "metadata.json").read_text(encoding="utf-8"))
+        metadata.update({name: extra[name] for name in ("sampling", "split") if name in extra})
+    (root / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    digest = validate_bundle(root)
+    return root, digest

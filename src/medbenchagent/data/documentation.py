@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 from medbenchagent.data.sources import digest_file
-from medbenchagent.data.validation import source_path
+from medbenchagent.data.sources import source_path
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 TEXT_FORMATS = {"", ".txt", ".md", ".rst", ".json", ".yaml", ".yml", ".csv", ".tsv", ".html", ".xml"}

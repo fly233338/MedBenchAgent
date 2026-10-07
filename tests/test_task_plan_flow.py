@@ -35,7 +35,7 @@ def _context(tmp_path):
         "relations": {"paired_text": 1, "paired": 1, "paired_study": 0, "related": 1},
     }
     plan = TaskPlanState(
-        dataset={"dataset_id": "d"}, dataset_facts=facts,
+        dataset={"dataset_id": "d"},
         blueprint={"name": "Blueprint", "capability_dimensions": [{"id": "report_generation"}], "task_concepts": []},
         phase="axes",
     )
@@ -44,6 +44,7 @@ def _context(tmp_path):
     return {
         "operation_directory": str(tmp_path),
         "task_plan_path": str(path),
+        "dataset_facts": facts,
         "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"},
     }
 
@@ -57,19 +58,18 @@ def test_axis_calls_are_strictly_ordered(tmp_path):
     result = task_planning.analyze_axis(context, axis="clinical_target", assessments=_assessments("clinical_target", ["finding"]))
     assert result["updates"]["task_plan"]["phase"] == "scenario_review"
     assert result["updates"]["task_plan"]["scenario_review_pending_ids"]
-    axis_path = Path(context["operation_directory"]) / "axis_decisions.json"
-    assert set(json.loads(axis_path.read_text(encoding="utf-8"))) == {
+    assert set(task_planning._load_plan(context).axis_decisions) == {
         "input_structure", "operation", "clinical_target"
     }
-    scenarios = json.loads((Path(context["operation_directory"]) / "task_scenarios.json").read_text(encoding="utf-8"))
+    scenarios = {key: value.model_dump(mode="json") for key, value in task_planning._load_plan(context).scenarios.items()}
     assert scenarios
-    assert all("annotation_mapping" not in value and "evidence_stats" not in value for value in scenarios.values())
+    assert not (Path(context["operation_directory"]) / "task_scenarios.json").exists()
 
 
 def test_axis_evidence_exposes_catalog_counts_and_semantics(tmp_path):
     context = _context(tmp_path)
     plan = task_planning._load_plan(context)
-    plan.dataset_facts["evidence_catalog"] = {
+    context["dataset_facts"]["evidence_catalog"] = {
         "report": {"name": "report", "cases": 1, "types": {"text": 1}, "units": {}}
     }
     task_planning._write_artifacts(context, plan)
@@ -167,9 +167,9 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
                 {"id": "report", "type": "text", "name": "report", "value": "Clear", "ref": ["asset"]},
             ]}])
 
-    monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", Query)
+    monkeypatch.setattr("medbenchagent.data.index.DatasetIndex", Query)
     image_inputs = image_context(tmp_path / "images", list(Query(None).iter_cases()))
-    monkeypatch.setattr(task_planning.ResolverContext, "from_access", lambda access: image_inputs)
+    monkeypatch.setattr("medbenchagent.planning.resolver.ResolverContext.from_access", lambda access: image_inputs)
     plan = task_planning._load_plan(context)
     node_id = plan.scenario_review_pending_ids[0]
     screened = task_planning.screen_scenario(
@@ -234,9 +234,9 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
                 {"id": "report", "type": "text", "name": "report", "value": "Clear", "ref": ["asset"]},
             ]}])
 
-    monkeypatch.setattr("medbenchagent.data.query.DatasetQuery", Query)
+    monkeypatch.setattr("medbenchagent.data.index.DatasetIndex", Query)
     image_inputs = image_context(tmp_path / "images", list(Query(None).iter_cases()))
-    monkeypatch.setattr(task_planning.ResolverContext, "from_access", lambda access: image_inputs)
+    monkeypatch.setattr("medbenchagent.planning.resolver.ResolverContext.from_access", lambda access: image_inputs)
     plan = task_planning._load_plan(context)
     scenario_id = plan.scenario_review_pending_ids[0]
     screened = task_planning.screen_scenario(
@@ -301,20 +301,12 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
     assert plan.reviews[scenario_id].discarded_leaf_tasks[0].leaf_task_id == "bad"
 
 
-def test_derived_plan_views_are_rebuilt_from_canonical_plan(tmp_path):
+def test_planning_does_not_write_projection_files(tmp_path):
     context = _context(tmp_path)
-    for axis, values in (("input_structure", ["single-image"]), ("operation", ["describe"]), ("clinical_target", ["finding"])):
-        task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
     plan = task_planning._load_plan(context)
     task_planning._write_artifacts(context, plan)
-    path = Path(context["operation_directory"]) / "task_scenarios.json"
-    expected = path.read_bytes()
-    path.write_text("corrupted", encoding="utf-8")
-    task_planning._write_artifacts(context, task_planning._load_plan(context))
-    assert path.read_bytes() == expected
-    path.unlink()
-    task_planning._write_artifacts(context, task_planning._load_plan(context))
-    assert path.read_bytes() == expected
+    files = {p.name for p in Path(context["operation_directory"]).glob("*.json")}
+    assert files == {"task_plan.json"}
 
 
 def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_path, monkeypatch):
@@ -391,7 +383,7 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
 
     assert result["status"] == "success"
     assert "{{PLANNING_RULES}}" not in captured["prompt"]
-    assert "The task must use a target previously validated during Scenario Screening." in captured["prompt"]
+    assert "accepted target" in captured["prompt"]
     assert captured["payload"]["benchmark_brief"]["clinical_scope"] == "breast imaging"
     reviewed_leaf = captured["payload"]["leaf_tasks"][0]
     for field in ("input", "resolver", "reference_rule", "evidence", "question_templates", "options", "output_spec", "task_paradigm"):
@@ -440,7 +432,7 @@ def test_leaf_scenario_can_be_excluded_without_leaf_and_all_excluded_can_finish(
     plan = task_planning._load_plan(context)
     assert plan.scenarios[first_id].status == "excluded"
     assert plan.current_scenario_id == second.scenario_id
-    assert json.loads((Path(context["operation_directory"]) / "scenario_exclusions.json").read_text())[first_id]["stage"] == "leaf_review"
+    assert task_planning._load_plan(context).scenarios[first_id].exclusion_stage == "leaf_review"
     context["planning_read_state"]["scenario_context_read"] = True
 
     excluded = task_planning.exclude_current_scenario(

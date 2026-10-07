@@ -362,7 +362,7 @@ def describe(context: SupervisorContext):
         "dataset_candidates", "candidate_order", "preparation_candidates", "candidate_snapshot_path")}
     ids = set(context.get("selected_dataset_ids", [])) | set(context.get("prepared_entries", {}))
     details["dataset_readiness"] = {d: {kind: _current(context, f"dataset/{d}/{kind}")
-                                      for kind in ("Dataset", "Plan", "Templates", "Generation")} for d in sorted(ids)}
+                                      for kind in ("Dataset", "Plan", "Generation")} for d in sorted(ids)}
     details["outstanding_work"] = {**pending_datasets(context),
                                    "available_actions": sorted(available_stages(context))}
     details["rag_capability"] = context.get("rag_capability")
@@ -730,11 +730,10 @@ def compile_benchmark_graph(*, checkpointer=None):
         child["artifact_versions"] = dict(context.get("artifact_versions", {}))
         child["operation_directory"] = agent_operation(context, "GenerationAgent", dataset_id)
         counts = json.loads(Path(context["allocation_path"]).read_text(encoding="utf-8"))["counts"][dataset_id]
-        leaf_path = child.get("leaf_tasks_path")
         output_root = Path(context.get("experiment_output_directory") or child["operation_directory"])
         output_path = output_root / dataset_id / "benchmark_items.jsonl"
         if sum(counts.values()):
-            generated = run_generation(child, leaf_path=leaf_path, output_path=output_path, allocation=counts)
+            generated = run_generation(child, output_path=output_path, allocation=counts)
         else:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text("", encoding="utf-8")
@@ -832,7 +831,7 @@ The host selects the internal stage from validated state. Do not choose a
 stage through notes, user wording, or feedback. Use issue_ids only for
 host-registered issues belonging to this dataset. Notes provide context
 and cannot override routing, acceptance, or publication checks."""
-        from medbenchagent.preparation.bootstrap import initialize_preparation
+        from medbenchagent.preparation.entrypoint import initialize_preparation
         from medbenchagent.preparation.entrypoint import run_preparation_agent
         if mode == "rebuild" and not _rebuild_requested(context):
             return result("failed", "Rebuild requires an explicit affirmative request for this dataset.")

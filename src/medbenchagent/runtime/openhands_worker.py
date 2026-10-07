@@ -227,9 +227,9 @@ def main(request_path: str, result_path: str) -> None:
     output_root = workspace / "work" / "outputs"
     for path in sorted(item for item in output_root.rglob("*") if item.is_file()):
         name = path.relative_to(output_root).as_posix()
-        if name in allowed or "output_manifest.json" in allowed or path.name not in {"complete.json", "preparation_report.json", "quarantine.jsonl"}:
+        if name in allowed or name.startswith("images/"):
             produced[name] = str(path.resolve())
-    submission_path = workspace / "work" / "outputs" / "submission.json"
+    submission_path = workspace / "work" / "submission.json"
     submission = None
     diagnostic = ""
     if submission_path.is_file():
@@ -239,14 +239,6 @@ def main(request_path: str, result_path: str) -> None:
             diagnostic = f"Invalid submission.json: {exc}"
     else:
         diagnostic = "Required worker output is missing: submission.json"
-    if not diagnostic and submission and submission.get("requested_outcome") == "submitted":
-        validation_path = workspace / "work" / "validation.json"
-        try:
-            validation = json.loads(validation_path.read_text(encoding="utf-8"))
-            if validation.get("status") != "accepted":
-                diagnostic = "Shared stage validator did not accept the candidate"
-        except (OSError, json.JSONDecodeError, AttributeError):
-            diagnostic = "Shared stage validator result is missing or invalid: work/validation.json"
     complete = not diagnostic and set(request["required_outputs"]) <= set(produced)
     requested = submission.get("requested_outcome") if isinstance(submission, dict) else "blocked"
     result_status = "submitted" if complete and requested == "submitted" else ("needs_input" if requested == "needs_input" else "blocked" if requested == "blocked" else "failed")
@@ -259,7 +251,7 @@ def main(request_path: str, result_path: str) -> None:
         "diagnostics": [], "diagnostic": "" if complete else diagnostic or submission.get("summary", ""),
         "termination_reason": "completed" if result_status == "submitted" else "output_invalid",
         "progress": progress, "input_digest": request.get("input_digest", ""),
-        "submission_path": "/workspace/work/outputs/submission.json",
+        "submission_path": "/workspace/work/submission.json",
         "token_count": request.get("prompt_token_count"),
     }
     Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")

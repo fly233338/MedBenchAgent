@@ -11,17 +11,13 @@ class ImageReader:
     format = ""
 
     def probe(self, path):
-        from medbenchagent.data.image_conversion import detect_format
+        from medbenchagent.data.asset_adapters import detect_format
 
         return (detect_format(Path(path)) or "").startswith(self.format)
 
     def read_pixels(self, path):
         raise NotImplementedError
 
-    def convert(self, path, policy=None):
-        from medbenchagent.data.image_conversion import convert_image
-
-        return convert_image(path, policy)
 
 
 class RasterReader(ImageReader):
@@ -29,7 +25,7 @@ class RasterReader(ImageReader):
 
     def read_pixels(self, path):
         from PIL import Image
-        from medbenchagent.data.image_conversion import UnsupportedMedicalImage
+        from medbenchagent.data.asset_adapters import UnsupportedMedicalImage
 
         with Image.open(path) as image:
             if (
@@ -102,7 +98,7 @@ class DicomReader(ImageReader):
         return result
 
     def read_pixels(self, path):
-        from medbenchagent.data.image_conversion import UnsupportedMedicalImage
+        from medbenchagent.data.asset_adapters import UnsupportedMedicalImage
 
         try:
             from pydicom import dcmread
@@ -201,7 +197,7 @@ READERS = (RasterReader(), DicomReader(), NiftiReader(), ItkReader())
 
 
 def _plane(pixels):
-    from medbenchagent.data.image_conversion import UnsupportedMedicalImage
+    from medbenchagent.data.asset_adapters import UnsupportedMedicalImage
 
     if pixels.ndim != 2:
         raise UnsupportedMedicalImage(f"Only 2D images are supported, got {pixels.shape}")
@@ -209,7 +205,7 @@ def _plane(pixels):
 
 
 def reader_for(path):
-    from medbenchagent.data.image_conversion import UnsupportedMedicalImage
+    from medbenchagent.data.asset_adapters import UnsupportedMedicalImage
 
     for reader in READERS:
         if reader.probe(path):

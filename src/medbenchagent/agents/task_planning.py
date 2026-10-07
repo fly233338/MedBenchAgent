@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from medbenchagent.planning.sampling import sampling_units
 
 import json
 import difflib
@@ -14,11 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from medbenchagent.data.task_facts import _asset_rows, build_dataset_facts, case_facts, compact_case, compact_catalog_entry, compact_scalar
 from medbenchagent.planning.node_builder import build_task_scenarios
-from medbenchagent.planning.access import DatasetAccessReceipt
-from medbenchagent.planning.resolver import NotApplicable, ResolverContext, ResolverSpec, encode_closed_label, resolve_task_input
+from medbenchagent.planning.resolver import ResolverSpec
 from medbenchagent.planning.bir import BIRStore, RegistrySnapshot
 from medbenchagent.planning.extensions import PlanningExtensionCatalog
-from medbenchagent.planning.task_discovery import leaf_identity, validate_candidate_leaf, validate_task_tree
+from medbenchagent.planning.task_discovery import validate_candidate_leaf, validate_task_tree
 from medbenchagent.planning.task_space import (
     AXIS_VALUES,
     AxisAnalysis,
@@ -27,7 +25,6 @@ from medbenchagent.planning.task_space import (
     CapabilityCategory,
     EvidenceBasis,
     EvidenceSelector,
-    LeafTask,
     ScenarioReview,
     TaskAxis,
     TaskPlanState,
@@ -245,7 +242,7 @@ def _mapping_path(context: dict[str, Any]) -> Path | None:
         return Path(explicit)
     cases_path = access.get("cases_path")
     if cases_path:
-        candidate = Path(cases_path).resolve().parent / "mapping.json"
+        candidate = Path(cases_path).resolve().parent / "metadata.json"
         if candidate.is_file():
             return candidate
     return None
@@ -440,8 +437,8 @@ def _name_suggestions(name: str, available: list[str]) -> list[str]:
 
 def _case_evidence_names(context: dict[str, Any]) -> set[str]:
     try:
-        from medbenchagent.data.query import DatasetQuery
-        query = DatasetQuery(_access(context))
+        from medbenchagent.data.index import DatasetIndex
+        query = DatasetIndex(_access(context))
         if hasattr(query, "iter_cases"):
             cases = []
             for case in query.iter_cases():
@@ -738,131 +735,6 @@ def _write_json(path: Path, value: Any) -> str:
     return str(path)
 
 
-def _write_evidence_artifacts(context: dict[str, Any], facts: dict[str, Any]) -> dict[str, str]:
-    directory = _evidence_dir(context)
-    directory.mkdir(parents=True, exist_ok=True)
-    access = _access(context)
-    mapping_path = _mapping_path(context)
-    receipt = DatasetAccessReceipt.model_validate({
-        "schema_version": "dataset-access",
-        "dataset_id": context.get("dataset_scope", context.get("selected_dataset_id")),
-        "revision": access.get("revision"),
-        "cases_path": access.get("cases_path"),
-        "asset_manifest_path": access.get("asset_manifest_path"),
-        "profile_path": access.get("profile_path"),
-        "duckdb_path": access.get("duckdb_path"),
-        "annotation_digest": access.get("annotation_digest"),
-        "asset_manifest_digest": access.get("asset_manifest_digest"),
-        "profile_digest": access.get("profile_digest"),
-        "duckdb_digest": access.get("duckdb_digest"),
-        "case_count": facts.get("case_count", 0),
-        "patient_count": facts.get("patient_count", 0),
-        "patient_identity": facts.get("patient_identity", "unknown"),
-        "mapping_path": str(mapping_path) if mapping_path else None,
-        "source_root": access.get("source_root"),
-        "source_roots": access.get("source_roots", {}),
-        "bundle_root": access.get("bundle_root"),
-        "presentation_manifest_path": access.get("presentation_manifest_path"),
-        "presentation_manifest_digest": access.get("presentation_manifest_digest"),
-        "split_manifest_path": access.get("split_manifest_path"),
-        "split_manifest_digest": access.get("split_manifest_digest"),
-        "sampling_manifest_path": access.get("sampling_manifest_path"),
-        "sampling_manifest_digest": access.get("sampling_manifest_digest"),
-    }).model_dump(mode="json")
-    overview = {
-        "schema_version": "dataset-overview",
-        "dataset_id": receipt["dataset_id"],
-        "revision": receipt["revision"],
-        "case_count": facts.get("case_count", 0),
-        "patient_count": facts.get("patient_count", 0),
-        "patient_identity": facts.get("patient_identity", "unknown"),
-        "assets": facts.get("assets", {}),
-        "relations": facts.get("relations", {}),
-        "evidence_counts": facts.get("evidence", {}),
-        "derived_capabilities": facts.get("derived_capabilities", {}),
-        "mask_feature_coverage": facts.get("mask_feature_coverage", {}),
-        "view_panel_capabilities": facts.get("view_panel_capabilities", {}),
-    }
-    meanings = _field_meanings(context)
-    catalog_entries = []
-    for entry in facts.get("evidence_catalog", {}).values():
-        item = dict(entry)
-        if item.get("name") in meanings:
-            item["meaning"] = meanings[item["name"]]
-        catalog_entries.append(item)
-    catalog = {
-        "schema_version": "evidence-catalog",
-        "dataset_id": receipt["dataset_id"],
-        "revision": receipt["revision"],
-        "entries": catalog_entries,
-        "names": facts.get("evidence_names", []),
-        "annotation_mapping": facts.get("annotation_mapping", []),
-    }
-    relations = {
-        "schema_version": "relation-summary",
-        "dataset_id": receipt["dataset_id"],
-        "revision": receipt["revision"],
-        "relations": facts.get("relations", {}),
-        "assets": facts.get("assets", {}),
-    }
-    samples_path = directory / "case_samples.json"
-    sample = facts.get("representative_case")
-    samples = {"schema_version": "case-samples", "cases": [sample] if sample else []}
-    manifest = {
-        "schema_version": "planning-evidence",
-        "dataset_id": receipt["dataset_id"],
-        "revision": receipt["revision"],
-        "artifacts": {},
-    }
-    bir = _bir(context)
-    if bir:
-        dataset_id = receipt["dataset_id"]
-        root = Path(bir.root) / "datasets" / dataset_id
-        canonical = {
-            f"datasets/{dataset_id}/access.json": receipt,
-            f"datasets/{dataset_id}/evidence/overview.json": overview,
-            f"datasets/{dataset_id}/evidence/catalog.json": catalog,
-            f"datasets/{dataset_id}/evidence/relations.json": relations,
-            f"datasets/{dataset_id}/evidence/case_samples.json": samples,
-        }
-        manifest["artifacts"] = {
-            key.split("/")[-1].replace(".json", ""): str(root / Path(*key.split("/")[2:]))
-            for key in canonical if key.endswith(".json") and "manifest" not in key
-        }
-        canonical[f"datasets/{dataset_id}/evidence/manifest.json"] = manifest
-        commit = bir.transaction(canonical, run_id=context.get("run_id", "unknown"), actor="task_planning")
-        context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
-        # Materialize the compatibility evidence view beside the Agent state.
-        derived = {
-            "access": bir.materialize(f"datasets/{dataset_id}/access.json", directory.parent / "access.json"),
-            "overview": bir.materialize(f"datasets/{dataset_id}/evidence/overview.json", directory / "overview.json"),
-            "catalog": bir.materialize(f"datasets/{dataset_id}/evidence/catalog.json", directory / "catalog.json"),
-            "relations": bir.materialize(f"datasets/{dataset_id}/evidence/relations.json", directory / "relations.json"),
-            "case_samples": bir.materialize(f"datasets/{dataset_id}/evidence/case_samples.json", samples_path),
-            "manifest": bir.materialize(f"datasets/{dataset_id}/evidence/manifest.json", directory / "manifest.json"),
-        }
-        paths = {key: str(bir.root / Path(*relative.split("/"))) for key, relative in {
-            "access": f"datasets/{dataset_id}/access.json",
-            "overview": f"datasets/{dataset_id}/evidence/overview.json",
-            "catalog": f"datasets/{dataset_id}/evidence/catalog.json",
-            "relations": f"datasets/{dataset_id}/evidence/relations.json",
-            "case_samples": f"datasets/{dataset_id}/evidence/case_samples.json",
-            "manifest": f"datasets/{dataset_id}/evidence/manifest.json",
-        }.items()}
-        paths["derived"] = derived
-    else:
-        paths = {
-            "access": _write_json(directory.parent / "access.json", receipt),
-            "overview": _write_json(directory / "overview.json", overview),
-            "catalog": _write_json(directory / "catalog.json", catalog),
-            "relations": _write_json(directory / "relations.json", relations),
-            "case_samples": _write_json(samples_path, samples),
-        }
-        manifest["artifacts"] = paths
-        paths["manifest"] = _write_json(directory / "manifest.json", manifest)
-    return paths
-
-
 def _write_artifacts(context, plan):
     from medbenchagent.planning.bir import persist_task_plan
     return persist_task_plan(context, plan, plan_path=_plan_path(context), bir=_bir(context), access=_access(context))
@@ -902,23 +774,23 @@ def _initialize_planning_context(context: dict[str, Any]) -> dict[str, Any]:
         context.update(_write_artifacts(context, plan))
         return context
 
-    evidence_paths = _write_evidence_artifacts(context, facts)
+    access_path = Path(context["operation_directory"]) / "access.json"
+    bir = _bir(context)
+    if bir:
+        relative = f"datasets/{context['dataset_scope']}/access.json"
+        bir.transaction({relative: access}, run_id=context.get("run_id", "unknown"), actor="task_planning")
+        access_path = bir.root / relative
+    else:
+        _write_json(access_path, access)
     plan = TaskPlanState(
         dataset={"dataset_id": context.get("dataset_scope", "dataset")},
-        access_path=evidence_paths["access"],
-        evidence_manifest_path=evidence_paths["manifest"],
+        access_path=str(access_path),
         phase="axes" if facts.get("case_count", 0) and facts.get("evidence_names") else "blocked",
         extension_selection=context.get("planning_extension_selection", {}),
         review={} if facts.get("case_count", 0) and facts.get("evidence_names") else {"reason": "Dataset has no Case or Evidence"},
     )
     context.update(_write_artifacts(context, plan))
     context["dataset_facts"] = facts
-    context["planning_context"] = {
-        "evidence_manifest_path": evidence_paths["manifest"],
-        "overview_path": evidence_paths["overview"],
-        "catalog_path": evidence_paths["catalog"],
-        "relations_path": evidence_paths["relations"],
-    }
     return context
 
 
@@ -928,68 +800,13 @@ def _axis_order() -> tuple[TaskAxis, ...]:
 
 def _facts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
     facts = context.get("dataset_facts")
-    if facts:
-        return facts
-    legacy_facts = getattr(plan, "dataset_facts", None)
-    if legacy_facts:
-        return legacy_facts
-    manifest = plan.evidence_manifest_path
-    if manifest:
-        paths = _read(manifest).get("artifacts", {})
-        overview = _read(paths["overview"]) if paths.get("overview") else {}
-        catalog_doc = _read(paths["catalog"]) if paths.get("catalog") else {}
-        entries = catalog_doc.get("entries", [])
-        catalog = _catalog_map(entries)
-        return overview | {
-            "evidence_catalog": catalog,
-            "evidence_names": catalog_doc.get("names", sorted(catalog)),
-            "annotation_mapping": catalog_doc.get("annotation_mapping", []),
-            "evidence": overview.get("evidence_counts", {}),
-        }
     access = _access(context)
-    if access.get("schema_version") == "annotation" and access.get("cases_path"):
-        try:
-            from medbenchagent.data.index import DatasetIndex
-            return DatasetIndex(access).facts()
-        except (OSError, ValueError, KeyError):
-            pass
-    try:
-        profile = _profile(context)
-    except (KeyError, OSError, ValueError):
-        return {}
-    evidence_catalog = {row["name"]: row for row in profile.get("evidence", []) if row.get("name")}
-    evidence = {}
-    for row in evidence_catalog.values():
-        for kind, count in row.get("types", {}).items():
-            evidence[kind] = evidence.get(kind, 0) + count
-        evidence["numeric"] = evidence.get("numeric", 0) + row.get("value_types", {}).get("number", 0)
-    assets = profile.get("assets", {})
-    return {
-        "schema_version": "dataset-facts",
-        "revision": _access(context).get("revision"),
-        "case_count": profile.get("case_count", 0),
-        "patient_count": profile.get("patient_count", 0),
-        "patient_identity": "present" if profile.get("patient_count", 0) else "absent",
-        "evidence_catalog": evidence_catalog,
-        "evidence_names": list(evidence_catalog),
-        "evidence": evidence,
-        "assets": {
-            "image_assets": assets.get("kinds", {}).get("image", 0),
-            "primary_image_assets": assets.get("kinds", {}).get("image", 0),
-            "volume_assets": assets.get("kinds", {}).get("volume", 0),
-            "multi_image_cases": 0,
-            "related_image_cases": 0,
-        },
-        "relations": {
-            "paired_text": 0,
-            "paired_study": 0,
-            "comparable": 0,
-            "related_image_groups": 0,
-        },
-        "derived_capabilities": {},
-        "mask_feature_coverage": {},
-        "view_panel_capabilities": {},
-    }
+    if facts is not None and facts.get("revision", access.get("revision")) == access.get("revision"):
+        return facts
+    from medbenchagent.data.index import DatasetIndex
+    facts = DatasetIndex(access).facts()
+    context["dataset_facts"] = facts
+    return facts
 
 
 def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanState:
@@ -1345,7 +1162,6 @@ def read_planning_context(context: dict[str, Any]) -> dict[str, Any]:
         "schema_version": "planning-index",
         "phase": plan.phase,
         "next_axis": plan.next_axis,
-        "evidence_manifest_path": plan.evidence_manifest_path,
         "extension_selection": plan.extension_selection,
         "axis_decisions": list(plan.axis_decisions),
         "scenario_count": len(plan.scenarios),
@@ -1356,10 +1172,9 @@ def read_planning_context(context: dict[str, Any]) -> dict[str, Any]:
 
 def read_dataset_overview(context: dict[str, Any]) -> dict[str, Any]:
     plan = _load_plan(context)
-    if not plan.evidence_manifest_path:
-        raise ValueError("Planning evidence manifest is unavailable")
-    paths = _read(plan.evidence_manifest_path)["artifacts"]
-    overview = _read(paths["overview"])
+    facts = _facts(context, plan)
+    overview = {key: facts.get(key) for key in ("revision", "case_count", "patient_count", "assets", "relations")}
+    overview["dataset_id"] = plan.dataset.get("dataset_id")
     return result(
         "success",
         f"Access verified for {overview.get('dataset_id')} revision {overview.get('revision')} with {overview.get('case_count', 0)} Cases",
@@ -1390,9 +1205,8 @@ def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=
     plan = _load_plan(context)
     state = _bound_read_state(context, plan, plan.current_scenario_id)
     query = json.dumps({"offset": offset, "limit": limit, "names": sorted(names or [])}, sort_keys=True)
-    paths = _read(plan.evidence_manifest_path)["artifacts"]
-    catalog_doc = _read(paths["catalog"])
-    all_entries = catalog_doc.get("entries", [])
+    facts = _facts(context, plan)
+    all_entries = list(_catalog_map(facts.get("evidence_catalog", {})).values())
     by_name = _catalog_map(all_entries)
     available = sorted(by_name)
     requested = list(dict.fromkeys(names or []))
@@ -1401,7 +1215,7 @@ def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=
     entries = [by_name[name] for name in matched_names] if requested else all_entries
     page = entries[offset:offset + limit]
     payload = {
-        "revision": _read(paths["catalog"]).get("revision"),
+        "revision": facts.get("revision"),
         "query": {"offset": offset, "limit": limit, "names": requested},
         "entries": [compact_catalog_entry(item, item.get("meaning")) for item in page],
         "total": len(entries),
@@ -1564,90 +1378,17 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
     raw_leaf = leaf
     if plan.phase != "leaves" or not plan.current_scenario_id:
         raise ValueError("An active Task Scenario is required before saving a Leaf Task")
+    from medbenchagent.planning.task_discovery import validate_leaf_design, LeafDesignError
     try:
-        draft = leaf if isinstance(leaf, LeafTaskDraft) else LeafTaskDraft.model_validate(leaf)
-        parsed = LeafTask.model_validate(draft.model_dump(mode="json"))
-    except ValueError as exc:
-        _raise_leaf_failure(context, plan, raw_leaf, "leaf_schema", str(exc), repair_hint="Preserve the submitted Leaf and correct only the reported schema fields.")
-    if parsed.scenario_id != plan.current_scenario_id:
-        _raise_leaf_failure(context, plan, raw_leaf, "scenario_mismatch", "Leaf Task must belong to the active Scenario", path="scenario_id", actual=parsed.scenario_id, expected=plan.current_scenario_id)
-    expected_templates = _configured_template_count(context)
-    if expected_templates is not None and len(parsed.question_templates) != expected_templates:
-        _raise_leaf_failure(
-            context, plan, raw_leaf, "template_count",
-            f"Leaf Task requires exactly {expected_templates} question_templates; received {len(parsed.question_templates)}",
-            path="question_templates", actual=len(parsed.question_templates), expected=expected_templates,
-        )
+        parsed = validate_leaf_design(leaf, plan, facts=_facts(context, plan), access=_access(context),
+            registry=_registry(context), expected_templates=_configured_template_count(context),
+            case_names=_case_evidence_names(context))
+    except LeafDesignError as exc:
+        _raise_leaf_failure(context, plan, raw_leaf, exc.code, str(exc), **exc.details)
     scenario = plan.scenarios[parsed.scenario_id]
-    if parsed.capability_category != scenario.capability_category:
-        _raise_leaf_failure(context, plan, raw_leaf, "capability_category", "Leaf Task Category must match its Scenario", path="capability_category", actual=parsed.capability_category.value, expected=scenario.capability_category.value)
-    target = next(
-        (_target_model(item) for item in scenario.validated_clinical_targets
-         if _target_model(item).target_id == parsed.clinical_target_id),
-        None,
-    )
-    if target is None:
-        _raise_leaf_failure(
-            context, plan, raw_leaf, "unknown_clinical_target_id",
-            "Leaf Task must reference a validated clinical target from its Scenario",
-            path="clinical_target_id", actual=parsed.clinical_target_id,
-            expected=[_target_model(item).target_id for item in scenario.validated_clinical_targets],
-        )
-    if parsed.target.strip() != target.name.strip():
-        _raise_leaf_failure(
-            context, plan, raw_leaf, "clinical_target_name_mismatch",
-            "Leaf Task target must match the selected validated clinical target name",
-            path="target", actual=parsed.target, expected=target.name,
-        )
-    evidence_names = set(_facts(context, plan).get("evidence_names", []))
-    facts = _facts(context, plan)
+    from medbenchagent.data.index import DatasetIndex
     try:
-        spec = ResolverSpec.parse(parsed.resolver)
-    except ValueError as exc:
-        _raise_leaf_failure(context, plan, raw_leaf, "resolver_schema", str(exc), repair_hint="Keep the same Leaf and repair the Resolver steps or result_step reported above.")
-    catalog = _catalog_map(facts.get("evidence_catalog", {}))
-    evidence_names.update(_case_evidence_names(context))
-    available_names = sorted(set(catalog) | evidence_names)
-    for index, selector in enumerate(parsed.input):
-        if selector.name and selector.name not in evidence_names:
-            _raise_leaf_failure(
-                context, plan, raw_leaf, "missing_input_evidence",
-                f"Input evidence name {selector.name!r} does not exist for this dataset.",
-                path=f"input[{index}].name", actual=selector.name,
-                expected=_name_suggestions(selector.name, available_names),
-                repair_hint="Replace the input selector with one of the reported real evidence names and keep resolver.inputs identical.",
-            )
-    if parsed.input != spec.inputs:
-        _raise_leaf_failure(
-            context, plan, raw_leaf, "input_resolver_mismatch",
-            "Leaf.input and Resolver.inputs differ.",
-            actual={"input": [item.model_dump(mode="json") for item in parsed.input], "resolver_inputs": [item.model_dump(mode="json") for item in spec.inputs]},
-            repair_hint="Make Resolver.inputs exactly equal to Leaf.input; keep reference-only evidence in resolver steps.",
-        )
-    try:
-        validate_candidate_leaf(parsed, plan.scenarios, resolver_context={
-            "evidence_names": evidence_names,
-            "evidence_catalog": catalog,
-            "reference_only_evidence_names": facts.get("reference_only_evidence_names", []),
-            "mask_feature_coverage": facts.get("mask_feature_coverage", {}),
-            "presentation_manifest_digest": _access(context).get("presentation_manifest_digest"),
-            "sampling_manifest_digest": _access(context).get("sampling_manifest_digest"),
-            "split_manifest_digest": _access(context).get("split_manifest_digest"),
-            "ordered_collection_available": bool(_access(context).get("sampling_manifest_digest")),
-            "registry": _registry(context),
-        })
-    except ValueError as exc:
-        _raise_leaf_failure(context, plan, raw_leaf, "leaf_contract", str(exc), repair_hint="Use the current evidence catalog and change only the rejected selector or contract field.")
-    identity = leaf_identity(parsed, plan.scenarios.get(parsed.scenario_id))
-    if any(
-        key != parsed.leaf_task_id
-        and leaf_identity(value, plan.scenarios.get(value.scenario_id)) == identity
-        for key, value in plan.leaf_tasks.items()
-    ):
-        _raise_leaf_failure(context, plan, raw_leaf, "duplicate_leaf", "Duplicate Leaf Task semantics", repair_hint="Reuse or skip the existing Leaf Task when the semantics are already present; do not alter target or resolver semantics to bypass deduplication.")
-    from medbenchagent.data.query import DatasetQuery
-    try:
-        query = DatasetQuery(_access(context))
+        query = DatasetIndex(_access(context))
         if hasattr(query, "iter_cases"):
             cases = list(query.iter_cases())
         else:
@@ -1655,28 +1396,13 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
             cases = list(page.get("values", []))
     except Exception as exc:
         _raise_leaf_failure(context, plan, raw_leaf, "dataset_query", str(exc), repair_hint="Use the available planning evidence and retry this Leaf after the dataset query is available.")
-    resolution_reasons = Counter()
-    resolved_answers = set()
-    resolver_context = ResolverContext.from_access(_access(context))
+    from medbenchagent.planning.task_discovery import summarize_leaf
+    summary = summarize_leaf(_access(context), parsed, cases=cases)
+    resolution_reasons = Counter(summary["failure_reasons"])
+    resolved_answers = set(summary["answer_distribution"])
+    eligible = summary["eligible_count"]
     operation_mode = (_registry(context).answer_options_mode(scenario.operation)
                       if _registry(context) else ("required" if scenario.operation in {"recognize", "compare", "align"} else "forbidden"))
-    units = sampling_units(cases, resolver_context.manifests.get("sampling"))
-    for case, unit in units:
-        resolved = resolve_task_input(case, parsed, unit, resolver_context)
-        if isinstance(resolved, NotApplicable):
-            resolution_reasons[resolved.reason] += 1
-        elif operation_mode == "required" and parsed.task_paradigm == TaskParadigm.VQA and parsed.output_spec == OutputSpec.LABEL:
-            value = resolved.reference.get("value", resolved.reference) if isinstance(resolved.reference, dict) else resolved.reference
-            if isinstance(value, (str, int, float, bool)):
-                try:
-                    resolved_answers.add(encode_closed_label(value))
-                except ValueError as exc:
-                    _raise_leaf_failure(
-                        context, plan, raw_leaf, "label_encoding",
-                        str(exc), path="options",
-                        repair_hint="Use string options matching the deterministic Resolver answer encoding.",
-                    )
-    eligible = len(units) - sum(resolution_reasons.values())
     if eligible <= 0:
         common = ", ".join(f"{reason}={count}" for reason, count in resolution_reasons.most_common())
         _raise_leaf_failure(
@@ -1724,64 +1450,9 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
     )
 
 
-def _leaf_validation_summary(context: dict[str, Any], leaf: LeafTask) -> dict[str, Any]:
-    """Return a bounded resolver summary for Scenario Review."""
-    summary: dict[str, Any] = {
-        "contract_validated": True,
-        "eligible_count": leaf.eligible_count,
-        "case_count": None,
-        "successful_case_count": None,
-        "failure_reasons": {},
-        "answer_distribution": {},
-        "successful_examples": [],
-    }
-    access = _access(context)
-    if not access.get("cases_path") and not access.get("duckdb_path"):
-        return summary
-    try:
-        from medbenchagent.data.query import DatasetQuery
-        query = DatasetQuery(access)
-        cases = list(query.iter_cases()) if hasattr(query, "iter_cases") else list(query.sample(offset=0, limit=512).get("values", []))
-    except Exception as exc:  # pragma: no cover - diagnostics only
-        summary["validation_error"] = str(exc)
-        return summary
-    failures = Counter()
-    answers = Counter()
-    examples = []
-    resolver_context = ResolverContext.from_access(access)
-    units = sampling_units(cases, resolver_context.manifests.get("sampling"))
-    for case, unit in units:
-        resolved = resolve_task_input(case, leaf, unit, resolver_context)
-        if isinstance(resolved, NotApplicable):
-            failures[resolved.reason] += 1
-            continue
-        reference = resolved.reference
-        value = reference.get("value", reference) if isinstance(reference, dict) else reference
-        if isinstance(value, (str, int, float, bool)):
-            try:
-                answer = encode_closed_label(value)
-            except ValueError:
-                answer = str(value)
-            answers[answer] += 1
-        else:
-            answer = None
-        if len(examples) < 3:
-            examples.append({
-                "case_id": case.get("case_id"),
-                "reference": reference if isinstance(reference, (str, int, float, bool, list, dict)) else str(reference),
-                "answer": answer,
-            })
-    summary.update({
-        "case_count": len(cases),
-        "successful_unit_count": len(units) - sum(failures.values()),
-        "eligible_count": len(units) - sum(failures.values()),
-        "all_cases_eligible": not failures,
-        "failure_reasons": dict(failures),
-        "answer_distribution": dict(answers),
-        "successful_examples": examples,
-        "boundary_case_examples": examples,
-    })
-    return summary
+def _leaf_validation_summary(context, leaf):
+    from medbenchagent.planning.task_discovery import summarize_leaf
+    return summarize_leaf(_access(context), leaf)
 
 
 def exclude_current_scenario(
@@ -1974,7 +1645,7 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview |
                 "evidence_names": evidence_names,
                 "reference_only_evidence_names": _facts(context, plan).get("reference_only_evidence_names", []),
                 "mask_feature_coverage": _facts(context, plan).get("mask_feature_coverage", {}),
-                "presentation_manifest_digest": _access(context).get("presentation_manifest_digest"),
+                "image_manifest_digest": _access(context).get("image_manifest_digest"),
                 "sampling_manifest_digest": _access(context).get("sampling_manifest_digest"),
                 "ordered_collection_available": bool(_access(context).get("sampling_manifest_digest")),
                 "registry": _registry(context),
@@ -2069,7 +1740,6 @@ def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
                         f"expected {expected_templates}"
                     )
     updates = _write_artifacts(context, plan)
-    _write_artifacts(context, plan)
     versions = publish(
         context, "Plan", {"task_plan": updates["task_plan_path"]},
         ("Dataset", "PlanningConfig", "TemplateConfig"),
@@ -2170,7 +1840,6 @@ def _planning_description(context: dict[str, Any]) -> dict[str, Any]:
         "executable_leaf_count": sum(
             len(item.leaf_task_ids) for item in plan.scenarios.values() if not item.exclusion_reason
         ),
-        "evidence_manifest_path": plan.evidence_manifest_path,
         "benchmark_brief": _benchmark_brief(context),
         "feedback": context.get("planning_feedback", {}),
     }

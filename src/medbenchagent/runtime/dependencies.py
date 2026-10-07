@@ -14,7 +14,7 @@ CONTRACT_VERSION = "agent-runtime"
 
 
 def artifact_key(context, kind):
-    from medbenchagent.workflow.dependencies import DATASET_KINDS
+    from medbenchagent.workflow.contracts import DATASET_KINDS
     if kind.startswith("dataset/"):
         return kind
     dataset = context.get("dataset_scope")
@@ -87,10 +87,9 @@ def require(context, *kinds):
     return {kind: check(artifact_key(context, kind)) for kind in kinds}
 
 
-def publish(context, kind, references, dependencies=None):
+def publish(context, kind, references, dependencies=()):
     """Append a version; replay of the same operation and inputs returns that version."""
-    from medbenchagent.workflow.dependencies import dependencies_for
-    kinds = dependencies_for(kind) if dependencies is None else dependencies
+    kinds = dependencies
     kinds = tuple(artifact_key(context, k) for k in kinds)
     kind = artifact_key(context, kind)
     require(context, *kinds)

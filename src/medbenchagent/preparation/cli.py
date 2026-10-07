@@ -1,121 +1,40 @@
-"""Worker-side preparation CLI backed by the canonical host models."""
-
-from __future__ import annotations
-
+"""Inspect canonical schemas or run the same read-only checks as Host."""
 import argparse
 import json
-import sys
 from pathlib import Path
-from typing import Any
-
-from medbenchagent.runtime.run_artifacts import atomic_write_json
-
-from .contracts import Stage
-from .assembly import validate_stage_outputs
-from .validation import (
-    validate_handoff,
-    validate_prepare_candidate,
-    validate_understand_candidate,
-)
+from .contracts import Stage, PreparationMapping, ImageConversionPlan, Submission
+from .validation import validate_stage
+from medbenchagent.data.models import CaseRecord, ImageEntry
 
 
-def _files(root: Path) -> dict[str, str]:
-    return {path.relative_to(root).as_posix(): str(path) for path in root.rglob("*") if path.is_file()}
-
-
-def _context(path: str | Path) -> dict[str, Any]:
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError("context must contain an object")
-    return value
-
-
-def _write_report(path: str | Path, result: Any) -> None:
-    payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
-    atomic_write_json(path, payload)
-
-
-def validate_handoff_command(args: argparse.Namespace) -> int:
-    candidate = Path(args.candidate).resolve()
-    context = _context(args.context)
-    result = validate_handoff(_files(candidate), state=context, replay=args.replay)
-    _write_report(args.report, result)
-    return 0 if result.status == "accepted" else 2
-
-
-def validate_understand_command(args: argparse.Namespace) -> int:
-    """Run the worker-visible, side-effect-free Understand validator."""
-    candidate = Path(args.candidate).resolve()
-    context = _context(args.context)
-    source_ids = [item.get("source_id") for item in context.get("sources", []) if isinstance(item, dict)]
-    result = validate_understand_candidate(_files(candidate), known_source_ids=source_ids)
-    _write_report(args.report, result)
-    return 0 if result.status == "accepted" else 2
-
-
-def validate_candidate_command(args: argparse.Namespace) -> int:
-    context = _context(args.context)
-    context["source_roots"] = {
-        item.get("source_id"): item.get("root")
-        for item in context.get("sources", [])
-        if isinstance(item, dict) and item.get("source_id") and item.get("root")
-    }
-    result = validate_prepare_candidate(
-        Path(args.candidate), state=context, persist=False,
-    )
-    _write_report(args.report, result)
-    return 0 if result.status == "accepted" else 2
-
-
-def validate_stage_command(args):
-    context = _context(args.context)
-    context["source_roots"] = {row["source_id"]: row["root"] for row in context["sources"]}
-    if args.stage is Stage.PREPARE_IMAGE:
-        accepted = Path(args.context).parent / "accepted"
-        context["text_root"] = str(accepted)
-        context["text_artifacts"] = {Path(row["path"]).name: {"path": row["path"], "digest": row["digest"]}
-            for row in context.get("files", []) if row.get("role") == "accepted"
-            and Path(row["path"]).name in {"cases.jsonl", "provenance.jsonl", "image_requests.jsonl", "sampling_manifest.jsonl", "split_manifest.jsonl"}}
-    result = validate_stage_outputs(args.candidate, args.stage, context)
-    _write_report(args.report, result)
-    return 0 if result.status == "accepted" else 2
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m medbenchagent.preparation.cli")
+def main(argv=None):
+    parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
-    handoff = sub.add_parser("validate-handoff", help="validate an understand candidate")
-    handoff.add_argument("--context", required=True)
-    handoff.add_argument("--candidate", required=True)
-    handoff.add_argument("--report", required=True)
-    handoff.add_argument("--replay", action="store_true")
-    handoff.set_defaults(function=validate_handoff_command)
-    understand = sub.add_parser("validate-understand", help="validate worker-visible Understand invariants")
-    understand.add_argument("--context", required=True)
-    understand.add_argument("--candidate", required=True)
-    understand.add_argument("--report", required=True)
-    understand.set_defaults(function=validate_understand_command)
-    candidate = sub.add_parser("validate-candidate", help="validate a prepare candidate")
-    candidate.add_argument("--context", required=True)
-    candidate.add_argument("--candidate", required=True)
-    candidate.add_argument("--report", required=True)
-    candidate.set_defaults(function=validate_candidate_command)
-    for stage in (Stage.PREPARE_TEXT, Stage.PREPARE_IMAGE):
-        command = sub.add_parser(f"validate-{stage.value.replace('_', '-')}")
-        command.add_argument("--context", required=True)
-        command.add_argument("--candidate", required=True)
-        command.add_argument("--report", required=True)
-        command.set_defaults(function=validate_stage_command, stage=stage)
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    try:
-        parsed = build_parser().parse_args(argv)
-        return int(parsed.function(parsed))
-    except (ValueError, OSError, json.JSONDecodeError) as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+    schema = sub.add_parser("schema")
+    schema.add_argument("name", choices=["mapping", "conversion", "case", "image", "submission"])
+    check = sub.add_parser("validate")
+    check.add_argument("--request", default="request.json")
+    check.add_argument("--candidate", default="work/outputs")
+    args = parser.parse_args(argv)
+    if args.command == "schema":
+        model = {"mapping": PreparationMapping, "conversion": ImageConversionPlan, "case": CaseRecord,
+                 "image": ImageEntry, "submission": Submission}[args.name]
+        print(json.dumps(model.model_json_schema(), ensure_ascii=False))
+        return 0
+    request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+    context = request["context"]
+    # Paths in context are worker-relative, including in Docker.
+    refs = {key: {"name": key, "path": value, "digest": __import__("hashlib").sha256(Path(value).read_bytes()).hexdigest()} for key, value in context["inputs"].items()}
+    state = {"source_roots": context["source_roots"]}
+    if refs:
+        state["accepted_handoff"] = {"dataset_id": context["dataset_id"], "source_snapshot_digest": request["source_snapshot_digest"],
+            "mapping": refs["mapping.json"], "image_conversion_plan": refs["image_conversion_plan.json"], "digest": request["input_digest"]}
+    if request["stage"] == "prepare_image":
+        state["text_root"] = str(Path(context["inputs"]["cases.jsonl"]).parent)
+        state["text_artifacts"] = {name: ref for name, ref in refs.items() if name in {"cases.jsonl", "metadata.json"}}
+    result = validate_stage(args.candidate, Stage(request["stage"]), state)
+    print(result.model_dump_json(indent=2))
+    return 0 if result.status == "accepted" else 2
 
 
 if __name__ == "__main__":

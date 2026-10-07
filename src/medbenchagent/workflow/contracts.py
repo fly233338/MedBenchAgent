@@ -26,3 +26,20 @@ class ProcessDatasetArguments(NoArguments):
     notes: str = ""
 
 
+
+
+DATASET_KINDS = frozenset(
+    {
+        "Dataset",
+        "DatasetProfile",
+        "DatasetCard",
+        "DatasetCandidates",
+        "DatasetSelection",
+        "Plan",
+        "PlanningDelegation",
+        "Generation",
+        "Allocation",
+        "Delivery",
+        "PreparedCandidates",
+    }
+)

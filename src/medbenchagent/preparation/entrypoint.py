@@ -107,7 +107,7 @@ def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
         "preparation_workspace": str(workspace), "preparation_status": status,
         "source_snapshot_digest": source_digest, "user_decisions": decisions,
         **{key: outcome[key] for key in (
-            "publication", "accepted_handoff_ref", "pending_questions", "diagnostics",
+            "publication", "pending_questions", "diagnostics",
         ) if key in outcome},
     }
     if status == "complete":
@@ -132,3 +132,47 @@ def run_preparation_agent(context):
         outcome = {"status": "blocked", "summary": str(exc), "updates": {}}
     event("agent_finished", status=outcome["status"], diagnostic=outcome["summary"])
     return outcome
+
+
+def _coding_worker_identity() -> dict[str, str]:
+    import os
+    import subprocess
+    from medbenchagent.runtime.dataset_runtime import WORKER_STARTUP_TIMEOUT_SECONDS
+    settings = get_settings().data_processing
+    venv = Path(settings.get("coding_worker_venv", ".venv-coding")).resolve()
+    executable = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    requirements = Path(__file__).resolve().parents[3] / "config" / "coding-worker.requirements.txt"
+    identity = {
+        "venv": str(venv),
+        "python": str(executable),
+        "requirements_digest": digest_file(requirements) if requirements.is_file() else "",
+    }
+    if executable.is_file():
+        try:
+            probe = subprocess.run(
+                [str(executable), "-c", "import importlib.metadata,sys; print(sys.version); print(importlib.metadata.version('openhands-sdk'))"],
+                capture_output=True, text=True, timeout=WORKER_STARTUP_TIMEOUT_SECONDS, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            probe = None
+        if probe is not None and probe.returncode == 0:
+            lines = probe.stdout.splitlines()
+            identity["python_version"] = lines[0] if lines else ""
+            identity["openhands_version"] = lines[1] if len(lines) > 1 else ""
+    return identity
+
+
+def initialize_preparation(context, sources, dataset_id):
+    from medbenchagent.data.dataset_catalog import validate_dataset_id
+    from medbenchagent.data.execution import select_backend
+    validate_dataset_id(dataset_id)
+    sources = [Source.model_validate(source) for source in sources]
+    bundle = (get_settings().paths.prepared_datasets_root / dataset_id).resolve()
+    if any(bundle.is_relative_to(Path(source.root).resolve()) for source in sources):
+        raise ValueError("Prepared output must be outside source roots")
+    runtime = dict(context.get("execution_runtime") or select_backend(get_settings().data_processing))
+    if runtime["backend"] == "local":
+        runtime["coding_worker"] = _coding_worker_identity()
+    return dict(context, sources=[source.model_dump() for source in sources], dataset_id=dataset_id,
+                dataset_scope=dataset_id, agent_role="DataProcessingAgent", execution_runtime=runtime,
+                bundle_root=str(bundle), source_scope=None)

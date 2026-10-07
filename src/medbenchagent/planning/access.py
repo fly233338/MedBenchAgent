@@ -13,11 +13,11 @@ class DatasetAccessReceipt(BaseModel):
     dataset_id: str = Field(min_length=1)
     revision: str = Field(min_length=1)
     cases_path: str = Field(min_length=1)
-    asset_manifest_path: str = Field(min_length=1)
+    image_manifest_path: str = Field(min_length=1)
     profile_path: str = Field(min_length=1)
     duckdb_path: str = Field(min_length=1)
     annotation_digest: str = Field(min_length=1)
-    asset_manifest_digest: str = Field(min_length=1)
+    image_manifest_digest: str = Field(min_length=1)
     profile_digest: str = Field(min_length=1)
     duckdb_digest: str = Field(min_length=1)
     case_count: int = Field(ge=0)
@@ -32,8 +32,6 @@ class DatasetAccessReceipt(BaseModel):
     source_root: str | None = None
     source_roots: dict[str, str] = Field(default_factory=dict)
     bundle_root: str | None = None
-    presentation_manifest_path: str | None = Field(default=None, min_length=1)
-    presentation_manifest_digest: str | None = Field(default=None, min_length=1)
     split_manifest_path: str | None = Field(default=None, min_length=1)
     split_manifest_digest: str | None = Field(default=None, min_length=1)
     sampling_manifest_path: str | None = Field(default=None, min_length=1)
@@ -41,7 +39,7 @@ class DatasetAccessReceipt(BaseModel):
 
     @model_validator(mode="after")
     def manifest_pairs(self):
-        for name in ("presentation_manifest", "split_manifest", "sampling_manifest"):
+        for name in ("split_manifest", "sampling_manifest"):
             path = getattr(self, f"{name}_path")
             digest = getattr(self, f"{name}_digest")
             if (path is None) != (digest is None):

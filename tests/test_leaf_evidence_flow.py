@@ -24,8 +24,8 @@ def _plan(tmp_path, *, phase="leaves", facts=None):
         scenarios={scenario.scenario_id: scenario},
         current_scenario_id=scenario.scenario_id,
         pending_scenario_ids=[scenario.scenario_id],
-        dataset_facts=facts or {},
     )
+    (Path(tmp_path) / "fixture_facts.json").write_text(json.dumps(facts or {}), encoding="utf-8")
     path = Path(tmp_path) / "task_plan.json"
     path.write_text(plan.model_dump_json(), encoding="utf-8")
     return plan, path
@@ -76,6 +76,7 @@ def test_scenario_context_prioritizes_input_and_related_evidence(tmp_path, monke
     context = {
         "operation_directory": str(tmp_path),
         "task_plan_path": str(path),
+        "dataset_facts": json.loads((tmp_path / "fixture_facts.json").read_text(encoding="utf-8")),
         "dataset_access_manifest": {"schema_version": "annotation"},
         "planning_read_state": {},
     }
@@ -103,15 +104,7 @@ def test_catalog_returns_text_values_samples_and_suggestions(tmp_path, monkeypat
         ],
         "names": ["classification", "ultrasound_bmode_image"],
     }
-    evidence_dir = Path(tmp_path) / "evidence"
-    evidence_dir.mkdir()
-    catalog_path = evidence_dir / "catalog.json"
-    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
-    manifest_path = evidence_dir / "manifest.json"
-    manifest_path.write_text(json.dumps({"artifacts": {"catalog": str(catalog_path)}}), encoding="utf-8")
     plan, path = _plan(tmp_path)
-    plan.evidence_manifest_path = str(manifest_path)
-    path.write_text(plan.model_dump_json(), encoding="utf-8")
 
     class FakeIndex:
         def __init__(self, _access):
@@ -135,6 +128,7 @@ def test_catalog_returns_text_values_samples_and_suggestions(tmp_path, monkeypat
         "task_plan_path": str(path),
         "dataset_access_manifest": {"schema_version": "annotation"},
         "planning_read_state": {},
+        "dataset_facts": {"evidence_catalog": {row["name"]: row for row in catalog["entries"]}},
     }
 
     first = task_planning.read_evidence_catalog(context, names=["classification", "clasification"])
@@ -159,6 +153,7 @@ def test_bad_leaf_contains_repairable_diagnostics(tmp_path):
     context = {
         "operation_directory": str(tmp_path),
         "task_plan_path": str(path),
+        "dataset_facts": json.loads((tmp_path / "fixture_facts.json").read_text(encoding="utf-8")),
         "dataset_access_manifest": {"schema_version": "annotation"},
     }
     leaf = {
@@ -203,6 +198,7 @@ def test_leaf_context_drops_cache_when_scenario_binding_changes(tmp_path):
     context = {
         "operation_directory": str(tmp_path),
         "task_plan_path": str(path),
+        "dataset_facts": json.loads((tmp_path / "fixture_facts.json").read_text(encoding="utf-8")),
         "dataset_access_manifest": {"schema_version": "annotation", "revision": "r1"},
         "planning_evidence_cache": {
             "binding": {"dataset_id": "dataset", "revision": "r1", "scenario_id": "scenario-1"},

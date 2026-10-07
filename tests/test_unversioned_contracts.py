@@ -3,7 +3,7 @@ import json
 import pytest
 
 from medbenchagent.data.bundle_catalog import verify_bundle
-from medbenchagent.data.query import DatasetQuery
+from medbenchagent.data.index import DatasetIndex
 
 
 def test_old_contract_markers_are_rejected(tmp_path):
@@ -17,5 +17,5 @@ def test_old_contract_markers_are_rejected(tmp_path):
         verify_bundle(bundle)
 
     with pytest.raises(ValueError, match="Only annotation is supported"):
-        DatasetQuery({"schema_version": "annotation.v5"})
+        DatasetIndex({"schema_version": "annotation.v5"})
 

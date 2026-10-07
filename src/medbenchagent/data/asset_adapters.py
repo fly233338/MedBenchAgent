@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from PIL import Image
+from .sources import digest_file
 from typing import Any
 
 import numpy as np
+import gzip
+import struct
 
 from medbenchagent.data.models import AssetEntry, PresentationSpec
 
@@ -42,17 +46,15 @@ class AssetAdapter:
         loaded = self.load(asset_spec, source_root=source_root)
         if presentation_spec.mode == "native":
             from PIL import Image
-            from .image_conversion import convert_image
             data = loaded.data
-            if not isinstance(data, Image.Image) or presentation_spec.window:
-                if presentation_spec.window:
-                    low, high = presentation_spec.window
-                    policy = {"encoding": "window", "low": low, "high": high,
-                              "invert": loaded.metadata.get("invert", False)}
-                else:
-                    policy = {"encoding": "preserve"}
-                data, _, _ = convert_image(asset_spec.source_path, policy,
-                    decoded=(data, asset_spec.format, loaded.metadata.get("window"), loaded.metadata.get("invert", False)))
+            if presentation_spec.window:
+                low, high = presentation_spec.window
+                policy = {"encoding": "window", "low": low, "high": high,
+                          "invert": loaded.metadata.get("invert", False)}
+            else:
+                policy = {"encoding": "preserve"}
+            data, _, _ = _render_pixels(policy=policy,
+                decoded=(data, asset_spec.format, loaded.metadata.get("window"), loaded.metadata.get("invert", False)))
             if presentation_spec.crop:
                 x0, y0, x1, y1 = presentation_spec.crop
                 width, height = data.size
@@ -71,13 +73,12 @@ class AssetAdapter:
         indices = presentation_spec.indices or [data.shape[axis] // 2]
         if any(index < 0 or index >= data.shape[axis] for index in indices):
             raise AssetAdapterError("Presentation slice index is outside the volume")
-        from .image_conversion import convert_image
         if presentation_spec.axis is None or not presentation_spec.indices:
             raise AssetAdapterError("Volume presentation requires explicit axis and slice indices")
         policy = ({"encoding": "window", "low": presentation_spec.window[0], "high": presentation_spec.window[1],
                    "invert": loaded.metadata.get("invert", False)}
                   if presentation_spec.window else {"encoding": "preserve"})
-        slices = [np.asarray(convert_image(asset_spec.source_path, policy,
+        slices = [np.asarray(_render_pixels(policy=policy,
                   decoded=(np.take(data, index, axis=axis), asset_spec.format, None,
                            loaded.metadata.get("invert", False)))[0]) for index in indices]
         if presentation_spec.crop is not None:
@@ -103,85 +104,9 @@ class AssetAdapter:
             return LoadedAsset(np.stack(slices), {**loaded.metadata, "presentation": presentation_spec.model_dump()})
         return LoadedAsset(np.concatenate(slices, axis=1), {**loaded.metadata, "presentation": presentation_spec.model_dump()})
 
-    def presentation_digest(self, asset_spec: AssetEntry, presentation_spec: PresentationSpec) -> str:
-        import hashlib
-        import json
-        payload = json.dumps({"asset": asset_spec.file_digest, "spec": presentation_spec.model_dump()},
-                             sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(payload).hexdigest()
-
-    def present_to_path(self, asset_spec: AssetEntry, presentation_spec: PresentationSpec, output: str | Path, *, source_root: str | Path | None = None) -> dict:
-        from medbenchagent.data.sources import digest_file
-        output = Path(output)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        loaded = self.present(asset_spec, presentation_spec, source_root=source_root)
-        data = loaded.data
-        if presentation_spec.mode == "slices" and np.asarray(data).ndim == 3:
-            if np.asarray(data).shape[0] != 1:
-                raise AssetAdapterError("Slice presentations with multiple indices must be materialized with present_to_paths")
-            data = np.asarray(data)[0]
-        try:
-            from PIL import Image
-            image = data if isinstance(data, Image.Image) else Image.fromarray(np.asarray(data))
-            image.save(output, format="PNG", compress_level=9)
-        except Exception as exc:
-            raise AssetAdapterError(f"Cannot persist presentation: {exc}") from exc
-        return {"asset_id": asset_spec.asset_id, "presentation_id": self.presentation_digest(asset_spec, presentation_spec),
-                "mode": presentation_spec.mode, "axis": presentation_spec.axis, "indices": presentation_spec.indices,
-                "window": presentation_spec.window, "resize": presentation_spec.resize, "crop": presentation_spec.crop,
-                "input_digest": asset_spec.file_digest, "output_digest": digest_file(output),
-                "path": output.as_posix()}
-
-    def present_to_paths(
-        self,
-        asset_spec: AssetEntry,
-        presentation_spec: PresentationSpec,
-        output_directory: str | Path,
-        *,
-        source_root: str | Path | None = None,
-        view_ids: list[str] | None = None,
-        panel_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Materialize ordered slice views as independent PNG records."""
-        from PIL import Image
-        from medbenchagent.data.sources import digest_file
-
-        if presentation_spec.mode != "slices":
-            raise AssetAdapterError("present_to_paths requires slices mode")
-        output_directory = Path(output_directory)
-        output_directory.mkdir(parents=True, exist_ok=True)
-        loaded = self.present(asset_spec, presentation_spec, source_root=source_root)
-        data = np.asarray(loaded.data)
-        if data.ndim != 3:
-            raise AssetAdapterError("Slice materialization requires one or more 2D slices")
-        if view_ids is not None and len(view_ids) != data.shape[0]:
-            raise AssetAdapterError("view_ids length must match slice count")
-        records = []
-        for order, slice_data in enumerate(data):
-            output = output_directory / f"{asset_spec.asset_id}_{order:04d}.png"
-            Image.fromarray(np.asarray(slice_data)).save(output, format="PNG", compress_level=9)
-            records.append({
-                "schema_version": "presentation-record",
-                "presentation_id": self.presentation_digest(asset_spec, presentation_spec) + f":{order}",
-                "case_id": str(asset_spec.metadata.get("case_id", asset_spec.asset_id)),
-                "asset_id": asset_spec.asset_id,
-                "path": output.as_posix(),
-                "input_digest": asset_spec.file_digest,
-                "output_digest": digest_file(output),
-                "mode": presentation_spec.mode,
-                "view_id": view_ids[order] if view_ids else None,
-                "panel_id": panel_id,
-                "axis": presentation_spec.axis,
-                "index": presentation_spec.indices[order] if presentation_spec.indices else order,
-                "order": order,
-                "metadata": {"presentation": presentation_spec.model_dump(mode="json")},
-            })
-        return records
-
-
 class ImageAdapter(AssetAdapter):
     kind = "image"
-    formats = frozenset({"png", "jpeg", "jpg", "dicom"})
+    formats = frozenset({"png", "jpeg", "jpg", "tiff", "bmp", "webp", "gif"})
 
     def inspect(self, asset_spec: AssetEntry, *, source_root=None) -> dict[str, Any]:
         from PIL import Image
@@ -190,10 +115,9 @@ class ImageAdapter(AssetAdapter):
             return {"kind": "image", "format": image.format, "width": image.width, "height": image.height}
 
     def load(self, asset_spec: AssetEntry, *, source_root=None) -> LoadedAsset:
-        from PIL import Image
-        with Image.open(_asset_path(asset_spec, source_root)) as image:
-            image.load()
-            return LoadedAsset(image.copy(), self.inspect(asset_spec, source_root=source_root))
+        from .readers import RasterReader
+        pixels, _, _, _ = RasterReader().read_pixels(_asset_path(asset_spec, source_root))
+        return LoadedAsset(pixels, self.inspect(asset_spec, source_root=source_root))
 
 
 class DicomImageAdapter(AssetAdapter):
@@ -356,18 +280,208 @@ def adapter_for(asset: AssetEntry) -> AssetAdapter:
     raise AssetAdapterError(f"No adapter for {asset.kind}/{asset.format}")
 
 
-def record_presentation(path: str | Path, record: dict[str, Any]) -> None:
-    """Append a deterministic presentation record to a JSONL manifest."""
-    import json
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with destination.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-
-
 def _asset_path(asset: AssetEntry, source_root: str | Path | None) -> Path:
     path = Path(asset.source_path)
     if path.is_absolute():
         raise AssetAdapterError("Asset source_path must be source-relative")
     return (Path(source_root).resolve() / path).resolve() if source_root is not None else path
 
+
+
+WSI_SUFFIXES = {".bif", ".mrxs", ".ndpi", ".scn", ".svs"}
+NIFTI_SUFFIXES = {".nii"}
+ITK_SUFFIXES = {".mha", ".mhd", ".nhdr", ".nrrd"}
+RASTER_FORMATS = {"BMP", "JPEG", "PNG", "TIFF", "WEBP"}
+
+
+class ConversionError(RuntimeError):
+    """Raised when an image cannot be converted safely."""
+
+
+class UnsupportedMedicalImage(ConversionError):
+    """Raised when an image is intentionally outside this workflow."""
+
+
+def _read_header(path: Path, size: int = 560) -> bytes:
+    with path.open("rb") as source:
+        prefix = source.read(2)
+        source.seek(0)
+        if prefix == b"\x1f\x8b":
+            with gzip.GzipFile(fileobj=source) as compressed:
+                return compressed.read(size)
+        return source.read(size)
+
+
+def _looks_like_nifti(path: Path) -> bool:
+    try:
+        header = _read_header(path)
+    except (OSError, EOFError):
+        return False
+    if len(header) >= 348:
+        sizes = {struct.unpack("<I", header[:4])[0], struct.unpack(">I", header[:4])[0]}
+        if 348 in sizes and header[344:348] in {b"n+1\x00", b"ni1\x00"}:
+            return True
+    if len(header) >= 12:
+        sizes = {struct.unpack("<I", header[:4])[0], struct.unpack(">I", header[:4])[0]}
+        if 540 in sizes and header[4:8] in {b"n+2\x00", b"ni2\x00"}:
+            return True
+    return False
+
+
+def _looks_like_itk(path: Path) -> bool:
+    try:
+        header = _read_header(path, 256)
+    except (OSError, EOFError):
+        return False
+    return header.startswith(b"NRRD000") or b"ObjectType = Image" in header
+
+
+def _looks_like_dicom(path: Path) -> bool:
+    try:
+        from pydicom import dcmread
+        from pydicom.misc import is_dicom
+
+        if is_dicom(path):
+            return True
+        dataset = dcmread(
+            path,
+            stop_before_pixels=True,
+            force=True,
+            specific_tags=["Rows", "Columns", "SOPClassUID", "PhotometricInterpretation"],
+        )
+        return bool(
+            getattr(dataset, "Rows", None)
+            and getattr(dataset, "Columns", None)
+            and getattr(dataset, "SOPClassUID", None)
+        )
+    except Exception:
+        return False
+
+
+def detect_format(path: Path) -> str | None:
+    """Detect a supported medical image format by suffix and file content."""
+    lower_name = path.name.lower()
+    if path.suffix.lower() in WSI_SUFFIXES:
+        raise UnsupportedMedicalImage(f"whole-slide image is unsupported: {path.name}")
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            if image.format in RASTER_FORMATS:
+                return f"raster:{image.format.lower()}"
+    except (OSError, ValueError):
+        pass
+    if lower_name.endswith(".nii.gz") or path.suffix.lower() in NIFTI_SUFFIXES:
+        return "nifti"
+    if path.suffix.lower() in ITK_SUFFIXES:
+        return "itk"
+    if _looks_like_nifti(path):
+        return "nifti"
+    if _looks_like_itk(path):
+        return "itk"
+    if _looks_like_dicom(path):
+        return "dicom"
+    return None
+
+
+
+def _pixel_info(pixels, detected, window, inverse):
+    import numpy as np
+    from PIL import Image
+    if isinstance(pixels, Image.Image):
+        size, mode = pixels.size, pixels.mode
+        safe = mode in {"1", "L", "LA", "RGB", "RGBA", "P", "I;16"}
+    else:
+        size, mode = (pixels.shape[1], pixels.shape[0]), str(pixels.dtype)
+        safe = pixels.dtype in (np.dtype("uint8"), np.dtype("uint16")) and not inverse
+    return {
+        "format": detected,
+        "width": size[0],
+        "height": size[1],
+        "mode": mode,
+        "copy": detected in {"raster:png", "raster:jpeg"},
+        "preserve_supported": safe,
+        "window": window,
+        "invert": inverse,
+    }
+
+
+
+def _render_pixels(*, decoded, policy):
+    """Preserve representable pixels or apply an explicitly selected linear display window."""
+    import numpy as np
+    from PIL import Image
+
+    policy = policy or {"encoding": "preserve"}
+    pixels, detected, window, inverse = decoded
+    info = _pixel_info(pixels, detected, window, inverse)
+    if policy["encoding"] == "preserve":
+        if not info["preserve_supported"]:
+            raise ConversionError(
+                "A documented display window or explicit user decision is required"
+            )
+        image = pixels if isinstance(pixels, Image.Image) else Image.fromarray(pixels)
+    elif policy["encoding"] == "window":
+        low, high = policy["low"], policy["high"]
+        if not np.isfinite([low, high]).all() or low >= high:
+            raise ConversionError("Display window requires finite low < high")
+        values = np.asarray(pixels, dtype=np.float64)
+        if values.ndim != 2 or not np.isfinite(values).all():
+            raise ConversionError("Windowing requires finite scalar 2D pixels")
+        rendered = np.rint(np.clip((values - low) / (high - low), 0, 1) * 255).astype(np.uint8)
+        if policy.get("invert", False):
+            rendered = 255 - rendered
+        image = Image.fromarray(rendered)
+    else:
+        raise ConversionError("Unknown image encoding")
+    return image, detected, policy["encoding"]
+
+
+
+
+SUPPORTED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
+
+def contained_path(root, relative):
+    value = PurePosixPath(relative.replace("\\", "/"))
+    if value.is_absolute() or ".." in value.parts or any(":" in part for part in value.parts):
+        raise ValueError(f"Unsafe presentation path: {relative}")
+    root = Path(root).resolve()
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError(f"Presentation escapes root: {relative}")
+    return path
+
+
+def verify_image(path, expected_digest=None):
+    path = Path(path)
+    if expected_digest and digest_file(path) != expected_digest:
+        raise ValueError(f"Presentation digest mismatch: {path}")
+    with Image.open(path) as image:
+        image.load()
+        if image.format not in SUPPORTED_IMAGE_FORMATS or getattr(image, "n_frames", 1) != 1:
+            raise ValueError(f"Unsupported model image: {path}")
+        return {"format": image.format, "width": image.width, "height": image.height}
+
+
+def materialize_image(asset, spec, destination, *, source_root):
+    """Preserve ordinary native images; render medical sources using shared adapters."""
+    import shutil
+
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source = contained_path(source_root, asset.source_path)
+    native = asset.format.lower() in {"jpg", "jpeg", "png", "webp", "gif"}
+    if native and spec.mode == "native" and not any((spec.window, spec.resize, spec.crop)):
+        verify_image(source, asset.file_digest)
+        shutil.copyfile(source, destination)
+    else:
+        if destination.suffix.lower() != ".png":
+            raise ValueError("Derived medical presentations require PNG")
+        pixels = adapter_for(asset).present(asset, spec, source_root=source_root).data
+        if spec.mode == "slices":
+            if np.asarray(pixels).shape[0] != 1:
+                raise ValueError("Each image mapping must select one slice, or an explicit montage")
+            pixels = pixels[0]
+        image = pixels if isinstance(pixels, Image.Image) else Image.fromarray(np.asarray(pixels))
+        image.save(destination, format="PNG")
+    return {**verify_image(destination), "output_digest": digest_file(destination)}

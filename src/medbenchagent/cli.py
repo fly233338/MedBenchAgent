@@ -30,8 +30,6 @@ def _parser() -> argparse.ArgumentParser:
     register = commands.add_parser("register", help="Register a prepared Dataset Bundle")
     register.add_argument("--dataset-id", required=True)
     register.add_argument("--bundle", required=True)
-    refresh = commands.add_parser("refresh-card", help="Refresh dataset metadata")
-    refresh.add_argument("--dataset-id", required=True)
     return parser
 
 
@@ -93,11 +91,6 @@ def run_command(args: argparse.Namespace) -> int:
         from medbenchagent.data.dataset_catalog import register_dataset
 
         print(json.dumps(register_dataset(args.dataset_id, args.bundle), ensure_ascii=False, indent=2))
-        return 0
-    if args.command == "refresh-card":
-        from medbenchagent.data.dataset_catalog import refresh_card
-
-        print(json.dumps(refresh_card(args.dataset_id), ensure_ascii=False, indent=2))
         return 0
     if args.command == "create":
         sessions.create_experiment(args.experiment, template=args.config)

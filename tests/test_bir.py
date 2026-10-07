@@ -51,11 +51,11 @@ def test_task_plan_is_only_planning_authority(tmp_path):
     assert Path(result["task_plan_path"]).is_relative_to(Path(record["bir_path"]))
     assert list((Path(record["bir_path"]) / "datasets/demo/planning").glob("*.json")) == [Path(result["task_plan_path"])]
     (operation / "task_plan.json").write_text("corrupted", encoding="utf-8")
-    (operation / "leaf_tasks.json").unlink()
+    assert not (operation / "leaf_tasks.json").exists()
     recovered = task_planning._load_plan(context)
     assert recovered == plan
     task_planning._write_artifacts(context, recovered)
-    assert json.loads((operation / "leaf_tasks.json").read_text()) == {}
+    assert not (operation / "leaf_tasks.json").exists()
 
 
 def test_bir_json_is_readable_and_failed_transaction_preserves_previous_file(tmp_path: Path):

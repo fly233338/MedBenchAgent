@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from medbenchagent.audit.task_items import audit_task_items
-from medbenchagent.data.manifests import PresentationRecord, SamplingManifest, SplitManifest, load_manifest, verify_manifest_digest
+from medbenchagent.data.manifests import SamplingManifest, SplitManifest, load_manifest, verify_manifest_digest
 from medbenchagent.planning.task_space import TaskPlanState
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
@@ -97,8 +97,8 @@ def _limit_reasons(items: Iterable[dict[str, Any]], *, max_tasks_per_image: int 
 
 def _access_payload(access: dict[str, Any]) -> dict[str, Any]:
     keys = (
-        "dataset_id", "revision", "annotation_digest", "asset_manifest_digest", "profile_digest",
-        "duckdb_digest", "mapping_digest", "dataset_card_digest", "presentation_manifest_digest",
+        "dataset_id", "revision", "annotation_digest", "image_manifest_digest", "profile_digest",
+        "duckdb_digest", "mapping_digest", "dataset_card_digest", "image_manifest_digest",
         "split_manifest_digest", "sampling_manifest_digest",
     )
     return {key: access.get(key) for key in keys if access.get(key) is not None}
@@ -110,7 +110,7 @@ def _digest_payload(value: Any) -> str:
 
 def _verify_dataset_manifests(access: dict[str, Any]) -> dict[str, Any]:
     references = {}
-    for name in ("presentation", "split", "sampling"):
+    for name in ("split", "sampling"):
         path = access.get(f"{name}_manifest_path")
         digest = access.get(f"{name}_manifest_digest")
         if path or digest:
@@ -118,7 +118,6 @@ def _verify_dataset_manifests(access: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"{name} manifest is missing")
             verify_manifest_digest(path, digest)
             model = {
-                "presentation": PresentationRecord,
                 "split": SplitManifest,
                 "sampling": SamplingManifest,
             }[name]
@@ -148,12 +147,6 @@ def _validate_item_manifest_refs(item: dict[str, Any], resolver_context) -> list
                 errors.append("sampling_order_mismatch")
     elif sampling is not None and item.get("view_ids"):
         errors.append("missing_sampling_unit")
-    if item.get("view_ids"):
-        presentation = resolver_context.manifests.get("presentation") if resolver_context else None
-        records = presentation if isinstance(presentation, list) else ([presentation] if presentation is not None else [])
-        available = {record.view_id for record in records if record.view_id}
-        if not set(item["view_ids"]) <= available:
-            errors.append("unknown_presentation_view")
     return errors
 
 
@@ -179,7 +172,7 @@ def _manifest(context: dict[str, Any], plans: dict[str, TaskPlanState], allocati
             "item_count": len(dataset_items),
             "dataset_access_digest": _digest_payload(access_receipts[dataset_id]),
             "prepared_annotation_digest": access.get("annotation_digest"),
-            "presentation_manifest_digest": access.get("presentation_manifest_digest"),
+            "image_manifest_digest": access.get("image_manifest_digest"),
             "split_manifest_digest": access.get("split_manifest_digest"),
             "sampling_manifest_digest": access.get("sampling_manifest_digest"),
         }
@@ -231,8 +224,8 @@ def _manifest(context: dict[str, Any], plans: dict[str, TaskPlanState], allocati
         "prepared_annotation_digest": {
             dataset_id: value.get("annotation_digest") for dataset_id, value in access_receipts.items()
         },
-        "presentation_manifest_digest": {
-            dataset_id: value.get("presentation_manifest_digest") for dataset_id, value in access_receipts.items()
+        "image_manifest_digest": {
+            dataset_id: value.get("image_manifest_digest") for dataset_id, value in access_receipts.items()
         },
         "split_manifest_digest": {
             dataset_id: value.get("split_manifest_digest") for dataset_id, value in access_receipts.items()

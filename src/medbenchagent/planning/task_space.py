@@ -302,10 +302,8 @@ class TaskPlanState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     schema_version: str = "task-plan"
     dataset: dict[str, Any]
-    dataset_facts: dict[str, Any] = Field(default_factory=dict)
     blueprint: dict[str, Any] = Field(default_factory=dict)
     access_path: str | None = None
-    evidence_manifest_path: str | None = None
     axis_decisions: dict[str, list[AxisValueDecision]] = Field(default_factory=dict)
     scenarios: dict[str, TaskScenario] = Field(default_factory=dict)
     leaf_tasks: dict[str, LeafTask] = Field(default_factory=dict)

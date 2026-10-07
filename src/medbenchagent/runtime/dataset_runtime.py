@@ -151,14 +151,14 @@ class OpenHandsDatasetRuntime:
             deployment.update(
                 base_url=_container_url(request.base_url),
                 construction_events_path="/workspace/work/logs/coding_events.jsonl",
-                context_path="/workspace/work/inputs/context.json",
+                context_path="/workspace/request.json",
                 prompt_path="/workspace/prompt.md",
             )
         else:
             deployment.update(
                 base_url=request.base_url,
                 construction_events_path=str(workspace / "work" / "logs" / "coding_events.jsonl"),
-                context_path=str((workspace / "work" / "inputs" / "context.json").resolve()),
+                context_path=str((workspace / "request.json").resolve()),
                 prompt_path=str((workspace / "prompt.md").resolve()),
             )
         request_path = workspace / "work" / "deployment.json"

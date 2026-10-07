@@ -1,11 +1,6 @@
-Current stage: prepare_image
-
-Implement accepted image_conversion_plan.json for accepted image_requests.jsonl.
-Do not change Case semantics, requests, paths, identities or sampling order. Read accepted Text files in work/inputs/accepted/.
-Use data.presentation.materialize_presentation and shared Asset adapters. Preserve native JPEG/PNG bytes when no transform is needed;
-medical sources, slices and montages produce real PNG. Missing window/slice semantics require clarification.
-Write asset_manifest.jsonl, presentation_manifest.jsonl, images/ and mask_features.jsonl (empty if no masks).
-Mask feature rows contain case_id, evidence_id and mask (MaskFeatureSet); use data.mask_geometry and bind source digest.
-Reference masks never become model-visible images. Asset metadata must retain semantic_role and input_visibility.
-Scripts, sample checks and execution logs belong in work/. Validate outputs before submission.
-Run python -m medbenchagent.preparation.cli validate-prepare-image --context work/inputs/context.json --candidate work/outputs --report work/validation.json.
+Consume accepted mapping, conversion plan and cases.jsonl. Do not change Case semantics.
+For each non-mask image locator referenced by Cases, prepare that exact path under work/outputs/images/.
+Use data.asset_adapters.materialize_image: preserve ordinary JPEG/PNG bytes without transforms; medical displays use PNG.
+Write one image_manifest.jsonl with ImageEntry records keyed by final path, measured output digest/dimensions and bound source identity/digest.
+Do not emit asset/presentation/request/mask-feature sidecars. Cases already contain reference mask features.
+Use explicit conversion decisions; missing window or slice semantics requires clarification, not guessing. Validate actual outputs before submission.

@@ -23,11 +23,10 @@ from .contracts import (
     StageRequest,
     StageResult,
     ValidationResult,
-    STAGE_SPECS,
+    STAGE_OUTPUTS,
 )
 from .publisher import DatasetPublisher
-from .assembly import validate_stage_outputs, assemble_candidate
-from .validation import create_accepted_handoff, read_question_set, validate_handoff, validate_prepare_candidate
+from .validation import validate_stage, accept_mapping, package_dataset
 from .worker import OpenHandsWorker
 
 
@@ -62,7 +61,6 @@ class PreparationGraphState(TypedDict, total=False):
     pending_questions: list[dict[str, Any]]
     diagnostics: list[dict[str, Any]]
     accepted_handoff: dict[str, Any] | None
-    accepted_handoff_ref: str | None
     revision_basis_handoff: dict[str, Any] | None
     implementation_repair_root: str | None
     publication: dict[str, Any] | None
@@ -123,7 +121,7 @@ def _revise_mapping(state, issues):
         return {"status": "blocked", "diagnostics": issues, "validation_feedback": {"issues": issues}}
     return _fresh_attempt(
         state, status="running", stage=Stage.UNDERSTAND.value,
-        mapping_revision_cycles=cycle + 1, accepted_handoff=None, accepted_handoff_ref=None,
+        mapping_revision_cycles=cycle + 1, accepted_handoff=None,
         text_root="", text_artifacts={}, package_root="",
         revision_basis_handoff=previous_handoff,
         implementation_repair_root=previous_prepare_root,
@@ -133,17 +131,22 @@ def _revise_mapping(state, issues):
 
 
 def validate_understand_submission(outputs, state):
-    return validate_handoff(outputs, state=state, replay=True)
+    return validate_stage(Path(outputs["mapping.json"]).parent, Stage.UNDERSTAND, state)
 
 
 def validate_candidate_submission(outputs, state):
-    return validate_stage_outputs(Path(outputs["root"]), Stage(state["stage"]), state)
+    return validate_stage(Path(outputs["root"]), Stage(state["stage"]), state)
 
 
 def publish_preparation(state, result, validation):
-    return DatasetPublisher(state["bundle_root"]).publish(
-        Path(state["package_root"]), state, validation,
-    )
+    from medbenchagent.data.bundle_catalog import verify_bundle
+    publication = DatasetPublisher(state["bundle_root"]).publish(state["package_root"], state, validation)
+    verified = verify_bundle(publication["revision_path"])
+    access, card = verified["ready"]["access"], verified["card"]
+    return {**publication, "cases_path": access["cases_path"], "access_manifest": access,
+            "card_path": access["dataset_card_path"], "dataset_entry": {
+                "dataset_id": state["dataset_id"], "name": card["name"], "description": card["description"],
+                "available": True, **{key: access[key] for key in ("cases_path", "image_manifest_path", "profile_path", "dataset_card_path")}}}
 
 
 def resume_or_start(state):
@@ -157,8 +160,6 @@ def resume_or_start(state):
         current.update(_fresh_attempt(
             current, previous_attempt_root=current.get("attempt_workspace"), status="running",
         ))
-    if current.get("accepted_handoff_ref") and not current.get("accepted_handoff"):
-        current["accepted_handoff"] = json.loads(Path(current["accepted_handoff_ref"]).read_text(encoding="utf-8"))
     handoff = _handoff(current)
     if handoff and handoff.source_snapshot_digest != current["source_snapshot_digest"]:
         raise ValueError("Preparation source snapshot changed; start a new run")
@@ -210,26 +211,16 @@ def _run_stage(state, stage, worker):
     else:
         packet, _, tokens, execution_key = build_stage_context(stage, local, workspace)
         settings = get_settings().llm
-        handoff = _handoff(state) if stage is not Stage.UNDERSTAND else None
-        artifacts = {} if handoff is None else {
-            "source_report.json": handoff.source_report, "mapping.json": handoff.mapping,
-            "image_population.jsonl": handoff.population, "inspect_source.py": handoff.inspection_script,
-            "image_conversion_plan.json": handoff.image_conversion_plan,
-        }
-        if stage is Stage.PREPARE_IMAGE:
-            artifacts.update({name: ArtifactRef.model_validate(value, strict=False)
-                              for name, value in state.get("text_artifacts", {}).items()})
-        spec = STAGE_SPECS[stage.value]
         request = StageRequest(
             stage=stage, run_id=state["run_id"], dataset_id=state["dataset_id"],
             attempt=count, attempt_id=attempt_id,
             conversation_id=uuid.uuid5(uuid.NAMESPACE_URL, f"{state['run_id']}:{state['dataset_id']}:{attempt_id}").hex,
-            execution_key=execution_key, input_digest=packet.identity["input_digest"],
+            execution_key=execution_key, input_digest=input_digest,
             source_snapshot_digest=state["source_snapshot_digest"], workspace=str(workspace),
-            prompt_path=str(workspace / "prompt.md"), context_path=str(workspace / "work/inputs/context.json"),
+            prompt_path=str(workspace / "prompt.md"), context_path=str(workspace / "request.json"), context=packet,
             source_roots=state["source_roots"], source_manifests=state["source_manifests"],
-            input_artifacts=artifacts, required_outputs=spec.required_outputs,
-            optional_outputs=spec.optional_outputs, prompt_token_count=tokens,
+            required_outputs=list(STAGE_OUTPUTS[stage]),
+            optional_outputs=["metadata.json"] if stage is Stage.PREPARE_TEXT else [], prompt_token_count=tokens,
             budget=resolve_prompt_budget(state, stage),
             construction_events_path=state.get("construction_events_path", ""),
             model=state.get("model") or settings.model or "",
@@ -276,23 +267,10 @@ def _run_stage(state, stage, worker):
 
 
 def _worker_questions(result):
-    path = result.outputs.get("semantic_questions.json")
-    if not path:
-        return [{"issue_id": ref, "stage": result.stage.value,
-                 "question": "Preparation needs the missing semantic decision.",
-                 "impact": "The stage cannot complete without this decision.",
-                 "blocking": True, "resolved": False}
-                for ref in result.question_refs]
-    questions = read_question_set(path, stage=result.stage)
-    selected = [item for item in questions if item["issue_id"] in result.question_refs
-                and item.get("blocking") and not item.get("resolved")]
-    if not selected:
-        return [{"issue_id": ref, "stage": result.stage.value,
-                 "question": "Preparation needs the missing semantic decision.",
-                 "impact": "The stage cannot complete without this decision.",
-                 "blocking": True, "resolved": False}
-                for ref in result.question_refs]
-    return selected
+    questions = [item.model_dump(mode="json") for item in result.questions if item.blocking and not item.resolved]
+    if not questions:
+        raise ValueError("needs_input requires an unresolved blocking question")
+    return questions
 
 
 def _failure_issues(result):
@@ -330,41 +308,36 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
             )
         _event(state, "stage_validated", status=validation.status)
         issues = [item.model_dump(mode="json") for item in validation.issues]
-        if stage is not Stage.UNDERSTAND and validation.control == CONTROL_MAPPING_REVISION_REQUIRED:
-            return _revise_mapping(state, issues)
         if validation.status == "needs_input":
             return {"status": "needs_input",
                     "pending_questions": [item.model_dump(mode="json") for item in validation.questions]}
         if validation.status != "accepted":
             return _retry(state, stage, issues)
         if stage is Stage.UNDERSTAND:
-            handoff = create_accepted_handoff(state, result.outputs, validation)
+            handoff = accept_mapping(Path(result.outputs["mapping.json"]).parent, state)
             return _fresh_attempt(
                 state, stage=Stage.PREPARE_TEXT.value, status="running",
                 accepted_handoff=handoff.model_dump(mode="json"),
-                accepted_handoff_ref=str(Path(state["preparation_root"]) / "handoff" / f"{handoff.digest}.json"),
                 validation_feedback={}, diagnostics=[],
                 previous_attempt_root=state.get("implementation_repair_root"),
                 revision_basis_handoff=None, implementation_repair_root=None,
             )
         if stage is Stage.PREPARE_TEXT:
             root = Path(state["attempt_workspace"]) / "work" / "outputs"
-            names = ["cases.jsonl", "provenance.jsonl", "image_requests.jsonl", "sampling_manifest.jsonl", "split_manifest.jsonl"]
-            artifacts = {name: ArtifactRef(name=name, path=str(root / name), digest=digest_file(root / name),
-                         producer="prepare_text", stage="prepare_text", status="accepted").model_dump(mode="json")
+            names = ["cases.jsonl", "metadata.json"]
+            artifacts = {name: ArtifactRef(name=name, path=str(root / name), digest=digest_file(root / name)).model_dump(mode="json")
                          for name in names if (root / name).is_file()}
             return _fresh_attempt(state, stage=Stage.PREPARE_IMAGE.value, status="running",
                                   text_root=str(root), text_artifacts=artifacts, previous_attempt_root=None)
         return {"status": "validated", "validation": validation.model_dump(mode="json")}
 
     def package(state):
-        root = assemble_candidate(state)
-        handoff = _handoff(state)
-        validation = validate_prepare_candidate(root, state=state, population_path=handoff.population.path)
-        if validation.status != "accepted":
-            return _retry(state, Stage.PREPARE_IMAGE, [i.model_dump(mode="json") for i in validation.issues])
+        try:
+            root, digest = package_dataset(state)
+        except (OSError, ValueError, KeyError) as exc:
+            return _retry(state, Stage.PREPARE_IMAGE, [{"code": "final_consistency", "message": str(exc)}])
+        validation = ValidationResult(status="accepted", stage=Stage.PREPARE_IMAGE, candidate_digest=digest)
         return {"status": "packaged", "package_root": str(root), "validation": validation.model_dump(mode="json")}
-
 
     def publish(state):
         result = StageResult.model_validate(state["stage_result"], strict=False)

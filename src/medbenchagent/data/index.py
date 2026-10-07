@@ -8,17 +8,21 @@ from pathlib import Path
 
 import duckdb
 
-from medbenchagent.data.asset_manifest import iter_asset_manifest
+from medbenchagent.data.manifests import iter_image_manifest
 from medbenchagent.data.sources import digest_file
 from medbenchagent.data.models import CaseRecord, validate_case
 
 
-def _manifest_access(root: Path) -> dict[str, str]:
-    """Return optional prepared manifest paths and their content digests."""
-    values: dict[str, str] = {}
-    for name in ("presentation", "split", "sampling"):
-        path = root / f"{name}_manifest.jsonl"
-        if path.is_file():
+def _manifest_access(root, cache):
+    metadata_path = root / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
+    values = {}
+    for name in ("sampling", "split"):
+        if name in metadata:
+            path = cache / f"{name}.json"
+            text = json.dumps(metadata[name], sort_keys=True)
+            if not path.is_file() or path.read_text(encoding="utf-8") != text:
+                path.write_text(text, encoding="utf-8")
             values[f"{name}_manifest_path"] = str(path)
             values[f"{name}_manifest_digest"] = digest_file(path)
     return values
@@ -35,19 +39,23 @@ def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refr
     db_path = cache / "dataset.duckdb"
     profile_path = cache / "dataset_profile.json"
     access_path = cache / "dataset_access_manifest.json"
-    manifest_access = _manifest_access(cases_file.parent)
+    manifest_access = _manifest_access(cases_file.parent, cache)
     if access_path.is_file():
-        access = json.loads(access_path.read_text(encoding="utf-8"))
+        try:
+            access = json.loads(access_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            access = {}
         if (
-            access.get("annotation_digest") == digest_file(cases_file)
-            and access.get("asset_manifest_digest") == digest_file(manifest)
+            db_path.is_file() and profile_path.is_file()
+            and digest_file(profile_path) == access.get("profile_digest")
+            and digest_file(db_path) == access.get("duckdb_digest")
+            and access.get("annotation_digest") == digest_file(cases_file)
+            and access.get("image_manifest_digest") == digest_file(manifest)
             and all(access.get(key) == value for key, value in manifest_access.items())
-            and all(key in manifest_access for key in access if key.endswith("_manifest_path") or key.endswith("_manifest_digest"))
+            and all((key in manifest_access) == (key in access) for name in ("sampling", "split") for key in (f"{name}_manifest_path", f"{name}_manifest_digest"))
         ):
             return json.loads(profile_path.read_text(encoding="utf-8")), access
-    assets = {entry.asset_id: entry for entry in iter_asset_manifest(
-        manifest, source_root=source_root, source_roots=source_roots
-    )}
+    assets = {entry.path: entry for entry in iter_image_manifest(manifest)}
     cases = []
     with cases_file.open(encoding="utf-8") as source:
         for line in source:
@@ -57,12 +65,12 @@ def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refr
     temporary.unlink(missing_ok=True)
     with duckdb.connect(str(temporary)) as db:
         db.execute("CREATE TABLE cases (case_id VARCHAR PRIMARY KEY, patient_id VARCHAR, record JSON)")
-        db.execute("CREATE TABLE assets (asset_id VARCHAR PRIMARY KEY, kind VARCHAR, format VARCHAR, source_path VARCHAR, file_digest VARCHAR, metadata JSON)")
+        db.execute("CREATE TABLE assets (asset_id VARCHAR PRIMARY KEY, kind VARCHAR, format VARCHAR, source_path VARCHAR, file_digest VARCHAR, metadata JSON, source_id VARCHAR, source_digest VARCHAR)")
         db.execute("CREATE TABLE evidence (case_id VARCHAR, evidence_id VARCHAR, type VARCHAR, name VARCHAR, value JSON, time DOUBLE, unit VARCHAR, PRIMARY KEY(case_id,evidence_id))")
         db.execute("CREATE TABLE case_assets (case_id VARCHAR, asset_id VARCHAR, evidence_id VARCHAR, PRIMARY KEY(case_id,asset_id,evidence_id))")
         db.execute("CREATE TABLE evidence_refs (case_id VARCHAR, evidence_id VARCHAR, ref_id VARCHAR, PRIMARY KEY(case_id,evidence_id,ref_id))")
         for asset in assets.values():
-            db.execute("INSERT INTO assets VALUES (?,?,?,?,?,?)", [asset.asset_id, asset.kind, asset.format, asset.source_path, asset.file_digest, json.dumps(asset.metadata)])
+            db.execute("INSERT INTO assets VALUES (?,?,?,?,?,?,?,?)", [asset.path, asset.kind, asset.format, asset.source_path, asset.file_digest, json.dumps(asset.metadata), asset.source_id, asset.source_digest])
         for case in cases:
             db.execute("INSERT INTO cases VALUES (?,?,?)", [case.case_id, case.patient_id, case.model_dump_json()])
             for evidence in case.evidence:
@@ -74,7 +82,7 @@ def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refr
     temporary.replace(db_path)
     profile = _profile(cases, assets)
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    access = {"schema_version": "annotation", "revision": revision, "cases_path": str(cases_file), "asset_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(cases_file), "asset_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path), **manifest_access}
+    access = {"schema_version": "annotation", "revision": revision, "cases_path": str(cases_file), "image_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(cases_file), "image_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path), **manifest_access}
     access_path.write_text(json.dumps(access, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return profile, access
 
@@ -96,11 +104,13 @@ def _profile(cases, assets):
             if item.unit is not None:
                 row["units"][item.unit] += 1
     per_case = Counter(sum(item.type == "asset" for item in case.evidence) for case in cases)
-    return {"schema_version": "dataset-profile", "case_count": len(cases), "patient_count": len({c.patient_id for c in cases if c.patient_id is not None}), "cases_per_patient": dict(Counter(c.patient_id for c in cases if c.patient_id is not None)), "evidence": [{"name": name, **row, "types": dict(row["types"]), "value_types": dict(row["value_types"]), "units": dict(row["units"])} for name, row in sorted(evidence.items())], "assets": {"kinds": dict(Counter(a.kind for a in assets.values())), "formats": dict(Counter(a.format for a in assets.values())), "assets_per_case": dict(per_case), "volume_properties": {a.asset_id: a.metadata for a in assets.values() if a.kind == "volume"}}}
+    return {"schema_version": "dataset-profile", "case_count": len(cases), "patient_count": len({c.patient_id for c in cases if c.patient_id is not None}), "cases_per_patient": dict(Counter(c.patient_id for c in cases if c.patient_id is not None)), "evidence": [{"name": name, **row, "types": dict(row["types"]), "value_types": dict(row["value_types"]), "units": dict(row["units"])} for name, row in sorted(evidence.items())], "assets": {"kinds": dict(Counter(a.kind for a in assets.values())), "formats": dict(Counter(a.format for a in assets.values())), "assets_per_case": dict(per_case), "volume_properties": {a.path: a.metadata for a in assets.values() if a.kind == "volume"}}}
 
 
 class DatasetIndex:
     def __init__(self, access):
+        if access.get("schema_version") != "annotation":
+            raise ValueError("Only annotation is supported")
         self.access = access
 
     def _db(self):
@@ -152,7 +162,7 @@ class DatasetIndex:
             args.append(format_name)
         clause = " WHERE " + " AND ".join(where) if where else ""
         with self._db() as db:
-            return [dict(asset_id=row[0], kind=row[1], format=row[2], source_path=row[3], file_digest=row[4], metadata=json.loads(row[5])) for row in db.execute("SELECT asset_id,kind,format,source_path,file_digest,metadata FROM assets" + clause, args).fetchall()]
+            return [dict(asset_id=row[0], kind=row[1], format=row[2], source_path=row[3], file_digest=row[4], metadata=json.loads(row[5]), source_id=row[6], source_digest=row[7]) for row in db.execute("SELECT asset_id,kind,format,source_path,file_digest,metadata,source_id,source_digest FROM assets" + clause, args).fetchall()]
 
     def iter_cases(self):
         offset = 0
@@ -168,24 +178,11 @@ class DatasetIndex:
         assets = {row["asset_id"]: row for row in self.assets()}
         profile = json.loads(Path(self.access["profile_path"]).read_text(encoding="utf-8"))
         facts = build_dataset_facts(self.iter_cases(), assets, profile=profile, revision=self.access.get("revision"))
-        try:
-            from medbenchagent.data.manifests import load_manifest, PresentationRecord, SamplingManifest, verify_manifest_digest
-            for name, model in (("presentation", PresentationRecord), ("sampling", SamplingManifest)):
-                path = self.access.get(f"{name}_manifest_path")
-                digest = self.access.get(f"{name}_manifest_digest")
-                if not path:
-                    continue
-                verify_manifest_digest(path, digest)
-                manifest = load_manifest(path, model)
-                if name == "presentation":
-                    records = manifest if isinstance(manifest, list) else [manifest]
-                    ordered = len({record.view_id for record in records if record.view_id})
-                else:
-                    ordered = len(manifest.units)
-                facts.setdefault("view_panel_capabilities", {})["ordered"] = ordered
-                facts.setdefault("derived_capabilities", {}).setdefault("view_panel", {})["ordered"] = ordered
-        except (OSError, ValueError):
-            pass
+        from medbenchagent.data.manifests import SamplingManifest, load_manifest
+        path = self.access.get("sampling_manifest_path")
+        if path:
+            ordered = len(load_manifest(path, SamplingManifest).units)
+            facts.setdefault("view_panel_capabilities", {})["ordered"] = ordered
         return facts
 
     def node_context(self, node, *, sample_limit=5, evidence_limit=100, registry=None):

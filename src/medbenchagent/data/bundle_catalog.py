@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from medbenchagent.data.sources import digest_file
-from medbenchagent.data.manifests import PresentationRecord, SamplingManifest, SplitManifest, load_manifest
+from medbenchagent.data.index import prepare_dataset
+from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 
 def read_card(path: str | Path) -> dict:
@@ -32,55 +32,35 @@ def card_summary(card: dict) -> dict:
     }
 
 
-def verify_bundle(bundle: str | Path) -> dict:
+def verify_bundle(bundle):
+    """Verify committed content and reconstruct cache/Card outside the dataset revision."""
+    from medbenchagent.preparation.validation import bundle_digest
     bundle = Path(bundle).resolve()
-    ready_path = bundle / "ready.json"
-    current_path = bundle / "current.json"
-    if current_path.is_file():
-        try:
-            current = json.loads(current_path.read_text(encoding="utf-8"))
-            revision = Path(current["revision_path"]).resolve()
-            if not revision.is_relative_to(bundle / "revisions") or not (revision / "ready.json").is_file():
-                raise ValueError("Current pointer does not reference a committed revision")
-            ready_path = revision / "ready.json"
-        except (OSError, KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"Invalid dataset current pointer: {exc}") from exc
-    if not ready_path.is_file():
-        raise ValueError("Dataset bundle is not annotation; re-prepare the dataset")
-    ready = json.loads(ready_path.read_text(encoding="utf-8"))
-    if ready.get("annotation_schema") != "annotation" or ready.get("schema_version") != "dataset-bundle":
-        raise ValueError("Dataset bundle is not annotation; re-prepare the dataset")
-    access = ready["access"]
-    for key in ("cases_path", "asset_manifest_path", "profile_path", "dataset_card_path"):
-        if not Path(access[key]).is_file():
-            raise ValueError(f"Missing bundle artifact: {key}")
-    checks = {
-        "annotation_digest": access["cases_path"],
-        "asset_manifest_digest": access["asset_manifest_path"],
-        "profile_digest": access["profile_path"],
-    }
-    for name in ("presentation", "split", "sampling"):
-        path_key = f"{name}_manifest_path"
-        digest_key = f"{name}_manifest_digest"
-        if path_key in access or digest_key in access:
-            if not access.get(path_key) or not access.get(digest_key):
-                raise ValueError(f"Manifest path/digest pair is incomplete: {name}")
-            checks[digest_key] = access[path_key]
-    for digest_key, path in checks.items():
-        if not Path(path).is_file():
-            raise ValueError(f"Missing bundle artifact: {digest_key}")
-        if digest_file(path) != access[digest_key]:
-            raise ValueError(f"bundle digest mismatch: {digest_key}")
-    for name, model in (
-        ("presentation", PresentationRecord),
-        ("split", SplitManifest),
-        ("sampling", SamplingManifest),
-    ):
-        path = access.get(f"{name}_manifest_path")
-        if path:
-            load_manifest(path, model)
-    card = read_card(access["dataset_card_path"])
-    if card["annotation_digest"] != access["annotation_digest"] or card["asset_manifest_digest"] != access["asset_manifest_digest"] or card["profile_digest"] != access["profile_digest"]:
-        raise ValueError("Dataset Card facts do not match bundle")
-    return {"ready": ready, "card": card}
-
+    if (bundle / "current.json").is_file():
+        receipt = json.loads((bundle / "current.json").read_text(encoding="utf-8"))
+        revision = Path(receipt["revision_path"]).resolve()
+        if not revision.is_relative_to(bundle / "revisions"):
+            raise ValueError("Current points outside committed revisions")
+        root = bundle
+    else:
+        revision, root = bundle, bundle.parent.parent
+        receipt_path = root / ".commits" / f"{revision.name}.json"
+        if not receipt_path.is_file():
+            raise ValueError("Dataset revision is not committed")
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if bundle_digest(revision) != receipt["digest"]:
+        raise ValueError("Dataset revision digest mismatch")
+    metadata = json.loads((revision / "metadata.json").read_text(encoding="utf-8"))
+    cache = root / ".derived" / receipt["revision"]
+    profile, access = prepare_dataset(revision / "cases.jsonl", revision / "image_manifest.jsonl", cache,
+                                      revision=receipt["revision"])
+    card = {"schema_version": "dataset-card", "dataset_id": receipt["dataset_id"],
+            "name": metadata.get("name", receipt["dataset_id"]), "description": metadata.get("description", "annotation dataset"),
+            "annotation_digest": access["annotation_digest"], "image_manifest_digest": access["image_manifest_digest"],
+            "profile_digest": access["profile_digest"], "case_count": profile["case_count"], "patient_count": profile["patient_count"],
+            "semantics": metadata.get("field_semantics", {})}
+    card_path = cache / "dataset_card.json"
+    if not card_path.is_file() or json.loads(card_path.read_text(encoding="utf-8")) != card:
+        atomic_write_json(card_path, card)
+    access.update(dataset_card_path=str(card_path), bundle_root=str(revision), mapping_path=str(revision / "metadata.json"))
+    return {"ready": {"revision": receipt["revision"], "access": access}, "card": card}
