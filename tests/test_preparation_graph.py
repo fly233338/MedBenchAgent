@@ -1,3 +1,4 @@
+import pytest
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ class _StageWorker:
                 "source_report.json": "{}",
                 "image_population.jsonl": "{}\n",
                 "mapping.json": "{}",
+                "image_conversion_plan.json": "{}",
                 "semantic_questions.json": json.dumps({"questions": []}),
                 "inspect_source.py": "print('ok')\n",
                 "submission.json": json.dumps({"requested_outcome": "submitted"}),
@@ -70,7 +72,7 @@ def _state(tmp_path):
         "sources": [Source(id="source", root=str(source_root)).model_dump()],
         "source_roots": {"source": str(source_root)},
         "source_manifests": {"source": str(manifest)},
-        "preparation_attempt_limits": {"understand": 2, "prepare": 2, "mapping_revision_cycles": 1},
+        "preparation_attempt_limits": {"understand": 2, "prepare_text": 2, "prepare_image": 2, "mapping_revision_cycles": 1},
     }
 
 
@@ -79,7 +81,7 @@ def _accepted_handoff(outputs, state):
 
 
 def _accepted_candidate(outputs, state):
-    return ValidationResult(status="accepted", stage=Stage.PREPARE, report={"accepted_cases": 1}, candidate_digest="")
+    return ValidationResult(status="accepted", stage=Stage.PREPARE_TEXT, report={"accepted_cases": 1}, candidate_digest="")
 
 
 def test_two_stage_graph_uses_one_production_orchestrator(tmp_path, monkeypatch):
@@ -90,7 +92,7 @@ def test_two_stage_graph_uses_one_production_orchestrator(tmp_path, monkeypatch)
     result = compile_preparation_graph(worker=worker).invoke(_state(tmp_path))
 
     assert result["status"] == "complete"
-    assert [request.stage for request in worker.requests] == [Stage.UNDERSTAND, Stage.PREPARE]
+    assert [request.stage for request in worker.requests] == [Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.PREPARE_IMAGE]
     assert result["accepted_handoff"]["mapping"]["name"] == "mapping.json"
 
 
@@ -101,7 +103,7 @@ def test_blocking_semantic_question_stops_before_prepare(tmp_path):
 
     assert result["status"] == "needs_input"
     assert result["stage"] == "understand"
-    assert not (Path(state["preparation_root"]) / "attempts" / "prepare").exists()
+    assert not (Path(state["preparation_root"]) / "attempts" / "prepare_text").exists()
 
 
 def test_resume_uses_run_frozen_worker_config(tmp_path, monkeypatch):
@@ -126,11 +128,11 @@ def test_resume_uses_run_frozen_worker_config(tmp_path, monkeypatch):
     assert request.llm_max_retries == 2
 
 
-def test_mapping_revision_creates_new_understand_and_prepare_attempts(tmp_path, monkeypatch):
+def test_mapping_revision_creates_new_understand_and_prepare_text_attempts(tmp_path, monkeypatch):
     class RevisionWorker(_StageWorker):
         def run(self, request):
             result = super().run(request)
-            if request.stage is Stage.PREPARE and len([item for item in self.requests if item.stage is Stage.PREPARE]) == 1:
+            if request.stage is Stage.PREPARE_TEXT and len([item for item in self.requests if item.stage is Stage.PREPARE_TEXT]) == 1:
                 return result.model_copy(update={
                     "status": "blocked", "control": "mapping_revision_required",
                     "diagnostic": "accepted mapping conflicts with source evidence",
@@ -141,7 +143,7 @@ def test_mapping_revision_creates_new_understand_and_prepare_attempts(tmp_path, 
     monkeypatch.setattr(preparation_graph, "validate_understand_submission", _accepted_handoff)
     monkeypatch.setattr(
         preparation_graph, "validate_candidate_submission",
-        lambda outputs, state: ValidationResult(status="accepted", stage=Stage.PREPARE, report={"accepted_cases": 1}),
+        lambda outputs, state: ValidationResult(status="accepted", stage=Stage.PREPARE_TEXT, report={"accepted_cases": 1}),
     )
     monkeypatch.setattr(
         preparation_graph, "publish_preparation",
@@ -151,8 +153,8 @@ def test_mapping_revision_creates_new_understand_and_prepare_attempts(tmp_path, 
     result = compile_preparation_graph(worker=worker).invoke(_state(tmp_path))
 
     assert result["status"] == "complete"
-    assert [request.stage for request in worker.requests] == [Stage.UNDERSTAND, Stage.PREPARE, Stage.UNDERSTAND, Stage.PREPARE]
-    assert [request.attempt for request in worker.requests] == [1, 1, 2, 2]
+    assert [request.stage for request in worker.requests] == [Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.PREPARE_IMAGE]
+    assert [request.attempt for request in worker.requests] == [1, 1, 2, 2, 1]
     assert result["mapping_revision_cycles"] == 1
 
 
@@ -164,7 +166,7 @@ class _ProtocolRevisionRuntime:
         self.requests.append(request)
         output_root = Path(request.workspace) / "outputs"
         output_root.mkdir(parents=True, exist_ok=True)
-        if request.stage is Stage.PREPARE and len([item for item in self.requests if item.stage is Stage.PREPARE]) == 1:
+        if request.stage is Stage.PREPARE_TEXT and len([item for item in self.requests if item.stage is Stage.PREPARE_TEXT]) == 1:
             path = output_root / "submission.json"
             path.write_text(json.dumps({
                 "requested_outcome": "blocked",
@@ -195,9 +197,10 @@ class _ProtocolRevisionRuntime:
 
 
 STAGE_OUTPUTS = {
-    Stage.UNDERSTAND: ("source_report.json", "image_population.jsonl", "mapping.json",
+    Stage.UNDERSTAND: ("source_report.json", "image_population.jsonl", "mapping.json", "image_conversion_plan.json",
                        "semantic_questions.json", "inspect_source.py", "submission.json"),
-    Stage.PREPARE: ("scripts/prepare.py", "cases.jsonl", "asset_manifest.jsonl",
+    Stage.PREPARE_IMAGE: ("asset_manifest.jsonl", "presentation_manifest.jsonl", "mask_features.jsonl", "submission.json"),
+    Stage.PREPARE_TEXT: ("image_requests.jsonl", "scripts/prepare.py", "cases.jsonl", "asset_manifest.jsonl",
                     "provenance.jsonl", "conversion_config.json", "grouping_policy.json",
                     "execution_report.json", "output_manifest.json", "submission.json"),
 }
@@ -209,7 +212,7 @@ def test_real_worker_protocol_routes_mapping_revision_with_repair_bases(tmp_path
     monkeypatch.setattr(preparation_graph, "validate_understand_submission", _accepted_handoff)
     monkeypatch.setattr(
         preparation_graph, "validate_candidate_submission",
-        lambda outputs, state: ValidationResult(status="accepted", stage=Stage.PREPARE, report={"accepted_cases": 1}),
+        lambda outputs, state: ValidationResult(status="accepted", stage=Stage.PREPARE_TEXT, report={"accepted_cases": 1}),
     )
     monkeypatch.setattr(
         preparation_graph, "publish_preparation",
@@ -223,9 +226,9 @@ def test_real_worker_protocol_routes_mapping_revision_with_repair_bases(tmp_path
     result = compile_preparation_graph(worker=worker).invoke(_state(tmp_path))
 
     assert result["status"] == "complete"
-    assert [item.stage for item in runtime.requests] == [Stage.UNDERSTAND, Stage.PREPARE, Stage.UNDERSTAND, Stage.PREPARE]
-    assert len({item.attempt_id for item in runtime.requests}) == 4
-    assert len({item.conversation_id for item in runtime.requests}) == 4
+    assert [item.stage for item in runtime.requests] == [Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.UNDERSTAND, Stage.PREPARE_TEXT, Stage.PREPARE_IMAGE]
+    assert len({item.attempt_id for item in runtime.requests}) == 5
+    assert len({item.conversation_id for item in runtime.requests}) == 5
     assert runtime.requests[2].previous_attempt_root == runtime.requests[1].workspace
     assert runtime.requests[3].previous_attempt_root == runtime.requests[1].workspace
     assert (Path(runtime.requests[2].workspace) / "inputs" / "previous_reference.json").is_file()
@@ -234,3 +237,10 @@ def test_real_worker_protocol_routes_mapping_revision_with_repair_bases(tmp_path
     assert context["facts"]["revision_basis"]["handoff_digest"]
     assert context["facts"]["revision_basis"]["artifacts"]["mapping"]["path"].endswith("mapping.json")
     assert context["validation_feedback"]["issues"]
+
+
+@pytest.fixture(autouse=True)
+def isolate_packaging_in_graph_routing_tests(monkeypatch, tmp_path):
+    monkeypatch.setattr(preparation_graph, "assemble_candidate", lambda state: tmp_path)
+    monkeypatch.setattr(preparation_graph, "validate_prepare_candidate", lambda *args, **kwargs:
+        ValidationResult(status="accepted", stage=Stage.PREPARE_IMAGE, report={"accepted_cases": 1}))

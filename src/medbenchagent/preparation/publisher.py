@@ -65,15 +65,10 @@ class DatasetPublisher:
             self._write_final_manifest(staging, copied_digests)
             final_report = validate_candidate(
                 staging, source_root=context.get("source_root"), source_roots=context.get("source_roots"),
+                population_path=(context.get("accepted_handoff") or {}).get("population", {}).get("path"),
             )
             if final_report["status"] != "complete" or not final_report["accepted_cases"]:
                 raise ValueError(f"Final dataset consistency validation failed: {final_report['failures']}")
-            atomic_write_json(staging / "preparation_report.json", report)
-            (staging / "quarantine.jsonl").write_text(
-                "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in report.get("failures", []) if item.get("kind") == "hard_case_failure"),
-                encoding="utf-8", newline="\n",
-            )
-            (staging / "optional_evidence_dropped.jsonl").write_text("", encoding="utf-8", newline="\n")
             profile, access = prepare_dataset(
                 staging / "cases.jsonl", staging / "asset_manifest.jsonl", staging / "cache",
                 revision=revision, source_root=context.get("source_root"), source_roots=context.get("source_roots"),

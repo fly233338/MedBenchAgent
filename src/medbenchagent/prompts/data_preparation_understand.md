@@ -1,84 +1,13 @@
 Current stage: understand
 
-Objective
+Understand source semantics once. Produce mapping.json and image_conversion_plan.json (policies keyed by policy_id, plus notes).
+Determine Case identity, joins, field meanings, missingness, Evidence relations, Asset roles, image selection and conversion policy.
+The shared target_path function defines stable source/asset/view target paths. Ordinary JPEG/PNG are preserved without transforms;
+medical sources need explicit window/axis/slice decisions and produce PNG. Do not predict output files, digests or dimensions.
 
-Produce an evidence-grounded handoff that a fresh coding session can use
-to implement data conversion without access to this conversation. Deliver
-measured source observations, a complete population, explicit processing
-rules, and scoped unresolved questions. Do not perform full conversion here.
-
-Procedure
-
-1. Establish the source inventory.
-   Programmatically enumerate every configured source, relevant table,
-   document, and asset format. Inspect bounded representative structures.
-   Identify the authoritative population and stable source-unit keys.
-   Record specific unresolved fields, identities, joins, and asset rules.
-
-2. Build and run the inspector early.
-   Implement inspect_source.py using the exact input-config, output-dir,
-   and mode interface in context.execution. Include every configured source
-   and register any helper dependencies. Do not hardcode an attempt path.
-   Build one in-memory `population_records` sequence and derive both
-   `image_population.jsonl` and `source_report.population` from it. Use the
-   supplied population projection helper when available; do not calculate the
-   report count independently. Run the inspector and write the complete
-   source report and population to the declared directories. Measure schemas, field coverage, value states, duplicate
-   keys, join cardinalities, unmatched records, and relevant boundary cases.
-   Keep observations deterministic; execution timestamps belong in receipts.
-
-3. Define implementable semantics.
-   For every observed field, specify its disposition, rule ID, target, raw
-   value preservation, transformation, missingness handling, units, reason,
-   and evidence references. Define Case identity, grouping keys, join
-   behavior, asset roles, ordering, and population accounting explicitly.
-   Do not merge independent examinations solely because they share a
-   patient identifier. Record planning-relevant field semantics without
-   selecting benchmark tasks.
-
-4. Resolve the remaining unknowns.
-   Inspect additional records or documentation only to resolve a named
-   unknown or verify a proposed rule. Use source evidence and the applicable
-   user decisions. If meaning is not established, preserve it as unknown
-   where the contract permits that state. If correct processing requires
-   choosing an unsupported interpretation, record a blocking question.
-
-Population contract
-
-`mapping.population_policy` defines what counts as one source unit, how its
-stable identity is formed, and which source evidence supports that rule.
-`image_population.jsonl` must enumerate the complete population produced by
-applying that policy. Every line must validate against
-`inputs/contracts/population.schema.json`; its canonical identity is exactly
-`(source_id, source_unit_id)`. Do not substitute `unit_id`, `image_id`,
-`asset_id`, `id`, or `record_ref` for `source_unit_id`.
-
-For volume datasets such as Hippocampus, represent one logical sample or
-volume case as one source unit. The image volume and its corresponding label
-are related assets of that unit; do not count them as separate population
-units.
-
-5. Validate the handoff.
-   Run the declared `validate-understand` command and inspect
-   `work/validation.json` before writing a submitted outcome. Confirm that all sources
-   and observed fields are covered, source-unit identities are unique,
-   evidence references resolve, dependencies are registered, and every
-   rule is specific enough to implement. Confirm that the submitted report
-   and population match the inspector's actual output.
-   Put essential decisions in structured mapping fields, not only in notes.
-
-Completion
-
-Use submitted only when the shared validator reports `accepted`, the handoff completion checks pass, and no unresolved
-blocking question remains. Include semantic_questions.json even when its
-questions array is empty. The host independently replays the inspector and
-decides whether to accept the handoff.
-
-Use needs_input when a genuine missing user fact blocks a rule or population
-choice. Keep the measured observations, mapping draft, and inspector, and
-identify which work remains partial. Use blocked for technical or contract
-failures and give a concrete diagnostic and recovery condition.
-
-Stop inspecting once source coverage and the implementable rule checklist
-are complete. Write the submission, ensure no command is still running,
-and call finish. Do not label your mapping accepted or begin prepare.
+Implement inspect_source.py with --input-config, --output-dir, --mode inventory. Enumerate the complete source population;
+write image_population.jsonl and derive source_report.population using write_population_projection. Host replays this script.
+Population identity is (source_id, source_unit_id); related volume and mask assets can belong to one logical unit.
+Missing annotation is not negative. Do not infer clinical meaning, windows or spatial units without evidence.
+Record blocking questions in semantic_questions.json; otherwise write an empty questions list.
+Run the supplied validate-understand command, repair contract failures, then submit. Do not publish or convert images here.

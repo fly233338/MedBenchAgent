@@ -116,7 +116,7 @@ def initialize_preparation(context: dict, sources, dataset_id: str) -> dict:
                     coding_worker_max_iterations=get_settings().data_processing["coding_worker_max_iterations"],
                     coding_worker_timeout_seconds=get_settings().data_processing["coding_worker_timeout_seconds"],
                     preparation_attempt_limits=get_settings().data_processing.get(
-                        "preparation_attempt_limits", {"understand": 2, "prepare": 2, "mapping_revision_cycles": 1}
+                        "preparation_attempt_limits", {"understand": 2, "prepare_text": 2, "prepare_image": 2, "mapping_revision_cycles": 1}
                     ),
                     preparation_stage_budgets=get_settings().data_processing.get("preparation_stage_budgets", {}),
                     bundle_root=str(bundle), source_scope=None,

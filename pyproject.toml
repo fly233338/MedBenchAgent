@@ -52,7 +52,8 @@ packages = ["src/medbenchagent"]
 "src/medbenchagent/schemas/annotation.schema.json" = "medbenchagent/schemas/annotation.schema.json"
 "src/medbenchagent/prompts/data_preparation_agent.md" = "medbenchagent/prompts/data_preparation_agent.md"
 "src/medbenchagent/prompts/data_preparation_understand.md" = "medbenchagent/prompts/data_preparation_understand.md"
-"src/medbenchagent/prompts/data_preparation_prepare.md" = "medbenchagent/prompts/data_preparation_prepare.md"
+"src/medbenchagent/prompts/data_preparation_prepare_text.md" = "medbenchagent/prompts/data_preparation_prepare_text.md"
+"src/medbenchagent/prompts/data_preparation_prepare_image.md" = "medbenchagent/prompts/data_preparation_prepare_image.md"
 
 [dependency-groups]
 dev = [

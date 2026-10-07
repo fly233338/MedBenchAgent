@@ -20,7 +20,7 @@ MedBenchAgent 用 LangGraph 协调医疗数据准备和 benchmark 构建。Super
 
 - `runtime/`：会话、Run、checkpoint、事件、Agent harness、依赖、部署运行时和运行产物。
 - `workflow/graph.py`：Supervisor 工具、产物就绪判断和子 Agent 委派。
-- `preparation/`：来源冻结、唯一两阶段 preparation graph、context、worker 协议和宿主验收入口。
+- `preparation/`：来源冻结、唯一三阶段 preparation graph、context、worker 协议和宿主验收入口。
 - `agents/`：任务规划、模板、分配、生成和最终化 Agent。
 - `data/`：来源、annotation、图像、Profile、Card、Catalog 和确定性验证。
 - `planning/`：需求提取、数据集选择、任务树、协议和样本计数。
@@ -139,10 +139,21 @@ Scenario Screening records validated clinical targets rather than speculative ta
 Each Leaf references one `clinical_target_id` from its Scenario, and code validates the target
 type, reference fields, Resolver contract, capacity, and derived plan projections.
 
-## Preparation execution contract
 
-Understand and Prepare acceptance use the same worker-visible validation boundary as the host. Cross-file invariants are represented by typed contracts or the shared preparation validator; source-root authorization, independent replay and publication receipts remain explicitly Host-only. Understand population summaries are derived from the canonical population rows, so a report count cannot drift from `image_population.jsonl`.
+## Canonical preparation flow
 
-The public Supervisor operation is `process_dataset(dataset_id, mode, issue_ids, notes)`. Its preparation adapter invokes one production graph: `understand → validate_understand → prepare → validate_prepare → publish`. `needs_input` returns to the Supervisor; the next invocation supplies `user_decisions[]`. Stage retries are bounded independently at two Understand attempts, two Prepare attempts and one mapping revision cycle. Each attempt owns `inputs`, `work`, `outputs`, `state`, `logs`, and `conversations`; `state/result.json` is its only result receipt. The DatasetPublisher is the sole bundle publication owner.
+The production graph is understand → prepare_text → prepare_image → package → publish.
+Understand freezes mapping.json and image_conversion_plan.json. A deterministic inspector
+enumerates the population and is replayed by Host. Text emits Cases, provenance and image_requests;
+Image consumes those requests and emits assets, presentations and digest-bound mask features.
+Host assembles the results, validates the final set and atomically publishes an immutable revision.
+Each coding stage has two attempts; one evidence-backed mapping revision invalidates Text/Image.
 
-Prepare may return `mapping_revision_required` only when the accepted semantic handoff is wrong. The graph then starts a new Understand attempt with the previous handoff and conflict evidence as a revision basis, followed by a Prepare attempt that receives the new handoff and a read-only reference to the previous implementation. Implementation, manifest, schema, and dependency failures remain within Prepare. Previous attempt work is referenced rather than copied; Docker mounts it read-only and local runs verify that the reference did not change. The local coding worker uses the run-frozen interpreter recorded under `data_processing.coding_worker_venv`; Docker continues to use the frozen worker image.
+Case/Evidence retain Asset identities. Presentations are model-visible ordinary images:
+JPEG/PNG without transforms preserve original bytes; medical images, slices and montages use PNG.
+Shared target_path assigns paths before conversion. Reference masks never become model input.
+Published bundles retain Cases, provenance, mapping/conversion policy, Asset/Presentation manifests,
+required sampling/split manifests, actual images and Card/Profile/commit metadata. Scripts, prompts,
+population working files and detailed reports stay in runtime. No image manifest duplicates Presentation.
+Validators do not repair candidates. Quarantine updates all references and dispositions before final
+validation. Catalog and consumers use verified revision paths, never root projections.

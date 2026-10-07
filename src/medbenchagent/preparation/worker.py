@@ -88,7 +88,7 @@ class OpenHandsWorker:
                     blocking=True, message=f"Worker reported diagnostic code: {code}",
                 ))
                 if code == CONTROL_MAPPING_REVISION_REQUIRED:
-                    if request.stage is Stage.PREPARE:
+                    if request.stage is not Stage.UNDERSTAND:
                         control = CONTROL_MAPPING_REVISION_REQUIRED
                     else:
                         diagnostics.append(Diagnostic(

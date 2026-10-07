@@ -345,7 +345,8 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                              key: _integer(value, f"data_processing.preparation_attempt_limits.{key}", minimum=0 if key == "mapping_revision_cycles" else 1)
                              for key, value in {
                                  "understand": values["data_processing"].get("preparation_attempt_limits", {}).get("understand", 2),
-                                 "prepare": values["data_processing"].get("preparation_attempt_limits", {}).get("prepare", 2),
+                                 "prepare_text": values["data_processing"].get("preparation_attempt_limits", {}).get("prepare_text", 2),
+                                 "prepare_image": values["data_processing"].get("preparation_attempt_limits", {}).get("prepare_image", 2),
                                  "mapping_revision_cycles": values["data_processing"].get("preparation_attempt_limits", {}).get("mapping_revision_cycles", 1),
                              }.items()
                          },

@@ -9,7 +9,6 @@ from medbenchagent.data.asset_manifest import iter_asset_manifest
 from medbenchagent.data.models import CaseRecord, validate_case
 from medbenchagent.data.manifests import PresentationRecord, SamplingManifest, SplitManifest, load_manifest
 from medbenchagent.data.sources import digest_file
-from medbenchagent.preparation.contracts import PopulationOutcome
 
 
 def validate_candidate(candidate: str | Path, *, source_root: str | Path | None = None,
@@ -18,6 +17,7 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                           expected_mapping_digest: str | None = None,
                           expected_population_digest: str | None = None) -> dict:
     """Validate every Case and return a complete acceptance/quarantine report."""
+    from medbenchagent.preparation.contracts import PopulationOutcome
     candidate = Path(candidate)
     cases_path = candidate / "cases.jsonl"
     manifest = candidate / "asset_manifest.jsonl"
@@ -28,12 +28,8 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
         raise ValueError("provenance.jsonl is required")
     # complete.json is a host receipt written after this validation succeeds;
     # workers must not be able to claim publication by creating it themselves.
-    required_receipts = ["conversion_config.json", "grouping_policy.json", "mapping.json"]
-    if (candidate / "submission.json").is_file():
-        required_receipts.extend(("execution_report.json", "output_manifest.json"))
-    missing_receipts = [name for name in required_receipts if not (candidate / name).is_file()]
-    if missing_receipts:
-        raise ValueError("Candidate is missing required outputs: " + ", ".join(missing_receipts))
+    if not (candidate / "mapping.json").is_file():
+        raise ValueError("Candidate is missing mapping.json")
     provenance_failures = []
     provenance_count = 0
     provenance_cases: set[str] = set()
@@ -176,8 +172,7 @@ def validate_candidate(candidate: str | Path, *, source_root: str | Path | None 
                 if not expected or digest_file(resolved) != expected:
                     raise ValueError(f"output_manifest digest mismatch: {relative}")
             required_files = ("cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl",
-                              "conversion_config.json", "grouping_policy.json", "execution_report.json",
-                              "scripts/prepare.py")
+                              "mapping.json")
             missing_registered = [name for name in required_files if (candidate / name).is_file() and name not in seen_output_paths]
             if missing_registered:
                 raise ValueError(f"output_manifest does not register required outputs: {missing_registered}")

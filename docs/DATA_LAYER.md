@@ -74,6 +74,21 @@ index、时间或医学语义。
 新运行存储在 `.runtime/<run>/control`、`inputs`、`agents` 和 `workers` 下。现有旧运行目录不属于当前运行时。
 
 
-## Preparation revisions
 
-The host freezes one SourceSnapshot and creates an AcceptedHandoff after the Understand gate. Candidate files stay inside an attempt workspace. The Prepare gate writes one validation receipt; DatasetPublisher consumes it and writes a complete immutable revision into `revisions/<revision>`, durable commit metadata, `preparation_report.json`, quarantine evidence and a final manifest, then advances `current.json` atomically. The Supervisor does not publish the candidate again.
+## Canonical preparation flow
+
+The production graph is understand → prepare_text → prepare_image → package → publish.
+Understand freezes mapping.json and image_conversion_plan.json. A deterministic inspector
+enumerates the population and is replayed by Host. Text emits Cases, provenance and image_requests;
+Image consumes those requests and emits assets, presentations and digest-bound mask features.
+Host assembles the results, validates the final set and atomically publishes an immutable revision.
+Each coding stage has two attempts; one evidence-backed mapping revision invalidates Text/Image.
+
+Case/Evidence retain Asset identities. Presentations are model-visible ordinary images:
+JPEG/PNG without transforms preserve original bytes; medical images, slices and montages use PNG.
+Shared target_path assigns paths before conversion. Reference masks never become model input.
+Published bundles retain Cases, provenance, mapping/conversion policy, Asset/Presentation manifests,
+required sampling/split manifests, actual images and Card/Profile/commit metadata. Scripts, prompts,
+population working files and detailed reports stay in runtime. No image manifest duplicates Presentation.
+Validators do not repair candidates. Quarantine updates all references and dispositions before final
+validation. Catalog and consumers use verified revision paths, never root projections.

@@ -1,4 +1,4 @@
-"""One LangGraph orchestrator for the two preparation sessions."""
+"""One LangGraph orchestrator for the three preparation sessions."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from .context import build_stage_context, resolve_prompt_budget, stage_input_dig
 from .contracts import (
     CONTROL_MAPPING_REVISION_REQUIRED,
     AcceptedHandoff,
+    ArtifactRef, digest_file,
     Diagnostic,
     Stage,
     StageRequest,
@@ -25,6 +26,7 @@ from .contracts import (
     STAGE_SPECS,
 )
 from .publisher import DatasetPublisher
+from .assembly import validate_stage_outputs, assemble_candidate
 from .validation import create_accepted_handoff, read_question_set, validate_handoff, validate_prepare_candidate
 from .worker import OpenHandsWorker
 
@@ -44,7 +46,11 @@ class PreparationGraphState(TypedDict, total=False):
     stage: str
     status: str
     understand_attempts: int
-    prepare_attempts: int
+    prepare_text_attempts: int
+    prepare_image_attempts: int
+    text_root: str
+    text_artifacts: dict[str, Any]
+    package_root: str
     mapping_revision_cycles: int
     attempt_id: str
     attempt_workspace: str
@@ -85,7 +91,7 @@ def _handoff(state) -> AcceptedHandoff | None:
 
 
 def _limit(state, name):
-    return state.get("preparation_attempt_limits", {"understand": 2, "prepare": 2, "mapping_revision_cycles": 1})[name]
+    return state.get("preparation_attempt_limits", {"understand": 2, "prepare_text": 2, "prepare_image": 2, "mapping_revision_cycles": 1})[name]
 
 
 def _fresh_attempt(state, **updates):
@@ -113,11 +119,12 @@ def _revise_mapping(state, issues):
     previous_handoff = state.get("accepted_handoff")
     if (cycle >= _limit(state, "mapping_revision_cycles")
             or state.get("understand_attempts", 0) >= _limit(state, "understand")
-            or state.get("prepare_attempts", 0) >= _limit(state, "prepare")):
+            or state.get("prepare_text_attempts", 0) >= _limit(state, "prepare_text")):
         return {"status": "blocked", "diagnostics": issues, "validation_feedback": {"issues": issues}}
     return _fresh_attempt(
         state, status="running", stage=Stage.UNDERSTAND.value,
         mapping_revision_cycles=cycle + 1, accepted_handoff=None, accepted_handoff_ref=None,
+        text_root="", text_artifacts={}, package_root="",
         revision_basis_handoff=previous_handoff,
         implementation_repair_root=previous_prepare_root,
         previous_attempt_root=previous_prepare_root,
@@ -130,17 +137,12 @@ def validate_understand_submission(outputs, state):
 
 
 def validate_candidate_submission(outputs, state):
-    handoff = _handoff(state)
-    return validate_prepare_candidate(
-        Path(outputs["cases.jsonl"]).resolve().parent,
-        state=state,
-        population_path=handoff.population.path if handoff else None,
-    )
+    return validate_stage_outputs(Path(outputs["root"]), Stage(state["stage"]), state)
 
 
 def publish_preparation(state, result, validation):
     return DatasetPublisher(state["bundle_root"]).publish(
-        Path(state["attempt_workspace"]) / "outputs", state, validation,
+        Path(state["package_root"]), state, validation,
     )
 
 
@@ -160,9 +162,10 @@ def resume_or_start(state):
     handoff = _handoff(current)
     if handoff and handoff.source_snapshot_digest != current["source_snapshot_digest"]:
         raise ValueError("Preparation source snapshot changed; start a new run")
-    current.setdefault("stage", Stage.PREPARE.value if handoff else Stage.UNDERSTAND.value)
+    current.setdefault("stage", Stage.PREPARE_TEXT.value if handoff else Stage.UNDERSTAND.value)
     current.setdefault("understand_attempts", 0)
-    current.setdefault("prepare_attempts", 0)
+    current.setdefault("prepare_text_attempts", 0)
+    current.setdefault("prepare_image_attempts", 0)
     current.setdefault("mapping_revision_cycles", 0)
     current.setdefault("validation_feedback", {})
     current.setdefault("user_decisions", [])
@@ -207,11 +210,15 @@ def _run_stage(state, stage, worker):
     else:
         packet, _, tokens, execution_key = build_stage_context(stage, local, workspace)
         settings = get_settings().llm
-        handoff = _handoff(state) if stage is Stage.PREPARE else None
+        handoff = _handoff(state) if stage is not Stage.UNDERSTAND else None
         artifacts = {} if handoff is None else {
             "source_report.json": handoff.source_report, "mapping.json": handoff.mapping,
             "image_population.jsonl": handoff.population, "inspect_source.py": handoff.inspection_script,
+            "image_conversion_plan.json": handoff.image_conversion_plan,
         }
+        if stage is Stage.PREPARE_IMAGE:
+            artifacts.update({name: ArtifactRef.model_validate(value, strict=False)
+                              for name, value in state.get("text_artifacts", {}).items()})
         spec = STAGE_SPECS[stage.value]
         request = StageRequest(
             stage=stage, run_id=state["run_id"], dataset_id=state["dataset_id"],
@@ -302,7 +309,7 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
         if not state.get("stage_result"):
             return {"status": "blocked"}
         result = StageResult.model_validate(state["stage_result"], strict=False)
-        if stage is Stage.PREPARE and result.control == CONTROL_MAPPING_REVISION_REQUIRED:
+        if stage is not Stage.UNDERSTAND and result.control == CONTROL_MAPPING_REVISION_REQUIRED:
             return _revise_mapping(state, _failure_issues(result))
         if result.status == "needs_input":
             try:
@@ -319,11 +326,11 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
         else:
             handoff = _handoff(state)
             validation = validate_candidate_submission(
-                {"cases.jsonl": str(Path(state["attempt_workspace"]) / "outputs/cases.jsonl")}, state,
+                {"root": str(Path(state["attempt_workspace"]) / "outputs")}, state,
             )
         _event(state, "stage_validated", status=validation.status)
         issues = [item.model_dump(mode="json") for item in validation.issues]
-        if stage is Stage.PREPARE and validation.control == CONTROL_MAPPING_REVISION_REQUIRED:
+        if stage is not Stage.UNDERSTAND and validation.control == CONTROL_MAPPING_REVISION_REQUIRED:
             return _revise_mapping(state, issues)
         if validation.status == "needs_input":
             return {"status": "needs_input",
@@ -333,14 +340,31 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
         if stage is Stage.UNDERSTAND:
             handoff = create_accepted_handoff(state, result.outputs, validation)
             return _fresh_attempt(
-                state, stage=Stage.PREPARE.value, status="running",
+                state, stage=Stage.PREPARE_TEXT.value, status="running",
                 accepted_handoff=handoff.model_dump(mode="json"),
                 accepted_handoff_ref=str(Path(state["preparation_root"]) / "handoff" / f"{handoff.digest}.json"),
                 validation_feedback={}, diagnostics=[],
                 previous_attempt_root=state.get("implementation_repair_root"),
                 revision_basis_handoff=None, implementation_repair_root=None,
             )
+        if stage is Stage.PREPARE_TEXT:
+            root = Path(state["attempt_workspace"]) / "outputs"
+            names = ["cases.jsonl", "provenance.jsonl", "image_requests.jsonl", "sampling_manifest.jsonl", "split_manifest.jsonl"]
+            artifacts = {name: ArtifactRef(name=name, path=str(root / name), digest=digest_file(root / name),
+                         producer="prepare_text", stage="prepare_text", status="accepted").model_dump(mode="json")
+                         for name in names if (root / name).is_file()}
+            return _fresh_attempt(state, stage=Stage.PREPARE_IMAGE.value, status="running",
+                                  text_root=str(root), text_artifacts=artifacts, previous_attempt_root=None)
         return {"status": "validated", "validation": validation.model_dump(mode="json")}
+
+    def package(state):
+        root = assemble_candidate(state)
+        handoff = _handoff(state)
+        validation = validate_prepare_candidate(root, state=state, population_path=handoff.population.path)
+        if validation.status != "accepted":
+            return _retry(state, Stage.PREPARE_IMAGE, [i.model_dump(mode="json") for i in validation.issues])
+        return {"status": "packaged", "package_root": str(root), "validation": validation.model_dump(mode="json")}
+
 
     def publish(state):
         result = StageResult.model_validate(state["stage_result"], strict=False)
@@ -354,21 +378,29 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
         if state.get("status") in {"needs_input", "blocked", "complete"}:
             return END
         if state.get("status") == "validated":
+            return "package"
+        if state.get("status") == "packaged":
             return "publish"
         return state.get("stage", "understand")
 
     graph = StateGraph(PreparationGraphState)
     graph.add_node("resume", resume_or_start)
     graph.add_node("understand", lambda state: _run_stage(state, Stage.UNDERSTAND, runner))
-    graph.add_node("prepare", lambda state: _run_stage(state, Stage.PREPARE, runner))
+    graph.add_node("prepare_text", lambda state: _run_stage(state, Stage.PREPARE_TEXT, runner))
     graph.add_node("validate_understand", lambda state: validate_stage(state, Stage.UNDERSTAND))
-    graph.add_node("validate_prepare", lambda state: validate_stage(state, Stage.PREPARE))
+    graph.add_node("validate_prepare_text", lambda state: validate_stage(state, Stage.PREPARE_TEXT))
+    graph.add_node("prepare_image", lambda state: _run_stage(state, Stage.PREPARE_IMAGE, runner))
+    graph.add_node("validate_prepare_image", lambda state: validate_stage(state, Stage.PREPARE_IMAGE))
+    graph.add_node("package", package)
     graph.add_node("publish", publish)
     graph.add_edge(START, "resume")
     graph.add_conditional_edges("resume", route)
     graph.add_edge("understand", "validate_understand")
-    graph.add_edge("prepare", "validate_prepare")
+    graph.add_edge("prepare_text", "validate_prepare_text")
     graph.add_conditional_edges("validate_understand", route)
-    graph.add_conditional_edges("validate_prepare", route)
+    graph.add_conditional_edges("validate_prepare_text", route)
+    graph.add_edge("prepare_image", "validate_prepare_image")
+    graph.add_conditional_edges("validate_prepare_image", route)
+    graph.add_conditional_edges("package", route)
     graph.add_edge("publish", END)
     return graph.compile(checkpointer=checkpointer)

@@ -102,13 +102,13 @@ class _SubmissionRuntime:
 
 def test_worker_projects_submission_control_for_prepare(tmp_path):
     request = StageRequest(
-        stage=Stage.PREPARE, run_id="run", dataset_id="dataset", attempt=1,
+        stage=Stage.PREPARE_TEXT, run_id="run", dataset_id="dataset", attempt=1,
         conversation_id="conversation", execution_key="execution", workspace=str(tmp_path),
         prompt_path=str(tmp_path / "prompt.md"), context_path=str(tmp_path / "context.json"),
         input_digest="input", required_outputs=["submission.json"],
     )
 
-    result = OpenHandsWorker(runtime=_SubmissionRuntime(Stage.PREPARE)).run(request)
+    result = OpenHandsWorker(runtime=_SubmissionRuntime(Stage.PREPARE_TEXT)).run(request)
 
     assert result.control == "mapping_revision_required"
     assert result.status == "blocked"

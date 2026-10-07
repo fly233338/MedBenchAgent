@@ -86,7 +86,7 @@ def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
     }
     limits = state["preparation_attempt_limits"]
     config = {"configurable": {"thread_id": dataset_id},
-              "recursion_limit": max(25, 2 * (limits["understand"] + limits["prepare"]) + 6)}
+              "recursion_limit": max(25, 2 * (limits["understand"] + limits["prepare_text"] + limits["prepare_image"]) + 6)}
     with SqliteSaver.from_conn_string(str(workspace / "checkpoint.sqlite")) as checkpointer:
         graph = compile_preparation_graph(
             worker=OpenHandsWorker(runtime=dataset_runtime(context)), checkpointer=checkpointer,

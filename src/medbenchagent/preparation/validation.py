@@ -21,7 +21,7 @@ from .contracts import (
     SEMANTIC_REVISION_CODES,
     AcceptedHandoff, ArtifactRef, DigestEntry, PopulationRecord, PopulationSummary,
     PreparationMapping, QuestionSet, Stage, SourceReport,
-    Submission, ValidationIssue, ValidationResult, STAGE_SPECS, UserDecision,
+    Submission, ImageConversionPlan, ValidationIssue, ValidationResult, STAGE_SPECS, UserDecision,
     digest_file, digest_payload,
 )
 
@@ -211,6 +211,11 @@ def validate_understand_candidate(
     except (OSError, ValueError, ValidationError) as exc:
         issues.append(_issue(stage, "mapping_schema", str(exc), path="mapping.json"))
 
+    try:
+        ImageConversionPlan.model_validate_json(Path(outputs["image_conversion_plan.json"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        issues.append(_issue(stage, "image_conversion_plan_invalid", str(exc)))
+
     records: list[PopulationRecord] = []
     try:
         records = read_population_records(outputs["image_population.jsonl"])
@@ -316,6 +321,7 @@ def create_accepted_handoff(state, outputs, validation):
     fields = {
         "source_report": "source_report.json", "mapping": "mapping.json",
         "population": "image_population.jsonl", "inspection_script": "inspect_source.py",
+        "image_conversion_plan": "image_conversion_plan.json",
     }
     refs = {field: ArtifactRef(name=name, path=str(Path(outputs[name]).resolve()),
                               digest=digest_file(outputs[name]), producer="host",
@@ -337,100 +343,22 @@ def create_accepted_handoff(state, outputs, validation):
     return handoff
 
 
-def validate_prepare_candidate(candidate, *, state=None, population_path=None,
-                               persist=True):
-    root, state, stage = Path(candidate).resolve(), state or {}, Stage.PREPARE
-
-    def finish(result):
-        return _save(result, state, root) if persist else result
-
+def validate_prepare_candidate(candidate, *, state=None, population_path=None, persist=True):
+    """Read-only validation of a fully assembled candidate."""
+    state = state or {}
+    stage = Stage.PREPARE_IMAGE
+    root = Path(candidate)
     try:
-        missing = [name for name in STAGE_SPECS[stage.value].required_outputs if not (root / name).is_file()]
-        if missing:
-            raise ValueError(f"Missing Prepare outputs: {missing}")
-        submission = Submission.model_validate_json((root / "submission.json").read_text(encoding="utf-8"))
-        if CONTROL_MAPPING_REVISION_REQUIRED in submission.diagnostic_codes:
-            return finish(ValidationResult(
-                status="blocked", stage=stage, control=CONTROL_MAPPING_REVISION_REQUIRED,
-                issues=[_issue(stage, CONTROL_MAPPING_REVISION_REQUIRED, submission.summary or "Mapping revision requested")],
-            ))
-        if submission.requested_outcome != "submitted":
-            raise ValueError("Prepare gate requires a submitted candidate")
-        if (root / "semantic_questions.json").is_file():
-            from .contracts import SemanticQuestion
-            questions = [item for item in read_question_set(root / "semantic_questions.json", stage=stage)
-                         if item["blocking"] and not item["resolved"]]
-            if questions:
-                return finish(ValidationResult(status="needs_input", stage=stage,
-                    questions=[SemanticQuestion.model_validate(item, strict=False) for item in questions]))
-        handoff_value = state.get("accepted_handoff")
-        handoff = AcceptedHandoff.model_validate(handoff_value, strict=False) if handoff_value else None
-        if handoff:
-            # Packaging restores the accepted semantic files. A worker-modified
-            # mapping is an implementation error, never implicit acceptance.
-            for artifact in (handoff.source_report, handoff.mapping, handoff.population, handoff.inspection_script):
-                target = root / artifact.name
-                if not target.is_file() or digest_file(target) != artifact.digest:
-                    raise ValueError(f"Prepare changed an accepted file: {artifact.name}")
-            population_file = Path(population_path or handoff.population.path)
-            expected = set()
-            for record in read_population_records(population_file):
-                expected.add((record.source_id, record.source_unit_id))
-            accounted = set()
-            for line_number, line in enumerate((root / "provenance.jsonl").read_text(encoding="utf-8").splitlines(), 1):
-                if not line.strip():
-                    continue
-                item = json.loads(line)
-                identity = (str(item.get("source_id", "")), str(item.get("source_unit_id", "")))
-                if identity in accounted:
-                    raise ValueError(f"duplicate provenance population identity at line {line_number}: {identity}")
-                if identity not in expected:
-                    raise ValueError(f"provenance references unknown population identity: {identity}")
-                if item.get("status") not in {"retained", "quarantined", "excluded", "duplicate"}:
-                    raise ValueError(f"provenance line {line_number} has no canonical terminal status")
-                accounted.add(identity)
-            if accounted != expected:
-                raise ValueError(f"population coverage incomplete: expected {len(expected)}, accounted {len(accounted)}")
-        execution = _json(root / "execution_report.json")
-        if (not execution.get("tests") or not execution.get("full_execution")
-                or execution["full_execution"].get("status") != "succeeded"
-                or any(item.get("status") != "succeeded" for item in execution["tests"])
-                or execution.get("failed_checks")):
-            raise ValueError("Execution report requires successful sample/test and full execution")
-        if handoff:
-            if _json(root / "grouping_policy.json") != project_grouping(
-                _json(handoff.mapping.path), mapping_digest=handoff.mapping.digest,
-            ):
-                raise ValueError("Grouping policy differs from the accepted mapping")
-        report = validate_candidate(
-            root, source_roots=state.get("source_roots"), population_path=population_path,
-            expected_mapping_digest=handoff.mapping.digest if handoff else None,
-            expected_population_digest=handoff.population.digest if handoff else None,
+        report = validate_candidate(root, source_roots=state.get("source_roots"), population_path=population_path)
+        issues = [_issue(stage, item["kind"], item["error"]) for item in report["failures"]]
+        ledger = build_digest_ledger(root)
+        result = ValidationResult(
+            stage=stage, status="accepted" if report["accepted_cases"] and not report["systemic_failure"] else "rejected",
+            report=report, issues=issues, candidate_digest=candidate_digest(root, ledger), digest_ledger=ledger,
         )
     except (ValueError, KeyError, OSError) as exc:
-        return finish(ValidationResult(status="rejected", stage=stage,
-                                     issues=[_issue(stage, _prepare_failure_code(str(exc)), str(exc))]))
-    issues = [_issue(stage, item["kind"], item["error"]) for item in report["failures"]]
-    accounting = {"expected": int(report.get("population", {}).get("expected_units", 0) or 0),
-                  "accounted": int(report.get("population", {}).get("accounted_units", 0) or 0),
-                  "retained": 0, "quarantined": 0, "excluded": 0, "duplicate": 0,
-                  "unprocessed": int(report.get("population", {}).get("unprocessed_units", 0) or 0)}
-    provenance = root / "provenance.jsonl"
-    if provenance.is_file():
-        for line in provenance.read_text(encoding="utf-8").splitlines():
-            if line.strip() and json.loads(line).get("status") in accounting:
-                accounting[json.loads(line)["status"]] += 1
-    ledger = build_digest_ledger(root)
-    result = ValidationResult(
-        status="accepted" if report["accepted_cases"] and not report["systemic_failure"] else "rejected",
-        stage=stage,
-        control=_semantic_control(issues),
-        issues=issues, report=report, accounting=accounting,
-        quarantined_cases=[item for item in report["failures"] if item["kind"] == "hard_case_failure"],
-        candidate_digest=candidate_digest(root, ledger),
-        digest_ledger=ledger,
-    )
-    return finish(result)
+        result = ValidationResult(stage=stage, status="rejected", issues=[_issue(stage, "candidate_invalid", str(exc))])
+    return _save(result, state, root) if persist else result
 
 
 def project_grouping(mapping: dict[str, Any] | PreparationMapping, *, mapping_digest=""):

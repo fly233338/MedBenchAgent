@@ -38,7 +38,7 @@ def _candidate(tmp_path: Path, *, record_ref="unit-1", dependency_path=None):
     population.write_text('{"unit_id":"unit-1"}\n', encoding="utf-8")
     entries = []
     for name in ("cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl", "conversion_config.json",
-                 "grouping_policy.json", "execution_report.json"):
+                 "grouping_policy.json", "execution_report.json", "mapping.json"):
         path = candidate / name
         entries.append({"path": name, "kind": "output", "digest": digest_path(path)})
     if dependency_path is not None:
@@ -121,11 +121,11 @@ def test_quarantine_preserves_population_and_filters_sampling(tmp_path):
 
 def test_only_explicit_semantic_issue_codes_request_mapping_revision():
     semantic = ValidationIssue(
-        stage=Stage.PREPARE, issue_id="semantic", code="grouping_semantics_conflict",
+        stage=Stage.PREPARE_TEXT, issue_id="semantic", code="grouping_semantics_conflict",
         message="accepted grouping semantics conflict with source",
     )
     implementation = ValidationIssue(
-        stage=Stage.PREPARE, issue_id="manifest", code="output_manifest_failure",
+        stage=Stage.PREPARE_TEXT, issue_id="manifest", code="output_manifest_failure",
         message="output_manifest mapping digest does not match accepted mapping",
     )
 
@@ -150,7 +150,7 @@ def test_output_manifest_mapping_failure_stays_in_prepare(tmp_path, monkeypatch)
     monkeypatch.setattr(preparation_validation, "validate_candidate", lambda *args, **kwargs: {
         "failures": [{"kind": "output_manifest_failure",
                        "error": "output_manifest mapping digest does not match accepted mapping"}],
-        "accepted_cases": 1, "systemic_failure": False,
+        "accepted_cases": 1, "systemic_failure": True,
         "population": {"expected_units": 1, "accounted_units": 1, "unprocessed_units": 0},
     })
 
@@ -194,6 +194,7 @@ def _understand_candidate(tmp_path, *, report_count=2):
     )
     (candidate / "source_report.json").write_text(report.model_dump_json(), encoding="utf-8")
     (candidate / "mapping.json").write_text(mapping.model_dump_json(), encoding="utf-8")
+    (candidate / "image_conversion_plan.json").write_text("{}", encoding="utf-8")
     (candidate / "image_population.jsonl").write_text(
         "".join(record.model_dump_json() + "\n" for record in records), encoding="utf-8",
     )

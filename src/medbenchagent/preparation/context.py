@@ -145,9 +145,12 @@ def resolve_prompt_budget(state: dict[str, Any], stage: Stage | str = Stage.UNDE
 
 
 def _contract_payload(name: str) -> dict[str, Any]:
-    from .contracts import OutputManifest, PopulationRecord, Submission
+    from .contracts import OutputManifest, PopulationRecord, Submission, ImageConversionPlan, ImageRequest, PopulationOutcome
 
     mapping = {
+        "image_conversion_plan.schema.json": ImageConversionPlan.model_json_schema(),
+        "image_request.schema.json": ImageRequest.model_json_schema(),
+        "population_outcome.schema.json": PopulationOutcome.model_json_schema(),
         "submission.schema.json": Submission.model_json_schema(),
         "question.schema.json": QuestionSet.model_json_schema(),
         "output_manifest.schema.json": OutputManifest.model_json_schema(),
@@ -187,7 +190,7 @@ def resolve_stage_inputs(stage: Stage | str, state: dict[str, Any]) -> dict[str,
                 manifests[source["id"]] = str(candidate)
     handoff = _handoff(state)
     artifacts: dict[str, ArtifactRef] = {}
-    if current is Stage.PREPARE:
+    if current is not Stage.UNDERSTAND:
         if handoff is None:
             raise ValueError("Prepare requires an accepted handoff")
         artifacts = {
@@ -195,7 +198,11 @@ def resolve_stage_inputs(stage: Stage | str, state: dict[str, Any]) -> dict[str,
             "mapping.json": handoff.mapping,
             "image_population.jsonl": handoff.population,
             "inspect_source.py": handoff.inspection_script,
+            "image_conversion_plan.json": handoff.image_conversion_plan,
         }
+    if current is Stage.PREPARE_IMAGE:
+        for name, value in state.get("text_artifacts", {}).items():
+            artifacts[name] = ArtifactRef.model_validate(value, strict=False)
     return {
         "stage": current,
         "spec": spec,
@@ -357,7 +364,7 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
             else AcceptedHandoff.model_validate(revision_handoff_value, strict=False)
         )
         revision_basis = {}
-        for field in ("source_report", "mapping", "population", "inspection_script"):
+        for field in ("source_report", "mapping", "population", "inspection_script", "image_conversion_plan"):
             artifact = getattr(revision_handoff, field)
             candidate = previous_root / "inputs" / "accepted" / artifact.name
             if not candidate.is_file():
@@ -401,7 +408,7 @@ def materialize_worker_inputs(inputs: dict[str, Any], destination: str | Path) -
     handoff = inputs.get("handoff")
     if handoff is not None:
         updates = {}
-        for field in ("source_report", "mapping", "population", "inspection_script"):
+        for field in ("source_report", "mapping", "population", "inspection_script", "image_conversion_plan"):
             artifact = getattr(handoff, field)
             updates[field] = artifact.model_copy(update={"path": f"inputs/accepted/{artifact.name}"})
         receipt_path = root / "handoff_validation.json"
@@ -452,7 +459,7 @@ def _project_facts(stage: Stage, materialized: MaterializedInputs) -> dict[str, 
 
 def _project_files(stage: Stage, materialized: MaterializedInputs) -> list[InputBinding]:
     required_roles = {"user_request", "source_index", "environment", "decisions", "contracts", "execution"}
-    if stage is Stage.PREPARE:
+    if stage is not Stage.UNDERSTAND:
         required_roles.add("accepted")
     required_roles.add("revision_basis")
     return [
@@ -471,7 +478,7 @@ def _project_files(stage: Stage, materialized: MaterializedInputs) -> list[Input
 
 def stage_input_digest(stage: Stage | str, state: dict[str, Any]) -> str:
     current = Stage(stage)
-    handoff = _handoff(state) if current is Stage.PREPARE else None
+    handoff = _handoff(state) if current is not Stage.UNDERSTAND else None
     revision_basis = state.get("revision_basis_handoff")
     if revision_basis:
         revision_basis = (
@@ -482,6 +489,7 @@ def stage_input_digest(stage: Stage | str, state: dict[str, Any]) -> str:
         "stage": current.value,
         "source_snapshot_digest": state.get("source_snapshot_digest") or digest_payload(state.get("source_manifests", {})),
         "handoff": handoff.digest if handoff else None,
+        "text_artifacts": state.get("text_artifacts", {}) if current is Stage.PREPARE_IMAGE else {},
         "revision_basis_handoff": revision_basis,
         "previous_attempt_root": state.get("previous_attempt_root"),
         "implementation_repair_root": state.get("implementation_repair_root"),
@@ -550,7 +558,7 @@ def render_attempt_mode(packet: ContextPacket) -> str:
 
 def render_prompt(stage: Stage | str, packet: ContextPacket) -> str:
     current = Stage(stage)
-    names = {Stage.UNDERSTAND: "data_preparation_understand.md", Stage.PREPARE: "data_preparation_prepare.md"}
+    names = {Stage.UNDERSTAND: "data_preparation_understand.md", Stage.PREPARE_TEXT: "data_preparation_prepare_text.md", Stage.PREPARE_IMAGE: "data_preparation_prepare_image.md"}
     common = read_prompt("data_preparation_agent.md")
     stage_prompt = read_prompt(names[current])
     spec = STAGE_SPECS[current.value]

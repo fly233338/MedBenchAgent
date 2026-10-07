@@ -22,7 +22,8 @@ class Contract(BaseModel):
 
 class Stage(StrEnum):
     UNDERSTAND = "understand"
-    PREPARE = "prepare"
+    PREPARE_TEXT = "prepare_text"
+    PREPARE_IMAGE = "prepare_image"
 
 
 CONTROL_MAPPING_REVISION_REQUIRED = "mapping_revision_required"
@@ -297,6 +298,7 @@ class PreparationMapping(Contract):
     joins: list[JoinRule] = Field(default_factory=list)
     fields: list[FieldRule] = Field(min_length=1)
     asset_rules: list[AssetRule] = Field(default_factory=list)
+    target_path_rule: Literal["stable_identity"] = "stable_identity"
     field_semantics: dict[str, Any] = Field(default_factory=dict)
     resolved_decision_refs: list[str] = Field(default_factory=list)
     limitations: list[Any] = Field(default_factory=list)
@@ -348,6 +350,7 @@ class AcceptedHandoff(Contract):
     mapping: ArtifactRef
     population: ArtifactRef
     inspection_script: ArtifactRef
+    image_conversion_plan: ArtifactRef
     decisions: list[UserDecision] = Field(default_factory=list)
     validation_receipt_ref: str = Field(min_length=1)
     digest: str = Field(min_length=1)
@@ -511,104 +514,65 @@ class StageSpec(Contract):
 STAGE_SPECS: dict[str, StageSpec] = {
     Stage.UNDERSTAND.value: StageSpec(
         stage=Stage.UNDERSTAND,
-        objective="Understand every configured source and produce a source-grounded, implementable preparation mapping.",
-        required_outputs=[
-            "source_report.json", "image_population.jsonl", "mapping.json",
-            "semantic_questions.json", "inspect_source.py", "submission.json",
-        ],
-        input_roles=["user_request", "source_index", "environment", "decisions", "contracts"],
-        success_conditions=[
-            "Every source unit is represented or explicitly accounted for.",
-            "Mapping decisions have resolvable evidence references.",
-            "Blocking questions are resolved before prepare starts.",
-        ],
-        files=[
-            {"path": "source_report.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "understand", "validator": "source_report"},
-            {"path": "image_population.jsonl", "format": "jsonl", "required": True, "read_policy": "stream_during_execution", "producer": "understand", "validator": "population"},
-            {"path": "mapping.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "understand", "validator": "mapping"},
-            {"path": "semantic_questions.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "stage", "validator": "questions"},
-            {"path": "inspect_source.py", "format": "python", "required": True, "read_policy": "on_failure", "producer": "understand", "validator": "replay"},
-        ],
-        commands=[
-            ["python", "outputs/inspect_source.py", "--input-config", "inputs/inspection_config.json", "--output-dir", "work/inspection", "--mode", "inventory"],
-            ["python", "-m", "medbenchagent.preparation.cli", "validate-understand", "--context", "inputs/context.json", "--candidate", "outputs", "--report", "work/validation.json"],
-        ],
-        completion_by_outcome={
-            "submitted": ["shared Understand validator reports accepted", "source replay is deterministic", "all source units are accounted for", "no blocking questions remain"],
-            "needs_input": ["question container is valid", "partial observations are preserved"],
-            "blocked": ["diagnostic and recovery condition are recorded"],
-        },
+        objective="Understand source semantics once; freeze mapping and image conversion policy.",
+        required_outputs=["mapping.json", "image_conversion_plan.json", "source_report.json",
+                          "image_population.jsonl", "inspect_source.py", "semantic_questions.json", "submission.json"],
+        commands=[["python", "-m", "medbenchagent.preparation.cli", "validate-understand",
+                   "--context", "inputs/context.json", "--candidate", "outputs", "--report", "work/validation.json"]],
     ),
-    Stage.PREPARE.value: StageSpec(
-        stage=Stage.PREPARE,
-        objective="Implement, test, execute and submit the accepted preparation mapping over the complete source population.",
-        required_outputs=[
-            "scripts/prepare.py", "cases.jsonl", "asset_manifest.jsonl", "provenance.jsonl",
-            "conversion_config.json", "grouping_policy.json", "execution_report.json",
-            "output_manifest.json", "submission.json",
-        ],
-        optional_outputs=[
-            "presentation_manifest.jsonl", "split_manifest.jsonl", "sampling_manifest.jsonl",
-            "semantic_questions.json",
-        ],
-        input_roles=["user_request", "source_index", "environment", "decisions", "accepted", "validation"],
-        success_conditions=[
-            "Representative and boundary checks actually ran.",
-            "The complete population is reconciled by stable source-unit identity.",
-            "Every candidate dependency is registered in output_manifest.json.",
-        ],
-        files=[
-            {"path": "scripts/prepare.py", "format": "python", "required": True, "read_policy": "before_work", "producer": "prepare", "validator": "script"},
-            {"path": "cases.jsonl", "format": "jsonl", "required": True, "read_policy": "stream_during_execution", "producer": "converter", "validator": "case"},
-            {"path": "asset_manifest.jsonl", "format": "jsonl", "required": True, "read_policy": "stream_during_execution", "producer": "converter", "validator": "asset"},
-            {"path": "provenance.jsonl", "format": "jsonl", "required": True, "read_policy": "stream_during_execution", "producer": "converter", "validator": "provenance"},
-            {"path": "conversion_config.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "prepare", "validator": "identity"},
-            {"path": "grouping_policy.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "host", "validator": "grouping"},
-            {"path": "execution_report.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "runtime", "validator": "execution"},
-            {"path": "output_manifest.json", "format": "json", "required": True, "read_policy": "before_work", "producer": "host", "validator": "manifest"},
-            {"path": "semantic_questions.json", "format": "json", "required": False, "read_policy": "on_failure", "producer": "stage", "validator": "questions"},
-        ],
-        commands=[
-            ["python", "outputs/scripts/prepare.py", "--input-config", "inputs/preparation_config.json", "--output-dir", "work/sample", "--mode", "sample"],
-            ["python", "outputs/scripts/prepare.py", "--input-config", "inputs/preparation_config.json", "--output-dir", "outputs", "--mode", "full"],
-            ["python", "-m", "medbenchagent.preparation.cli", "validate-candidate", "--context", "inputs/context.json", "--candidate", "outputs", "--report", "work/validation.json"],
-        ],
-        completion_by_outcome={
-            "submitted": ["sample and full execution evidence exists", "population is fully reconciled", "shared candidate validation passes"],
-            "needs_input": ["current question set is valid", "partial work is preserved"],
-            "blocked": ["diagnostic and recovery condition are recorded"],
-        },
+    Stage.PREPARE_TEXT.value: StageSpec(
+        stage=Stage.PREPARE_TEXT,
+        objective="Implement accepted annotation mapping without converting images or reinterpreting semantics.",
+        required_outputs=["cases.jsonl", "provenance.jsonl", "image_requests.jsonl", "submission.json"],
+        optional_outputs=["sampling_manifest.jsonl", "split_manifest.jsonl", "semantic_questions.json"],
+    ),
+    Stage.PREPARE_IMAGE.value: StageSpec(
+        stage=Stage.PREPARE_IMAGE,
+        objective="Materialize requested presentations and mask features under accepted conversion policy.",
+        required_outputs=["asset_manifest.jsonl", "presentation_manifest.jsonl", "mask_features.jsonl", "submission.json"],
+        optional_outputs=["semantic_questions.json"],
     ),
 }
 
+CONTRACT_RULES = """# Preparation contracts
 
-CONTRACT_RULES = """# Preparation contract rules
-
-- Case IDs and Evidence IDs are unique within their scope.
-- Asset Evidence values reference an Asset ID in asset_manifest.jsonl.
-- Evidence refs stay within their Case and region Evidence references exactly one Asset Evidence.
-- Region coordinates use normalized xyxy order; mask digests match their Asset digest.
-- Source locators are source-relative and cannot escape the declared source root.
-- Every emitted Case and every accounted source population unit has provenance.
-- Population accounting distinguishes retained, isolated, excluded and duplicate units.
-- Understand population counts are projections of image_population.jsonl; do not independently author them.
-- Optional manifests reference existing Case, Asset and output files and preserve declared order.
-- mapping, grouping_policy and conversion_config must carry the accepted mapping identity.
-- output_manifest registers every submitted output and all file dependencies.
+Use the supplied schemas and shared validators. Source locators remain inside frozen roots.
+Case/Evidence identities and relations come from accepted mapping. Source dispositions use
+case_ids and record_refs, one terminal outcome per source unit. Images use stable target paths
+from medbenchagent.data.presentation.target_path. Existing JPEG/PNG bytes are preserved when
+no transform is requested; medical presentations are actual PNG. Reference masks stay hidden.
+Understand must not predict conversion results. Text declares requests; Image records facts.
+Implementations and diagnostics belong in work/. Only Host packages and publishes.
 """
 
 
 def contract_file_names(stage: Stage | str) -> list[str]:
-    current = Stage(stage)
-    common = ["rules.md", "submission.schema.json"]
-    if current is Stage.UNDERSTAND:
-        return common + [
-            "source_report.schema.json", "population.schema.json", "mapping.schema.json", "question.schema.json",
-        ]
-    return common + [
-        "question.schema.json", "case.schema.json", "asset.schema.json", "presentation.schema.json", "split.schema.json",
-        "sampling.schema.json", "execution_report.schema.json", "output_manifest.schema.json",
-    ]
+    common = ["rules.md", "submission.schema.json", "question.schema.json"]
+    if Stage(stage) is Stage.UNDERSTAND:
+        return common + ["source_report.schema.json", "population.schema.json", "mapping.schema.json",
+                         "image_conversion_plan.schema.json"]
+    return common + ["case.schema.json", "asset.schema.json", "presentation.schema.json",
+                     "split.schema.json", "sampling.schema.json", "image_request.schema.json",
+                     "population_outcome.schema.json"]
+
+
+class ImageConversionPlan(Contract):
+    policies: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ImageRequest(Contract):
+    case_id: str = Field(min_length=1)
+    asset_id: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    source_path: str = Field(min_length=1)
+    source_format: str = Field(min_length=1)
+    policy_id: str = Field(min_length=1)
+    view_id: str | None = None
+    panel_id: str | None = None
+    order: int = Field(ge=0)
+    target_path: str = Field(min_length=1)
+    reference_only: bool = False
 
 
 def digest_payload(value: Any) -> str:

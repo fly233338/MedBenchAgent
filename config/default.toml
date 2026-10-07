@@ -68,5 +68,5 @@ coding_worker_image = "medbench-openhands:local"
 coding_worker_venv = ".venv-coding"
 coding_worker_max_iterations = 100
 coding_worker_timeout_seconds = 7200
-preparation_attempt_limits = { understand = 2, prepare = 2, mapping_revision_cycles = 1 }
-preparation_stage_budgets = { understand = { max_iterations = 40, timeout_seconds = 1800 }, prepare = { max_iterations = 80, timeout_seconds = 3600 } }
+preparation_attempt_limits = { understand = 2, prepare_text = 2, prepare_image = 2, mapping_revision_cycles = 1 }
+preparation_stage_budgets = { understand = { max_iterations = 40, timeout_seconds = 1800 }, prepare_text = { max_iterations = 80, timeout_seconds = 3600 }, prepare_image = { max_iterations = 80, timeout_seconds = 3600 } }

@@ -18,6 +18,7 @@ def _inputs(tmp_path):
     for name, value in {
         "source_report.json": "{}",
         "mapping.json": "{}",
+                "image_conversion_plan.json": "{}",
         "image_population.jsonl": "{}\n",
         "inspect_source.py": "print('ok')\n",
     }.items():
@@ -34,6 +35,7 @@ def _inputs(tmp_path):
         "accepted_handoff": AcceptedHandoff(
             handoff_id="handoff", dataset_id="dataset", source_snapshot_digest="source",
             source_report=files["source_report.json"], mapping=files["mapping.json"],
+            image_conversion_plan=files["image_conversion_plan.json"],
             population=files["image_population.jsonl"], inspection_script=files["inspect_source.py"],
             validation_receipt_ref=str(tmp_path / "validation.json"), digest=digest_payload(files),
         ).model_dump(mode="json"),
@@ -42,7 +44,7 @@ def _inputs(tmp_path):
 
 
 def test_context_writes_complete_prompt_and_keeps_unaccepted_outputs_separate(tmp_path):
-    packet, prompt, token_count, key = build_stage_context("prepare", _inputs(tmp_path), tmp_path / "attempt")
+    packet, prompt, token_count, key = build_stage_context("prepare_text", _inputs(tmp_path), tmp_path / "attempt")
 
     assert "You are the MedBench data preparation coding agent." in prompt
     assert "Current stage: prepare" in prompt
@@ -55,20 +57,20 @@ def test_context_writes_complete_prompt_and_keeps_unaccepted_outputs_separate(tm
     previous = next(item for item in packet.files if item.role == "previous")
     assert previous.host_path == str((tmp_path / "previous").resolve())
     assert previous.worker_path == str((tmp_path / "previous").resolve())
-    assert packet.identity["stage"] == "prepare"
+    assert packet.identity["stage"] == "prepare_text"
 
 
 def test_required_context_budget_fails_without_truncating_prompt(tmp_path):
     state = _inputs(tmp_path)
-    state["preparation_stage_budgets"] = {"prepare": {"initial_message_tokens": 256}}
+    state["preparation_stage_budgets"] = {"prepare_text": {"initial_message_tokens": 256}}
     with pytest.raises(ContextBudgetError, match="required_context_too_large"):
-        build_stage_context("prepare", state, tmp_path / "attempt")
+        build_stage_context("prepare_text", state, tmp_path / "attempt")
 
 
 def test_previous_reference_detects_local_mutation(tmp_path):
     state = _inputs(tmp_path)
     attempt = tmp_path / "attempt"
-    build_stage_context("prepare", state, attempt)
+    build_stage_context("prepare_text", state, attempt)
     (tmp_path / "previous" / "outputs" / "draft.json").write_text("changed", encoding="utf-8")
 
     with pytest.raises(ValueError, match="reference changed"):
@@ -79,7 +81,7 @@ def test_previous_reference_uses_docker_worker_path(tmp_path):
     state = _inputs(tmp_path)
     state["execution_runtime"] = {"backend": "docker"}
 
-    packet, _, _, _ = build_stage_context("prepare", state, tmp_path / "attempt")
+    packet, _, _, _ = build_stage_context("prepare_text", state, tmp_path / "attempt")
 
     previous = next(item for item in packet.files if item.role == "previous")
     assert previous.worker_path == "/workspace/previous"

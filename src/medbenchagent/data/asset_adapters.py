@@ -41,7 +41,25 @@ class AssetAdapter:
     def present(self, asset_spec: AssetEntry, presentation_spec: PresentationSpec, *, source_root: str | Path | None = None) -> LoadedAsset:
         loaded = self.load(asset_spec, source_root=source_root)
         if presentation_spec.mode == "native":
-            return loaded
+            from PIL import Image
+            from .image_conversion import convert_image
+            data = loaded.data
+            if not isinstance(data, Image.Image) or presentation_spec.window:
+                if presentation_spec.window:
+                    low, high = presentation_spec.window
+                    policy = {"encoding": "window", "low": low, "high": high,
+                              "invert": loaded.metadata.get("invert", False)}
+                else:
+                    policy = {"encoding": "preserve"}
+                data, _, _ = convert_image(asset_spec.source_path, policy,
+                    decoded=(data, asset_spec.format, loaded.metadata.get("window"), loaded.metadata.get("invert", False)))
+            if presentation_spec.crop:
+                x0, y0, x1, y1 = presentation_spec.crop
+                width, height = data.size
+                data = data.crop((int(x0 * width), int(y0 * height), int(x1 * width), int(y1 * height)))
+            if presentation_spec.resize:
+                data = data.resize(presentation_spec.resize, Image.Resampling.NEAREST)
+            return LoadedAsset(data, loaded.metadata)
         data = np.asarray(loaded.data)
         if data.ndim < 3:
             raise AssetAdapterError("slice presentation requires a volume")
@@ -53,13 +71,15 @@ class AssetAdapter:
         indices = presentation_spec.indices or [data.shape[axis] // 2]
         if any(index < 0 or index >= data.shape[axis] for index in indices):
             raise AssetAdapterError("Presentation slice index is outside the volume")
-        if presentation_spec.window is not None:
-            low, high = presentation_spec.window
-            if low >= high:
-                raise AssetAdapterError("Presentation window requires low < high")
-            data = np.clip((data.astype(float) - low) / (high - low), 0, 1) * 255
-            data = data.astype(np.uint8)
-        slices = [np.take(data, index, axis=axis) for index in indices]
+        from .image_conversion import convert_image
+        if presentation_spec.axis is None or not presentation_spec.indices:
+            raise AssetAdapterError("Volume presentation requires explicit axis and slice indices")
+        policy = ({"encoding": "window", "low": presentation_spec.window[0], "high": presentation_spec.window[1],
+                   "invert": loaded.metadata.get("invert", False)}
+                  if presentation_spec.window else {"encoding": "preserve"})
+        slices = [np.asarray(convert_image(asset_spec.source_path, policy,
+                  decoded=(np.take(data, index, axis=axis), asset_spec.format, None,
+                           loaded.metadata.get("invert", False)))[0]) for index in indices]
         if presentation_spec.crop is not None:
             if len(presentation_spec.crop) != 4:
                 raise AssetAdapterError("Presentation crop requires normalized xyxy coordinates")
@@ -184,24 +204,9 @@ class DicomImageAdapter(AssetAdapter):
         return self.load(asset_spec, source_root=source_root).metadata
 
     def load(self, asset_spec: AssetEntry, *, source_root=None) -> LoadedAsset:
-        try:
-            import pydicom
-        except ImportError as exc:
-            raise AssetAdapterError("pydicom is required for DICOM assets") from exc
-        dataset = pydicom.dcmread(str(_asset_path(asset_spec, source_root)))
-        if not hasattr(dataset, "PixelData"):
-            raise AssetAdapterError("DICOM has no Pixel Data")
-        if int(getattr(dataset, "NumberOfFrames", 1)) != 1:
-            raise AssetAdapterError("Multiframe DICOM requires a volume adapter")
-        if str(getattr(dataset, "PhotometricInterpretation", "")) not in {"MONOCHROME1", "MONOCHROME2"}:
-            raise AssetAdapterError("Unsupported DICOM photometric interpretation")
-        pixels = dataset.pixel_array.astype(np.float32)
-        pixels = pixels * float(getattr(dataset, "RescaleSlope", 1.0)) + float(getattr(dataset, "RescaleIntercept", 0.0))
-        if str(getattr(dataset, "PhotometricInterpretation", "")) == "MONOCHROME1":
-            pixels = np.max(pixels) - pixels
-        return LoadedAsset(pixels, {"rows": int(dataset.Rows), "columns": int(dataset.Columns),
-                                    "series_uid": str(getattr(dataset, "SeriesInstanceUID", "")),
-                                    "sop_uid": str(getattr(dataset, "SOPInstanceUID", ""))})
+        from .readers import DicomReader
+        pixels, _, window, inverse = DicomReader().read_pixels(_asset_path(asset_spec, source_root))
+        return LoadedAsset(pixels, {"window": window, "invert": inverse})
 
 
 class NiftiVolumeAdapter(AssetAdapter):
@@ -318,8 +323,6 @@ class DicomSeriesAdapter(AssetAdapter):
                 transfer = getattr(getattr(ds, "file_meta", None), "TransferSyntaxUID", "unknown")
                 raise AssetAdapterError(f"DICOM pixel decoder unavailable for transfer syntax {transfer}: {exc}") from exc
             pixels = pixels * float(getattr(ds, "RescaleSlope", 1.0)) + float(getattr(ds, "RescaleIntercept", 0.0))
-            if str(getattr(ds, "PhotometricInterpretation", "")) == "MONOCHROME1":
-                pixels = np.max(pixels) - pixels
             arrays.append(pixels)
         shapes = {tuple(array.shape) for array in arrays}
         if len(shapes) != 1:
@@ -340,6 +343,7 @@ class DicomSeriesAdapter(AssetAdapter):
                                     "direction": list(getattr(first, "ImageOrientationPatient", [])),
                                     "affine": None, "axis_order": [0, 1, 2],
                                     "slice_count": len(datasets), "frame_count": 1,
+                                    "invert": str(getattr(first, "PhotometricInterpretation", "")) == "MONOCHROME1",
                                     "series_uid": next(iter(uids))})
 
     def inspect(self, asset_spec: AssetEntry, *, source_root=None) -> dict[str, Any]:

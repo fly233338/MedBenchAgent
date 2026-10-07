@@ -16,7 +16,7 @@ def publish_candidate(candidate, context):
     report = validate_candidate(candidate)
     ledger = DatasetPublisher._build_ledger(candidate)
     validation = ValidationResult(
-        status="accepted", stage=Stage.PREPARE, report=report,
+        status="accepted", stage=Stage.PREPARE_TEXT, report=report,
         candidate_digest=DatasetPublisher._candidate_digest(candidate, ledger),
         digest_ledger=ledger,
     )
