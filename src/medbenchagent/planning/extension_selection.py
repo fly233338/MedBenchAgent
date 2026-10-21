@@ -1,4 +1,4 @@
-"""Freeze and bind human-selected Prompt extensions for selected datasets."""
+"""Freeze and bind human-selected planning extensions for one compilation."""
 
 from __future__ import annotations
 
@@ -59,19 +59,31 @@ def discover_extension_candidates(context):
             extension_ids=[],
             selection_reason={},
         )
-        return result("success", "No planning extensions are registered", **selected["updates"],
-                      extension_candidates=[], candidate_snapshot_path=str(path))
+        return result("success", "No planning extensions are registered", **selected["updates"])
     return result(
         "success",
         json.dumps({"dataset_id": snapshot["dataset_id"], "candidates": [snapshot["candidates"][key] for key in snapshot["candidate_order"]]}, ensure_ascii=False),
-        extension_candidates=[snapshot["candidates"][key] for key in snapshot["candidate_order"]],
-        extension_candidate_order=snapshot["candidate_order"],
         extension_candidate_snapshot_path=str(path),
     )
 
 
 def select_extensions(context, *, extension_ids: list[str],
                       selection_reason: dict[str, str], selection_issue_id: str = ""):
+    issue_updates = {}
+    if selection_issue_id:
+        issue = context.get("global_issue")
+        if not issue or issue.get("issue_id") != selection_issue_id:
+            raise ValueError("selection_issue_id must reference the pending extension selection question")
+        if issue.get("purpose") != "planning_extension_selection" or issue.get("status") != "answered":
+            raise ValueError("Extension selection question must have an answer before binding")
+        from medbenchagent.workflow.clarifications import resolve_semantic_answer
+        resolved = resolve_semantic_answer(context, issue)
+        issue_updates = {
+            "issues": {**context.get("issues", {}), selection_issue_id: resolved},
+            "decisions": {**context.get("decisions", {}), selection_issue_id: issue["answer_reference"]},
+            "global_issue": None,
+            "clarification": resolved,
+        }
     snapshot, snapshot_path = _snapshot(context)
     selection = ExtensionSelection(
         selected_extension_ids=extension_ids,
@@ -90,20 +102,6 @@ def select_extensions(context, *, extension_ids: list[str],
     store = BIRStore(context["bir_path"])
     store.update("planning_extensions.json", selection_value, run_id=context["run_id"], actor="extension_selection",
                  dependencies={"registry": store.registry().digest})
-    issue_updates = {}
-    if selection_issue_id:
-        issue = context.get("global_issue")
-        if not issue or issue.get("issue_id") != selection_issue_id:
-            raise ValueError("selection_issue_id must reference the pending extension selection question")
-        if issue.get("purpose") != "planning_extension_selection" or issue.get("status") != "answered":
-            raise ValueError("Extension selection question must have an answer before binding")
-        resolved = {**issue, "status": "resolved"}
-        issue_updates = {
-            "issues": {**context.get("issues", {}), selection_issue_id: resolved},
-            "decisions": {**context.get("decisions", {}), selection_issue_id: issue.get("answer_reference", "")},
-            "global_issue": None,
-            "clarification": resolved,
-        }
     return result(
         "success",
         "Planning extensions selected",

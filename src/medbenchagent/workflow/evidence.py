@@ -28,8 +28,7 @@ class EvidenceRead(NoArguments):
 
 
 def _scope(context):
-    return (context.get("dataset_scope"),
-            context.get("agent_role", "DataProcessingAgent" if context.get("source_scope") else "TaskPlanningAgent"))
+    return context.get("dataset_scope"), context["agent_role"]
 
 
 def _folder(context):

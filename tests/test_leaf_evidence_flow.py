@@ -5,11 +5,12 @@ from pathlib import Path
 import pytest
 
 from medbenchagent.agents import task_planning
+from medbenchagent.data.index import DatasetIndex
 from medbenchagent.planning.task_space import CapabilityCategory, TaskPlanState, TaskScenario
 from medbenchagent.workflow.graph import planning_draft_advanced
 
 
-def _plan(tmp_path, *, phase="leaves", facts=None):
+def _plan(tmp_path, *, phase="leaves"):
     scenario = TaskScenario(
         scenario_id="scenario-1",
         input_structure="single-image",
@@ -26,7 +27,6 @@ def _plan(tmp_path, *, phase="leaves", facts=None):
         current_scenario_id=scenario.scenario_id,
         pending_scenario_ids=[scenario.scenario_id],
     )
-    (Path(tmp_path) / "fixture_facts.json").write_text(json.dumps(facts or {}), encoding="utf-8")
     records = [{"case_id": "c1", "evidence": [
         {"id": "image", "name": "ultrasound_bmode_image", "type": "asset", "value": "image.png", "ref": []},
         {"id": "label", "name": "classification", "type": "text", "value": "benign", "ref": ["image"]}]}]
@@ -50,9 +50,12 @@ def test_scenario_context_prioritizes_input_and_related_evidence(tmp_path, monke
         "evidence": {"asset": 2, "text": 2, "value": 2},
     }
 
-    class FakeIndex:
+    class FakeIndex(DatasetIndex):
         def __init__(self, _access):
-            pass
+            super().__init__(_access)
+
+        def facts(self):
+            return {**super().facts(), **facts}
 
         def assets(self):
             return [{"asset_id": "asset-1", "kind": "image"}]
@@ -76,11 +79,9 @@ def test_scenario_context_prioritizes_input_and_related_evidence(tmp_path, monke
 
     import medbenchagent.data.index as index
     monkeypatch.setattr(index, "DatasetIndex", FakeIndex)
-    plan, path = _plan(tmp_path, facts=facts)
+    plan, path = _plan(tmp_path)
     context = {**planning_context(tmp_path),
         "operation_directory": str(tmp_path),
-        "task_plan_path": str(path),
-        "dataset_facts": json.loads((tmp_path / "fixture_facts.json").read_text(encoding="utf-8")),
         "planning_read_state": {},
     }
 
@@ -92,45 +93,18 @@ def test_scenario_context_prioritizes_input_and_related_evidence(tmp_path, monke
     assert payload["representative_cases"][0]["evidence"]
     assert all(item["name"] != "age" for item in payload["representative_cases"][0]["evidence"])
     assert output["updates"]["planning_evidence_cache"]["scenario_id"] == "scenario-1"
-    assert output["updates"]["leaf_context"]["evidence_catalog"]
-    assert "coverage_and_limitations" in output["updates"]["leaf_context"]
-    assert output["updates"]["leaf_context"]["annotation_semantics"]["status"] == "unavailable"
+    assert "leaf_context" not in output["updates"]
+    leaf_context = task_planning._leaf_context(context, plan)
+    assert leaf_context["evidence_catalog"]
+    assert "coverage_and_limitations" in leaf_context
+    assert leaf_context["annotation_semantics"]["status"] == "unavailable"
 
 
-def test_catalog_returns_text_values_samples_and_suggestions(tmp_path, monkeypatch):
-    catalog = {
-        "schema_version": "evidence-catalog",
-        "revision": "r1",
-        "entries": [
-            {"name": "classification", "cases": 2, "types": {"text": 2}},
-            {"name": "ultrasound_bmode_image", "cases": 2, "types": {"asset": 2}},
-        ],
-        "names": ["classification", "ultrasound_bmode_image"],
-    }
-    plan, path = _plan(tmp_path)
-
-    class FakeIndex:
-        def __init__(self, _access):
-            pass
-
-        def values(self, name, limit=50):
-            if name == "classification":
-                return {"values": [{"value": "benign", "count": 1}, {"value": "malignant", "count": 1}], "total": 2}
-            return {"values": [], "total": 0}
-
-        def assets(self):
-            return [{"asset_id": "asset-1", "kind": "image"}]
-
-        def sample(self, *, evidence_name=None, limit=3, **_kwargs):
-            return {"values": [{"case_id": "c1", "evidence": [{"id": "label", "type": "text", "name": evidence_name, "value": "benign", "ref": []}]}]}
-
-    import medbenchagent.data.index as index
-    monkeypatch.setattr(index, "DatasetIndex", FakeIndex)
+def test_catalog_returns_text_values_samples_and_suggestions(tmp_path):
+    _plan(tmp_path)
     context = {**planning_context(tmp_path),
         "operation_directory": str(tmp_path),
-        "task_plan_path": str(path),
         "planning_read_state": {},
-        "dataset_facts": {"evidence_catalog": {row["name"]: row for row in catalog["entries"]}},
     }
 
     first = task_planning.read_evidence_catalog(context, names=["classification", "clasification"])
@@ -138,7 +112,7 @@ def test_catalog_returns_text_values_samples_and_suggestions(tmp_path, monkeypat
     assert payload["field_values"]["classification"]["values"]
     assert payload["case_samples"]["classification"][0]["evidence"]
     assert payload["suggestions"]["clasification"][0] == "classification"
-    leaf_context = first["updates"]["leaf_context"]
+    leaf_context = task_planning._leaf_context(context, task_planning._load_plan(context))
     cached_field = next(item for item in leaf_context["evidence_catalog"] if item["name"] == "classification")
     assert cached_field["field_values"][0]["value"] == "benign"
 
@@ -147,15 +121,9 @@ def test_catalog_returns_text_values_samples_and_suggestions(tmp_path, monkeypat
 
 
 def test_bad_leaf_contains_repairable_diagnostics(tmp_path):
-    facts = {
-        "evidence_names": ["ultrasound_bmode_image"],
-        "evidence_catalog": {"ultrasound_bmode_image": {"name": "ultrasound_bmode_image", "types": {"asset": 1}}},
-    }
-    _, path = _plan(tmp_path, facts=facts)
+    _plan(tmp_path)
     context = {**planning_context(tmp_path),
         "operation_directory": str(tmp_path),
-        "task_plan_path": str(path),
-        "dataset_facts": json.loads((tmp_path / "fixture_facts.json").read_text(encoding="utf-8")),
     }
     leaf = {
         "leaf_task_id": "bad",
@@ -187,22 +155,18 @@ def test_bad_leaf_contains_repairable_diagnostics(tmp_path):
 
 
 def test_leaf_context_drops_cache_when_scenario_binding_changes(tmp_path):
-    plan, path = _plan(tmp_path, facts={
-        "revision": "r1",
-        "evidence_catalog": {"old": {"name": "old", "cases": 1, "types": {"value": 1}}},
-        "evidence_names": ["old"],
-    })
+    plan, path = _plan(tmp_path)
+    context = planning_context(tmp_path)
+    binding = task_planning._planning_binding(context, plan, "scenario-1")
     second = plan.scenarios["scenario-1"].model_copy(update={"scenario_id": "scenario-2"})
     plan.scenarios["scenario-2"] = second
     plan.current_scenario_id = "scenario-2"
     plan.pending_scenario_ids = ["scenario-2"]
-    path = write_plan(tmp_path, plan)
+    write_plan(tmp_path, plan)
     context = {**planning_context(tmp_path),
         "operation_directory": str(tmp_path),
-        "task_plan_path": str(path),
-        "dataset_facts": json.loads((tmp_path / "fixture_facts.json").read_text(encoding="utf-8")),
         "planning_evidence_cache": {
-            "binding": {"dataset_id": "dataset", "revision": "r1", "scenario_id": "scenario-1"},
+            "binding": binding,
             "scenario_id": "scenario-1",
             "planning_evidence": [],
             "representative_cases": [],

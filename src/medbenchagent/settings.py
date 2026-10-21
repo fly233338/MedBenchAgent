@@ -71,12 +71,6 @@ class GenerationSettings:
 
 
 @dataclass(frozen=True)
-class DatasetProfileSettings:
-    max_top_values: int
-    max_top_value_chars: int
-
-
-@dataclass(frozen=True)
 class BenchmarkSettings:
     default_sample_count: int
     input_policy: str
@@ -97,7 +91,6 @@ class AppSettings:
     llm: LlmSettings
     rag: RagSettings
     generation: GenerationSettings
-    dataset_profile: DatasetProfileSettings
     dataset_sources: tuple[dict[str, Any], ...]
     benchmark: BenchmarkSettings
     planning: PlanningSettings
@@ -140,10 +133,6 @@ class AppSettings:
                 },
                 "model_services": self.service_status,
                 "generation": generation,
-                "dataset_profile": {
-                    key: getattr(self.dataset_profile, key)
-                    for key in self.dataset_profile.__dataclass_fields__
-                },
             },
             "config_sources": {
                 "default": {"path": str(self.default_config_path)},
@@ -299,7 +288,6 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     llm = values["llm"]
     rag = values["rag"]
     generation = values["generation"]
-    profile = values["dataset_profile"]
 
     chunk_size = _integer(rag["chunk_size"], "rag.chunk_size", minimum=1)
     chunk_overlap = _integer(rag["chunk_overlap"], "rag.chunk_overlap", minimum=0)
@@ -378,12 +366,6 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                                        if generation.get("max_total_tasks_per_image") is not None else None),
             fetch_batch_size=_integer(generation["fetch_batch_size"], "generation.fetch_batch_size", minimum=1),
             question_template_count=question_template_count,
-        ),
-        dataset_profile=DatasetProfileSettings(
-            max_top_values=_integer(profile["max_top_values"], "dataset_profile.max_top_values", minimum=1),
-            max_top_value_chars=_integer(
-                profile["max_top_value_chars"], "dataset_profile.max_top_value_chars", minimum=1
-            ),
         ),
         default_config_path=default_path,
         local_config_path=local_path,

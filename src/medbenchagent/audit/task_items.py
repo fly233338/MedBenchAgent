@@ -269,8 +269,9 @@ def audit_benchmark(context, *, output_directory):
         seen.add(item["item_id"])
         counts[item["leaf_task_id"]] += 1
         accepted.append(item)
+    brief = store.load("benchmark_info.json")
     accepted, limited = _limit_reasons(accepted, max_tasks_per_image=context.get("max_tasks_per_image"),
-                                      max_total_tasks_per_image=context.get("max_total_tasks_per_image"))
+                                      max_total_tasks_per_image=brief.get("max_total_tasks_per_image"))
     quarantine.extend(limited)
     accepted, options = balance_option_positions(accepted, context.get("seed", 0))
     root = Path(output_directory)
@@ -284,7 +285,7 @@ def audit_benchmark(context, *, output_directory):
     identity = {"binding": store.digest("dataset_binding.json"), "plan": store.digest("task_plan.json"),
                 "allocation": store.digest("allocation.json"), "generation": store.digest("generation.json"),
                 "seed": context.get("seed", 0), "max_tasks_per_image": context.get("max_tasks_per_image"),
-                "max_total_tasks_per_image": context.get("max_total_tasks_per_image")}
+                "max_total_tasks_per_image": brief.get("max_total_tasks_per_image")}
     tasks = {f"{dataset}::{key}": {"dataset_id": dataset, "leaf_task_id": key, "scenario_id": leaf.scenario_id,
              "capability_category": leaf.capability_category.value, "task_paradigm": leaf.task_paradigm.value,
              "output_spec": leaf.output_spec.value, "eligible_count": leaf.eligible_count,
@@ -292,7 +293,7 @@ def audit_benchmark(context, *, output_directory):
              "accepted_count": sum(item["leaf_task_id"] == key for item in accepted)} for key, leaf in plan.leaf_tasks.items()}
     manifest = {"schema_version": "benchmark-manifest", "dataset_id": dataset,
                 "benchmark_id": hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest(),
-                "dependencies": identity, "benchmark_info": store.load("benchmark_info.json"),
+                "dependencies": identity, "benchmark_info": brief,
                 "tasks": tasks, "allocation": allocation, "item_count": len(accepted), "generated_count": len(raw)}
     report = {"schema_version": "audit-report", "generated": len(raw), "accepted": len(accepted),
               "rejected": len(quarantine), "requested": allocation["requested_count"],

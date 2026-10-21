@@ -205,9 +205,6 @@ def test_canonical_planner_axis_and_node_tools_persist_bounded_artifacts(tmp_pat
         "operation_directory": str(tmp_path),
     }
     context = task_planning._initialize_planning_context(context)
-    context["dataset_facts"] = {"revision":"7", "assets":{"primary_image_assets":1},
-        "evidence_names":["label"], "evidence_catalog":{"label":{"name":"label", "types":{"value":1}}},
-        "evidence":{"value":1}, "relations":{}}
     analysis = _analysis(input_structure=["single-image"], operation=["recognize"], clinical_target=["finding"]).model_copy(update={"dataset_revision": "7"}).model_dump()
     for axis in ("input_structure", "operation", "clinical_target"):
         saved = task_planning.analyze_axis(context, axis=axis, assessments=analysis[axis])
@@ -223,9 +220,6 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
     context = {**planning_context(tmp_path),"operation_directory": str(tmp_path), "dataset_scope": "d",
                }
     context = task_planning._initialize_planning_context(context)
-    context["dataset_facts"] = {"revision":"7", "assets":{"primary_image_assets":1},
-        "evidence_names":["image", "report"], "evidence_catalog":{"report":{"name":"report", "types":{"text":1}}},
-        "evidence":{"text":1}, "relations":{"paired_text":1}}
     axis = _analysis(input_structure=["single-image"], operation=["describe"], clinical_target=["finding"]).model_copy(update={"dataset_revision": "7"}).model_dump()
     for name in ("input_structure", "operation", "clinical_target"):
         context.update(task_planning.analyze_axis(context, axis=name, assessments=axis[name])["updates"])

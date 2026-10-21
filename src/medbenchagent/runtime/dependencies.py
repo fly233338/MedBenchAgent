@@ -78,11 +78,7 @@ def verify_resume(context):
             load_prepared(entry)
 
 
-def initialize_dependencies(context, settings):
-    atomic_write_json(
-        Path(context["run_directory"]) / "control" / "execution_runtime.json",
-        context["execution_runtime"],
-    )
+def initialize_dependencies(context):
     atomic_write_json(
         Path(context["run_directory"]) / "control" / "contract.json",
         {"contract": CONTRACT_VERSION, "code_at_start": code_identity()},

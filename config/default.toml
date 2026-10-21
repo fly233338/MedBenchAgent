@@ -47,10 +47,6 @@ fetch_batch_size = 128
 # Number of semantically equivalent question templates per Leaf Task (3-5).
 question_template_count = 3
 
-[dataset_profile]
-max_top_values = 3
-max_top_value_chars = 200
-
 [harness]
 max_calls = 60
 max_seconds = 7200

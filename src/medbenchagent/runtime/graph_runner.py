@@ -13,7 +13,7 @@ from medbenchagent.settings import active_settings, load_settings, run_settings
 
 EventKind = Literal["initialized", "progress", "artifact", "needs_input", "finished", "error", "view"]
 _ARTIFACT_KEYS = {"run_directory", "effective_config_path", "construction_events_path",
-                  "benchmark_brief_path", "raw_output_path", "manifest_path", "delivery_path"}
+                  "raw_output_path", "manifest_path", "delivery_path"}
 
 
 @dataclass(frozen=True)
@@ -69,12 +69,7 @@ def _interrupt(payload: dict) -> dict | None:
 def _recursion_limit(values: object) -> int:
     context = values.get("context", {}) if isinstance(values, dict) else {}
     calls = context.get("limits", {}).get("max_calls", 60)
-    base = max(1_000, 3 * calls + 10)
-    profile = values.get("dataset_profile", {}) if isinstance(values, dict) else {}
-    images = profile.get("total_images") if isinstance(profile, dict) else None
-    if not isinstance(images, int) or isinstance(images, bool) or images < 0:
-        return base
-    return max(base, images * 4 + 100)
+    return max(1_000, 3 * calls + 10)
 
 
 def _metadata(values: dict) -> dict:
@@ -88,7 +83,6 @@ def _metadata(values: dict) -> dict:
         "bir_path": context.get("bir_path"),
         "bir_manifest_digest": context.get("bir_manifest_digest"),
         "bir_template_revision": context.get("bir_template_revision"),
-        "bir_summary_ref": context.get("bir_summary_ref"),
         "source_decision_path": context.get("source_decision_path"),
         "view": context.get("view"),
 

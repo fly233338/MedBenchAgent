@@ -10,6 +10,6 @@
 
 **Feedback:** a completed delegation call returns the child's actual outcome separately. Source concerns go to Preparation; task issues go to Planning. Missing facts are scoped questions. A rejected review blocks publication. Accepting a quantity shortfall requires a delivery limitation reason and never changes an explicit clinical constraint.
 
-**Recovery:** LangGraph checkpoints resume the same Run. Operation receipts bind arguments and BIR dependencies. Scoped revisions are atomically counted in the Task Plan; unchanged failed actions and exhausted budgets are rejected.
+**Recovery:** LangGraph checkpoints resume the same Run. Operation receipts bind arguments and BIR dependencies. Scoped revisions are atomically counted in the Task Plan; unchanged failed actions and exhausted budgets are rejected. Planning blocks are scoped to input digests and clarification references, so changed requirements, data or answers permit renewed planning.
 
 **Acceptance:** one dataset per compilation, independent batch state, optional clinical scope, meaningful review/revision choices, and no completion before publication. Relevant coverage: compilation, raw-source routing, clarification and tool-contract tests.

@@ -12,7 +12,7 @@ from medbenchagent.data.bundle_catalog import card_summary
 from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
-from medbenchagent.planning.bir import BIRStore, business_dependencies
+from medbenchagent.planning.bir import BIRStore
 
 
 def _snapshot_inputs(context):
@@ -100,10 +100,11 @@ def _selection_issue_updates(context, issue_id):
         raise ValueError("selection_issue_id must reference the pending dataset selection question")
     if issue.get("purpose") != "dataset_selection" or issue.get("status") != "answered":
         raise ValueError("Dataset selection question must have an answer before binding")
-    resolved = {**issue, "kind": "dataset_selection", "status": "resolved"}
+    from medbenchagent.workflow.clarifications import resolve_semantic_answer
+    resolved = {**resolve_semantic_answer(context, issue), "kind": "dataset_selection"}
     return {
         "issues": {**context.get("issues", {}), issue_id: resolved},
-        "decisions": {**context.get("decisions", {}), issue_id: issue.get("answer_reference", "")},
+        "decisions": {**context.get("decisions", {}), issue_id: issue["answer_reference"]},
         "global_issue": None,
         "clarification": resolved,
     }
@@ -111,6 +112,7 @@ def _selection_issue_updates(context, issue_id):
 
 def bind_dataset(context, *, dataset_id: str, reason: str, selection_issue_id=""):
     """Bind one verified dataset from current frozen candidates."""
+    issue_updates = _selection_issue_updates(context, selection_issue_id)
     store = BIRStore(context["bir_path"])
     current = store.current("dataset_binding.json")
     if current and current["access"]["dataset_id"] != dataset_id:
@@ -130,7 +132,6 @@ def bind_dataset(context, *, dataset_id: str, reason: str, selection_issue_id=""
         raise ValueError("Dataset access belongs to another dataset")
     store.update("dataset_binding.json", {"schema_version": "dataset-binding", "access": parsed.model_dump(exclude_none=True),
         "entry": candidate["entry"], "selection_reason": reason, "candidate_snapshot_digest": digest_file(path)},
-        run_id=context["run_id"], actor="dataset_selection",
-        dependencies=business_dependencies(context, "benchmark_info.json"))
+        run_id=context["run_id"], actor="dataset_selection")
     return result("success", "Dataset bound", candidate_snapshot_path=str(path),
-                  **_selection_issue_updates(context, selection_issue_id))
+                  **issue_updates)

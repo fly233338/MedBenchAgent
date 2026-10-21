@@ -162,10 +162,6 @@ class ChatMessage(Static):
         self.chat_row: Horizontal | None = None
         
 
-    def show_text(self, content: str) -> None:
-        self.update(Text(content))
-
-
 class RemoveExperimentScreen(ModalScreen[bool]):
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
@@ -638,8 +634,6 @@ class ConversationScreen(Screen):
         self._event_path: Path | None = None
         self._event_offset = 0
         self._event_partial = b""
-        self._discard_event_line = False
-        self._event_generation = 0
         self._event_reading = False
         self._event_initial = False
         self._record_generation = 0
@@ -871,12 +865,10 @@ class ConversationScreen(Screen):
         self._event_path = Path(run_directory) / "control" / "events.jsonl" if run_directory else None
         self._event_offset = 0
         self._event_partial = b""
-        self._discard_event_line = False
         self.query_one("#active-agent", Static).update("Latest activity: waiting")
         self.query_one("#agent-filter", Select).set_options([("All agents", "*")])
         self.query_one("#agent-filter", Select).value = "*"
         self._render_agent_status()
-        self._event_generation += 1
         self._event_reading = False
         self._event_initial = True
         self._render_progress()
@@ -991,46 +983,6 @@ class ConversationScreen(Screen):
         self._event_reading = False
         if self._agent_status_dirty:
             self._render_agent_status()
-
-    @work(thread=True, group="event-read")
-    def _read_event_batch(self, generation, path, offset, partial, discard, initial):
-        lines = []
-        try:
-            if initial:
-                lines, offset = _recent_event_lines(path)
-            else:
-                with path.open("rb") as stream:
-                    stream.seek(0, 2)
-                    if stream.tell() < offset:
-                        offset, partial, discard = 0, b"", False
-                    stream.seek(offset)
-                    chunk = stream.read(65536)
-                offset += len(chunk)
-                data = partial + chunk
-                if discard:
-                    end = data.find(b"\n")
-                    data = data[end + 1:] if end >= 0 else b""
-                    discard = end < 0
-                lines = data.split(b"\n")
-                partial = lines.pop()
-                if len(partial) > _MAX_EVENT_LINE_BYTES:
-                    partial, discard = b"", True
-        except OSError:
-            pass
-        self.app.call_from_thread(self._event_batch_loaded, generation, lines, offset, partial, discard)
-
-    def _event_batch_loaded(self, generation, lines, offset, partial, discard):
-        if not self.is_mounted or generation != self._event_generation:
-            return
-        self._event_reading = False
-        self._event_initial = False
-        self._event_offset, self._event_partial, self._discard_event_line = offset, partial, discard
-        with self.app.batch_update():
-            for line in lines:
-                if len(line) <= _MAX_EVENT_LINE_BYTES:
-                    self._read_construction_event(line)
-            if self._agent_status_dirty:
-                self._render_agent_status()
 
     def _flush_progress(self, limit: int = 100) -> None:
         count = 0
@@ -1358,9 +1310,7 @@ class ConversationScreen(Screen):
 
     def on_unmount(self) -> None:
         self._progress_timer.stop()
-        self._event_generation += 1
         self._record_generation += 1
-        self.workers.cancel_group(self, "event-read")
         self.workers.cancel_group(self, "record-read")
 
     def action_edit_config(self) -> None:

@@ -51,7 +51,7 @@ def planning_context(root, *, plan=None, cases=None, dataset_id="d", brief=None,
         store = BIRStore(root / "BIR")
         dataset = store.load("dataset_binding.json")["access"]["dataset_id"]
     context = {"bir_path": str(store.root), "run_id": "test", "run_directory": str(root / "runtime"),
-               "operation_directory": str(root / "runtime/planning"), "dataset_scope": dataset,
+               "operation_directory": str(root / "runtime/planning"), "dataset_scope": dataset, "agent_role": "TaskPlanningAgent",
                "experiment_output_directory": str(root / "outputs"), "seed": 0,
                "construction_events_path": str(root / "runtime/events.jsonl"),
                "question_template_count": 1, "benchmark_input_policy": "image-only", "user_requirement": f"Compile {dataset}"}

@@ -30,7 +30,8 @@ def approve(context, monkeypatch):
                 "checked_leaf_task_ids": [leaf["leaf_task_id"] for leaf in value["leaf_tasks"]],
                 "status": "approved"}
     monkeypatch.setattr(task_planning, "complete_json", model)
-    assert review_plan(context)["updates"]["review_summary"]["status"] == "approved"
+    assert review_plan(context)["updates"] == {}
+    assert BIRStore(context["bir_path"]).load("review.json")["status"] == "approved"
 
 
 def test_canonical_stages_and_portable_export_survive_relocation(tmp_path, monkeypatch):
@@ -67,6 +68,41 @@ def test_source_image_mutation_is_rejected_before_export(tmp_path, monkeypatch):
     assert load_benchmark_package(export_benchmark(delivered, tmp_path / "export"))["items"]
 
 
+def test_publication_recovery_reuses_committed_files(tmp_path, monkeypatch):
+    from medbenchagent.generation import delivery
+    context = compile_fixture(tmp_path, _plan("d", {"leaf": 1}), cases())
+    approve(context, monkeypatch)
+    update = BIRStore.update
+    def interrupted(store, path, *args, **kwargs):
+        if path == "delivery.json":
+            raise OSError("Interrupted after package commit")
+        return update(store, path, *args, **kwargs)
+    monkeypatch.setattr(BIRStore, "update", interrupted)
+    with pytest.raises(OSError, match="Interrupted"):
+        publish_benchmark(context)
+    root = next((tmp_path / "outputs/deliveries").iterdir())
+    before = {path.name: path.stat().st_mtime_ns for path in root.iterdir()}
+    monkeypatch.setattr(BIRStore, "update", update)
+    monkeypatch.setattr(delivery.shutil, "copy2", lambda *args: pytest.fail("Rewriting a committed package"))
+    recovered = publish_benchmark(context)["updates"]["delivery_path"]
+    assert recovered == str(root)
+    assert len(load_benchmark_package(recovered)["items"]) == 1
+    assert {path.name: path.stat().st_mtime_ns for path in root.iterdir()} == before
+
+
+def test_review_rejects_corruption_instead_of_replacing_it(tmp_path, monkeypatch):
+    context = compile_fixture(tmp_path, _plan("d", {"leaf": 1}), cases())
+    approve(context, monkeypatch)
+    path = Path(context["bir_path"]) / "review.json"
+    content = json.loads(path.read_text(encoding="utf-8"))
+    content["findings"] = [{"summary": "uncommitted modification"}]
+    path.write_text(json.dumps(content), encoding="utf-8")
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="content digest mismatch"):
+        review_plan(context)
+    assert path.read_bytes() == before
+
+
 def test_revised_plan_invalidates_allocation_generation_and_review(tmp_path, monkeypatch):
     context = compile_fixture(tmp_path, _plan("d", {"leaf": 1}), cases())
     approve(context, monkeypatch)
@@ -88,6 +124,28 @@ def test_scoped_rework_keeps_frozen_extension_dependency(tmp_path):
     select_extensions(context, extension_ids=[], selection_reason={})
     with pytest.raises(BIRStaleError, match="planning_extensions.json"):
         BIRStore(context["bir_path"]).load("task_plan.json")
+
+
+def test_audit_enforces_canonical_brief_image_limit(tmp_path, monkeypatch):
+    from compilation_fixtures import planning_context
+    from medbenchagent.planning.allocation import allocate_benchmark
+    from medbenchagent.generation.delivery import audit_candidate
+    context = planning_context(tmp_path, plan=_plan("d", {"first": 1, "second": 1}), cases=cases(),
+                               brief={"sample_count": 2, "max_total_tasks_per_image": 1})
+    allocate_benchmark(context)
+    run_generation(context)
+    context.update(audit_candidate(context)["updates"])
+    counts = BIRStore(context["bir_path"]).load("candidate.json")["counts"]
+    assert counts["accepted"] == 1
+    assert counts["shortfall"] == 1
+    assert counts["reason_counts"] == {"max_total_tasks_per_image": 1}
+    manifest = json.loads((Path(context["candidate_path"]) / "benchmark_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["dependencies"]["max_total_tasks_per_image"] == 1
+    approve(context, monkeypatch)
+    with pytest.raises(ValueError, match="limitation reason"):
+        publish_benchmark(context)
+    delivered = publish_benchmark(context, limitation_reason="One question per image")["updates"]["delivery_path"]
+    assert len(load_benchmark_package(delivered)["items"]) == 1
 
 
 def test_batch_has_independent_business_state_and_frozen_config(tmp_path):

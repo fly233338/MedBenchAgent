@@ -123,7 +123,7 @@ def queue_run(record: dict, requirement: str, *, root: Path = EXPERIMENTS_ROOT,
            "effective_config_path": None, "catalog_snapshot_path": None,
            "bir_path": str(store.root),
            "bir_manifest_digest": store.digest("manifest.json"),
-           "bir_summary_ref": None, "summary": "", "created_at": _now()}
+           "summary": "", "created_at": _now()}
     record["runs"].append(run)
     record["pending_runs"].append(run["id"])
     if save:

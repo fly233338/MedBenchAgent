@@ -84,8 +84,10 @@ def load_prepared(entry):
     bundle = resolve_path(entry["cases_path"]).parent
     verified = verify_bundle(bundle)
     access = verified["ready"]["access"]
-    frozen_card_path = resolve_path(entry.get("dataset_card_path", access["dataset_card_path"]))
+    frozen_card_path = resolve_path(entry["dataset_card_path"])
     card = verified["card"] if frozen_card_path == resolve_path(access["dataset_card_path"]) else read_card(frozen_card_path)
+    if card["dataset_id"] != entry["dataset_id"] or access["dataset_id"] != entry["dataset_id"]:
+        raise DatasetCatalogError("Catalog identity does not match the prepared dataset")
     if card.get("annotation_digest") != access["annotation_digest"] or card.get("image_manifest_digest") != access["image_manifest_digest"]:
         raise DatasetCatalogError("Frozen Dataset Card does not match annotation bundle")
     return card, access
@@ -97,6 +99,8 @@ def register_dataset(dataset_id, bundle, *, catalog_path=None):
     verified = verify_bundle(bundle)
     card = verified["card"]
     access = verified["ready"]["access"]
+    if card["dataset_id"] != dataset_id or access["dataset_id"] != dataset_id:
+        raise DatasetCatalogError("Registration identity does not match the prepared dataset")
     entry = {
         "dataset_id": dataset_id,
         "name": card["name"],

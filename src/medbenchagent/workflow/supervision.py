@@ -91,7 +91,6 @@ def revise_plan(context, *, scenario_ids, reason, issue_ids=None):
             "exclusion_category": None, "exclusion_evidence": [],
         })
         plan.reviews.pop(key, None)
-    plan.completed_scenario_ids = [key for key in plan.completed_scenario_ids if key not in targets]
     screening = [key for key in targets if not plan.scenarios[key].validated_clinical_targets]
     pending = list(dict.fromkeys([*targets, *plan.pending_scenario_ids]))
     plan.pending_scenario_ids = screening or pending
@@ -104,4 +103,4 @@ def revise_plan(context, *, scenario_ids, reason, issue_ids=None):
                                         "findings": [known_issues[key] for key in (issue_ids or [])]},
                    "revision_history": journal["revisions"]}
     persist_task_plan({**context, "planning_read_digest": before}, plan)
-    return result("success", "Selected Scenarios reopened; downstream receipts are now stale", planning_stalled=False)
+    return result("success", "Selected Scenarios reopened; downstream receipts are now stale")

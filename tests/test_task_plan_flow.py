@@ -1,4 +1,4 @@
-from compilation_fixtures import planning_context, write_plan
+from compilation_fixtures import planning_context
 from compilation_fixtures import axis_values
 from compilation_fixtures import screen
 from image_fixtures import image_context
@@ -28,27 +28,11 @@ def _assessments(axis, supported):
 
 
 def _context(tmp_path):
-    facts = {
-        "schema_version": "dataset-facts",
-        "revision": "7",
-        "case_count": 1,
-        "evidence_names": ["image", "report"],
-        "evidence": {"text": 1},
-        "assets": {"image_assets": 1, "multi_image_cases": 0, "related_image_cases": 0, "volume_assets": 0},
-        "relations": {"paired_text": 1, "paired": 1, "paired_study": 0, "related": 1},
-    }
     plan = TaskPlanState(
         dataset={"dataset_id": "d"},
         phase="axes",
     )
-    path = Path(tmp_path) / "task_plan.json"
-    path = write_plan(tmp_path, plan)
-    return {**planning_context(tmp_path),
-        "dataset_scope": "d",
-        "operation_directory": str(tmp_path),
-        "task_plan_path": str(path),
-        "dataset_facts": facts,
-    }
+    return planning_context(tmp_path, plan=plan)
 
 
 def test_axis_calls_are_strictly_ordered(tmp_path):
@@ -71,14 +55,12 @@ def test_axis_calls_are_strictly_ordered(tmp_path):
 def test_axis_evidence_exposes_catalog_counts_and_semantics(tmp_path):
     context = _context(tmp_path)
     plan = task_planning._load_plan(context)
-    context["dataset_facts"]["evidence_catalog"] = {
-        "report": {"name": "report", "cases": 1, "types": {"text": 1}, "units": {}}
-    }
     task_planning._write_artifacts(context, plan)
     result = task_planning.read_axis_evidence(context, axis="input_structure")
     payload = __import__("json").loads(result["summary"])
-    assert payload["evidence_catalog"][0]["cases"] == 1
-    assert payload["evidence_catalog"][0]["types"] == {"text": 1}
+    report = next(row for row in payload["evidence_catalog"] if row["name"] == "report")
+    assert report["cases"] == 1
+    assert report["types"] == {"text": 1}
     assert payload["catalog_semantics"]["cases"]
     assert payload["axis_definition"]["id"] == "input_structure"
     assert isinstance(payload["allowed_value_definitions"], list)
@@ -424,7 +406,7 @@ def test_leaf_scenario_can_be_excluded_without_leaf_and_all_excluded_can_finish(
     plan.scenarios[second.scenario_id] = second
     task_planning._write_artifacts(context, plan)
     context["planning_read_state"] = {
-        "binding": {"dataset_id": "d", "revision": "7", "scenario_id": first_id},
+        "binding": task_planning._planning_binding(context, plan, first_id),
         "scenario_id": first_id,
         "scenario_context_read": True,
         "catalog_queries": [],

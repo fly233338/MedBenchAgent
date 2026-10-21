@@ -17,6 +17,8 @@ Inside each BIR, `dataset_binding.json`, `task_plan.json`, `generation.json` and
 
 Each BIR business document owns its atomic `_commit`, revision, content digest and dependency digests. The manifest fixes compilation and Registry identity. Reads reject changed dependencies. Checkpoints retain execution state, dependency-bound evidence caches and references, without parallel Plan, allocation or access documents. UI summaries are read from BIR. Internal schemas have stable, unversioned identifiers; old internal layouts and checkpoints have no migration or compatibility reader.
 
+Dataset identity is fixed independently of the benchmark brief. Revising requirements invalidates planning and downstream work, while retaining the same binding. BIR initialization distinguishes stale derivatives that need rebuilding from corrupted content, which is rejected. Selection questions and their dependency digests are validated before committing a binding or extension choice.
+
 ## Supervision
 
 Supervisor remains a model-driven tool loop. It can inspect current evidence/coverage, prepare sources, bind a dataset, delegate planning, request independent review, reopen specific Scenarios, allocate, generate, audit and publish.
@@ -48,6 +50,8 @@ Task Planning keeps Axis → Scenario → Leaf. There is one canonical pending S
 
 Planning requires the compilation BIR and its frozen Registry. Pure validators receive Registry explicitly. Prompts have one source in Registry; imports do not load a repository-default Registry. Tests construct real temporary BIR fixtures rather than enabling a second local-file planning mode.
 
+Derived dataset facts are cached on disk by the verified binding digest, outside checkpoints. Planning read caches also bind requirements, extensions, Scenario and rework round. A blocked planning attempt records input and clarification references so changed inputs permit another attempt. Completed Scenario lists, copied review reports and generated Leaf prompt contexts are not parallel state.
+
 `planning.context_chars` bounds the complete serialized model request, including system instructions, output schema, tool definitions, evidence, tool results and repair turns. Direct planning/review calls and the planning tool loop share this final transport check. Every retry is checked again. Required content is never silently truncated; an oversized request reports its size and configured limit so the query can be narrowed or the budget increased.
 
 Allocation is dataset-local. Generation and Audit share `resolve_task_input`, frozen ordering and deterministic Resolver answers. Reference-only evidence stays out of model input. `eligible_count` counts SamplingUnits; structural Scenario capacity counts Cases.
@@ -63,6 +67,8 @@ This component is not exposed uniformly to all semantic model calls. Shared tool
 ## Publication and recovery
 
 Audit writes an unpublished candidate and quarantine; it never writes a delivery completion marker. Publication requires a current approved semantic review and a valid candidate. Shortfalls/rejections require a limitation explanation. It writes the compilation report and a hash-bound completion marker before recording delivery in BIR.
+
+Audit enforces the total per-image limit from the canonical brief; intake resolves its default from the frozen configuration. Publication recovery verifies and reuses a completed package without rewriting its files, then records any missing BIR receipt.
 
 Default delivery references Prepared/source images. Export verifies those image digests, copies only model inputs and produces relative paths. The standalone package reader validates package files and images after relocation.
 

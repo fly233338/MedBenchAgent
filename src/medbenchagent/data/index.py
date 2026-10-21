@@ -145,18 +145,6 @@ class DatasetIndex:
             rows = db.execute("SELECT record FROM cases" + where + " ORDER BY case_id LIMIT ? OFFSET ?", [*args, limit, offset]).fetchall()
         return {"dataset_version": self.access["revision"], "total": total, "values": [json.loads(row[0]) for row in rows], "complete": offset + len(rows) >= total, "next_offset": offset + len(rows) if offset + len(rows) < total else None}
 
-    def evidence(self, name=None, evidence_type=None):
-        where, args = [], []
-        if name is not None:
-            where.append("name=?")
-            args.append(name)
-        if evidence_type is not None:
-            where.append("type=?")
-            args.append(evidence_type)
-        clause = " WHERE " + " AND ".join(where) if where else ""
-        with self._db() as db:
-            return [dict(case_id=row[0], evidence_id=row[1], type=row[2], name=row[3], value=json.loads(row[4]), time=row[5], unit=row[6]) for row in db.execute("SELECT case_id,evidence_id,type,name,value,time,unit FROM evidence" + clause, args).fetchall()]
-
     def assets(self, kind=None, format_name=None):
         where, args = [], []
         if kind is not None:
@@ -215,7 +203,7 @@ class DatasetIndex:
                 "capacity_hint": count, "relations": self.facts()["relations"],
                 "representative_cases": samples}
 
-    def values(self, field, offset=0, limit=20, source_id=None):
+    def values(self, field, offset=0, limit=20):
         with self._db() as db:
             total = db.execute("SELECT count(DISTINCT value) FROM evidence WHERE name=?", [field]).fetchone()[0]
             rows = db.execute("SELECT value,count(*) FROM evidence WHERE name=? GROUP BY value ORDER BY value LIMIT ? OFFSET ?", [field, limit, offset]).fetchall()

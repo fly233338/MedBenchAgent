@@ -1,4 +1,5 @@
 import shutil
+import pytest
 from pathlib import Path
 from compilation_fixtures import planning_context
 from medbenchagent.planning.bir import BIRStore
@@ -26,3 +27,15 @@ def test_discovery_without_extensions_records_empty_selection(tmp_path):
     assert result["summary"] == "No planning extensions are registered"
     selection = BIRStore(context["bir_path"]).load("planning_extensions.json")
     assert selection["selected_extension_ids"] == [] and selection["selection_reason"] == {}
+
+
+@pytest.mark.parametrize("issue", [None, {"issue_id": "selection", "purpose": "planning_extension_selection", "status": "open"},
+    {"issue_id": "selection", "purpose": "planning_extension_selection", "status": "answered",
+     "input_versions": {"benchmark_info.json": "outdated"}, "answer_reference": "answer"}])
+def test_invalid_selection_question_does_not_change_extensions(tmp_path, issue):
+    context = {**planning_context(tmp_path), "global_issue": issue}
+    store = BIRStore(context["bir_path"])
+    before = store.digest("planning_extensions.json")
+    with pytest.raises(ValueError, match="selection question|inputs changed"):
+        select_extensions(context, extension_ids=[], selection_reason={}, selection_issue_id="selection")
+    assert store.digest("planning_extensions.json") == before

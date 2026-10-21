@@ -1,10 +1,4 @@
-"""Experiment-level Benchmark Intermediate Representation (BIR).
-
-The BIR is the canonical, resumable state for one experiment.  Run folders may
-contain projections of this state, but agents must use :class:`BIRStore` for
-reads and writes so revisions, digests and dependencies are checked in one
-place.
-"""
+"""Canonical business state and atomic dependency-bound commits for one compilation."""
 
 from __future__ import annotations
 
@@ -28,14 +22,6 @@ class BIRConflictError(ValueError):
 
 class BIRStaleError(ValueError):
     """Valid content whose producing business inputs have changed."""
-
-
-@dataclass(frozen=True)
-class BIRCommit:
-    revision: int
-    manifest_digest: str
-    changed_paths: tuple[str, ...]
-    status: str
 
 
 @dataclass(frozen=True)
@@ -112,7 +98,7 @@ def _safe_relative(relative_path: str) -> PurePosixPath:
 
 
 class RegistrySnapshot:
-    """Loaded, immutable view of the experiment Registry."""
+    """Loaded, immutable view of the compilation Registry."""
 
     def __init__(self, root: Path, documents: dict[str, Any], digests: dict[str, str],
                  prompts: dict[str, str], extensions: PlanningExtensionCatalog):
@@ -218,11 +204,6 @@ class RegistrySnapshot:
     def planning_extensions(self) -> PlanningExtensionCatalog:
         return self.extensions
 
-    def validate_value(self, axis: str, value: str) -> None:
-        if value not in self.axis_values(axis):
-            raise ValueError(f"Unknown value {value!r} for BIR Axis {axis}")
-
-
 class BIRStore:
     """Safe, revisioned access to one compilation's BIR directory."""
 
@@ -244,8 +225,6 @@ class BIRStore:
                 raise ValueError(f"BIR template requires {required}")
         RegistrySnapshot.from_directory(path / "registry")
         manifest_path = path / "manifest.json"
-        if not manifest_path.is_file():
-            raise ValueError("BIR template requires manifest.json")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         template_revision = manifest["template_revision"]
         for file in path.rglob("*"):
@@ -310,28 +289,25 @@ class BIRStore:
             raise ValueError(f"BIR path escapes root: {relative_path}")
         return path
 
-    def load(self, relative_path, *, expected_schema=None, verify_digest=True):
+    def load(self, relative_path):
         path = self._path(relative_path)
         value = json.loads(path.read_text(encoding="utf-8"))
         if not relative_path.startswith("registry/") and relative_path != "manifest.json":
             commit = value.pop("_commit", None)
             if commit is None:
                 raise ValueError(f"BIR document has no atomic commit metadata: {relative_path}")
-            if verify_digest:
-                if commit["digest"] != _digest_bytes(_canonical_bytes(value)):
-                    raise ValueError(f"BIR content digest mismatch: {relative_path}")
-                for dependency, expected in commit["dependencies"].items():
-                    if dependency == "registry":
-                        actual = self.registry().digest
-                    elif dependency.startswith("file:"):
-                        actual = digest_file(dependency[5:])
-                    else:
-                        self.load(dependency)
-                        actual = self.digest(dependency)
-                    if actual != expected:
-                        raise BIRStaleError(f"BIR dependency changed: {dependency}; rebuild {relative_path}")
-        if expected_schema and value.get("schema_version") != expected_schema:
-            raise ValueError(f"Unexpected BIR schema: {relative_path}")
+            if commit["digest"] != _digest_bytes(_canonical_bytes(value)):
+                raise ValueError(f"BIR content digest mismatch: {relative_path}")
+            for dependency, expected in commit["dependencies"].items():
+                if dependency == "registry":
+                    actual = self.registry().digest
+                elif dependency.startswith("file:"):
+                    actual = digest_file(dependency[5:])
+                else:
+                    self.load(dependency)
+                    actual = self.digest(dependency)
+                if actual != expected:
+                    raise BIRStaleError(f"BIR dependency changed: {dependency}; rebuild {relative_path}")
         return value
 
     def current(self, relative_path):
@@ -353,19 +329,22 @@ class BIRStore:
         return digest_file(self._path(relative_path))
 
     def validate(self):
-        errors = []
+        """Check integrity; outdated derivatives are rebuildable, not corruption."""
+        errors, warnings = [], []
         for path in self.root.rglob("*.json"):
             if path.is_relative_to(self.root / "registry"):
                 continue
             try:
                 self.load(path.relative_to(self.root).as_posix())
+            except BIRStaleError as exc:
+                warnings.append(str(exc))
             except (OSError, ValueError) as exc:
                 errors.append(str(exc))
         try:
             self.registry()
         except ValueError as exc:
             errors.append(str(exc))
-        return BIRValidationReport(not errors, tuple(errors))
+        return BIRValidationReport(not errors, tuple(errors), tuple(warnings))
 
     def update(self, relative_path, value, *, run_id, actor, expected_revision=None,
                dependencies=None, expected_digest=None):
@@ -373,11 +352,13 @@ class BIRStore:
             from medbenchagent.data.contracts import DatasetAccessReceipt
             DatasetAccessReceipt.model_validate(value["access"]).verify()
         if relative_path.startswith("registry/") or relative_path == "manifest.json":
-            raise ValueError("BIR Registry and experiment identity are immutable")
+            raise ValueError("BIR Registry and compilation identity are immutable")
         with self.lock:
             path = self._path(relative_path)
             previous = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
             previous_commit = previous.pop("_commit", {})
+            if relative_path == "dataset_binding.json" and previous and previous["access"]["dataset_id"] != value["access"]["dataset_id"]:
+                raise ValueError("A compilation cannot switch datasets")
             revision = previous_commit.get("revision", 0)
             if expected_revision is not None and revision != expected_revision:
                 raise BIRConflictError("BIR revision conflict")
@@ -387,7 +368,7 @@ class BIRStore:
             payload.pop("_commit", None)
             deps = dependencies or {}
             if previous == payload and previous_commit.get("dependencies") == deps:
-                return BIRCommit(revision, digest_file(self.manifest_path), (), "unchanged")
+                return revision
             # Validate dependencies before the single visible state transition.
             for dependency, expected in deps.items():
                 if dependency == "registry":
@@ -404,15 +385,7 @@ class BIRStore:
             commit = {"revision": revision + 1, "digest": _digest_bytes(_canonical_bytes(payload)),
                       "dependencies": deps, "run_id": run_id, "actor": actor}
             _atomic_replace(path, _canonical_bytes({**payload, "_commit": commit}))
-            return BIRCommit(revision + 1, digest_file(self.manifest_path), (relative_path,), "committed")
-
-    def atomic_write(self, relative_path, value):
-        return self.update(relative_path, value, run_id="system", actor="atomic_write")
-
-    def materialize(self, relative_path, destination):
-        # Explicit human-readable export, never a restore prerequisite.
-        _atomic_replace(Path(destination), _canonical_bytes(self.load(relative_path)))
-        return str(destination)
+            return revision + 1
 
 
 def _contains_absolute_path(value: Any) -> bool:

@@ -59,8 +59,8 @@ def missing_fields(info: dict[str, Any]) -> list[str]:
     return missing
 
 
-def merge_info(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
-    merged = {k: v for k, v in existing.items() if k in REQUIRED_FIELDS + OPTIONAL_FIELDS}
+def _normalize_info(update: dict[str, Any]) -> dict[str, Any]:
+    merged = {}
     for field in REQUIRED_FIELDS + OPTIONAL_FIELDS:
         value = update.get(field)
         if field in ("diseases", "modalities", "dataset_mentions", "intent_notes") and value is not None:
@@ -86,23 +86,22 @@ def merge_info(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, An
     return merged
 
 
-def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = None,
-                           *, user_inputs: list[str] | None = None,
+def extract_benchmark_info(requirement: str, *, user_inputs: list[str] | None = None,
                            prompt: str) -> dict[str, Any]:
     """Extract only the explicitly requested benchmark-level intent."""
     user_inputs = user_inputs if user_inputs is not None else [requirement]
     result = complete_json(
         prompt,
-        f"Current values: {json.dumps(existing or {})}\n\nUser requirement:\n{requirement}"
+        f"User requirement:\n{requirement}"
         f"\n\nQuote evidence only from these numbered user inputs: {json.dumps({i: text for i, text in enumerate(user_inputs)}, ensure_ascii=False)}",
         ExtractedBrief,
-        lambda parsed: _validate_extraction(parsed.model_dump(exclude_unset=True), existing, user_inputs),
+        lambda parsed: _validate_extraction(parsed.model_dump(exclude_unset=True), user_inputs),
     )
-    return _validate_extraction(result, existing, user_inputs)
+    return _validate_extraction(result, user_inputs)
 
 
-def _validate_extraction(result, existing, user_inputs):
-    info = merge_info(existing or {}, result)
+def _validate_extraction(result, user_inputs):
+    info = _normalize_info(result)
     raw_scopes = result.get("sample_scope", [])
     if info["modalities"] and not raw_scopes:
         raw_scopes = _derive_modality_scope(info["modalities"], user_inputs)

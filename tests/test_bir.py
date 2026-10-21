@@ -28,7 +28,7 @@ def test_bir_revision_conflict_and_digest_validation(tmp_path: Path):
     store = BIRStore(Path(record["bir_path"]))
     first = store.update("benchmark_info.json", {"schema_version": "benchmark-info", "value": 1},
                          run_id="r1", actor="test", expected_revision=0)
-    assert first.revision == 1
+    assert first == 1
     with pytest.raises(ValueError, match="revision conflict"):
         store.update("benchmark_info.json", {"schema_version": "benchmark-info", "value": 2},
                      run_id="r2", actor="test", expected_revision=0)
@@ -92,7 +92,7 @@ def test_atomic_update_failure_and_dependency_invalidation(tmp_path, monkeypatch
     record = compilation(tmp_path)
     store = BIRStore(Path(record["bir_path"]))
     first = store.update("benchmark_info.json", {"scope":"one"}, run_id="r", actor="test")
-    assert store.update("benchmark_info.json", {"scope":"one"}, run_id="r", actor="test").revision == first.revision
+    assert store.update("benchmark_info.json", {"scope":"one"}, run_id="r", actor="test") == first
     store.update("allocation.json", {"count":1}, run_id="r", actor="test",
         dependencies={"benchmark_info.json":store.digest("benchmark_info.json")})
     replace = bir.os.replace

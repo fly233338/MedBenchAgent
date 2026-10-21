@@ -150,6 +150,24 @@ def test_initialize_run_writes_secret_free_effective_configuration(tmp_path: Pat
     assert "not-in-snapshot" not in json.dumps(snapshot)
 
 
+def test_initialize_run_accepts_stale_work_but_rejects_corruption(tmp_path):
+    store = BIRStore(bir(tmp_path))
+    store.update("benchmark_info.json", {"sample_count": 1}, run_id="r", actor="test")
+    store.update("allocation.json", {"requested_count": 1}, run_id="r", actor="test",
+                 dependencies={"benchmark_info.json": store.digest("benchmark_info.json")})
+    store.update("benchmark_info.json", {"sample_count": 2}, run_id="r", actor="test")
+    run = initialize_run(tmp_path / "runs", bir_path=store.root)
+    assert run["bir_path"] == str(store.root)
+    assert store.current("allocation.json") is None
+    assert store.validate().warnings
+    path = store.root / "allocation.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["requested_count"] = 999
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="content digest mismatch"):
+        initialize_run(tmp_path / "runs", bir_path=store.root)
+
+
 def test_source_settings_normalize_paths_and_resume_snapshot(tmp_path, monkeypatch):
     from medbenchagent.settings import run_settings
     monkeypatch.setattr("medbenchagent.settings.PROJECT_ROOT", tmp_path)

@@ -19,7 +19,7 @@ def audit_candidate(context):
     from medbenchagent.workflow.supervision import current_document
     saved = current_document(context, "candidate.json")
     if saved:
-        return result("success", "Audited candidate is current", candidate_path=saved["directory"], candidate_counts=saved["counts"])
+        return result("success", "Audited candidate is current", candidate_path=saved["directory"])
     store = BIRStore(context["bir_path"])
     dependencies = business_dependencies(context, "allocation.json",
                       "task_plan.json", "generation.json")
@@ -30,7 +30,7 @@ def audit_candidate(context):
     value = {"schema_version": "benchmark-candidate", "status": "audited",
              "directory": str(root), "counts": outcome["data"]["counts"]}
     store.update("candidate.json", value, run_id=context["run_id"], actor="audit", dependencies=dependencies)
-    return result("success", outcome["summary"], candidate_path=str(root), candidate_counts=value["counts"])
+    return result("success", outcome["summary"], candidate_path=str(root))
 
 
 def compilation_report(store, counts, limitation_reason=""):
@@ -71,13 +71,20 @@ def publish_benchmark(context, *, limitation_reason=""):
     manifest = json.loads((source / "benchmark_manifest.json").read_text(encoding="utf-8"))
     publication_id = manifest["benchmark_id"] + "-" + hashlib.sha256(limitation_reason.encode()).hexdigest()[:12]
     root = Path(context["experiment_output_directory"]) / "deliveries" / publication_id
-    root.mkdir(parents=True, exist_ok=True)
-    for name in PACKAGE_FILES:
-        shutil.copy2(source / name, root / name)
-    (root / "compilation_report.md").write_text(compilation_report(store, counts, limitation_reason), encoding="utf-8")
-    files = {name: digest_file(root / name) for name in (*PACKAGE_FILES, "compilation_report.md")}
-    atomic_write_json(root / "complete.json", {"schema_version": "benchmark-delivery",
-                                               "benchmark_id": manifest["benchmark_id"], "files": files})
+    report = compilation_report(store, counts, limitation_reason).encode("utf-8")
+    files = {name: digest_file(source / name) for name in PACKAGE_FILES}
+    files["compilation_report.md"] = hashlib.sha256(report).hexdigest()
+    completion = {"schema_version": "benchmark-delivery", "benchmark_id": manifest["benchmark_id"], "files": files}
+    if (root / "complete.json").is_file():
+        verify_package(root)
+        if json.loads((root / "complete.json").read_text(encoding="utf-8")) != completion:
+            raise ValueError("Completed publication differs from the current candidate or report")
+    else:
+        root.mkdir(parents=True, exist_ok=True)
+        for name in PACKAGE_FILES:
+            shutil.copy2(source / name, root / name)
+        (root / "compilation_report.md").write_bytes(report)
+        atomic_write_json(root / "complete.json", completion)
     value = {"schema_version": "bir-delivery", "status": "complete", "delivery_path": str(root),
              "manifest_path": str(root / "benchmark_manifest.json"), "combined_output": str(root / "benchmark.jsonl"),
              "counts": counts, "limitation_reason": limitation_reason}

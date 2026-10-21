@@ -301,16 +301,6 @@ def build_dataset_facts(
         "patient_count": len(known_patient_ids),
         "patient_identity": "present" if known_patient_ids else "absent",
         "evidence_catalog": evidence_catalog,
-        "annotation_mapping": [
-            {
-                "role": f"{name}:{evidence_type}",
-                "name": name,
-                "evidence_type": evidence_type,
-            }
-            for name, row in sorted(evidence_catalog.items())
-            for evidence_type in sorted(row.get("types", {}))
-            if evidence_type in {"value", "text", "asset", "region"}
-        ],
         "evidence": merged["evidence"],
         "evidence_names": merged["evidence_names"],
         "reference_only_evidence_names": merged["reference_only_evidence_names"],

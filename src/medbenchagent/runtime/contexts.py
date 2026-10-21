@@ -14,7 +14,6 @@ class SupervisorContext(TypedDict, total=False):
     bir_path: str
     bir_manifest_digest: str
     bir_template_revision: str
-    bir_summary_ref: dict[str, Any]
     child_states: dict[str, str]
     issues: dict[str, dict]
     evidence_index_path: str
@@ -47,7 +46,7 @@ def validate_context(context, role, dataset):
     ContextBoundary.model_validate(context)
     if context.get("dataset_scope") != dataset:
         raise ValueError("Private context belongs to another dataset")
-    if context.get("agent_role", role) != role:
+    if context.get("agent_role") != role:
         raise ValueError("Private context belongs to another role")
     for key, value in context.items():
         if key.endswith("_path") and value is not None and not isinstance(value, str):

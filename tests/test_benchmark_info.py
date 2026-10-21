@@ -28,7 +28,7 @@ def test_evidence_validates_source_quotes_independently_of_normalized_values():
         {"field": "sample_count", "quote": "20 questions", "input_index": 0},
         {"field": "dataset_mentions", "quote": "Example CT", "input_index": 0},
         {"field": "intent_notes", "quote": "image interpretation", "input_index": 0},
-    ]), None, ["Build a 20 questions English benchmark for thoracic imaging CT cases using Example CT; focus on image interpretation"])
+    ]), ["Build a 20 questions English benchmark for thoracic imaging CT cases using Example CT; focus on image interpretation"])
 
     assert result["modalities"] == ["Computed Tomography"]
     assert result["sample_count"] == 20
@@ -43,7 +43,7 @@ def test_evidence_rejects_quotes_not_present_in_user_inputs():
             {"field": "sample_count", "quote": "20 questions", "input_index": 0},
             {"field": "dataset_mentions", "quote": "Example CT", "input_index": 0},
             {"field": "intent_notes", "quote": "image interpretation", "input_index": 0},
-        ]), None, ["Build a 20 questions English benchmark for thoracic imaging CT cases using Example CT; focus on image interpretation"])
+        ]), ["Build a 20 questions English benchmark for thoracic imaging CT cases using Example CT; focus on image interpretation"])
 
 
 def test_missing_modality_scope_is_derived_from_source_quote():
@@ -57,7 +57,7 @@ def test_missing_modality_scope_is_derived_from_source_quote():
             {"field": "sample_count", "quote": "20", "input_index": 0},
             {"field": "dataset_mentions", "quote": "breast-us", "input_index": 0},
         ],
-    }, None, ["Build a 20 question English benchmark for breast cancer using breast-us"])
+    }, ["Build a 20 question English benchmark for breast cancer using breast-us"])
     assert result["sample_scope"][0]["modalities"] == ["ultrasound"]
 
 
@@ -68,5 +68,5 @@ def test_unquoted_intent_notes_are_dropped():
         {"field": "language", "quote": "English benchmark", "input_index": 0},
         {"field": "sample_count", "quote": "20 questions", "input_index": 0},
         {"field": "dataset_mentions", "quote": "Example CT", "input_index": 0},
-    ]), None, ["Build a 20 questions English benchmark for thoracic imaging CT cases using Example CT"])
+    ]), ["Build a 20 questions English benchmark for thoracic imaging CT cases using Example CT"])
     assert result["intent_notes"] == []

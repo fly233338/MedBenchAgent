@@ -4,7 +4,7 @@
 
 **Output:** one canonical Task Plan with Axis decisions, Scenarios, validated targets, executable Leaves, reviews and categorized exclusions.
 
-**Private state:** dataset/revision/Scenario-bound evidence cache and read state. The canonical plan owns progress; current prompt text and observation excerpts do not.
+**Private state:** evidence/read caches bound to BIR input digests, Scenario and rework round. Full dataset facts are cached on disk by binding digest. Leaf prompt context is assembled for each request; it is not checkpoint state. The canonical plan owns progress.
 
 Plan writes update BIR `task_plan.json` and return its reference. There is no local-file fallback, checkpoint Plan copy, bulk-Axis entry point or default Registry. Extension selection is owned by `planning_extensions.json`; changing it invalidates dependent planning work.
 

@@ -97,6 +97,23 @@ def test_optional_clinical_goal_and_language_defaults(tmp_path, monkeypatch):
     assert "global_issue" not in updates
 
 
+@pytest.mark.parametrize("explicit,expected", [(None, 2), (1, 1)])
+def test_intake_resolves_image_limit_from_frozen_settings_or_user(tmp_path, monkeypatch, explicit, expected):
+    import medbenchagent.workflow.graph as workflow
+    from medbenchagent.runtime.run_artifacts import initialize_run
+    from medbenchagent.settings import run_settings
+    store = BIRStore.initialize(tmp_path / "BIR", "config/bir_template", "test")
+    run = initialize_run(tmp_path / "runs", bir_path=store.root, graph_overrides={"max_total_tasks_per_image": 2})
+    monkeypatch.setattr(workflow, "preflight_errors", lambda *args, **kwargs: [])
+    monkeypatch.setattr(workflow, "extract_benchmark_info", lambda *args, **kwargs:
+                        {"max_total_tasks_per_image": explicit, "sample_scope": [], "allocation_preferences": []})
+    context = {**run, "user_requirement": "Compile d", "operation_directory": str(tmp_path / "operation")}
+    with run_settings(run["effective_config_path"]):
+        specify(context)
+    assert store.load("benchmark_info.json")["max_total_tasks_per_image"] == expected
+    assert "max_total_tasks_per_image" not in context and "configured_total_tasks_per_image" not in context
+
+
 def test_supervisor_has_review_and_rework_choices_and_publication_respects_rejection(tmp_path, monkeypatch):
     context = compile_fixture(tmp_path, _plan("d", {"leaf": 1}), cases())
     context.update(brief_ready=True, user_requirement="Compile d", brief_requirement="Compile d")

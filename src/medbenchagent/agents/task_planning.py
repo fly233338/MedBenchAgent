@@ -180,37 +180,18 @@ def _registry(context) -> RegistrySnapshot:
     return _bir(context).registry()
 
 
-def _profile(context: dict[str, Any]) -> dict[str, Any]:
-    return _read(_access(context)["profile_path"])
-
-
 def _plan_path(context) -> Path:
     return _bir(context).root / "task_plan.json"
 
 
 
 
-def _configured_template_count(context: dict[str, Any]) -> int | None:
-    value = context.get("question_template_count")
-    if value is None:
-        return None
-    return int(value)
-
-
-def _catalog_map(value: Any) -> dict[str, dict[str, Any]]:
-    if isinstance(value, dict):
-        return {str(key): dict(item) for key, item in value.items() if isinstance(item, dict)}
-    if isinstance(value, list):
-        return {
-            str(item["name"]): dict(item)
-            for item in value
-            if isinstance(item, dict) and item.get("name")
-        }
-    return {}
+def _configured_template_count(context: dict[str, Any]) -> int:
+    return context["question_template_count"]
 
 
 
-def _planning_extensions(context: dict[str, Any]) -> PlanningExtensionCatalog | None:
+def _planning_extensions(context: dict[str, Any]) -> PlanningExtensionCatalog:
     registry = _registry(context)
     return registry.planning_extensions()
 
@@ -233,14 +214,10 @@ _LEAF_CONTEXT_CHAR_BUDGET = 64000
 
 
 def _planning_binding(context: dict[str, Any], plan: TaskPlanState, scenario_id: str | None) -> dict[str, Any]:
-    access = _access(context)
-    facts = _facts(context, plan)
+    store = _bir(context)
     return {
-        "dataset_id": access.get(
-            "dataset_id",
-            context.get("dataset_scope", plan.dataset.get("dataset_id")),
-        ) or plan.dataset.get("dataset_id"),
-        "revision": access.get("revision", facts.get("revision")),
+        "inputs": {path: store.digest(path) for path in ("dataset_binding.json", "benchmark_info.json", "planning_extensions.json")},
+        "rework": len(plan.review.get("revision_history", [])),
         "scenario_id": scenario_id,
     }
 
@@ -344,8 +321,8 @@ def _name_suggestions(name: str, available: list[str]) -> list[str]:
 def _scenario_context_payload(context: dict[str, Any], plan: TaskPlanState, scenario: Any, raw: dict[str, Any]) -> dict[str, Any]:
     from medbenchagent.data.index import DatasetIndex
 
-    facts = _facts(context, plan)
-    catalog = _catalog_map(facts.get("evidence_catalog", {}))
+    facts = _facts(context)
+    catalog = facts["evidence_catalog"]
     meanings = _field_meanings(_access(context))
     raw_entries = {item.get("name") for item in raw.get("evidence", []) if item.get("name")}
     input_names = {
@@ -406,12 +383,12 @@ def scenario_evidence_context(context, plan, scenario_id):
 
 def _leaf_context(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
     scenario = plan.scenarios.get(plan.current_scenario_id) if plan.current_scenario_id else None
-    facts = _facts(context, plan)
+    facts = _facts(context)
     scenario_id = scenario.scenario_id if scenario else None
     cache = _bound_cache(context, plan, scenario_id)
     catalog = list(cache.get("planning_evidence") or [
         compact_catalog_entry(item, item.get("meaning"))
-        for item in list(_catalog_map(facts.get("evidence_catalog", {})).values())
+        for item in list(facts["evidence_catalog"].values())
     ])
     for name, item in cache.get("catalog_fields", {}).items():
         if name not in {entry.get("name") for entry in catalog}:
@@ -461,15 +438,15 @@ def _leaf_context(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any
     if scenario:
         required.update(name for target in scenario.validated_clinical_targets for name in target.reference_fields)
         required.update(selector.name for leaf_id in scenario.leaf_task_ids for selector in plan.leaf_tasks[leaf_id].input if selector.name)
-    by_name = _catalog_map(facts.get("evidence_catalog", {}))
+    by_name = facts["evidence_catalog"]
     present = {entry.get("name") for entry in catalog}
     catalog.extend(compact_catalog_entry(by_name[name], by_name[name].get("meaning")) for name in sorted(required - present) if name in by_name)
     access = _access(context)
     return _bounded_leaf_context({
         "required_evidence_names": sorted(required),
         "dataset_binding": {
-            "dataset_id": access.get("dataset_id", context.get("dataset_scope")),
-            "revision": access.get("revision", facts.get("revision")),
+            "dataset_id": access["dataset_id"],
+            "revision": access["revision"],
         },
         "extension_selection": _bir(context).load("planning_extensions.json"),
         "scenario": {
@@ -497,7 +474,7 @@ def _leaf_context(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any
             "case_count": facts.get("case_count"),
             "evidence_coverage": {
                 key: value.get("cases")
-                for key, value in _catalog_map(facts.get("evidence_catalog", {})).items()
+                for key, value in facts["evidence_catalog"].items()
                 if isinstance(value, dict) and "cases" in value
             },
             "annotation_completeness": "unavailable unless documented by preparation evidence",
@@ -511,8 +488,8 @@ def _leaf_diagnostics(context: dict[str, Any], plan: TaskPlanState, raw_leaf: An
         attempted = raw_leaf.model_dump(mode="json")
     else:
         attempted = raw_leaf
-    facts = _facts(context, plan)
-    catalog = _catalog_map(facts.get("evidence_catalog", {}))
+    facts = _facts(context)
+    catalog = facts["evidence_catalog"]
     return {
         "attempted_leaf": attempted,
         "errors": errors,
@@ -561,16 +538,13 @@ def _write_artifacts(context, plan):
 
 
 def _initialize_planning_context(context):
-    from medbenchagent.data.index import DatasetIndex
     context = dict(context)
     plan = _load_plan(context)
     if plan.phase != "access":
         return context
-    access = _access(context)
     try:
-        facts = DatasetIndex(access).facts()
+        facts = _facts(context)
         plan.phase = "axes" if facts["case_count"] and facts["evidence_names"] else "blocked"
-        context["dataset_facts"] = facts
         if plan.phase == "blocked":
             plan.review = {"reason": "Dataset has no Case or Evidence"}
     except (OSError, ValueError) as exc:
@@ -584,19 +558,21 @@ def _axis_order(context) -> tuple[TaskAxis, ...]:
     return tuple(TaskAxis(axis) for axis in _registry(context).axis_order)
 
 
-def _facts(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any]:
-    facts = context.get("dataset_facts")
+def _facts(context: dict[str, Any]) -> dict[str, Any]:
+    """Cache derived facts by the verified binding, outside Agent checkpoints."""
     access = _access(context)
-    if facts is not None and facts.get("revision", access.get("revision")) == access.get("revision"):
-        return facts
+    binding = _bir(context).digest("dataset_binding.json").removeprefix("sha256:")
+    path = Path(context["run_directory"]) / "evidence" / "dataset_facts" / f"{binding}.json"
+    if path.is_file():
+        return _read(path)
     from medbenchagent.data.index import DatasetIndex
     facts = DatasetIndex(access).facts()
-    context["dataset_facts"] = facts
+    atomic_write_json(path, facts)
     return facts
 
 
 def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanState:
-    facts = _facts(context, plan)
+    facts = _facts(context)
     node_context = {
         "evidence": facts.get("evidence", {}),
         "assets": facts.get("assets", {}),
@@ -605,26 +581,23 @@ def _build_scenarios(context: dict[str, Any], plan: TaskPlanState) -> TaskPlanSt
         "mask_feature_coverage": facts.get("mask_feature_coverage", {}),
         "view_panel_capabilities": facts.get("view_panel_capabilities", {}),
         "evidence_names": facts.get("evidence_names", []),
-        "annotation_mapping": facts.get("annotation_mapping", []),
     }
     access = _access(context)
-    if access.get("schema_version") == "dataset-access":
-        from medbenchagent.data.index import DatasetIndex
-        query = DatasetIndex(access)
-        assets = {row["asset_id"]: row for row in query.assets()}
-        node_context["case_facts"] = [case_facts(case, assets) for case in query.iter_cases()]
+    from medbenchagent.data.index import DatasetIndex
+    query = DatasetIndex(access)
+    assets = {row["asset_id"]: row for row in query.assets()}
+    node_context["case_facts"] = [case_facts(case, assets) for case in query.iter_cases()]
     analysis = AxisAnalysis(
         input_structure=plan.axis_decisions[TaskAxis.INPUT_STRUCTURE.value],
         operation=plan.axis_decisions[TaskAxis.OPERATION.value],
         clinical_target=plan.axis_decisions[TaskAxis.CLINICAL_TARGET.value],
-        dataset_revision=str(facts.get("revision") or access.get("revision") or "1"),
+        dataset_revision=access["revision"],
     )
     scenarios = build_task_scenarios(analysis, node_context, registry=_registry(context))
     active = sorted(key for key, value in scenarios.items() if not value.exclusion_reason)
     plan.scenarios = scenarios
     plan.phase = "screening" if active else "complete"
     plan.pending_scenario_ids = active.copy()
-    plan.completed_scenario_ids = []
     plan.current_scenario_id = active[0] if active else None
     return plan
 
@@ -637,10 +610,10 @@ def _clinical_target_definition(context: dict[str, Any], target: str) -> dict[st
 
 def _screening_payload(context: dict[str, Any], plan: TaskPlanState, scenario) -> dict[str, Any]:
     registry = _registry(context)
-    facts = _facts(context, plan)
+    facts = _facts(context)
     meanings = _field_meanings(_access(context))
     catalog = []
-    for entry in _catalog_map(facts.get("evidence_catalog", {})).values():
+    for entry in facts["evidence_catalog"].values():
         item = compact_catalog_entry(entry, meanings.get(entry.get("name")) or entry.get("meaning"))
         catalog.append(item)
     operation = registry.operation_definition(scenario.operation)
@@ -698,8 +671,8 @@ def _apply_screening_record(plan: TaskPlanState, scenario, reviewed: ScenarioScr
 
 def _validate_screening_targets(context: dict[str, Any], plan: TaskPlanState, scenario,
                                 targets: list[ValidatedClinicalTarget]) -> None:
-    names = set(_facts(context, plan).get("evidence_names", []))
-    names.update(_catalog_map(_facts(context, plan).get("evidence_catalog", {})))
+    names = set(_facts(context).get("evidence_names", []))
+    names.update(_facts(context)["evidence_catalog"])
     seen = set()
     normalized = [_target_model(target) for target in targets]
     for target in normalized:
@@ -813,7 +786,7 @@ def read_planning_context(context: dict[str, Any]) -> dict[str, Any]:
 
 def read_dataset_overview(context: dict[str, Any]) -> dict[str, Any]:
     plan = _load_plan(context)
-    facts = _facts(context, plan)
+    facts = _facts(context)
     overview = {key: facts.get(key) for key in ("revision", "case_count", "patient_count", "assets", "relations")}
     overview["dataset_id"] = plan.dataset.get("dataset_id")
     return result(
@@ -851,7 +824,7 @@ def read_field_values(context, *, name, offset=0, limit=20, text_offset=0):
     """Read exact observed values with explicit pagination; excerpts are never answer labels."""
     from medbenchagent.data.index import DatasetIndex
     plan = _load_plan(context)
-    if name not in _catalog_map(_facts(context, plan).get("evidence_catalog", {})):
+    if name not in _facts(context)["evidence_catalog"]:
         raise ValueError("Unknown evidence field")
     page = DatasetIndex(_access(context)).values(name, offset=offset, limit=limit)
     values = page["values"]
@@ -916,9 +889,9 @@ def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=
     plan = _load_plan(context)
     state = _bound_read_state(context, plan, plan.current_scenario_id)
     query = json.dumps({"offset": offset, "limit": limit, "names": sorted(names or [])}, sort_keys=True)
-    facts = _facts(context, plan)
-    all_entries = list(_catalog_map(facts.get("evidence_catalog", {})).values())
-    by_name = _catalog_map(all_entries)
+    facts = _facts(context)
+    by_name = facts["evidence_catalog"]
+    all_entries = list(by_name.values())
     available = sorted(by_name)
     requested = list(dict.fromkeys(names or []))
     unmatched = [name for name in requested if name not in by_name]
@@ -968,14 +941,12 @@ def read_evidence_catalog(context: dict[str, Any], *, offset=0, limit=20, names=
         json.dumps(cached, ensure_ascii=False),
         planning_read_state=state,
         planning_evidence_cache=cache,
-        leaf_context=_leaf_context(context, plan),
     )
 
 
 def read_axis_evidence(context: dict[str, Any], *, axis: TaskAxis) -> dict[str, Any]:
     axis = TaskAxis(axis)
-    plan = _load_plan(context)
-    facts = _facts(context, plan)
+    facts = _facts(context)
     registry = _registry(context)
     axis_definition = next(
         (item for item in registry.axis_definitions() if item.get("id") == axis.value),
@@ -1078,7 +1049,6 @@ def read_scenario_context(context: dict[str, Any], *, scenario_id: str | None = 
         "success",
         json.dumps(context_value, ensure_ascii=False),
         planning_read_state=state,
-        leaf_context=_leaf_context(context, plan),
         planning_evidence_cache=cache,
     )
 
@@ -1091,7 +1061,7 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         raise ValueError("An active Task Scenario is required before saving a Leaf Task")
     from medbenchagent.planning.task_discovery import validate_leaf_design, LeafDesignError
     try:
-        parsed = validate_leaf_design(leaf, plan, facts=_facts(context, plan), access=_access(context),
+        parsed = validate_leaf_design(leaf, plan, facts=_facts(context), access=_access(context),
             registry=_registry(context), expected_templates=_configured_template_count(context),
             case_names=_case_evidence_names(_access(context)))
     except LeafDesignError as exc:
@@ -1155,7 +1125,6 @@ def save_leaf_task(context: dict[str, Any], *, leaf: LeafTaskDraft) -> dict[str,
         milestone={"kind": "leaf", "leaf_task_id": parsed.leaf_task_id, "capacity": eligible},
         planning_read_state=read_state,
         planning_evidence_cache=cache,
-        leaf_context=_leaf_context(context, plan),
         **updates,
     )
 
@@ -1190,7 +1159,6 @@ def exclude_current_scenario(
         "exclusion_evidence": evidence_basis,
     })
     plan.pending_scenario_ids = [item for item in plan.pending_scenario_ids if item != scenario_id]
-    plan.completed_scenario_ids = [item for item in plan.completed_scenario_ids if item != scenario_id]
     if plan.pending_scenario_ids:
         plan.phase = "leaves"
         plan.current_scenario_id = plan.pending_scenario_ids[0]
@@ -1210,7 +1178,6 @@ def exclude_current_scenario(
             "status": "excluded",
         },
         excluded_scenario_id=scenario_id,
-        next_pending_scenario_id=plan.current_scenario_id,
         planning_read_state=context["planning_read_state"],
         planning_evidence_cache=context["planning_evidence_cache"],
         **updates,
@@ -1289,7 +1256,7 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview |
     if not discarded <= expected:
         raise ValueError("Scenario review can discard only saved Leaf Tasks")
     remaining = expected - discarded
-    evidence_names = set(_facts(context, plan).get("evidence_names", []))
+    evidence_names = set(_facts(context).get("evidence_names", []))
     evidence_names.update(
         selector.name
         for leaf_id in remaining
@@ -1299,7 +1266,7 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview |
     expected_templates = _configured_template_count(context)
     for leaf_id in remaining:
         leaf = plan.leaf_tasks[leaf_id]
-        if expected_templates is not None and len(leaf.question_templates) != expected_templates:
+        if len(leaf.question_templates) != expected_templates:
             raise ValueError(
                 f"Leaf Task {leaf_id} requires exactly {expected_templates} question_templates"
             )
@@ -1309,8 +1276,8 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview |
             registry=_registry(context),
             resolver_context={
                 "evidence_names": evidence_names,
-                "reference_only_evidence_names": _facts(context, plan).get("reference_only_evidence_names", []),
-                "mask_feature_coverage": _facts(context, plan).get("mask_feature_coverage", {}),
+                "reference_only_evidence_names": _facts(context).get("reference_only_evidence_names", []),
+                "mask_feature_coverage": _facts(context).get("mask_feature_coverage", {}),
                 "image_manifest_digest": _access(context).get("image_manifest_digest"),
                 "sampling_manifest_digest": _access(context).get("sampling_manifest_digest"),
                 "ordered_collection_available": bool(_access(context).get("sampling_manifest_digest")),
@@ -1332,17 +1299,12 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview |
     )
     plan.reviews[review.scenario_id] = normalized_review
     if review.status == "approved":
-        plan.completed_scenario_ids = sorted(set(plan.completed_scenario_ids) | {review.scenario_id})
         plan.pending_scenario_ids = [key for key in plan.pending_scenario_ids if key != review.scenario_id]
         if plan.pending_scenario_ids:
             plan.current_scenario_id = plan.pending_scenario_ids[0]
         else:
             plan.current_scenario_id = None
             plan.phase = "complete"
-    else:
-        plan.completed_scenario_ids = [
-            key for key in plan.completed_scenario_ids if key != review.scenario_id
-        ]
     plan.revision += 1
     _reset_planning_context(context, plan, plan.current_scenario_id)
     updates = _write_artifacts(context, plan)
@@ -1362,11 +1324,8 @@ def review_current_scenario(context: dict[str, Any], *, review: ScenarioReview |
             "next_scenario_id": next_pending,
             "status": review.status,
         },
-        completed_scenario_id=review.scenario_id,
-        next_pending_scenario_id=next_pending,
         planning_read_state=context["planning_read_state"],
         planning_evidence_cache=context["planning_evidence_cache"],
-        scenario_review=review_summary,
         **updates,
     )
 
@@ -1389,14 +1348,13 @@ def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
         review = plan.reviews.get(scenario_id)
         if review is None or review.status != "approved":
             raise ValueError(f"Scenario lacks an approved review: {scenario_id}")
-        if expected_templates is not None:
-            for leaf_id in scenario.leaf_task_ids:
-                actual = len(plan.leaf_tasks[leaf_id].question_templates)
-                if actual != expected_templates:
-                    raise ValueError(
-                        f"Leaf Task {leaf_id} has {actual} templates; "
-                        f"expected {expected_templates}"
-                    )
+        for leaf_id in scenario.leaf_task_ids:
+            actual = len(plan.leaf_tasks[leaf_id].question_templates)
+            if actual != expected_templates:
+                raise ValueError(
+                    f"Leaf Task {leaf_id} has {actual} templates; "
+                    f"expected {expected_templates}"
+                )
     updates = _write_artifacts(context, plan)
     executable_scenarios = [item for item in plan.scenarios.values() if not item.exclusion_reason]
     executable_leaves = [
@@ -1502,7 +1460,7 @@ def _render_leaf_prompt(context: dict[str, Any], plan: TaskPlanState, template: 
         )
     replacements = {
         "{{current_planning_state_and_scenario_json}}": "See the structured state and leaf_context in this request.",
-        "{{question_template_count}}": str(_configured_template_count(context) or "not specified"),
+        "{{question_template_count}}": str(_configured_template_count(context)),
         "{{benchmark_output_language}}": str(_benchmark_brief(context).get("language", "unavailable")),
         "{{benchmark_input_policy}}": str(context.get("benchmark_input_policy", "unavailable")),
         "{{current_operation_and_clinical_target_definitions_json}}": json.dumps(

@@ -8,7 +8,6 @@ from typing import Any
 from medbenchagent.planning.task_space import (
     AxisAnalysis,
     CapabilityCategory,
-    EvidenceSelector,
     TaskAxis,
     TaskScenario,
     stable_scenario_id,
@@ -100,22 +99,12 @@ def build_task_scenarios(
         supported[TaskAxis.OPERATION],
         supported[TaskAxis.CLINICAL_TARGET],
     ):
-        mapping = [
-            EvidenceSelector.model_validate(value)
-            for value in context.get("annotation_mapping", [])
-        ]
         scenario = TaskScenario(
             scenario_id=stable_scenario_id(input_structure, operation, clinical_target),
             input_structure=input_structure,
             operation=operation,
             clinical_target=clinical_target,
             capability_category=CapabilityCategory(registry.registry.capability_by_operation[operation]),
-            annotation_mapping=mapping,
-            evidence_stats=context.get("evidence", {}),
-            validated_clinical_targets=[
-                item for item in (context.get("validated_clinical_targets", {}).get(clinical_target, [])
-                                  if isinstance(context.get("validated_clinical_targets", {}), dict) else [])
-            ],
         )
         feasible, reason = registry.check(scenario, context)
         case_facts = context.get("case_facts", [])

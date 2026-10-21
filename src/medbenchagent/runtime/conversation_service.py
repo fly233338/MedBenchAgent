@@ -172,7 +172,7 @@ class ConversationService:
                        if key in {"run_id", "run_directory", "runs_root", "construction_events_path",
                                   "effective_config_path", "catalog_snapshot_path",
                                    "bir_path", "bir_manifest_digest",
-                                   "bir_template_revision", "bir_summary_ref", "summary", "status", "view"}}
+                                   "bir_template_revision", "summary", "status", "view"}}
             if event.kind == "needs_input":
                 changes["status"] = "waiting_input"
             elif event.kind == "error":

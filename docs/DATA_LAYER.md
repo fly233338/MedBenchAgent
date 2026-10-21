@@ -20,7 +20,7 @@ immutable revision 的 cases/image manifest，根目录 current.json 仅作为�
 
 多来源字段通过 understand 阶段的 accepted mapping 合并、保留或排除。值映射、缺失状态、数组边界和来源空间都保留在 mapping 和运行诊断中。
 
-`DatasetIndex` 绑定一个 access manifest 和 cache revision，提供字段值、来源覆盖、记录采样、数组长度、配对和协议容量查询。查询返回准确总数和分页结果，供规划 Agent 使用。
+`DatasetIndex` 绑定一个扁平访问收据，提供 Case 读取、字段值分页、Asset 查询、数据事实和 Scenario 上下文。来源关系与结构容量从这些事实及 Resolver 推导，不保留旧协议查询入口。
 
 Evidence Catalog 是完整数据事实清单，不是任务候选清单。Task Planning 需要区分图像可观察证据、患者/临床上下文、设备/行政元数据和仅用于校准的 spacing 等字段；字段存在本身不能支持一个 Axis 或 Leaf Task。
 

@@ -41,6 +41,11 @@ def initialize_run(
     execution_runtime: dict[str, object] | None = None,
 ) -> dict[str, str]:
     """Create one time-named run directory while retaining a full UUID run_id."""
+    from medbenchagent.planning.bir import BIRStore
+    bir = BIRStore(bir_path)
+    report = bir.validate()
+    if not report.valid:
+        raise ValueError("Invalid compilation BIR: " + "; ".join(report.errors))
     active_settings = settings or get_settings()
     identifier = uuid.uuid4()
     run_id = str(identifier)
@@ -63,11 +68,6 @@ def initialize_run(
     snapshot = active_settings.snapshot(graph_overrides)
     if execution_runtime is not None:
         snapshot["execution_runtime"] = execution_runtime
-    from medbenchagent.planning.bir import BIRStore
-    bir = BIRStore(bir_path)
-    report = bir.validate()
-    if not report.valid:
-        raise ValueError("Invalid compilation BIR: " + "; ".join(report.errors))
     manifest = bir.load("manifest.json")
     snapshot["bir"] = {"path": str(bir.root), "compilation_id": manifest["compilation_id"],
                        "template_revision": manifest["template_revision"], "manifest_digest": bir.digest("manifest.json")}

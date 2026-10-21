@@ -16,10 +16,7 @@ def review_plan(context):
         raise ValueError("Independent review requires discovered Scenarios")
     dependencies = business_dependencies(context, "task_plan.json",
                                          "dataset_binding.json", "benchmark_info.json", registry=True)
-    try:
-        saved = store.load("review.json")
-    except (OSError, ValueError):
-        saved = {"schema_version": "plan-review", "findings": [], "checked_scenario_ids": [], "status": "running"}
+    saved = store.current("review.json") or {"schema_version": "plan-review", "findings": [], "checked_scenario_ids": [], "status": "running"}
     for key, scenario in plan.scenarios.items():
         if key in saved["checked_scenario_ids"]:
             continue
@@ -36,8 +33,8 @@ def review_plan(context):
                          "category": "invalid_task" if blocking else "coverage_gap", "blocking": blocking,
                          "summary": text, "evidence_refs": [f"scenario:{key}"]}
                         for index, text in enumerate(issues)]
-            from medbenchagent.agents.task_planning import _facts, _catalog_map
-            known_fields = set(_catalog_map(_facts(context, plan).get("evidence_catalog", {})))
+            from medbenchagent.agents.task_planning import _facts
+            known_fields = set(_facts(context)["evidence_catalog"])
             for index, concern in enumerate(review.source_concerns):
                 if not set(concern.fields) <= known_fields:
                     raise ValueError("Source concern references unknown evidence fields")
@@ -60,4 +57,4 @@ def review_plan(context):
         store.update("review.json", saved, run_id=context["run_id"], actor="independent_review", dependencies=dependencies)
     saved["status"] = "rejected" if any(row["blocking"] for row in saved["findings"]) else "approved"
     store.update("review.json", saved, run_id=context["run_id"], actor="independent_review", dependencies=dependencies)
-    return result("success", json.dumps(saved, ensure_ascii=False), review_summary=saved)
+    return result("success", json.dumps(saved, ensure_ascii=False))

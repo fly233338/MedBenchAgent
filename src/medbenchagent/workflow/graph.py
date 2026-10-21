@@ -113,7 +113,6 @@ class BenchmarkInputState(TypedDict, total=False):
     seed: int
     max_tasks_per_image: int
     max_total_tasks_per_image: int | None
-    question_template_count: int
     experiment_name: str
     experiments_root: str
 
@@ -160,7 +159,7 @@ def specify(context):
     if context.get("requested_dataset_id"):
         info["dataset_mentions"] = [context["requested_dataset_id"]]
     info.update(schema_version="benchmark-info", user_requirement=context["user_requirement"],
-                max_total_tasks_per_image=info.get("max_total_tasks_per_image") or context.get("configured_total_tasks_per_image"))
+                max_total_tasks_per_image=info.get("max_total_tasks_per_image") or settings.generation.max_total_tasks_per_image)
     missing = missing_fields(info)
     info["missing_fields"] = missing
     store.update("benchmark_info.json", info, run_id=context["run_id"], actor="specify")
@@ -290,9 +289,6 @@ def child_result(context, dataset_id, role, output):
         unresolved_questions=raw.get("unresolved_questions", child.get("pending_questions", [])),
     ).model_dump()
     updates = {"child_states": states, "last_agent_result": outcome}
-    for key in ("bir_path", "bir_manifest_digest", "bir_template_revision", "bir_summary_ref"):
-        if key in child:
-            updates[key] = child[key]
     updates["issues"] = {**context.get("issues", {}), **child.get("issues", {})}
     pending = child.get("global_issue")
     if pending and updates["issues"].get(pending["issue_id"], {}).get("status") != "resolved":
@@ -334,6 +330,14 @@ def _delivery_ready(context):
     return True
 
 
+def _planning_inputs(context):
+    store = BIRStore(context["bir_path"])
+    return {"documents": {path: store.digest(path) for path in (
+                "benchmark_info.json", "dataset_binding.json", "planning_extensions.json", "task_plan.json")
+                if (store.root / path).is_file()},
+            "decisions": dict(context.get("decisions", {}))}
+
+
 def available_stages(context):
     from medbenchagent.workflow.agent_runtime import pending_tools
     if context.get("global_issue"):
@@ -353,7 +357,7 @@ def available_stages(context):
     if plan and plan.get("scenarios"):
         tools.update({"revise_plan", "review_plan"})
     if not plan or plan["phase"] != "complete":
-        if not context.get("planning_stalled"):
+        if context.get("blocked_planning_inputs") != _planning_inputs(context):
             tools.add("plan")
         return tools
     tools.update({"review_plan", "allocate"})
@@ -409,7 +413,8 @@ def compile_benchmark_graph(*, checkpointer=None):
                 and output["result"].get("diagnostics", {}).get("budget_exhausted") in {"max_calls", "max_seconds"}):
             output["result"] = {**output["result"], "status": "progress"}
         outcome = child_result(context, _bound_dataset(context), "planning", output)
-        outcome["updates"]["planning_stalled"] = output["result"]["status"] == "blocked" and not advanced
+        outcome["updates"]["blocked_planning_inputs"] = (
+            _planning_inputs(context) if output["result"]["status"] == "blocked" and not advanced else None)
         return outcome
 
 
@@ -543,7 +548,6 @@ and cannot override routing, acceptance, or publication checks."""
                 rebound = run_binding({**context, **outcome["updates"]}, dataset_id=dataset_id,
                                       reason="Rebind the accepted repaired dataset revision")
                 outcome["updates"].update(rebound["updates"])
-                outcome["updates"]["planning_stalled"] = False
         return outcome
 
     def end(context):
@@ -586,7 +590,7 @@ and cannot override routing, acceptance, or publication checks."""
 
         settings = resolve_run_services(settings)
         execution_runtime = select_backend(settings.data_processing)
-        defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_template_count")}
+        defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "question_template_count")}
         defaults["benchmark_input_policy"] = settings.benchmark.input_policy
         from medbenchagent.runtime.sessions import EXPERIMENTS_ROOT
         experiment_name = state.get("experiment_name")
@@ -600,7 +604,7 @@ and cannot override routing, acceptance, or publication checks."""
         run = initialize_run(settings=settings, graph_overrides=overrides,
                              execution_runtime=execution_runtime, bir_path=bir_path)
         experiment_output_directory = compilation_root / "outputs"
-        context = dict(run, **(defaults | overrides), user_requirement=requirement,
+        context = dict(run, **{k: overrides.get(k, v) for k, v in defaults.items()}, user_requirement=requirement,
                        execution_runtime=execution_runtime,
                        model=settings.llm.model,
                        base_url=settings.llm.base_url,
@@ -618,8 +622,7 @@ and cannot override routing, acceptance, or publication checks."""
         context["compilation_directory"] = str(compilation_root)
         context["requested_dataset_id"] = state.get("dataset_id")
         context["experiments_root"] = state.get("experiments_root")
-        context["configured_total_tasks_per_image"] = context["max_total_tasks_per_image"]
-        initialize_dependencies(context, settings)
+        initialize_dependencies(context)
         return dict(run, context=context)
 
     def run_supervisor(state):

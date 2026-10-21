@@ -94,8 +94,6 @@ def test_candidate_audit_uses_canonical_dataset_binding(tmp_path):
     (bundle / "image_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
     _, access = prepare_dataset(bundle / "cases.jsonl", bundle / "image_manifest.jsonl", bundle / "cache", dataset_id="d")
     plan = _plan("d", {"leaf": 1})
-    plan_path = tmp_path / "plan.json"
-    plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
     from medbenchagent.planning.bir import BIRStore
     store = BIRStore.initialize(tmp_path / "BIR", "config/bir_template", "test")
     store.update("task_plan.json", plan.model_dump(mode="json"), run_id="r", actor="test")
@@ -103,8 +101,6 @@ def test_candidate_audit_uses_canonical_dataset_binding(tmp_path):
     items = generate_task_items([case.model_dump(mode="json")], plan.leaf_tasks.values(), "d", allocation={"leaf": 1}, resolver_context=images)
     raw = tmp_path / "generated.jsonl"
     write_task_items(raw, items)
-    allocation_path = tmp_path / "allocation.json"
-    allocation_path.write_text(json.dumps({"requested_count": 1, "counts": {"d": {"leaf": 1}}}), encoding="utf-8")
     from medbenchagent.audit.task_items import audit_benchmark
     from medbenchagent.data.sources import digest_file
     from medbenchagent.data.contracts import DatasetAccessReceipt
@@ -114,7 +110,6 @@ def test_candidate_audit_uses_canonical_dataset_binding(tmp_path):
     store.update("generation.json", {"benchmark_items_path":str(raw), "benchmark_items_digest":digest_file(raw)}, run_id="r", actor="test")
     store.update("benchmark_info.json", {"sample_count": 1, "language": "en"}, run_id="r", actor="test")
     result = audit_benchmark({"bir_path": str(store.root),
-        "allocation_path": str(allocation_path),
         "operation_directory": str(tmp_path),
         "seed": 0,
     }, output_directory=tmp_path / "delivery")

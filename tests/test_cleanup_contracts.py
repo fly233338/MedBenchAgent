@@ -87,7 +87,24 @@ def test_planning_cache_cannot_bypass_current_access_integrity(tmp_path):
     from medbenchagent.agents import task_planning
     context = planning_context(tmp_path)
     access = BIRStore(context["bir_path"]).load("dataset_binding.json")["access"]
-    context["dataset_facts"] = {"revision": access["revision"], "case_count": 1}
+    task_planning.read_dataset_overview(context)
     Path(access["cases_path"]).write_text("changed", encoding="utf-8")
     with pytest.raises(ValueError, match="content changed"):
         task_planning.read_dataset_overview(context)
+
+
+def test_rebinding_same_revision_refreshes_facts_and_leaf_read_state(tmp_path):
+    from medbenchagent.agents import task_planning
+    from compilation_fixtures import planning_context, prepared_access
+    context = planning_context(tmp_path)
+    plan = task_planning._load_plan(context)
+    assert task_planning._facts(context)["case_count"] == 1
+    task_planning._bound_read_state(context, plan, "scenario")["scenario_context_read"] = True
+    rows = cases()
+    rows.append({**rows[0], "case_id": "second"})
+    replacement = prepared_access(tmp_path / "replacement", rows, revision="7")
+    store = BIRStore(context["bir_path"])
+    store.update("dataset_binding.json", {"access": replacement}, run_id="test", actor="test")
+    assert task_planning._facts(context)["case_count"] == 2
+    assert not task_planning._bound_read_state(context, plan, "scenario")["scenario_context_read"]
+    assert "dataset_facts" not in context

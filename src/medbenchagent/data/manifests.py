@@ -85,10 +85,6 @@ class SamplingManifest(ManifestModel):
             raise ValueError("Sampling manifest order values must be unique")
         return self
 
-    def eligible_units(self) -> list[SamplingUnit]:
-        return [unit for unit in sorted(self.units, key=lambda item: item.order) if unit.eligible]
-
-
 ManifestT = TypeVar("ManifestT", bound=BaseModel)
 
 
@@ -103,14 +99,10 @@ def load_manifest(path: str | Path, model: type[ManifestT]) -> ManifestT:
     return model.model_validate_json(text)
 
 
-def manifest_digest(path: str | Path) -> str:
-    return digest_file(path)
-
-
 def verify_manifest_digest(path: str | Path, expected: str | None) -> str:
     if not expected:
         raise ValueError("Manifest digest is required")
-    actual = manifest_digest(path)
+    actual = digest_file(path)
     if actual != expected:
         raise ValueError(f"Manifest digest mismatch: {path}")
     return actual

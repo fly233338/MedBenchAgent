@@ -188,8 +188,18 @@ def test_supervisor_has_one_binding_entry_after_specification(tmp_path):
     assert "select_datasets" not in stages
 
 
-def test_stalled_planning_does_not_offer_plan(tmp_path):
-    context = {**planning_context(tmp_path), "planning_stalled": True}
+def test_stalled_planning_reopens_when_inputs_or_clarifications_change(tmp_path):
+    from medbenchagent.workflow.graph import _planning_inputs
+    from medbenchagent.planning.bir import BIRStore
+    context = planning_context(tmp_path)
+    context["blocked_planning_inputs"] = _planning_inputs(context)
     stages = available_stages(context)
     assert "plan" not in stages
     assert "ask_user" in stages
+    store = BIRStore(context["bir_path"])
+    store.update("benchmark_info.json", {**store.load("benchmark_info.json"), "sample_count": 2}, run_id="test", actor="test")
+    assert "plan" in available_stages(context)
+    context["blocked_planning_inputs"] = _planning_inputs(context)
+    assert "plan" not in available_stages(context)
+    context["decisions"] = {"question": "user-answer-reference"}
+    assert "plan" in available_stages(context)

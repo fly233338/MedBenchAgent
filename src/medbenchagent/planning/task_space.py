@@ -131,8 +131,6 @@ class TaskScenario(BaseModel):
     operation: str
     clinical_target: str
     capability_category: CapabilityCategory
-    annotation_mapping: list[EvidenceSelector] = Field(default_factory=list)
-    evidence_stats: dict[str, Any] = Field(default_factory=dict)
     feasible_case_count: int | None = Field(default=None, ge=0)
     screening_decision: Literal["keep", "exclude"] | None = None
     screening_reason: str | None = None
@@ -270,7 +268,6 @@ class TaskPlanState(BaseModel):
     next_axis: TaskAxis | None = TaskAxis.INPUT_STRUCTURE
     current_scenario_id: str | None = None
     pending_scenario_ids: list[str] = Field(default_factory=list)
-    completed_scenario_ids: list[str] = Field(default_factory=list)
     reviews: dict[str, ScenarioReview] = Field(default_factory=dict)
     revision: int = Field(default=0, ge=0)
     review: dict[str, Any] = Field(default_factory=dict)
