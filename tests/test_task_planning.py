@@ -1,10 +1,11 @@
+from compilation_fixtures import registry
+from compilation_fixtures import axis_values
 import pytest
 
 from medbenchagent.agents.task_planning import AxisArguments, AxisEvidenceArguments
 from medbenchagent.data.task_facts import build_dataset_facts
 from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.task_space import (
-    AXIS_VALUES,
     AxisAnalysis,
     AxisValueDecision,
     CapabilityCategory,
@@ -22,7 +23,7 @@ def _analysis(supported):
                 evidence_basis=[EvidenceBasis(reference="overview", detail="observed")],
                 reason="observed",
             )
-            for value in AXIS_VALUES[TaskAxis(axis)]
+            for value in axis_values(axis)
         ]
 
     return AxisAnalysis(
@@ -91,8 +92,7 @@ def test_scenario_category_is_derived_from_operation():
             "assets": {"primary_image_assets": 2, "related_image_cases": 1},
             "relations": {"related_image_groups": 1},
             "evidence": {"text": 1},
-        },
-    )
+        }, registry=registry())
     active = [value for value in scenarios.values() if not value.exclusion_reason]
     assert active
     assert {value.capability_category for value in active} == {CapabilityCategory.INTEGRATION}
@@ -115,8 +115,7 @@ def test_localize_accepts_registered_mask_to_bbox_capability():
                 "evidence": {"asset": 1},
                 "derived_capabilities": {"mask_to_bbox": 1},
             }],
-        },
-    )
+        }, registry=registry())
     active = [value for value in scenarios.values() if not value.exclusion_reason]
     assert len(active) == 1
     assert active[0].operation == "localize"

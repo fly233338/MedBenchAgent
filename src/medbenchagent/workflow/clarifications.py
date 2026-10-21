@@ -48,19 +48,13 @@ def validate_ask_user(context, role, arguments):
 
 
 def new_issue(role, context, reference, question, *, subject_scope=None, source_ids=None):
-    from medbenchagent.planning.bir import require
-    dataset = context.get("dataset_scope")
+    from medbenchagent.planning.bir import BIRStore
+    store = BIRStore(context["bir_path"])
+    binding = store.current("dataset_binding.json")
+    dataset = context.get("dataset_scope") or (binding["access"]["dataset_id"] if binding else None)
     scope, sources = resolve_subject(context, role, subject_scope, source_ids)
-    kinds = []
-    if not sources:
-        for kind in (("Dataset",) if dataset else ("Requirement",)):
-            try:
-                require(context, kind)
-            except ValueError:
-                continue
-            kinds.append(kind)
-    records = require(context, *kinds) if kinds else {}
-    versions = {r["kind"]: r["id"] for r in records.values()}
+    path = "dataset_binding.json" if binding else "benchmark_info.json"
+    versions = {path: store.digest(path)} if not sources and store.current(path) else {}
     identity = json.dumps([role, dataset, scope, sources, reference, question, versions], sort_keys=True, ensure_ascii=False)
     return {"issue_id": identity, "role": role, "dataset_id": dataset, "scope": scope,
             "source_ids": sources, "source_id": sources[0] if len(sources) == 1 else None,
@@ -84,9 +78,11 @@ def record_answer(context, issue, answer, *, question=None):
 
 
 def resolve_semantic_answer(context, issue):
-    from medbenchagent.planning.bir import require
-    current = require(context, *issue["input_versions"])
-    if any(current[key]["id"] != value for key, value in issue["input_versions"].items()):
+    from medbenchagent.planning.bir import BIRStore
+    store = BIRStore(context["bir_path"])
+    for path in issue["input_versions"]:
+        store.load(path)
+    if any(store.digest(path) != value for path, value in issue["input_versions"].items()):
         raise ValueError("Clarification inputs changed; ask again for current facts")
     return {**issue, "status": "resolved", "kind": "semantic"}
 
@@ -144,24 +140,23 @@ def resolve_clarification(context, *, issue_id, kind):
     if kind == "requirement_change" and not control_response:
         clarification_text = "\n".join(f"Clarification question: {e['question']}\nUser answer: {e['answer']}" for e in exchanges)
         updates.update(user_requirement=context["user_requirement"] + "\n" + clarification_text,
-                       brief_ready=False, brief_missing_fields=[])
-        if context.get("bir_path"):
-            from medbenchagent.planning.bir import BIRStore
-            BIRStore(context["bir_path"]).update("benchmark_info.json",
-                {"schema_version": "benchmark-info", "user_requirement": updates["user_requirement"], "needs_specification": True},
-                run_id=context.get("run_id", "unknown"), actor="clarification")
+)
+        from medbenchagent.planning.bir import BIRStore
+        BIRStore(context["bir_path"]).update("benchmark_info.json",
+            {"schema_version": "benchmark-info", "user_requirement": updates["user_requirement"], "needs_specification": True},
+            run_id=context.get("run_id", "unknown"), actor="clarification")
     from pathlib import Path
     # Replace the saved private-state reference too; re-entry is not required to
     # close the issue, and an interrupted resolution can safely repeat this write.
-    states = {d: dict(roles) for d, roles in context.get("child_states", {}).items()}
+    states = dict(context.get("child_states", {}))
     role = {"TaskPlanningAgent": "planning", "DataProcessingAgent": "preparation"}.get(issue["role"])
-    saved = states.get(issue["dataset_id"], {}).get(role) if role else None
+    saved = states.get(role)
     if saved:
         from medbenchagent.runtime.contexts import load_context, save_context
         child = load_context(saved, issue["role"], issue["dataset_id"])
         inject_answers(updates, child, issue["role"], issue["dataset_id"])
         target = Path(context["operation_directory"]) / "resolved-child.json"
         save_context(target, child, issue["role"], issue["dataset_id"])
-        states[issue["dataset_id"]][role] = str(target)
+        states[role] = str(target)
         updates["child_states"] = states
     return result("success", "Clarification resolved and routed to its origin", **updates)

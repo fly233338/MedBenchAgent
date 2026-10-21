@@ -3,6 +3,7 @@ import json
 import pytest
 
 from medbenchagent.runtime import dependencies
+from medbenchagent.planning.bir import BIRStore
 
 
 def _context(tmp_path):
@@ -11,7 +12,9 @@ def _context(tmp_path):
     control.mkdir(parents=True)
     frozen = control / "effective_config.json"
     frozen.write_text(json.dumps({"execution_runtime": {"backend": "local"}}), encoding="utf-8")
+    store = BIRStore.initialize(tmp_path / "BIR", "config/bir_template", "test")
     return {
+        "bir_path": str(store.root),
         "run_directory": str(run),
         "effective_config_path": str(frozen),
         "execution_runtime": {"backend": "local"},

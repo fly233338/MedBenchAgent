@@ -64,7 +64,7 @@ def preparation_decisions(context):
 
 def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
     dataset_id = context["dataset_scope"]
-    workspace = Path(context["run_directory"]) / "preparation" / dataset_id
+    workspace = Path(context["run_directory"]) / "preparation"
     if context.get("preparation_revision"):
         workspace /= "repairs/" + context["preparation_revision"]
     workspace.mkdir(parents=True, exist_ok=True)

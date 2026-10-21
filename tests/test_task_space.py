@@ -1,3 +1,5 @@
+from compilation_fixtures import planning_context
+from compilation_fixtures import registry
 from compilation_fixtures import screen
 from image_fixtures import image_context
 import pytest
@@ -13,15 +15,12 @@ from medbenchagent.planning.task_space import (
     LeafTask,
     OutputSpec,
     TaskScenario,
-    TaskParadigm,
 )
 
 
 def _analysis(**supported):
     def values(axis, names):
-        allowed = {"input_structure": ("single-image", "multi-image", "multi-view", "volume", "image-text", "paired-study"),
-                   "operation": ("recognize", "localize", "quantify", "compare", "align", "describe"),
-                   "clinical_target": ("acquisition", "anatomy", "finding", "attribute", "assessment", "diagnosis", "management", "quality")} [axis]
+        allowed = registry().axis_values(axis)
         return [AxisValueDecision(value=value, supported=value in names,
                                evidence_basis=[EvidenceBasis(reference="case:c1", detail="observed")], reason="observed") for value in allowed]
     return AxisAnalysis(input_structure=values("input_structure", supported.get("input_structure", [])),
@@ -32,8 +31,8 @@ def _analysis(**supported):
 
 def test_axis_registry_and_node_ids_are_deterministic():
     analysis = _analysis(input_structure=["single-image"], operation=["recognize"], clinical_target=["finding"])
-    first = build_task_scenarios(analysis, {"evidence": {}})
-    second = build_task_scenarios(analysis, {"evidence": {}})
+    first = build_task_scenarios(analysis, {"evidence": {}}, registry=registry())
+    second = build_task_scenarios(analysis, {"evidence": {}}, registry=registry())
     assert first.keys() == second.keys()
     assert len(first) == 1
     assert next(iter(first.values())).capability_category == "Recognition"
@@ -56,7 +55,7 @@ def test_axis_decision_set_accepts_json_axis_value_under_strict_contract():
 
 def test_node_constraints_preserve_empty_nodes_with_reason():
     analysis = _analysis(input_structure=["multi-view"], operation=["recognize"], clinical_target=["finding"])
-    nodes = build_task_scenarios(analysis, {"assets": {"related_image_cases": 0}, "evidence": {}})
+    nodes = build_task_scenarios(analysis, {"assets": {"related_image_cases": 0}, "evidence": {}}, registry=registry())
     node = next(iter(nodes.values()))
     assert node.exclusion_reason == "multi-view requires related image assets"
 
@@ -189,48 +188,48 @@ def test_resolver_reports_positional_result_step_ids():
 
 
 def test_task_paradigm_rejects_incompatible_output():
-    try:
-        LeafTask(leaf_task_id="l", name="l", scenario_id="n", question_templates=["q"], input=[{"role": "x"}],
-                 clinical_target_id="finding", target="t", reference_rule="a", resolver={}, output_spec=OutputSpec.BBOX,
-                 task_paradigm=TaskParadigm.VQA, capability_category="Recognition")
-    except ValueError as exc:
-        assert "incompatible" in str(exc)
-    else:
-        raise AssertionError("incompatible TaskLeaf was accepted")
+    from test_global_construction import _plan
+    from medbenchagent.planning.task_discovery import validate_candidate_leaf
+    plan = _plan("d", {"leaf": 1})
+    original = plan.leaf_tasks["leaf"]
+    leaf = LeafTask.model_validate({**original.model_dump(mode="json"), "task_paradigm": "Report Generation", "options": None})
+    with pytest.raises(ValueError, match="incompatible"):
+        validate_candidate_leaf(leaf, plan.scenarios, registry=registry())
 
 
 def test_canonical_planner_axis_and_node_tools_persist_bounded_artifacts(tmp_path, monkeypatch):
     from medbenchagent.agents import task_planning
 
-    context = {
+    context = {**planning_context(tmp_path),
         "dataset_scope": "d",
         "operation_directory": str(tmp_path),
-        "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"},
     }
-    monkeypatch.setattr(task_planning, "require", lambda *_args: None)
+    context = task_planning._initialize_planning_context(context)
     context["dataset_facts"] = {"revision":"7", "assets":{"primary_image_assets":1},
         "evidence_names":["label"], "evidence_catalog":{"label":{"name":"label", "types":{"value":1}}},
         "evidence":{"value":1}, "relations":{}}
     analysis = _analysis(input_structure=["single-image"], operation=["recognize"], clinical_target=["finding"]).model_copy(update={"dataset_revision": "7"}).model_dump()
-    saved = task_planning.analyze_axes(context, analysis=analysis)
+    for axis in ("input_structure", "operation", "clinical_target"):
+        saved = task_planning.analyze_axis(context, axis=axis, assessments=analysis[axis])
     context.update(saved["updates"])
     built = saved
     assert built["updates"]["task_plan_path"]
-    assert built["updates"]["task_plan"]["scenarios"]
+    assert task_planning._load_plan(context).model_dump(mode="json")["scenarios"]
 
 
 def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypatch):
     from medbenchagent.agents import task_planning
 
-    context = {"operation_directory": str(tmp_path), "dataset_scope": "d",
-               "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"}}
-    monkeypatch.setattr(task_planning, "require", lambda *_args: None)
+    context = {**planning_context(tmp_path),"operation_directory": str(tmp_path), "dataset_scope": "d",
+               }
+    context = task_planning._initialize_planning_context(context)
     context["dataset_facts"] = {"revision":"7", "assets":{"primary_image_assets":1},
         "evidence_names":["image", "report"], "evidence_catalog":{"report":{"name":"report", "types":{"text":1}}},
         "evidence":{"text":1}, "relations":{"paired_text":1}}
     axis = _analysis(input_structure=["single-image"], operation=["describe"], clinical_target=["finding"]).model_copy(update={"dataset_revision": "7"}).model_dump()
-    context.update(task_planning.analyze_axes(context, analysis=axis)["updates"])
-    node_id = next(key for key, value in context["task_plan"]["scenarios"].items() if not value["exclusion_reason"])
+    for name in ("input_structure", "operation", "clinical_target"):
+        context.update(task_planning.analyze_axis(context, axis=name, assessments=axis[name])["updates"])
+    node_id = next(key for key, value in task_planning._load_plan(context).model_dump(mode="json")["scenarios"].items() if not value["exclusion_reason"])
     screened = screen(
         context, scenario_id=node_id, decision="keep", reason="The report scenario is suitable.",
         validated_clinical_targets=[{"target_id": "finding_report", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]}],
@@ -254,8 +253,8 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
                       {"op": "reference_text", "selector": {"role": "reference", "name": "report", "evidence_type": "text"}}],
             "output_spec": "text", "result_step": "step_1"}, "output_spec": "text", "task_paradigm": "Report Generation",
             "capability_category": "Generation"}
-    saved = task_planning.save_leaf_task(
+    task_planning.save_leaf_task(
         context,
         leaf=task_planning.LeafTaskDraft.model_validate(leaf),
     )
-    assert saved["updates"]["task_plan"]["leaf_tasks"]["leaf-1"]["eligible_count"] == 1
+    assert task_planning._load_plan(context).model_dump(mode="json")["leaf_tasks"]["leaf-1"]["eligible_count"] == 1

@@ -1,3 +1,4 @@
+from compilation_fixtures import registry
 import json
 
 from medbenchagent.data.sources import digest_path
@@ -17,7 +18,7 @@ def test_canonical_duckdb_index_and_query(tmp_path):
     ])
     (tmp_path / "image_manifest.jsonl").write_text(asset.model_dump_json() + "\n", encoding="utf-8")
     (tmp_path / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
-    profile, access = prepare_dataset(tmp_path / "cases.jsonl", tmp_path / "image_manifest.jsonl", tmp_path / "cache")
+    profile, access = prepare_dataset(tmp_path / "cases.jsonl", tmp_path / "image_manifest.jsonl", tmp_path / "cache", dataset_id="d")
     assert profile["case_count"] == 1
     query = DatasetIndex(access)
     assert query.records(["case-1"])["case-1"]["case_id"] == "case-1"
@@ -56,7 +57,7 @@ def test_canonical_node_context_uses_constraint_registry_instance(tmp_path, monk
         scenario_id="scenario-1", input_structure="single-image", operation="localize",
         clinical_target="finding", capability_category=CapabilityCategory.RECOGNITION,
     )
-    result = query.node_context(node)
+    result = query.node_context(node, registry=registry())
     assert result["scenario_id"] == "scenario-1"
     assert result["capacity_hint"] == 1
     assert result["representative_cases"][0]["case_id"] == "keep"

@@ -8,7 +8,6 @@ place.
 
 from __future__ import annotations
 
-from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 import hashlib
 import json
@@ -42,7 +41,6 @@ class BIRCommit:
 @dataclass(frozen=True)
 class BIRValidationReport:
     valid: bool
-    revision: int
     errors: tuple[str, ...]
     warnings: tuple[str, ...] = ()
 
@@ -71,111 +69,10 @@ def business_dependencies(context, *paths, registry=False):
     return dependencies
 
 
-def require(context, *kinds):
-    """Read business readiness from canonical documents, without a runtime version registry."""
-    result = {}
-    for requested in kinds:
-        dataset = context.get("dataset_scope")
-        kind = requested
-        if requested.startswith("dataset/"):
-            _, dataset, kind = requested.split("/", 2)
-        if kind.endswith("Config"):
-            path = context.get("effective_config_path")
-            if not path:
-                raise ValueError("Frozen configuration is required")
-            value, identity = {}, digest_file(path)
-        elif kind == "DatasetCandidates":
-            path = context.get("candidate_snapshot_path")
-            if not path:
-                raise ValueError("Dataset candidates are required")
-            value = json.loads(Path(path).read_text(encoding="utf-8"))
-            if value["requirement_version"] != require(context, "Requirement")["Requirement"]["id"]:
-                raise ValueError("Dataset candidates are stale")
-            identity = digest_file(path)
-        else:
-            if not context.get("bir_path"):
-                raise ValueError("Canonical BIR is required")
-            store = BIRStore(context["bir_path"])
-            paths = {"Requirement": "benchmark_info.json", "DatasetSelection": "dataset_bindings.json",
-                     "Dataset": "dataset_bindings.json", "DatasetProfile": "dataset_bindings.json",
-                     "DatasetCard": "dataset_bindings.json", "Plan": f"datasets/{dataset}/planning/task_plan.json",
-                     "Allocation": "allocation.json", "Generation": f"outputs/{dataset}.json", "Delivery": "delivery.json"}
-            if kind not in paths:
-                raise ValueError(f"Unknown business requirement: {kind}")
-            path = paths[kind]
-            try:
-                value = store.load(path)
-                identity = store.digest(path)
-            except OSError as exc:
-                raise ValueError(f"{kind} is required") from exc
-            commit = json.loads(store._path(path).read_text(encoding="utf-8"))["_commit"]
-            if config := context.get("effective_config_path"):
-                for dependency, digest in commit["dependencies"].items():
-                    if dependency.startswith("file:") and Path(dependency[5:]).name == "effective_config.json" and digest_file(config) != digest:
-                        raise ValueError(f"{kind} is stale after configuration changed")
-            if commit["revision"] == 0:
-                raise ValueError(f"{kind} is not ready")
-            if kind == "Plan" and value.get("phase") != "complete":
-                raise ValueError("Task plan is incomplete")
-            if kind in {"Dataset", "DatasetCard", "DatasetProfile"}:
-                if dataset not in value.get("datasets", {}):
-                    raise ValueError("Dataset is not selected")
-                value = value["datasets"][dataset]
-            path = str(store._path(path))
-        key = f"dataset/{dataset}/{kind}" if dataset and kind in {"Dataset", "DatasetCard", "DatasetProfile", "Plan", "Generation"} else kind
-        result[key] = {"id": identity, "kind": key, "references": {"path": str(path), **value}}
-    return result
-
-
 def business_snapshot(context):
-    if not context.get("bir_path"):
-        return {}
     store = BIRStore(context["bir_path"])
     return {p.relative_to(store.root).as_posix(): digest_file(p) for p in store.root.rglob("*.json")
             if not p.is_relative_to(store.root / "registry")}
-
-
-def restore_business(context):
-    """Rebuild coordination summaries from valid BIR state after checkpoint recovery."""
-    if not context.get("bir_path"):
-        return
-    store = BIRStore(context["bir_path"])
-    def available(kind):
-        try:
-            return require(context, kind)
-        except (OSError, ValueError):
-            return None
-    if available("Requirement"):
-        brief = store.load("benchmark_info.json")
-        for key in ("sample_scope", "allocation_preferences", "max_total_tasks_per_image"):
-            if key in brief:
-                context[key] = brief[key]
-        context.update(benchmark_info=brief, brief_ready=not brief.get("needs_specification") and not brief.get("missing_fields"),
-                       brief_requirement=brief.get("user_requirement", context.get("user_requirement")))
-    context.update(selected_dataset_ids=[], dataset_assets={}, dataset_task_plans={}, dataset_generations={})
-    if available("DatasetSelection"):
-        from medbenchagent.data.dataset_catalog import load_prepared
-        from medbenchagent.data.bundle_catalog import card_summary
-        for dataset, binding in store.load("dataset_bindings.json")["datasets"].items():
-            card, _ = load_prepared(binding["entry"])
-            from medbenchagent.planning.access import DatasetAccessReceipt
-            access = DatasetAccessReceipt.model_validate(binding["access"]).verified_source(dataset)
-            context["selected_dataset_ids"].append(dataset)
-            context["dataset_assets"][dataset] = {"entry": binding["entry"], "access": access, "card_summary": card_summary(card)}
-            if available(f"dataset/{dataset}/Plan"):
-                context["dataset_task_plans"][dataset] = str(store.root / f"datasets/{dataset}/planning/task_plan.json")
-            if available(f"dataset/{dataset}/Generation"):
-                value = store.load(f"outputs/{dataset}.json")
-                context["dataset_generations"][dataset] = {"raw_output_path": value["benchmark_items_path"],
-                    "item_count": sum(value.get("counts", {}).values()), "task_counts": value.get("counts", {})}
-    context.pop("allocation_path", None)
-    context.pop("allocation", None)
-    if available("Allocation"):
-        context.update(allocation=store.load("allocation.json"), allocation_path=str(store.root / "allocation.json"))
-    context.pop("delivery_path", None)
-    if available("Delivery"):
-        value = store.load("delivery.json")
-        context.update(delivery_path=value["delivery_path"], delivery_counts=value["counts"], manifest_path=value["manifest_path"])
 
 
 def _digest_bytes(value: bytes) -> str:
@@ -212,10 +109,6 @@ def _safe_relative(relative_path: str) -> PurePosixPath:
     return normalized
 
 
-def _schema(value: Any) -> str:
-    if isinstance(value, dict):
-        return str(value.get("schema_version", "json"))
-    return "text"
 
 
 class RegistrySnapshot:
@@ -346,7 +239,7 @@ class BIRStore:
         path = Path(template_dir).resolve()
         if not path.is_dir():
             raise ValueError(f"BIR template directory does not exist: {path}")
-        for required in ("manifest.json", "benchmark_info.json", "allocation.json", "delivery.json"):
+        for required in ("manifest.json", "benchmark_info.json", "allocation.json", "delivery.json", "planning_extensions.json"):
             if not (path / required).is_file():
                 raise ValueError(f"BIR template requires {required}")
         RegistrySnapshot.from_directory(path / "registry")
@@ -376,8 +269,6 @@ class BIRStore:
         template = cls.load_template(template_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(template.path, target)
-        (target / "datasets").mkdir(exist_ok=True)
-        (target / "outputs").mkdir(exist_ok=True)
         store = cls.__new__(cls)
         store.root = target
         store.lock = FileLock(str(target / ".bir.lock"))
@@ -443,6 +334,15 @@ class BIRStore:
             raise ValueError(f"Unexpected BIR schema: {relative_path}")
         return value
 
+    def current(self, relative_path):
+        """Read a committed current business document, or an absent/stale stage."""
+        try:
+            value = self.load(relative_path)
+            commit = json.loads(self._path(relative_path).read_text(encoding="utf-8")).get("_commit")
+            return value if commit is None or commit["revision"] else None
+        except (FileNotFoundError, BIRStaleError):
+            return None
+
     def registry(self):
         snapshot = RegistrySnapshot.from_directory(self.root / "registry")
         if snapshot.digest != self._read_manifest()["registry_digest"]:
@@ -452,7 +352,7 @@ class BIRStore:
     def digest(self, relative_path):
         return digest_file(self._path(relative_path))
 
-    def validate(self, *, scope="full", expected_revision=None):
+    def validate(self):
         errors = []
         for path in self.root.rglob("*.json"):
             if path.is_relative_to(self.root / "registry"):
@@ -461,17 +361,17 @@ class BIRStore:
                 self.load(path.relative_to(self.root).as_posix())
             except (OSError, ValueError) as exc:
                 errors.append(str(exc))
-        if scope == "full":
-            try:
-                self.registry()
-            except ValueError as exc:
-                errors.append(str(exc))
-        return BIRValidationReport(not errors, 0, tuple(errors))
+        try:
+            self.registry()
+        except ValueError as exc:
+            errors.append(str(exc))
+        return BIRValidationReport(not errors, tuple(errors))
 
     def update(self, relative_path, value, *, run_id, actor, expected_revision=None,
                dependencies=None, expected_digest=None):
-        if relative_path == "dataset_bindings.json" and len(value.get("datasets", {})) != 1:
-            raise ValueError("A compilation must bind exactly one dataset")
+        if relative_path == "dataset_binding.json":
+            from medbenchagent.data.contracts import DatasetAccessReceipt
+            DatasetAccessReceipt.model_validate(value["access"]).verify()
         if relative_path.startswith("registry/") or relative_path == "manifest.json":
             raise ValueError("BIR Registry and experiment identity are immutable")
         with self.lock:
@@ -537,24 +437,10 @@ def _atomic_replace(destination: Path, data: bytes) -> None:
 
 
 
-def persist_task_plan(context, plan, *, plan_path, bir) -> dict[str, Any]:
-    directory = Path(context["operation_directory"])
-    directory.mkdir(parents=True, exist_ok=True)
-    plan_value = plan.model_dump(mode="json")
-    if bir:
-        dataset_id = context["dataset_scope"]
-        prefix = f"datasets/{dataset_id}/planning/"
-        commit = bir.update(prefix + "task_plan.json", plan_value, run_id=context.get("run_id", "unknown"), actor="task_planning",
-            dependencies=business_dependencies(context, "benchmark_info.json", "dataset_bindings.json", registry=True),
-            expected_digest=context.get("planning_read_digest"))
-        context.update(bir_manifest_digest=commit.manifest_digest,
-                       planning_read_digest=bir.digest(prefix + "task_plan.json"))
-    else:
-        atomic_write_json(plan_path, plan_value)
-    return {
-        "task_plan_path": str(bir.root / prefix / "task_plan.json") if bir else str(plan_path),
-        "task_plan": plan.model_dump(mode="json"),
-        "extension_selection": plan.extension_selection,
-        "bir_summary_ref": ({"revision": commit.revision, "dataset_id": context.get("dataset_scope"),
-                              "task_plan": str(plan_path)} if context.get("bir_path") else None),
-    }
+def persist_task_plan(context, plan):
+    store = BIRStore(context["bir_path"])
+    store.update("task_plan.json", plan.model_dump(mode="json"), run_id=context["run_id"], actor="task_planning",
+        dependencies=business_dependencies(context, "benchmark_info.json", "dataset_binding.json", "planning_extensions.json", registry=True),
+        expected_digest=context.get("planning_read_digest"))
+    context["planning_read_digest"] = store.digest("task_plan.json")
+    return {"task_plan_path": str(store.root / "task_plan.json")}

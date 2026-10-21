@@ -197,6 +197,7 @@ def test_progress_key_still_caps_unchanged_repeated_actions(tmp_path, harness_mo
 
 def test_source_clarification_is_repaired_before_execution(tmp_path, harness_model):
     from medbenchagent.workflow.agent_runtime import compile_agent
+    from compilation_fixtures import planning_context
     actions = iter([
         {"tool": "ask_user", "arguments": {"question": "What does status 0 mean?",
                                          "subject_scope": "source", "source_ids": ["one"]}, "reason": "Clarify"},
@@ -205,7 +206,7 @@ def test_source_clarification_is_repaired_before_execution(tmp_path, harness_mod
     adapter = harness_model(lambda *_args: next(actions))
     graph = compile_agent("DataProcessingAgent", "Test", {}, lambda _context: {},
                           lambda _context: result("complete", "Done"))
-    output = graph.invoke({"context": {"run_id": "test", "sources": [{"id": "one"}],
+    output = graph.invoke({"context": {**planning_context(tmp_path), "run_id": "test", "sources": [{"id": "one"}],
                                        "operation_directory": str(tmp_path / "ops"),
                                        "construction_events_path": str(tmp_path / "events.jsonl")}})
     assert output["result"]["status"] == "complete"

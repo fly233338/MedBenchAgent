@@ -6,7 +6,7 @@ import hashlib
 import shutil
 from pathlib import Path
 
-from medbenchagent.agents.finalization import _read_jsonl, _write_jsonl, audit_benchmark
+from medbenchagent.audit.task_items import _read_jsonl, _write_jsonl, audit_benchmark
 from medbenchagent.evaluation.loader import PACKAGE_FILES, verify_package
 from medbenchagent.data.sources import digest_file
 from medbenchagent.planning.bir import BIRStore, business_dependencies, digest_file as artifact_digest
@@ -17,29 +17,26 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 def audit_candidate(context):
     """Audit and register an unpublished candidate bound to its exact input artifacts."""
     from medbenchagent.workflow.supervision import current_document
-    from medbenchagent.planning.bir import require
     saved = current_document(context, "candidate.json")
     if saved:
         return result("success", "Audited candidate is current", candidate_path=saved["directory"], candidate_counts=saved["counts"])
     store = BIRStore(context["bir_path"])
-    dataset = next(iter(store.load("dataset_bindings.json")["datasets"]))
-    require(context, "Allocation", f"dataset/{dataset}/Generation")
     dependencies = business_dependencies(context, "allocation.json",
-                      f"datasets/{dataset}/planning/task_plan.json", f"outputs/{dataset}.json")
+                      "task_plan.json", "generation.json")
     identity = hashlib.sha256(json.dumps(dependencies, sort_keys=True).encode()).hexdigest()
     root = Path(context["experiment_output_directory"]) / "candidates" / identity
     outcome = audit_benchmark(context, output_directory=root)
     dependencies.update({"file:" + str(path): artifact_digest(path) for path in root.iterdir() if path.is_file()})
     value = {"schema_version": "benchmark-candidate", "status": "audited",
-             "directory": str(root), "counts": outcome["updates"]["delivery_counts"]}
+             "directory": str(root), "counts": outcome["data"]["counts"]}
     store.update("candidate.json", value, run_id=context["run_id"], actor="audit", dependencies=dependencies)
     return result("success", outcome["summary"], candidate_path=str(root), candidate_counts=value["counts"])
 
 
 def compilation_report(store, counts, limitation_reason=""):
     brief = store.load("benchmark_info.json")
-    dataset = next(iter(store.load("dataset_bindings.json")["datasets"]))
-    plan = store.load(f"datasets/{dataset}/planning/task_plan.json")
+    dataset = store.load("dataset_binding.json")["access"]["dataset_id"]
+    plan = store.load("task_plan.json")
     lines = [f"# MedD2B compilation: {dataset}", "", "## Requirements", "",
              f"Clinical goal: {brief.get('clinical_scope') or 'Discover tasks supported by dataset evidence'}",
              f"Language: {brief.get('language')}",

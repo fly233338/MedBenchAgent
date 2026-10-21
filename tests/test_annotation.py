@@ -1,6 +1,6 @@
 import pytest
 
-from medbenchagent.data.sources import digest_path, stable_id
+from medbenchagent.data.sources import digest_path
 from medbenchagent.data.manifests import iter_image_manifest
 from medbenchagent.data.index import prepare_dataset, DatasetIndex
 from medbenchagent.data.models import ImageEntry, CaseRecord, Evidence, validate_case
@@ -32,7 +32,7 @@ def test_case_query_profiles(tmp_path):
         Evidence(id="t", type="text", name="report", value="clear", ref=["a"]),
     ])
     (tmp_path / "cases.jsonl").write_text(case.model_dump_json() + "\n", encoding="utf-8")
-    profile, access = prepare_dataset(tmp_path / "cases.jsonl", tmp_path / "image_manifest.jsonl", tmp_path / "cache")
+    profile, access = prepare_dataset(tmp_path / "cases.jsonl", tmp_path / "image_manifest.jsonl", tmp_path / "cache", dataset_id="d")
     query = DatasetIndex(access)
     assert query.sample()["total"] == 1
     assert profile["patient_count"] == 1
@@ -47,8 +47,3 @@ def test_manifest_rejects_duplicate_path(tmp_path):
     manifest.write_text((image.model_dump_json() + "\n") * 2, encoding="utf-8")
     with pytest.raises(ValueError, match="Duplicate"):
         list(iter_image_manifest(manifest))
-
-
-def test_stable_id_is_reproducible():
-    assert stable_id("source", "study-1", prefix="case") == stable_id("source", "study-1", prefix="case")
-

@@ -90,9 +90,10 @@ def test_optional_clinical_goal_and_language_defaults(tmp_path, monkeypatch):
     context = {"bir_path": str(store.root), "run_id": "test", "user_requirement": "Compile d",
                "operation_directory": str(tmp_path / "runtime")}
     updates = specify(context)["updates"]
-    assert updates["brief_ready"]
-    assert updates["benchmark_info"]["clinical_scope"] is None
-    assert updates["benchmark_info"]["language"] == "en"
+    info = store.load("benchmark_info.json")
+    assert not info["missing_fields"]
+    assert info["clinical_scope"] is None
+    assert info["language"] == "en"
     assert "global_issue" not in updates
 
 
@@ -127,7 +128,7 @@ def test_explicit_value_pagination_preserves_full_domain(tmp_path):
     second = task_planning.read_field_values(context, name="label", offset=first["next_offset"], limit=50)["data"]
     assert [row["value"] for row in [*first["values"], *second["values"]]] == vocabulary
     assert second["next_offset"] is None
-    assert json.loads(BIRStore(context["bir_path"])._path("datasets/d/planning/task_plan.json").read_text())["revision"] == 0
+    assert json.loads(BIRStore(context["bir_path"])._path("task_plan.json").read_text())["revision"] == 0
 
 
 def test_scoped_rework_carries_review_evidence_and_enforces_budget(tmp_path):
@@ -139,7 +140,7 @@ def test_scoped_rework_carries_review_evidence_and_enforces_budget(tmp_path):
                "summary": "Question assumes a positive finding", "evidence_refs": ["evidence_catalog:label"]}
     store.update("review.json", {"status": "rejected", "findings": [finding]}, run_id="test", actor="test")
     revise_plan(context, scenario_ids=["scenario-d"], reason="Correct the wording", issue_ids=["wording"])
-    request = store.load("datasets/d/planning/task_plan.json")["review"]["revision_request"]
+    request = store.load("task_plan.json")["review"]["revision_request"]
     assert request["findings"] == [finding]
     with pytest.raises(ValueError, match="rework budget"):
         revise_plan(context, scenario_ids=["scenario-d"], reason="Try again")

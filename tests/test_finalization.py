@@ -30,14 +30,13 @@ def test_catalog_cache_is_derived_and_no_projection_is_required(tmp_path):
 def test_minimal_bundle_drives_planning_generation_and_delivery(tmp_path):
     from medbenchagent.agents import task_planning
     from medbenchagent.planning.task_space import TaskPlanState, TaskScenario
-    from compilation_fixtures import compile_fixture
+    from compilation_fixtures import compile_fixture, planning_context
     from test_task_input import leaf
     context = state(tmp_path)
     prepared = compile_preparation_graph(worker=Worker()).invoke(context)["publication"]
-    access = prepared["access_manifest"]
+    _, access = load_prepared(prepared["dataset_entry"])
     operation = tmp_path / "planning"
-    initialized = task_planning._initialize_planning_context({
-        "dataset_scope": "d", "operation_directory": str(operation), "dataset_access_manifest": access})
+    initialized = task_planning._initialize_planning_context(planning_context(operation, access=access))
     overview = task_planning.read_dataset_overview(initialized)
     assert json.loads(overview["updates"]["overview"])["case_count"] == 1
     assert not (operation / "evidence").exists()

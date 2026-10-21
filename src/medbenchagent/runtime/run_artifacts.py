@@ -36,8 +36,7 @@ def initialize_run(
     runs_root: str | Path | None = None,
     *,
     settings: AppSettings | None = None,
-    bir_path: str | Path | None = None,
-    experiment_name: str | None = None,
+    bir_path: str | Path,
     graph_overrides: dict[str, object] | None = None,
     execution_runtime: dict[str, object] | None = None,
 ) -> dict[str, str]:
@@ -64,24 +63,17 @@ def initialize_run(
     snapshot = active_settings.snapshot(graph_overrides)
     if execution_runtime is not None:
         snapshot["execution_runtime"] = execution_runtime
-    if bir_path is not None:
-        from medbenchagent.planning.bir import BIRStore, digest_file
-        bir = BIRStore(bir_path)
-        report = bir.validate(scope="full")
-        if not report.valid:
-            raise ValueError("Invalid experiment BIR: " + "; ".join(report.errors))
-        manifest = json.loads((Path(bir_path) / "manifest.json").read_text(encoding="utf-8"))
-        snapshot["bir"] = {
-            "path": str(Path(bir_path).resolve()),
-            "experiment_name": experiment_name,
-            "revision": manifest.get("revision", 0),
-            "template_revision": manifest.get("template_revision"),
-            "manifest_digest": digest_file(Path(bir_path) / "manifest.json") if (Path(bir_path) / "manifest.json").is_file() else None,
-        }
+    from medbenchagent.planning.bir import BIRStore
+    bir = BIRStore(bir_path)
+    report = bir.validate()
+    if not report.valid:
+        raise ValueError("Invalid compilation BIR: " + "; ".join(report.errors))
+    manifest = bir.load("manifest.json")
+    snapshot["bir"] = {"path": str(bir.root), "compilation_id": manifest["compilation_id"],
+                       "template_revision": manifest["template_revision"], "manifest_digest": bir.digest("manifest.json")}
     inputs = run_directory / "inputs"
     inputs.mkdir(parents=True)
-    # BIR is experiment-scoped canonical state.  Run inputs retain only the
-    # frozen catalog and Cards; initialize() injects the experiment BIR path.
+    # BIR owns compilation facts; run inputs retain the frozen catalog and Cards.
     # Materials remain external read-only inputs.  Freeze the configured path
     # in the run snapshot; selection records file digests later.
     snapshot["settings"]["paths"]["materials_root"] = str(active_settings.paths.materials_root)
@@ -111,9 +103,9 @@ def initialize_run(
         "effective_config_path": str(effective_config_path),
         "task_catalog_snapshot_path": str(catalog_snapshot_path),
         "task_catalog_snapshot_digest": digest_file(catalog_snapshot_path),
-        "bir_path": str(Path(bir_path).resolve()) if bir_path is not None else None,
-        "bir_template_revision": snapshot.get("bir", {}).get("template_revision") if bir_path is not None else None,
-        "bir_manifest_digest": snapshot.get("bir", {}).get("manifest_digest") if bir_path is not None else None,
+        "bir_path": str(bir.root),
+        "bir_template_revision": snapshot["bir"]["template_revision"],
+        "bir_manifest_digest": snapshot["bir"]["manifest_digest"],
     }
 
 

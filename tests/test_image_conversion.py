@@ -1,6 +1,6 @@
 from medbenchagent.data.models import AssetEntry, PresentationSpec
 from medbenchagent.data.sources import digest_file
-from medbenchagent.data.readers import reader_for
+from medbenchagent.data.readers import RasterReader
 import numpy as np
 import pytest
 from PIL import Image
@@ -48,4 +48,4 @@ def test_float_pixels_need_explicit_window_and_multiframe_is_rejected(tmp_path):
         np.testing.assert_array_equal(np.asarray(rendered), [[0, 64], [128, 255]])
     Image.new("L", (2, 2)).save(source, save_all=True, append_images=[Image.new("L", (2, 2))])
     with pytest.raises(UnsupportedMedicalImage, match="Multiframe"):
-        reader_for(source).read_pixels(source)
+        RasterReader().read_pixels(source)

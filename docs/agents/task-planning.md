@@ -6,6 +6,8 @@
 
 **Private state:** dataset/revision/Scenario-bound evidence cache and read state. The canonical plan owns progress; current prompt text and observation excerpts do not.
 
+Plan writes update BIR `task_plan.json` and return its reference. There is no local-file fallback, checkpoint Plan copy, bulk-Axis entry point or default Registry. Extension selection is owned by `planning_extensions.json`; changing it invalidates dependent planning work.
+
 **Model-visible context:** facts, source-backed field semantics, relations, category/value coverage, representative Cases, user constraints and validation feedback. Required/query fields are retained first. Omissions and continuation tools are explicit. Source facts are separate from requirements; model assumptions cannot create missing annotations.
 
 **Request budget:** `planning.context_chars` covers the final serialized request, including instructions, output schema, tools, source evidence, tool data and all repair messages. The direct Axis/screening/review calls and Leaf tool loop use the same check before each model request. An oversized request fails explicitly with size/limit diagnostics; required evidence and repair output are not silently truncated.

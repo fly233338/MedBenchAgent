@@ -1,5 +1,5 @@
 from pathlib import Path
-from types import SimpleNamespace
+from compilation_fixtures import planning_context
 
 from medbenchagent.agents import task_planning
 from medbenchagent.planning.bir import RegistrySnapshot
@@ -22,8 +22,7 @@ def test_core_prompts_are_complete_and_have_one_final_extension_slot():
     assert "produced through registered deterministic Resolver operations" in registry.prompt("scenario_review")
 
 
-def test_leaf_instructions_render_registry_context_and_requirements(monkeypatch):
-    registry = RegistrySnapshot.from_directory(ROOT / "config" / "bir_template" / "registry")
+def test_leaf_instructions_render_registry_context_and_requirements(tmp_path):
     scenario = TaskScenario(
         scenario_id="assessment-scenario",
         input_structure="single-image",
@@ -38,14 +37,8 @@ def test_leaf_instructions_render_registry_context_and_requirements(monkeypatch)
         current_scenario_id=scenario.scenario_id,
         scenarios={scenario.scenario_id: scenario},
     )
-    context = {
-        "question_template_count": 3,
-        "benchmark_info": {"language": "zh"},
-        "benchmark_input_policy": "image_only",
-    }
-    monkeypatch.setattr(task_planning, "_bir", lambda _: SimpleNamespace(registry=lambda: registry))
-    monkeypatch.setattr(task_planning, "_load_plan", lambda _: plan)
-    monkeypatch.setattr(task_planning, "_available_tools", lambda _: {"read_scenario_context"})
+    context = planning_context(tmp_path, plan=plan, brief={"language": "zh"})
+    context.update(question_template_count=3, benchmark_input_policy="image_only")
 
     prompt = task_planning._planning_instructions(context)
 

@@ -310,7 +310,7 @@ def test_menu_colored_brand_and_confirmed_remove(tmp_path, monkeypatch):
             await app.workers.wait_for_complete()
             await pilot.pause()
             assert not (tmp_path / selected).exists()
-            assert len(sessions.list_experiments(root=tmp_path)) == 1
+            assert len(list(tmp_path.glob("*/session.json"))) == 1
 
     asyncio.run(check())
 

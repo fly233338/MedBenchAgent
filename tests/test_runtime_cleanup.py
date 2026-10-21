@@ -107,7 +107,7 @@ def test_generation_fetch_batch_size_controls_real_pagination(tmp_path, monkeypa
     from compilation_fixtures import compile_fixture
     from test_compilation import cases
     from test_global_construction import _plan
-    from medbenchagent.agents.generation import run_generation
+    from medbenchagent.generation.items import run_generation
     from medbenchagent.data.index import DatasetIndex
     records = [{**cases()[0], "case_id": str(index)} for index in range(3)]
     context = compile_fixture(tmp_path, _plan("d", {"leaf": 3}), records, requested=3)

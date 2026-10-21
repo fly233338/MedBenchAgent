@@ -26,7 +26,7 @@ def validate_candidate_leaf(
     scenarios: dict[str, TaskScenario],
     *,
     resolver_context: dict[str, Any] | None = None,
-    registry=None,
+    registry,
 ) -> LeafTask:
     scenario = scenarios.get(leaf.scenario_id)
     if scenario is None:
@@ -45,18 +45,14 @@ def validate_candidate_leaf(
         raise ValueError("Leaf Task references an unknown validated clinical target")
     if leaf.target.strip() != target.name.strip():
         raise ValueError("Leaf Task target does not match its validated clinical target")
-    registry = registry or (resolver_context or {}).get("registry")
-    operation_mode = registry.answer_options_mode(scenario.operation) if registry else (
-        "required" if scenario.operation in {"recognize", "compare", "align"} else "forbidden"
-    )
+    operation_mode = registry.answer_options_mode(scenario.operation)
     if operation_mode == "required" and leaf.task_paradigm.value == "VQA" and leaf.output_spec.value == "label":
         if not leaf.options or len(leaf.options) < 2:
             raise ValueError("Closed VQA label tasks require at least two options")
     elif operation_mode == "forbidden" and leaf.options is not None:
         raise ValueError(f"Operation {scenario.operation} forbids answer options")
     spec = ResolverSpec.parse(leaf.resolver)
-    if registry is not None:
-        validate_resolver_policy(spec, registry.resolver_policy)
+    validate_resolver_policy(spec, registry.resolver_policy)
     if leaf.input != spec.inputs or leaf.output_spec != spec.output_spec:
         input_value = [selector.model_dump(mode="json") for selector in leaf.input]
         resolver_value = [selector.model_dump(mode="json") for selector in spec.inputs]
@@ -67,20 +63,14 @@ def validate_candidate_leaf(
             "Resolver.inputs must equal Leaf.input; keep reference-only evidence "
             "only in resolver steps such as reference_text."
         )
-    contracts = (resolver_context or {}).get("registry").task_contracts if (resolver_context or {}).get("registry") else None
-    if contracts:
-        allowed = set(contracts.get("paradigm_output_specs", {}).get(leaf.task_paradigm.value, []))
-        if leaf.output_spec.value not in allowed:
-            raise ValueError("OutputSpec is incompatible with TaskParadigm")
-        if leaf.task_paradigm.value == "Report Generation" and any(
-            selector.evidence_type not in set(contracts.get("report_generation_input_types", ["asset"]))
-            for selector in leaf.input
-        ):
-            raise ValueError("Report Generation accepts only Registry-approved input types")
-    elif leaf.task_paradigm.value == "Report Generation" and any(
-        selector.evidence_type != "asset" for selector in leaf.input
+    contracts = registry.task_contracts
+    allowed = set(contracts["paradigm_output_specs"][leaf.task_paradigm.value])
+    if leaf.output_spec.value not in allowed:
+        raise ValueError("OutputSpec is incompatible with TaskParadigm")
+    if leaf.task_paradigm.value == "Report Generation" and any(
+        selector.evidence_type not in contracts["report_generation_input_types"] for selector in leaf.input
     ):
-        raise ValueError("Report Generation accepts only assets as input")
+        raise ValueError("Report Generation accepts only Registry-approved input types")
     if resolver_context is not None and "evidence_names" in resolver_context:
         names = resolver_context.get("evidence_names", set())
         missing = [
@@ -177,7 +167,7 @@ def leaf_identity(leaf: LeafTask, scenario: TaskScenario | None = None):
     )
 
 
-def validate_task_tree(plan: TaskPlanState, *, require_reviews: bool = True, registry=None) -> TaskPlanState:
+def validate_task_tree(plan: TaskPlanState, *, require_reviews: bool = True, registry) -> TaskPlanState:
     if not plan.axis_decisions:
         raise ValueError("Task Plan requires completed Axis decisions")
     active = {key: value for key, value in plan.scenarios.items() if not value.exclusion_reason}
@@ -231,9 +221,6 @@ def summarize_leaf(access, leaf, *, cases=None, scenarios=None):
     from .sampling import sampling_units
     from .resolver import ResolverContext, resolve_task_input, NotApplicable, encode_closed_label
     if cases is None:
-        if not access.get("cases_path") and not access.get("duckdb_path"):
-            return {"contract_validated": True, "eligible_count": leaf.eligible_count, "failure_reasons": {},
-                    "answer_distribution": {}, "successful_examples": []}
         cases = list(DatasetIndex(access).iter_cases())
     context = ResolverContext.from_access(access)
     context.scenarios = scenarios or {}
@@ -304,8 +291,6 @@ def validate_leaf_design(leaf, plan, *, facts, access, registry, expected_templa
     except ValueError as exc:
         fail( "resolver_schema", str(exc), repair_hint="Keep the same Leaf and repair the Resolver steps or result_step reported above.")
     catalog = facts.get("evidence_catalog", {})
-    if not isinstance(catalog, dict):
-        catalog = {row["name"]: row for row in catalog}
     evidence_names.update(case_names)
     available_names = sorted(set(catalog) | evidence_names)
     for index, selector in enumerate(parsed.input):
@@ -323,7 +308,7 @@ def validate_leaf_design(leaf, plan, *, facts, access, registry, expected_templa
             repair_hint="Make Resolver.inputs exactly equal to Leaf.input; keep reference-only evidence in resolver steps.",
         )
     try:
-        validate_candidate_leaf(parsed, plan.scenarios, resolver_context={
+        validate_candidate_leaf(parsed, plan.scenarios, registry=registry, resolver_context={
             "evidence_names": evidence_names,
             "evidence_catalog": catalog,
             "reference_only_evidence_names": facts.get("reference_only_evidence_names", []),
@@ -332,7 +317,6 @@ def validate_leaf_design(leaf, plan, *, facts, access, registry, expected_templa
             "sampling_manifest_digest": access.get("sampling_manifest_digest"),
             "split_manifest_digest": access.get("split_manifest_digest"),
             "ordered_collection_available": bool(access.get("sampling_manifest_digest")),
-            "registry": registry,
         })
     except ValueError as exc:
         fail( "leaf_contract", str(exc), repair_hint="Use the current evidence catalog and change only the rejected selector or contract field.")

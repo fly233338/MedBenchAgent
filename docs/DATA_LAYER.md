@@ -24,12 +24,12 @@ immutable revision 的 cases/image manifest，根目录 current.json 仅作为�
 
 Evidence Catalog 是完整数据事实清单，不是任务候选清单。Task Planning 需要区分图像可观察证据、患者/临床上下文、设备/行政元数据和仅用于校准的 spacing 等字段；字段存在本身不能支持一个 Axis 或 Leaf Task。
 
-规划阶段不会把 access manifest 和全部 Case 内容直接交给模型。宿主先生成
-`DatasetAccessReceipt`，再生成 Dataset Overview、Evidence Catalog、Relation
+规划阶段不会把 access manifest 和全部 Case 内容直接交给模型。准备索引产生唯一的扁平
+`DatasetAccessReceipt`，规划使用它生成 Dataset Overview、Evidence Catalog、Relation
 Summary 和有界 Case Samples。每个规划证据文件记录 dataset revision 与输入
 digest；读取工具只返回分页或当前 Axis/Scenario 所需的切片。
 
-Receipt 在绑定和读取边界检查数据集身份、source access 与绑定路径的一致性及文件摘要。
+Receipt 在绑定和读取边界检查数据集身份、文件路径和内容摘要，所有消费者使用相同字段，不维护嵌套访问镜像。
 case/patient 计数取自实际 profile，缺少信息时不以零或空路径代替；可选 mapping、Card、sampling/split 的路径与摘要必须成对出现。
 
 Mask 的 bbox、面积、质心、component、等效直径和 plane feature 必须由准备阶段写入
@@ -53,5 +53,8 @@ index、时间或医学语义。
 编译级 BIR 位于 `experiments/<session>/compilations/<id>/BIR/`，保存单数据集绑定、冻结的
 `DatasetAccessReceipt` 和规划 Evidence 的 canonical 引用。Run 保存 BIR 路径、摘要和文档引用，
 不维护全局 BIR revision；各业务文档通过 BIRStore 按自己的 revision/digest 校验写回。
+
+绑定、规划、生成分别使用 BIR 根目录的 `dataset_binding.json`、`task_plan.json`、`generation.json`。
+共享状态不维护按数据集分组的 Plan、访问数据或生成结果字典；批处理在 Session 中创建独立 Compilation。
 
 新运行存储在 `.runtime/<run>/control`、`inputs`、`agents` 和 `preparation` 下。会话只持有编译引用；旧运行不迁移。

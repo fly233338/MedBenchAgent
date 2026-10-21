@@ -24,7 +24,7 @@ See [Data Preparation Agent](agents/data-preparation.md) for ownership and accep
 
 ## Real-runtime validation checklist — pending
 
-Offline cleanup verification on 2026-10-21: `uv run ruff check .` passed; `uv run pytest -q` passed 313 tests. The four warnings were also present in the 278-test baseline (LangSmith/nrrd deprecations and two Pydantic fixture serialization warnings).
+Offline architecture cleanup verification on 2026-10-21, against `ba510e4`: `uv run ruff check .` passed; `uv run pytest -q` passed 315 tests. Obsolete interface tests were removed and current BIR, preparation-only resume, cache-integrity and extension-dependency coverage was updated. The four existing warnings concern LangSmith/nrrd deprecations and two Pydantic fixture serialization warnings.
 
 The cleanup is accepted through offline Ruff/pytest checks. Live model behavior, Docker execution and large-dataset performance have **not** been validated by those checks. Record each run separately with commit, frozen configuration, model IDs, dataset revision, run/compilation IDs, commands, result and unresolved issues. Keep source data, credentials and generated packages out of Git.
 

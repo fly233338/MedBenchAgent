@@ -24,22 +24,3 @@ class ProcessDatasetArguments(NoArguments):
     mode: Literal["reuse_or_process", "rebuild", "repair"] = "reuse_or_process"
     issue_ids: list[NonEmpty] = Field(default_factory=list)
     notes: str = ""
-
-
-
-
-DATASET_KINDS = frozenset(
-    {
-        "Dataset",
-        "DatasetProfile",
-        "DatasetCard",
-        "DatasetCandidates",
-        "DatasetSelection",
-        "Plan",
-        "PlanningDelegation",
-        "Generation",
-        "Allocation",
-        "Delivery",
-        "PreparedCandidates",
-    }
-)

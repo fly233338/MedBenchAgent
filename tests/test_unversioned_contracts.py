@@ -16,6 +16,6 @@ def test_old_contract_markers_are_rejected(tmp_path):
     with pytest.raises(ValueError):
         verify_bundle(bundle)
 
-    with pytest.raises(ValueError, match="Only annotation is supported"):
+    with pytest.raises(ValueError, match="dataset-access"):
         DatasetIndex({"schema_version": "annotation.v5"})
 

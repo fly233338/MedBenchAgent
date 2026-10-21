@@ -1,7 +1,5 @@
 {
   "schema_version": "benchmark-info",
-  "revision": 0,
-  "status": "empty",
   "clinical_scope": null,
   "diseases": [],
   "modalities": [],
@@ -13,8 +11,5 @@
   "sample_scope": [],
   "allocation_preferences": [],
   "evidence": [],
-  "missing_fields": [],
-  "source_runs": [],
-  "change_log": []
+  "missing_fields": []
 }
-

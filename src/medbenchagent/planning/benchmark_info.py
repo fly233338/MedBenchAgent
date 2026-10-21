@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import re
 import json
-from pathlib import Path
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 from medbenchagent.planning.scope import ScopeRequirement
 from medbenchagent.workflow.contracts import AllocationPreference
 
 from medbenchagent.runtime.llm import complete_json
-from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 REQUIRED_FIELDS = ("language", "sample_count")
 OPTIONAL_FIELDS = ("clinical_scope", "diseases", "modalities", "evaluation_focus", "dataset_mentions", "intent_notes")
@@ -32,59 +30,6 @@ class ExtractedBrief(BaseModel):
     allocation_preferences: list[AllocationPreference] = Field(default_factory=list)
     evidence: list[dict[str, Any]]
     max_total_tasks_per_image: int | None = Field(default=None, gt=0)
-
-EXTRACTION_PROMPT = """Act as the benchmark-intake analyst. Extract the user's intended medical VLM benchmark
-from the complete request and clarification history into one JSON object. Preserve the user's intent even when it
-is broad, comparative, or expressed with unfamiliar task wording. Each compilation binds one dataset; independent
-datasets require separate batch entries without a shared quota. Do not force a disease or modality the user did not state.
-
-Return these keys and no wrapper object:
-{
-  "clinical_scope": "English description of only the benchmark aspects explicitly stated by the user, or null. A broad scope or explicitly requested dataset population is valid; do not demand a single disease.",
-  "diseases": ["Explicitly requested disease names in English; empty if unspecified"],
-  "modalities": ["Explicitly requested imaging modalities in English; empty if unspecified"],
-  "evaluation_focus": "Only explicitly requested task priorities and exclusions, or null",
-  "dataset_mentions": ["Dataset names or IDs explicitly named by the user; empty if unspecified"],
-  "intent_notes": ["Short English summaries of explicit constraints that do not fit the fixed fields"],
-  "language": "en, zh, or null",
-  "sample_count": "positive integer or null",
-  "sample_scope": [{"id":"scope-1", "kind":"modality or population", "description":"Explicit sample inclusion/exclusion requirement", "quote":"Exact original user wording", "modalities": ["Standard modality names covered by this scope; empty for population"], "operator":"in or not_in", "logic":"any for alternatives, all only for explicit simultaneous multi-sequence requirements"}],
-  "allocation_preferences": [{"id":"preference-1", "description":"Only an explicit weighting or exclusion preference", "quote":"Exact user wording"}],
-  "evidence": [{"field":"clinical_scope", "quote":"Exact original user wording", "input_index":0}],
-  "max_total_tasks_per_image": "Explicit positive integer total across all task types, or null"
-}
-
-The user may write Chinese, English, or both. Infer the requested benchmark language,
-not the language of the user's message. Translate disease and modality to standard
-English medical terms. Convert expressions such as "20题", "10k", and "2.5k" to a
-positive integer. Use null only when the user did not provide or imply a value.
-If the user explicitly supplied an invalid sample count, preserve that value (or its original text),
-never replace it with null. Later user corrections override earlier requests.
-Omit any unspecified aspect instead of inferring or inventing it.
-Every nonempty explicit field must have at least one evidence entry. Evidence quotes must be copied verbatim from
-the numbered user inputs; never quote an assistant question. `input_index` is zero-based and must identify the input
-containing the quote. Evidence is a source pointer, not a normalized-value equality check. If a value is inferred from
-a clarification or configuration default, do not fabricate a quote for it.
-sample_scope must cover EVERY explicit modality and population restriction. If modalities is nonempty,
-always create a modality scope for every listed modality. For example, a request containing "breast-us"
-may normalize modalities to ["ultrasound"], but the scope quote must remain the exact original "breast-us".
-The evidence array must also include {"field":"intent_notes", ...} whenever intent_notes is nonempty.
-Distinguish
-testing disease knowledge from selecting only cases with that disease. The former is
-evaluation_focus, not a positive-case filter. Do not invent restrictions. Use an empty
-list when none were requested. Quote the user's original language, without translation. Keep `dataset_mentions` as
-user-facing names; do not resolve them to catalog IDs in this step.
-Every explicit nonempty field, including invalid explicit values and max_total_tasks_per_image, requires evidence with
-its field and exact user quote.
-Unspecified values require no evidence. Do not quote assistant clarification questions as user evidence.
-Always return sample_scope, even when empty. Group alternatives such as CT or MRI in ONE
-modality scope listing both modalities; resolve them with one in condition, not intersecting filters.
-Use at most one modality scope per operator: put all inclusion alternatives in one in scope,
-all exclusions in one not_in scope. Do not turn alternatives into AND conditions.
-allocation_preferences must be empty unless the user explicitly prioritizes/excludes a concept,
-dataset or task for allocation. A clinical evaluation topic alone is NOT a weighting preference.
-Return valid JSON only."""
-
 
 def parse_sample_count(value: object) -> int | None:
     if type(value) is int and value > 0:
@@ -143,11 +88,11 @@ def merge_info(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, An
 
 def extract_benchmark_info(requirement: str, existing: dict[str, Any] | None = None,
                            *, user_inputs: list[str] | None = None,
-                           prompt: str | None = None) -> dict[str, Any]:
+                           prompt: str) -> dict[str, Any]:
     """Extract only the explicitly requested benchmark-level intent."""
     user_inputs = user_inputs if user_inputs is not None else [requirement]
     result = complete_json(
-        prompt or EXTRACTION_PROMPT,
+        prompt,
         f"Current values: {json.dumps(existing or {})}\n\nUser requirement:\n{requirement}"
         f"\n\nQuote evidence only from these numbered user inputs: {json.dumps({i: text for i, text in enumerate(user_inputs)}, ensure_ascii=False)}",
         ExtractedBrief,
@@ -245,15 +190,3 @@ def _derive_modality_scope(modalities: list[str], user_inputs: list[str]) -> lis
         quotes.append(text[start:start + len(match)])
     return [{"id": "scope-modality", "kind": "modality", "description": "Explicit modality selection",
              "quote": " or ".join(quotes), "modalities": modalities, "operator": "in", "logic": "any"}]
-
-
-def write_benchmark_brief(
-    benchmark_info: dict[str, Any], output_path: str | Path, template_path: Path | None = None
-) -> str:
-    """Write a reviewable projection of the canonical user requirements."""
-    brief = {"schema_version": "benchmark-brief", "benchmark_info": benchmark_info}
-    destination = Path(output_path)
-    if destination.suffix != ".json":
-        destination = destination / "benchmark_brief.json"
-    atomic_write_json(destination, brief)
-    return str(destination)

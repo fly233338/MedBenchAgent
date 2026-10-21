@@ -13,7 +13,9 @@ MedD2B uses LangGraph and OpenHands to compile one medical dataset into an annot
 
 A submission creates `experiments/<session>/compilations/<id>/`, with a configuration snapshot and BIR. A retry resumes that same compilation. Sessions do not own or overwrite a shared BIR. Batch submission queues independent compilations; source joining and multi-image tasks remain features within a dataset.
 
-Each BIR business document owns its atomic `_commit`, revision, content digest and dependency digests. The manifest fixes compilation and Registry identity. Reads reject changed dependencies. Checkpoint and UI copies never override BIR. Internal schemas have stable, unversioned identifiers.
+Inside each BIR, `dataset_binding.json`, `task_plan.json`, `generation.json` and `planning_extensions.json` have fixed locations alongside allocation, review, candidate and delivery documents. Compilation tools bind one dataset; planning and generation read that identity from BIR. Allocation counts and capacities are keyed directly by Leaf ID. Dataset candidate lists and the session batch queue remain collections.
+
+Each BIR business document owns its atomic `_commit`, revision, content digest and dependency digests. The manifest fixes compilation and Registry identity. Reads reject changed dependencies. Checkpoints retain execution state, dependency-bound evidence caches and references, without parallel Plan, allocation or access documents. UI summaries are read from BIR. Internal schemas have stable, unversioned identifiers; old internal layouts and checkpoints have no migration or compatibility reader.
 
 ## Supervision
 
@@ -28,9 +30,10 @@ A delegated agent's outcome is separate from the success of the delegation call.
 - `workflow/`: orchestration, business clarification/evidence adapters, scoped revision and user-facing business projections.
 - `runtime/`: generic action execution, model transport, checkpoint/interrupt integration, operation logs, process adapters and presentation of events.
 - `preparation/`: source freezing, stage sessions, candidate snapshots, deterministic acceptance and publication.
-- `agents/` and `planning/`: evidence-grounded task design and independent review; Registry, Resolver and BIR contracts.
+- `agents/`: evidence-grounded task design and independent semantic review.
+- `planning/`: Registry, Resolver, BIR, dataset/extension binding and dataset-local allocation.
 - `data/`: canonical annotations, assets, index, source semantics and evidence sampling.
-- `generation/` and `audit/`: deterministic materialization, candidate audit, publication and portable export.
+- `generation/` and `audit/`: deterministic generation and candidate audit, followed by publication and portable export. These stages have no Agent-private sessions or forwarding Agent modules.
 - `evaluation/` in the source package: read-only package loading and evaluation configuration; model inference is independent.
 
 The generic harness receives domain callbacks; it does not import BIR, interpret Leaf evidence or recognize dataset-selection states.
@@ -43,11 +46,13 @@ Host validation reports passed checks. A first failed candidate establishes the 
 
 Task Planning keeps Axis → Scenario → Leaf. There is one canonical pending Scenario queue. Deterministic transitions directly invoke the dedicated semantic Axis/screening calls; Leaf exploration retains a tool loop. Context construction belongs to Planning, prioritizes required/query evidence, reports omissions and supports exact paged reads. Design and review use the same source-evidence interface in separate calls.
 
+Planning requires the compilation BIR and its frozen Registry. Pure validators receive Registry explicitly. Prompts have one source in Registry; imports do not load a repository-default Registry. Tests construct real temporary BIR fixtures rather than enabling a second local-file planning mode.
+
 `planning.context_chars` bounds the complete serialized model request, including system instructions, output schema, tool definitions, evidence, tool results and repair turns. Direct planning/review calls and the planning tool loop share this final transport check. Every retry is checked again. Required content is never silently truncated; an oversized request reports its size and configured limit so the query can be narrowed or the budget increased.
 
 Allocation is dataset-local. Generation and Audit share `resolve_task_input`, frozen ordering and deterministic Resolver answers. Reference-only evidence stays out of model input. `eligible_count` counts SamplingUnits; structural Scenario capacity counts Cases.
 
-`DatasetAccessReceipt` verifies dataset identity, source paths/digests and actual profile counts at binding and consumption. Benchmark items have one strict contract: `item_id`, `dataset_id`, `leaf_task_id`, ordered `input_images` and optional sampling metadata. Generation validates before writing; audit rejects old aliases or malformed records with explicit quarantine reasons. `generation.fetch_batch_size` controls source pagination.
+`DatasetAccessReceipt` is a flat data-layer contract produced by Prepared indexing and consumed unchanged by binding, planning, generation and audit. It verifies dataset identity, file digests and actual profile counts. Benchmark items have one strict contract: `item_id`, `dataset_id`, `leaf_task_id`, ordered `input_images` and optional sampling metadata. Generation validates before writing; audit rejects old aliases or malformed records with explicit quarantine reasons. `generation.fetch_batch_size` controls source pagination.
 
 ## Local PDF retrieval
 

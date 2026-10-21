@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable, Literal, TypeVar
+from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -93,22 +93,14 @@ ManifestT = TypeVar("ManifestT", bound=BaseModel)
 
 
 def load_manifest(path: str | Path, model: type[ManifestT]) -> ManifestT:
-    """Load a JSON or JSONL manifest through its strict model."""
+    """Load a JSON manifest through its strict model."""
     source = Path(path)
     if not source.is_file():
         raise ValueError(f"Manifest is missing: {source}")
     text = source.read_text(encoding="utf-8")
     if not text.strip():
         raise ValueError(f"Manifest is empty: {source}")
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        payload = [json.loads(line) for line in text.splitlines() if line.strip()]
-    if isinstance(payload, dict):
-        return model.model_validate(payload)
-    if not isinstance(payload, list):
-        raise ValueError(f"Manifest must contain an object or JSONL records: {source}")
-    return model.model_validate(payload)
+    return model.model_validate_json(text)
 
 
 def manifest_digest(path: str | Path) -> str:
@@ -124,13 +116,6 @@ def verify_manifest_digest(path: str | Path, expected: str | None) -> str:
     return actual
 
 
-def write_jsonl(path: str | Path, records: Iterable[BaseModel]) -> str:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with destination.open("w", encoding="utf-8", newline="\n") as handle:
-        for record in records:
-            handle.write(record.model_dump_json() + "\n")
-    return str(destination)
 
 
 def iter_image_manifest(path):
@@ -146,8 +131,6 @@ def iter_image_manifest(path):
         yield image
 
 
-def write_image_manifest(path, entries):
-    Path(path).write_text("".join(row.model_dump_json() + "\n" for row in entries), encoding="utf-8")
 
 
 def dataset_images(cases_path, manifest_path):

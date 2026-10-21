@@ -91,10 +91,7 @@ def _metadata(values: dict) -> dict:
         "bir_summary_ref": context.get("bir_summary_ref"),
         "source_decision_path": context.get("source_decision_path"),
         "view": context.get("view"),
-        "selected_assets": {
-            dataset_id: asset.get("entry", {})
-            for dataset_id, asset in context.get("dataset_assets", {}).items()
-        },
+
     }
 
 
@@ -130,7 +127,7 @@ class GraphRunner:
 
     def inspect(self, run: dict) -> dict:
         """Read recovery state after a process disappeared, without executing the graph."""
-        identifier = run.get("id", "_single")
+        identifier = run["id"]
         return self.inspect_many([{**run, "id": identifier}])[identifier]
 
     def inspect_many(self, runs: list[dict]) -> dict[str, dict]:

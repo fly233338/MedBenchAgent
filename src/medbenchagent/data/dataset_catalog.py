@@ -78,13 +78,6 @@ def load_dataset_catalog(catalog_path=None):
     return entries
 
 
-def dataset_by_id(datasets, dataset_id):
-    for entry in datasets:
-        if entry["dataset_id"] == dataset_id:
-            if not entry["available"]:
-                raise DatasetCatalogError("Dataset is disabled")
-            return entry
-    raise DatasetCatalogError(f"Unknown dataset id: {dataset_id}")
 
 
 def load_prepared(entry):

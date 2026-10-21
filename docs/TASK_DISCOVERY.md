@@ -1,6 +1,6 @@
 # Task Planning contract
 
-The canonical product is `datasets/<dataset>/planning/task_plan.json` inside a compilation BIR. The plan binds the dataset receipt, compilation requirements and frozen Registry. Derived axis/scenario/leaf exports are not a restore source.
+The canonical product is `task_plan.json` at the compilation BIR root. Its dependencies bind `dataset_binding.json`, compilation requirements, `planning_extensions.json` and the frozen Registry. Planning reads and writes this document directly; checkpoints store references and execution context. A BIR and explicit Registry are required, including in tests.
 
 ## Semantics and stages
 

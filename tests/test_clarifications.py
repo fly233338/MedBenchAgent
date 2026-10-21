@@ -1,3 +1,4 @@
+from compilation_fixtures import planning_context
 
 import pytest
 
@@ -8,7 +9,7 @@ from medbenchagent.runtime import sessions
 
 @pytest.mark.parametrize("kind", ["semantic", "requirement_change"])
 def test_resolution_closes_saved_origin_and_only_invalidates_changed_requirement(tmp_path, kind):
-    context = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "resolve"), "user_requirement": "Build"}
+    context = {**planning_context(tmp_path), "run_directory": str(tmp_path), "operation_directory": str(tmp_path / "resolve"), "user_requirement": "Build"}
     session = sessions.create_experiment("pilot", root=tmp_path)
     context["bir_path"] = sessions.queue_run(session, "Compile dataset", root=tmp_path)["bir_path"]
     store = BIRStore(context["bir_path"])
@@ -20,11 +21,11 @@ def test_resolution_closes_saved_origin_and_only_invalidates_changed_requirement
     saved = tmp_path / "child.json"
     from medbenchagent.runtime.contexts import save_context, load_context
     save_context(saved, {**child_context, "global_issue": issue, "issues": {key: issue}}, "planning", "a")
-    context["child_states"] = {"a": {"planning": str(saved)}}
+    context["child_states"] = {"planning": str(saved)}
     context["issues"] = {key: record_answer(child_context, issue, "0 means benign")}
     context["global_issue"] = context["issues"][key]
     context.update(resolve_clarification(context, issue_id=key, kind=kind)["updates"])
-    child = load_context(context["child_states"]["a"]["planning"], "planning", "a")
+    child = load_context(context["child_states"]["planning"], "planning", "a")
     assert child["global_issue"] is None and context["global_issue"] is None
     assert child["decisions"][key] == context["issues"][key]["answer_reference"]
     assert inject_answers(context, {}, "TaskPlanningAgent", "b")["decisions"] == {}
@@ -35,7 +36,7 @@ def test_resolution_closes_saved_origin_and_only_invalidates_changed_requirement
 
 
 def test_explicit_stop_answer_marks_run_for_termination(tmp_path):
-    context = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "resolve"), "user_requirement": "Build"}
+    context = {**planning_context(tmp_path), "run_directory": str(tmp_path), "operation_directory": str(tmp_path / "resolve"), "user_requirement": "Build"}
     issue = new_issue("SupervisorAgent", context, "generation_failure", "Generation failed. Continue or stop?")
     key = issue["issue_id"]
     context["issues"] = {key: record_answer(context, issue, "you can stop here")}

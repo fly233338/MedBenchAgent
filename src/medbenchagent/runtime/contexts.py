@@ -15,7 +15,7 @@ class SupervisorContext(TypedDict, total=False):
     bir_manifest_digest: str
     bir_template_revision: str
     bir_summary_ref: dict[str, Any]
-    child_states: dict[str, dict[str, str]]
+    child_states: dict[str, str]
     issues: dict[str, dict]
     evidence_index_path: str
 
@@ -27,7 +27,7 @@ class ContextBoundary(BaseModel):
     dataset_scope: str | None = None
     source_scope: str | None = None
     evidence_index_path: str | None = None
-    child_states: dict[str, dict[str, str]] = Field(default_factory=dict)
+    child_states: dict[str, str] = Field(default_factory=dict)
     issues: dict[str, dict] = Field(default_factory=dict)
     decisions: dict[str, str] = Field(default_factory=dict)
 
@@ -35,13 +35,12 @@ class ContextBoundary(BaseModel):
 class PrivateState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     schema_version: Literal["agent-private-state"] = "agent-private-state"
-    role: Literal["TaskPlanningAgent", "DataProcessingAgent", "GenerationAgent"]
+    role: Literal["TaskPlanningAgent", "DataProcessingAgent"]
     dataset_id: str | None
     context: dict[str, Any]
 
 
-ROLES = {"planning": "TaskPlanningAgent", "preparation": "DataProcessingAgent",
-         "generation": "GenerationAgent"}
+ROLES = {"planning": "TaskPlanningAgent", "preparation": "DataProcessingAgent"}
 
 
 def validate_context(context, role, dataset):
@@ -55,7 +54,7 @@ def validate_context(context, role, dataset):
             raise ValueError(f"Private state {key} must be a file reference")
     if any(key in context for key in ("inspections", "source_documents", "retrieved_passages", "retrieved_evidence")):
         raise ValueError("Private state must reference evidence instead of embedding payloads")
-    if role in {"TaskPlanningAgent", "DataProcessingAgent", "GenerationAgent"} and not dataset:
+    if role in {"TaskPlanningAgent", "DataProcessingAgent"} and not dataset:
         raise ValueError("Dataset specialist state requires a dataset identity")
     if context.get("evidence_index_path"):
         expected = Path(context["run_directory"]) / "evidence/index.sqlite"

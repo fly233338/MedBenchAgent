@@ -135,65 +135,10 @@ class DicomReader(ImageReader):
         return _plane(pixels), self.format, window, interpretation == "MONOCHROME1"
 
 
-class NiftiReader(ImageReader):
-    format = "nifti"
-
-    def read_pixels(self, path):
-        import numpy as np
-
-        try:
-            import nibabel as nib
-        except ImportError as exc:
-            raise ReaderUnavailable("Install nibabel") from exc
-        return _plane(np.squeeze(np.asanyarray(nib.load(path).dataobj))), self.format, None, False
-
-    def read_metadata(self, path):
-        try:
-            import nibabel as nib
-        except ImportError as exc:
-            raise ReaderUnavailable("Install nibabel") from exc
-        image = nib.load(path)
-        return {
-            "shape": list(image.shape),
-            "dtype": str(image.get_data_dtype()),
-            "affine": image.affine.tolist(),
-        }
 
 
-class ItkReader(ImageReader):
-    format = "itk"
-
-    def read_pixels(self, path):
-        import numpy as np
-
-        try:
-            import SimpleITK as sitk
-        except ImportError as exc:
-            raise ReaderUnavailable("Install SimpleITK") from exc
-        return (
-            _plane(np.squeeze(sitk.GetArrayFromImage(sitk.ReadImage(str(path))))),
-            self.format,
-            None,
-            False,
-        )
-
-    def read_metadata(self, path):
-        try:
-            import SimpleITK as sitk
-        except ImportError as exc:
-            raise ReaderUnavailable("Install SimpleITK") from exc
-        reader = sitk.ImageFileReader()
-        reader.SetFileName(str(path))
-        reader.ReadImageInformation()
-        return {
-            "size": list(reader.GetSize()),
-            "spacing": list(reader.GetSpacing()),
-            "direction": list(reader.GetDirection()),
-            "dimension": reader.GetDimension(),
-        }
 
 
-READERS = (RasterReader(), DicomReader(), NiftiReader(), ItkReader())
 
 
 def _plane(pixels):
@@ -202,16 +147,3 @@ def _plane(pixels):
     if pixels.ndim != 2:
         raise UnsupportedMedicalImage(f"Only 2D images are supported, got {pixels.shape}")
     return pixels
-
-
-def reader_for(path):
-    from medbenchagent.data.asset_adapters import UnsupportedMedicalImage
-
-    for reader in READERS:
-        if reader.probe(path):
-            return reader
-    raise UnsupportedMedicalImage(f"Unsupported medical image: {Path(path).name}")
-
-
-def inspect_metadata(path):
-    return reader_for(path).read_metadata(path)

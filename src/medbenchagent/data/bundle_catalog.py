@@ -53,7 +53,7 @@ def verify_bundle(bundle):
     metadata = json.loads((revision / "metadata.json").read_text(encoding="utf-8"))
     cache = root / ".derived" / receipt["revision"]
     profile, access = prepare_dataset(revision / "cases.jsonl", revision / "image_manifest.jsonl", cache,
-                                      revision=receipt["revision"])
+                                      revision=receipt["revision"], dataset_id=receipt["dataset_id"])
     card = {"schema_version": "dataset-card", "dataset_id": receipt["dataset_id"],
             "name": metadata.get("name", receipt["dataset_id"]), "description": metadata.get("description", "annotation dataset"),
             "annotation_digest": access["annotation_digest"], "image_manifest_digest": access["image_manifest_digest"],
@@ -62,5 +62,8 @@ def verify_bundle(bundle):
     card_path = cache / "dataset_card.json"
     if not card_path.is_file() or json.loads(card_path.read_text(encoding="utf-8")) != card:
         atomic_write_json(card_path, card)
-    access.update(dataset_card_path=str(card_path), bundle_root=str(revision), mapping_path=str(revision / "metadata.json"))
+    from medbenchagent.data.sources import digest_file
+    access.update(dataset_card_path=str(card_path), dataset_card_digest=digest_file(card_path),
+                  bundle_root=str(revision), mapping_path=str(revision / "metadata.json"),
+                  mapping_digest=digest_file(revision / "metadata.json"))
     return {"ready": {"revision": receipt["revision"], "access": access}, "card": card}

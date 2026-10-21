@@ -104,54 +104,6 @@ class Prompt(TextArea):
         await super()._on_key(event)
 
 
-class Splitter(Static, can_focus=True):
-    """Own mouse capture so drag events need not bubble through a screen."""
-
-    class Adjust(Message):
-        def __init__(self, splitter, delta=0, reset=False):
-            super().__init__()
-            self.splitter, self.delta, self.reset = splitter, delta, reset
-
-    def __init__(self, *, axis, id):
-        super().__init__("│" if axis == "x" else "─", id=id, classes=f"splitter {axis}")
-        self.axis = axis
-        self.origin = None
-
-    def on_mouse_down(self, event):
-        if event.button == 1:
-            self.focus()
-            self.origin = event.screen_x if self.axis == "x" else event.screen_y
-            self.capture_mouse()
-            self.add_class("dragging")
-            event.stop()
-            event.prevent_default()
-
-    def on_mouse_move(self, event):
-        if self.origin is not None:
-            position = event.screen_x if self.axis == "x" else event.screen_y
-            self.post_message(self.Adjust(self, position - self.origin))
-            self.origin = position
-            event.stop()
-
-    def release(self):
-        if self.origin is not None:
-            self.capture_mouse(False)
-        self.origin = None
-        self.remove_class("dragging")
-
-    def on_mouse_up(self, event):
-        self.release()
-        event.stop()
-
-    def on_unmount(self):
-        self.release()
-
-    def on_key(self, event):
-        keys = ("left", "right") if self.axis == "x" else ("up", "down")
-        if event.key in (*keys, "home"):
-            self.post_message(self.Adjust(self, -1 if event.key == keys[0] else 1, event.key == "home"))
-            event.stop()
-            event.prevent_default()
 
 
 class CommandDialog(ModalScreen):

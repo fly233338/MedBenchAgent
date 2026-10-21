@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import Counter
 from pydantic import Field
 
-from medbenchagent.planning.bir import BIRStore, business_dependencies
+from medbenchagent.planning.bir import BIRStore, persist_task_plan
 from medbenchagent.planning.task_space import TaskPlanState
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.tool_contracts import NoArguments, NonEmpty
@@ -21,21 +21,19 @@ class PublishArguments(NoArguments):
 
 
 def current_document(context, path):
-    try:
-        return BIRStore(context["bir_path"]).load(path)
-    except (OSError, ValueError, KeyError):
-        return None
+    return BIRStore(context["bir_path"]).current(path)
 
 
 def compilation_summary(context):
-    selected = context.get("selected_dataset_ids", [])
-    dataset = selected[0] if len(selected) == 1 else None
-    plan = current_document(context, f"datasets/{dataset}/planning/task_plan.json") if dataset else None
+    binding = current_document(context, "dataset_binding.json")
+    dataset = binding["access"]["dataset_id"] if binding else None
+    plan = current_document(context, "task_plan.json")
+    delivery = current_document(context, "delivery.json")
     review = current_document(context, "review.json")
     candidate = current_document(context, "candidate.json")
     return {
         "compilation_id": context.get("compilation_id"), "dataset_id": dataset,
-        "requirements": context.get("benchmark_info", {}),
+        "requirements": current_document(context, "benchmark_info.json"),
         "plan": {"phase": plan.get("phase"), "revision": plan.get("revision"),
                  "leaf_count": len(plan.get("leaf_tasks", {})),
                  "capacity": sum(row.get("eligible_count") or 0 for row in plan.get("leaf_tasks", {}).values()),
@@ -47,7 +45,7 @@ def compilation_summary(context):
         "review": review,
         "candidate": {key: candidate.get(key) for key in ("counts", "status")} if candidate else None,
         "last_agent_result": context.get("last_agent_result"),
-        "delivery_path": context.get("delivery_path"),
+        "delivery_path": delivery["delivery_path"] if delivery else None,
     }
 
 
@@ -69,11 +67,7 @@ def compilation_view(context):
 def revise_plan(context, *, scenario_ids, reason, issue_ids=None):
     """Reopen specific Scenarios for evidence-based repair or additional exploration."""
     store = BIRStore(context["bir_path"])
-    selected = list(store.load("dataset_bindings.json")["datasets"])
-    if len(selected) != 1:
-        raise ValueError("Planning revision requires one dataset")
-    dataset = selected[0]
-    path = f"datasets/{dataset}/planning/task_plan.json"
+    path = "task_plan.json"
     plan = TaskPlanState.model_validate(store.load(path))
     targets = list(dict.fromkeys(scenario_ids))
     if not targets or not set(targets) <= set(plan.scenarios):
@@ -109,10 +103,5 @@ def revise_plan(context, *, scenario_ids, reason, issue_ids=None):
     plan.review = {"revision_request": {"scenario_ids": targets, "reason": reason, "issue_ids": issue_ids or [],
                                         "findings": [known_issues[key] for key in (issue_ids or [])]},
                    "revision_history": journal["revisions"]}
-    store.update(path, plan.model_dump(mode="json"), run_id=context["run_id"], actor="supervisor_revision",
-                 expected_digest=before,
-                 dependencies=business_dependencies(context, "benchmark_info.json", "dataset_bindings.json", registry=True))
-    return result("success", "Selected Scenarios reopened; downstream receipts are now stale",
-                  planning_stalled=False, planning_feedback=plan.review["revision_request"],
-                  dataset_task_plans={}, allocation_path=None, allocation=None,
-                  dataset_generations={}, delivery_path=None, candidate_path=None)
+    persist_task_plan({**context, "planning_read_digest": before}, plan)
+    return result("success", "Selected Scenarios reopened; downstream receipts are now stale", planning_stalled=False)

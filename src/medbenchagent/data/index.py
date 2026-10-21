@@ -11,6 +11,7 @@ import duckdb
 from medbenchagent.data.manifests import dataset_images
 from medbenchagent.data.sources import digest_file
 from medbenchagent.data.models import CaseRecord, validate_case
+from medbenchagent.data.contracts import DatasetAccessReceipt
 
 
 def _manifest_access(root, cache):
@@ -28,8 +29,7 @@ def _manifest_access(root, cache):
     return values
 
 
-def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refresh=False,
-                       source_root=None, source_roots=None):
+def prepare_dataset(cases_path, manifest_path, cache_root, *, dataset_id, revision="1", refresh=False):
     cases_file = Path(cases_path).resolve()
     manifest = Path(manifest_path).resolve()
     cache = Path(cache_root) / "annotation-cache" / revision
@@ -47,7 +47,8 @@ def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refr
         except (OSError, ValueError):
             access = {}
         if (
-            db_path.is_file() and profile_path.is_file()
+            access.get("schema_version") == "dataset-access" and access.get("dataset_id") == dataset_id
+            and db_path.is_file() and profile_path.is_file()
             and digest_file(profile_path) == access.get("profile_digest")
             and digest_file(db_path) == access.get("duckdb_digest")
             and access.get("annotation_digest") == digest_file(cases_file)
@@ -82,7 +83,7 @@ def prepare_dataset(cases_path, manifest_path, cache_root, *, revision="1", refr
     temporary.replace(db_path)
     profile = _profile(cases, assets)
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    access = {"schema_version": "annotation", "revision": revision, "cases_path": str(cases_file), "image_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(cases_file), "image_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path), **manifest_access}
+    access = {"schema_version": "dataset-access", "dataset_id": dataset_id, "case_count": profile["case_count"], "patient_count": profile["patient_count"], "revision": revision, "cases_path": str(cases_file), "image_manifest_path": str(manifest), "profile_path": str(profile_path), "duckdb_path": str(db_path), "annotation_digest": digest_file(cases_file), "image_manifest_digest": digest_file(manifest), "profile_digest": digest_file(profile_path), "duckdb_digest": digest_file(db_path), **manifest_access}
     access_path.write_text(json.dumps(access, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return profile, access
 
@@ -109,9 +110,7 @@ def _profile(cases, assets):
 
 class DatasetIndex:
     def __init__(self, access):
-        if access.get("schema_version") != "annotation":
-            raise ValueError("Only annotation is supported")
-        self.access = access
+        self.access = DatasetAccessReceipt.model_validate(access).verify().model_dump(exclude_none=True)
 
     def _db(self):
         return duckdb.connect(self.access["duckdb_path"], read_only=True)
@@ -191,7 +190,7 @@ class DatasetIndex:
             facts.setdefault("view_panel_capabilities", {})["ordered"] = ordered
         return facts
 
-    def node_context(self, node, *, sample_limit=5, evidence_limit=100, registry=None):
+    def node_context(self, node, *, registry, sample_limit=5, evidence_limit=100):
         from medbenchagent.data.task_facts import case_facts
         from medbenchagent.planning.node_builder import ScenarioConstraintRegistry
         from medbenchagent.planning.task_space import TaskScenario

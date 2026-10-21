@@ -1,3 +1,5 @@
+from compilation_fixtures import planning_context, write_plan
+from compilation_fixtures import axis_values
 from compilation_fixtures import screen
 from image_fixtures import image_context
 import json
@@ -7,7 +9,7 @@ import pytest
 
 from medbenchagent.agents import task_planning
 from medbenchagent.planning.bir import RegistrySnapshot
-from medbenchagent.planning.task_space import AXIS_VALUES, CapabilityCategory, EvidenceBasis, LeafTask, TaskAxis, TaskPlanState, TaskScenario
+from medbenchagent.planning.task_space import CapabilityCategory, EvidenceBasis, LeafTask, TaskPlanState, TaskScenario
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,7 +23,7 @@ def _assessments(axis, supported):
             "evidence_basis": [{"reference": "profile:report", "detail": "observed"}],
             "reason": "observed",
         }
-        for value in AXIS_VALUES[TaskAxis(axis)]
+        for value in axis_values(axis)
     ]
 
 
@@ -40,13 +42,12 @@ def _context(tmp_path):
         phase="axes",
     )
     path = Path(tmp_path) / "task_plan.json"
-    path.write_text(plan.model_dump_json(), encoding="utf-8")
-    return {
+    path = write_plan(tmp_path, plan)
+    return {**planning_context(tmp_path),
         "dataset_scope": "d",
         "operation_directory": str(tmp_path),
         "task_plan_path": str(path),
         "dataset_facts": facts,
-        "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"},
     }
 
 
@@ -56,9 +57,9 @@ def test_axis_calls_are_strictly_ordered(tmp_path):
         task_planning.analyze_axis(context, axis="operation", assessments=_assessments("operation", ["describe"]))
     task_planning.analyze_axis(context, axis="input_structure", assessments=_assessments("input_structure", ["single-image"]))
     task_planning.analyze_axis(context, axis="operation", assessments=_assessments("operation", ["describe"]))
-    result = task_planning.analyze_axis(context, axis="clinical_target", assessments=_assessments("clinical_target", ["finding"]))
-    assert result["updates"]["task_plan"]["phase"] == "screening"
-    assert result["updates"]["task_plan"]["pending_scenario_ids"]
+    task_planning.analyze_axis(context, axis="clinical_target", assessments=_assessments("clinical_target", ["finding"]))
+    assert task_planning._load_plan(context).model_dump(mode="json")["phase"] == "screening"
+    assert task_planning._load_plan(context).model_dump(mode="json")["pending_scenario_ids"]
     assert set(task_planning._load_plan(context).axis_decisions) == {
         "input_structure", "operation", "clinical_target"
     }
@@ -211,12 +212,10 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     reviewed = task_planning.review_current_scenario(context, review={"scenario_id": node_id, "checked_leaf_task_ids": ["leaf-1"], "status": "approved"})
     context.update(reviewed["updates"])
     assert reviewed["updates"]["milestone"]["kind"] == "scenario_complete"
-    assert reviewed["updates"]["planning_incomplete"] is False
-    monkeypatch.setattr(task_planning, "require", lambda *_args: None)
+    assert task_planning._load_plan(context).phase == "complete"
     finished = task_planning.finish_task_plan(context)
     assert finished["status"] == "complete"
-    assert finished["updates"]["planning_incomplete"] is False
-    assert finished["updates"]["planning_status"] == "complete"
+    assert task_planning._load_plan(context).phase == "complete"
 
 
 def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
@@ -308,12 +307,15 @@ def test_planning_does_not_write_projection_files(tmp_path):
     plan = task_planning._load_plan(context)
     task_planning._write_artifacts(context, plan)
     files = {p.name for p in Path(context["operation_directory"]).glob("*.json")}
-    assert files == {"task_plan.json"}
+    assert not files
+    assert (Path(context["bir_path"]) / "task_plan.json").is_file()
 
 
 def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_path, monkeypatch):
     context = _context(tmp_path)
-    context["benchmark_info"] = {
+    from medbenchagent.planning.bir import BIRStore
+    store = BIRStore(context["bir_path"])
+    brief = {
         "clinical_scope": "breast imaging",
         "language": "en",
         "evaluation_focus": "recognition",
@@ -321,6 +323,9 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
         "modalities": ["ultrasound"],
         "intent_notes": [],
     }
+    plan = task_planning._load_plan(context)
+    store.update("benchmark_info.json", brief, run_id="test", actor="test")
+    task_planning._write_artifacts(context, plan)
     for axis, values in (
         ("input_structure", ["single-image"]),
         ("operation", ["describe"]),
@@ -448,7 +453,6 @@ def test_leaf_scenario_can_be_excluded_without_leaf_and_all_excluded_can_finish(
         evidence_basis=[EvidenceBasis(reference="catalog:report", detail="No deterministic reference.")],
     )
     context.update(excluded["updates"])
-    monkeypatch.setattr(task_planning, "require", lambda *_args: None)
     finished = task_planning.finish_task_plan(context)
     assert finished["status"] == "complete"
     assert finished["updates"]["executable_leaf_count"] == 0

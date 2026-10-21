@@ -73,14 +73,6 @@ def load_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT) -> dict:
     return record
 
 
-def list_experiments(*, root: Path = EXPERIMENTS_ROOT) -> list[dict]:
-    if not root.is_dir():
-        return []
-    records = []
-    for folder in root.iterdir():
-        if folder.is_dir() and (folder / "session.json").is_file():
-            records.append(load_experiment(folder.name, root=root))
-    return sorted(records, key=lambda record: record["created_at"], reverse=True)
 
 
 def remove_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT) -> None:
@@ -94,9 +86,6 @@ def remove_experiment(name: str, *, root: Path = EXPERIMENTS_ROOT) -> None:
         with ExitStack() as stack:
             for filename in ("submit.lock", "run.lock", "session.json.lock"):
                 stack.enter_context(FileLock(str(folder / filename)).acquire(timeout=0))
-            bir_lock = folder / "BIR" / ".bir.lock"
-            if bir_lock.parent.is_dir():
-                stack.enter_context(FileLock(str(bir_lock)).acquire(timeout=0))
             load_experiment(name, root=root)
     except Timeout as exc:
         raise ValueError(f"Experiment is in use: {name}") from exc

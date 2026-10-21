@@ -19,8 +19,6 @@ class ExtensionSelection(Contract):
 
 
 def _catalog(context):
-    if not context.get("bir_path"):
-        return None
     return BIRStore(context["bir_path"]).registry().planning_extensions()
 
 
@@ -32,18 +30,19 @@ def _validate_selection(selection: ExtensionSelection, candidates: dict[str, dic
         raise ValueError("Extension selection contains an ID outside the frozen candidate snapshot")
 
 
-def _snapshot(context, dataset_id: str, *, refresh: bool = False):
-    directory = Path(context["operation_directory"]) / "extensions" / dataset_id
+def _snapshot(context, *, refresh: bool = False):
+    dataset_id = BIRStore(context["bir_path"]).load("dataset_binding.json")["access"]["dataset_id"]
+    directory = Path(context["operation_directory"]) / "extensions"
     path = directory / "extension_candidates.json"
     if path.is_file() and not refresh:
         return json.loads(path.read_text(encoding="utf-8")), path
     catalog = _catalog(context)
-    metadata = catalog.metadata() if catalog else []
+    metadata = catalog.metadata()
     candidates = {item["id"]: item for item in metadata}
     snapshot = {
         "schema_version": "planning-extension-candidates",
         "dataset_id": dataset_id,
-        "registry_digest": BIRStore(context["bir_path"]).registry().digest if context.get("bir_path") else None,
+        "registry_digest": BIRStore(context["bir_path"]).registry().digest,
         "candidates": candidates,
         "candidate_order": sorted(candidates),
     }
@@ -52,12 +51,11 @@ def _snapshot(context, dataset_id: str, *, refresh: bool = False):
     return snapshot, path
 
 
-def discover_extension_candidates(context, *, dataset_id: str):
-    snapshot, path = _snapshot(context, dataset_id, refresh=True)
+def discover_extension_candidates(context):
+    snapshot, path = _snapshot(context, refresh=True)
     if not snapshot["candidate_order"]:
         selected = select_extensions(
             context,
-            dataset_id=dataset_id,
             extension_ids=[],
             selection_reason={},
         )
@@ -65,35 +63,33 @@ def discover_extension_candidates(context, *, dataset_id: str):
                       extension_candidates=[], candidate_snapshot_path=str(path))
     return result(
         "success",
-        json.dumps({"dataset_id": dataset_id, "candidates": [snapshot["candidates"][key] for key in snapshot["candidate_order"]]}, ensure_ascii=False),
+        json.dumps({"dataset_id": snapshot["dataset_id"], "candidates": [snapshot["candidates"][key] for key in snapshot["candidate_order"]]}, ensure_ascii=False),
         extension_candidates=[snapshot["candidates"][key] for key in snapshot["candidate_order"]],
         extension_candidate_order=snapshot["candidate_order"],
         extension_candidate_snapshot_path=str(path),
     )
 
 
-def select_extensions(context, *, dataset_id: str, extension_ids: list[str],
+def select_extensions(context, *, extension_ids: list[str],
                       selection_reason: dict[str, str], selection_issue_id: str = ""):
-    snapshot, snapshot_path = _snapshot(context, dataset_id)
+    snapshot, snapshot_path = _snapshot(context)
     selection = ExtensionSelection(
         selected_extension_ids=extension_ids,
         selection_reason=selection_reason,
     )
     _validate_selection(selection, snapshot["candidates"])
     catalog = _catalog(context)
-    digest = catalog.selection_digest(extension_ids) if catalog else None
+    digest = catalog.selection_digest(extension_ids)
     selection_value = {
         **selection.model_dump(mode="json"),
-        "dataset_id": dataset_id,
+        "dataset_id": snapshot["dataset_id"],
         "candidate_snapshot_digest": digest_file(snapshot_path),
         "selected_extension_digest": digest,
         "selection_issue_id": selection_issue_id,
     }
-    output_dir = snapshot_path.parent
-    selection_path = output_dir / "extension_selection.json"
-    atomic_write_json(selection_path, selection_value)
-    all_selected = dict(context.get("planning_extension_selections", {}))
-    all_selected[dataset_id] = selection_value
+    store = BIRStore(context["bir_path"])
+    store.update("planning_extensions.json", selection_value, run_id=context["run_id"], actor="extension_selection",
+                 dependencies={"registry": store.registry().digest})
     issue_updates = {}
     if selection_issue_id:
         issue = context.get("global_issue")
@@ -111,8 +107,7 @@ def select_extensions(context, *, dataset_id: str, extension_ids: list[str],
     return result(
         "success",
         "Planning extensions selected",
-        planning_extension_selections=all_selected,
-        extension_selection_path=str(selection_path),
+        extension_selection_path=str(store.root / "planning_extensions.json"),
         extension_candidate_snapshot_path=str(snapshot_path),
         **issue_updates,
     )

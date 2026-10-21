@@ -10,7 +10,7 @@ def pending_tools(context):
     allowed = {"ask_user", "resolve_clarification", "list_evidence", "read_evidence"}
     if issue.get("status") == "answered":
         if issue.get("purpose") == "dataset_selection":
-            allowed.update({"process_dataset", "discover_datasets", "select_datasets", "bind_dataset"})
+            allowed.update({"process_dataset", "discover_datasets", "bind_dataset"})
         elif issue.get("purpose") == "planning_extension_selection":
             allowed.update({"discover_planning_extensions", "select_planning_extensions"})
     return allowed

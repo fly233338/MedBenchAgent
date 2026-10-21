@@ -39,7 +39,7 @@ def verify_resume(context):
     if saved.get("contract") != CONTRACT_VERSION:
         raise ValueError("Code or runtime contract changed; start a new run")
     current_code = code_identity()
-    saved_code = saved.get("code_at_start", saved.get("code", {}))
+    saved_code = saved["code_at_start"]
     code_changed = saved_code != current_code
     event_path = context.get("construction_events_path")
     if event_path:
@@ -70,14 +70,12 @@ def verify_resume(context):
     from medbenchagent.data.dataset_catalog import load_prepared
     from medbenchagent.settings import run_settings
 
-    entries = dict(context.get("prepared_entries", {}))
-    entries.update(
-        {key: asset["entry"] for key, asset in context.get("dataset_assets", {}).items()}
-    )
-    if entries:
+    from medbenchagent.planning.bir import BIRStore
+    binding = BIRStore(context["bir_path"]).current("dataset_binding.json")
+    entry = binding["entry"] if binding else context.get("prepared_entry")
+    if entry:
         with run_settings(context["effective_config_path"]):
-            for entry in entries.values():
-                load_prepared(entry)
+            load_prepared(entry)
 
 
 def initialize_dependencies(context, settings):

@@ -133,7 +133,7 @@ def _extract_proposal(text: str) -> RootProposal:
 
 def discover_source(context: dict, dataset_id: str) -> dict:
     """Resolve one source directory and persist the decision for run recovery."""
-    folder = Path(context["run_directory"]) / "discovery" / "sources" / dataset_id
+    folder = Path(context["run_directory"]) / "discovery"
     folder.mkdir(parents=True, exist_ok=True)
     decision_path = folder / "source_decision.json"
     if decision_path.is_file():

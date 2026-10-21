@@ -45,17 +45,6 @@ def event_context(**values: object) -> Iterator[list[str]]:
         _CONTEXT.reset(token)
 
 
-@contextlib.contextmanager
-def event_operation(operation: str) -> Iterator[None]:
-    context = _CONTEXT.get()
-    if context is None:
-        yield
-        return
-    token = _CONTEXT.set(context | {"operation": operation})
-    try:
-        yield
-    finally:
-        _CONTEXT.reset(token)
 
 
 def record_llm_call(

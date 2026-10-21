@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import StrEnum
-from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -22,18 +21,6 @@ class TaskAxis(StrEnum):
     CLINICAL_TARGET = "clinical_target"
 
 
-def _default_registry():
-    from medbenchagent.planning.bir import RegistrySnapshot
-    return RegistrySnapshot.from_directory(Path(__file__).resolve().parents[3] / "config" / "bir_template" / "registry")
-
-
-# Default Registry values for deterministic callers.
-_DEFAULT_REGISTRY = _default_registry()
-AXIS_VALUES: dict[TaskAxis, tuple[str, ...]] = {
-    TaskAxis(axis): _DEFAULT_REGISTRY.axis_values(axis) for axis in _DEFAULT_REGISTRY.axis_order
-}
-
-
 class CapabilityCategory(StrEnum):
     RECOGNITION = "Recognition"
     LOCALIZATION = "Localization"
@@ -41,12 +28,6 @@ class CapabilityCategory(StrEnum):
     COMPARISON = "Comparison"
     INTEGRATION = "Integration"
     GENERATION = "Generation"
-
-
-CAPABILITY_BY_OPERATION: dict[str, CapabilityCategory] = {
-    operation: CapabilityCategory(category)
-    for operation, category in _DEFAULT_REGISTRY.capability_by_operation.items()
-}
 
 
 class TaskParadigm(StrEnum):
@@ -238,11 +219,6 @@ class LeafTask(BaseModel):
             raise ValueError("LeafTask question_templates must be complete; unresolved placeholders are not supported")
         if len(set(self.question_templates)) != len(self.question_templates):
             raise ValueError("LeafTask question_templates must be unique")
-        allowed = set(_DEFAULT_REGISTRY.task_contracts.get("paradigm_output_specs", {}).get(
-            self.task_paradigm.value, []
-        ))
-        if allowed and self.output_spec.value not in allowed:
-            raise ValueError("OutputSpec is incompatible with TaskParadigm")
         if self.options is not None:
             if any(not isinstance(option, str) or not option.strip() for option in self.options):
                 raise ValueError("VQA options must be non-empty strings")
@@ -287,7 +263,6 @@ class TaskPlanState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     schema_version: str = "task-plan"
     dataset: dict[str, Any]
-    access_path: str | None = None
     axis_decisions: dict[str, list[AxisValueDecision]] = Field(default_factory=dict)
     scenarios: dict[str, TaskScenario] = Field(default_factory=dict)
     leaf_tasks: dict[str, LeafTask] = Field(default_factory=dict)
@@ -297,7 +272,6 @@ class TaskPlanState(BaseModel):
     pending_scenario_ids: list[str] = Field(default_factory=list)
     completed_scenario_ids: list[str] = Field(default_factory=list)
     reviews: dict[str, ScenarioReview] = Field(default_factory=dict)
-    extension_selection: dict[str, Any] = Field(default_factory=dict)
     revision: int = Field(default=0, ge=0)
     review: dict[str, Any] = Field(default_factory=dict)
 

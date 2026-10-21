@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from medbenchagent.runtime.run_artifacts import initialize_run
+from medbenchagent.planning.bir import BIRStore
 from medbenchagent.settings import load_project_env, load_settings
 
 
@@ -113,7 +114,7 @@ def test_cli_config_path_selects_file_over_environment_and_snapshots_remote_rag(
     assert settings.rag.embedding_model == "embed-v1"
     with active_settings(settings):
         assert get_settings() is settings
-        run = initialize_run(tmp_path / "runs", settings=settings)
+        run = initialize_run(tmp_path / "runs", bir_path=bir(tmp_path), settings=settings)
     selected.write_text("[rag]\nembedding_model='changed'\n", encoding="utf-8")
     with run_settings(run["effective_config_path"]) as saved:
         assert saved.rag.embedding_model == "embed-v1"
@@ -137,6 +138,7 @@ def test_initialize_run_writes_secret_free_effective_configuration(tmp_path: Pat
 
     run = initialize_run(
         tmp_path / "runs",
+        bir_path=bir(tmp_path),
         settings=settings,
         graph_overrides={"seed": 9, "max_tasks_per_image": 7},
     )
@@ -156,7 +158,7 @@ def test_source_settings_normalize_paths_and_resume_snapshot(tmp_path, monkeypat
                      "[[dataset_sources.sources]]\nid='images'\nroot='raw/ecd'\n", encoding="utf-8")
     cfg = load_settings(local)
     assert cfg.dataset_sources[0]["sources"][0]["root"] == str(tmp_path / "raw/ecd")
-    run = initialize_run(tmp_path / "runs", settings=cfg)
+    run = initialize_run(tmp_path / "runs", bir_path=bir(tmp_path), settings=cfg)
     local.write_text("dataset_sources=[]\n", encoding="utf-8")
     with run_settings(run["effective_config_path"]) as saved:
         assert saved.dataset_sources == cfg.dataset_sources
@@ -182,7 +184,7 @@ def test_benchmark_settings_are_saved_and_validated(tmp_path):
     local = tmp_path / "defaults.toml"
     local.write_text("[benchmark]\ndefault_sample_count=35\n", encoding="utf-8")
     cfg = load_settings(local)
-    run = initialize_run(tmp_path / "runs", settings=cfg)
+    run = initialize_run(tmp_path / "runs", bir_path=bir(tmp_path), settings=cfg)
     local.write_text("[benchmark]\ndefault_sample_count=1\n", encoding="utf-8")
     with run_settings(run["effective_config_path"]) as saved:
         assert saved.benchmark.default_sample_count == 35
@@ -197,3 +199,7 @@ def test_removed_semantic_audit_config_is_rejected(tmp_path):
     local.write_text("[audit]\nsemantic_samples_per_task=10\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Unknown configuration key: audit"):
         load_settings(local)
+
+
+def bir(tmp_path):
+    return BIRStore.initialize(tmp_path / "BIR", Path(__file__).resolve().parents[1] / "config/bir_template", "test").root

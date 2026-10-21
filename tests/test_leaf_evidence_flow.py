@@ -1,3 +1,4 @@
+from compilation_fixtures import planning_context, write_plan
 import json
 from pathlib import Path
 
@@ -26,8 +27,11 @@ def _plan(tmp_path, *, phase="leaves", facts=None):
         pending_scenario_ids=[scenario.scenario_id],
     )
     (Path(tmp_path) / "fixture_facts.json").write_text(json.dumps(facts or {}), encoding="utf-8")
-    path = Path(tmp_path) / "task_plan.json"
-    path.write_text(plan.model_dump_json(), encoding="utf-8")
+    records = [{"case_id": "c1", "evidence": [
+        {"id": "image", "name": "ultrasound_bmode_image", "type": "asset", "value": "image.png", "ref": []},
+        {"id": "label", "name": "classification", "type": "text", "value": "benign", "ref": ["image"]}]}]
+    context = planning_context(tmp_path, plan=plan, cases=records)
+    path = Path(context["bir_path"]) / "task_plan.json"
     return plan, path
 
 
@@ -73,11 +77,10 @@ def test_scenario_context_prioritizes_input_and_related_evidence(tmp_path, monke
     import medbenchagent.data.index as index
     monkeypatch.setattr(index, "DatasetIndex", FakeIndex)
     plan, path = _plan(tmp_path, facts=facts)
-    context = {
+    context = {**planning_context(tmp_path),
         "operation_directory": str(tmp_path),
         "task_plan_path": str(path),
         "dataset_facts": json.loads((tmp_path / "fixture_facts.json").read_text(encoding="utf-8")),
-        "dataset_access_manifest": {"schema_version": "annotation"},
         "planning_read_state": {},
     }
 
@@ -123,10 +126,9 @@ def test_catalog_returns_text_values_samples_and_suggestions(tmp_path, monkeypat
 
     import medbenchagent.data.index as index
     monkeypatch.setattr(index, "DatasetIndex", FakeIndex)
-    context = {
+    context = {**planning_context(tmp_path),
         "operation_directory": str(tmp_path),
         "task_plan_path": str(path),
-        "dataset_access_manifest": {"schema_version": "annotation"},
         "planning_read_state": {},
         "dataset_facts": {"evidence_catalog": {row["name"]: row for row in catalog["entries"]}},
     }
@@ -150,14 +152,14 @@ def test_bad_leaf_contains_repairable_diagnostics(tmp_path):
         "evidence_catalog": {"ultrasound_bmode_image": {"name": "ultrasound_bmode_image", "types": {"asset": 1}}},
     }
     _, path = _plan(tmp_path, facts=facts)
-    context = {
+    context = {**planning_context(tmp_path),
         "operation_directory": str(tmp_path),
         "task_plan_path": str(path),
         "dataset_facts": json.loads((tmp_path / "fixture_facts.json").read_text(encoding="utf-8")),
-        "dataset_access_manifest": {"schema_version": "annotation"},
     }
     leaf = {
         "leaf_task_id": "bad",
+        "options": ["yes", "no"],
         "name": "finding",
         "scenario_id": "scenario-1",
         "clinical_target_id": "finding",
@@ -194,12 +196,11 @@ def test_leaf_context_drops_cache_when_scenario_binding_changes(tmp_path):
     plan.scenarios["scenario-2"] = second
     plan.current_scenario_id = "scenario-2"
     plan.pending_scenario_ids = ["scenario-2"]
-    path.write_text(plan.model_dump_json(), encoding="utf-8")
-    context = {
+    path = write_plan(tmp_path, plan)
+    context = {**planning_context(tmp_path),
         "operation_directory": str(tmp_path),
         "task_plan_path": str(path),
         "dataset_facts": json.loads((tmp_path / "fixture_facts.json").read_text(encoding="utf-8")),
-        "dataset_access_manifest": {"schema_version": "annotation", "revision": "r1"},
         "planning_evidence_cache": {
             "binding": {"dataset_id": "dataset", "revision": "r1", "scenario_id": "scenario-1"},
             "scenario_id": "scenario-1",

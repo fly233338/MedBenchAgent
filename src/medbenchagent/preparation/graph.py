@@ -180,8 +180,7 @@ def publish_preparation(state, result, validation):
     publication = DatasetPublisher(state["bundle_root"]).publish(state["package_root"], state, validation)
     verified = verify_bundle(publication["revision_path"])
     access, card = verified["ready"]["access"], verified["card"]
-    return {**publication, "cases_path": access["cases_path"], "access_manifest": access,
-            "card_path": access["dataset_card_path"], "dataset_entry": {
+    return {**publication, "dataset_entry": {
                 "dataset_id": state["dataset_id"], "name": card["name"], "description": card["description"],
                 "available": True, **{key: access[key] for key in ("cases_path", "image_manifest_path", "profile_path", "dataset_card_path")}}}
 

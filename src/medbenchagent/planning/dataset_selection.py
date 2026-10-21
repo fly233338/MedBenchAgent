@@ -5,27 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from medbenchagent.data.contracts import Contract, Text
+from medbenchagent.data.contracts import DatasetAccessReceipt
 from medbenchagent.data.dataset_catalog import load_dataset_catalog, load_prepared, resolve_path
 from medbenchagent.data.readiness import prepared_directory_entries
 from medbenchagent.data.bundle_catalog import card_summary
 from medbenchagent.data.sources import digest_file
-from medbenchagent.planning.bir import require
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.planning.bir import BIRStore, business_dependencies
-
-
-class Selection(Contract):
-    selected_dataset_ids: list[Text]
-    selection_reason: dict[str, Text]
-
-
-def _validate_selection(selection, candidates):
-    ids = selection.selected_dataset_ids
-    if (len(ids) != 1 or set(ids) != set(selection.selection_reason)
-            or not set(ids) <= set(candidates)):
-        raise ValueError("A compilation must bind exactly one of the unique prepared candidates; use batch for multiple datasets")
 
 
 def _snapshot_inputs(context):
@@ -37,37 +24,27 @@ def _snapshot_inputs(context):
     entries = {entry["dataset_id"]: entry for entry in catalog}
     for entry in direct:
         entries.setdefault(entry["dataset_id"], entry)
-    entries.update(context.get("prepared_entries", {}))
+    if entry := context.get("prepared_entry"):
+        entries[entry["dataset_id"]] = entry
     return list(entries.values()), direct_errors
 
 
-def _candidate_snapshot(context, path, *, refresh=False):
-    requirement_version = require(context, "Requirement")["Requirement"]["id"]
-    prepared_version = json.dumps(context.get("prepared_entries", {}), sort_keys=True)
+def _candidate_snapshot(context, path):
+    requirement_version = BIRStore(context["bir_path"]).digest("benchmark_info.json")
+    prepared_version = json.dumps(context.get("prepared_entry"), sort_keys=True)
     if path.is_file():
         snapshot = json.loads(path.read_text(encoding="utf-8"))
         changed = (snapshot.get("schema_version") != "dataset-candidates"
                    or snapshot["requirement_version"] != requirement_version
-                   or snapshot["requirement"] != context["user_requirement"]
                    or snapshot["prepared_version"] != prepared_version)
-        if changed and not refresh:
-            raise ValueError("Selection inputs changed; start a new candidate discovery operation")
         if not changed:
             return snapshot
 
     catalog, direct_errors = _snapshot_inputs(context)
-    from medbenchagent.settings import get_settings
-    raw_sources = list(get_settings().dataset_sources)
     snapshot = {
         "schema_version": "dataset-candidates",
-        "requirement": context["user_requirement"],
         "requirement_version": requirement_version,
-        "benchmark_info": context.get("benchmark_info", {}),
         "prepared_version": prepared_version,
-        "catalog_entries": catalog,
-        "configured_sources": raw_sources,
-        "dataset_mentions": context.get("benchmark_info", {}).get("dataset_mentions", []),
-        "direct_bundle_errors": direct_errors,
     }
     frozen, excluded = {}, dict(direct_errors)
     for entry in catalog:
@@ -83,14 +60,13 @@ def _candidate_snapshot(context, path, *, refresh=False):
             card_path.parent.mkdir(parents=True, exist_ok=True)
             card_path.write_bytes(original.read_bytes())
             frozen_entry = {**entry, "dataset_card_path": str(card_path)}
-            card, access = load_prepared(frozen_entry)
+            card, _ = load_prepared(frozen_entry)
         except (ValueError, OSError, KeyError) as exc:
             excluded[identifier] = str(exc)
             continue
         frozen[identifier] = {
             "card_digest": digest_file(card_path),
             "summary": card_summary(card),
-            "original_card_path": str(original),
             "entry": frozen_entry,
         }
     order = list(frozen)
@@ -98,13 +74,6 @@ def _candidate_snapshot(context, path, *, refresh=False):
         candidates=frozen,
         candidate_order=order,
         excluded_candidates=excluded,
-        preparation_candidates=sorted({source["dataset_id"] for source in raw_sources
-                                       if source["dataset_id"] not in frozen}),
-        selection_input={
-            "requirement": snapshot["requirement"],
-            "benchmark_info": snapshot["benchmark_info"],
-            "cards": [frozen[key]["summary"] for key in order],
-        },
     )
     atomic_write_json(path, snapshot)
     return snapshot
@@ -114,15 +83,12 @@ def discover_dataset_candidates(context):
     """Freeze validated Prepared candidates for Supervisor review; never selects a dataset."""
     folder = Path(context["operation_directory"])
     path = folder / "dataset_candidates.json"
-    snapshot = _candidate_snapshot(context, path, refresh=True)
+    snapshot = _candidate_snapshot(context, path)
     candidates = [snapshot["candidates"][key]["summary"] for key in snapshot["candidate_order"]]
     return result(
         "success",
         json.dumps({"candidates": candidates, "excluded": snapshot["excluded_candidates"]}, ensure_ascii=False),
         candidate_snapshot_path=str(path),
-        dataset_candidates=candidates,
-        candidate_order=snapshot["candidate_order"],
-        preparation_candidates=snapshot["preparation_candidates"],
     )
 
 
@@ -143,63 +109,28 @@ def _selection_issue_updates(context, issue_id):
     }
 
 
-def bind_dataset(context, *, dataset_id: str, reason: str):
-    """Resolve one explicit dataset ID and freeze only its verified binding."""
-    current = context.get("selected_dataset_ids", [])
-    if current and current != [dataset_id]:
-        raise ValueError("A compilation cannot switch datasets; start another compilation")
-    local = {**context, "binding_dataset_id": dataset_id}
-    discovery = discover_dataset_candidates(local)
-    local.update(discovery["updates"])
-    return select_datasets(local, dataset_ids=[dataset_id], selection_reason={dataset_id: reason})
-
-
-def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_id=""):
-    """Bind exactly one ID from the frozen candidate snapshot."""
-    if context.get("selected_dataset_ids") and context["selected_dataset_ids"] != dataset_ids:
+def bind_dataset(context, *, dataset_id: str, reason: str, selection_issue_id=""):
+    """Bind one verified dataset from current frozen candidates."""
+    store = BIRStore(context["bir_path"])
+    current = store.current("dataset_binding.json")
+    if current and current["access"]["dataset_id"] != dataset_id:
         raise ValueError("A compilation cannot switch datasets")
-    if context.get("requested_dataset_id") and dataset_ids != [context["requested_dataset_id"]]:
+    if context.get("requested_dataset_id") and context["requested_dataset_id"] != dataset_id:
         raise ValueError("Binding differs from the explicitly requested dataset")
-    folder = Path(context["operation_directory"])
-    snapshot_path = Path(context.get("candidate_snapshot_path", folder / "dataset_candidates.json"))
-    snapshot = _candidate_snapshot(context, snapshot_path)
-    selection = Selection(selected_dataset_ids=dataset_ids, selection_reason=selection_reason)
-    _validate_selection(selection, snapshot["candidates"])
-    path = folder / "dataset_selection.json"
-    atomic_write_json(path, {**snapshot, **selection.model_dump(), "selection_issue_id": selection_issue_id})
-    assets = {}
-    for identifier in selection.selected_dataset_ids:
-        candidate = snapshot["candidates"][identifier]
-        if digest_file(candidate["entry"]["dataset_card_path"]) != candidate["card_digest"]:
-            raise ValueError("Frozen candidate Card changed; start a new candidate discovery operation")
-        card, access = load_prepared(candidate["entry"])
-        asset = {"entry": candidate["entry"], "access": access, "card_summary": card_summary(card)}
-        assets[identifier] = asset
-    if context.get("bir_path"):
-        store = BIRStore(context["bir_path"])
-        bindings = {}
-        for identifier in selection.selected_dataset_ids:
-            asset = assets[identifier]
-            entry = snapshot["candidates"][identifier]["entry"]
-            access = asset["access"]
-            from medbenchagent.planning.access import DatasetAccessReceipt
-            receipt = DatasetAccessReceipt.bind(identifier, access).model_dump(exclude_none=True)
-            bindings[identifier] = {"access": receipt, "entry": entry,
-                "selection_reason": selection.selection_reason[identifier],
-                "candidate_snapshot_digest": digest_file(snapshot_path)}
-        commit = store.update("dataset_bindings.json", {"schema_version": "dataset-bindings", "datasets": bindings},
-            run_id=context.get("run_id", "unknown"), actor="dataset_selection",
-            dependencies=business_dependencies(context, "benchmark_info.json"))
-        context.update(bir_manifest_digest=commit.manifest_digest)
-    issue_updates = _selection_issue_updates(context, selection_issue_id)
-    return result(
-        "success",
-        "Dataset selection published",
-        selected_dataset_ids=selection.selected_dataset_ids,
-        bir_manifest_digest=context.get("bir_manifest_digest"),
-        dataset_assets=assets,
-        selection_path=str(path),
-        candidate_snapshot_path=str(snapshot_path),
-        warnings=list(snapshot["excluded_candidates"].values()),
-        **issue_updates,
-    )
+    path = Path(context["operation_directory"]) / "dataset_candidates.json"
+    snapshot = _candidate_snapshot({**context, "binding_dataset_id": dataset_id}, path)
+    if dataset_id not in snapshot["candidates"]:
+        raise ValueError("Dataset is outside the verified candidate snapshot")
+    candidate = snapshot["candidates"][dataset_id]
+    if digest_file(resolve_path(candidate["entry"]["dataset_card_path"])) != candidate["card_digest"]:
+        raise ValueError("Frozen Dataset Card changed")
+    _, access = load_prepared(candidate["entry"])
+    parsed = DatasetAccessReceipt.model_validate(access).verify()
+    if parsed.dataset_id != dataset_id:
+        raise ValueError("Dataset access belongs to another dataset")
+    store.update("dataset_binding.json", {"schema_version": "dataset-binding", "access": parsed.model_dump(exclude_none=True),
+        "entry": candidate["entry"], "selection_reason": reason, "candidate_snapshot_digest": digest_file(path)},
+        run_id=context["run_id"], actor="dataset_selection",
+        dependencies=business_dependencies(context, "benchmark_info.json"))
+    return result("success", "Dataset bound", candidate_snapshot_path=str(path),
+                  **_selection_issue_updates(context, selection_issue_id))

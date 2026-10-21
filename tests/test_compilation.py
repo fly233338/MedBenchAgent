@@ -7,7 +7,7 @@ from compilation_fixtures import compile_fixture
 from test_global_construction import _plan
 from medbenchagent.agents import task_planning
 from medbenchagent.agents.review import review_plan
-from medbenchagent.agents.generation import run_generation
+from medbenchagent.generation.items import run_generation
 from medbenchagent.evaluation.loader import load_benchmark_package
 from medbenchagent.generation.delivery import publish_benchmark, export_benchmark
 from medbenchagent.planning.bir import BIRStore, BIRStaleError
@@ -80,6 +80,16 @@ def test_revised_plan_invalidates_allocation_generation_and_review(tmp_path, mon
         run_generation(context)
 
 
+def test_scoped_rework_keeps_frozen_extension_dependency(tmp_path):
+    from medbenchagent.workflow.supervision import revise_plan
+    from medbenchagent.planning.extension_selection import select_extensions
+    context = compile_fixture(tmp_path, _plan("d", {"leaf": 1}), cases())
+    revise_plan(context, scenario_ids=["scenario-d"], reason="Check wording")
+    select_extensions(context, extension_ids=[], selection_reason={})
+    with pytest.raises(BIRStaleError, match="planning_extensions.json"):
+        BIRStore(context["bir_path"]).load("task_plan.json")
+
+
 def test_batch_has_independent_business_state_and_frozen_config(tmp_path):
     sessions.create_experiment("pilot", root=tmp_path)
     service = ConversationService("pilot", root=tmp_path)
@@ -95,9 +105,8 @@ def test_batch_has_independent_business_state_and_frozen_config(tmp_path):
 def test_supervisor_drives_independent_review_publication_and_finish(tmp_path, monkeypatch, harness_model):
     import medbenchagent.workflow.graph as workflow
     context = compile_fixture(tmp_path, _plan("d", {"leaf": 1}), cases())
-    context.update(user_requirement="Compile d", brief_requirement="Compile d", brief_ready=True,
+    context.update(user_requirement="Compile d",
                    construction_events_path=str(tmp_path / "runtime/events.jsonl"))
-    context["dataset_assets"]["d"].update(entry={"dataset_id": "d"}, card_summary={"dataset_id": "d"})
     monkeypatch.setattr(workflow, "complete_validated_json", lambda *args, **kwargs:
                         workflow.SupervisorRequestIntent(goal="benchmark"))
     def reviewer(_prompt, payload, _schema):
@@ -119,3 +128,48 @@ def test_supervisor_drives_independent_review_publication_and_finish(tmp_path, m
     assert outcome["result"]["status"] == "complete"
     assert load_benchmark_package(outcome["context"]["delivery_path"])["items"]
     assert outcome["context"]["view"]["review"]["status"] == "approved"
+
+
+def test_preparation_only_supervisor_publishes_once_with_one_child_reference(tmp_path, monkeypatch):
+    import medbenchagent.workflow.graph as workflow
+    from medbenchagent.preparation import entrypoint
+    from medbenchagent.preparation.graph import compile_preparation_graph
+    from medbenchagent.runtime.contexts import load_context
+    from test_preparation_graph import Worker, state
+    initial = state(tmp_path)
+    worker = Worker()
+    store = BIRStore.initialize(tmp_path / "BIR", "config/bir_template", "test")
+    source = {"dataset_id": "d", "sources": initial["sources"]}
+    monkeypatch.setattr(workflow, "complete_validated_json", lambda *args, **kwargs:
+                        workflow.SupervisorRequestIntent(goal="preparation_only", preparation_dataset_id="d"))
+    monkeypatch.setattr(workflow, "configured_source", lambda _dataset: source)
+    monkeypatch.setattr(workflow, "dataset_status", lambda *_args: {"prepared": False, "available": None, "source_errors": []})
+    monkeypatch.setattr(entrypoint, "_coding_worker_identity", lambda: {})
+    def prepare(_context):
+        prepared = compile_preparation_graph(worker=worker).invoke(initial)
+        return {"status": prepared["status"], "summary": "Prepared", "updates": {"publication": prepared["publication"]}}
+    monkeypatch.setattr(entrypoint, "run_preparation_agent", prepare)
+    captured = {}
+    original = workflow.compile_agent
+    def capture(*args, **kwargs):
+        graph = original(*args, **kwargs)
+        captured[args[0]] = graph
+        return graph
+    monkeypatch.setattr(workflow, "compile_agent", capture)
+    workflow.compile_benchmark_graph()
+    context = {"bir_path": str(store.root), "run_id": "r", "run_directory": initial["run_directory"],
+               "operation_directory": str(tmp_path / "operations"),
+               "construction_events_path": str(tmp_path / "events.jsonl"),
+               "registration_catalog_path": str(tmp_path / "catalog.json"),
+               "user_requirement": f"Prepare dataset d from {initial['source_roots']['s']}"}
+    outcome = captured["SupervisorAgent"].invoke({"context": context})
+    assert outcome["result"]["status"] == "complete"
+    assert outcome["context"]["prepared_entry"]["dataset_id"] == "d"
+    assert set(outcome["context"]["child_states"]) == {"preparation"}
+    saved = load_context(outcome["context"]["child_states"]["preparation"], "preparation", "d")
+    assert "access_manifest" not in saved["publication"]
+    assert "dataset_access_manifest" not in saved
+    assert store.current("task_plan.json") is None
+    calls = len(worker.requests)
+    captured["SupervisorAgent"].invoke({"context": outcome["context"]})
+    assert len(worker.requests) == calls

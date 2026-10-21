@@ -16,7 +16,8 @@ def catalog_entries(context):
     else:
         entries = load_dataset_catalog(context.get("registration_catalog_path") or context.get("catalog_path"))
     by_id = {entry["dataset_id"]: entry for entry in entries}
-    by_id.update(context.get("prepared_entries", {}))
+    if entry := context.get("prepared_entry"):
+        by_id[entry["dataset_id"]] = entry
     return list(by_id.values())
 
 
@@ -40,13 +41,13 @@ def configured_source(dataset_id, context=None):
     """Return the source bound to this run before falling back to settings.
 
     Explicit raw paths are discovered during a run and kept in
-    ``discovered_sources`` until the experiment state is persisted.  Readiness
+    ``discovered_source`` until the experiment state is persisted.  Readiness
     checks must see that binding; otherwise a failed preparation is reported
     as a missing global ``dataset_sources`` entry and the user is asked for a
     path that was already supplied.
     """
-    discovered = (context or {}).get("discovered_sources", {}).get(dataset_id)
-    if discovered is not None:
+    discovered = (context or {}).get("discovered_source")
+    if discovered is not None and discovered["dataset_id"] == dataset_id:
         return discovered
     return next((item for item in get_settings().dataset_sources if item["dataset_id"] == dataset_id), None)
 
@@ -74,7 +75,7 @@ def list_datasets(context, *, offset=0, limit=20, query=""):
         entries[dataset_id]["available"] = False
         entries[dataset_id]["issues"] = [diagnostic]
     sources = [*get_settings().dataset_sources]
-    for item in (context.get("discovered_sources") or {}).values():
+    if item := context.get("discovered_source"):
         if not any(existing["dataset_id"] == item["dataset_id"] for existing in sources):
             sources.append(item)
     for item in sources:
@@ -137,5 +138,4 @@ def reuse_prepared(context, dataset_id):
         load_prepared(entry)
         atomic_write_json(path, entry)
     load_prepared(entry)
-    entries = {**context.get("prepared_entries", {}), dataset_id: entry}
-    return result("success", "Reused validated prepared dataset", prepared_entries=entries)
+    return result("success", "Reused validated prepared dataset", prepared_entry=entry)

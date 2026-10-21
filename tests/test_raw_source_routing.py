@@ -1,10 +1,11 @@
+from compilation_fixtures import registry, planning_context
 import json
 
 import pytest
 
 from medbenchagent.data.dataset_catalog import normalize_dataset_id
 from medbenchagent.data import source_discovery
-from medbenchagent.workflow.graph import SUPERVISOR_INSTRUCTIONS, automatic_supervisor_action, available_stages
+from medbenchagent.workflow.graph import automatic_supervisor_action, available_stages
 from medbenchagent.workflow import graph as workflow
 
 
@@ -45,7 +46,7 @@ def test_discover_source_uses_explicit_path_without_llm(tmp_path, monkeypatch):
 
     assert entry["dataset_id"] == "breast"
     assert entry["sources"][0]["root"] == str(root.resolve())
-    decision = json.loads((tmp_path / "run" / "discovery" / "sources" / "breast" / "source_decision.json").read_text())
+    decision = json.loads((tmp_path / "run" / "discovery" / "source_decision.json").read_text())
     assert decision["entry"] == entry
 
 
@@ -64,7 +65,7 @@ def test_discover_source_does_not_cache_conflicting_registration(tmp_path, monke
              "experiment_name": "pilot", "user_requirement": f"Prepare {root}"},
             "breast",
         )
-    assert not (tmp_path / "run" / "discovery" / "sources" / "breast" / "source_decision.json").exists()
+    assert not (tmp_path / "run" / "discovery" / "source_decision.json").exists()
 
 
 def test_prepare_only_routes_directly_and_finishes_without_benchmark_fields(tmp_path, monkeypatch):
@@ -73,7 +74,7 @@ def test_prepare_only_routes_directly_and_finishes_without_benchmark_fields(tmp_
     (root / "image.png").write_bytes(b"pixels")
     context = {"run_directory": str(tmp_path / "run"), "user_requirement": f"Prepare {root}"}
     monkeypatch.setattr(workflow, "complete_validated_json", lambda _prompt, _request, schema:
-                        schema(goal="preparation_only", preparation_dataset_ids=["breast"]))
+                        schema(goal="preparation_only", preparation_dataset_id="breast"))
     context = workflow.initialize_supervisor_intent(context)
 
     action = automatic_supervisor_action(context)
@@ -82,14 +83,14 @@ def test_prepare_only_routes_directly_and_finishes_without_benchmark_fields(tmp_
     assert {"ask_user", "process_dataset"} <= available_stages(context)
     assert "specify" not in available_stages(context)
     assert "discover_datasets" not in available_stages(context)
-    context["prepared_entries"] = {"breast": {"dataset_id": "breast"}}
+    context["prepared_entry"] = {"dataset_id": "breast"}
     assert automatic_supervisor_action(context)["tool"] == "finish"
     assert available_stages(context) == {"finish"}
     assert workflow.finish_supervisor(context)["status"] == "complete"
-    assert "process_dataset" in SUPERVISOR_INSTRUCTIONS
-    assert "Preparation-only requests finish after validated registration" in SUPERVISOR_INSTRUCTIONS
-    assert "Resolve an explicitly named dataset with bind_dataset" in SUPERVISOR_INSTRUCTIONS
-    assert "请" not in SUPERVISOR_INSTRUCTIONS
+    assert "process_dataset" in registry().prompt("supervisor")
+    assert "Preparation-only requests finish after validated registration" in registry().prompt("supervisor")
+    assert "Resolve an explicitly named dataset with bind_dataset" in registry().prompt("supervisor")
+    assert "请" not in registry().prompt("supervisor")
 
 
 @pytest.mark.parametrize("prepare", [False, True])
@@ -100,11 +101,11 @@ def test_benchmark_and_joint_requests_require_benchmark_flow(tmp_path, monkeypat
     requirement = (f"Prepare dataset BrEaST from {root} and then use it for a Chinese benchmark"
                    if prepare else "Build a Chinese benchmark using dataset BrEaST")
     monkeypatch.setattr(workflow, "complete_validated_json", lambda _prompt, _request, schema:
-                        schema(goal="benchmark", preparation_dataset_ids=["breast"] if prepare else []))
-    context = workflow.initialize_supervisor_intent({"user_requirement": requirement})
+                        schema(goal="benchmark", preparation_dataset_id="breast" if prepare else None))
+    context = workflow.initialize_supervisor_intent({**planning_context(tmp_path), "user_requirement": requirement})
     action = automatic_supervisor_action(context)
     assert (action["tool"] if action else None) == ("process_dataset" if prepare else None)
-    context["prepared_entries"] = {"breast": {"dataset_id": "breast"}}
+    context["prepared_entry"] = {"dataset_id": "breast"}
     assert automatic_supervisor_action(context) is None
     assert "specify" in available_stages(context)
     assert "finish" not in available_stages(context)
@@ -114,10 +115,10 @@ def test_benchmark_and_joint_requests_require_benchmark_flow(tmp_path, monkeypat
 
 def test_preparation_clarification_and_requested_dataset_completion(monkeypatch):
     context = {"user_requirement": "Prepare dataset X",
-               "request_intent": {"goal": "preparation_only", "preparation_dataset_ids": ["x"]},
-               "prepared_entries": {"other": {"dataset_id": "other"}}}
+               "request_intent": {"goal": "preparation_only", "preparation_dataset_id": "x"},
+               "prepared_entry": {"dataset_id": "other"}}
     assert "finish" not in available_stages(context)
-    with pytest.raises(ValueError, match="requested datasets"):
+    with pytest.raises(ValueError, match="requested dataset"):
         workflow.finish_supervisor(context)
     context["global_issue"] = {"status": "pending", "issue_id": "semantic", "question": "Which scope?"}
     assert available_stages(context) == {"ask_user"}
@@ -128,7 +129,7 @@ def test_preparation_clarification_and_requested_dataset_completion(monkeypatch)
 
 def test_request_intent_is_reused_on_resume(monkeypatch):
     context = {"user_requirement": "Prepare X", "intent_requirement": "Prepare X",
-               "request_intent": {"goal": "preparation_only", "preparation_dataset_ids": ["x"]}}
+               "request_intent": {"goal": "preparation_only", "preparation_dataset_id": "x"}}
     monkeypatch.setattr(workflow, "complete_validated_json", lambda *_args: pytest.fail("unchanged intent reclassified"))
     assert workflow.initialize_supervisor_intent(context) == context
 
@@ -141,13 +142,13 @@ def test_preparation_only_harness_never_calls_specify_or_asks_language(tmp_path,
     (root / "image.png").write_bytes(b"pixels")
     calls = []
     monkeypatch.setattr(workflow, "complete_validated_json", lambda _prompt, _request, schema:
-                        schema(goal="preparation_only", preparation_dataset_ids=["raw"]))
+                        schema(goal="preparation_only", preparation_dataset_id="raw"))
     monkeypatch.setattr("medbenchagent.runtime.harness.complete_validated_json",
                         lambda *_args, **_kwargs: pytest.fail("No Supervisor model action or benchmark question expected"))
 
     def process(context, **arguments):
         calls.append(arguments)
-        return result("success", "Validated and registered", prepared_entries={"raw": {"dataset_id": "raw"}})
+        return result("success", "Validated and registered", prepared_entry={"dataset_id": "raw"})
 
     graph = compile_agent(
         "SupervisorAgent", workflow._supervisor_instructions,
@@ -178,22 +179,17 @@ def test_source_discovery_still_reports_unusable_path(tmp_path):
     assert "empty" in error
 
 
-def test_supervisor_requires_candidate_discovery_before_selection(tmp_path):
-    control = tmp_path / "control"
-    control.mkdir()
-    (control / "artifacts.json").write_text('{"versions": {}}', encoding="utf-8")
-    context = {"brief_ready": True, "brief_requirement": "Build a benchmark", "user_requirement": "Build a benchmark",
-               "run_directory": str(tmp_path)}
-
-    stages = available_stages(context)
-
-    assert "discover_datasets" in stages
-    assert "bind_dataset" in stages
+def test_supervisor_has_one_binding_entry_after_specification(tmp_path):
+    from medbenchagent.planning.bir import BIRStore
+    store = BIRStore.initialize(tmp_path / "BIR", "config/bir_template", "test")
+    store.update("benchmark_info.json", {"user_requirement": "Build a benchmark"}, run_id="r", actor="test")
+    stages = available_stages({"bir_path": str(store.root), "user_requirement": "Build a benchmark"})
+    assert {"discover_datasets", "bind_dataset"} <= stages
     assert "select_datasets" not in stages
 
 
-def test_stalled_planning_does_not_offer_plan():
-    stages = available_stages({"planning_stalled": True, "artifact_versions": {}})
-
+def test_stalled_planning_does_not_offer_plan(tmp_path):
+    context = {**planning_context(tmp_path), "planning_stalled": True}
+    stages = available_stages(context)
     assert "plan" not in stages
     assert "ask_user" in stages

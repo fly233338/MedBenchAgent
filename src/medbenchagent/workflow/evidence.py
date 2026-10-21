@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from pydantic import Field
-from medbenchagent.planning.bir import require
+from medbenchagent.planning.bir import BIRStore
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.tool_contracts import NoArguments, NonEmpty
 
@@ -45,13 +45,15 @@ def _index(context):
 
 
 def save_evidence(context, operation, arguments, value, dependencies, *, source_ids=(), kind="inspection", reference=None):
-    records = require(context, *dependencies)
+    store = BIRStore(context["bir_path"])
+    for path in dependencies:
+        store.load(path)
     dataset, role = _scope(context)
     reference = reference or str(uuid4())
     metadata = {"reference": reference, "dataset_id": dataset, "role": role, "source_ids": sorted(source_ids),
                 "source_id": next(iter(source_ids)) if len(source_ids) == 1 else None,
                 "kind": kind, "operation": operation, "arguments": arguments,
-                "dependencies": {r["kind"]: r["id"] for r in records.values()}}
+                "dependencies": {path: store.digest(path) for path in dependencies}}
     path = _folder(context) / (reference + ".json")
     payload = {**metadata, "value": value}
     if path.exists():
@@ -68,8 +70,10 @@ def save_evidence(context, operation, arguments, value, dependencies, *, source_
 def _validate(context, metadata):
     if (metadata["dataset_id"], metadata["role"]) != _scope(context):
         raise ValueError("Evidence belongs to another dataset or agent")
-    current = require(context, *metadata["dependencies"])
-    if any(current[key]["id"] != version for key, version in metadata["dependencies"].items()):
+    store = BIRStore(context["bir_path"])
+    for path in metadata["dependencies"]:
+        store.load(path)
+    if any(store.digest(path) != version for path, version in metadata["dependencies"].items()):
         raise ValueError("Evidence is stale; inspect the current inputs")
 
 
@@ -82,22 +86,6 @@ def evidence(context, reference):
     metadata = json.loads(row[0])
     _validate(context, metadata)
     return json.loads((_folder(context) / (reference + ".json")).read_text(encoding="utf-8"))
-
-
-def inspected(context, operation, arguments, value, dependencies, *, source_id=None, **updates):
-    from medbenchagent.runtime.harness import result
-    kind = "document" if operation in {"read_text", "read_dataset_document"} else "inspection"
-    ref = save_evidence(context, operation, arguments, value, dependencies,
-                        source_ids=[source_id] if source_id else [], kind=kind)
-    return result("success", json.dumps({"inspection_reference": ref, "inspection": value}, ensure_ascii=False)[:6000],
-                  evidence_index_path=str(_folder(context) / "index.sqlite"), **updates)
-
-
-def inspection(context, reference, *, source_id=None):
-    receipt = evidence(context, reference)
-    if receipt["source_ids"] != ([source_id] if source_id else []):
-        raise ValueError("Inspection reference belongs to another source")
-    return receipt
 
 
 def evidence_page(context, *, offset=0, limit=20, kind=None, source_id=None, current_only=True):
@@ -175,7 +163,3 @@ def read_evidence(context, *, reference, pointer=None, offset=0, limit=20, text_
         page = {"serialized_page": text[text_offset:text_offset + 2500],
                 "next_text_offset": text_offset + 2500 if text_offset + 2500 < len(text) else None}
     return result("success", json.dumps({"reference": reference, "kind": receipt["kind"], **page}, ensure_ascii=False))
-
-
-def inspection_index(context):
-    return evidence_page(context, limit=10)

@@ -14,9 +14,8 @@ def review_plan(context):
     plan = _load_plan(context)
     if not plan.scenarios:
         raise ValueError("Independent review requires discovered Scenarios")
-    dataset = plan.dataset["dataset_id"]
-    dependencies = business_dependencies(context, f"datasets/{dataset}/planning/task_plan.json",
-                                         "dataset_bindings.json", "benchmark_info.json", registry=True)
+    dependencies = business_dependencies(context, "task_plan.json",
+                                         "dataset_binding.json", "benchmark_info.json", registry=True)
     try:
         saved = store.load("review.json")
     except (OSError, ValueError):

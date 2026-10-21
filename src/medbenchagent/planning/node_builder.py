@@ -19,12 +19,7 @@ from medbenchagent.planning.bir import RegistrySnapshot
 class ScenarioConstraintRegistry:
     """Structural feasibility checks; this class performs no medical inference."""
 
-    def __init__(self, registry: RegistrySnapshot | None = None):
-        if registry is None:
-            from pathlib import Path
-            registry = RegistrySnapshot.from_directory(
-                Path(__file__).resolve().parents[3] / "config" / "bir_template" / "registry"
-            )
+    def __init__(self, registry: RegistrySnapshot):
         self.registry = registry
 
     @staticmethod
@@ -80,12 +75,10 @@ def build_task_scenarios(
     axis_analysis: AxisAnalysis,
     context: dict[str, Any],
     *,
-    registry: ScenarioConstraintRegistry | None = None,
+    registry: RegistrySnapshot,
     exclusions: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, TaskScenario]:
-    if isinstance(registry, RegistrySnapshot):
-        registry = ScenarioConstraintRegistry(registry)
-    registry = registry or ScenarioConstraintRegistry()
+    registry = ScenarioConstraintRegistry(registry)
     supported = {
         TaskAxis.INPUT_STRUCTURE: [
             item.value for item in axis_analysis.input_structure if item.supported
