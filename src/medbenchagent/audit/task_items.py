@@ -7,6 +7,8 @@ from typing import Any, Iterable
 
 from medbenchagent.generation.items import _input_assets, _input_bindings
 from medbenchagent.planning.resolver import NotApplicable, ResolverContext, encode_closed_label, resolve_task_input
+from pydantic import ValidationError
+from medbenchagent.contracts import BenchmarkItem
 from medbenchagent.planning.task_space import LeafTask, OutputSpec
 
 
@@ -38,7 +40,14 @@ def audit_task_items(
     accepted, rejected = [], []
     reasons = Counter()
     for item in items:
-        leaf = leaf_map.get(item.get("task_id"))
+        try:
+            BenchmarkItem.model_validate(item)
+        except ValidationError as exc:
+            reasons.update(["invalid_item_contract"])
+            rejected.append({"item": item, "reasons": ["invalid_item_contract"],
+                             "diagnostics": str(exc)})
+            continue
+        leaf = leaf_map.get(item.get("leaf_task_id"))
         case = case_map.get(item.get("case_id"))
         errors = []
         if leaf is None:
@@ -113,8 +122,8 @@ def audit_task_items(
             accepted.append(item)
     by_capability = defaultdict(lambda: {"generated": 0, "accepted": 0, "rejected": 0})
     for leaf_id, leaf in leaf_map.items():
-        generated_count = sum(item.get("task_id") == leaf_id for item in items)
-        accepted_count = sum(item.get("task_id") == leaf_id for item in accepted)
+        generated_count = sum(isinstance(item, dict) and item.get("leaf_task_id") == leaf_id for item in items)
+        accepted_count = sum(item.get("leaf_task_id") == leaf_id for item in accepted)
         group = by_capability[leaf.capability_category.value]
         group["generated"] += generated_count
         group["accepted"] += accepted_count

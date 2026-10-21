@@ -8,29 +8,34 @@ from medbenchagent.agents.generation import run_generation
 from medbenchagent.data.index import prepare_dataset
 from medbenchagent.data.models import ImageEntry
 from medbenchagent.generation.delivery import audit_candidate
+from medbenchagent.planning.access import DatasetAccessReceipt
 from medbenchagent.planning.bir import BIRStore, business_dependencies
 from medbenchagent.planning.task_discovery import summarize_leaf
+
+
+def prepared_access(bundle, cases):
+    bundle = Path(bundle)
+    images = image_context(bundle, cases)
+    (bundle / "cases.jsonl").write_text("".join(json.dumps(row) + "\n" for row in cases), encoding="utf-8")
+    (bundle / "image_manifest.jsonl").write_text("".join(ImageEntry.model_validate(value).model_dump_json() + "\n"
+        for value in images.assets.values()), encoding="utf-8")
+    return prepare_dataset(bundle / "cases.jsonl", bundle / "image_manifest.jsonl", bundle / "cache")[1]
 
 
 def compile_fixture(root, plan, cases, requested=1, access=None):
     root = Path(root)
     dataset = plan.dataset["dataset_id"]
     if access is None:
-        bundle = root / "dataset"
-        images = image_context(bundle, cases)
-        (bundle / "cases.jsonl").write_text("".join(json.dumps(row) + "\n" for row in cases), encoding="utf-8")
-        (bundle / "image_manifest.jsonl").write_text("".join(ImageEntry.model_validate(value).model_dump_json() + "\n"
-            for value in images.assets.values()), encoding="utf-8")
-        _, access = prepare_dataset(bundle / "cases.jsonl", bundle / "image_manifest.jsonl", bundle / "cache")
+        access = prepared_access(root / "dataset", cases)
     store = BIRStore.initialize(root / "BIR", "config/bir_template", "test")
     context = {"bir_path": str(store.root), "run_id": "test", "run_directory": str(root / "runtime"),
                "operation_directory": str(root / "runtime/planning"), "dataset_scope": dataset,
-               "selected_dataset_id": dataset, "selected_dataset_ids": [dataset],
+               "selected_dataset_ids": [dataset],
                "dataset_access_manifest": access, "experiment_output_directory": str(root / "outputs"),
                "benchmark_info": {"sample_count": requested, "language": "en"}, "seed": 0,
                "dataset_assets": {dataset: {"access": access}}}
     store.update("benchmark_info.json", context["benchmark_info"], run_id="test", actor="fixture")
-    store.update("dataset_bindings.json", {"datasets": {dataset: {"access": access}}}, run_id="test", actor="fixture")
+    store.update("dataset_bindings.json", {"datasets": {dataset: {"access": DatasetAccessReceipt.bind(dataset, access).model_dump(exclude_none=True)}}}, run_id="test", actor="fixture")
     for key, leaf in plan.leaf_tasks.items():
         summary = summarize_leaf(access, leaf, scenarios=plan.scenarios)
         plan.leaf_tasks[key] = leaf.model_copy(update={"eligible_count": summary["eligible_count"]})

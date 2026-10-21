@@ -69,7 +69,7 @@ def test_allocation_reports_capacity_shortfall_and_zero_leaves():
 
 def test_option_balancing_preserves_answer_and_balances_positions():
     items = [
-        {"item_id": str(index), "task_id": "task", "answer": "yes", "options": ["yes", "no"]}
+        {"item_id": str(index), "leaf_task_id": "task", "answer": "yes", "options": ["yes", "no"]}
         for index in range(4)
     ]
     balanced, distribution = balance_option_positions(items, seed=4)
@@ -78,7 +78,7 @@ def test_option_balancing_preserves_answer_and_balances_positions():
     assert sorted(distribution["after"]["task"].values()) == [2, 2]
 
 
-def test_finalization_merges_and_audits_dataset_output(tmp_path):
+def test_candidate_audit_uses_canonical_dataset_binding(tmp_path):
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     asset = ImageEntry(path="asset-1", source_id="s", source_digest="raw", kind="image", format="png", source_path="image.png",
@@ -107,7 +107,9 @@ def test_finalization_merges_and_audits_dataset_output(tmp_path):
     allocation_path.write_text(json.dumps({"requested_count": 1, "counts": {"d": {"leaf": 1}}}), encoding="utf-8")
     from medbenchagent.agents.finalization import audit_benchmark
     from medbenchagent.data.sources import digest_file
-    store.update("dataset_bindings.json", {"datasets":{"d":{"access":access}}}, run_id="r", actor="test")
+    from medbenchagent.planning.access import DatasetAccessReceipt
+    receipt = DatasetAccessReceipt.bind("d", access).model_dump(exclude_none=True)
+    store.update("dataset_bindings.json", {"datasets":{"d":{"access":receipt}}}, run_id="r", actor="test")
     store.update("allocation.json", {"requested_count":1, "counts":{"d":{"leaf":1}}}, run_id="r", actor="test")
     store.update("outputs/d.json", {"benchmark_items_path":str(raw), "benchmark_items_digest":digest_file(raw)}, run_id="r", actor="test")
     result = audit_benchmark({"bir_path": str(store.root),

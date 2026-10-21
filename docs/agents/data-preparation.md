@@ -10,7 +10,7 @@
 
 **Conversation:** each stage/semantic epoch has one stable workspace and conversation ID. Ordinary implementation repairs and answers append a deduplicated host message to that session. Every completed worker round has a separate candidate snapshot. A mapping revision starts a fresh epoch and invalidates dependent Text/Image work.
 
-**Feedback and budgets:** contract/data errors receive structured diagnostics and consume the failed-attempt budget. User questions do not consume it. Environment failures block for intervention. Mapping revisions have their own finite budget. SDK condensation manages growing conversation context; accepted semantics remain in explicit files and subsequent host messages.
+**Feedback and budgets:** the first rejected candidate establishes a baseline of content digest and Host-passed checks. A changed candidate with improved checks or resolved diagnostics resets consecutive no-progress failures; cosmetic rewrites, repeated errors and regressions consume the allowance. User questions do not consume it. Stage iterations and active execution time are cumulative across repairs and resume; waiting for answers is excluded. Explicit blocked outcomes and environment failures stop for intervention. Mapping revisions have their own finite budget. SDK condensation manages growing conversation context; accepted semantics remain in explicit files and subsequent host messages.
 
 **Recovery:** reuse a completed round receipt, or restore the unfinished SDK conversation. The SDK event history is checked before sending a host-turn marker again. The source inventory, handoff and previous candidate references remain digest-bound.
 

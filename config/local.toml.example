@@ -1,5 +1,5 @@
 # Copy to config/local.toml and pass --config config/local.toml before the CLI command.
-# This seeds NEW experiments only; experiment BIR state lives under experiments/<name>/BIR.
+# This seeds NEW experiments only; each compilation owns experiments/<name>/compilations/<id>/BIR/.
 # Relative data paths resolve from the repository root. Nonempty supported environment
 # variables override TOML for new runs; resume uses frozen settings. Keep credentials in .env
 # or process environment variables (see .env.example).
@@ -16,9 +16,9 @@
 # annotation = "cases.jsonl"
 
 [benchmark]
-default_sample_count = 1000 # Used only when the user did not supply a count; language is asked.
+default_sample_count = 1000 # Used only when the user did not supply a count; language defaults to English.
 
-# [llm]
+[llm]
 # model = "your-chat-model" # Optional when /v1/models returns exactly one model.
 reasoning_effort = "medium" # Must be supported by the configured gateway/model.
 
@@ -36,4 +36,4 @@ question_template_count = 3
 # backend = "local"  # auto, docker, or local
 # coding_worker_image = "medbench-openhands:local"
 # coding_worker_venv = ".venv-coding"  # local backend; startup provisions this environment
-# preparation_attempt_limits = { understand = 2, prepare = 2, mapping_revision_cycles = 1 }
+# preparation_attempt_limits = { understand = 2, prepare_text = 2, prepare_image = 2, mapping_revision_cycles = 1 }

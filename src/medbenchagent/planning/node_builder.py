@@ -74,7 +74,6 @@ class ScenarioConstraintRegistry:
         return True, None
 
 
-NodeConstraintRegistry = ScenarioConstraintRegistry
 
 
 def build_task_scenarios(

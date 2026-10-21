@@ -121,7 +121,6 @@ class BenchmarkInputState(TypedDict, total=False):
     seed: int
     max_tasks_per_image: int
     max_total_tasks_per_image: int | None
-    question_temperature: float
     question_template_count: int
     requested_dataset_ids: list[str]
     experiment_name: str
@@ -131,7 +130,6 @@ class BenchmarkInputState(TypedDict, total=False):
 class BenchmarkState(BenchmarkInputState, total=False):
     context: dict[str, Any]
     bir_path: str
-    bir_revision: int
     bir_manifest_digest: str
     bir_template_revision: str
     result: dict[str, Any]
@@ -170,7 +168,6 @@ class BenchmarkState(BenchmarkInputState, total=False):
 class BenchmarkOutputState(TypedDict, total=False):
     run_id: str
     bir_path: str
-    bir_revision: int
     bir_manifest_digest: str
     bir_template_revision: str
     run_directory: str
@@ -263,7 +260,7 @@ def specify(context: SupervisorContext):
                                       {"run_id": context.get("run_id", "unknown"), "fields": sorted(info)}][-50:]})
         commit = store.update("benchmark_info.json", merged, run_id=context.get("run_id", "unknown"),
                               actor="specify")
-        updates.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest,
+        updates.update(bir_manifest_digest=commit.manifest_digest,
                        bir_summary_ref={"revision": commit.revision, "path": "benchmark_info.json"})
     if missing:
         questions = {"clinical_scope": "Please describe the medical scope or population that the benchmark should evaluate.",
@@ -282,10 +279,10 @@ def specify(context: SupervisorContext):
 
 
 COMMON = ("run_id", "run_directory", "construction_events_path", "effective_config_path",
-          "limits", "user_requirement", "benchmark_info", "seed", "max_tasks_per_image", "question_temperature",
-          "question_template_count", "benchmark_input_policy", "planning_novelty_enabled", "compilation_id", "compilation_directory",
+          "limits", "user_requirement", "benchmark_info", "seed", "max_tasks_per_image",
+          "question_template_count", "benchmark_input_policy", "compilation_id", "compilation_directory",
           "planning_extension_selections",
-          "bir_path", "bir_revision", "bir_manifest_digest", "bir_template_revision",
+          "bir_path", "bir_manifest_digest", "bir_template_revision",
           "registration_catalog_path", "sample_scope", "max_total_tasks_per_image", "allocation_preferences",
           "execution_runtime", "model", "base_url", "reasoning_effort", "llm_timeout_seconds",
           "llm_max_retries")
@@ -379,7 +376,7 @@ def child_context(context, dataset_id, role):
     child = load_context(saved, role, dataset_id) if saved else {}
     child.update({k: context[k] for k in COMMON if k in context})
     asset = context["dataset_assets"][dataset_id]
-    child.update(agent_role=ROLES[role], dataset_scope=dataset_id, selected_dataset_id=dataset_id,
+    child.update(agent_role=ROLES[role], dataset_scope=dataset_id,
                  cases_path=asset["access"]["cases_path"], dataset_entry=asset["entry"],
                  dataset_access_manifest=asset["access"], dataset_card_summary=asset["card_summary"],
                  planning_extension_selection=context.get("planning_extension_selections", {}).get(dataset_id, {}),
@@ -389,14 +386,21 @@ def child_context(context, dataset_id, role):
 
 
 def child_result(context, dataset_id, role, output):
+    from medbenchagent.runtime.harness import AgentOutcome
     child = output["context"]
     path = Path(child["operation_directory"]) / "state.json"
     save_context(path, child, role, dataset_id)
     states = {k: dict(v) for k, v in context.get("child_states", {}).items()}
     states.setdefault(dataset_id, {})[role] = str(path)
-    updates = {"child_states": states,
-               "last_agent_result": output["result"]}
-    for key in ("bir_path", "bir_revision", "bir_manifest_digest", "bir_template_revision", "bir_summary_ref"):
+    raw = output["result"]
+    outcome = AgentOutcome(
+        status="progress" if raw["status"] in {"running", "success"} else raw["status"],
+        summary=raw["summary"], diagnostics=raw.get("diagnostics", {}),
+        artifacts={**raw.get("artifacts", {}), "private_state": str(path)},
+        unresolved_questions=raw.get("unresolved_questions", child.get("pending_questions", [])),
+    ).model_dump()
+    updates = {"child_states": states, "last_agent_result": outcome}
+    for key in ("bir_path", "bir_manifest_digest", "bir_template_revision", "bir_summary_ref"):
         if key in child:
             updates[key] = child[key]
     updates["issues"] = {**context.get("issues", {}), **child.get("issues", {})}
@@ -404,7 +408,7 @@ def child_result(context, dataset_id, role, output):
     if pending and updates["issues"].get(pending["issue_id"], {}).get("status") != "resolved":
         updates["global_issue"] = pending
     return result("success", output["result"]["summary"],
-                  agent_outcome=output["result"], **updates)
+                  agent_outcome=outcome, **updates)
 
 
 def describe(context: SupervisorContext):
@@ -603,9 +607,12 @@ def compile_benchmark_graph(*, checkpointer=None):
         previous = _load_plan(child).model_dump(mode="json")
         output = planning.invoke({"context": child},
                                  config={"recursion_limit": 3 * child["limits"]["max_calls"] + 10})
-        outcome = child_result(context, dataset_id, "planning", output)
         draft = output["context"].get("task_plan", {})
         advanced = planning_draft_advanced(previous, draft)
+        if (advanced and output["result"]["status"] == "blocked"
+                and output["result"].get("diagnostics", {}).get("budget_exhausted") in {"max_calls", "max_seconds"}):
+            output["result"] = {**output["result"], "status": "progress"}
+        outcome = child_result(context, dataset_id, "planning", output)
         outcome["updates"].update(planning_stalled=output["result"]["status"] == "blocked" and not advanced,
                                   planning_incomplete=draft.get("phase") != "complete")
         if output["result"]["status"] == "complete":
@@ -825,7 +832,7 @@ and cannot override routing, acceptance, or publication checks."""
                       "generate": DatasetStatusArguments})
 
     def initialize(state):
-        overrides = {k: state[k] for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature") if k in state}
+        overrides = {k: state[k] for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image") if k in state}
         requirement = state.get("user_requirement") or next((getattr(m, "content", "") for m in reversed(convert_to_messages(state.get("messages", []))) if getattr(m, "type", "") == "human"), "")
         if not isinstance(requirement, str) or not requirement.strip():
             raise ValueError("A natural-language requirement is required")
@@ -837,9 +844,8 @@ and cannot override routing, acceptance, or publication checks."""
 
         settings = resolve_run_services(settings)
         execution_runtime = select_backend(settings.data_processing)
-        defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature", "question_template_count")}
+        defaults = {k: getattr(settings.generation, k) for k in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_template_count")}
         defaults["benchmark_input_policy"] = settings.benchmark.input_policy
-        defaults["planning_novelty_enabled"] = settings.planning.novelty_enabled
         from medbenchagent.runtime.sessions import EXPERIMENTS_ROOT
         experiment_name = state.get("experiment_name")
         experiments_root = Path(state.get("experiments_root") or EXPERIMENTS_ROOT)

@@ -1,10 +1,20 @@
 """Explicit, bounded evidence packets; required evidence is never silently discarded."""
 from __future__ import annotations
 import json
+from medbenchagent.runtime.llm import RequestContextBudgetError
 
 
-class EvidenceContextBudgetError(ValueError):
-    pass
+def complete_planning_json(*args, **kwargs):
+    """Use the same final-request budget for all direct planning/review calls."""
+    from medbenchagent.runtime.llm import complete_json
+    from medbenchagent.settings import get_settings
+    return complete_json(*args, request_char_budget=get_settings().planning.context_chars, **kwargs)
+
+
+class EvidenceContextBudgetError(RequestContextBudgetError):
+    def __init__(self, message):
+        ValueError.__init__(self, message)
+        self.diagnostics = {"budget": "planning.context_chars", "reason": "required_evidence"}
 
 
 def bounded_evidence(value, *, char_budget=64000):

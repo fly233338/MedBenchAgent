@@ -112,7 +112,6 @@ def initialize_run(
         "task_catalog_snapshot_path": str(catalog_snapshot_path),
         "task_catalog_snapshot_digest": digest_file(catalog_snapshot_path),
         "bir_path": str(Path(bir_path).resolve()) if bir_path is not None else None,
-        "bir_revision": snapshot.get("bir", {}).get("revision") if bir_path is not None else None,
         "bir_template_revision": snapshot.get("bir", {}).get("template_revision") if bir_path is not None else None,
         "bir_manifest_digest": snapshot.get("bir", {}).get("manifest_digest") if bir_path is not None else None,
     }

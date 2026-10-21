@@ -17,10 +17,6 @@ _CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar
     "construction_context", default=None
 )
 
-GENERATION_AGENT = "GenerationAgent"
-FINALIZATION_AGENT = "FinalizationAgent"
-
-
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 

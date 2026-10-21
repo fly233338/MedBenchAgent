@@ -1,5 +1,8 @@
 import json
 from pathlib import Path
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import httpx
@@ -70,6 +73,7 @@ def test_rag_cache_isolated_by_embedding_endpoint_and_model(tmp_path, monkeypatc
         "sources", [{"chunk_id": "one", "text": "text", "pdf": "a.pdf", "page": 1}]))
     root = tmp_path / "materials"
     root.mkdir()
+    (root / "a.pdf").write_bytes(b"pdf source")
     first = pdf_rag.LocalPdfRag(root, tmp_path / "cache")
     same = pdf_rag.LocalPdfRag(root, tmp_path / "cache")
     assert first.cache_dir == same.cache_dir
@@ -112,6 +116,7 @@ def test_remote_rag_retrieves_and_reranks_chroma_candidates(tmp_path, monkeypatc
         transport=httpx.MockTransport(respond), **kwargs))
     root = tmp_path / "materials"
     root.mkdir()
+    (root / "a.pdf").write_bytes(b"pdf source")
     reader = pdf_rag.LocalPdfRag(root, tmp_path / "cache")
     results = reader.retrieve("query")
     assert [(item["chunk_id"], item["rerank_score"]) for item in results] == [("a", 0.9)]
@@ -145,3 +150,76 @@ def test_unexpected_pdf_programming_errors_propagate(tmp_path, monkeypatch):
     monkeypatch.setattr(pdf_rag, "PdfReader", reader)
     with pytest.raises(TypeError, match="programming error"):
         pdf_rag.extract_pdf_chunks(tmp_path)
+
+
+def test_chunking_consumes_text_at_paragraph_and_overlap_boundaries():
+    # A subprocess timeout makes a recurrence of the former infinite loop fail safely.
+    script = '''
+from medbenchagent.rag.pdf import _page_chunks
+text = "short\\n\\n" + "".join(chr(0x4e00 + i) for i in range(300)) + "END"
+for size, overlap in [(120, 20), (48, 47), (5, 0), (1, 0)]:
+    chunks = _page_chunks(text, size, overlap)
+    assert 0 < len(chunks) <= len(text)
+    assert all(0 < len(chunk) <= size for chunk in chunks)
+    assert set(text.replace("\\n", "")) <= set("".join(chunks))
+assert _page_chunks("", 10, 2) == []
+assert _page_chunks("1234567890", 10, 2) == ["1234567890"]
+'''
+    completed = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=20)
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_live_reader_reindexes_same_path_same_length_content_change(tmp_path, monkeypatch):
+    rag = SimpleNamespace(embedding_base_url="http://embed/v1", embedding_model="embed",
+                          reranker_base_url="http://rerank/v1", reranker_model="rerank",
+                          chunk_size=1200, chunk_overlap=200, candidate_count=2,
+                          reranker_max_length=8192, min_rerank_score=0.5, result_limit=2)
+    monkeypatch.setattr(pdf_rag, "get_settings", lambda: SimpleNamespace(rag=rag))
+    root = tmp_path / "materials"
+    root.mkdir()
+    source = root / "source.pdf"
+    source.write_bytes(b"aaaa")
+    (root / "unselected.pdf").write_bytes(b"unused")
+    monkeypatch.setattr(pdf_rag, "PdfReader", lambda path: SimpleNamespace(pages=[
+        SimpleNamespace(extract_text=lambda: Path(path).read_text(encoding="utf-8"))]))
+    embedded = []
+    def embed(_api, _url, _model, texts):
+        embedded.extend(texts)
+        return [[1.0, 0.0] for _ in texts]
+    monkeypatch.setattr(pdf_rag, "embed_texts", embed)
+    monkeypatch.setattr(pdf_rag, "rerank_documents", lambda *_args, **_kwargs: [1.0])
+    reader = pdf_rag.LocalPdfRag(root, tmp_path / "cache", ["source.pdf"])
+    first = reader.cache_dir
+    assert reader.retrieve("query")[0]["text"] == "aaaa"
+    reader.retrieve("query")
+    assert embedded.count("aaaa") == 1
+    (root / "unselected.pdf").write_bytes(b"changed")
+    reader.retrieve("query")
+    assert reader.cache_dir == first
+    stat = source.stat()
+    source.write_bytes(b"bbbb")
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert reader.retrieve("query")[0]["text"] == "bbbb"
+    assert reader.cache_dir != first and embedded.count("bbbb") == 1
+    second = reader.cache_dir
+    rag.chunk_size = 600
+    reader.retrieve("query")
+    assert reader.cache_dir not in {first, second}
+
+
+def test_legacy_cache_metadata_is_not_read(tmp_path, monkeypatch):
+    rag = SimpleNamespace(embedding_base_url="http://embed/v1", embedding_model="embed",
+                          reranker_base_url="http://rerank/v1", reranker_model="rerank",
+                          chunk_size=1200, chunk_overlap=200)
+    monkeypatch.setattr(pdf_rag, "get_settings", lambda: SimpleNamespace(rag=rag))
+    root = tmp_path / "materials"
+    root.mkdir()
+    (root / "a.pdf").write_bytes(b"new")
+    old = tmp_path / "cache/pdf-cache/old"
+    old.mkdir(parents=True)
+    (old / "sources.json").write_text("broken old cache", encoding="utf-8")
+    monkeypatch.setattr(pdf_rag, "PdfReader", lambda _path: SimpleNamespace(pages=[
+        SimpleNamespace(extract_text=lambda: "current source")]))
+    reader = pdf_rag.LocalPdfRag(root, tmp_path / "cache")
+    assert reader.cache_dir != old
+    assert reader.chunks[0]["text"] == "current source"

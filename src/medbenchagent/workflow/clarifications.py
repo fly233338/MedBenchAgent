@@ -155,17 +155,13 @@ def resolve_clarification(context, *, issue_id, kind):
     # close the issue, and an interrupted resolution can safely repeat this write.
     states = {d: dict(roles) for d, roles in context.get("child_states", {}).items()}
     role = {"TaskPlanningAgent": "planning", "DataProcessingAgent": "preparation"}.get(issue["role"])
-    field = {"AllocationAgent": "allocation_state_path", "FinalizationAgent": "finalization_state_path"}.get(issue["role"])
-    saved = states.get(issue["dataset_id"], {}).get(role) if role else context.get(field) if field else None
+    saved = states.get(issue["dataset_id"], {}).get(role) if role else None
     if saved:
         from medbenchagent.runtime.contexts import load_context, save_context
         child = load_context(saved, issue["role"], issue["dataset_id"])
         inject_answers(updates, child, issue["role"], issue["dataset_id"])
         target = Path(context["operation_directory"]) / "resolved-child.json"
         save_context(target, child, issue["role"], issue["dataset_id"])
-        if role:
-            states[issue["dataset_id"]][role] = str(target)
-            updates["child_states"] = states
-        else:
-            updates[field] = str(target)
+        states[issue["dataset_id"]][role] = str(target)
+        updates["child_states"] = states
     return result("success", "Clarification resolved and routed to its origin", **updates)

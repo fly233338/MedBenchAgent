@@ -6,7 +6,7 @@ Extract the user's benchmark-construction intent from the complete request and c
 
 This stage is for benchmark construction. Dataset-preparation-only requests should be handled by the Supervisor without requiring benchmark specification.
 
-Preserve broad, comparative, multi-dataset, and unfamiliar benchmark requests.
+Preserve broad, comparative and unfamiliar goals within the bound dataset. Each compilation binds one dataset; independent datasets require separate batch entries, without a shared quota or merged benchmark.
 
 Do not restrict the extracted brief to tasks already known to be supported by the current datasets or implementation.
 

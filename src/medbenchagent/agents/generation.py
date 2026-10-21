@@ -2,8 +2,10 @@
 from medbenchagent.generation.items import generate_task_items, write_task_items
 from medbenchagent.runtime.harness import result
 
-def run_generation(context, *, output_path=None, page_size=512):
+def run_generation(context, *, output_path=None):
     from pathlib import Path
+    from medbenchagent.settings import get_settings
+    page_size = get_settings().generation.fetch_batch_size
     from medbenchagent.data.index import DatasetIndex
     from medbenchagent.data.manifests import SamplingManifest, load_manifest
     from medbenchagent.planning.resolver import ResolverContext
@@ -11,7 +13,8 @@ def run_generation(context, *, output_path=None, page_size=512):
     store = BIRStore(context["bir_path"])
     dataset = context["dataset_scope"]
     receipt = store.load("dataset_bindings.json")["datasets"][dataset]["access"]
-    access = receipt.get("source_access", receipt)
+    from medbenchagent.planning.access import DatasetAccessReceipt
+    access = DatasetAccessReceipt.model_validate(receipt).verified_source(dataset)
     allocation = store.load("allocation.json")["counts"][dataset]
     sampling_manifest = None
     if access.get("sampling_manifest_path"):
@@ -35,7 +38,7 @@ def run_generation(context, *, output_path=None, page_size=512):
     items = generate_task_items(
         pages(),
         leaves.values(),
-        context.get("selected_dataset_id", "dataset"),
+        context["dataset_scope"],
         allocation=allocation,
         seed=context.get("seed", 0),
         resolver_context=resolver_context,
@@ -48,7 +51,7 @@ def run_generation(context, *, output_path=None, page_size=512):
     write_task_items(destination, items)
     task_counts = {}
     for item in items:
-        task_counts[item["task_id"]] = task_counts.get(item["task_id"], 0) + 1
+        task_counts[item["leaf_task_id"]] = task_counts.get(item["leaf_task_id"], 0) + 1
     from medbenchagent.planning.bir import business_dependencies, digest_file
     from medbenchagent.data.sources import digest_file as content_digest
     store.update(f"outputs/{dataset}.json", {

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://medbenchagent.local/schemas/annotation.schema.json",
-  "title": "MedBenchAgent annotation",
+  "title": "MedD2B annotation",
   "type": "object",
   "additionalProperties": false,
   "required": ["case_id", "evidence"],

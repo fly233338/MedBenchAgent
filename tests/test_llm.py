@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 from types import SimpleNamespace
 from typing import Literal
 
@@ -189,3 +190,45 @@ def test_config_switch_does_not_close_active_clients(monkeypatch):
         assert len(clients) == 2
     finally:
         llm.clear_client_cache()
+
+
+def test_budget_covers_entire_serialized_request_including_schema_and_tools(monkeypatch):
+    requests = []
+    def create(**kwargs):
+        requests.append(json.loads(json.dumps(kwargs)))
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"kind":"prepare_dataset"}'))])
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create))))
+    prompt = json.dumps({"tools": {"inspect": {"parameters": {"description": "x" * 300}}},
+                         "evidence": "医学证据" * 100, "last_result": {"data": "y" * 100}}, ensure_ascii=False)
+    llm.complete_json("required instructions", prompt, _Decision)
+    size = len(json.dumps(requests[0], ensure_ascii=False))
+    assert size > len(prompt)
+    llm.complete_json("required instructions", prompt, _Decision, request_char_budget=size)
+    with pytest.raises(llm.RequestContextBudgetError) as error:
+        llm.complete_json("required instructions", prompt, _Decision, request_char_budget=size - 1)
+    assert len(requests) == 2
+    assert error.value.diagnostics == {"request_chars": size, "context_chars": size - 1}
+
+
+def test_repair_feedback_is_rebudgeted_without_truncating_model_output(monkeypatch):
+    requests = []
+    def create(**kwargs):
+        requests.append(json.loads(json.dumps(kwargs)))
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="invalid " + "x" * 7000))])
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create))))
+    with pytest.raises(llm.RequestContextBudgetError) as error:
+        llm.complete_validated_json("system", "evidence", _Decision, request_char_budget=1000)
+    assert len(requests) == 1
+    assert error.value.diagnostics["request_chars"] > 7000
+
+
+def test_direct_planning_calls_use_the_configured_final_request_budget(monkeypatch):
+    from medbenchagent.planning.context import complete_planning_json
+    from medbenchagent.settings import active_settings
+    settings = get_settings()
+    monkeypatch.setattr(llm, "_client", lambda: pytest.fail("Over-budget request must not reach the model"))
+    with active_settings(replace(settings, planning=replace(settings.planning, context_chars=1))):
+        with pytest.raises(llm.RequestContextBudgetError):
+            complete_planning_json("system", "required source evidence", _Decision)

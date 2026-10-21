@@ -112,6 +112,8 @@ def export_benchmark(source, destination):
     asset_files = {}
     items = _read_jsonl(source / "benchmark.jsonl")
     for item in items:
+        from medbenchagent.contracts import BenchmarkItem
+        BenchmarkItem.model_validate(item)
         for asset in item.get("input_images", []):
             original = Path(asset["path"])
             original = original if original.is_absolute() else source / original

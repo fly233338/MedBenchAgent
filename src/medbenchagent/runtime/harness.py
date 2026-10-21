@@ -7,14 +7,14 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from typing import Any, Callable, TypedDict
+from typing import Any, Callable, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from medbenchagent.runtime.construction import event_context, record_event
-from medbenchagent.runtime.llm import StructuredOutputError, complete_validated_json
+from medbenchagent.runtime.llm import RequestContextBudgetError, StructuredOutputError, complete_validated_json
 from medbenchagent.runtime.operation_log import append as append_operation, path_for as operation_log_path, read as read_operation
 from medbenchagent.runtime.tool_contracts import AskUserArguments, NoArguments
 
@@ -61,10 +61,23 @@ class ToolAction(BaseModel):
     reason: str = Field(description="Brief reason for this outer ToolAction.")
 
 
+class AgentOutcome(BaseModel):
+    """Business outcome of a child, independent of the delegation tool's status."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    status: Literal["complete", "progress", "needs_input", "failed", "blocked"]
+    summary: str
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+    unresolved_questions: list[Any] = Field(default_factory=list)
+
+
 def result(status: str, summary: str, **updates: Any) -> dict[str, Any]:
     structured = {key: updates.pop(key, default) for key, default in (
         ("unresolved_questions", []), ("warnings", []), ("artifacts", {}),
-        ("readiness", {}), ("affected_node_ids", []), ("diagnostics", {}), ("data", None))}
+        ("readiness", {}), ("affected_node_ids", []), ("diagnostics", {}), ("data", None),
+        ("agent_outcome", None))}
+    if structured["agent_outcome"] is not None:
+        structured["agent_outcome"] = AgentOutcome.model_validate(structured["agent_outcome"]).model_dump()
     return {"status": status, "summary": summary, "updates": updates, **structured}
 
 
@@ -88,6 +101,7 @@ def compile_agent(
     pending_tools: Callable | None = None,
     model_context: Callable | None = None,
     after_tool: Callable | None = None,
+    request_char_budget: Callable[[dict[str, Any]], int] | None = None,
 ):
     """Run registered tools serially, retaining private state and completed operations."""
     schemas = {key: NoArguments for key in (*tools, "finish")}
@@ -149,7 +163,8 @@ def compile_agent(
             summary = f"Execution budget exhausted ({exceeded}): {detail}"
             if last_error:
                 summary += f". Last error: {last_error}"
-            return {"result": result("blocked", summary, diagnostics=state["result"].get("diagnostics", {}))}
+            return {"result": result("blocked", summary, diagnostics={
+                **state["result"].get("diagnostics", {}), "budget_exhausted": exceeded})}
         enabled = available_tools(context) if available_tools is not None else set(catalog)
         automatic = automatic_action(context) if automatic_action else None
         if automatic and automatic["tool"] in enabled:
@@ -197,7 +212,7 @@ def compile_agent(
                     "pending_clarification": context.get("global_issue"),
                     "recent_observations": state.get("observations", []),
                     "last_result": {
-                        k: (v[:6000] if isinstance(v, str) else v)
+                        k: v
                         for k, v in state["result"].items()
                         if k != "updates"
                     },
@@ -223,7 +238,10 @@ def compile_agent(
                     ToolAction,
                     validate=validate_action,
                     on_retry=count_repair,
+                    **({"request_char_budget": request_char_budget(context)} if request_char_budget else {}),
                 )
+            except RequestContextBudgetError as exc:
+                return {"result": result("blocked", str(exc), diagnostics=exc.diagnostics), "action": {}}
             except StructuredOutputError as exc:
                 category = "decision validation"
                 return {
@@ -335,6 +353,8 @@ def compile_agent(
                             args_schema=schemas[tool_name],
                         )
                         outcome = tool.invoke(arguments)
+                    except RequestContextBudgetError as exc:
+                        outcome = result("blocked", str(exc), diagnostics=exc.diagnostics)
                     except ValueError as exc:
                         diagnostics = getattr(exc, "diagnostics", {})
                         outcome = result(

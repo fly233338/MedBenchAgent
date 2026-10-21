@@ -21,7 +21,7 @@ Supervisor remains a model-driven tool loop. It can inspect current evidence/cov
 
 Tool availability describes valid dependencies, not one compulsory sequence. A complete plan allows review and allocation; review can also diagnose a discovered draft. A current reviewed candidate allows publication. Review findings can return work to planning or, for explicit source concerns, preparation. Rework is bounded and does not relax user constraints.
 
-A delegated agent's outcome is separate from the success of the delegation call. Supervisor receives the child's actual status and diagnostics. Missing facts become scoped LangGraph interrupts; answers return to their owner. Preparation-only requests never enter benchmark planning.
+A delegated agent's outcome is separate from the success of the delegation call. The top-level `agent_outcome` carries `complete`, `progress`, `needs_input`, `failed` or `blocked`, diagnostics, questions and artifact references. A successful tool call does not imply a completed child or compilation. Missing facts become scoped LangGraph interrupts; answers return to their owner. Preparation-only requests never enter benchmark planning.
 
 ## Boundaries
 
@@ -39,9 +39,21 @@ The generic harness receives domain callbacks; it does not import BIR, interpret
 
 Preparation keeps Understand → Text → conditional Image → Package → Publish. Ordinary repair and clarification continue the same stage's OpenHands session. Candidate snapshots are immutable per round; a semantic mapping revision creates a new session epoch. Only host-accepted artifacts cross stage boundaries.
 
+Host validation reports passed checks. A first failed candidate establishes the repair baseline; a changed candidate must advance those checks or resolve diagnostics without regression to reset consecutive no-progress failures. Editing bytes alone does not count. Clarification does not consume this failure allowance. Stage iteration and active execution-time budgets are cumulative across rounds and restored from checkpoints; user waiting time is excluded.
+
 Task Planning keeps Axis → Scenario → Leaf. There is one canonical pending Scenario queue. Deterministic transitions directly invoke the dedicated semantic Axis/screening calls; Leaf exploration retains a tool loop. Context construction belongs to Planning, prioritizes required/query evidence, reports omissions and supports exact paged reads. Design and review use the same source-evidence interface in separate calls.
 
+`planning.context_chars` bounds the complete serialized model request, including system instructions, output schema, tool definitions, evidence, tool results and repair turns. Direct planning/review calls and the planning tool loop share this final transport check. Every retry is checked again. Required content is never silently truncated; an oversized request reports its size and configured limit so the query can be narrowed or the budget increased.
+
 Allocation is dataset-local. Generation and Audit share `resolve_task_input`, frozen ordering and deterministic Resolver answers. Reference-only evidence stays out of model input. `eligible_count` counts SamplingUnits; structural Scenario capacity counts Cases.
+
+`DatasetAccessReceipt` verifies dataset identity, source paths/digests and actual profile counts at binding and consumption. Benchmark items have one strict contract: `item_id`, `dataset_id`, `leaf_task_id`, ordered `input_images` and optional sampling metadata. Generation validates before writing; audit rejects old aliases or malformed records with explicit quarantine reasons. `generation.fetch_batch_size` controls source pagination.
+
+## Local PDF retrieval
+
+The PDF retrieval component retains embedding, Chroma retrieval and reranking. Cache identity binds selected document byte digests, chunking strategy/parameters and embedding endpoint/model. Content is checked before reuse, including repeated retrieval on one reader; obsolete cache layouts are not read. Paragraph chunking always consumes text even when overlap exceeds the preceding short paragraph.
+
+This component is not exposed uniformly to all semantic model calls. Shared tool registration, autonomous retrieval loops for every model and OpenHands cross-process access remain deferred; no MCP service or additional communication layer is introduced.
 
 ## Publication and recovery
 

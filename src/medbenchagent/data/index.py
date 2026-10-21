@@ -193,10 +193,10 @@ class DatasetIndex:
 
     def node_context(self, node, *, sample_limit=5, evidence_limit=100, registry=None):
         from medbenchagent.data.task_facts import case_facts
-        from medbenchagent.planning.node_builder import NodeConstraintRegistry
+        from medbenchagent.planning.node_builder import ScenarioConstraintRegistry
         from medbenchagent.planning.task_space import TaskScenario
         node = TaskScenario.model_validate(node)
-        constraint_registry = NodeConstraintRegistry(registry)
+        constraint_registry = ScenarioConstraintRegistry(registry)
         assets = {row["asset_id"]: row for row in self.assets()}
         from medbenchagent.data.sampling import representative_samples
         count = 0

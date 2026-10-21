@@ -182,39 +182,21 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
             asset = assets[identifier]
             entry = snapshot["candidates"][identifier]["entry"]
             access = asset["access"]
-            receipt = {
-                "schema_version": "dataset-access",
-                "source_schema_version": access.get("schema_version", "annotation"),
-                "source_access": access,
-                "dataset_id": identifier,
-                "revision": str(access.get("revision", "1")),
-                "cases_path": access.get("cases_path", entry["cases_path"]),
-                "image_manifest_path": access.get("image_manifest_path", entry.get("image_manifest_path", "")),
-                "profile_path": access.get("profile_path", entry.get("profile_path", "")),
-                "duckdb_path": access.get("duckdb_path", ""),
-                "annotation_digest": access.get("annotation_digest", ""),
-                "image_manifest_digest": access.get("image_manifest_digest", ""),
-                "profile_digest": access.get("profile_digest", ""),
-                "duckdb_digest": access.get("duckdb_digest", ""),
-                "case_count": int(access.get("case_count", 0)),
-                "patient_count": int(access.get("patient_count", 0)),
-                "patient_identity": access.get("patient_identity", "unknown"),
-                "dataset_card_path": entry.get("dataset_card_path"),
-                "dataset_card_digest": snapshot["candidates"][identifier].get("card_digest"),
-            }
+            from medbenchagent.planning.access import DatasetAccessReceipt
+            receipt = DatasetAccessReceipt.bind(identifier, access).model_dump(exclude_none=True)
             bindings[identifier] = {"access": receipt, "entry": entry,
                 "selection_reason": selection.selection_reason[identifier],
                 "candidate_snapshot_digest": digest_file(snapshot_path)}
         commit = store.update("dataset_bindings.json", {"schema_version": "dataset-bindings", "datasets": bindings},
             run_id=context.get("run_id", "unknown"), actor="dataset_selection",
             dependencies=business_dependencies(context, "benchmark_info.json"))
-        context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest)
+        context.update(bir_manifest_digest=commit.manifest_digest)
     issue_updates = _selection_issue_updates(context, selection_issue_id)
     return result(
         "success",
         "Dataset selection published",
         selected_dataset_ids=selection.selected_dataset_ids,
-        bir_revision=context.get("bir_revision"), bir_manifest_digest=context.get("bir_manifest_digest"),
+        bir_manifest_digest=context.get("bir_manifest_digest"),
         dataset_assets=assets,
         selection_path=str(path),
         candidate_snapshot_path=str(snapshot_path),

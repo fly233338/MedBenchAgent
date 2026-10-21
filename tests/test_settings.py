@@ -138,13 +138,13 @@ def test_initialize_run_writes_secret_free_effective_configuration(tmp_path: Pat
     run = initialize_run(
         tmp_path / "runs",
         settings=settings,
-        graph_overrides={"seed": 9, "question_temperature": 0.2},
+        graph_overrides={"seed": 9, "max_tasks_per_image": 7},
     )
 
     snapshot = json.loads(Path(run["effective_config_path"]).read_text(encoding="utf-8"))
-    assert snapshot["graph_overrides"] == {"seed": 9, "question_temperature": 0.2}
+    assert snapshot["graph_overrides"] == {"seed": 9, "max_tasks_per_image": 7}
     assert snapshot["settings"]["generation"]["seed"] == 9
-    assert snapshot["settings"]["generation"]["question_temperature"] == 0.2
+    assert snapshot["settings"]["generation"]["max_tasks_per_image"] == 7
     assert "not-in-snapshot" not in json.dumps(snapshot)
 
 

@@ -128,10 +128,3 @@ def run_command(args: argparse.Namespace) -> int:
     if args.command == "resume":
         return _consume(service, service.resume(args.run_id))
     raise ValueError(f"Unknown command: {args.command}")
-
-
-def main() -> None:
-    """Keep an already installed console script usable until its launcher is rebuilt."""
-    from medbenchagent.entrypoint import main as entrypoint_main
-
-    entrypoint_main()

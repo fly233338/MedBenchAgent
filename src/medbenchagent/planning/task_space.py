@@ -283,27 +283,6 @@ class ScenarioReview(BaseModel):
         return self
 
 
-class BenchmarkItem(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    item_id: str = Field(min_length=1)
-    dataset_id: str = Field(min_length=1)
-    scenario_id: str = Field(min_length=1)
-    leaf_task_id: str = Field(min_length=1)
-    case_id: str = Field(min_length=1)
-    capability_category: CapabilityCategory
-    task_paradigm: TaskParadigm
-    output_spec: OutputSpec
-    question: str = Field(min_length=1)
-    template_index: int = Field(default=0, ge=0)
-    template_count: int = Field(default=1, ge=1)
-    options: list[str] | None = None
-    answer: Any
-    input_bindings: list[dict[str, Any]] = Field(default_factory=list)
-    input_assets: list[str] = Field(default_factory=list)
-    input_evidence_ids: list[str] = Field(default_factory=list)
-    reference_evidence_ids: list[str] = Field(default_factory=list)
-
-
 class TaskPlanState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     schema_version: str = "task-plan"

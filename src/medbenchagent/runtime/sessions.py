@@ -132,7 +132,7 @@ def queue_run(record: dict, requirement: str, *, root: Path = EXPERIMENTS_ROOT,
            "status": "queued", "run_id": None, "run_directory": None,
            "runs_root": None, "construction_events_path": None,
            "effective_config_path": None, "catalog_snapshot_path": None,
-           "bir_path": str(store.root), "bir_revision": 0,
+           "bir_path": str(store.root),
            "bir_manifest_digest": store.digest("manifest.json"),
            "bir_summary_ref": None, "summary": "", "created_at": _now()}
     record["runs"].append(run)

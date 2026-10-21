@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from typing import Any, Iterable
+from typing import Any
 
-from medbenchagent.planning.node_builder import build_task_scenarios
 from medbenchagent.planning.resolver import (
     ArgmaxStep,
     MaskToBBoxStep,
@@ -15,7 +14,6 @@ from medbenchagent.planning.resolver import (
     validate_resolver_policy,
 )
 from medbenchagent.planning.task_space import (
-    AxisAnalysis,
     LeafTask,
     TaskPlanState,
     TaskScenario,
@@ -225,66 +223,6 @@ def validate_task_tree(plan: TaskPlanState, *, require_reviews: bool = True, reg
     if set(plan.pending_scenario_ids) or plan.current_scenario_id:
         raise ValueError("Task Plan still has pending or active Scenarios")
     return plan
-
-
-def compile_task_space_plan(
-    *,
-    dataset: dict[str, Any],
-    axis_analysis: AxisAnalysis,
-    node_context: dict[str, Any],
-    leaves: Iterable[LeafTask] = (),
-    revision: int = 0,
-    registry=None,
-) -> TaskPlanState:
-    scenarios = build_task_scenarios(axis_analysis, node_context, registry=registry)
-    accepted: dict[str, LeafTask] = {}
-    identities: set[tuple[str, str, str, str]] = set()
-    for leaf in leaves:
-        validate_candidate_leaf(
-            leaf,
-            scenarios,
-            resolver_context={"evidence_names": node_context.get("evidence_names", [])},
-            registry=registry,
-        )
-        identity = leaf_identity(leaf, scenarios.get(leaf.scenario_id))
-        if identity in identities:
-            raise ValueError("Duplicate Leaf Task semantics")
-        identities.add(identity)
-        if leaf.leaf_task_id in accepted:
-            raise ValueError(f"Duplicate Leaf Task identity: {leaf.leaf_task_id}")
-        accepted[leaf.leaf_task_id] = leaf
-        scenario = scenarios[leaf.scenario_id]
-        scenarios[leaf.scenario_id] = scenario.model_copy(update={
-            "leaf_task_ids": [*scenario.leaf_task_ids, leaf.leaf_task_id],
-            "status": "completed" if leaf.eligible_count else scenario.status,
-        })
-    active = [key for key, value in scenarios.items() if not value.exclusion_reason]
-    completed = [key for key in active if scenarios[key].leaf_task_ids]
-    pending = [key for key in active if key not in completed]
-    return TaskPlanState(
-        dataset=dataset,
-        axis_decisions={
-            "input_structure": axis_analysis.input_structure,
-            "operation": axis_analysis.operation,
-            "clinical_target": axis_analysis.clinical_target,
-        },
-        scenarios=scenarios,
-        leaf_tasks=accepted,
-        phase="leaves",
-        current_scenario_id=pending[0] if pending else None,
-        pending_scenario_ids=pending,
-        completed_scenario_ids=completed,
-        revision=revision,
-    )
-
-
-def node_statistics(nodes: dict[str, TaskScenario]) -> dict[str, Any]:
-    return {
-        "total": len(nodes),
-        "excluded": sum(bool(node.exclusion_reason) for node in nodes.values()),
-        "with_leaves": sum(bool(node.leaf_task_ids) for node in nodes.values()),
-        "by_capability_category": dict(Counter(node.capability_category for node in nodes.values())),
-    }
 
 
 def summarize_leaf(access, leaf, *, cases=None, scenarios=None):

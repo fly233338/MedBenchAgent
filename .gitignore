@@ -25,8 +25,6 @@ benchmarks/
 .runtime/
 experiments/
 experiments-v2/
-.runtime/
-experiments/
 .langgraph_api/
 
 # IDE and OS files

@@ -203,6 +203,7 @@ def test_canonical_planner_axis_and_node_tools_persist_bounded_artifacts(tmp_pat
     from medbenchagent.agents import task_planning
 
     context = {
+        "dataset_scope": "d",
         "operation_directory": str(tmp_path),
         "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"},
     }
@@ -221,7 +222,7 @@ def test_canonical_planner_axis_and_node_tools_persist_bounded_artifacts(tmp_pat
 def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypatch):
     from medbenchagent.agents import task_planning
 
-    context = {"operation_directory": str(tmp_path),
+    context = {"operation_directory": str(tmp_path), "dataset_scope": "d",
                "dataset_access_manifest": {"schema_version": "annotation", "revision": "7"}}
     monkeypatch.setattr(task_planning, "require", lambda *_args: None)
     context["dataset_facts"] = {"revision":"7", "assets":{"primary_image_assets":1},

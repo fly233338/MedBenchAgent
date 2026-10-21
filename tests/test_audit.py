@@ -1,6 +1,5 @@
 from image_fixtures import image_context
-from medbenchagent.planning.resolver import resolve_task_input
-from medbenchagent.planning.task_space import LeafTask
+from medbenchagent.generation.items import generate_task_items
 from medbenchagent.audit.task_items import audit_task_items
 
 
@@ -14,17 +13,9 @@ def test_audit_reconstructs_reference_and_rejects_leakage(tmp_path):
             "output_spec": "text", "result_step": "step_1"}}
     case = {"case_id": "c", "evidence": [{"id": "a", "type": "asset", "name": "image", "value": "asset", "ref": []},
                                               {"id": "r", "type": "text", "name": "report", "value": "Clear", "ref": ["a"]}]}
-    good = {
-        "task_id": "l", "case_id": "c", "answer": "Clear",
-        "question": "Describe.", "template_index": 0, "template_count": 1,
-        "options": None,
-        "input_bindings": [{"role": "image", "evidence_ids": ["a"], "assets": ["asset"]}],
-        "input_assets": ["asset"],
-        "input_evidence_ids": ["a"], "reference_evidence_ids": ["r"],
-    }
-    bad = {**good, "id": "bad", "input_evidence_ids": ["a", "r"]}
     context = image_context(tmp_path, [case])
-    good["input_images"] = resolve_task_input(case, LeafTask.model_validate(leaf), None, context).presentations
+    good = generate_task_items([case], [leaf], "d", resolver_context=context)[0]
+    bad = {**good, "item_id": "bad", "input_evidence_ids": ["a", "r"]}
     report = audit_task_items([case], [good, bad], [leaf], resolver_context=context)
     assert report["accepted"] == 1 and report["rejected"] == 1
     assert report["reason_counts"]["input_reference_leakage"] == 1
@@ -46,14 +37,11 @@ def test_audit_rejects_wrong_question_and_input_binding(tmp_path):
         {"id": "a", "type": "asset", "name": "image", "value": "asset", "ref": []},
         {"id": "r", "type": "text", "name": "report", "value": "Clear", "ref": ["a"]},
     ]}
-    item = {
-        "task_id": "l", "case_id": "c", "answer": "Clear", "question": "Wrong.",
-        "template_index": 0, "template_count": 1, "options": None,
-        "input_bindings": [{"role": "image", "evidence_ids": ["r"], "assets": []}],
-        "input_assets": [], "input_evidence_ids": ["r"], "reference_evidence_ids": ["r"],
-    }
-
-    report = audit_task_items([case], [item], [leaf], resolver_context=image_context(tmp_path, [case]))
+    context = image_context(tmp_path, [case])
+    item = generate_task_items([case], [leaf], "d", resolver_context=context)[0]
+    item.update(question="Wrong.", input_bindings=[{"role": "image", "evidence_ids": ["r"], "assets": []}],
+                input_assets=[], input_evidence_ids=["r"])
+    report = audit_task_items([case], [item], [leaf], resolver_context=context)
 
     assert report["accepted"] == 0
     assert {"question_mismatch", "input_binding_mismatch", "input_order_mismatch"} <= set(report["reason_counts"])

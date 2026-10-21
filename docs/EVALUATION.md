@@ -31,7 +31,7 @@ python -m pip install -r requirements/evaluation.txt
 If the server needs a CUDA-specific PyTorch wheel, install the matching `torch`
 and `torchvision` build first, then install the requirements file. The repository
 does not assume a CUDA version. The evaluation environment does not need the full
-MedBenchAgent dependency set or an editable package install.
+MedD2B dependency set or an editable package install.
 
 To use FlashAttention-2, install a build compatible with the active PyTorch and
 server CUDA toolchain after the base requirements:

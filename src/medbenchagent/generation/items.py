@@ -8,6 +8,7 @@ import random
 from pathlib import Path
 from typing import Any, Iterable
 
+from medbenchagent.contracts import BenchmarkItem
 from medbenchagent.planning.resolver import NotApplicable, ResolverContext, encode_closed_label, resolve_task_input
 from medbenchagent.planning.sampling import sampling_units
 from medbenchagent.planning.task_space import LeafTask, OutputSpec
@@ -113,12 +114,9 @@ def generate_task_items(
             template_index = cycles[leaf.leaf_task_id][counts[leaf.leaf_task_id] % len(cycles[leaf.leaf_task_id])]
             item = {
                 "item_id": _identity(dataset_id, leaf.leaf_task_id, case_id, sampling_unit.sampling_unit_id, sampling_unit.view_ids, sampling_unit.panel_id, sampling_unit.order),
-                "id": _identity(dataset_id, leaf.leaf_task_id, case_id, sampling_unit.sampling_unit_id, sampling_unit.view_ids, sampling_unit.panel_id, sampling_unit.order),
                 "dataset_id": dataset_id,
-                "dataset": dataset_id,
                 "scenario_id": leaf.scenario_id,
                 "leaf_task_id": leaf.leaf_task_id,
-                "task_id": leaf.leaf_task_id,
                 "case_id": case_id,
                 "capability_category": leaf.capability_category.value,
                 "task_paradigm": leaf.task_paradigm.value,
@@ -142,7 +140,7 @@ def generate_task_items(
                     "panel_id": sampling_unit.panel_id,
                     "sampling_order": sampling_unit.order,
                 })
-            items.append(item)
+            items.append(BenchmarkItem.model_validate(item).model_dump(exclude_unset=True))
             counts[leaf.leaf_task_id] += 1
     return items
 
@@ -151,9 +149,13 @@ def write_task_items(path: str | Path, items: Iterable[dict[str, Any]]) -> str:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-        for item in items:
-            handle.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
-    temporary.replace(destination)
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            for item in items:
+                item = BenchmarkItem.model_validate(item).model_dump(exclude_unset=True)
+                handle.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
     return str(destination)
 

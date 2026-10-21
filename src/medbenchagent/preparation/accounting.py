@@ -9,8 +9,8 @@ def records(mapping, source_roots):
     for source in mapping.record_sources:
         path = contained_path(source_roots[source.source_id], source.path)
         if source.format in {"xlsx", "xls"}:
-            from medbenchagent.data.preparation_ops import _read_table
-            yield from _read_table(path, sheet=source.sheet).to_dict(orient="records")
+            from medbenchagent.data.tables import read_excel
+            yield from read_excel(path, sheet=source.sheet).to_dict(orient="records")
             continue
         with path.open(encoding="utf-8-sig", newline="") as stream:
             if source.format in {"csv", "tsv"}:

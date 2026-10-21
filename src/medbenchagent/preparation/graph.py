@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 import shutil
+import time
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -18,7 +19,7 @@ from .context import build_stage_context, resolve_prompt_budget, stage_input_dig
 from .contracts import (
     CONTROL_MAPPING_REVISION_REQUIRED,
     AcceptedHandoff,
-    ArtifactRef, digest_file,
+    ArtifactRef, digest_file, digest_payload,
     Diagnostic,
     Stage,
     StageRequest,
@@ -52,6 +53,8 @@ class PreparationGraphState(TypedDict, total=False):
     understand_failures: int
     prepare_text_failures: int
     prepare_image_failures: int
+    repair_progress: dict[str, Any]
+    stage_usage: dict[str, Any]
     text_root: str
     text_artifacts: dict[str, Any]
     package_root: str
@@ -72,7 +75,6 @@ class PreparationGraphState(TypedDict, total=False):
     preparation_attempt_limits: dict[str, int]
     preparation_stage_budgets: dict[str, Any]
     execution_runtime: dict[str, Any]
-    data_runtime: dict[str, Any]
     construction_events_path: str
     model: str
     base_url: str
@@ -105,17 +107,44 @@ def _fresh_attempt(state, **updates):
             **updates}
 
 
-def _retry(state, stage, issues):
+def _candidate_digest(state):
+    root = Path(state["attempt_workspace"]) / "work" if state.get("attempt_workspace") else None
+    if root is None or not root.exists():
+        return digest_payload({})
+    files = [path for path in (root / "outputs").rglob("*") if path.is_file()]
+    if (root / "accounting.json").is_file():
+        files.append(root / "accounting.json")
+    return digest_payload({path.relative_to(root).as_posix(): digest_file(path) for path in sorted(files)})
+
+
+def _retry(state, stage, issues, validation=None):
+    """Only host-verified improvement resets the consecutive no-progress budget."""
+    history = dict(state.get("repair_progress", {}))
+    key = f"{stage.value}:{state.get('mapping_revision_cycles', 0)}"
+    prior = history.get(key)
+    candidate = _candidate_digest(state)
+    checks = set(validation.passed_checks if validation else [])
+    signatures = {digest_payload({key: item.get(key) for key in (
+        "code", "category", "field", "rule_ids", "issue_ids", "source_refs")}) for item in issues}
+    advanced = bool(prior and candidate != prior["candidate_digest"] and (
+        checks > set(prior["passed_checks"]) or
+        (checks >= set(prior["passed_checks"]) and signatures < set(prior["issues"]))
+    ))
+    failures = 0 if prior is None or advanced else state.get(f"{stage.value}_failures", 0) + 1
+    if prior is None or advanced:
+        history[key] = {"candidate_digest": candidate, "passed_checks": sorted(checks),
+                        "issues": sorted(signatures)}
     reference_changed = any(item.get("code") == "previous_reference_changed" for item in issues)
-    failures = state.get(f"{stage.value}_failures", 0) + 1
     allowed = (not reference_changed
                and failures < _limit(state, stage.value)
                and not any(item.get("category") == "environment" for item in issues))
     return _fresh_attempt(
         state, status="running" if allowed else "blocked", stage=stage.value,
         **{f"{stage.value}_failures": failures},
+        repair_progress=history,
         previous_attempt_root=state.get("attempt_workspace"),
-        diagnostics=issues, validation_feedback={"issues": issues},
+        diagnostics=issues, validation_feedback={"issues": issues, "candidate_digest": candidate,
+            "passed_checks": sorted(checks), "advanced": advanced, "no_progress_failures": failures},
     )
 
 
@@ -185,6 +214,15 @@ def resume_or_start(state):
 def _run_stage(state, stage, worker):
     if state.get(f"{stage.value}_failures", 0) >= _limit(state, stage.value):
         return {"status": "blocked", "stage_result": None}
+    usage = dict(state.get("stage_usage", {}))
+    spent = usage.get(stage.value, {"iterations": 0, "seconds": 0.0})
+    budget = resolve_prompt_budget(state, stage)
+    if spent["iterations"] >= budget.max_iterations or budget.timeout_seconds - spent["seconds"] < 1:
+        return {"status": "blocked", "stage_result": None, "diagnostics": [{
+            "code": "stage_budget_exhausted", "stage": stage.value,
+            "message": "Cumulative preparation stage execution budget exhausted", "category": "environment"}]}
+    remaining = budget.model_copy(update={"max_iterations": budget.max_iterations - spent["iterations"],
+                                         "timeout_seconds": int(budget.timeout_seconds - spent["seconds"])})
     count = state.get(f"{stage.value}_attempts", 0) + 1
     attempt_id = f"{stage.value}-{count}"
     epoch = state.get("mapping_revision_cycles", 0)
@@ -222,7 +260,7 @@ def _run_stage(state, stage, worker):
             source_roots=state["source_roots"], source_manifests=state["source_manifests"],
             required_outputs=list(STAGE_OUTPUTS[stage]),
             optional_outputs=["metadata.json"] if stage is Stage.PREPARE_TEXT else [],
-            prompt_token_count=tokens, budget=resolve_prompt_budget(state, stage),
+            prompt_token_count=tokens, budget=remaining,
             construction_events_path=state.get("construction_events_path", ""),
             model=state.get("model") or settings.model or "",
             base_url=state.get("base_url") or settings.base_url or "",
@@ -240,6 +278,7 @@ def _run_stage(state, stage, worker):
         atomic_write_json(request_path, request.model_dump(mode="json"))
         atomic_write_json(workspace / "request.json", request.model_dump(mode="json"))
         _event(local, "stage_started", attempt=count, conversation_id=request.conversation_id, status="running")
+        started = time.monotonic()
         try:
             result = worker.run(request)
             verify_previous_reference(workspace)
@@ -256,9 +295,13 @@ def _run_stage(state, stage, worker):
                         ignore=shutil.ignore_patterns("conversations", "logs"))
         shutil.copy2(workspace / "prompt.md", snapshot / "prompt.md")
         outputs = {name: str(snapshot / "work/outputs" / name) for name in result.outputs}
-        result = result.model_copy(update={"outputs": outputs, "input_digest": input_digest})
+        result = result.model_copy(update={"outputs": outputs, "input_digest": input_digest,
+            "usage": {**result.usage, "host_elapsed_seconds": time.monotonic() - started}})
         atomic_write_json(result_path, result.model_dump(mode="json"))
+    usage[stage.value] = {"iterations": spent["iterations"] + max(1, int(result.progress.get("iterations", 0))),
+                          "seconds": spent["seconds"] + result.usage.get("host_elapsed_seconds", 0.0)}
     return {"stage": stage.value, "status": "running", f"{stage.value}_attempts": count,
+            "stage_usage": usage,
             "attempt_id": attempt_id, "attempt_workspace": str(snapshot),
             "attempt_input_digest": input_digest, "stage_result": result.model_dump(mode="json")}
 
@@ -293,7 +336,7 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
                 return _retry(state, stage, [{"code": "question_invalid", "message": str(exc)}])
             return {"status": "needs_input", "pending_questions": questions}
         if result.status != "submitted":
-            if result.status == "cancelled":
+            if result.status in {"cancelled", "blocked"}:
                 return {"status": "blocked", "diagnostics": _failure_issues(result)}
             return _retry(state, stage, _failure_issues(result))
         if stage is Stage.UNDERSTAND:
@@ -309,7 +352,8 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
             return {"status": "needs_input",
                     "pending_questions": [item.model_dump(mode="json") for item in validation.questions]}
         if validation.status != "accepted":
-            return _retry(state, stage, issues)
+            return _retry(state, stage, issues, validation)
+        accepted = {f"{stage.value}_failures": 0}
         if stage is Stage.UNDERSTAND:
             handoff = accept_mapping(Path(result.outputs["mapping.json"]).parent, state)
             return _fresh_attempt(
@@ -317,7 +361,7 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
                 accepted_handoff=handoff.model_dump(mode="json"),
                 validation_feedback={}, diagnostics=[],
                 previous_attempt_root=state.get("implementation_repair_root"),
-                revision_basis_handoff=None, implementation_repair_root=None,
+                revision_basis_handoff=None, implementation_repair_root=None, **accepted,
             )
         if stage is Stage.PREPARE_TEXT:
             root = Path(state["attempt_workspace"]) / "work" / "outputs"
@@ -329,10 +373,10 @@ def compile_preparation_graph(*, worker=None, checkpointer=None):
             cases = read_cases(root / "cases.jsonl")
             if not any(mapped[e.value][0].action == "convert"
                        for case in cases for e in case.evidence if e.type == "asset"):
-                return {"status": "validated", "text_root": str(root), "text_artifacts": artifacts}
+                return {"status": "validated", "text_root": str(root), "text_artifacts": artifacts, **accepted}
             return _fresh_attempt(state, stage=Stage.PREPARE_IMAGE.value, status="running",
-                                  text_root=str(root), text_artifacts=artifacts, previous_attempt_root=None)
-        return {"status": "validated", "validation": validation.model_dump(mode="json")}
+                                  text_root=str(root), text_artifacts=artifacts, previous_attempt_root=None, **accepted)
+        return {"status": "validated", "validation": validation.model_dump(mode="json"), **accepted}
 
     def package(state):
         try:

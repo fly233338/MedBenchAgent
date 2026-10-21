@@ -208,6 +208,7 @@ class ValidationResult(Contract):
     issues: list[Diagnostic] = Field(default_factory=list)
     questions: list[SemanticQuestion] = Field(default_factory=list)
     candidate_digest: str = ""
+    passed_checks: list[str] = Field(default_factory=list)
 
 
 class StageControl(Contract):

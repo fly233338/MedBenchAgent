@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import uuid
 from filelock import FileLock
+from pydantic import ValidationError
 from medbenchagent.data.sources import digest_path
 from .images import mapped_images
 
@@ -33,13 +34,17 @@ def _load_inputs(state):
 
 def validate_stage(root, stage, state):
     root, stage = Path(root), Stage(stage)
+    passed = []
     try:
         for name in STAGE_OUTPUTS[stage]:
             if not (root / name).is_file():
                 raise ValueError(f"Missing output: {name}")
+            passed.append(f"output:{name}")
         if stage is Stage.UNDERSTAND:
             mapping = PreparationMapping.model_validate_json((root / "mapping.json").read_text(encoding="utf-8"))
+            passed.append("mapping_schema")
             plan = ImageConversionPlan.model_validate_json((root / "image_conversion_plan.json").read_text(encoding="utf-8"))
+            passed.append("conversion_schema")
             ids = [r.rule_id for r in mapping.image_rules]
             if len(ids) != len(set(ids)):
                 raise ValueError("Duplicate image rule ID")
@@ -54,17 +59,23 @@ def validate_stage(root, stage, state):
                         raise ValueError("Volume policy requires explicit axis and indices")
                 if rule.action == "direct" and rule.source_format.lower() not in {"jpeg", "jpg", "png", "webp", "gif"}:
                     raise ValueError("Nonordinary input must convert to PNG")
+            passed.append("image_rules")
             from .accounting import records
             sum(1 for _ in records(mapping, state["source_roots"]))
+            passed.append("source_records")
             if not mapped_images(mapping, plan, state):
                 raise ValueError("Image rules match no sources")
         else:
             mapping, plan = _load_inputs(state)
+            passed.append("accepted_semantics")
             mapped = mapped_images(mapping, plan, state)
+            passed.append("mapped_images")
             if stage is Stage.PREPARE_TEXT:
                 cases = read_cases(root / "cases.jsonl")
+                passed.append("cases_schema")
                 from .accounting import validate_accounting
                 validate_accounting(root.parent / "accounting.json", mapping, state["source_roots"], len(cases))
+                passed.append("accounting")
                 for case in cases:
                     validate_case(case)
                     for evidence in case.evidence:
@@ -80,15 +91,19 @@ def validate_stage(root, stage, state):
                             raise ValueError("Mask requires reference-only rule")
                         elif rule.action == "direct":
                             verify_image(source)
+                    passed.append(f"case:{case.case_id}")
             else:
                 for ref in state["text_artifacts"].values():
                     if digest_file(ref["path"]) != ref["digest"]:
                         raise ValueError("Accepted Text changed")
+                passed.append("accepted_text")
                 cases = read_cases(Path(state["text_root"]) / "cases.jsonl")
                 needed = {e.value for c in cases for e in c.evidence if e.type == "asset" and mapped[e.value][0].action == "convert"}
                 images = {row.path: row for row in iter_image_manifest(root / "image_manifest.jsonl")}
+                passed.append("image_manifest_schema")
                 if set(images) != needed:
                     raise ValueError("Converted manifest differs from required converted locators")
+                passed.append("converted_locators")
                 for locator, image in images.items():
                     rule, source, relative, index = mapped[locator]
                     if image.metadata.get("conversion") != plan.policies[rule.policy_id].model_dump(mode="json") or image.metadata.get("slice_index") != index:
@@ -100,9 +115,14 @@ def validate_stage(root, stage, state):
                     info = verify_image(root / "images" / Path(locator).name, image.file_digest)
                     if (info["width"], info["height"], info["format"].lower()) != (image.width, image.height, image.format.lower()) or info["format"] != "PNG":
                         raise ValueError("Converted image must be a real PNG with matching metadata")
-        return ValidationResult(status="accepted", stage=stage)
+                    passed.append(f"image:{locator}")
+        return ValidationResult(status="accepted", stage=stage, passed_checks=passed)
     except (ValueError, KeyError, OSError) as exc:
-        return ValidationResult(status="rejected", stage=stage, issues=[Diagnostic(stage=stage, code="invalid_output", message=str(exc))])
+        issues = ([Diagnostic(stage=stage, code=error["type"], category="schema",
+                              field=".".join(map(str, error["loc"])), message=error["msg"])
+                   for error in exc.errors()] if isinstance(exc, ValidationError) else
+                  [Diagnostic(stage=stage, code="invalid_output", message=str(exc))])
+        return ValidationResult(status="rejected", stage=stage, passed_checks=passed, issues=issues)
 
 
 def accept_mapping(root, state):

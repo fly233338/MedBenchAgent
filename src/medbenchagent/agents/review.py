@@ -6,7 +6,7 @@ from medbenchagent.agents.task_planning import (
 )
 from medbenchagent.planning.bir import BIRStore, business_dependencies
 from medbenchagent.runtime.harness import result
-from medbenchagent.runtime.llm import complete_json
+from medbenchagent.planning.context import complete_planning_json as complete_json
 
 
 def review_plan(context):

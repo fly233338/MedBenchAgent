@@ -35,8 +35,8 @@ class ExtractedBrief(BaseModel):
 
 EXTRACTION_PROMPT = """Act as the benchmark-intake analyst. Extract the user's intended medical VLM benchmark
 from the complete request and clarification history into one JSON object. Preserve the user's intent even when it
-is broad, comparative, multi-dataset, or expressed with unfamiliar task wording. Do not force an intent into a disease
-or modality when the user did not say that.
+is broad, comparative, or expressed with unfamiliar task wording. Each compilation binds one dataset; independent
+datasets require separate batch entries without a shared quota. Do not force a disease or modality the user did not state.
 
 Return these keys and no wrapper object:
 {

@@ -61,11 +61,16 @@ def test_bir_rejects_path_escape(tmp_path: Path):
 def test_task_plan_is_only_planning_authority(tmp_path):
     from medbenchagent.agents import task_planning
     from medbenchagent.planning.task_space import TaskPlanState
+    from medbenchagent.planning.access import DatasetAccessReceipt
+    from compilation_fixtures import prepared_access
+    from test_compilation import cases
     record = compilation(tmp_path)
     operation = tmp_path / "operation"
+    access = prepared_access(tmp_path / "dataset", cases())
     context = {"bir_path": record["bir_path"], "dataset_scope": "demo", "run_id": "r",
-               "operation_directory": str(operation), "dataset_access_manifest": {"revision": "r"}}
-    BIRStore(record["bir_path"]).update("dataset_bindings.json", {"datasets": {"demo": {"access": {"revision": "r"}}}}, run_id="r", actor="test")
+               "operation_directory": str(operation), "dataset_access_manifest": access}
+    receipt = DatasetAccessReceipt.bind("demo", access).model_dump(exclude_none=True)
+    BIRStore(record["bir_path"]).update("dataset_bindings.json", {"datasets": {"demo": {"access": receipt}}}, run_id="r", actor="test")
     plan = TaskPlanState(dataset={"dataset_id": "demo"})
     result = task_planning._write_artifacts(context, plan)
     assert Path(result["task_plan_path"]).is_relative_to(Path(record["bir_path"]))

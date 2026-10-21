@@ -123,13 +123,6 @@ class ResolverContext:
                     manifests[name] = load_manifest(path, model)
                 except (OSError, ValueError):
                     manifests[name] = None
-        nested = access.get("source_access")
-        if isinstance(nested, dict) and nested is not access:
-            nested_context = cls.from_access(nested)
-            for asset_id, asset in nested_context.assets.items():
-                assets.setdefault(asset_id, asset)
-            for name, manifest in nested_context.manifests.items():
-                manifests.setdefault(name, manifest)
         return cls(assets=assets, manifests=manifests, dataset_root=str(Path(access["cases_path"]).parent) if access.get("cases_path") else "")
 
     def asset(self, asset_id: str) -> dict[str, Any] | None:

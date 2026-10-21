@@ -37,7 +37,7 @@ from medbenchagent.planning.task_space import (
 from medbenchagent.planning.bir import require
 from medbenchagent.runtime.harness import result
 from medbenchagent.workflow.agent_runtime import compile_agent
-from medbenchagent.runtime.llm import complete_json
+from medbenchagent.planning.context import complete_planning_json as complete_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.tool_contracts import NoArguments
 
@@ -173,7 +173,8 @@ def _access(context: dict[str, Any]) -> dict[str, Any]:
     if context.get("bir_path") and context.get("dataset_scope"):
         store = BIRStore(context["bir_path"])
         value = store.load("dataset_bindings.json")["datasets"][context["dataset_scope"]]["access"]
-        return value.get("source_access", value)
+        from medbenchagent.planning.access import DatasetAccessReceipt
+        return DatasetAccessReceipt.model_validate(value).verified_source(context["dataset_scope"])
     return context.get("dataset_access_manifest", {})
 
 
@@ -255,7 +256,7 @@ def _planning_binding(context: dict[str, Any], plan: TaskPlanState, scenario_id:
     return {
         "dataset_id": access.get(
             "dataset_id",
-            context.get("dataset_scope", context.get("selected_dataset_id", plan.dataset.get("dataset_id"))),
+            context.get("dataset_scope", plan.dataset.get("dataset_id")),
         ) or plan.dataset.get("dataset_id"),
         "revision": access.get("revision", facts.get("revision")),
         "scenario_id": scenario_id,
@@ -485,7 +486,7 @@ def _leaf_context(context: dict[str, Any], plan: TaskPlanState) -> dict[str, Any
     return _bounded_leaf_context({
         "required_evidence_names": sorted(required),
         "dataset_binding": {
-            "dataset_id": access.get("dataset_id", context.get("dataset_scope", context.get("selected_dataset_id"))),
+            "dataset_id": access.get("dataset_id", context.get("dataset_scope")),
             "revision": access.get("revision", facts.get("revision")),
         },
         "extension_selection": plan.extension_selection,
@@ -571,7 +572,7 @@ def _benchmark_brief(context: dict[str, Any]) -> dict[str, Any]:
 def _load_plan(context: dict[str, Any]) -> TaskPlanState:
     bir = _bir(context)
     if bir:
-        dataset = context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))
+        dataset = context["dataset_scope"]
         relative = f"datasets/{dataset}/planning/task_plan.json"
         if (bir.root / relative).is_file():
             from medbenchagent.planning.bir import BIRStaleError, business_dependencies
@@ -590,7 +591,7 @@ def _load_plan(context: dict[str, Any]) -> TaskPlanState:
     if not bir and path.is_file():
         return TaskPlanState.model_validate(_read(path))
     return TaskPlanState(
-        dataset={"dataset_id": context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))}
+        dataset={"dataset_id": context["dataset_scope"]}
     )
 
 
@@ -601,7 +602,7 @@ def _write_json(path: Path, value: Any) -> str:
 
 def _write_artifacts(context, plan):
     from medbenchagent.planning.bir import persist_task_plan
-    return persist_task_plan(context, plan, plan_path=_plan_path(context), bir=_bir(context), access=_access(context))
+    return persist_task_plan(context, plan, plan_path=_plan_path(context), bir=_bir(context))
 
 
 def _initialize_planning_context(context: dict[str, Any]) -> dict[str, Any]:
@@ -1515,7 +1516,7 @@ def finish_task_plan(context: dict[str, Any]) -> dict[str, Any]:
         executable_leaf_count=len(executable_leaves),
         excluded_scenario_count=excluded_count,
         dataset_task_plans={
-            context.get("dataset_scope", context.get("selected_dataset_id", "dataset")): updates["task_plan_path"]
+            context["dataset_scope"]: updates["task_plan_path"]
         },
         **updates,
     )
@@ -1672,7 +1673,7 @@ def _planning_model_context(context, payload):
     payload["recent_observations"] = [{key: row[key] for key in ("tool", "status") if key in row}
                                       for row in payload.get("recent_observations", [])]
     payload["last_result"] = {key: value for key, value in payload.get("last_result", {}).items()
-                              if key in {"status", "diagnostics", "data"}}
+                              if key in {"status", "diagnostics", "data", "agent_outcome"}}
     from medbenchagent.runtime.construction import record_event
     encoded = json.dumps(payload, ensure_ascii=False)
     record_event(context["construction_events_path"], "planning_context_metrics",
@@ -1682,6 +1683,7 @@ def _planning_model_context(context, payload):
 
 
 def compile_task_planning_agent(*, checkpointer=None):
+    from medbenchagent.settings import get_settings
     tools = (
         read_planning_context,
         read_dataset_overview,
@@ -1719,6 +1721,7 @@ def compile_task_planning_agent(*, checkpointer=None):
         available_tools=_available_tools,
         automatic_action=_planning_automatic_action,
         model_context=_planning_model_context,
+        request_char_budget=lambda context: get_settings().planning.context_chars,
         read_tools=frozenset({"read_planning_context", "read_dataset_overview", "read_evidence_catalog", "read_axis_evidence", "read_field_values", "read_annotation_semantics", "read_leaf_tasks"}),
         initialize_context=_initialize_planning_context,
         progress_key=_planning_progress_key,

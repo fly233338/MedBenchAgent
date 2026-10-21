@@ -86,7 +86,6 @@ def _metadata(values: dict) -> dict:
         "effective_config_path": context.get("effective_config_path"),
         "catalog_snapshot_path": context.get("task_catalog_snapshot_path"),
         "bir_path": context.get("bir_path"),
-        "bir_revision": context.get("bir_revision"),
         "bir_manifest_digest": context.get("bir_manifest_digest"),
         "bir_template_revision": context.get("bir_template_revision"),
         "bir_summary_ref": context.get("bir_summary_ref"),
@@ -324,7 +323,6 @@ class GraphRunner:
                                         "effective_config_path": initialized.get("effective_config_path"),
                                         "catalog_snapshot_path": initialized.get("task_catalog_snapshot_path"),
                                         "bir_path": initialized.get("bir_path"),
-                                        "bir_revision": initialized.get("bir_revision"),
                                         "bir_manifest_digest": initialized.get("bir_manifest_digest"),
                                         "bir_template_revision": initialized.get("bir_template_revision"),
                                     })

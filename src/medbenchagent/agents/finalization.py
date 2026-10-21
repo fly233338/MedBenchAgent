@@ -11,6 +11,8 @@ from typing import Any, Iterable
 
 from medbenchagent.audit.task_items import audit_task_items
 from medbenchagent.data.manifests import SamplingManifest, SplitManifest, load_manifest, verify_manifest_digest
+from pydantic import ValidationError
+from medbenchagent.contracts import BenchmarkItem
 from medbenchagent.planning.task_space import TaskPlanState
 from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
@@ -47,7 +49,7 @@ def _option_distribution(items: Iterable[dict[str, Any]]) -> dict[str, dict[str,
     for item in items:
         options = item.get("options")
         if isinstance(options, list) and item.get("answer") in options:
-            distribution[str(item.get("task_id"))][str(options.index(item["answer"]))] += 1
+            distribution[str(item.get("leaf_task_id"))][str(options.index(item["answer"]))] += 1
     return {task: dict(sorted(counts.items())) for task, counts in sorted(distribution.items())}
 
 
@@ -57,10 +59,10 @@ def balance_option_positions(items: list[dict[str, Any]], seed: int = 0) -> tupl
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in items:
         if isinstance(item.get("options"), list) and item.get("options") and item.get("answer") in item["options"]:
-            groups[str(item.get("task_id"))].append(item)
+            groups[str(item.get("leaf_task_id"))].append(item)
     for task_id, group in groups.items():
         group.sort(key=lambda item: hashlib.sha256(
-            json.dumps([seed, task_id, item.get("item_id", item.get("id"))], separators=(",", ":")).encode()
+            json.dumps([seed, task_id, item["item_id"]], separators=(",", ":")).encode()
         ).hexdigest())
         for rank, item in enumerate(group):
             options = list(item["options"])
@@ -77,8 +79,8 @@ def _limit_reasons(items: Iterable[dict[str, Any]], *, max_tasks_per_image: int 
     accepted, rejected = [], []
     per_format: Counter[tuple[str, str, str]] = Counter()
     total: Counter[tuple[str, str]] = Counter()
-    for item in sorted(items, key=lambda value: (str(value.get("dataset_id")), str(value.get("item_id", value.get("id", ""))))):
-        dataset = str(item.get("dataset_id", item.get("dataset", "")))
+    for item in sorted(items, key=lambda value: (str(value.get("dataset_id")), str(value["item_id"]))):
+        dataset = str(item["dataset_id"])
         keys = [(dataset, str(asset), str(item.get("output_spec"))) for asset in (item.get("input_assets") or [])]
         reasons = []
         if max_tasks_per_image is not None and any(per_format[key] >= max_tasks_per_image for key in keys):
@@ -258,7 +260,9 @@ def audit_benchmark(context: dict[str, Any], *, output_directory: str | Path | N
     if len(selected) != 1:
         raise ValueError("Candidate audit requires exactly one dataset")
     allocation = store.load("allocation.json")
-    assets = {key: {"access": value["access"].get("source_access", value["access"])} for key, value in bindings.items()}
+    from medbenchagent.planning.access import DatasetAccessReceipt
+    assets = {key: {"access": DatasetAccessReceipt.model_validate(value["access"]).verified_source(key)}
+              for key, value in bindings.items()}
     context = {**context, "dataset_assets": assets}
     plans = {
         dataset_id: TaskPlanState.model_validate(BIRStore(context["bir_path"]).load(f"datasets/{dataset_id}/planning/task_plan.json"))
@@ -289,13 +293,19 @@ def audit_benchmark(context: dict[str, Any], *, output_directory: str | Path | N
         raw_items = _read_jsonl(raw_path)
         raw_generated_count = len(raw_items)
         for row in raw_items:
-            if row.get("__invalid__"):
+            if isinstance(row, dict) and row.get("__invalid__"):
                 quarantine.append({"dataset_id": dataset_id, "stage": "generation", "item": row, "reasons": ["invalid_json"]})
         generated = []
         for row in raw_items:
-            if row.get("__invalid__"):
+            if isinstance(row, dict) and row.get("__invalid__"):
                 continue
-            if row.get("dataset_id", row.get("dataset")) != dataset_id or row.get("dataset") not in {None, dataset_id}:
+            try:
+                BenchmarkItem.model_validate(row)
+            except ValidationError as exc:
+                quarantine.append({"dataset_id": dataset_id, "stage": "audit", "item": row,
+                                   "reasons": ["invalid_item_contract"], "diagnostics": str(exc)})
+                continue
+            if row["dataset_id"] != dataset_id:
                 quarantine.append({"dataset_id": dataset_id, "stage": "audit", "item": row, "reasons": ["dataset_mismatch"]})
                 continue
             manifest_reasons = _validate_item_manifest_refs(row, resolver_context)
@@ -311,8 +321,8 @@ def audit_benchmark(context: dict[str, Any], *, output_directory: str | Path | N
         quarantine.extend({"dataset_id": dataset_id, "stage": "audit", **row} for row in audit["rejected_items"])
         bounded, over_allocated = [], []
         allocated_seen: Counter[str] = Counter()
-        for item in sorted(accepted, key=lambda value: str(value.get("item_id", value.get("id", "")))):
-            leaf_id = str(item.get("leaf_task_id", item.get("task_id", "")))
+        for item in sorted(accepted, key=lambda value: str(value["item_id"])):
+            leaf_id = str(item["leaf_task_id"])
             if allocated_seen[leaf_id] >= counts.get(leaf_id, 0):
                 over_allocated.append({"item": item, "reasons": ["allocation_exceeded"]})
             else:
@@ -322,7 +332,7 @@ def audit_benchmark(context: dict[str, Any], *, output_directory: str | Path | N
         quarantine.extend({"dataset_id": dataset_id, "stage": "assembly", **row} for row in over_allocated)
         seen, unique = set(), []
         for item in accepted:
-            identity = (dataset_id, item.get("item_id", item.get("id")))
+            identity = (dataset_id, item["item_id"])
             if identity in seen:
                 quarantine.append({"dataset_id": dataset_id, "stage": "assembly", "item": item, "reasons": ["duplicate_item_id"]})
             else:
@@ -344,7 +354,11 @@ def audit_benchmark(context: dict[str, Any], *, output_directory: str | Path | N
 
     all_items, option_summary = balance_option_positions(all_items, context.get("seed", 0))
     if not all_items:
-        raise ValueError("No deliverable benchmark items remain after Finalization")
+        quarantine_path = _write_jsonl(root / "quarantine.jsonl", quarantine)
+        error = ValueError(f"No deliverable benchmark items remain after candidate audit; inspect {quarantine_path}")
+        error.diagnostics = {"quarantine_path": quarantine_path,
+                             "reason_counts": dict(Counter(reason for row in quarantine for reason in row["reasons"]))}
+        raise error
     manifest = _manifest(context, plans, allocation, all_items, reports, option_summary)
     report = {
         "schema_version": "audit-report",

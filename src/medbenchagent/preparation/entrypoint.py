@@ -83,13 +83,14 @@ def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
         "preparation_attempt_limits": context.get("preparation_attempt_limits", settings["preparation_attempt_limits"]),
         "preparation_stage_budgets": context.get("preparation_stage_budgets", settings["preparation_stage_budgets"]),
         **{key: context[key] for key in (
-            "execution_runtime", "data_runtime", "construction_events_path", "model",
+            "execution_runtime", "construction_events_path", "model",
             "base_url", "reasoning_effort", "llm_timeout_seconds", "llm_max_retries",
         ) if key in context},
     }
-    limits = state["preparation_attempt_limits"]
+    from .context import resolve_prompt_budget
+    from .contracts import Stage
     config = {"configurable": {"thread_id": dataset_id},
-              "recursion_limit": max(25, 2 * (limits["understand"] + limits["prepare_text"] + limits["prepare_image"]) + 6)}
+              "recursion_limit": 2 * sum(resolve_prompt_budget(state, stage).max_iterations for stage in Stage) + 12}
     with SqliteSaver.from_conn_string(str(workspace / "checkpoint.sqlite")) as checkpointer:
         graph = compile_preparation_graph(
             worker=OpenHandsWorker(runtime=dataset_runtime(context)), checkpointer=checkpointer,

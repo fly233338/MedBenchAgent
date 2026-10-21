@@ -29,6 +29,9 @@ Evidence Catalog 是完整数据事实清单，不是任务候选清单。Task P
 Summary 和有界 Case Samples。每个规划证据文件记录 dataset revision 与输入
 digest；读取工具只返回分页或当前 Axis/Scenario 所需的切片。
 
+Receipt 在绑定和读取边界检查数据集身份、source access 与绑定路径的一致性及文件摘要。
+case/patient 计数取自实际 profile，缺少信息时不以零或空路径代替；可选 mapping、Card、sampling/split 的路径与摘要必须成对出现。
+
 Mask 的 bbox、面积、质心、component、等效直径和 plane feature 必须由准备阶段写入
 Evidence，并绑定对应 Asset digest；Resolver 不读取原始 mask 文件。结构事实区分 primary
 asset 才能证明 multi-image 或 multi-view；region→mask 引用不等于多视图关系。
@@ -48,7 +51,7 @@ index、时间或医学语义。
 准备和构建使用 Run 冻结的配置、Catalog snapshot、Card 副本、事件日志和 operation ledger。业务依赖由 BIR canonical 文档校验；工具调用按参数和依赖幂等重放。
 
 编译级 BIR 位于 `experiments/<session>/compilations/<id>/BIR/`，保存单数据集绑定、冻结的
-`DatasetAccessReceipt` 和规划 Evidence 的 canonical 引用。Run 只保存 BIR 路径、revision
-和摘要；Evidence、规划和交付阶段通过 BIRStore 读取并以 revision/digest 校验写回。
+`DatasetAccessReceipt` 和规划 Evidence 的 canonical 引用。Run 保存 BIR 路径、摘要和文档引用，
+不维护全局 BIR revision；各业务文档通过 BIRStore 按自己的 revision/digest 校验写回。
 
 新运行存储在 `.runtime/<run>/control`、`inputs`、`agents` 和 `preparation` 下。会话只持有编译引用；旧运行不迁移。

@@ -65,7 +65,6 @@ class RagSettings:
 class GenerationSettings:
     seed: int
     max_tasks_per_image: int
-    question_temperature: float
     fetch_batch_size: int
     question_template_count: int
     max_total_tasks_per_image: int | None = None
@@ -86,7 +85,6 @@ class BenchmarkSettings:
 
 @dataclass(frozen=True)
 class PlanningSettings:
-    novelty_enabled: bool
     max_calls: int = 1200
     context_chars: int = 64000
 
@@ -114,7 +112,7 @@ class AppSettings:
         generation = {
             key: getattr(self.generation, key) for key in self.generation.__dataclass_fields__
         }
-        for key in ("seed", "max_tasks_per_image", "max_total_tasks_per_image", "question_temperature"):
+        for key in ("seed", "max_tasks_per_image", "max_total_tasks_per_image"):
             if key in normalized_overrides:
                 generation[key] = normalized_overrides[key]
         return {
@@ -310,9 +308,6 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     backend = values["data_processing"]["backend"]
     if backend not in {"auto", "docker", "local"}:
         raise ValueError("data_processing.backend must be auto, docker, or local")
-    workspace_mode = values["data_processing"]["source_workspace_mode"]
-    if workspace_mode not in {"readonly_mount", "copy"}:
-        raise ValueError("data_processing.source_workspace_mode must be readonly_mount or copy")
     question_template_count = _integer(
         generation["question_template_count"],
         "generation.question_template_count",
@@ -332,25 +327,17 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
                                  "benchmark.input_policy"),
         ),
         planning=PlanningSettings(
-            novelty_enabled=bool(values.get("planning", {}).get("novelty_enabled", False)),
             max_calls=_integer(values["planning"]["max_calls"], "planning.max_calls", minimum=1),
             context_chars=_integer(values["planning"]["context_chars"], "planning.context_chars", minimum=4096),
         ),
         dataset_sources=_dataset_sources(values["dataset_sources"]),
         harness={key: _integer(value, f"harness.{key}", minimum=1) for key, value in values["harness"].items()},
-        data_processing={"backend": backend, "image": _string(values["data_processing"]["image"], "data_processing.image"),
-                         "memory_limit": _string(values["data_processing"]["memory_limit"], "data_processing.memory_limit"),
-                         "threads": _integer(values["data_processing"]["threads"], "data_processing.threads", minimum=1),
-                         "container_memory": _string(values["data_processing"]["container_memory"], "data_processing.container_memory"),
-                         "timeout_seconds": _integer(values["data_processing"]["timeout_seconds"], "data_processing.timeout_seconds", minimum=1),
-                         "source_workspace_mode": workspace_mode,
+        data_processing={"backend": backend,
                          "coding_worker_image": _string(values["data_processing"]["coding_worker_image"], "data_processing.coding_worker_image"),
                          "coding_worker_venv": str(_resolve_path(
                              values["data_processing"].get("coding_worker_venv", ".venv-coding"),
                              "data_processing.coding_worker_venv",
                          )),
-                         "coding_worker_max_iterations": _integer(values["data_processing"]["coding_worker_max_iterations"], "data_processing.coding_worker_max_iterations", minimum=1),
-                         "coding_worker_timeout_seconds": _integer(values["data_processing"]["coding_worker_timeout_seconds"], "data_processing.coding_worker_timeout_seconds", minimum=1),
                          "preparation_attempt_limits": {
                              key: _integer(value, f"data_processing.preparation_attempt_limits.{key}", minimum=0 if key == "mapping_revision_cycles" else 1)
                              for key, value in {
@@ -370,9 +357,7 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
             timeout_seconds=_number(llm["timeout_seconds"], "llm.timeout_seconds", minimum=0.000001, maximum=float("inf")),
             max_retries=_integer(llm["max_retries"], "llm.max_retries", minimum=0),
             default_temperature=_number(llm["default_temperature"], "llm.default_temperature", minimum=0, maximum=2),
-            # Older frozen runs predate this setting; medium avoids OpenHands'
-            # SDK default (high) while keeping those runs resumable.
-            reasoning_effort=_optional_string(llm.get("reasoning_effort", "medium"), "llm.reasoning_effort"),
+            reasoning_effort=_optional_string(llm["reasoning_effort"], "llm.reasoning_effort"),
         ),
         rag=RagSettings(
             embedding_base_url=_optional_string(rag["embedding_base_url"], "rag.embedding_base_url"),
@@ -391,7 +376,6 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
             max_tasks_per_image=_integer(generation["max_tasks_per_image"], "generation.max_tasks_per_image", minimum=1),
             max_total_tasks_per_image=(_integer(generation["max_total_tasks_per_image"], "generation.max_total_tasks_per_image", minimum=1)
                                        if generation.get("max_total_tasks_per_image") is not None else None),
-            question_temperature=_number(generation["question_temperature"], "generation.question_temperature", minimum=0, maximum=2),
             fetch_batch_size=_integer(generation["fetch_batch_size"], "generation.fetch_batch_size", minimum=1),
             question_template_count=question_template_count,
         ),
@@ -419,9 +403,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                       else _resolve_path(str(raw_path), "MEDBENCH_CONFIG"))
     if local_path:
         override = _read_toml(local_path)
-        # Existing experiment TOMLs may still contain the removed tracing label.
-        if isinstance(override.get("llm"), dict):
-            override["llm"].pop("trace_name", None)
         _merge(values, override)
     env_keys: list[str] = []
     overrides = {target: (name, os.environ[name]) for name, target in _ENVIRONMENT_OVERRIDES.items()

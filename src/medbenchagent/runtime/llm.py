@@ -38,6 +38,15 @@ class StructuredOutputError(ValueError):
     """Raised after model output cannot be repaired to satisfy a contract."""
 
 
+class RequestContextBudgetError(ValueError):
+    """The complete serialized request cannot fit without losing required context."""
+
+    def __init__(self, actual: int, limit: int):
+        super().__init__(f"Model request requires {actual} characters, exceeding planning.context_chars={limit}; "
+                         "narrow the evidence query or increase the context budget. Required context was not truncated.")
+        self.diagnostics = {"request_chars": actual, "context_chars": limit}
+
+
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -72,10 +81,12 @@ class JsonObject(BaseModel):
 def complete_json(
     system_prompt: str, user_prompt: str, schema: type[BaseModel] = JsonObject,
     validate: Callable[[BaseModel], None] | None = None, *, temperature: float | None = None,
+    request_char_budget: int | None = None,
 ) -> dict[str, Any]:
     """Return validated JSON using the same bounded repair path as agent decisions."""
     return complete_validated_json(system_prompt, user_prompt, schema,
-                                   temperature=temperature, validate=validate).model_dump(exclude_unset=True)
+                                   temperature=temperature, validate=validate,
+                                   request_char_budget=request_char_budget).model_dump(exclude_unset=True)
 
 
 def complete_validated_json(
@@ -84,6 +95,7 @@ def complete_validated_json(
     temperature: float | None = None,
     on_chunk: Callable[[str], None] | None = None,
     on_retry: Callable[[], None] | None = None,
+    request_char_budget: int | None = None,
 ) -> T:
     """Repair model contract errors, independently of API transport retries."""
     settings = get_settings()
@@ -105,6 +117,10 @@ def complete_validated_json(
             }
             if settings.llm.reasoning_effort:
                 request["reasoning_effort"] = settings.llm.reasoning_effort
+            if request_char_budget is not None:
+                actual = len(json.dumps(request, ensure_ascii=False))
+                if actual > request_char_budget:
+                    raise RequestContextBudgetError(actual, request_char_budget)
             response = _client().chat.completions.create(**request)
             if on_chunk is None:
                 raw = (response.choices[0].message.content or "") if response.choices else ""
@@ -135,7 +151,7 @@ def complete_validated_json(
         except (ValueError, ValidationError) as exc:
             if isinstance(exc, ValidationError):
                 errors = [f"{'.'.join(map(str, item['loc']))}: {item['msg']}"
-                          for item in exc.errors()[:5]]
+                          for item in exc.errors()]
                 feedback = "; ".join(errors)
             else:
                 errors = [str(exc)]
@@ -145,7 +161,7 @@ def complete_validated_json(
                 " Correct only the reported contract errors, preserve all already valid fields, "
                 "and return one complete JSON object."
             )
-            feedback = (feedback + repair_guidance)[:1600]
+            feedback += repair_guidance
             record_llm_validation_error(
                 errors=diagnostic,
                 model_output=_validation_output_excerpt(str(raw)),
@@ -154,7 +170,7 @@ def complete_validated_json(
             if attempt == 2 or (raw, feedback) == previous:
                 raise StructuredOutputError(f"LLM structured response failed validation: {feedback}") from exc
             previous = raw, feedback
-            messages.extend([{"role": "assistant", "content": raw[:6000]},
+            messages.extend([{"role": "assistant", "content": raw},
                              {"role": "user", "content":
                               f"Correct your JSON. Contract error: {feedback} Return only a corrected JSON object."}])
             if on_retry is not None:

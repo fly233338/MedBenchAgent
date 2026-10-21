@@ -1,8 +1,9 @@
-"""Local PDF retrieval available throughout concept and leaf planning."""
+"""Local PDF retrieval component with content-bound caches."""
 
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from pathlib import Path
 
@@ -15,8 +16,9 @@ from medbenchagent.rag.remote import (
     REQUEST_TIMEOUT_SECONDS, RagUnavailable, embed_texts, rerank_documents,
 )
 from medbenchagent.settings import get_settings
-
-CACHE_SCHEMA = "3"
+from medbenchagent.data.sources import digest_file
+from medbenchagent.runtime.run_artifacts import atomic_write_json
+from filelock import FileLock
 
 
 def discover_medical_materials(materials_root: str | Path) -> list[dict[str, str]]:
@@ -49,45 +51,25 @@ def _page_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
     if not paragraphs:
         return []
-    chunks: list[str] = []
-    current = ""
-    for paragraph in paragraphs:
-        pending = paragraph
-        while pending:
-            separator = "\n\n" if current else ""
-            available = chunk_size - len(current) - len(separator)
-            if available <= 0:
-                chunks.append(current)
-                current = current[-overlap:] if overlap else ""
-                continue
-            if len(pending) <= available:
-                current += separator + pending
-                pending = ""
-                continue
-            if current:
-                chunks.append(current)
-                current = current[-overlap:] if overlap else ""
-                continue
-            chunks.append(pending[:chunk_size])
-            pending = pending[chunk_size - overlap :]
-    if current and (not chunks or current != chunks[-1]):
-        chunks.append(current)
-    return [chunk.strip() for chunk in chunks if chunk.strip()]
+    normalized = "\n\n".join(paragraphs)
+    chunks, start = [], 0
+    while start < len(normalized):
+        end = min(start + chunk_size, len(normalized))
+        if end < len(normalized):
+            boundary = normalized.rfind("\n\n", start + overlap + 1, end)
+            if boundary != -1:
+                end = boundary
+        chunk = normalized[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end == len(normalized):
+            break
+        # The paragraph boundary is chosen only beyond overlap: always consume text.
+        start = end - overlap
+    return chunks
 
 
-def extract_pdf_chunks(
-    materials_root: str | Path,
-    selected_files: list[str] | None = None,
-    chunk_size: int | None = None,
-    overlap: int | None = None,
-) -> tuple[str, list[dict[str, object]]]:
-    """Extract page-local chunks and return a description of sources and chunking rules."""
-    root = Path(materials_root).expanduser().resolve()
-    settings = get_settings().rag
-    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
-    overlap = settings.chunk_overlap if overlap is None else overlap
-    if chunk_size <= 0 or overlap < 0 or overlap >= chunk_size:
-        raise ValueError("chunk_size must be positive and overlap must be smaller than it.")
+def _pdf_sources(root: Path, selected_files):
     if not root.is_dir():
         raise RagUnavailable(f"Medical-material directory does not exist: {root}")
     if selected_files is None:
@@ -95,7 +77,7 @@ def extract_pdf_chunks(
             path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"
         )
     else:
-        if not selected_files or len(selected_files) != len(set(selected_files)):
+        if not selected_files or not all(isinstance(name, str) for name in selected_files) or len(selected_files) != len(set(selected_files)):
             raise RagUnavailable("Selected medical materials must be a non-empty unique file list.")
         pdfs = []
         for selected_file in selected_files:
@@ -114,11 +96,33 @@ def extract_pdf_chunks(
     if not pdfs:
         raise RagUnavailable("No PDF medical materials were found.")
 
-    source_description = [CACHE_SCHEMA, str(chunk_size), str(overlap)]
+    return pdfs
+
+
+def _source_description(root, pdfs, chunk_size, overlap):
+    return {"schema": "pdf-chunks", "strategy": "paragraph-window",
+            "chunk_size": chunk_size, "overlap": overlap,
+            "documents": [{"path": pdf.relative_to(root).as_posix(), "digest": digest_file(pdf)} for pdf in pdfs]}
+
+
+def extract_pdf_chunks(
+    materials_root: str | Path,
+    selected_files: list[str] | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
+) -> tuple[str, list[dict[str, object]]]:
+    """Extract page-local chunks and return a description of sources and chunking rules."""
+    root = Path(materials_root).expanduser().resolve()
+    settings = get_settings().rag
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    overlap = settings.chunk_overlap if overlap is None else overlap
+    if chunk_size <= 0 or overlap < 0 or overlap >= chunk_size:
+        raise ValueError("chunk_size must be positive and overlap must be smaller than it.")
+    pdfs = _pdf_sources(root, selected_files)
+    source_description = _source_description(root, pdfs, chunk_size, overlap)
     chunks: list[dict[str, object]] = []
     for pdf in pdfs:
         relative_path = pdf.relative_to(root).as_posix()
-        source_description.append(relative_path)
         try:
             reader = PdfReader(str(pdf))
             for page_number, page in enumerate(reader.pages, start=1):
@@ -136,57 +140,73 @@ def extract_pdf_chunks(
             raise RagUnavailable(f"Cannot read PDF text: {relative_path}: {exc}") from exc
     if not chunks:
         raise RagUnavailable("PDF materials contain no extractable text.")
-    source_identity = json.dumps(source_description)
+    if source_description != _source_description(root, pdfs, chunk_size, overlap):
+        raise RagUnavailable("Medical PDF content changed during extraction; retry with a stable source.")
+    source_identity = json.dumps(source_description, sort_keys=True)
     return source_identity, chunks
 
 
 class LocalPdfRag:
     """Chroma retrieval using independently served embedding and reranking models."""
 
-    def __init__(
-        self,
-        materials_root: str | Path,
-        cache_root: str | Path,
-        selected_files: list[str] | None = None,
-        *, revision: str = "1", refresh: bool = False,
-    ) -> None:
+    def __init__(self, materials_root: str | Path, cache_root: str | Path,
+                 selected_files: list[str] | None = None, *, refresh: bool = False) -> None:
+        self.materials_root = Path(materials_root).expanduser().resolve()
+        self.cache_root = Path(cache_root) / "pdf-cache"
+        self.selected_files = list(selected_files) if selected_files is not None else None
+        self._ensure_cache(refresh=refresh)
+
+    def _ensure_cache(self, *, refresh=False):
         settings = get_settings().rag
         if not all((settings.embedding_base_url, settings.embedding_model,
                     settings.reranker_base_url, settings.reranker_model)):
             raise RagUnavailable("Embedding and reranker API endpoints and models must be configured.")
-        if not revision.isalnum():
-            raise ValueError("RAG revision must be alphanumeric.")
-        identity = {"root": str(Path(materials_root).resolve()), "sources": selected_files,
-                    "chunk_size": settings.chunk_size, "overlap": settings.chunk_overlap,
-                    "embedding_base_url": settings.embedding_base_url,
-                    "embedding_model": settings.embedding_model, "revision": revision}
-        cache = Path(cache_root) / "pdf-cache"
+        root = self.materials_root
+        pdfs = _pdf_sources(root, self.selected_files)
+        sources = _source_description(root, pdfs, settings.chunk_size, settings.chunk_overlap)
+        identity = {"schema": "pdf-rag-cache", "root": str(root), "sources": sources,
+                    "embedding_base_url": settings.embedding_base_url, "embedding_model": settings.embedding_model}
+        key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
+        cache = self.cache_root / key
         cache.mkdir(parents=True, exist_ok=True)
-        entries = sorted(cache.glob("*/sources.json"))
-        match = next((p.parent for p in entries if json.loads(p.read_text(encoding="utf-8")) == identity), None)
-        if match is None or refresh:
-            from uuid import uuid4
-            match = cache / str(uuid4())
-            match.mkdir()
-            _, self.chunks = extract_pdf_chunks(materials_root, selected_files)
-            (match / "chunks.json").write_text(json.dumps(self.chunks), encoding="utf-8")
-            (match / "sources.json").write_text(json.dumps(identity), encoding="utf-8")
-        else:
-            self.chunks = json.loads((match / "chunks.json").read_text(encoding="utf-8"))
-        self.cache_dir = match
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.settings = settings
+        manifest, chunks_path = cache / "sources.json", cache / "chunks.json"
+        with FileLock(str(cache / ".cache.lock")):
+            saved = None
+            if manifest.is_file():
+                try:
+                    saved = json.loads(manifest.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    pass
+            valid = (isinstance(saved, dict) and saved.get("identity") == identity and chunks_path.is_file()
+                     and saved.get("chunks_digest") == digest_file(chunks_path))
+            if refresh or not valid:
+                _, chunks = extract_pdf_chunks(root, self.selected_files,
+                                               chunk_size=settings.chunk_size, overlap=settings.chunk_overlap)
+                if sources != _source_description(root, pdfs, settings.chunk_size, settings.chunk_overlap):
+                    raise RagUnavailable("Medical PDF content changed during extraction; retry with a stable source.")
+                atomic_write_json(chunks_path, chunks)
+                atomic_write_json(manifest, {"identity": identity, "chunks_digest": digest_file(chunks_path)})
+                (cache / "indexed.json").unlink(missing_ok=True)
+            self.chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
+            self.chunks_digest = digest_file(chunks_path)
+        self.cache_dir, self.settings = cache, settings
 
     def retrieve(self, query: str, limit: int | None = None) -> list[dict[str, object]]:
+        self._ensure_cache()
         try:
             import chromadb
         except ImportError as exc:
             raise RagUnavailable("PDF RAG dependencies are not installed.") from exc
         client = chromadb.PersistentClient(path=str(self.cache_dir))
-        collection = client.get_or_create_collection("medical_references")
         settings = self.settings
-        with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as api:
-            if collection.count() != len(self.chunks):
+        with FileLock(str(self.cache_dir / ".index.lock")), httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as api:
+            collection = client.get_or_create_collection("medical_references")
+            indexed = self.cache_dir / "indexed.json"
+            complete = indexed.is_file() and indexed.read_text(encoding="utf-8").strip() == json.dumps(self.chunks_digest)
+            if not complete or collection.count() != len(self.chunks):
+                if collection.count():
+                    client.delete_collection("medical_references")
+                    collection = client.get_or_create_collection("medical_references")
                 collection.upsert(
                     ids=[str(chunk["chunk_id"]) for chunk in self.chunks],
                     documents=[str(chunk["text"]) for chunk in self.chunks],
@@ -197,6 +217,7 @@ class LocalPdfRag:
                         for chunk in self.chunks
                     ],
                 )
+                atomic_write_json(indexed, self.chunks_digest)
             response = collection.query(
                 query_embeddings=embed_texts(api, settings.embedding_base_url,
                                              settings.embedding_model, [query]),

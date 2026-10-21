@@ -42,7 +42,7 @@ def test_canonical_stages_and_portable_export_survive_relocation(tmp_path, monke
     approve(context, monkeypatch)
     delivered = publish_benchmark(context)["updates"]["delivery_path"]
     original = load_benchmark_package(delivered)
-    assert original["items"][0]["task_id"] == "leaf"
+    assert original["items"][0]["leaf_task_id"] == "leaf"
     exported = Path(export_benchmark(delivered, tmp_path / "export"))
     assert export_benchmark(delivered, exported) == str(exported)
     moved = tmp_path / "moved"

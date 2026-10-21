@@ -157,7 +157,9 @@ def restore_business(context):
         from medbenchagent.data.dataset_catalog import load_prepared
         from medbenchagent.data.bundle_catalog import card_summary
         for dataset, binding in store.load("dataset_bindings.json")["datasets"].items():
-            card, access = load_prepared(binding["entry"])
+            card, _ = load_prepared(binding["entry"])
+            from medbenchagent.planning.access import DatasetAccessReceipt
+            access = DatasetAccessReceipt.model_validate(binding["access"]).verified_source(dataset)
             context["selected_dataset_ids"].append(dataset)
             context["dataset_assets"][dataset] = {"entry": binding["entry"], "access": access, "card_summary": card_summary(card)}
             if available(f"dataset/{dataset}/Plan"):
@@ -535,17 +537,17 @@ def _atomic_replace(destination: Path, data: bytes) -> None:
 
 
 
-def persist_task_plan(context, plan, *, plan_path, bir, access) -> dict[str, Any]:
+def persist_task_plan(context, plan, *, plan_path, bir) -> dict[str, Any]:
     directory = Path(context["operation_directory"])
     directory.mkdir(parents=True, exist_ok=True)
     plan_value = plan.model_dump(mode="json")
     if bir:
-        dataset_id = context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))
+        dataset_id = context["dataset_scope"]
         prefix = f"datasets/{dataset_id}/planning/"
         commit = bir.update(prefix + "task_plan.json", plan_value, run_id=context.get("run_id", "unknown"), actor="task_planning",
             dependencies=business_dependencies(context, "benchmark_info.json", "dataset_bindings.json", registry=True),
             expected_digest=context.get("planning_read_digest"))
-        context.update(bir_revision=commit.revision, bir_manifest_digest=commit.manifest_digest,
+        context.update(bir_manifest_digest=commit.manifest_digest,
                        planning_read_digest=bir.digest(prefix + "task_plan.json"))
     else:
         atomic_write_json(plan_path, plan_value)
@@ -553,6 +555,6 @@ def persist_task_plan(context, plan, *, plan_path, bir, access) -> dict[str, Any
         "task_plan_path": str(bir.root / prefix / "task_plan.json") if bir else str(plan_path),
         "task_plan": plan.model_dump(mode="json"),
         "extension_selection": plan.extension_selection,
-        "bir_summary_ref": ({"revision": context.get("bir_revision"), "dataset_id": context.get("dataset_scope"),
+        "bir_summary_ref": ({"revision": commit.revision, "dataset_id": context.get("dataset_scope"),
                               "task_plan": str(plan_path)} if context.get("bir_path") else None),
     }

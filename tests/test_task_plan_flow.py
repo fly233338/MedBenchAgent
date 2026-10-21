@@ -42,6 +42,7 @@ def _context(tmp_path):
     path = Path(tmp_path) / "task_plan.json"
     path.write_text(plan.model_dump_json(), encoding="utf-8")
     return {
+        "dataset_scope": "d",
         "operation_directory": str(tmp_path),
         "task_plan_path": str(path),
         "dataset_facts": facts,
