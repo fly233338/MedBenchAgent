@@ -23,9 +23,9 @@ class Selection(Contract):
 
 def _validate_selection(selection, candidates):
     ids = selection.selected_dataset_ids
-    if (not ids or len(ids) != len(set(ids)) or set(ids) != set(selection.selection_reason)
+    if (len(ids) != 1 or set(ids) != set(selection.selection_reason)
             or not set(ids) <= set(candidates)):
-        raise ValueError("Selection IDs/reasons must match one or more unique prepared candidates")
+        raise ValueError("A compilation must bind exactly one of the unique prepared candidates; use batch for multiple datasets")
 
 
 def _snapshot_inputs(context):
@@ -72,6 +72,8 @@ def _candidate_snapshot(context, path, *, refresh=False):
     frozen, excluded = {}, dict(direct_errors)
     for entry in catalog:
         identifier = entry["dataset_id"]
+        if context.get("binding_dataset_id") and identifier != context["binding_dataset_id"]:
+            continue
         if not entry.get("available", True):
             excluded[identifier] = "Dataset is disabled"
             continue
@@ -141,8 +143,23 @@ def _selection_issue_updates(context, issue_id):
     }
 
 
+def bind_dataset(context, *, dataset_id: str, reason: str):
+    """Resolve one explicit dataset ID and freeze only its verified binding."""
+    current = context.get("selected_dataset_ids", [])
+    if current and current != [dataset_id]:
+        raise ValueError("A compilation cannot switch datasets; start another compilation")
+    local = {**context, "binding_dataset_id": dataset_id}
+    discovery = discover_dataset_candidates(local)
+    local.update(discovery["updates"])
+    return select_datasets(local, dataset_ids=[dataset_id], selection_reason={dataset_id: reason})
+
+
 def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_id=""):
-    """Bind one or more Supervisor/user-selected IDs from the frozen candidate snapshot."""
+    """Bind exactly one ID from the frozen candidate snapshot."""
+    if context.get("selected_dataset_ids") and context["selected_dataset_ids"] != dataset_ids:
+        raise ValueError("A compilation cannot switch datasets")
+    if context.get("requested_dataset_id") and dataset_ids != [context["requested_dataset_id"]]:
+        raise ValueError("Binding differs from the explicitly requested dataset")
     folder = Path(context["operation_directory"])
     snapshot_path = Path(context.get("candidate_snapshot_path", folder / "dataset_candidates.json"))
     snapshot = _candidate_snapshot(context, snapshot_path)
@@ -204,4 +221,3 @@ def select_datasets(context, *, dataset_ids, selection_reason, selection_issue_i
         warnings=list(snapshot["excluded_candidates"].values()),
         **issue_updates,
     )
-

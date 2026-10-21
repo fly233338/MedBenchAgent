@@ -1,5 +1,13 @@
 # Model inference and evaluation overlay
 
+MedD2B publishes the unversioned `benchmark-manifest` package contract. Use
+`medbenchagent.evaluation.loader.load_benchmark_package(directory)` to read a
+published local package or relocated portable export, with image and file digest
+verification. This reader does not need a construction Run, checkpoint or Prepared
+cache. The independently deployed inference overlay described below predates this
+contract and must adapt its inputs to this reader; legacy manifest loaders are
+not a compatibility path in the compiler.
+
 Evaluation is provisioned separately on the model-serving host. The main
 `medbenchagent` package no longer includes or maintains the evaluator; place the
 ignored repository-root `evaluation/` overlay beside the checkout before running
@@ -246,4 +254,3 @@ module implementing `ModelAdapter.generate`, then add its explicit name and
 factory to the registry in that package. Adapters own checkpoint loading, chat
 templates, batch preprocessing, decoding, and any model-specific coordinate
 space; common parsing and scoring remain model-independent.
-

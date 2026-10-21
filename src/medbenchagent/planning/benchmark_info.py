@@ -13,8 +13,8 @@ from medbenchagent.workflow.contracts import AllocationPreference
 from medbenchagent.runtime.llm import complete_json
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
-REQUIRED_FIELDS = ("clinical_scope", "language", "sample_count")
-OPTIONAL_FIELDS = ("diseases", "modalities", "evaluation_focus", "dataset_mentions", "intent_notes")
+REQUIRED_FIELDS = ("language", "sample_count")
+OPTIONAL_FIELDS = ("clinical_scope", "diseases", "modalities", "evaluation_focus", "dataset_mentions", "intent_notes")
 
 
 class ExtractedBrief(BaseModel):
@@ -106,7 +106,7 @@ def missing_fields(info: dict[str, Any]) -> list[str]:
     missing = [field for field in REQUIRED_FIELDS if not info.get(field)]
     if "sample_count" not in missing and parse_sample_count(info["sample_count"]) is None:
         missing.append("sample_count")
-    for field in ("clinical_scope", "language"):
+    for field in ("language",):
         if field not in missing and (not isinstance(info[field], str) or not info[field].strip()):
             missing.append(field)
     if "language" not in missing and info["language"] not in {"en", "zh"}:
@@ -247,13 +247,13 @@ def _derive_modality_scope(modalities: list[str], user_inputs: list[str]) -> lis
              "quote": " or ".join(quotes), "modalities": modalities, "operator": "in", "logic": "any"}]
 
 
-def write_working_blueprint(
+def write_benchmark_brief(
     benchmark_info: dict[str, Any], output_path: str | Path, template_path: Path | None = None
 ) -> str:
-    """Write the user benchmark brief; the registered Blueprint stays separate."""
-    blueprint = {"schema_version": "benchmark-brief", "benchmark_info": benchmark_info}
+    """Write a reviewable projection of the canonical user requirements."""
+    brief = {"schema_version": "benchmark-brief", "benchmark_info": benchmark_info}
     destination = Path(output_path)
     if destination.suffix != ".json":
         destination = destination / "benchmark_brief.json"
-    atomic_write_json(destination, blueprint)
+    atomic_write_json(destination, brief)
     return str(destination)

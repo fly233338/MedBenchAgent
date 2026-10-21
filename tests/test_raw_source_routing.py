@@ -87,8 +87,8 @@ def test_prepare_only_routes_directly_and_finishes_without_benchmark_fields(tmp_
     assert available_stages(context) == {"finish"}
     assert workflow.finish_supervisor(context)["status"] == "complete"
     assert "process_dataset" in SUPERVISOR_INSTRUCTIONS
-    assert "Do not ask" in SUPERVISOR_INSTRUCTIONS
-    assert "Call `discover_datasets` to freeze validated Prepared candidates." in SUPERVISOR_INSTRUCTIONS
+    assert "Preparation-only requests finish after validated registration" in SUPERVISOR_INSTRUCTIONS
+    assert "Resolve an explicitly named dataset with bind_dataset" in SUPERVISOR_INSTRUCTIONS
     assert "请" not in SUPERVISOR_INSTRUCTIONS
 
 
@@ -182,12 +182,13 @@ def test_supervisor_requires_candidate_discovery_before_selection(tmp_path):
     control = tmp_path / "control"
     control.mkdir()
     (control / "artifacts.json").write_text('{"versions": {}}', encoding="utf-8")
-    context = {"brief_ready": True, "artifact_versions": {}, "user_requirement": "Build a benchmark",
+    context = {"brief_ready": True, "brief_requirement": "Build a benchmark", "user_requirement": "Build a benchmark",
                "run_directory": str(tmp_path)}
 
     stages = available_stages(context)
 
     assert "discover_datasets" in stages
+    assert "bind_dataset" in stages
     assert "select_datasets" not in stages
 
 

@@ -1,4 +1,4 @@
-"""Deterministic global Finalization stage."""
+"""Deterministic audit of one dataset's generated candidate."""
 
 from __future__ import annotations
 from medbenchagent.planning.bir import BIRStore
@@ -16,7 +16,6 @@ from medbenchagent.runtime.harness import result
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 
-PACKAGE_FILES = ("benchmark.jsonl", "benchmark_manifest.json", "audit_report.json", "quarantine.jsonl")
 
 
 def _read_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -252,12 +251,12 @@ def _manifest(context: dict[str, Any], plans: dict[str, TaskPlanState], allocati
     }
 
 
-def finalize_benchmark(context: dict[str, Any], *, output_directory: str | Path | None = None) -> dict[str, Any]:
+def audit_benchmark(context: dict[str, Any], *, output_directory: str | Path | None = None) -> dict[str, Any]:
     store = BIRStore(context["bir_path"])
     bindings = store.load("dataset_bindings.json")["datasets"]
     selected = list(bindings)
-    if not selected:
-        raise ValueError("Dataset selection is required before finalization")
+    if len(selected) != 1:
+        raise ValueError("Candidate audit requires exactly one dataset")
     allocation = store.load("allocation.json")
     assets = {key: {"access": value["access"].get("source_access", value["access"])} for key, value in bindings.items()}
     context = {**context, "dataset_assets": assets}
@@ -364,14 +363,5 @@ def finalize_benchmark(context: dict[str, Any], *, output_directory: str | Path 
     }
     atomic_write_json(paths["manifest_path"], manifest)
     atomic_write_json(paths["audit_report_path"], report)
-    atomic_write_json(root / "complete.json", {"schema_version": "benchmark-delivery", "files": list(PACKAGE_FILES)})
-    return result("success", f"Finalized {len(all_items)} benchmark items from {len(selected)} datasets",
+    return result("success", f"Audited {len(all_items)} candidate benchmark items",
                   **paths, delivery_counts=report, item_count=len(all_items))
-
-
-def restore_delivery(context):
-    return {"delivery_path": context.get("delivery_path"), "delivery_counts": context.get("delivery_counts", {})}
-
-
-def compile_finalization_agent(*, checkpointer=None):
-    return finalize_benchmark

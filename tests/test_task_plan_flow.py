@@ -1,3 +1,4 @@
+from compilation_fixtures import screen
 from image_fixtures import image_context
 import json
 from pathlib import Path
@@ -36,7 +37,6 @@ def _context(tmp_path):
     }
     plan = TaskPlanState(
         dataset={"dataset_id": "d"},
-        blueprint={"name": "Blueprint", "capability_dimensions": [{"id": "report_generation"}], "task_concepts": []},
         phase="axes",
     )
     path = Path(tmp_path) / "task_plan.json"
@@ -56,8 +56,8 @@ def test_axis_calls_are_strictly_ordered(tmp_path):
     task_planning.analyze_axis(context, axis="input_structure", assessments=_assessments("input_structure", ["single-image"]))
     task_planning.analyze_axis(context, axis="operation", assessments=_assessments("operation", ["describe"]))
     result = task_planning.analyze_axis(context, axis="clinical_target", assessments=_assessments("clinical_target", ["finding"]))
-    assert result["updates"]["task_plan"]["phase"] == "scenario_review"
-    assert result["updates"]["task_plan"]["scenario_review_pending_ids"]
+    assert result["updates"]["task_plan"]["phase"] == "screening"
+    assert result["updates"]["task_plan"]["pending_scenario_ids"]
     assert set(task_planning._load_plan(context).axis_decisions) == {
         "input_structure", "operation", "clinical_target"
     }
@@ -92,12 +92,12 @@ def test_candidate_scenario_review_requires_pending_queue_head(tmp_path):
     ):
         task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
     plan = task_planning._load_plan(context)
-    pending = plan.scenario_review_pending_ids
+    pending = plan.pending_scenario_ids
 
     with pytest.raises(ValueError, match="queue head"):
         task_planning.review_candidate_scenarios(context, scenario_id="scenario-wrong")
 
-    assert task_planning._load_plan(context).scenario_review_pending_ids == pending
+    assert task_planning._load_plan(context).pending_scenario_ids == pending
 
 
 def test_candidate_scenario_review_advances_the_explicit_scenario(tmp_path, monkeypatch):
@@ -108,12 +108,14 @@ def test_candidate_scenario_review_advances_the_explicit_scenario(tmp_path, monk
         ("clinical_target", ["finding"]),
     ):
         task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
-    scenario_id = task_planning._load_plan(context).scenario_review_pending_ids[0]
+    scenario_id = task_planning._load_plan(context).pending_scenario_ids[0]
     captured = {}
 
     def fake_complete_json(prompt, user_prompt, schema, **kwargs):
         captured["payload"] = json.loads(user_prompt)
-        return {"decision": "keep", "reason": "Suitable for review.", "validated_clinical_targets": [{
+        return {"decision": "keep", "reason": "Suitable for review.",
+                "evidence_basis": [{"reference": "evidence_catalog:report", "detail": "Source report"}],
+                "validated_clinical_targets": [{
             "target_id": "finding_target", "name": "finding", "target_type": "finding",
             "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"],
         }]}
@@ -124,17 +126,17 @@ def test_candidate_scenario_review_advances_the_explicit_scenario(tmp_path, monk
 
     assert captured["payload"]["scenario"]["scenario_id"] == scenario_id
     assert "count_semantics" in captured["payload"]
-    assert scenario_id not in plan.scenario_review_pending_ids
+    assert scenario_id not in plan.pending_scenario_ids
     assert plan.pending_scenario_ids
-    if plan.phase == "scenario_review":
-        assert plan.pending_scenario_ids == plan.scenario_review_pending_ids
+    if plan.phase == "screening":
+        assert plan.pending_scenario_ids == plan.pending_scenario_ids
     assert task_planning._planning_progress_key(context)["pending_scenario_count"] == len(plan.pending_scenario_ids)
     assert reviewed["summary"] == f"Scenario Review {scenario_id}: keep"
     assert plan.scenarios[scenario_id].screening_decision == "keep"
     assert plan.scenarios[scenario_id].validated_clinical_targets
 
 
-def test_review_progress_uses_review_queue_when_legacy_pending_list_is_empty(tmp_path):
+def test_review_progress_uses_one_canonical_pending_queue(tmp_path):
     context = _context(tmp_path)
     for axis, values in (
         ("input_structure", ["single-image"]),
@@ -143,11 +145,10 @@ def test_review_progress_uses_review_queue_when_legacy_pending_list_is_empty(tmp
     ):
         task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
     plan = task_planning._load_plan(context)
-    plan.pending_scenario_ids = []
     task_planning._write_artifacts(context, plan)
 
     progress = task_planning._planning_progress_key(context)
-    assert progress["pending_scenario_count"] == len(plan.scenario_review_pending_ids)
+    assert progress["pending_scenario_count"] == len(plan.pending_scenario_ids)
     assert progress["pending_scenario_count"] > 0
 
 
@@ -171,8 +172,8 @@ def test_node_review_and_capability_assignment_gate_completion(tmp_path, monkeyp
     image_inputs = image_context(tmp_path / "images", list(Query(None).iter_cases()))
     monkeypatch.setattr("medbenchagent.planning.resolver.ResolverContext.from_access", lambda access: image_inputs)
     plan = task_planning._load_plan(context)
-    node_id = plan.scenario_review_pending_ids[0]
-    screened = task_planning.screen_scenario(
+    node_id = plan.pending_scenario_ids[0]
+    screened = screen(
         context, scenario_id=node_id, decision="keep", reason="The scenario is semantically suitable.",
             validated_clinical_targets=[
                 {"target_id": "finding_target", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]},
@@ -238,8 +239,8 @@ def test_scenario_review_can_discard_leaf_atomically(tmp_path, monkeypatch):
     image_inputs = image_context(tmp_path / "images", list(Query(None).iter_cases()))
     monkeypatch.setattr("medbenchagent.planning.resolver.ResolverContext.from_access", lambda access: image_inputs)
     plan = task_planning._load_plan(context)
-    scenario_id = plan.scenario_review_pending_ids[0]
-    screened = task_planning.screen_scenario(
+    scenario_id = plan.pending_scenario_ids[0]
+    screened = screen(
         context, scenario_id=scenario_id, decision="keep", reason="The scenario is semantically suitable.",
         validated_clinical_targets=[
             {"target_id": "finding_target", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]},
@@ -326,7 +327,7 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
     ):
         task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
     plan = task_planning._load_plan(context)
-    scenario_id = plan.scenario_review_pending_ids[0]
+    scenario_id = plan.pending_scenario_ids[0]
     plan.phase = "leaves"
     plan.current_scenario_id = scenario_id
     plan.pending_scenario_ids = [scenario_id]
@@ -366,6 +367,8 @@ def test_default_scenario_review_receives_brief_and_complete_leaf_contract(tmp_p
     registry = RegistrySnapshot.from_directory(ROOT / "config" / "bir_template" / "registry")
     monkeypatch.setattr(task_planning, "_registry", lambda _context: registry)
     captured = {}
+    monkeypatch.setattr(task_planning, "scenario_evidence_context",
+                        lambda *args: {"source": "fixture metadata", "field_semantics": {"report": "paired report"}})
 
     def fake_complete_json(prompt, user_prompt, schema):
         captured["prompt"] = prompt
@@ -400,7 +403,7 @@ def test_leaf_scenario_can_be_excluded_without_leaf_and_all_excluded_can_finish(
     ):
         task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
     plan = task_planning._load_plan(context)
-    first_id = plan.scenario_review_pending_ids[0]
+    first_id = plan.pending_scenario_ids[0]
     second = TaskScenario(
         scenario_id="scenario-next",
         input_structure="single-image",
@@ -424,6 +427,7 @@ def test_leaf_scenario_can_be_excluded_without_leaf_and_all_excluded_can_finish(
 
     excluded = task_planning.exclude_current_scenario(
         context,
+        exclusion_category="unsupported",
         scenario_id=first_id,
         reason="No supported Leaf direction remains after reading the Scenario evidence.",
         evidence_basis=[EvidenceBasis(reference="catalog:report", detail="The required scope is unavailable.")],
@@ -437,6 +441,7 @@ def test_leaf_scenario_can_be_excluded_without_leaf_and_all_excluded_can_finish(
 
     excluded = task_planning.exclude_current_scenario(
         context,
+        exclusion_category="unsupported",
         scenario_id=second.scenario_id,
         reason="The remaining Scenario has no supported reference route.",
         evidence_basis=[EvidenceBasis(reference="catalog:report", detail="No deterministic reference.")],
@@ -458,7 +463,7 @@ def test_review_discarding_all_leafs_allows_explicit_scenario_exclusion(tmp_path
     ):
         task_planning.analyze_axis(context, axis=axis, assessments=_assessments(axis, values))
     plan = task_planning._load_plan(context)
-    scenario_id = plan.scenario_review_pending_ids[0]
+    scenario_id = plan.pending_scenario_ids[0]
     plan.phase = "leaves"
     plan.current_scenario_id = scenario_id
     plan.pending_scenario_ids = [scenario_id]
@@ -497,10 +502,10 @@ def test_review_discarding_all_leafs_allows_explicit_scenario_exclusion(tmp_path
     context["planning_read_state"]["scenario_context_read"] = True
     excluded = task_planning.exclude_current_scenario(
         context,
+        exclusion_category="unsupported",
         scenario_id=scenario_id,
         reason="Review discarded every saved Leaf.",
         evidence_basis=[EvidenceBasis(reference="review:discard-me", detail="The only Leaf was rejected.")],
     )
     assert excluded["status"] == "success"
     assert task_planning._load_plan(context).scenarios[scenario_id].status == "excluded"
-

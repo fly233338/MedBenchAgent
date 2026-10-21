@@ -130,7 +130,7 @@ def complete_validated_json(
             phase = "tool_action_validation_error" if schema.__name__ == "ToolAction" else "schema_validation_error"
             parsed = schema.model_validate(data)
             if validate is not None:
-                phase = "axis_validation_error" if "assessments" in data.get("arguments", {}) else "business_validation_error"
+                phase = "business_validation_error"
                 validate(parsed)
         except (ValueError, ValidationError) as exc:
             if isinstance(exc, ValidationError):
@@ -141,14 +141,6 @@ def complete_validated_json(
                 errors = [str(exc)]
                 feedback = str(exc)
             diagnostic = [f"phase={phase}", f"schema={schema.__name__}", *errors]
-            if "assessments" in feedback or "dimension" in feedback or "evidence_refs" in feedback:
-                axis_hint = (
-                    " Axis requires each assessment to contain only value, supported, "
-                    "evidence_basis (objects with reference and detail), and reason; "
-                    "cover every allowed value exactly once."
-                )
-                feedback += axis_hint
-                diagnostic.append(axis_hint.strip())
             repair_guidance = (
                 " Correct only the reported contract errors, preserve all already valid fields, "
                 "and return one complete JSON object."
@@ -172,4 +164,3 @@ def complete_validated_json(
                         response=response if on_chunk is None else None)
         return parsed
     raise AssertionError("unreachable")
-

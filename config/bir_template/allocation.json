@@ -1,10 +1,6 @@
 {
   "schema_version": "bir-allocation",
   "status": "pending",
-  "revision": 0,
-  "assignments": {},
   "counts": {},
-  "shortfall": {},
-  "dependencies": {}
+  "shortfall": 0
 }
-

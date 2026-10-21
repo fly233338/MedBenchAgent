@@ -450,6 +450,9 @@ def _field_semantics(access: dict[str, Any], names: list[str]) -> dict[str, Any]
             section = mapping.get(key)
             if isinstance(section, dict):
                 sections.append(section)
+            elif key == "fields" and isinstance(section, list):
+                sections.append({name: rule for rule in section if isinstance(rule, dict)
+                                 for name in (rule.get("target_path"), rule.get("source_path")) if name})
     try:
         profile = json.loads(Path(access["profile_path"]).read_text(encoding="utf-8"))
     except (OSError, ValueError, KeyError, TypeError):
@@ -462,6 +465,8 @@ def _field_semantics(access: dict[str, Any], names: list[str]) -> dict[str, Any]
     result = {}
     for name in names:
         item = next((section.get(name) for section in sections if name in section), None)
+        if isinstance(item, str):
+            item = {"meaning": item}
         if not isinstance(item, dict):
             item = profile_entries.get(name, {})
         if not isinstance(item, dict):
@@ -478,7 +483,8 @@ def _field_semantics(access: dict[str, Any], names: list[str]) -> dict[str, Any]
             "input_visibility": item.get("input_visibility", "unknown"),
             "coverage": item.get("coverage", item.get("cases")),
         }
-        for key in ("meaning", "description", "entity", "object", "unit", "relation", "missing"):
+        for key in ("meaning", "description", "entity", "object", "unit", "relation", "missing",
+                    "missingness", "disposition", "source_type", "target_type", "transform", "reason", "evidence_refs"):
             if key in item:
                 selected[key] = compact_scalar(item[key], limit=180)
         selected = {key: value for key, value in selected.items() if value not in (None, "")}

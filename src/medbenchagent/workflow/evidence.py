@@ -1,4 +1,4 @@
-"""Run-local evidence payloads with scoped, version-bound, paged access."""
+"""Business evidence references with scoped, dependency-bound, paged access."""
 
 import json
 import sqlite3
@@ -138,7 +138,7 @@ def read_evidence(context, *, reference, pointer=None, offset=0, limit=20, text_
         raise ValueError("Planning evidence references are not inspection IDs; use read_axis_evidence or read_evidence_catalog")
     pending = context.get("global_issue")
     if pending and pending.get("answer_reference") == reference:
-        from medbenchagent.runtime.clarifications import issue_context
+        from medbenchagent.workflow.clarifications import issue_context
         receipt = evidence(issue_context(context, pending), reference)
     else:
         receipt = evidence(context, reference)

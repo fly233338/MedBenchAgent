@@ -101,6 +101,8 @@ class StageBudget(Contract):
     output_reserve_tokens: int = Field(default=4_096, ge=0)
     conversation_reserve_tokens: int = Field(default=8_192, ge=0)
     safety_margin_tokens: int = Field(default=1_024, ge=0)
+    condenser_max_events: int = Field(default=80, ge=12)
+    condenser_max_tokens: int | None = Field(default=None, ge=256)
 
 
 class Diagnostic(Contract):
@@ -244,7 +246,7 @@ class StageRequest(Contract):
     reasoning_effort: str = "medium"
     llm_timeout_seconds: float | None = Field(default=None, ge=0.000001)
     llm_max_retries: int | None = Field(default=None, ge=0)
-    agent: str = "DatasetProcessingAgent"
+    agent: str = "DataProcessingAgent"
     resume_existing: bool = False
     validation_feedback: dict[str, Any] = Field(default_factory=dict)
     runtime_backend: str = ""

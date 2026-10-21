@@ -1,4 +1,4 @@
-"""Correlated clarification records; answers travel only to their originating agent."""
+"""Business-scoped clarification records; answers return to their originating agent."""
 
 import json
 
@@ -69,12 +69,12 @@ def new_issue(role, context, reference, question, *, subject_scope=None, source_
 
 
 def answer_payload(context, issue):
-    from medbenchagent.runtime.inspection import evidence
+    from medbenchagent.workflow.evidence import evidence
     return evidence(issue_context(context, issue), issue["answer_reference"])["value"]
 
 
 def record_answer(context, issue, answer, *, question=None):
-    from medbenchagent.runtime.inspection import save_evidence
+    from medbenchagent.workflow.evidence import save_evidence
     exchanges = answer_payload(context, issue)["exchanges"] if issue.get("answer_reference") else []
     exchanges = [*exchanges, {"question": question or issue["question"], "answer": answer}]
     value = {"issue_id": issue["issue_id"], "text": "\n".join(e["answer"] for e in exchanges), "exchanges": exchanges}
@@ -169,4 +169,3 @@ def resolve_clarification(context, *, issue_id, kind):
         else:
             updates[field] = str(target)
     return result("success", "Clarification resolved and routed to its origin", **updates)
-

@@ -9,7 +9,7 @@ from medbenchagent.runtime.harness import (
     compile_agent,
     result,
 )
-from medbenchagent.runtime.clarifications import resolve_subject, validate_ask_user
+from medbenchagent.workflow.clarifications import resolve_subject, validate_ask_user
 from medbenchagent.runtime.tool_contracts import AskUserArguments, NoArguments
 
 
@@ -196,6 +196,7 @@ def test_progress_key_still_caps_unchanged_repeated_actions(tmp_path, harness_mo
 
 
 def test_source_clarification_is_repaired_before_execution(tmp_path, harness_model):
+    from medbenchagent.workflow.agent_runtime import compile_agent
     actions = iter([
         {"tool": "ask_user", "arguments": {"question": "What does status 0 mean?",
                                          "subject_scope": "source", "source_ids": ["one"]}, "reason": "Clarify"},

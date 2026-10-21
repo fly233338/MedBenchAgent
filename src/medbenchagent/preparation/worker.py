@@ -63,7 +63,8 @@ class OpenHandsWorker:
         if result.diagnostic:
             diagnostics.append(Diagnostic(
                 stage=request.stage, code="worker",
-                category="environment" if status == "failed" else "unknown",
+                category=("contract" if result.termination_reason == "output_invalid" else
+                          "environment" if status == "failed" else "unknown"),
                 blocking=status != "submitted", message=result.diagnostic,
             ))
         if signal_error:

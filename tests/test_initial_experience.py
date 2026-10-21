@@ -26,7 +26,7 @@ def test_submit_creates_one_untyped_run(tmp_path):
     submission = service.submit("prepare a dataset and build a benchmark")
     record = service.record()
     assert len(submission.run_ids) == 1
-    assert record["schema_version"] == "mba-session"
+    assert record["schema_version"] == "compilation-session"
     assert record["runs"][0]["requirement"] == "prepare a dataset and build a benchmark"
     assert "kind" not in record["runs"][0]
     assert record["messages"][0]["role"] == "user"
@@ -63,4 +63,3 @@ def test_checkpoint_recovery_compiles_once_per_database(tmp_path):
     assert len(compilations) == 1
     assert len(state_reads) == 2
     assert all(value["status"] == "interrupted" for value in results.values())
-

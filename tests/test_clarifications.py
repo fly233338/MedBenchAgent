@@ -1,7 +1,7 @@
 
 import pytest
 
-from medbenchagent.runtime.clarifications import new_issue, inject_answers, resolve_clarification, record_answer
+from medbenchagent.workflow.clarifications import new_issue, inject_answers, resolve_clarification, record_answer
 from medbenchagent.planning.bir import BIRStore
 from medbenchagent.runtime import sessions
 
@@ -9,7 +9,8 @@ from medbenchagent.runtime import sessions
 @pytest.mark.parametrize("kind", ["semantic", "requirement_change"])
 def test_resolution_closes_saved_origin_and_only_invalidates_changed_requirement(tmp_path, kind):
     context = {"run_directory": str(tmp_path), "operation_directory": str(tmp_path / "resolve"), "user_requirement": "Build"}
-    context["bir_path"] = sessions.create_experiment("pilot", root=tmp_path)["bir_path"]
+    session = sessions.create_experiment("pilot", root=tmp_path)
+    context["bir_path"] = sessions.queue_run(session, "Compile dataset", root=tmp_path)["bir_path"]
     store = BIRStore(context["bir_path"])
     store.update("benchmark_info.json", {"text":"Build"}, run_id="r", actor="test")
     before = store.digest("benchmark_info.json")

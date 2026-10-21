@@ -1,7 +1,7 @@
 [project]
 name = "medbenchagent"
 version = "0.1.0"
-description = "An agent development project built with LangGraph."
+description = "MedD2B: supervised medical dataset-to-benchmark compilation."
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
@@ -39,7 +39,7 @@ data-processing = [
 ]
 
 [project.scripts]
-medbenchagent = "medbenchagent.entrypoint:main"
+medd2b = "medbenchagent.entrypoint:main"
 
 [build-system]
 requires = ["hatchling>=1.27.0"]
@@ -68,4 +68,3 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-

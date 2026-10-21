@@ -1,3 +1,4 @@
+from compilation_fixtures import screen
 from image_fixtures import image_context
 import pytest
 
@@ -212,9 +213,9 @@ def test_canonical_planner_axis_and_node_tools_persist_bounded_artifacts(tmp_pat
     analysis = _analysis(input_structure=["single-image"], operation=["recognize"], clinical_target=["finding"]).model_copy(update={"dataset_revision": "7"}).model_dump()
     saved = task_planning.analyze_axes(context, analysis=analysis)
     context.update(saved["updates"])
-    built = task_planning.build_nodes(context)
+    built = saved
     assert built["updates"]["task_plan_path"]
-    assert built["updates"]["task_nodes"]
+    assert built["updates"]["task_plan"]["scenarios"]
 
 
 def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypatch):
@@ -228,9 +229,8 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
         "evidence":{"text":1}, "relations":{"paired_text":1}}
     axis = _analysis(input_structure=["single-image"], operation=["describe"], clinical_target=["finding"]).model_copy(update={"dataset_revision": "7"}).model_dump()
     context.update(task_planning.analyze_axes(context, analysis=axis)["updates"])
-    context.update(task_planning.build_nodes(context)["updates"])
-    node_id = next(key for key, value in context["task_nodes"].items() if not value["exclusion_reason"])
-    screened = task_planning.screen_scenario(
+    node_id = next(key for key, value in context["task_plan"]["scenarios"].items() if not value["exclusion_reason"])
+    screened = screen(
         context, scenario_id=node_id, decision="keep", reason="The report scenario is suitable.",
         validated_clinical_targets=[{"target_id": "finding_report", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["report"]}],
     )
@@ -257,5 +257,4 @@ def test_save_task_leaf_compiles_resolver_and_counts_capacity(tmp_path, monkeypa
         context,
         leaf=task_planning.LeafTaskDraft.model_validate(leaf),
     )
-    assert saved["updates"]["task_leaves"]["leaf-1"]["eligible_count"] == 1
-
+    assert saved["updates"]["task_plan"]["leaf_tasks"]["leaf-1"]["eligible_count"] == 1

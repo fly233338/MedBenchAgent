@@ -205,4 +205,8 @@ For `exclude`, do not create placeholder targets.
 
 Do not propose Leaf Tasks, answer choices or question templates here.
 
+## Exclusion provenance
+
+For exclude, set exclusion_category explicitly: insufficient_evidence when necessary source meaning is unavailable; unsupported when the source establishes the task cannot be supported; user_excluded when an explicit user constraint excludes it. For keep use null. Do not interpret missing clinical goals as missing requirements, or missing context as negative evidence.
+
 {{DATASET_SPECIFIC_RULES}}

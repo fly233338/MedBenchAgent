@@ -81,11 +81,14 @@ class DatasetProfileSettings:
 class BenchmarkSettings:
     default_sample_count: int
     input_policy: str
+    default_language: str = "en"
 
 
 @dataclass(frozen=True)
 class PlanningSettings:
     novelty_enabled: bool
+    max_calls: int = 1200
+    context_chars: int = 64000
 
 
 @dataclass(frozen=True)
@@ -120,8 +123,9 @@ class AppSettings:
                 "benchmark": {
                     "default_sample_count": self.benchmark.default_sample_count,
                     "input_policy": self.benchmark.input_policy,
+                    "default_language": self.benchmark.default_language,
                 },
-                "planning": {"novelty_enabled": self.planning.novelty_enabled},
+                "planning": {key: getattr(self.planning, key) for key in self.planning.__dataclass_fields__},
                 "harness": self.harness,
                 "data_processing": self.data_processing,
                 "paths": {key: str(getattr(self.paths, key)) for key in self.paths.__dataclass_fields__},
@@ -316,8 +320,12 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
     )
     if not 3 <= question_template_count <= 5:
         raise ValueError("generation.question_template_count must be between 3 and 5")
+    if values["benchmark"]["default_language"] not in {"en", "zh"}:
+        raise ValueError("benchmark.default_language must be en or zh")
     return AppSettings(
         benchmark=BenchmarkSettings(
+            default_language=_string(values["benchmark"]["default_language"],
+                                     "benchmark.default_language"),
             default_sample_count=_integer(values["benchmark"]["default_sample_count"],
                                           "benchmark.default_sample_count", minimum=1),
             input_policy=_string(values["benchmark"].get("input_policy", "image-only"),
@@ -325,6 +333,8 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
         ),
         planning=PlanningSettings(
             novelty_enabled=bool(values.get("planning", {}).get("novelty_enabled", False)),
+            max_calls=_integer(values["planning"]["max_calls"], "planning.max_calls", minimum=1),
+            context_chars=_integer(values["planning"]["context_chars"], "planning.context_chars", minimum=4096),
         ),
         dataset_sources=_dataset_sources(values["dataset_sources"]),
         harness={key: _integer(value, f"harness.{key}", minimum=1) for key, value in values["harness"].items()},

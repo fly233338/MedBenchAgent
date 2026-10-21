@@ -5,7 +5,7 @@ from medbenchagent.agents.finalization import balance_option_positions
 from medbenchagent.data.index import prepare_dataset
 from medbenchagent.data.models import ImageEntry, CaseRecord, Evidence
 from medbenchagent.generation.items import generate_task_items, write_task_items
-from medbenchagent.planning.allocation import allocate_task_plans
+from medbenchagent.planning.allocation import allocate_task_plan
 from medbenchagent.planning.task_space import (
     CapabilityCategory,
     LeafTask,
@@ -54,18 +54,17 @@ def _plan(dataset_id, leaves):
                          leaf_tasks=parsed, phase="complete")
 
 
-def test_global_allocation_balances_datasets_then_leaves():
-    result = allocate_task_plans({"a": _plan("a", {"a1": 20}), "b": _plan("b", {"b1": 20})}, 10)
+def test_allocation_balances_leaves_within_one_dataset():
+    result = allocate_task_plan("a", _plan("a", {"a1": 20, "a2": 20}), 10)
     assert result["allocated_count"] == 10
-    assert result["dataset_counts"] == {"a": 5, "b": 5}
-    assert result["counts"] == {"a": {"a1": 5}, "b": {"b1": 5}}
+    assert result["counts"] == {"a": {"a1": 5, "a2": 5}}
 
 
-def test_global_allocation_reports_capacity_shortfall_and_zero_dataset():
-    result = allocate_task_plans({"a": _plan("a", {"a1": 1}), "b": _plan("b", {"b1": 0})}, 4)
+def test_allocation_reports_capacity_shortfall_and_zero_leaves():
+    result = allocate_task_plan("a", _plan("a", {"a1": 1, "a2": 0}), 4)
     assert result["allocated_count"] == 1
     assert result["shortfall"] == 3
-    assert result["dataset_counts"] == {"a": 1, "b": 0}
+    assert result["counts"]["a"]["a2"] == 0
 
 
 def test_option_balancing_preserves_answer_and_balances_positions():
@@ -106,12 +105,12 @@ def test_finalization_merges_and_audits_dataset_output(tmp_path):
     write_task_items(raw, items)
     allocation_path = tmp_path / "allocation.json"
     allocation_path.write_text(json.dumps({"requested_count": 1, "counts": {"d": {"leaf": 1}}}), encoding="utf-8")
-    from medbenchagent.agents.finalization import finalize_benchmark
+    from medbenchagent.agents.finalization import audit_benchmark
     from medbenchagent.data.sources import digest_file
     store.update("dataset_bindings.json", {"datasets":{"d":{"access":access}}}, run_id="r", actor="test")
     store.update("allocation.json", {"requested_count":1, "counts":{"d":{"leaf":1}}}, run_id="r", actor="test")
     store.update("outputs/d.json", {"benchmark_items_path":str(raw), "benchmark_items_digest":digest_file(raw)}, run_id="r", actor="test")
-    result = finalize_benchmark({"bir_path": str(store.root),
+    result = audit_benchmark({"bir_path": str(store.root),
         "selected_dataset_ids": ["d"],
         "allocation_path": str(allocation_path),
         "dataset_task_plans": {"d": str(plan_path)},

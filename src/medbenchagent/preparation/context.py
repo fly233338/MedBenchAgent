@@ -67,7 +67,8 @@ def build_stage_context(stage, state, workspace):
         if not root.is_relative_to(Path(state["preparation_root"]).resolve()):
             raise ValueError("Previous attempt is outside preparation runtime")
         context["previous"] = "/workspace/previous" if docker else str(root)
-        context["reference_digests"].update({str(p): digest_file(p) for p in (root / "work").rglob("*") if p.is_file()})
+        context["reference_digests"].update({str(p): digest_file(p) for folder in ("inputs", "outputs")
+                                           for p in (root / "work" / folder).rglob("*") if p.is_file()})
     prompts = Path(__file__).parents[1] / "prompts"
     visible = {key: value for key, value in context.items() if key != "reference_digests"}
     prompt = "\n\n".join((

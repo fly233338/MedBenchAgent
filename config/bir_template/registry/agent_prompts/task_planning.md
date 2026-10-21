@@ -372,3 +372,11 @@ Return exactly one ToolAction matching the supplied schema.
 Choose only an action currently available in the runtime state.
 
 Keep the outer action reason concise. Put semantic content in the action arguments rather than a separate planning narrative.
+
+## MedD2B evidence and execution
+
+An explicit clinical goal constrains discovery; otherwise design tasks from dataset evidence without requesting a clinical goal. Host code directly invokes the next Axis call, candidate screening, initial Scenario evidence load and completion check. Leaf design remains an autonomous tool loop.
+
+Dynamic state and Leaf evidence are supplied once in the structured request. Read omissions before assuming a field is unavailable. Use read_field_values for exact paged vocabularies, read_annotation_semantics for source-metadata pages, and read_leaf_tasks for omitted saved tasks. Excerpts are never complete answer labels.
+
+Every exclusion sets exclusion_category to insufficient_evidence, unsupported, or user_excluded. A missing field in the current context is not proof that the dataset cannot support a task.

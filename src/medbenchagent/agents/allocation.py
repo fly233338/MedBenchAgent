@@ -1,104 +1,68 @@
-"""Global Allocation stage for completed dataset-local Task Plans."""
-
+"""Dataset-local allocation; only explicit preferences require semantic interpretation."""
 from __future__ import annotations
-from medbenchagent.planning.bir import BIRStore
-
 import json
 from pathlib import Path
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
-
-from medbenchagent.planning.allocation import allocate_task_plans
+from medbenchagent.planning.allocation import allocate_task_plan
+from medbenchagent.planning.bir import BIRStore, business_dependencies
 from medbenchagent.planning.task_space import TaskPlanState
 from medbenchagent.runtime.harness import result
-from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.runtime.llm import complete_json
+from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 
 class AllocationWeight(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    weight: float = Field(ge=0)
+    weight: float = Field(ge=0, allow_inf_nan=False)
     reason: str = Field(min_length=1)
     preference_references: list[str] = Field(default_factory=list)
 
 
 class AllocationIntent(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    datasets: dict[str, AllocationWeight]
-    leaves: dict[str, dict[str, AllocationWeight]]
-
-
-def _weights_from_preferences(context: dict[str, Any], plans: dict[str, TaskPlanState]) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
-    preferences = context.get("allocation_preferences", [])
-    if not preferences:
-        return {}, {}
-    supplied = context.get("allocation_intent")
-    if supplied is None:
-        supplied = complete_json(
-            """Allocate one global benchmark budget across the supplied datasets and Leaf Tasks.
-Return JSON with datasets and leaves maps and cover every key exactly once.
-Use non-default weights only when supported by an explicit preference_references ID.
-Do not use medical importance or invent priorities.""",
-            json.dumps({
-                "preferences": preferences,
-                "datasets": sorted(plans),
-                "leaves": {dataset_id: sorted(plan.leaf_tasks) for dataset_id, plan in plans.items()},
-            }, ensure_ascii=False),
-            AllocationIntent,
-        )
-    intent = AllocationIntent.model_validate(supplied)
-    dataset_ids = set(plans)
-    if set(intent.datasets) != dataset_ids or set(intent.leaves) != dataset_ids:
-        raise ValueError("Allocation intent must cover every selected dataset")
-    preference_ids = {item["id"] for item in preferences}
-    dataset_weights, leaf_weights = {}, {}
-    for dataset_id, spec in intent.datasets.items():
-        refs = set(spec.preference_references)
-        if not refs <= preference_ids or (spec.weight != 1.0 and not refs):
-            raise ValueError("Dataset allocation weights require current preference references")
-        dataset_weights[dataset_id] = spec.weight
-    for dataset_id, values in intent.leaves.items():
-        if set(values) != set(plans[dataset_id].leaf_tasks):
-            raise ValueError(f"Leaf allocation intent must cover every Leaf in {dataset_id}")
-        leaf_weights[dataset_id] = {}
-        for leaf_id, spec in values.items():
-            refs = set(spec.preference_references)
-            if not refs <= preference_ids or (spec.weight != 1.0 and not refs):
-                raise ValueError("Leaf allocation weights require current preference references")
-            leaf_weights[dataset_id][leaf_id] = spec.weight
-    return dataset_weights, leaf_weights
+    leaves: dict[str, AllocationWeight]
 
 
 def allocate_benchmark(context: dict[str, Any], *, output_path: str | Path | None = None,
-                       dataset_weights: dict[str, float] | None = None,
-                       leaf_weights: dict[str, dict[str, float]] | None = None) -> dict[str, Any]:
+                       leaf_weights: dict[str, float] | None = None) -> dict[str, Any]:
     store = BIRStore(context["bir_path"])
     selected = list(store.load("dataset_bindings.json")["datasets"])
+    if len(selected) != 1:
+        raise ValueError("Allocation requires exactly one dataset")
+    dataset_id = selected[0]
     brief = store.load("benchmark_info.json")
-    context = {**context, "benchmark_info": brief, "allocation_preferences": brief.get("allocation_preferences", [])}
-    if not selected:
-        raise ValueError("Dataset selection is required before allocation")
-    plans = {
-        dataset_id: TaskPlanState.model_validate(BIRStore(context["bir_path"]).load(f"datasets/{dataset_id}/planning/task_plan.json"))
-        for dataset_id in selected
-    }
-    requested = context.get("benchmark_info", {}).get("sample_count")
-    if type(requested) is not int or requested <= 0:
-        raise ValueError("benchmark_info.sample_count must be a positive integer")
-    if context.get("allocation_preferences"):
-        dataset_weights, leaf_weights = _weights_from_preferences(context, plans)
-    allocation = allocate_task_plans(
-        plans,
-        requested,
-        dataset_weights=dataset_weights or None,
-        leaf_weights=leaf_weights or None,
-    )
+    plan = TaskPlanState.model_validate(store.load(f"datasets/{dataset_id}/planning/task_plan.json"))
+    if plan.phase != "complete":
+        raise ValueError("Allocation requires a complete Task Plan")
+    preferences = brief.get("allocation_preferences", [])
+    if preferences and plan.leaf_tasks:
+        supplied = context.get("allocation_intent")
+        if supplied is None:
+            supplied = complete_json(
+                "Allocate a single dataset's sample budget across its Leaf Tasks. "
+                "Return leaves weights covering every supplied key. Non-default weights require "
+                "explicit preference_references IDs. Never invent clinical priorities.",
+                json.dumps({"preferences": preferences, "leaves": {
+                    key: {"name": leaf.name, "target": leaf.target, "eligible_count": leaf.eligible_count}
+                    for key, leaf in plan.leaf_tasks.items()}}, ensure_ascii=False),
+                AllocationIntent,
+            )
+        intent = AllocationIntent.model_validate(supplied)
+        if set(intent.leaves) != set(plan.leaf_tasks):
+            raise ValueError("Allocation intent must cover every Leaf")
+        known = {row["id"] for row in preferences}
+        for spec in intent.leaves.values():
+            refs = set(spec.preference_references)
+            if not refs <= known or (spec.weight != 1.0 and not refs):
+                raise ValueError("Allocation weights require current preference references")
+        leaf_weights = {key: spec.weight for key, spec in intent.leaves.items()}
+    allocation = allocate_task_plan(dataset_id, plan, brief["sample_count"], leaf_weights=leaf_weights)
     destination = Path(output_path or Path(context["operation_directory"]) / "allocation.json")
     atomic_write_json(destination, allocation)
-    return result("success", f"Allocated {allocation['allocated_count']} of {requested} requested items",
-                  allocation_path=str(destination), allocation=allocation, planning_shortfall=allocation["shortfall"])
-
-
-def compile_allocation_agent(*, checkpointer=None):
-    """Return the global allocation boundary; only explicit preferences use an LLM."""
-    return allocate_benchmark
+    store.update("allocation.json", allocation, run_id=context.get("run_id", "unknown"), actor="allocation",
+                 dependencies=business_dependencies(context, "benchmark_info.json", "dataset_bindings.json",
+                                                    f"datasets/{dataset_id}/planning/task_plan.json"))
+    return result("success", f"Allocated {allocation['allocated_count']} of {brief['sample_count']} items",
+                  allocation_path=str(store.root / "allocation.json"), allocation=allocation,
+                  planning_shortfall=allocation["shortfall"])

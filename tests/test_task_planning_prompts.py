@@ -52,7 +52,8 @@ def test_leaf_instructions_render_registry_context_and_requirements(monkeypatch)
     assert "{{" not in prompt
     assert "# Task Planning Coordinator" in prompt
     assert "# Leaf Task Design" in prompt
-    assert '"scenario_id": "assessment-scenario"' in prompt
+    assert '"scenario_id": "assessment-scenario"' not in prompt
+    assert "See the structured state and leaf_context" in prompt
     assert '"operation": ' in prompt
     assert '"id": "recognize"' in prompt
     assert '"id": "assessment"' in prompt

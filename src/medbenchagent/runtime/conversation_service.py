@@ -34,15 +34,27 @@ class ConversationService:
         with self.session_lock:
             return sessions.load_experiment(self.name, root=self.root)
 
-    def submit(self, text: str) -> Submission:
+    def submit(self, text: str, *, dataset_id: str | None = None) -> Submission:
         if not text.strip():
             raise ValueError("Enter a request")
         with self.submit_lock, self.session_lock:
             record = sessions.load_experiment(self.name, root=self.root)
-            run = sessions.queue_run(record, text.strip(), root=self.root, save=False)
+            run = sessions.queue_run(record, text.strip(), root=self.root, save=False, dataset_id=dataset_id)
             sessions.add_message(record, "user", text.strip(), run_id=run["id"], root=self.root, save=False)
             sessions.save_experiment(record, root=self.root)
             return Submission("", (run["id"],))
+
+    def submit_batch(self, dataset_ids: list[str], request: str = "Compile this dataset") -> Submission:
+        """Queue independent single-dataset compilations; no shared BIR or quotas."""
+        from medbenchagent.data.dataset_catalog import validate_dataset_id
+        if not dataset_ids or len(set(dataset_ids)) != len(dataset_ids):
+            raise ValueError("Batch requires distinct dataset IDs")
+        for dataset_id in dataset_ids:
+            validate_dataset_id(dataset_id)
+        identifiers = []
+        for dataset_id in dataset_ids:
+            identifiers.extend(self.submit(request, dataset_id=dataset_id).run_ids)
+        return Submission("", tuple(identifiers))
 
     def answer(self, run_id: str, text: str) -> None:
         if not text.strip():
@@ -98,7 +110,7 @@ class ConversationService:
                     if run is None:
                         return
                     try:
-                        experiment_config = sessions.config_path(self.name, root=self.root)
+                        experiment_config = Path(run["config_path"])
                         settings = load_settings(experiment_config)
                         from medbenchagent.runtime.environment import ensure_environment
 
@@ -147,24 +159,25 @@ class ConversationService:
         yield from self.drive(stop_requested=stop_requested)
 
     def _apply(self, event: RunEvent) -> None:
-        if event.kind not in {"initialized", "needs_input", "finished", "error"}:
+        if event.kind not in {"initialized", "needs_input", "finished", "error", "view"}:
             return
         with self.session_lock:
             record = sessions.load_experiment(self.name, root=self.root)
             run = next(item for item in record["runs"] if item["id"] == event.run_session_id)
+            if event.kind == "view":
+                run["view"] = event.payload
+                sessions.save_experiment(record, root=self.root)
+                return
             changes = {key: value for key, value in event.payload.items() if value is not None
                        if key in {"run_id", "run_directory", "runs_root", "construction_events_path",
                                   "effective_config_path", "catalog_snapshot_path", "selected_assets",
                                    "bir_path", "bir_revision", "bir_manifest_digest",
-                                   "bir_template_revision", "bir_summary_ref", "summary", "status"}}
+                                   "bir_template_revision", "bir_summary_ref", "summary", "status", "view"}}
             if event.kind == "needs_input":
                 changes["status"] = "waiting_input"
             elif event.kind == "error":
                 changes["status"] = event.payload.get("status", "failed")
             run.update(changes)
-            for key in ("bir_path", "bir_revision", "bir_manifest_digest", "bir_template_revision"):
-                if key in changes and changes[key] is not None:
-                    record[key] = changes[key]
             if event.kind == "needs_input":
                 question = event.payload["question"]
                 if run.get("pending_question") != question or run.get("pending_answer"):

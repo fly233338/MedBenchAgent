@@ -2,8 +2,7 @@
 
 The model may select Axis Values and propose Leaf Tasks. Code owns Scenario
 construction, capability tagging, resolver validation, capacity and item
-instantiation. Compatibility aliases keep in-process callers usable while
-persisted artifacts use the current schema.
+instantiation. Persisted artifacts use one canonical schema.
 """
 
 from __future__ import annotations
@@ -28,8 +27,7 @@ def _default_registry():
     return RegistrySnapshot.from_directory(Path(__file__).resolve().parents[3] / "config" / "bir_template" / "registry")
 
 
-# Compatibility views for in-process callers.  The source of truth is the
-# experiment Registry; these values are derived from the checked-in template.
+# Default Registry values for deterministic callers.
 _DEFAULT_REGISTRY = _default_registry()
 AXIS_VALUES: dict[TaskAxis, tuple[str, ...]] = {
     TaskAxis(axis): _DEFAULT_REGISTRY.axis_values(axis) for axis in _DEFAULT_REGISTRY.axis_order
@@ -49,7 +47,6 @@ CAPABILITY_BY_OPERATION: dict[str, CapabilityCategory] = {
     operation: CapabilityCategory(category)
     for operation, category in _DEFAULT_REGISTRY.capability_by_operation.items()
 }
-OPERATION_FAMILY_BY_OPERATION = CAPABILITY_BY_OPERATION
 
 
 class TaskParadigm(StrEnum):
@@ -162,6 +159,7 @@ class TaskScenario(BaseModel):
     validated_clinical_targets: list[ValidatedClinicalTarget] = Field(default_factory=list)
     exclusion_reason: str | None = None
     exclusion_stage: Literal["structural", "screening", "leaf_review"] | None = None
+    exclusion_category: Literal["insufficient_evidence", "unsupported", "user_excluded"] | None = None
     exclusion_evidence: list[EvidenceBasis] = Field(default_factory=list)
     leaf_task_ids: list[str] = Field(default_factory=list)
     status: Literal["pending", "active", "review_pending", "completed", "blocked", "excluded"] = "pending"
@@ -258,6 +256,13 @@ class LeafTaskDiscard(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class SourceConcern(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    summary: str = Field(min_length=1)
+    fields: list[str] = Field(min_length=1)
+    evidence_refs: list[EvidenceBasis] = Field(min_length=1)
+
+
 class ScenarioReview(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     scenario_id: str = Field(min_length=1)
@@ -265,6 +270,7 @@ class ScenarioReview(BaseModel):
     discarded_leaf_tasks: list[LeafTaskDiscard] = Field(default_factory=list)
     status: Literal["approved", "rejected"]
     issues: list[str] = Field(default_factory=list)
+    source_concerns: list[SourceConcern] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_leaf_ids(self):
@@ -302,19 +308,14 @@ class TaskPlanState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     schema_version: str = "task-plan"
     dataset: dict[str, Any]
-    blueprint: dict[str, Any] = Field(default_factory=dict)
     access_path: str | None = None
     axis_decisions: dict[str, list[AxisValueDecision]] = Field(default_factory=dict)
     scenarios: dict[str, TaskScenario] = Field(default_factory=dict)
     leaf_tasks: dict[str, LeafTask] = Field(default_factory=dict)
-    phase: Literal["access", "overview", "axes", "scenarios", "screening", "scenario_review", "leaves", "complete", "blocked"] = "access"
+    phase: Literal["access", "axes", "screening", "leaves", "complete", "blocked"] = "access"
     next_axis: TaskAxis | None = TaskAxis.INPUT_STRUCTURE
     current_scenario_id: str | None = None
     pending_scenario_ids: list[str] = Field(default_factory=list)
-    screening_pending_scenario_ids: list[str] = Field(default_factory=list)
-    scenario_review_pending_ids: list[str] = Field(default_factory=list)
-    scenario_review_completed_ids: list[str] = Field(default_factory=list)
-    scenario_review_excluded_ids: list[str] = Field(default_factory=list)
     completed_scenario_ids: list[str] = Field(default_factory=list)
     reviews: dict[str, ScenarioReview] = Field(default_factory=dict)
     extension_selection: dict[str, Any] = Field(default_factory=dict)
@@ -329,4 +330,3 @@ class TaskPlanState(BaseModel):
 def stable_scenario_id(input_structure: str, operation: str, clinical_target: str) -> str:
     payload = json.dumps([input_structure, operation, clinical_target], separators=(",", ":"))
     return "scenario-" + hashlib.sha256(payload.encode()).hexdigest()[:16]
-

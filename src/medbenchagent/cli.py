@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="medbenchagent")
+    parser = argparse.ArgumentParser(prog="medd2b")
     parser.add_argument("--config", type=Path, help="TOML template for newly created experiments")
     commands = parser.add_subparsers(dest="command")
     create = commands.add_parser("create", help="Create an experiment")
@@ -24,12 +24,20 @@ def _parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="Submit a request to an existing experiment")
     run.add_argument("experiment")
     run.add_argument("request")
+    run.add_argument("--dataset", dest="dataset_id")
+    batch = commands.add_parser("batch", help="Compile datasets independently")
+    batch.add_argument("experiment")
+    batch.add_argument("dataset_ids", nargs="+")
+    batch.add_argument("--request", default="Compile this dataset into a benchmark")
     resume = commands.add_parser("resume", help="Resume a session run by its ID")
     resume.add_argument("experiment")
     resume.add_argument("run_id")
     register = commands.add_parser("register", help="Register a prepared Dataset Bundle")
     register.add_argument("--dataset-id", required=True)
     register.add_argument("--bundle", required=True)
+    export = commands.add_parser("export", help="Export a published portable benchmark package")
+    export.add_argument("source", type=Path)
+    export.add_argument("destination", type=Path)
     return parser
 
 
@@ -41,6 +49,9 @@ def _render(event: RunEvent) -> None:
         print(payload.get("text", ""))
     elif event.kind == "artifact":
         print(f"[artifact] {payload.get('name')}: {payload.get('path')}")
+    elif event.kind == "view":
+        from medbenchagent.runtime.presentation import compilation_text
+        print(compilation_text({"view": payload, "status": "running"}))
     elif event.kind == "finished":
         print(f"Run {event.run_session_id}: {payload.get('status')}. {payload.get('summary', '')}")
         if payload.get("run_directory"):
@@ -87,6 +98,10 @@ def _consume(service: ConversationService, events: Iterable[RunEvent]) -> int:
 
 
 def run_command(args: argparse.Namespace) -> int:
+    if args.command == "export":
+        from medbenchagent.generation.delivery import export_benchmark
+        print(export_benchmark(args.source, args.destination))
+        return 0
     if args.command == "register":
         from medbenchagent.data.dataset_catalog import register_dataset
 
@@ -101,9 +116,14 @@ def run_command(args: argparse.Namespace) -> int:
     service = ConversationService(args.experiment)
     service.reconcile()
     if args.command == "run":
-        submission = service.submit(args.request)
+        submission = service.submit(args.request, dataset_id=args.dataset_id)
         for run_id in submission.run_ids:
             print(f"Queued run: {run_id}")
+        return _consume(service, service.drive())
+    if args.command == "batch":
+        submission = service.submit_batch(args.dataset_ids, args.request)
+        for run_id in submission.run_ids:
+            print(f"Queued compilation: {run_id}")
         return _consume(service, service.drive())
     if args.command == "resume":
         return _consume(service, service.resume(args.run_id))

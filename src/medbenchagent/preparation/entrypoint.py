@@ -9,7 +9,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from medbenchagent.data.contracts import Source
 from medbenchagent.data.sources import inventory_source, verify_source
-from medbenchagent.runtime.clarifications import answer_payload
+from medbenchagent.workflow.clarifications import answer_payload
 from medbenchagent.runtime.construction import record_event
 from medbenchagent.runtime.dataset_runtime import dataset_runtime
 from medbenchagent.settings import get_settings
@@ -65,6 +65,8 @@ def preparation_decisions(context):
 def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
     dataset_id = context["dataset_scope"]
     workspace = Path(context["run_directory"]) / "preparation" / dataset_id
+    if context.get("preparation_revision"):
+        workspace /= "repairs/" + context["preparation_revision"]
     workspace.mkdir(parents=True, exist_ok=True)
     sources, manifests, source_digest = freeze_sources(context, workspace)
     decisions = preparation_decisions(context)
@@ -75,7 +77,8 @@ def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
         "bundle_root": context["bundle_root"], "sources": sources,
         "source_roots": {item["id"]: item["root"] for item in sources},
         "source_manifests": manifests, "source_snapshot_digest": source_digest,
-        "user_request": context.get("user_request") or context.get("user_requirement") or "",
+        "user_request": (context.get("user_request") or context.get("user_requirement") or "")
+                        + ("\nSource repair findings: " + context["notes"] if context.get("notes") else ""),
         "user_decisions": decisions,
         "preparation_attempt_limits": context.get("preparation_attempt_limits", settings["preparation_attempt_limits"]),
         "preparation_stage_budgets": context.get("preparation_stage_budgets", settings["preparation_stage_budgets"]),
@@ -122,7 +125,7 @@ def run_preparation(context: dict[str, Any]) -> dict[str, Any]:
 def run_preparation_agent(context):
     def event(kind, **values):
         if path := context.get("construction_events_path"):
-            record_event(path, kind, run_id=context["run_id"], agent="DatasetProcessingAgent",
+            record_event(path, kind, run_id=context["run_id"], agent="DataProcessingAgent",
                          dataset_id=context["dataset_scope"], operation="process_dataset", **values)
 
     event("agent_started", status="running")

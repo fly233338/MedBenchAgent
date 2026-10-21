@@ -126,11 +126,22 @@ def _litellm_model(model: str) -> str:
     return model if "/" in model else "openai/" + model
 
 
+def send_host_turn(conversation, execution_key, prompt):
+    """Deduplicate a host turn against durable SDK messages, including after a crash."""
+    marker = f"[host-turn:{execution_key}]"
+    if any(marker in json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
+           for event in conversation.state.events):
+        return False
+    conversation.send_message(marker + "\n" + prompt)
+    return True
+
+
 def main(request_path: str, result_path: str) -> None:
     from pydantic import SecretStr
     from openhands.sdk import Agent, Conversation, LLM, Tool
     from openhands.tools.file_editor import FileEditorTool
     from openhands.tools.terminal import TerminalTool
+    from openhands.sdk.context import LLMSummarizingCondenser
 
     request = json.loads(Path(request_path).read_text(encoding="utf-8"))
     workspace = Path(request["workspace"]).resolve()
@@ -146,13 +157,23 @@ def main(request_path: str, result_path: str) -> None:
         model=_litellm_model(model_name),
         base_url=base_url,
         max_output_tokens=int(request.get("budget", {}).get("output_reserve_tokens", 4096)),
+        max_input_tokens=request.get("budget", {}).get("model_context_tokens"),
         api_key=SecretStr(key),
         usage_id="medbench_coding_worker",
         num_retries=int(request.get("llm_max_retries") or 0),
         timeout=max(1, math.ceil(float(request.get("llm_timeout_seconds") or 300))),
         reasoning_effort=request.get("reasoning_effort") or "medium",
     )
-    agent = Agent(llm=llm, tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)])
+    budget = request.get("budget", {})
+    context_limit = budget.get("model_context_tokens")
+    condenser_limit = (context_limit - budget.get("output_reserve_tokens", 4096)
+                       - budget.get("safety_margin_tokens", 1024)) if context_limit else budget.get("condenser_max_tokens")
+    condenser = LLMSummarizingCondenser(
+        llm=llm.model_copy(update={"usage_id": "medd2b_context"}),
+        max_size=budget.get("condenser_max_events", 80), keep_first=2,
+        max_tokens=max(256, condenser_limit) if condenser_limit is not None else None,
+    )
+    agent = Agent(llm=llm, tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)], condenser=condenser)
     event_path = Path(request["construction_events_path"]) if request.get("construction_events_path") else None
     if event_path:
         event_path.parent.mkdir(parents=True, exist_ok=True)
@@ -212,7 +233,7 @@ def main(request_path: str, result_path: str) -> None:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "event_type": "coding_worker_event",
                 "run_id": request["run_id"],
-                "agent": request.get("agent", "DatasetProcessingAgent"),
+                "agent": request.get("agent", "DataProcessingAgent"),
                 "component": "OpenHandsCodingWorker",
                 "dataset_id": request["dataset_id"],
                 "phase": request.get("stage", "prepare"),
@@ -246,8 +267,9 @@ def main(request_path: str, result_path: str) -> None:
     prompt_path = Path(request.get("prompt_path") or "")
     if not prompt_path.is_file():
         raise RuntimeError(f"Worker prompt is missing: {prompt_path}")
-    if not request.get("resume_existing"):
-        conversation.send_message(prompt_path.read_text(encoding="utf-8"))
+    # The SDK persists user events before returning. Checking those events closes
+    # the crash window between send_message and the worker's own result receipt.
+    send_host_turn(conversation, request["execution_key"], prompt_path.read_text(encoding="utf-8"))
     try:
         conversation.run()
     except Exception as exc:

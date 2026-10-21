@@ -194,13 +194,13 @@ def test_agent_progress_filter_keeps_live_and_saved_events(tmp_path):
             await pilot.pause()
             assert any("inspect_table" in str(line) for line in progress.lines)
             assert not any("prepare_data" in str(line) for line in progress.lines)
-            record_event(events, "worker_started", agent="DatasetProcessingAgent",
+            record_event(events, "worker_started", agent="DataProcessingAgent",
                          operation="coding_worker", status="running")
             screen._flush_progress()
-            screen.query_one("#agent-filter", Select).value = "DatasetProcessingAgent"
+            screen.query_one("#agent-filter", Select).value = "DataProcessingAgent"
             await pilot.pause()
             assert any("coding_worker" in str(line) for line in progress.lines)
-            assert "DatasetProcessing" in str(screen.query_one("#active-agent").content)
+            assert "DataProcessing" in str(screen.query_one("#active-agent").content)
             screen.query_one("#agent-filter", Select).value = "*"
             await pilot.pause()
             assert any("prepare_data" in str(line) for line in progress.lines)
@@ -283,7 +283,7 @@ def test_menu_colored_brand_and_confirmed_remove(tmp_path, monkeypatch):
     assert len({span.style for span in brand.spans}) > 3
     monkeypatch.setattr(tui, "_supports_block_glyphs", lambda: False)
     fallback = _brand()
-    assert fallback.plain == "MedBenchAgent"
+    assert fallback.plain == "MedD2B"
     assert len({span.style for span in fallback.spans}) > 3
 
     async def check():

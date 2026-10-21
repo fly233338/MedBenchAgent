@@ -1,70 +1,53 @@
-# MedBenchAgent
+# MedD2B — Medical Data to Benchmark
 
-MedBenchAgent uses LangGraph to prepare medical datasets and build annotation-driven Medical VLM benchmarks. Submit one natural-language request; the Supervisor chooses the required agents and keeps the run resumable.
+MedD2B compiles one annotated medical dataset into a traceable Medical VLM benchmark. A real Supervisor chooses expert work, inspects coverage, requests scoped revisions, and publishes only after semantic review and deterministic audit.
+
+Provide a dataset or raw source and optional requirements. With no clinical goal, Task Planning designs tasks from the available evidence. Explicit clinical goals constrain discovery and screening. One dataset may contain multiple sources, modalities, images and linked studies.
 
 ## Start
 
 ```powershell
 uv sync
-uv run medbenchagent
+uv run medd2b
+uv run medd2b create pilot
+uv run medd2b run pilot "Compile this dataset" --dataset breast-us
+uv run medd2b run pilot "Prepare BrEaST from D:/Data/BrEaST and compile 20 English questions"
+uv run medd2b resume pilot RUN_ID
 ```
 
-The first startup prepares the local data-processing dependencies and the
-isolated OpenHands coding-worker environment automatically. For DICOM, NIfTI
-or NRRD preparation, the same command is enough:
+The no-command entry opens the Textual interface. Plain text starts a new compilation unless a question is active; then it answers that question. Use `/queue <request>` to create a separate compilation, `/resume` for recovery, and `/details` for Agent decisions and diagnostics.
+
+A preparation-only request stops after accepted data registration. The initial startup installs the configured preparation runtime when necessary. Model endpoints and data paths come from configuration; credentials remain in environment variables.
+
+## Independent batches and delivery
 
 ```powershell
-uv run medbenchagent
+uv run medd2b batch pilot breast-us chest-xray --request "Compile 100 English questions"
+uv run medd2b export PATH_TO_PUBLISHED_DELIVERY PATH_TO_NEW_EXPORT
 ```
 
-Create an experiment and submit a request through the CLI:
+Each batch entry has independent requirements, BIR, quota and output. There is no cross-dataset allocation or automatic merge. Execution is serial; an unresolved question pauses the queue.
 
-```powershell
-uv run medbenchagent create pilot
-uv run medbenchagent run pilot "Prepare BrEaST from D:/Data/BrEaST and build a 20-question English benchmark"
-uv run medbenchagent resume pilot RUN_ID
+Deliveries contain benchmark items, a manifest, audit report, quarantine and a readable compilation report. Default packages reference verified local images. Explicit export copies model-input images and uses package-relative paths. A completion marker binds all delivered files.
+
+```python
+from medbenchagent.evaluation.loader import load_benchmark_package
+package = load_benchmark_package("/path/to/published-or-exported-package")
+items = package["items"]  # ordered input_images resolve to verified absolute paths
 ```
 
-The TUI opens when no subcommand is supplied. Create an experiment, edit its configuration, then enter the conversation. `/details` shows runs and Agent activity; `/queue <request>` adds an independent request; `/resume` continues an interrupted run.
+Model inference remains a separate deployment. The package reader requires no construction checkpoint or Prepared cache. Existing independent inference adapters need to consume this canonical interface; old benchmark formats are not supported by this reader.
 
-## Configuration
+## Ownership and configuration
 
-| Source | Purpose |
-| --- | --- |
-| `config/default.toml` | Shared defaults |
-| `--config PATH` | Template merged when creating an experiment |
-| `experiments/<name>/config.toml` | Configuration for future runs |
-| `.runtime/<run>/control/effective_config.json` | Frozen settings for a run |
+- `experiments/<session>/config.toml`: defaults for future compilations.
+- `experiments/<session>/compilations/<id>/config.toml`: configuration copied when submitted.
+- `experiments/<session>/compilations/<id>/BIR/`: one compilation's canonical business documents.
+- The compilation's `outputs/`: audited candidates and published deliveries.
+- `.runtime/<run>/`: execution checkpoint, events, operations and Agent-private state.
+- `datasets/Prepared/`: reusable prepared dataset revisions.
 
-New experiments use `experiments/<name>/BIR/` as the canonical Benchmark Intermediate Representation. Runs keep only BIR references and derived views under `.runtime/`.
-
-Relative paths resolve from the repository root. Keep credentials in environment variables; credentials are not written to configuration snapshots. Chat model discovery is required. Retrieval services are optional and their availability is recorded per run.
-
-## Run layout
-
-Each run contains:
-
-```text
-<run>/
-  control/     frozen config, contract, artifact index, events and operation ledger
-  inputs/      frozen Catalog and dataset Cards
-  agents/      Agent state and semantic outputs
-  workers/     OpenHands preparation workspaces
-```
-
-Prepared data remains under `datasets/Prepared`. Deliveries reference prepared images instead of copying them.
-
-## Data preparation and construction
-
-The Supervisor can inspect registered datasets, prepare configured raw sources, reuse valid prepared versions, plan and review tasks independently for each selected dataset, allocate one global sample budget, generate dataset-local JSONL items and publish one audited delivery. Missing facts become a focused `ask_user` question inside the same run. Requests outside dataset preparation or benchmark construction end without creating artifacts.
-
-Raw-source preparation uses an OpenHands coding session. The source is read-only; candidates are validated deterministically before registration. Registered datasets are reused unless the request explicitly asks for a rebuild.
-
-The local preparation worker uses the fixed virtual environment configured by
-`data_processing.coding_worker_venv`. Startup creates it and installs
-`config/coding-worker.requirements.txt` when needed. Local data-processing
-packages are installed into the main `uv` environment from the
-`data-processing` extra. Docker uses the configured pinned images instead.
+The Python import package remains `medbenchagent`; the product and console command are MedD2B / `medd2b`. Shared defaults live in `config/default.toml`. Language defaults to English and the sample budget to 1000; both are configurable. Missing clinical scope is valid.
 
 ## Development
 
@@ -73,11 +56,6 @@ uv run ruff check .
 uv run pytest
 ```
 
-The tests use local fixtures and model doubles. Real Docker, model services and large datasets require separate integration validation.
-
-See [architecture](docs/ARCHITECTURE.md), [data contracts](docs/DATA_LAYER.md), [preparation validation](docs/PREPARATION_VALIDATION.md) and [evaluation](docs/EVALUATION.md).
-
-## License
+See [architecture](docs/ARCHITECTURE.md), [Agent responsibilities](docs/agents/README.md), [data contracts](docs/DATA_LAYER.md), and [preparation validation](docs/PREPARATION_VALIDATION.md). Offline tests use real small image fixtures and scripted model decisions. They do not establish live-model quality, Docker reliability or large-dataset throughput.
 
 [Apache License 2.0](LICENSE).
-

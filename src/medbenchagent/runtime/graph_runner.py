@@ -11,9 +11,9 @@ from typing import Any, Callable, Iterator, Literal
 from medbenchagent.settings import active_settings, load_settings, run_settings
 
 
-EventKind = Literal["initialized", "progress", "artifact", "needs_input", "finished", "error"]
+EventKind = Literal["initialized", "progress", "artifact", "needs_input", "finished", "error", "view"]
 _ARTIFACT_KEYS = {"run_directory", "effective_config_path", "construction_events_path",
-                  "working_blueprint_path", "raw_output_path", "manifest_path", "delivery_path"}
+                  "benchmark_brief_path", "raw_output_path", "manifest_path", "delivery_path"}
 
 
 @dataclass(frozen=True)
@@ -91,6 +91,7 @@ def _metadata(values: dict) -> dict:
         "bir_template_revision": context.get("bir_template_revision"),
         "bir_summary_ref": context.get("bir_summary_ref"),
         "source_decision_path": context.get("source_decision_path"),
+        "view": context.get("view"),
         "selected_assets": {
             dataset_id: asset.get("entry", {})
             for dataset_id, asset in context.get("dataset_assets", {}).items()
@@ -282,6 +283,9 @@ class GraphRunner:
                         "user_requirement": run["requirement"],
                         "experiment_name": experiment_name,
                         "experiments_root": str(experiments_root),
+                        "compilation_id": run.get("compilation_id"),
+                        "compilation_directory": run.get("compilation_directory"),
+                        "dataset_id": run.get("dataset_id"),
                     }
                 seen_artifacts: set[tuple[str, str]] = set()
                 while True:
@@ -337,13 +341,19 @@ class GraphRunner:
                                     seen_artifacts.add((name, path))
                                     yield RunEvent(identifier, "artifact", {"name": name, "path": path})
                             execute = payload.get("execute")
+                            if isinstance(execute, dict) and execute.get("context", {}).get("view"):
+                                yield RunEvent(identifier, "view", execute["context"]["view"])
                             observations = execute.get("observations", []) if isinstance(execute, dict) else []
                             if observations:
                                 item = observations[-1]
+                                from medbenchagent.runtime.presentation import event_view
+                                view = event_view({"agent": "SupervisorAgent" if not namespace else namespace[-1].split(":")[0],
+                                                   "event_type": "tool_result", "operation": item.get("tool"),
+                                                   "status": item.get("status"), "summary": item.get("summary")})
                                 milestone = item.get("milestone")
                                 suffix = f" [{milestone.get('kind')}]" if isinstance(milestone, dict) and milestone.get("kind") else ""
                                 yield RunEvent(identifier, "progress", {
-                                    "text": f"[tool] {item.get('tool')}: {item.get('status')}{suffix} — {item.get('summary')}",
+                                    "text": (view["text"] if view else str(item.get("summary"))) + suffix,
                                 })
                             if not namespace:
                                 interrupted = interrupted or _interrupt(payload)

@@ -1,9 +1,8 @@
-"""Keyboard-first persistent terminal interface for MedBenchAgent."""
+"""Keyboard-first persistent terminal interface for MedD2B."""
 
 from __future__ import annotations
 
 import queue
-import json
 import sys
 import threading
 import tomlkit
@@ -84,6 +83,7 @@ def _brand() -> Text:
         "M": ("█   █", "██ ██", "█ █ █", "█   █", "█   █"),
         "E": ("█▀▀▀", "█   ", "█▀▀ ", "█   ", "▀▀▀▀"),
         "D": ("█▀▀▄", "█  █", "█  █", "█  █", "▀▀▀ "),
+        "2": ("▀▀▀▄", "   █", "▄▀▀ ", "█   ", "▀▀▀▀"),
         "B": ("█▀▀▄", "█  █", "█▀▀▄", "█  █", "▀▀▀ "),
         "N": ("█  █", "██ █", "█ ██", "█  █", "█  █"),
         "C": ("▄▀▀▀", "█   ", "█   ", "█   ", "▀▄▄▄"),
@@ -97,14 +97,14 @@ def _brand() -> Text:
               "#d483d9", "#df82c9", "#e78cbb")
     title = Text()
     if not _supports_block_glyphs():
-        for letter, color in zip("MedBenchAgent", colors, strict=True):
+        for letter, color in zip("MedD2B", colors[:6], strict=True):
             title.append(letter, style=f"bold {color}")
         return title
-    rows = [" ".join(glyphs[letter][row] for letter in "MEDBENCHAGENT") for row in range(5)]
+    rows = [" ".join(glyphs[letter][row] for letter in "MEDD2B") for row in range(5)]
     column_colors = []
-    for index, letter in enumerate("MEDBENCHAGENT"):
+    for index, letter in enumerate("MEDD2B"):
         column_colors.extend([colors[index]] * len(glyphs[letter][0]))
-        if index < 12:
+        if index < 5:
             column_colors.append(colors[index])
     # A one-cell down/right shadow never overwrites a letter's foreground.
     width = len(rows[0]) + 1
@@ -198,7 +198,7 @@ class RemoveExperimentScreen(ModalScreen[bool]):
 class ExperimentMenu(Screen):
     COMMANDS = (("new", "Create an experiment"), 
                 ("remove", "Remove the selected experiment"),
-                ("quit", "Exit MedBenchAgent"), ("help", "Commands and keys"))
+                ("quit", "Exit MedD2B"), ("help", "Commands and keys"))
 
     def __init__(self) -> None:
         super().__init__()
@@ -611,7 +611,7 @@ class ConfigScreen(Screen):
 
 class ConversationScreen(Screen):
     COMMANDS = (("details", "Toggle run details"), ("resume", "Resume an unfinished run"),
-                ("config", "Edit future run settings"), ("queue", "Queue a request: /queue <text>"),
+                ("config", "Edit future run settings"), ("queue", "Start another compilation: /queue <text>"),
                 ("quit", "Return to experiments"), ("help", "Commands and keys"))
 
     def __init__(self, name: str) -> None:
@@ -662,6 +662,7 @@ class ConversationScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static(self.experiment_name, id="session-title")
         yield Static("Ready", id="session-status")
+        yield Static("Select a dataset or describe its source to start a compilation.", id="compilation-summary")
         with Horizontal(id="session-body"):
             with Vertical(id="chat-pane"):
                 yield HistoryView(id="conversation")
@@ -670,7 +671,7 @@ class ConversationScreen(Screen):
                     yield Static("", id="run-question")
         
                 yield OptionList(id="session-commands")
-                yield Prompt(placeholder="Message", id="message", highlight_cursor_line=False)
+                yield Prompt(placeholder="Dataset/source and optional goal; answer the active question here", id="message", highlight_cursor_line=False)
             with Vertical(id="side-pane"):
                 with Vertical(id="runs-panel"):
                     yield Button("RUNS  ▾", id="runs-toggle")
@@ -754,8 +755,13 @@ class ConversationScreen(Screen):
         if added_ids:
             self.call_after_refresh(self._position_messages, added_ids)
         self.refresh_runs()
+        self._show_compilation_summary(self.record["runs"][-1] if self.record["runs"] else {})
         if after:
             after()
+
+    def _show_compilation_summary(self, run):
+        from medbenchagent.runtime.presentation import compilation_text
+        self.query_one("#compilation-summary", Static).update(compilation_text(run))
 
     def load_older_messages(self) -> None:
         if not self._history_start or self._loading_history:
@@ -932,85 +938,25 @@ class ConversationScreen(Screen):
         self._render_agent_status()
 
     def _read_construction_event(self, line: bytes, *, render: bool = True) -> None:
-        try:
-            event = json.loads(line)
-        except (UnicodeDecodeError, ValueError):
+        from medbenchagent.runtime.presentation import event_view
+        view = event_view(line)
+        if view is None:
             return
-        if not isinstance(event, dict):
-            return
-        agent = event.get("agent")
-        kind = event.get("event_type")
-        if not isinstance(agent, str) or kind not in {
-            "agent_step_started", "tool_started", "tool_result", "llm_call", "llm_validation_error",
-            "coding_worker_event", "agent_started", "agent_finished", "worker_started", "worker_result",
-            "publish_started", "publish_finished", "candidate_submitted",
-            "stage_started", "stage_validated", "stage_completed", "stage_paused"
-        }:
-            return
-        operation = event.get("operation", "")
-        status = event.get("status", "")
-        label = agent.removesuffix("Agent")
-        timestamp = event.get("timestamp", "")
-        time = timestamp[11:19] if isinstance(timestamp, str) else ""
-        dataset = str(event.get("dataset_id") or "")
-        source = str(event.get("source_id") or "")
-        stage = str(event.get("stage") or event.get("phase") or "")
-        attempt = event.get("attempt")
-        milestone = str(event.get("milestone") or "")
-        progress_count = event.get("processed") or event.get("processed_count")
-        if agent:
-            self._context_agent = agent.removesuffix("Agent")
-            self._render_status()
-        if kind == "coding_worker_event":
-            operation = str(event.get("operation") or "event")
-            detail = f"OpenHands · {operation.removesuffix('Event')}"
-            status = event.get("status", "running")
-            suffix = f" · {stage}" if stage else ""
-            if attempt is not None:
-                suffix += f" attempt {attempt}"
-            if milestone:
-                suffix += f" · {milestone}"
-            if progress_count is not None:
-                suffix += f" · processed {progress_count}"
-            detail += suffix
-        elif kind == "agent_step_started":
-            detail = "deciding"
-        elif kind == "tool_started":
-            detail = f"{operation} · running"
-        elif kind == "tool_result":
-            detail = f"{operation} · {status}: {str(event.get('summary', ''))[:240]}"
-        elif kind == "llm_validation_error":
-            detail = f"{operation} · invalid model output; repairing"
-            status = "failed"
-        elif kind in {"agent_started", "worker_started", "publish_started"}:
-            detail = f"{operation} · started"
-            status = status or "running"
-        elif kind in {"agent_finished", "worker_result", "publish_finished", "candidate_submitted"}:
-            detail = f"{operation} · {status}: {str(event.get('summary') or event.get('diagnostic') or '')[:240]}"
-        elif kind in {"stage_started", "stage_validated", "stage_completed", "stage_paused"}:
-            stage_label = f"{stage} " if stage else ""
-            detail = f"{stage_label}{kind.removeprefix('stage_')} · {status}"
-            if attempt is not None:
-                detail += f" · attempt {attempt}"
-        else:
-            latency = event.get("latency_ms")
-            duration = f" ({latency / 1000:.1f}s)" if isinstance(latency, (int, float)) else ""
-            detail = f"{operation} · model {status}{duration}"
-        if kind == "llm_call":
-            if isinstance(event.get("input_tokens"), int):
-                self._context_tokens = event["input_tokens"]
-            if isinstance(event.get("context_window_tokens"), int):
-                self._context_window = event["context_window_tokens"]
-            if isinstance(event.get("model"), str):
-                self._context_model = event["model"]
-            self._update_context_indicator()
+        agent, kind = view["agent"], view["kind"]
+        self._context_agent = view["label"]
+        if isinstance(view["input_tokens"], int):
+            self._context_tokens = view["input_tokens"]
+        if isinstance(view["context_window_tokens"], int):
+            self._context_window = view["context_window_tokens"]
+        if isinstance(view["model"], str):
+            self._context_model = view["model"]
+        self._update_context_indicator()
         self._add_agent(agent)
-        self._update_agent_status(agent, dataset, source, str(status), str(operation), detail)
-        self._append_progress(agent, f"{time}  {label}: {detail}", status, render=render)
-        if kind in {"agent_step_started", "tool_started", "coding_worker_event", "agent_started", "worker_started", "publish_started", "stage_started"}:
-            self.query_one("#active-agent", Static).update(f"Working: {label} · {operation}")
-        elif kind in {"tool_result", "llm_call", "agent_finished", "worker_result", "publish_finished", "candidate_submitted", "stage_validated", "stage_completed", "stage_paused"}:
-            self.query_one("#active-agent", Static).update(f"Latest: {label} · {operation}")
+        self._update_agent_status(agent, view["dataset"], view["source"], str(view["status"]),
+                                  str(view["operation"]), view["detail"])
+        self._append_progress(agent, view["text"], view["status"], render=render)
+        prefix = "Working" if kind.endswith("started") or kind == "coding_worker_event" else "Latest"
+        self.query_one("#active-agent", Static).update(f"{prefix}: {view['label']} · {view['operation']}")
 
     def _update_context_indicator(self) -> None:
         if self._context_tokens is None:
@@ -1292,6 +1238,9 @@ class ConversationScreen(Screen):
     def _on_event(self, event: RunEvent) -> None:
         if event.kind in {"initialized", "needs_input", "finished", "error"}:
             self.refresh_record()
+        if event.kind == "view":
+            self._show_compilation_summary({"view": event.payload, "status": "running"})
+            return
         if event.kind == "initialized":
             if event.payload.get("run_directory"):
                 self._follow_run(event.run_session_id, event.payload["run_directory"])
@@ -1483,6 +1432,7 @@ class MBAApp(App):
     ConfigScreen #apply { height: 3; min-height: 3; margin: 0; padding: 0; }
     #config-command { height: 3; }
     #session-title { height: 1; padding: 0 2; color: #a8c4ff; text-style: bold; }
+    #compilation-summary { height: auto; max-height: 4; padding: 0 2; color: #a8c4ff; }
     #session-status { height: auto; max-height: 4; overflow-y: auto; padding: 0 2; color: #9aa6b6; }
     #session-body { width: 100%; height: 1fr; }
     #chat-pane { width: 1fr; height: 1fr; min-width: 24; padding: 0 1 0 2; }
@@ -1530,7 +1480,7 @@ class MBAApp(App):
     #command-options { height: auto; max-height: 12; }
     """
 
-    TITLE = "MBA"
+    TITLE = "MedD2B"
 
     def __init__(self, *, experiments_root: Path = sessions.EXPERIMENTS_ROOT,
                  config_template: Path | None = None) -> None:

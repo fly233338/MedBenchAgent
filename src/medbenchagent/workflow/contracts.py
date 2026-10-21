@@ -21,7 +21,7 @@ class ProcessDatasetArguments(NoArguments):
     """Only public data-processing tool contract."""
 
     dataset_id: DatasetId
-    mode: Literal["reuse_or_process", "rebuild"] = "reuse_or_process"
+    mode: Literal["reuse_or_process", "rebuild", "repair"] = "reuse_or_process"
     issue_ids: list[NonEmpty] = Field(default_factory=list)
     notes: str = ""
 

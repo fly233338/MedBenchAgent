@@ -11,3 +11,13 @@ Workers and Host use the same read-only stage checks. Package performs final con
 Workers generate candidate files and finish. No success submission receipt is required. The runtime checks required outputs; Host independently validates contents and advances only on acceptance, retrying invalid candidates. `validate` is an optional read-only development check, not a completion action. Only exceptional outcomes use `work/control.json` with `StageControl`: `needs_input` contains scoped questions and `blocked` contains diagnostics. CLI `signal --outcome needs_input --questions-file work/questions.json` or `signal --outcome blocked --summary ...` writes this control message. Explicit control takes precedence over complete files; malformed control and missing outputs fail closed. Runtime errors and cancellation remain failures, not implicit success. Understand defaults to 80 iterations with a 1800-second timeout; Text and Image retain 80.
 
 Worker prompts require only construction checks and prohibit CLI `validate`; workers finish as soon as required outputs are ready. The coding-process adapter collects files and reads exceptional control using the standard library, without importing the main application. Host separately applies the complete StageControl schema and authoritative stage validation.
+
+## Sessions, feedback and snapshots
+
+Each stage and mapping-revision epoch owns a stable `sessions/<stage>-<epoch>/` workspace and OpenHands conversation. Ordinary implementation repair and user clarification append a host message to that conversation. Host-turn markers are checked against SDK-persisted events to avoid resending after a crash.
+
+Each round snapshots candidate files and accepted inputs under `attempts/<stage>/<attempt>/`; conversation and log histories are not copied. The host validates those snapshots, not mutable workspace files. Previous-reference digest checks cover semantic inputs and candidate outputs. A semantic mapping revision creates a new session epoch and invalidates dependent Text/Image work.
+
+Failure counters are independent of round counters: clarification does not consume a failure retry. Contract failures receive typed feedback; environment failures block; mapping revision has a separate finite budget. OpenHands `LLMSummarizingCondenser` is configured from stage budgets, with model context/output reserves honored when supplied. Accepted facts and user decisions remain explicit in host prompts/files instead of relying on summaries alone.
+
+See [Data Preparation Agent](agents/data-preparation.md) for ownership and acceptance coverage.

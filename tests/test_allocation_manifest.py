@@ -1,4 +1,8 @@
-from medbenchagent.audit.manifest import build_manifest
+from compilation_fixtures import compile_fixture
+from test_global_construction import _plan
+from test_compilation import cases
+from pathlib import Path
+import json
 from medbenchagent.planning.allocation import allocate_task_leaves
 
 
@@ -8,13 +12,14 @@ def _leaf(leaf_id, node_id="n", capacity=3):
             "output_spec": "label", "task_paradigm": "VQA", "capability_category": "Recognition", "eligible_count": capacity}
 
 
-def test_allocation_is_capacity_bounded_and_manifest_has_no_metric():
+def test_allocation_is_capacity_bounded_and_manifest_has_no_metric(tmp_path):
     leaves = [_leaf("a", capacity=1), _leaf("b", capacity=4)]
     allocation = allocate_task_leaves(leaves, 3)
     assert sum(allocation.values()) == 3
     assert allocation["a"] <= 1 and allocation["b"] <= 4
-    manifest = build_manifest({"dataset_id": "d"}, [{"scenario_id": "n", "input_structure": "single-image", "operation": "recognize", "clinical_target": "finding", "capability_category": "Recognition", "validated_clinical_targets": [{"target_id": "finding", "name": "finding", "target_type": "finding", "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["label"]}]}], leaves, allocation, item_count=3)
+    context = compile_fixture(tmp_path, _plan("d", {"a": 1}), cases())
+    manifest = json.loads((Path(context["candidate_path"]) / "benchmark_manifest.json").read_text())
+
     assert manifest["schema_version"] == "benchmark-manifest"
     assert "metrics" not in manifest
-    assert manifest["tasks"]["a"]["output_spec"] == "label"
-
+    assert manifest["tasks"]["d::a"]["output_spec"] == "label"

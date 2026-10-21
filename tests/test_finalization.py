@@ -29,11 +29,8 @@ def test_catalog_cache_is_derived_and_no_projection_is_required(tmp_path):
 
 def test_minimal_bundle_drives_planning_generation_and_delivery(tmp_path):
     from medbenchagent.agents import task_planning
-    from medbenchagent.agents.finalization import finalize_benchmark
     from medbenchagent.planning.task_space import TaskPlanState, TaskScenario
-    from medbenchagent.planning.pipeline import run_pipeline
-    from medbenchagent.planning.resolver import ResolverContext
-    from medbenchagent.generation.items import write_task_items
+    from compilation_fixtures import compile_fixture
     from test_task_input import leaf
     context = state(tmp_path)
     prepared = compile_preparation_graph(worker=Worker()).invoke(context)["publication"]
@@ -52,27 +49,6 @@ def test_minimal_bundle_drives_planning_generation_and_delivery(tmp_path):
                 "subject": "case", "scope": "case", "reference_kind": "direct", "reference_fields": ["label"]}]),
     })
     cases = [json.loads(line) for line in Path(access["cases_path"]).read_text().splitlines()]
-    built = run_pipeline(dataset={"dataset_id": "d"}, plan=plan, cases=cases, requested_count=1,
-                         resolver_context=ResolverContext.from_access(access))
-    assert built["audit"]["accepted"] == 1
-    plan.leaf_tasks["l"] = task.model_copy(update={"eligible_count": 1})
-    plan_path = tmp_path / "task_plan.json"
-    plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
-    from medbenchagent.planning.bir import BIRStore
-    store = BIRStore.initialize(tmp_path / "BIR", "config/bir_template", "test")
-    store.update("datasets/d/planning/task_plan.json", plan.model_dump(mode="json"), run_id="r", actor="test")
-
-    raw = tmp_path / "generated.jsonl"
-    write_task_items(raw, built["items"])
-    allocation = tmp_path / "allocation.json"
-    allocation.write_text(json.dumps({"requested_count": 1, "counts": {"d": {"l": 1}}}), encoding="utf-8")
-    from medbenchagent.data.sources import digest_file
-    store.update("dataset_bindings.json", {"datasets":{"d":{"access":access}}}, run_id="r", actor="test")
-    store.update("allocation.json", {"requested_count":1, "counts":{"d":{"l":1}}}, run_id="r", actor="test")
-    store.update("outputs/d.json", {"benchmark_items_path":str(raw), "benchmark_items_digest":digest_file(raw)}, run_id="r", actor="test")
-    finalize_benchmark({"bir_path": str(store.root), "selected_dataset_ids": ["d"], "allocation_path": str(allocation),
-        "dataset_task_plans": {"d": str(plan_path)}, "dataset_generations": {"d": {"raw_output_path": str(raw)}},
-        "dataset_assets": {"d": {"access": access}}, "operation_directory": str(tmp_path), "seed": 0,
-    }, output_directory=tmp_path / "delivery")
-    delivered = json.loads((tmp_path / "delivery/benchmark.jsonl").read_text())
+    compiled = compile_fixture(tmp_path / "compiled", plan, cases, access=access)
+    delivered = json.loads((Path(compiled["candidate_path"]) / "benchmark.jsonl").read_text())
     assert Path(delivered["input_images"][0]["path"]).read_bytes() == (tmp_path / "raw/raw.jpg").read_bytes()

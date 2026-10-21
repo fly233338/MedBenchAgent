@@ -10,7 +10,6 @@ from medbenchagent.planning.resolver import (
     ResolverSpec,
     resolve,
 )
-from medbenchagent.planning.blueprint import load_blueprint
 from medbenchagent.planning.bir import BIRStore, BIRConflictError, BIRCommit, BIRValidationReport, RegistrySnapshot
 from medbenchagent.planning.access import DatasetAccessReceipt
 from medbenchagent.planning.task_discovery import compile_task_space_plan, validate_candidate_leaf, validate_task_tree
@@ -36,7 +35,6 @@ __all__ = [
     "ResolverContext", "ResolverSpec", "TaskAxis",
     "TaskParadigm", "TaskPlanState", "TaskScenario",
     "build_task_scenarios", "compile_task_space_plan", "resolve",
-    "validate_candidate_leaf", "validate_task_tree", "load_blueprint", "BIRStore",
+    "validate_candidate_leaf", "validate_task_tree", "BIRStore",
     "BIRConflictError", "BIRCommit", "BIRValidationReport", "RegistrySnapshot",
 ]
-

@@ -6,12 +6,17 @@ import pytest
 from medbenchagent.planning.bir import BIRStore
 from medbenchagent.runtime import sessions
 
+def compilation(tmp_path):
+    session = sessions.create_experiment("pilot", root=tmp_path)
+    return sessions.queue_run(session, "Compile dataset", root=tmp_path)
+
+
 
 def test_restore_business_preserves_current_run_request(tmp_path, monkeypatch):
     from medbenchagent.planning import bir
 
-    sessions.create_experiment("pilot", root=tmp_path)
-    store = BIRStore(tmp_path / "pilot/BIR")
+    record = compilation(tmp_path)
+    store = BIRStore(Path(record["bir_path"]))
     store.update("benchmark_info.json", {"schema_version": "benchmark-info", "user_requirement": "Build old benchmark"},
                  run_id="old", actor="test")
     monkeypatch.setattr(bir, "require", lambda _context, kind: {kind: {}} if kind == "Requirement" else None)
@@ -22,8 +27,8 @@ def test_restore_business_preserves_current_run_request(tmp_path, monkeypatch):
 
 
 def test_new_experiment_initializes_bir_directory_and_manifest(tmp_path: Path):
-    record = sessions.create_experiment("pilot", root=tmp_path)
-    bir = tmp_path / "pilot" / "BIR"
+    record = compilation(tmp_path)
+    bir = Path(record["bir_path"])
     assert Path(record["bir_path"]) == bir
     assert (bir / "registry" / "axes.json").is_file()
     manifest = json.loads((bir / "manifest.json").read_text(encoding="utf-8"))
@@ -33,8 +38,8 @@ def test_new_experiment_initializes_bir_directory_and_manifest(tmp_path: Path):
 
 
 def test_bir_revision_conflict_and_digest_validation(tmp_path: Path):
-    sessions.create_experiment("pilot", root=tmp_path)
-    store = BIRStore(tmp_path / "pilot" / "BIR")
+    record = compilation(tmp_path)
+    store = BIRStore(Path(record["bir_path"]))
     first = store.update("benchmark_info.json", {"schema_version": "benchmark-info", "value": 1},
                          run_id="r1", actor="test", expected_revision=0)
     assert first.revision == 1
@@ -42,13 +47,13 @@ def test_bir_revision_conflict_and_digest_validation(tmp_path: Path):
         store.update("benchmark_info.json", {"schema_version": "benchmark-info", "value": 2},
                      run_id="r2", actor="test", expected_revision=0)
     assert store.validate().valid
-    (tmp_path / "pilot" / "BIR" / "benchmark_info.json").write_text("{}", encoding="utf-8")
+    (Path(record["bir_path"]) / "benchmark_info.json").write_text("{}", encoding="utf-8")
     assert not store.validate().valid
 
 
 def test_bir_rejects_path_escape(tmp_path: Path):
-    sessions.create_experiment("pilot", root=tmp_path)
-    store = BIRStore(tmp_path / "pilot" / "BIR")
+    record = compilation(tmp_path)
+    store = BIRStore(Path(record["bir_path"]))
     with pytest.raises(ValueError):
         store.load("../outside.json")
 
@@ -56,7 +61,7 @@ def test_bir_rejects_path_escape(tmp_path: Path):
 def test_task_plan_is_only_planning_authority(tmp_path):
     from medbenchagent.agents import task_planning
     from medbenchagent.planning.task_space import TaskPlanState
-    record = sessions.create_experiment("pilot", root=tmp_path)
+    record = compilation(tmp_path)
     operation = tmp_path / "operation"
     context = {"bir_path": record["bir_path"], "dataset_scope": "demo", "run_id": "r",
                "operation_directory": str(operation), "dataset_access_manifest": {"revision": "r"}}
@@ -74,8 +79,8 @@ def test_task_plan_is_only_planning_authority(tmp_path):
 
 
 def test_bir_json_is_readable_and_failed_transaction_preserves_previous_file(tmp_path: Path):
-    sessions.create_experiment("pilot", root=tmp_path)
-    store = BIRStore(tmp_path / "pilot" / "BIR")
+    record = compilation(tmp_path)
+    store = BIRStore(Path(record["bir_path"]))
     store.update("allocation.json", {"schema_version": "allocation", "items": ["one"]},
                  run_id="r1", actor="test")
     path = store.root / "allocation.json"
@@ -91,8 +96,8 @@ def test_bir_json_is_readable_and_failed_transaction_preserves_previous_file(tmp
 
 def test_atomic_update_failure_and_dependency_invalidation(tmp_path, monkeypatch):
     from medbenchagent.planning import bir
-    sessions.create_experiment("pilot", root=tmp_path)
-    store = BIRStore(tmp_path / "pilot/BIR")
+    record = compilation(tmp_path)
+    store = BIRStore(Path(record["bir_path"]))
     first = store.update("benchmark_info.json", {"scope":"one"}, run_id="r", actor="test")
     assert store.update("benchmark_info.json", {"scope":"one"}, run_id="r", actor="test").revision == first.revision
     store.update("allocation.json", {"count":1}, run_id="r", actor="test",

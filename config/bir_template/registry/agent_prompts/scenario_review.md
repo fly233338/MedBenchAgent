@@ -185,4 +185,9 @@ Return:
 
 Do not propose unrelated replacement tasks during review.
 
+## Source evidence and ownership
+
+Use source_evidence to check the original annotation semantics and representative Cases against the generated Leaf definitions. Do not approve solely because the Leaf is structurally valid.
+When source interpretation or preparation must be corrected, report source_concerns containing summary, fields (known evidence names), and evidence_refs (reference/detail records). Do not invent a replacement mapping. Supervisor routes these concerns back to Preparation. Ordinary task wording and Resolver issues remain planning feedback.
+
 {{DATASET_SPECIFIC_RULES}}

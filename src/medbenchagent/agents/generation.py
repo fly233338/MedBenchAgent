@@ -17,6 +17,8 @@ def run_generation(context, *, output_path=None, page_size=512):
     if access.get("sampling_manifest_path"):
         sampling_manifest = load_manifest(access["sampling_manifest_path"], SamplingManifest)
     plan = store.load(f"datasets/{context['dataset_scope']}/planning/task_plan.json")
+    if plan["phase"] != "complete":
+        raise ValueError("Generation requires a complete Task Plan")
     leaves = plan["leaf_tasks"]
     resolver_context = ResolverContext.from_access(access)
     resolver_context.scenarios = plan["scenarios"]
@@ -47,6 +49,15 @@ def run_generation(context, *, output_path=None, page_size=512):
     task_counts = {}
     for item in items:
         task_counts[item["task_id"]] = task_counts.get(item["task_id"], 0) + 1
+    from medbenchagent.planning.bir import business_dependencies, digest_file
+    from medbenchagent.data.sources import digest_file as content_digest
+    store.update(f"outputs/{dataset}.json", {
+        "schema_version": "bir-output", "dataset_id": dataset, "status": "complete",
+        "benchmark_items_path": destination, "benchmark_items_digest": content_digest(destination),
+        "counts": task_counts, "allocation": dict(allocation or {}),
+    }, run_id=context.get("run_id", "unknown"), actor="generation",
+       dependencies=business_dependencies(context, "allocation.json", f"datasets/{dataset}/planning/task_plan.json")
+                    | {"file:" + str(Path(destination).resolve()): digest_file(destination)})
     return result(
         "success",
         f"Generated {len(items)} benchmark items",

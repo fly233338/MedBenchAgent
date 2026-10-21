@@ -2,10 +2,13 @@ dataset_sources = []
 
 [benchmark]
 default_sample_count = 1000
+default_language = "en"
 input_policy = "image-only"
 
 [planning]
 novelty_enabled = false
+max_calls = 1200
+context_chars = 64000
 
 [paths]
 dataset_catalog = "datasets/dataset_catalog.json"
@@ -69,4 +72,4 @@ coding_worker_venv = ".venv-coding"
 coding_worker_max_iterations = 100
 coding_worker_timeout_seconds = 7200
 preparation_attempt_limits = { understand = 2, prepare_text = 2, prepare_image = 2, mapping_revision_cycles = 1 }
-preparation_stage_budgets = { understand = { max_iterations = 80, timeout_seconds = 1800 }, prepare_text = { max_iterations = 80, timeout_seconds = 3600 }, prepare_image = { max_iterations = 80, timeout_seconds = 3600 } }
+preparation_stage_budgets = { understand = { max_iterations = 80, timeout_seconds = 1800, condenser_max_events = 80, condenser_max_tokens = 24000 }, prepare_text = { max_iterations = 80, timeout_seconds = 3600, condenser_max_events = 80, condenser_max_tokens = 24000 }, prepare_image = { max_iterations = 80, timeout_seconds = 3600, condenser_max_events = 80, condenser_max_tokens = 24000 } }

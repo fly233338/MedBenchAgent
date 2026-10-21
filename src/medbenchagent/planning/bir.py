@@ -329,7 +329,7 @@ class RegistrySnapshot:
 
 
 class BIRStore:
-    """Safe, revisioned access to an experiment's BIR directory."""
+    """Safe, revisioned access to one compilation's BIR directory."""
 
     SCHEMA_VERSION = "bir"
 
@@ -352,7 +352,7 @@ class BIRStore:
         if not manifest_path.is_file():
             raise ValueError("BIR template requires manifest.json")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        template_revision = str(manifest.get("template_revision") or manifest.get("revision") or "1")
+        template_revision = manifest["template_revision"]
         for file in path.rglob("*"):
             if not file.is_file() or file.name == ".keep":
                 continue
@@ -367,7 +367,7 @@ class BIRStore:
         return BIRTemplate(path, template_revision, digest_tree(path), files)
 
     @classmethod
-    def initialize(cls, target_dir: str | Path, template_dir: str | Path, experiment_id: str) -> "BIRStore":
+    def initialize(cls, target_dir: str | Path, template_dir: str | Path, compilation_id: str) -> "BIRStore":
         target = Path(target_dir).resolve()
         if target.exists():
             raise ValueError(f"BIR directory already exists: {target}")
@@ -381,7 +381,7 @@ class BIRStore:
         store.lock = FileLock(str(target / ".bir.lock"))
         manifest = {
             "schema_version": cls.SCHEMA_VERSION,
-            "experiment_id": experiment_id,
+            "compilation_id": compilation_id,
             "template_revision": template.template_revision,
             "template_digest": template.digest,
             "registry_digest": RegistrySnapshot.from_directory(target / "registry").digest,
@@ -468,6 +468,8 @@ class BIRStore:
 
     def update(self, relative_path, value, *, run_id, actor, expected_revision=None,
                dependencies=None, expected_digest=None):
+        if relative_path == "dataset_bindings.json" and len(value.get("datasets", {})) != 1:
+            raise ValueError("A compilation must bind exactly one dataset")
         if relative_path.startswith("registry/") or relative_path == "manifest.json":
             raise ValueError("BIR Registry and experiment identity are immutable")
         with self.lock:
@@ -537,7 +539,6 @@ def persist_task_plan(context, plan, *, plan_path, bir, access) -> dict[str, Any
     directory = Path(context["operation_directory"])
     directory.mkdir(parents=True, exist_ok=True)
     plan_value = plan.model_dump(mode="json")
-    scenarios_value = {key: value.model_dump(mode="json") for key, value in plan.scenarios.items() if not value.exclusion_reason}
     if bir:
         dataset_id = context.get("dataset_scope", context.get("selected_dataset_id", "dataset"))
         prefix = f"datasets/{dataset_id}/planning/"
@@ -552,10 +553,6 @@ def persist_task_plan(context, plan, *, plan_path, bir, access) -> dict[str, Any
         "task_plan_path": str(bir.root / prefix / "task_plan.json") if bir else str(plan_path),
         "task_plan": plan.model_dump(mode="json"),
         "extension_selection": plan.extension_selection,
-        "task_scenarios": scenarios_value,
-        "leaf_tasks": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
-        "task_nodes": scenarios_value,
-        "task_leaves": {key: value.model_dump(mode="json") for key, value in plan.leaf_tasks.items()},
         "bir_summary_ref": ({"revision": context.get("bir_revision"), "dataset_id": context.get("dataset_scope"),
                               "task_plan": str(plan_path)} if context.get("bir_path") else None),
     }

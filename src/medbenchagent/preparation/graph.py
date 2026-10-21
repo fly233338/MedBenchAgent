@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+import shutil
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -48,6 +49,9 @@ class PreparationGraphState(TypedDict, total=False):
     understand_attempts: int
     prepare_text_attempts: int
     prepare_image_attempts: int
+    understand_failures: int
+    prepare_text_failures: int
+    prepare_image_failures: int
     text_root: str
     text_artifacts: dict[str, Any]
     package_root: str
@@ -80,7 +84,7 @@ class PreparationGraphState(TypedDict, total=False):
 def _event(state, event_type, **values):
     if path := state.get("construction_events_path"):
         record_event(path, event_type, run_id=state.get("run_id"),
-                     dataset_id=state["dataset_id"], agent="DatasetProcessingAgent",
+                     dataset_id=state["dataset_id"], agent="DataProcessingAgent",
                      stage=state.get("stage"), **values)
 
 
@@ -103,10 +107,13 @@ def _fresh_attempt(state, **updates):
 
 def _retry(state, stage, issues):
     reference_changed = any(item.get("code") == "previous_reference_changed" for item in issues)
+    failures = state.get(f"{stage.value}_failures", 0) + 1
     allowed = (not reference_changed
-               and state.get(f"{stage.value}_attempts", 0) < _limit(state, stage.value))
+               and failures < _limit(state, stage.value)
+               and not any(item.get("category") == "environment" for item in issues))
     return _fresh_attempt(
         state, status="running" if allowed else "blocked", stage=stage.value,
+        **{f"{stage.value}_failures": failures},
         previous_attempt_root=state.get("attempt_workspace"),
         diagnostics=issues, validation_feedback={"issues": issues},
     )
@@ -117,8 +124,8 @@ def _revise_mapping(state, issues):
     previous_prepare_root = state.get("attempt_workspace")
     previous_handoff = state.get("accepted_handoff")
     if (cycle >= _limit(state, "mapping_revision_cycles")
-            or state.get("understand_attempts", 0) >= _limit(state, "understand")
-            or state.get("prepare_text_attempts", 0) >= _limit(state, "prepare_text")):
+            or state.get("understand_failures", 0) >= _limit(state, "understand")
+            or state.get("prepare_text_failures", 0) >= _limit(state, "prepare_text")):
         return {"status": "blocked", "diagnostics": issues, "validation_feedback": {"issues": issues}}
     return _fresh_attempt(
         state, status="running", stage=Stage.UNDERSTAND.value,
@@ -176,36 +183,29 @@ def resume_or_start(state):
 
 
 def _run_stage(state, stage, worker):
+    if state.get(f"{stage.value}_failures", 0) >= _limit(state, stage.value):
+        return {"status": "blocked", "stage_result": None}
     count = state.get(f"{stage.value}_attempts", 0) + 1
-    if count > _limit(state, stage.value):
-        return {"status": "blocked", "diagnostics": [{
-            "stage": stage.value, "code": "stage_attempt_budget",
-            "message": f"{stage.value} attempt budget exhausted",
-        }], "stage_result": None}
     attempt_id = f"{stage.value}-{count}"
-    workspace = Path(state["preparation_root"]) / "attempts" / stage.value / attempt_id
+    epoch = state.get("mapping_revision_cycles", 0)
+    session_id = f"{stage.value}-{epoch}"
+    root = Path(state["preparation_root"])
+    workspace = root / "sessions" / session_id
+    snapshot = root / "attempts" / stage.value / attempt_id
     for name in ("work/inputs", "work/outputs", "work/logs", "work/conversations"):
         (workspace / name).mkdir(parents=True, exist_ok=True)
-    reference_root = state.get("previous_attempt_root")
+    snapshot.mkdir(parents=True, exist_ok=True)
+    reference = state.get("previous_attempt_root")
     if stage is Stage.UNDERSTAND and state.get("revision_basis_handoff"):
-        reference_root = state.get("implementation_repair_root") or reference_root
-    local = {
-        **state, "stage": stage.value, "attempt": count, "attempt_id": attempt_id,
-        "previous_attempt_root": reference_root,
-    }
+        reference = state.get("implementation_repair_root") or reference
+    local = {**state, "stage": stage.value, "attempt": count, "attempt_id": attempt_id,
+             "previous_attempt_root": reference}
     input_digest = stage_input_digest(stage, local)
-    request_path, result_path = workspace / "request.json", workspace / "result.json"
+    request_path, result_path = snapshot / "request.json", snapshot / "result.json"
     previous = json.loads(request_path.read_text(encoding="utf-8")) if request_path.is_file() else None
-    same_attempt = bool(
-        state.get("status") == "running" and previous
-        and previous.get("stage") == stage.value
-        and previous.get("attempt_id") == attempt_id
-        and previous.get("input_digest") == input_digest
-    )
-    if previous and not same_attempt:
+    if previous and previous["input_digest"] != input_digest:
         raise ValueError("Attempt inputs changed; start a new preparation run")
-    verify_previous_reference(workspace)
-    if same_attempt and result_path.is_file():
+    if previous and result_path.is_file():
         result = StageResult.model_validate_json(result_path.read_text(encoding="utf-8"))
         if result.input_digest != input_digest:
             raise ValueError("Saved attempt result has a different input digest")
@@ -215,14 +215,14 @@ def _run_stage(state, stage, worker):
         request = StageRequest(
             stage=stage, run_id=state["run_id"], dataset_id=state["dataset_id"],
             attempt=count, attempt_id=attempt_id,
-            conversation_id=uuid.uuid5(uuid.NAMESPACE_URL, f"{state['run_id']}:{state['dataset_id']}:{attempt_id}").hex,
+            conversation_id=uuid.uuid5(uuid.NAMESPACE_URL, f"{state['run_id']}:{state['dataset_id']}:{root}:{session_id}").hex,
             execution_key=execution_key, input_digest=input_digest,
             source_snapshot_digest=state["source_snapshot_digest"], workspace=str(workspace),
             prompt_path=str(workspace / "prompt.md"), context_path=str(workspace / "request.json"), context=packet,
             source_roots=state["source_roots"], source_manifests=state["source_manifests"],
             required_outputs=list(STAGE_OUTPUTS[stage]),
-            optional_outputs=["metadata.json"] if stage is Stage.PREPARE_TEXT else [], prompt_token_count=tokens,
-            budget=resolve_prompt_budget(state, stage),
+            optional_outputs=["metadata.json"] if stage is Stage.PREPARE_TEXT else [],
+            prompt_token_count=tokens, budget=resolve_prompt_budget(state, stage),
             construction_events_path=state.get("construction_events_path", ""),
             model=state.get("model") or settings.model or "",
             base_url=state.get("base_url") or settings.base_url or "",
@@ -230,16 +230,19 @@ def _run_stage(state, stage, worker):
             llm_timeout_seconds=state.get("llm_timeout_seconds", settings.timeout_seconds),
             llm_max_retries=state.get("llm_max_retries", settings.max_retries),
             runtime_backend=state.get("execution_runtime", {}).get("backend", "local"),
-            previous_attempt_root=reference_root,
-            worker_runtime=state.get("execution_runtime", {}).get("coding_worker", {}),
-            resume_existing=(same_attempt and not result_path.is_file()
-                             and any((workspace / "work" / "conversations").iterdir())),
+            previous_attempt_root=reference, worker_runtime=state.get("execution_runtime", {}).get("coding_worker", {}),
+            resume_existing=any((workspace / "work/conversations").iterdir()),
             validation_feedback=state.get("validation_feedback", {}),
         )
+        if not previous:
+            (workspace / "work/control.json").unlink(missing_ok=True)
+            (workspace / "result.json").unlink(missing_ok=True)
         atomic_write_json(request_path, request.model_dump(mode="json"))
+        atomic_write_json(workspace / "request.json", request.model_dump(mode="json"))
         _event(local, "stage_started", attempt=count, conversation_id=request.conversation_id, status="running")
         try:
             result = worker.run(request)
+            verify_previous_reference(workspace)
         except Exception as exc:
             result = StageResult(
                 stage=stage, attempt=count, attempt_id=attempt_id,
@@ -248,23 +251,16 @@ def _run_stage(state, stage, worker):
                 diagnostics=[Diagnostic(stage=stage, code="worker_execution_failed",
                                         category="environment", blocking=True, message=str(exc))],
             )
-        else:
-            try:
-                verify_previous_reference(workspace)
-            except Exception as exc:
-                result = StageResult(
-                    stage=stage, attempt=count, attempt_id=attempt_id,
-                    conversation_id=request.conversation_id, execution_key=execution_key,
-                    input_digest=input_digest, status="failed", diagnostic=str(exc),
-                    diagnostics=[Diagnostic(stage=stage, code="previous_reference_changed",
-                                            category="contract", blocking=True, message=str(exc))],
-                )
+        # Immutable candidate snapshots are independent of the continuing SDK session.
+        shutil.copytree(workspace / "work", snapshot / "work", dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("conversations", "logs"))
+        shutil.copy2(workspace / "prompt.md", snapshot / "prompt.md")
+        outputs = {name: str(snapshot / "work/outputs" / name) for name in result.outputs}
+        result = result.model_copy(update={"outputs": outputs, "input_digest": input_digest})
         atomic_write_json(result_path, result.model_dump(mode="json"))
-    return {
-        "stage": stage.value, "status": "running", f"{stage.value}_attempts": count,
-        "attempt_id": attempt_id, "attempt_workspace": str(workspace),
-        "attempt_input_digest": input_digest, "stage_result": result.model_dump(mode="json"),
-    }
+    return {"stage": stage.value, "status": "running", f"{stage.value}_attempts": count,
+            "attempt_id": attempt_id, "attempt_workspace": str(snapshot),
+            "attempt_input_digest": input_digest, "stage_result": result.model_dump(mode="json")}
 
 
 def _worker_questions(result):

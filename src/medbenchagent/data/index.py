@@ -123,7 +123,7 @@ class DatasetIndex:
             rows = db.execute("SELECT case_id,record FROM cases WHERE case_id IN (SELECT unnest(?))", [case_ids]).fetchall()
         return {case_id: json.loads(record) for case_id, record in rows}
 
-    def sample(self, offset=0, limit=5, *, case_id=None, evidence_name=None, asset_kind=None):
+    def sample(self, offset=0, limit=5, *, case_id=None, evidence_name=None, asset_kind=None, diverse=False):
         filters, args = [], []
         if case_id is not None:
             filters.append("case_id=?")
@@ -137,6 +137,12 @@ class DatasetIndex:
         where = " WHERE " + " AND ".join(filters) if filters else ""
         with self._db() as db:
             total = db.execute("SELECT count(*) FROM cases" + where, args).fetchone()[0]
+            if diverse:
+                from medbenchagent.data.sampling import representative_samples
+                cursor = db.execute("SELECT record FROM cases" + where + " ORDER BY case_id", args)
+                values = representative_samples((json.loads(row[0]) for row in cursor.fetchall()), limit)
+                return {"dataset_version": self.access["revision"], "total": total, "values": values,
+                        "complete": len(values) >= total, "next_offset": None, "selection": "category_missingness_relation_boundaries"}
             rows = db.execute("SELECT record FROM cases" + where + " ORDER BY case_id LIMIT ? OFFSET ?", [*args, limit, offset]).fetchall()
         return {"dataset_version": self.access["revision"], "total": total, "values": [json.loads(row[0]) for row in rows], "complete": offset + len(rows) >= total, "next_offset": offset + len(rows) if offset + len(rows) < total else None}
 
@@ -192,14 +198,17 @@ class DatasetIndex:
         node = TaskScenario.model_validate(node)
         constraint_registry = NodeConstraintRegistry(registry)
         assets = {row["asset_id"]: row for row in self.assets()}
-        samples, count = [], 0
+        from medbenchagent.data.sampling import representative_samples
+        count = 0
         names = set()
-        for case in self.iter_cases():
-            if constraint_registry.check(node, case_facts(case, assets))[0]:
-                count += 1
-                names.update(row["name"] for row in case["evidence"])
-                if len(samples) < sample_limit:
-                    samples.append(case)
+        def feasible():
+            nonlocal count
+            for case in self.iter_cases():
+                if constraint_registry.check(node, case_facts(case, assets))[0]:
+                    count += 1
+                    names.update(row["name"] for row in case["evidence"])
+                    yield case
+        samples = representative_samples(feasible(), sample_limit)
         profile = json.loads(Path(self.access["profile_path"]).read_text(encoding="utf-8"))
         return {"dataset_version": self.access["revision"], "scenario_id": node.scenario_id,
                 "scenario": node.model_dump(),
@@ -213,4 +222,3 @@ class DatasetIndex:
             rows = db.execute("SELECT value,count(*) FROM evidence WHERE name=? GROUP BY value ORDER BY value LIMIT ? OFFSET ?", [field, limit, offset]).fetchall()
         return {"values": [{"value": json.loads(v), "count": n} for v, n in rows], "total": total,
                 "dataset_version": self.access["revision"], "complete": offset + len(rows) >= total}
-
