@@ -9,6 +9,8 @@
 ## 输入、输出与能力
 
 输入为 WorkRequest 的目标、范围、Dataset/需求/证据引用及约束。
+Host 额外注入冻结的 Compilation Goal 作为只读背景；适用的长期用户要求由 Supervisor
+写入本次 constraints，不传递 Supervisor 完整历史。静态 Coding 指令来自 run.json 的冻结快照。
 输出为 WorkResult 和实际数据、代码或报告引用。Coding 不直接调用 Planner，
 缺少信息时返回 need。
 
@@ -35,6 +37,8 @@ SDK FinishTool 使用嵌套结构化候选结果：request_id、outcome、summar
 issues、needs。needs 本轮使用 need_id/kind/summary，详细材料作为文件提交。
 模型不分配 ArtifactRef。Host 检查当前请求输出目录内的实际文件，复制到
 artifacts/<request_id>/ 后登记；只允许相同内容重放，不覆盖已交接文件。
+ArtifactRef 必须携带文件 SHA-256 digest。输入读取和产物交接均校验内容身份；发现变化返回
+artifact_integrity，不能重新登记摘要来替换已接受引用。该摘要不递归覆盖 Manifest 引用的文件。
 具体输出类型和字段要求来自 WorkRequest 或 DataRequirement，不写入通用 Adapter。
 
 ## 反馈、失败与恢复
@@ -43,6 +47,9 @@ artifacts/<request_id>/ 后登记；只允许相同内容重放，不覆盖已�
 有效 FinishTool 结果已持久化时只重新交接，不重新运行 Agent。
 缺少输入返回 needs_input；环境不可用或不能继续返回 blocked；执行异常、超时或无效
 产物返回 failed，由 Supervisor 决定下一步，不自动回退 Scripted。
+
+请求日志头记录 compilation_id、request_id、agent_id 和 workstream_id；相同标识传入 SDK
+原生 observability metadata。详细工具事件仍归 SDK，不复制为中央执行账本，不新增外部 tracing 服务。
 
 SDK 状态不复制到 LangGraph 或额外状态文件。Local Runtime 不承诺操作系统沙箱、
 跨进程终端存活或任意外部命令 exactly-once。

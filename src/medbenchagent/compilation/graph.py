@@ -10,7 +10,9 @@ from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 from pydantic import TypeAdapter
 
-from .artifacts import _within, register_file
+from medbenchagent.runtime.construction import record_event
+
+from .artifacts import ArtifactIntegrityError, _within, register_file
 from . import interfaces
 from .contracts import (
     ArtifactRef, AskUser, Delegate, Finish, Identifier, SupervisorDecision, Text,
@@ -113,6 +115,12 @@ def build_compilation_graph(
                 objective=decision.objective, scope=decision.scope,
                 inputs=decision.inputs, constraints=decision.constraints,
             )
+            record_event(
+                runtime.context.directory / "events.jsonl", "work_delegated",
+                compilation_id=compilation_id, request_id=request.request_id,
+                agent_id=request.agent_id, workstream_id=workstream_id,
+                input_artifact_ids=[ref.artifact_id for ref in request.inputs],
+            )
             return {
                 "sequence": sequence, "request": request.model_dump(mode="json"),
                 "workstreams": [item.model_dump(mode="json") for item in workstreams],
@@ -135,8 +143,12 @@ def build_compilation_graph(
                 expected = register_file(
                     runtime.context.directory, request, ref.path, kind=ref.kind,
                 )
+                if expected.digest != ref.digest:
+                    raise ArtifactIntegrityError(f"Artifact content changed: {ref.artifact_id}")
                 if expected != ref:
                     raise ValueError("Output artifact identity does not match its producing request")
+                if ref.artifact_id in known and known[ref.artifact_id] != ref:
+                    raise ArtifactIntegrityError("Cannot replace a registered artifact identity or content")
                 if ref.artifact_id in accepted:
                     raise ValueError("Duplicate output Artifact ID")
                 accepted[ref.artifact_id] = ref
@@ -150,10 +162,17 @@ def build_compilation_graph(
             result = WorkResult(
                 request_id=request.request_id, outcome="failed",
                 summary="Agent returned an invalid handoff",
-                issues=[WorkIssue(code="invalid_handoff", message=str(exc))],
+                issues=[WorkIssue(code="artifact_integrity" if isinstance(exc, ArtifactIntegrityError)
+                                  else "invalid_handoff", message=str(exc))],
             )
         known.update(accepted)
         record = WorkRecord(request=request, result=result).model_dump(mode="json")
+        record_event(
+            runtime.context.directory / "events.jsonl", "work_result",
+            compilation_id=request.compilation_id, request_id=request.request_id,
+            agent_id=request.agent_id, workstream_id=request.workstream_id,
+            outcome=result.outcome, artifact_ids=[ref.artifact_id for ref in result.artifacts],
+        )
         return {
             "result": result.model_dump(mode="json"),
             "artifacts": [ref.model_dump(mode="json") for ref in known.values()],

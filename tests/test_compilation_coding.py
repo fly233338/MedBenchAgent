@@ -3,6 +3,7 @@
 from dataclasses import replace
 import json
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -168,9 +169,13 @@ def test_workstreams_reuse_isolate_and_exchange_formal_artifacts(tmp_path, codin
     rejected = malicious({"request": bad_request.model_dump()}, SimpleNamespace(context=context))["result"]
     assert rejected["outcome"] == "failed" and rejected["artifacts"] == []
 
-    formal.unlink()
     missing_request = request.model_copy(update={"request_id": "missing-input", "inputs": [ref]})
     before = len(runner.payloads)
+    formal.write_bytes(b"changed after registration")
+    corrupt = agent({"request": missing_request.model_dump()}, SimpleNamespace(context=context))["result"]
+    assert corrupt["outcome"] == "failed" and corrupt["issues"][0]["code"] == "artifact_integrity"
+    assert len(runner.payloads) == before
+    formal.unlink()
     missing = agent({"request": missing_request.model_dump()}, SimpleNamespace(context=context))["result"]
     assert missing["outcome"] == "needs_input" and missing["needs"][0]["kind"] == "work"
     assert len(runner.payloads) == before
@@ -214,3 +219,37 @@ def test_sdk_replay_after_host_send_or_finish_before_graph_checkpoint(tmp_path, 
     assert persisted["runs"] == 1
     assert len([event for event in persisted["events"] if event["source"] == "user"]) == 1
     assert payload["conversation_id"] == runner.payloads[0]["conversation_id"]
+
+
+def test_worker_transport_logs_ids_without_serializing_credentials(tmp_path, coding_settings, monkeypatch):
+    import medbenchagent.compilation.coding as module
+    from medbenchagent.compilation.coding_worker import failure
+
+    monkeypatch.setenv("MEDBENCH_CODING_LLM_API_KEY", "transport-private-key")
+    request = WorkRequest(request_id="transport-1", compilation_id="transport", agent_id="coding",
+                          workstream_id="ws-transport", objective="Report an execution failure")
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            assert command == [sys.executable, "-m", "medbenchagent.compilation.coding_worker"]
+            assert kwargs["env"]["MEDBENCH_CODING_LLM_API_KEY"] == "transport-private-key"
+            assert "MEDBENCH_LLM_API_KEY" not in kwargs["env"]
+
+        def communicate(self, data, **_kwargs):
+            assert "transport-private-key" not in data
+            return failure(request.request_id, "failed", "sdk_failure", "SDK reported failure").model_dump_json(), None
+
+    monkeypatch.setattr(module.subprocess, "Popen", Process)
+    agent = OpenHandsCodingAgent(replace(coding_settings, worker_python=sys.executable),
+                                instructions=load_prompt("coding.md"))
+    context = CompilationContext(tmp_path, lambda _: Finish(summary="Done"), "Transport check")
+    result = agent({"request": request.model_dump()}, SimpleNamespace(context=context))["result"]
+    assert result["outcome"] == "failed" and result["issues"][0]["code"] == "sdk_failure"
+    text = (tmp_path / "coding/ws-transport/logs/transport-1.log").read_text(encoding="utf-8")
+    event = json.loads(text)
+    assert event["event_type"] == "coding_request"
+    for name in ("compilation_id", "request_id", "agent_id", "workstream_id"):
+        assert event[name] == getattr(request, name)
+    assert "transport-private-key" not in text

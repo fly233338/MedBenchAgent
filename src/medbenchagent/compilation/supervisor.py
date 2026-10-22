@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from medbenchagent.runtime.construction import event_context
 from medbenchagent.runtime.llm import (
     RequestContextBudgetError, complete_validated_json, json_request_chars,
 )
@@ -244,6 +245,15 @@ class ModelSupervisor:
                     raise RequestContextBudgetError(size, self.settings.context_chars)
 
     def __call__(self, view: SupervisorView):
+        with event_context(
+            construction_events_path=str(self.directory / "events.jsonl"),
+            compilation_id=view.compilation_id, agent_id="supervisor", operation="supervisor_decision",
+            request_id=None, workstream_id=None, artifact_id=None, artifact_ids=None, agent=None,
+            model=self.settings.llm.model, reasoning_effort=self.settings.llm.reasoning_effort,
+        ):
+            return self._decide(view)
+
+    def _decide(self, view: SupervisorView):
         known = {ref.artifact_id: ref for ref in view.artifacts}
         inspections, reads = [], {}
 

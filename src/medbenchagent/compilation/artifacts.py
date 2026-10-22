@@ -1,5 +1,6 @@
 """File handoffs, not a versioned artifact store or an operation ledger."""
 
+import hashlib
 import json
 import os
 import uuid
@@ -7,6 +8,15 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import ArtifactRef, WorkRequest
+
+
+class ArtifactIntegrityError(ValueError):
+    """The registered file no longer has its accepted content identity."""
+
+
+def _digest(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def _within(root: Path, relative: str) -> Path:
@@ -24,6 +34,8 @@ def resolve_artifact(root: str | Path, reference: ArtifactRef) -> Path:
     path = _within(Path(root), reference.path)
     if not path.is_file():
         raise FileNotFoundError(path)
+    if _digest(path) != reference.digest:
+        raise ArtifactIntegrityError(f"Artifact content changed: {reference.artifact_id}")
     return path
 
 
@@ -40,7 +52,7 @@ def register_file(
     identifier = uuid.uuid5(
         uuid.NAMESPACE_URL, f"{request.compilation_id}/{request.request_id}/{relative}"
     ).hex
-    return ArtifactRef(artifact_id=identifier, kind=kind, path=relative)
+    return ArtifactRef(artifact_id=identifier, kind=kind, path=relative, digest=_digest(actual))
 
 
 def write_artifact(
@@ -89,6 +101,9 @@ def preview_artifact(root: str | Path, reference: ArtifactRef, *, limit: int) ->
         preview.update(content=content[:limit], truncated=len(content) > limit)
     except UnicodeError:
         preview["unavailable"] = "Artifact is not UTF-8 text"
+    except ArtifactIntegrityError as exc:
+        preview["unavailable"] = str(exc)
+        preview["issue_code"] = "artifact_integrity"
     except OSError:
         preview["unavailable"] = "Registered artifact is not readable"
     return preview

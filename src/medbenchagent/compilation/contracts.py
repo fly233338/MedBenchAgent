@@ -18,6 +18,7 @@ class ArtifactRef(Contract):
     artifact_id: Identifier
     kind: Text
     path: Text
+    digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
 class WorkRequest(Contract):

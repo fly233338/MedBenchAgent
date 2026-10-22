@@ -158,6 +158,8 @@ def _conversation(payload):
         conversation_id=uuid.UUID(payload["conversation_id"]),
         max_iteration_per_run=runtime["max_iterations"],
         stuck_detection=True, delete_on_close=False, visualizer=None,
+        observability_metadata={name: payload["request"][name]
+                                for name in ("compilation_id", "request_id", "agent_id", "workstream_id")},
     )
     # Resolving the builtin parser does not initialize terminal tools or call a model.
     return conversation, resolve_tool(finish_spec, conversation.state)[0]

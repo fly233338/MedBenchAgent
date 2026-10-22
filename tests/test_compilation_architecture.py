@@ -1,6 +1,7 @@
 """Composition boundaries and frozen resources, using the existing fake SDK runner."""
 
 import ast
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ import pytest
 
 from medbenchagent import prompts
 from medbenchagent.compilation import assembly, coding, graph, interfaces, run
-from medbenchagent.compilation.contracts import WorkRequest
+from medbenchagent.compilation.contracts import Delegate, Finish, WorkRequest, WorkResult
 from test_compilation_coding import Crash, FakeRunner
 
 
@@ -80,3 +81,47 @@ def test_agent_interfaces_do_not_depend_on_graph_or_sdk():
     assert not hasattr(__import__("medbenchagent.compilation.demo", fromlist=["demo_agents"]), "demo_agents")
     with pytest.raises((FileNotFoundError, ValueError)):
         prompts.load_prompt("missing.md")
+
+
+def test_artifact_digest_detects_changes_and_cannot_be_reregistered_over_an_accepted_ref(tmp_path):
+    from medbenchagent.compilation.artifacts import (
+        ArtifactIntegrityError, preview_artifact, read_json_artifact, register_file,
+        resolve_artifact, write_json_artifact,
+    )
+
+    seed = WorkRequest(request_id="integrity-000001", compilation_id="integrity",
+                       agent_id="writer", objective="Create accepted evidence")
+    ref = write_json_artifact(tmp_path, seed, "evidence.json", kind="report", value={"accepted": True})
+    path = resolve_artifact(tmp_path, ref)
+    assert ref.digest == hashlib.sha256(path.read_bytes()).hexdigest()
+    mtime = path.stat().st_mtime_ns
+    assert write_json_artifact(tmp_path, seed, "evidence.json", kind="report", value={"accepted": True}) == ref
+    assert path.stat().st_mtime_ns == mtime
+    path.write_text('{"accepted": false}', encoding="utf-8")
+    with pytest.raises(ArtifactIntegrityError):
+        read_json_artifact(tmp_path, ref)
+    assert preview_artifact(tmp_path, ref, limit=100)["issue_code"] == "artifact_integrity"
+
+    def rewriting_agent(state):
+        request = WorkRequest.model_validate(state["request"])
+        replacement = register_file(tmp_path, request, ref.path, kind=ref.kind)
+        assert replacement.artifact_id == ref.artifact_id and replacement.digest != ref.digest
+        return {"result": WorkResult(request_id=request.request_id, outcome="completed",
+                                     summary="Attempt to accept changed bytes", artifacts=[replacement]).model_dump(mode="json")}
+
+    def decide(view):
+        return Finish(summary="Checked") if view.last_result else Delegate(agent_id="writer", objective="Replay")
+
+    with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
+        built = graph.build_compilation_graph({"writer": interfaces.AgentSpec("Test writer", rewriting_agent)},
+                                              checkpointer=saver)
+        result = built.invoke({"compilation_id": "integrity", "goal": "Check content", "artifacts": [ref.model_dump()]},
+                              {"configurable": {"thread_id": "integrity"}},
+                              context=interfaces.CompilationContext(tmp_path, decide, "Check content"), durability="sync")
+    assert result["result"]["outcome"] == "failed"
+    assert result["result"]["issues"][0]["code"] == "artifact_integrity"
+    assert result["artifacts"] == [ref.model_dump()]
+    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["event_type"] for row in records] == ["work_delegated", "work_result"]
+    assert all(row["compilation_id"] == "integrity" and row["request_id"] == seed.request_id
+               and row["agent_id"] == "writer" for row in records)

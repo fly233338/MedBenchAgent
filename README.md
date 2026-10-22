@@ -53,9 +53,13 @@ when a question is pending.
 
 Only the selected agents' model/execution configuration is loaded. There is no
 RAG or Preparation preflight. Limits `supervisor.context_chars`, `artifact_chars` and
-`max_artifacts` bound the full request, each preview and preview count. Truncation and omitted
-previews are explicit; an oversized full request fails with its size instead of silently
-dropping required context. Invalid model choices use the existing bounded repair path.
+`max_artifacts` bound the full request, each preview and preview count. `history_items` defaults
+to 8, `catalog_page_size` to 20, and `max_lookups` to 4. The Supervisor can use its own read-only
+`inspect` capability to page through registered artifacts, Workstreams and earlier work records,
+or preview an artifact by ID. Optional projections are bounded with explicit omission counts;
+the goal and user answers are never silently truncated. Exhausting a budget is an explicit failure.
+Invalid model choices use the existing bounded repair path. Reported needs/issues remain traceable
+feedback, not an automatically resolved requirements ledger.
 
 Coding uses **Workstreams**. The Supervisor requests a new Workstream with a null ID or
 continues one of the Host-assigned IDs. Scope describes the current job, not session identity.
@@ -63,16 +67,23 @@ Each Workstream owns a stable Conversation and independent workspace/persistence
 Completing a request does not close it. Different Workstreams exchange formal `ArtifactRef`
 files, not private histories or mutable workspace files; tools remain independent of lifecycle.
 
-The run directory holds `run.json` (modes, goal, options and non-secret model/execution settings),
+The run directory holds `run.json` (modes, goal, options, non-secret model/execution settings,
+and the enabled agents' frozen prompt text/digests),
 `checkpoints.sqlite`, request-owned files under `artifacts/`, and private Coding directories
 under `coding/<workstream_id>/`. The Workstream catalog lives only in checkpoints. Reusing `run` on an existing
 directory is rejected. `resume` uses the saved mode/model without reading a new configuration
-or rediscovering a model; credentials can still be supplied through the environment.
+or rediscovering a model. Updating source prompts changes new runs only; credentials can still
+be supplied through the environment. Static instructions live in the packaged `medbenchagent.prompts`
+resources; dynamic work context and tool schemas remain with their implementations.
 Supervisor model failures preserve checkpoints. Coding failures return `WorkResult` to the
 Supervisor; neither adapter falls back to Scripted execution. SDK Host messages are deduplicated
 by request ID, and persisted FinishTool results can be handed off without rerunning completed
 work. Formal files are copied from request-local candidates and cannot be overwritten with
-different bytes. Local execution is not an OS sandbox or an exactly-once command guarantee.
+different bytes. Every ArtifactRef carries a SHA-256 digest, checked on Host reads and handoffs;
+this covers the referenced file, not a Dataset manifest's entire dependency tree.
+`events.jsonl` correlates Host decisions and handoffs; Coding request logs and SDK metadata carry
+the applicable IDs without copying private tool histories. Logs are diagnostic, not recovery state.
+Local execution is not an OS sandbox or an exactly-once command guarantee.
 No compatibility reader is provided for earlier demonstration runs.
 
 See the [architecture](docs/ARCHITECTURE.md), [agent boundaries](docs/agents/README.md),

@@ -9,6 +9,7 @@ from openai import APIConnectionError
 import pytest
 
 import medbenchagent.runtime.llm as transport
+from medbenchagent.runtime.construction import event_context
 import medbenchagent.settings as settings_module
 from medbenchagent.compilation.artifacts import write_json_artifact
 from medbenchagent.compilation.contracts import (
@@ -95,9 +96,16 @@ def test_model_supervisor_repairs_choices_and_uses_bounded_frozen_context(tmp_pa
     )
     instructions = load_prompt("supervisor.md")
     supervisor = ModelSupervisor(tmp_path, settings, instructions=instructions)
-    decision = supervisor(view)
+    with event_context(request_id="outer-request", workstream_id="outer-workstream"):
+        decision = supervisor(view)
     assert isinstance(decision, Delegate) and decision.inputs == [evidence]
     assert len(requests) == 3
+    logged = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert logged[0]["event_type"] == logged[2]["event_type"] == "llm_call"
+    assert logged[1]["call_id"] == logged[0]["call_id"]
+    assert logged[3]["call_id"] == logged[2]["call_id"]
+    assert all(row["compilation_id"] == view.compilation_id and row["agent_id"] == "supervisor"
+               and "request_id" not in row for row in logged)
     assert "Unregistered Agent" in requests[1]["messages"][-1]["content"]
     assert "Unknown artifact IDs" in requests[2]["messages"][-1]["content"]
     payload = json.loads(requests[0]["messages"][1]["content"])

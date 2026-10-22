@@ -13,14 +13,13 @@ import uuid
 from filelock import FileLock, Timeout
 from langgraph.runtime import Runtime
 
+from medbenchagent.runtime.construction import record_event
 from medbenchagent.settings import CodingSettings, get_coding_api_key
 
-from .artifacts import _within, resolve_artifact, write_artifact
+from .artifacts import ArtifactIntegrityError, _within, resolve_artifact, write_artifact
 from .coding_worker import CandidateNeed, CodingCandidate, failure
 from .contracts import WorkNeed, WorkRequest, WorkResult
 from .interfaces import AgentInput, AgentOutput, AgentSpec, CompilationContext
-
-
 
 
 def _stop_process(process):
@@ -52,6 +51,9 @@ def run_local_worker(payload: dict) -> CodingCandidate:
     log = Path(payload["log_path"])
     log.parent.mkdir(parents=True, exist_ok=True)
     try:
+        record_event(log, "coding_request", compilation_id=request.compilation_id,
+                     request_id=request.request_id, agent_id=request.agent_id,
+                     workstream_id=request.workstream_id)
         with log.open("a", encoding="utf-8") as stderr:
             process = subprocess.Popen(
                 [str(python), "-m", "medbenchagent.compilation.coding_worker"],
@@ -105,6 +107,8 @@ class OpenHandsCodingAgent:
         directory = runtime.context.directory.resolve()
         try:
             result = self._execute(directory, request, runtime.context.goal)
+        except ArtifactIntegrityError as exc:
+            result = self._result(failure(request.request_id, "failed", "artifact_integrity", str(exc)), [])
         except (ValueError, OSError) as exc:
             result = WorkResult(
                 **failure(request.request_id, "failed", "invalid_handoff", str(exc)).model_dump(

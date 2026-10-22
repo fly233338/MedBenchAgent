@@ -35,7 +35,7 @@ def record_event(path: str | Path, event_type: str, **values: object) -> dict[st
 
 @contextlib.contextmanager
 def event_context(**values: object) -> Iterator[list[str]]:
-    """Associate nested model calls with one workflow operation and collect local IDs."""
+    """Associate nested model calls with an operation and collect diagnostic call IDs."""
     parent = _CONTEXT.get() or {}
     call_ids: list[str] = []
     token = _CONTEXT.set(parent | values | {"call_ids": call_ids})
@@ -45,6 +45,12 @@ def event_context(**values: object) -> Iterator[list[str]]:
         _CONTEXT.reset(token)
 
 
+
+
+def _correlation(context: dict) -> dict:
+    return {name: context[name] for name in
+            ("compilation_id", "request_id", "agent_id", "workstream_id", "artifact_id", "artifact_ids")
+            if name in context}
 
 
 def record_llm_call(
@@ -59,6 +65,13 @@ def record_llm_call(
     prompt_tokens = getattr(usage, "prompt_tokens", None)
     completion_tokens = getattr(usage, "completion_tokens", None)
     available = isinstance(prompt_tokens, int) and isinstance(completion_tokens, int)
+    model = context.get("model")
+    reasoning_effort = context.get("reasoning_effort")
+    if not model or "reasoning_effort" not in context:
+        settings = get_settings().llm
+        model = model or settings.model
+        if "reasoning_effort" not in context:
+            reasoning_effort = settings.reasoning_effort
     record_event(
         str(context["construction_events_path"]),
         "llm_call",
@@ -70,7 +83,7 @@ def record_llm_call(
         agent=context.get("agent"),
         operation=context.get("operation", "llm"),
         component=context.get("component"),
-        model=context.get("model") or get_settings().llm.model,
+        model=model,
         status=status,
         latency_ms=round((time.perf_counter() - started) * 1000, 3),
         input_tokens=prompt_tokens if available else 0,
@@ -79,11 +92,12 @@ def record_llm_call(
         context_window_tokens=context.get("context_window_tokens"),
         context_ratio=(prompt_tokens / context.get("context_window_tokens")
                        if available and context.get("context_window_tokens") else None),
-        reasoning_effort=context.get("reasoning_effort", get_settings().llm.reasoning_effort) or None,
+        reasoning_effort=reasoning_effort or None,
         token_usage_available=available,
         error_type=error_type,
         call_id=call_id,
         provider_response_id=getattr(response, "id", None),
+        **_correlation(context),
     )
 
 
@@ -108,4 +122,5 @@ def record_llm_validation_error(*, errors: list[str], model_output: object) -> N
         validation_errors=errors,
         model_output=model_output,
         call_id=call_id,
+        **_correlation(context),
     )

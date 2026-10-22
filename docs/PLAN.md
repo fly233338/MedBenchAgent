@@ -8,7 +8,7 @@
 - [x] 模块审计与图示架构规范。
 - [x] 公共接口、运行记录、单一 Assembly、Prompt 资源与冻结。
 - [x] Supervisor 有界上下文与私有 inspect 查询、可查询工作记录。
-- [ ] Artifact 内容校验、执行关联、清理与回归验证。
+- [x] Artifact 内容校验、执行关联、清理与回归验证。
 
 ## 模块调整
 
@@ -50,7 +50,16 @@ Supervisor 默认近期记录 8 条、目录页 20 条、每次决策最多 4 �
 - 修改源码 Prompt 后，已有运行从冻结文本恢复，新运行读取新文本；已验证快照摘要损坏被拒绝。
 - uv build --wheel 成功；主环境和独立 Coding Python 均从 wheel 读取两份 Prompt 资源，
   资源加载不导入 LangGraph 或 OpenHands。此验证不调用模型。
-- 后续补齐 Artifact / 关联日志检查与全量回归；离线结果不能代替在线模型或医学 Benchmark 验收。
+- Artifact 读取/预览/交接均检查 SHA-256，已覆盖内容变更、同内容重放和拒绝重新登记以覆盖
+  已接受引用；Coding 在输入损坏时不启动 worker。
+- 模型、委派、结果及 Coding 请求日志关联标识已覆盖；显式模型记录不加载旧配置，
+  Supervisor 不继承无关 request_id，校验错误关联本次失败调用，凭据不进入日志。
+- 2026-10-23：uv run --locked pytest -q 为 347 passed（4 条第三方/既有测试警告）；
+  uv run --locked ruff check . 通过。三份 Mermaid 图已完成解析/渲染检查，图以 Agent 可读的
+  模块、运行和状态关系为目标，不另维护图片作为架构事实来源。
+- 已清理旧公共接口定义、demo_agents、内嵌指令常量和重复 CLI 装配逻辑；用户原有 AGENTS.md
+  改写保留未提交，提交中只包含本轮新增架构约束。旧业务链、Registry Prompt 和医学 Schema 未迁移。
+- 本轮未调用真实模型 API；离线结果不能代替在线模型或医学 Benchmark 验收。
 ## 首期验证记录
 
 - 新增协作测试仅两项：不同证据条件的多轮协作，以及新进程恢复。

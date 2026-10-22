@@ -187,11 +187,12 @@ def complete_validated_json(
                 "and return one complete JSON object."
             )
             feedback += repair_guidance
+            record_llm_call(status="failure", started=started, error_type=phase,
+                            response=response if on_chunk is None else None)
             record_llm_validation_error(
                 errors=diagnostic,
                 model_output=_validation_output_excerpt(str(raw)),
             )
-            record_llm_call(status="failure", started=started, error_type=phase)
             if attempt == 2 or (raw, feedback) == previous:
                 raise StructuredOutputError(f"LLM structured response failed validation: {feedback}") from exc
             previous = raw, feedback

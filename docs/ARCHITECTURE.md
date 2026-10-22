@@ -1,11 +1,11 @@
 # MedD2B Compilation 架构
 
-本文是模块、依赖和状态归属的入口。图示为本阶段收敛结构，施工与验证进度见
+本文是模块、依赖和状态归属的入口。图示对应当前实现，施工与验证进度见
 [PLAN](PLAN.md)；交接细节见 [Agent 契约](agents/README.md)，命令与配置见 [README](../README.md)。
 
 ## 1. 模块与代码依赖
 
-箭头表示 **import / 使用依赖**，不是运行顺序。`compilation` 包中的通用协调模块与
+箭头表示主要的 **import / 使用依赖**，不是运行顺序；不穷举纯类型导入。`compilation` 包中的通用协调模块与
 具体 Agent 适配分别分组；领域模块不反向依赖 Agent 或协调图。
 
 ```mermaid
@@ -30,7 +30,8 @@ flowchart TB
     subgraph Services[领域能力与底层服务]
         Prompts[prompts<br/>静态 Markdown 与包资源加载]
         Settings[settings<br/>模型与执行配置]
-        LLM[runtime.llm / construction<br/>模型传输 / 预算 / 关联日志]
+        LLM[runtime.llm<br/>模型传输 / 请求预算]
+        Logs[runtime.construction<br/>现有关联日志函数]
         Data[data.dataset / planning.contracts<br/>Reader 与任务契约]
         SDK[OpenHands SDK / Tools]
         LG[LangGraph / SQLite Saver]
@@ -38,14 +39,15 @@ flowchart TB
     CLI --> Run & Assembly & Graph & Demo
     Run --> Settings & Prompts
     Assembly --> Run & Interfaces & Supervisor & Coding & Demo
-    Graph --> Interfaces & Contracts & Artifacts & LG
+    Graph --> Interfaces & Contracts & Artifacts & LG & Logs
     Interfaces --> Contracts
     Artifacts --> Contracts
-    Supervisor --> Interfaces & Artifacts & LLM
-    Coding --> Interfaces & Artifacts & Worker
+    Supervisor --> Interfaces & Artifacts & LLM & Logs
+    Coding --> Interfaces & Artifacts & Worker & Logs
     Worker --> Contracts & SDK
     Demo --> Interfaces & Artifacts & Data & LG
-    LLM --> Settings
+    LLM --> Settings & Logs
+    Logs --> Settings
     subgraph Legacy[仍在使用的旧入口与待迁移资产]
         OldCLI[medd2b CLI / TUI] --> Workflow[旧 Workflow / Preparation / Resolver / BIR]
     end
