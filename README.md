@@ -2,7 +2,7 @@
 
 ## Independent Compilation
 
-The `refractor` branch provides an independent LangGraph coordination core with named
+The `refactor` branch provides an independent LangGraph coordination core with named
 agent nodes, explicit work handoffs, a Case-based file reader and SQLite checkpoints.
 The Supervisor supports `scripted` (default, offline) and `llm` modes. Professional
 Coding and Planning agents still use **scripted synthetic implementations**; neither
