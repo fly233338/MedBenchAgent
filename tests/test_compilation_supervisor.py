@@ -11,7 +11,9 @@ import pytest
 import medbenchagent.runtime.llm as transport
 import medbenchagent.settings as settings_module
 from medbenchagent.compilation.artifacts import write_json_artifact
-from medbenchagent.compilation.contracts import AskUser, Delegate, Finish, WorkNeed, WorkRequest, WorkResult
+from medbenchagent.compilation.contracts import (
+    AskUser, Delegate, Finish, WorkNeed, WorkRequest, WorkResult, Workstream,
+)
 from medbenchagent.compilation.graph import SupervisorView
 from medbenchagent.compilation.supervisor import ModelSupervisor
 from medbenchagent.settings import SupervisorSettings, load_supervisor_settings
@@ -105,6 +107,34 @@ def test_model_supervisor_repairs_choices_and_uses_bounded_frozen_context(tmp_pa
     assert all(item["model"] == "frozen-model" for item in requests)
     assert isinstance(supervisor(view), AskUser)
     assert isinstance(supervisor(view), Finish)
+
+    streams = (
+        Workstream(workstream_id="ws-inspect", agent_id="inspector", objective="Inspect evidence", scope=["same"]),
+        Workstream(workstream_id="ws-other", agent_id="other", objective="Other work", scope=["same"]),
+    )
+    scoped = replace(view, workstreams=streams, workstream_agents=("inspector", "other"),
+                     history=({"request_id": "previous", "agent_id": "inspector",
+                               "workstream_id": "ws-inspect", "outcome": "completed", "summary": "Inspected"},))
+    answers = iter([
+        {"decision": {"action": "delegate", "agent_id": "inspector", "objective": "Continue",
+                      "workstream_id": "unknown"}},
+        {"decision": {"action": "delegate", "agent_id": "inspector", "objective": "Continue",
+                      "workstream_id": "ws-other"}},
+        {"decision": {"action": "delegate", "agent_id": "inspector", "objective": "Continue",
+                      "workstream_id": "ws-inspect"}},
+        {"decision": {"action": "delegate", "agent_id": "inspector", "objective": "Independent work",
+                      "workstream_id": None}},
+    ])
+    decision = supervisor(scoped)
+    assert decision.workstream_id == "ws-inspect"
+    assert "Unknown Workstream" in requests[-2]["messages"][-1]["content"]
+    assert "another Agent" in requests[-1]["messages"][-1]["content"]
+    assert supervisor(scoped).workstream_id is None
+    payload = json.loads(requests[-1]["messages"][1]["content"])
+    assert payload["workstreams"][0]["last_result"]["summary"] == "Inspected"
+    assert "conversation_id" not in json.dumps(payload)
+    with pytest.raises(ValueError, match="does not use Workstreams"):
+        replace(scoped, workstream_agents=()).validate_workstream("inspector", "ws-inspect")
 
     answers = iter([{"decision": {"action": "delegate", "agent_id": "missing", "objective": "No"}}
                     for _ in range(3)])

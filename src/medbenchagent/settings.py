@@ -71,23 +71,65 @@ class SupervisorSettings:
     def from_snapshot(cls, values: dict[str, Any]) -> "SupervisorSettings":
         if not isinstance(values, dict) or set(values) != {"llm", "supervisor"}:
             raise ValueError("Supervisor settings require llm and supervisor sections")
-        if (not isinstance(values["llm"], dict)
-                or set(values["llm"]) != set(LlmSettings.__dataclass_fields__)):
-            raise ValueError("Unexpected or missing LLM configuration fields")
         limits = values["supervisor"]
         if (not isinstance(limits, dict)
                 or set(limits) != {"context_chars", "artifact_chars", "max_artifacts"}):
             raise ValueError("Unexpected or missing Supervisor limit fields")
-        llm = _llm_settings(values["llm"])
-        url = urlsplit(llm.base_url)
-        if (url.scheme not in {"http", "https"} or not url.netloc or url.username is not None
-                or url.password is not None or url.query or url.fragment):
-            raise ValueError("llm.base_url must be an HTTP(S) base URL without credentials or query")
         return cls(
-            llm=llm,
+            llm=_checked_llm_settings(values["llm"]),
             context_chars=_integer(limits["context_chars"], "supervisor.context_chars", minimum=1),
             artifact_chars=_integer(limits["artifact_chars"], "supervisor.artifact_chars", minimum=1),
             max_artifacts=_integer(limits["max_artifacts"], "supervisor.max_artifacts", minimum=1),
+        )
+
+
+@dataclass(frozen=True)
+class CodingSettings:
+    """Frozen model and local execution settings, shared by this run's Workstreams."""
+
+    llm: LlmSettings
+    worker_python: str
+    sdk_packages: dict[str, str]
+    max_iterations: int
+    timeout_seconds: float
+    max_output_tokens: int
+    condenser_max_events: int
+    condenser_max_tokens: int
+
+    def snapshot(self) -> dict[str, Any]:
+        values = asdict(self)
+        return {"llm": values.pop("llm"), "coding": values}
+
+    @classmethod
+    def from_snapshot(cls, values: dict[str, Any]) -> "CodingSettings":
+        if not isinstance(values, dict) or set(values) != {"llm", "coding"}:
+            raise ValueError("Coding settings require llm and coding sections")
+        runtime = values["coding"]
+        if (not isinstance(runtime, dict)
+                or set(runtime) != set(cls.__dataclass_fields__) - {"llm"}):
+            raise ValueError("Unexpected or missing Coding configuration fields")
+        worker_python = _string(runtime["worker_python"], "coding.worker_python")
+        if not Path(worker_python).is_absolute():
+            raise ValueError("coding.worker_python must be an absolute path")
+        packages = runtime["sdk_packages"]
+        if (not isinstance(packages, dict)
+                or set(packages) != {"openhands-sdk", "openhands-tools"}):
+            raise ValueError("Coding requires frozen OpenHands SDK and Tools versions")
+        timeout = _number(runtime["timeout_seconds"], "coding.timeout_seconds",
+                          minimum=0.000001, maximum=float("inf"))
+        if not math.isfinite(timeout):
+            raise ValueError("coding.timeout_seconds must be finite")
+        limits = {
+            name: _integer(runtime[name], f"coding.{name}", minimum=1)
+            for name in ("max_iterations", "max_output_tokens", "condenser_max_events",
+                         "condenser_max_tokens")
+        }
+        if limits["condenser_max_events"] <= 2:
+            raise ValueError("coding.condenser_max_events must exceed the two retained events")
+        return cls(
+            llm=_checked_llm_settings(values["llm"]), worker_python=worker_python,
+            sdk_packages={name: _string(value, name) for name, value in packages.items()},
+            timeout_seconds=timeout, **limits,
         )
 
 
@@ -227,6 +269,10 @@ def get_llm_api_key() -> str:
     return os.getenv("MEDBENCH_LLM_API_KEY") or "local-vllm"
 
 
+def get_coding_api_key() -> str:
+    return os.getenv("MEDBENCH_CODING_LLM_API_KEY") or get_llm_api_key()
+
+
 def get_rag_api_key(kind: str) -> str:
     """Keep each retrieval credential separate and outside snapshots."""
     if kind not in {"embedding", "reranker"}:
@@ -238,6 +284,9 @@ def _merge(base: dict[str, Any], override: dict[str, Any], *, prefix: str = "") 
     for key, value in override.items():
         name = f"{prefix}.{key}" if prefix else key
         if key not in base:
+            if prefix == "coding.llm" and key in LlmSettings.__dataclass_fields__:
+                base[key] = value
+                continue
             raise ValueError(f"Unknown configuration key: {name}")
         if isinstance(base[key], dict):
             if not isinstance(value, dict):
@@ -314,6 +363,17 @@ def _llm_settings(llm: dict[str, Any]) -> LlmSettings:
     )
 
 
+def _checked_llm_settings(values: dict[str, Any]) -> LlmSettings:
+    if not isinstance(values, dict) or set(values) != set(LlmSettings.__dataclass_fields__):
+        raise ValueError("Unexpected or missing LLM configuration fields")
+    llm = _llm_settings(values)
+    url = urlsplit(llm.base_url)
+    if (url.scheme not in {"http", "https"} or not url.netloc or url.username is not None
+            or url.password is not None or url.query or url.fragment):
+        raise ValueError("llm.base_url must be an HTTP(S) base URL without credentials or query")
+    return llm
+
+
 def _apply_environment(values: dict[str, Any]) -> list[str]:
     """Apply the established overrides only to sections requested by the caller."""
     env_keys = []
@@ -348,6 +408,38 @@ def load_supervisor_settings(config_path: Path | None = None) -> SupervisorSetti
         _merge(values, {name: override[name] for name in values if name in override})
     _apply_environment(values)
     return SupervisorSettings.from_snapshot(values)
+
+
+def load_coding_settings(config_path: Path | None = None) -> CodingSettings:
+    """Resolve only the local Coding environment and model; never provision dependencies."""
+    load_project_env()
+    defaults = _read_toml(DEFAULT_CONFIG_PATH)
+    values = {name: defaults[name] for name in ("llm", "coding")}
+    raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
+    overrides = {}
+    if raw_path:
+        path = (Path(raw_path).expanduser().resolve() if config_path is not None
+                else _resolve_path(str(raw_path), "MEDBENCH_CONFIG"))
+        override = _read_toml(path)
+        coding = override.get("coding", {})
+        if not isinstance(coding, dict):
+            raise ValueError("coding must be a table")
+        overrides = coding.get("llm", {})
+        if not isinstance(overrides, dict):
+            raise ValueError("coding.llm must be a table")
+        _merge(values, {**({"llm": override["llm"]} if "llm" in override else {}),
+                        "coding": {key: value for key, value in coding.items() if key != "llm"}})
+    _apply_environment(values)
+    _merge(values["llm"], overrides, prefix="coding.llm")
+    runtime = dict(values["coding"])
+    runtime.pop("llm")
+    venv = _resolve_path(runtime.pop("worker_venv"), "coding.worker_venv")
+    runtime["worker_python"] = str(venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
+    requirements = PROJECT_ROOT / "config" / "coding-worker.requirements.txt"
+    pins = dict(line.strip().split("==", 1) for line in requirements.read_text(encoding="utf-8").splitlines()
+                if line.startswith(("openhands-sdk==", "openhands-tools==")))
+    runtime["sdk_packages"] = pins
+    return CodingSettings.from_snapshot({"llm": values["llm"], "coding": runtime})
 
 
 

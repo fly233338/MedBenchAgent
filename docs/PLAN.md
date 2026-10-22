@@ -8,7 +8,7 @@
 - [x] 第三步：独立协作图、合成示例、一个多轮协作测试及一个最小恢复测试。
 - [x] 上阶段：统一 compilation 命名、模型 Supervisor、配置冻结和模型适配测试。
 - [x] 本阶段第一步：确定 Workstream、Coding 职责和验收边界，先提交文档。
-- [ ] 本阶段第二步：Workstream 契约及 Local OpenHands Coding 接入。
+- [x] 本阶段第二步：Workstream 契约及 Local OpenHands Coding 接入。
 - [ ] 本阶段第三步：独立 Coding 模式、配置冻结、合成示例和针对性验证。
 - [ ] 在线验证：当前 Chat 服务连接失败，尚未执行真实模型协作。
 - [ ] 后续：接入真实 Planner 和业务能力。

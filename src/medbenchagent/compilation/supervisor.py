@@ -17,6 +17,7 @@ from .graph import SupervisorView
 class _ModelDelegation(Contract):
     action: Literal["delegate"]
     agent_id: Identifier
+    workstream_id: Identifier | None = None
     objective: Text
     scope: list[Text] = Field(default_factory=list)
     input_artifact_ids: list[Identifier] = Field(default_factory=list)
@@ -31,6 +32,10 @@ _INSTRUCTIONS = """You supervise an evidence-grounded compilation.
 Choose one next action from the registered capabilities based on the user's goal and actual results.
 Delegate a bounded objective with every input artifact the professional agent needs.
 Use only registered agent names and artifact IDs; the host resolves file references.
+For workstream_agents, set workstream_id=null to create an independent workstream, or select an
+existing workstream owned by that agent to continue its working context. Scope describes this
+request, not session identity. A completed request does not close its workstream. Other agents
+must leave workstream_id null. Share results across workstreams only through input artifact IDs.
 Ask the user only when needed information cannot be obtained through available agents.
 Inspect work needs and failures and decide whether to delegate, ask, revise, or stop.
 A successful agent call does not prove the user's goal is complete.
@@ -77,12 +82,12 @@ class ModelSupervisor:
         for ref in selected:
             if known.get(ref.artifact_id) != ref:
                 raise ValueError("Preview references an unregistered artifact")
-            path = resolve_artifact(self.directory, ref)
             preview = {"artifact_id": ref.artifact_id}
-            if path.suffix.lower() not in {".json", ".jsonl", ".txt", ".md"}:
+            if Path(ref.path).suffix.lower() not in {".json", ".jsonl", ".txt", ".md"}:
                 preview["unavailable"] = "Only text and JSON previews are supported"
             else:
                 try:
+                    path = resolve_artifact(self.directory, ref)
                     with path.open(encoding="utf-8") as stream:
                         text = stream.read(self.settings.artifact_chars + 1)
                     preview.update(
@@ -91,10 +96,14 @@ class ModelSupervisor:
                     )
                 except UnicodeError:
                     preview["unavailable"] = "Artifact is not UTF-8 text"
+                except OSError:
+                    preview["unavailable"] = "Registered artifact is not readable"
             previews.append(preview)
         return {
             "compilation_id": view.compilation_id, "goal": view.goal,
             "agents": dict(view.agents),
+            "workstream_agents": list(view.workstream_agents),
+            "workstreams": view.workstream_summaries(),
             "available_artifacts": [
                 {"artifact_id": ref.artifact_id, "kind": ref.kind} for ref in view.artifacts
             ],
@@ -112,6 +121,7 @@ class ModelSupervisor:
                 return decision
             if decision.agent_id not in view.agents:
                 raise ValueError(f"Unregistered Agent: {decision.agent_id}")
+            view.validate_workstream(decision.agent_id, decision.workstream_id)
             identifiers = decision.input_artifact_ids
             if len(identifiers) != len(set(identifiers)):
                 raise ValueError("Input artifact IDs must be unique")
@@ -120,6 +130,7 @@ class ModelSupervisor:
                 raise ValueError(f"Unknown artifact IDs: {sorted(unknown)}")
             return Delegate(
                 agent_id=decision.agent_id, objective=decision.objective,
+                workstream_id=decision.workstream_id,
                 scope=decision.scope, constraints=decision.constraints,
                 inputs=[known[identifier] for identifier in identifiers],
             )

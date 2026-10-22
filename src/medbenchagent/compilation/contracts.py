@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 Identifier = Annotated[str, StringConstraints(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")]
+WorkOutcome = Literal["completed", "progress", "needs_input", "blocked", "failed"]
 
 
 class Contract(BaseModel):
@@ -23,6 +24,7 @@ class WorkRequest(Contract):
     request_id: Identifier
     compilation_id: Identifier
     agent_id: Identifier
+    workstream_id: Identifier | None = None
     objective: Text
     scope: list[Text] = Field(default_factory=list)
     inputs: list[ArtifactRef] = Field(default_factory=list)
@@ -43,7 +45,7 @@ class WorkNeed(Contract):
 
 class WorkResult(Contract):
     request_id: Identifier
-    outcome: Literal["completed", "progress", "needs_input", "blocked", "failed"]
+    outcome: WorkOutcome
     summary: Text
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     issues: list[WorkIssue] = Field(default_factory=list)
@@ -53,10 +55,20 @@ class WorkResult(Contract):
 class Delegate(Contract):
     action: Literal["delegate"] = "delegate"
     agent_id: Identifier
+    workstream_id: Identifier | None = None
     objective: Text
     scope: list[Text] = Field(default_factory=list)
     inputs: list[ArtifactRef] = Field(default_factory=list)
     constraints: list[Text] = Field(default_factory=list)
+
+
+class Workstream(Contract):
+    """Host-owned coordination identity; never contains SDK session state."""
+
+    workstream_id: Identifier
+    agent_id: Identifier
+    objective: Text
+    scope: list[Text] = Field(default_factory=list)
 
 
 class AskUser(Contract):

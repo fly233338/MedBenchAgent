@@ -11,10 +11,10 @@ from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 from pydantic import TypeAdapter
 
-from .artifacts import register_file, resolve_artifact
+from .artifacts import _within, register_file
 from .contracts import (
     ArtifactRef, AskUser, Delegate, Finish, Identifier, SupervisorDecision, Text,
-    WorkIssue, WorkRequest, WorkResult,
+    WorkIssue, WorkRequest, WorkResult, Workstream,
 )
 
 
@@ -33,6 +33,7 @@ class CompilationState(TypedDict, total=False):
     request: dict[str, Any]
     result: dict[str, Any]
     artifacts: list[dict[str, Any]]
+    workstreams: list[dict[str, Any]]
     history: list[dict[str, str]]
     answers: list[str]
     question: str | None
@@ -50,6 +51,28 @@ class SupervisorView:
     last_result: WorkResult | None
     history: tuple[dict[str, str], ...]
     answers: tuple[str, ...]
+    workstreams: tuple[Workstream, ...] = ()
+    workstream_agents: tuple[str, ...] = ()
+
+    def validate_workstream(self, agent_id: str, workstream_id: str | None) -> None:
+        if workstream_id is None:
+            return
+        if agent_id not in self.workstream_agents:
+            raise ValueError(f"Agent does not use Workstreams: {agent_id}")
+        selected = next(
+            (item for item in self.workstreams if item.workstream_id == workstream_id), None,
+        )
+        if selected is None:
+            raise ValueError(f"Unknown Workstream ID: {workstream_id}")
+        if selected.agent_id != agent_id:
+            raise ValueError("Workstream belongs to another Agent")
+
+    def workstream_summaries(self) -> list[dict[str, Any]]:
+        latest = {row["workstream_id"]: row for row in self.history if "workstream_id" in row}
+        return [
+            {**item.model_dump(mode="json"), "last_result": latest.get(item.workstream_id)}
+            for item in self.workstreams
+        ]
 
 
 @dataclass(frozen=True)
@@ -62,6 +85,7 @@ class CompilationContext:
 class AgentSpec:
     description: str
     node: Any  # A LangGraph node function or a compiled subgraph with AgentInput/AgentOutput.
+    uses_workstreams: bool = False
 
 
 _decision = TypeAdapter(SupervisorDecision)
@@ -74,7 +98,9 @@ def _catalog(state: CompilationState, directory: Path) -> dict[str, ArtifactRef]
     paths = {}
     for raw in state.get("artifacts", []):
         ref = ArtifactRef.model_validate(raw)
-        actual = resolve_artifact(directory, ref)
+        # A missing registered input is work feedback, not a coordination failure.
+        # Producers still have to supply actual files in collect().
+        actual = _within(directory, ref.path)
         if ref.artifact_id in known and known[ref.artifact_id] != ref:
             raise ValueError("An Artifact ID cannot refer to different files")
         if actual in paths and paths[actual] != ref.artifact_id:
@@ -112,6 +138,8 @@ def build_compilation_graph(
             last_result=WorkResult.model_validate(state["result"]) if state.get("result") else None,
             history=tuple(dict(row) for row in state.get("history", [])),
             answers=tuple(state.get("answers", [])),
+            workstreams=tuple(Workstream.model_validate(row) for row in state.get("workstreams", [])),
+            workstream_agents=tuple(name for name, spec in agents.items() if spec.uses_workstreams),
         )
         decision = _decision.validate_python(runtime.context.decide(view))
         if isinstance(decision, Delegate):
@@ -121,14 +149,25 @@ def build_compilation_graph(
                 if known.get(ref.artifact_id) != ref:
                     raise ValueError("A delegation can only consume registered artifact references")
             sequence = state.get("sequence", 0) + 1
+            request_id = f"{compilation_id}-{sequence:06d}"
+            view.validate_workstream(decision.agent_id, decision.workstream_id)
+            workstream_id = decision.workstream_id
+            workstreams = list(view.workstreams)
+            if agents[decision.agent_id].uses_workstreams and workstream_id is None:
+                workstream_id = f"ws-{request_id}"
+                workstreams.append(Workstream(
+                    workstream_id=workstream_id, agent_id=decision.agent_id,
+                    objective=decision.objective, scope=decision.scope,
+                ))
             request = WorkRequest(
-                request_id=f"{compilation_id}-{sequence:06d}",
+                request_id=request_id, workstream_id=workstream_id,
                 compilation_id=compilation_id, agent_id=decision.agent_id,
                 objective=decision.objective, scope=decision.scope,
                 inputs=decision.inputs, constraints=decision.constraints,
             )
             return {
                 "sequence": sequence, "request": request.model_dump(mode="json"),
+                "workstreams": [item.model_dump(mode="json") for item in workstreams],
                 "next_node": decision.agent_id, "status": "running",
             }
         if isinstance(decision, AskUser):
@@ -170,6 +209,8 @@ def build_compilation_graph(
             "request_id": request.request_id, "agent_id": request.agent_id,
             "outcome": result.outcome, "summary": result.summary,
         }
+        if request.workstream_id is not None:
+            record["workstream_id"] = request.workstream_id
         return {
             "result": result.model_dump(mode="json"),
             "artifacts": [ref.model_dump(mode="json") for ref in known.values()],
