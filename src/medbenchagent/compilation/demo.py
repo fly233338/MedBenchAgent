@@ -18,6 +18,13 @@ from .contracts import ArtifactRef, AskUser, Delegate, Finish, WorkNeed, WorkReq
 from .graph import AgentInput, AgentOutput, AgentSpec, CompilationContext, SupervisorView
 
 
+DEFAULT_DEMO_GOAL = (
+    "Create a feasible SemanticTaskSpec for a synthetic task that reports twice each Case's "
+    "value. Provide the Case-linked derived reference data needed by the task. "
+    "The available professional agents are scripted test implementations, not medical agents."
+)
+
+
 def _latest(references, kind):
     return next((ref for ref in reversed(references) if ref.kind == kind), None)
 
@@ -231,8 +238,18 @@ def build_scripted_planner():
 
 def demo_agents() -> dict[str, AgentSpec]:
     return {
-        "coding": AgentSpec("Inspect or transform the synthetic data", coding_node),
-        "task_planner": AgentSpec("Design and continue a synthetic task", build_scripted_planner()),
+        "coding": AgentSpec(
+            "Scripted data worker. Requires a dataset artifact. Without a data_requirement "
+            "input it produces an overview; with a data_requirement it produces Case-linked "
+            "derived values satisfying that requirement.",
+            coding_node,
+        ),
+        "task_planner": AgentSpec(
+            "Scripted task designer with persistent private progress. Requires a dataset "
+            "artifact. Designs or revises a SemanticTaskSpec, requests missing reference "
+            "data, and checks a supplied derived_view against its pending requirement.",
+            build_scripted_planner(),
+        ),
     }
 
 

@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from medbenchagent.runtime.construction import record_llm_call, record_llm_validation_error
 from medbenchagent.runtime.model_services import resolve_model_service
-from medbenchagent.settings import get_llm_api_key, get_settings
+from medbenchagent.settings import LlmSettings, get_llm_api_key, get_settings
 
 _CLIENTS: dict[tuple, OpenAI] = {}
 _CLIENT_LOCK = Lock()
@@ -42,7 +42,7 @@ class RequestContextBudgetError(ValueError):
     """The complete serialized request cannot fit without losing required context."""
 
     def __init__(self, actual: int, limit: int):
-        super().__init__(f"Model request requires {actual} characters, exceeding planning.context_chars={limit}; "
+        super().__init__(f"Model request requires {actual} characters, exceeding context_chars={limit}; "
                          "narrow the evidence query or increase the context budget. Required context was not truncated.")
         self.diagnostics = {"request_chars": actual, "context_chars": limit}
 
@@ -58,8 +58,8 @@ def clear_client_cache() -> None:
         _CLIENTS.clear()
 
 
-def _client() -> OpenAI:
-    settings = get_settings().llm
+def _client(llm_settings: LlmSettings | None = None) -> OpenAI:
+    settings = llm_settings if llm_settings is not None else get_settings().llm
     api_key = get_llm_api_key() or "local-vllm"
     config = (api_key, settings.base_url, settings.timeout_seconds, settings.max_retries)
     with _CLIENT_LOCK:
@@ -96,11 +96,19 @@ def complete_validated_json(
     on_chunk: Callable[[str], None] | None = None,
     on_retry: Callable[[], None] | None = None,
     request_char_budget: int | None = None,
+    llm_settings: LlmSettings | None = None,
 ) -> T:
     """Repair model contract errors, independently of API transport retries."""
-    settings = get_settings()
-    model = (settings.llm.model if getattr(settings, "service_status", {}).get("chat") == "available" else
-             resolve_model_service("Chat", settings.llm.base_url, settings.llm.model, get_llm_api_key()))
+    if llm_settings is not None:
+        settings = llm_settings
+        if not settings.model:
+            raise ModelUnavailable("Explicit LLM settings require a resolved model identity")
+        model = settings.model
+    else:
+        app_settings = get_settings()
+        settings = app_settings.llm
+        model = (settings.model if getattr(app_settings, "service_status", {}).get("chat") == "available"
+                 else resolve_model_service("Chat", settings.base_url, settings.model, get_llm_api_key()))
     messages = [{"role": "system", "content": system_prompt + "\nReturn JSON matching this schema:\n"
                  + json.dumps(schema.model_json_schema(), ensure_ascii=False)},
                 {"role": "user", "content": user_prompt}]
@@ -110,18 +118,19 @@ def complete_validated_json(
         try:
             request = {
                 "model": model,
-                "temperature": get_settings().llm.default_temperature if temperature is None else temperature,
+                "temperature": settings.default_temperature if temperature is None else temperature,
                 "response_format": {"type": "json_object"},
                 "messages": messages,
                 "stream": on_chunk is not None,
             }
-            if settings.llm.reasoning_effort:
-                request["reasoning_effort"] = settings.llm.reasoning_effort
+            if settings.reasoning_effort:
+                request["reasoning_effort"] = settings.reasoning_effort
             if request_char_budget is not None:
                 actual = len(json.dumps(request, ensure_ascii=False))
                 if actual > request_char_budget:
                     raise RequestContextBudgetError(actual, request_char_budget)
-            response = _client().chat.completions.create(**request)
+            client = _client(llm_settings) if llm_settings is not None else _client()
+            response = client.chat.completions.create(**request)
             if on_chunk is None:
                 raw = (response.choices[0].message.content or "") if response.choices else ""
             else:

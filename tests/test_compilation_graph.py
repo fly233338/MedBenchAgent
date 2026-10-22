@@ -115,6 +115,10 @@ def test_checkpoint_resumes_in_a_new_process_without_repeating_completed_work(tm
     directory = tmp_path / "restart"
     before = _demo_process(directory, "run", "--pause-for-input")
     assert before["status"] == "waiting" and len(before["questions"]) == 1
+    assert before["supervisor_mode"] == before["agent_mode"] == "scripted"
+    saved_options = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+    assert saved_options["supervisor_mode"] == "scripted"
+    assert saved_options["model_settings"] is None
     assert [row["agent_id"] for row in before["history"]] == [
         "coding", "task_planner", "coding",
     ]
@@ -124,6 +128,7 @@ def test_checkpoint_resumes_in_a_new_process_without_repeating_completed_work(tm
     }
     after = _demo_process(directory, "resume", "--answer", "Continue")
     assert after["status"] == "completed" and after["questions"] == []
+    assert json.loads((directory / "run.json").read_text(encoding="utf-8")) == saved_options
     assert after["history"][:-1] == before["history"]
     assert after["history"][-1]["agent_id"] == "task_planner"
     assert after["artifacts"][:len(before["artifacts"])] == before["artifacts"]

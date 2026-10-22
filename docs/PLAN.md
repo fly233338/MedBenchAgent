@@ -8,15 +8,15 @@
 - [x] 第三步：独立协作图、合成示例、一个多轮协作测试及一个最小恢复测试。
 - [x] 本阶段第一步：更新架构、计划和 Supervisor 文档，随后再修改代码。
 - [x] 本阶段第二步：统一包名、上下文名称、入口和测试引用。
-- [ ] 本阶段第三步：模型 Supervisor、相关配置冻结和模型适配测试。
-- [ ] 在线验证：可用模型配置下执行一次轻量合成协作，记录真实结果。
+- [x] 本阶段第三步：模型 Supervisor、相关配置冻结和模型适配测试。
+- [ ] 在线验证：当前 Chat 服务连接失败，尚未执行真实模型协作。
 - [ ] 后续：接入 OpenHands、Planner 和业务能力。
 - [ ] 后续：切换 CLI/TUI，删除被替代实现。
 
 当前阶段仅完成命名整理和真实 Supervisor 接入；OpenHands、医学数据和完整 Planner
 不在本阶段范围。真实调用必须另有运行记录，不能用离线测试替代。
 
-目标独立入口为 python -m medbenchagent.compilation，合成专业 Agent 位于 demo.py。
+当前独立入口为 python -m medbenchagent.compilation，合成专业 Agent 位于 demo.py。
 支持 --supervisor scripted|llm，默认 scripted；真实模式与专业 Agent 模式分别标示。
 CLI/TUI 切换仍是后续工作。
 
@@ -72,3 +72,16 @@ Preparation Graph、BIRStore 或旧 harness。
 - 文档相对链接检查通过；原工作区用户修改保留。
 
 这些结果只验证合成协作和基础恢复，不是实际模型、OpenHands 或医学 Benchmark 的验收。
+
+## 本阶段验证记录
+
+- 包名、入口和上下文已统一为 compilation / CompilationContext；不保留旧别名。
+- 新增一个模型适配测试，覆盖 Agent/产物 ID 修正、AskUser/Finish 解析、
+  有界预览、配置快照、超限和模型不可用；复用已有模型通信与配置测试。
+- 相关回归：73 passed；uv run --locked ruff check . 通过。
+- CLI 离线检查使用 mock API：模型失败保留 checkpoint，恢复沿用原模式/模型，
+  不读取修改后的配置、不重新发现模型，也不调用 Scripted 回退。
+- 2026-10-22 检查当前 Chat 配置：默认本地端点 127.0.0.1:8005 的模型发现返回 ConnectError。
+  原工作区与本 Worktree 均无其他本地模型配置。因此未执行真实模型协作，
+  在线验收仍未完成；离线结果不替代这一项。
+- 文档链接和命名引用检查通过。OpenHands、真实专业 Planner、医学数据及 CLI/TUI 切换仍未迁入。

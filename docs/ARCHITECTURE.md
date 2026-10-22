@@ -3,8 +3,8 @@
 ## 实施状态与范围
 
 本分支独立重建 Agentic Benchmark Compiler 的协作骨架。本文固定目标边界；
-首期骨架已实现；本阶段先记录目标：统一 compilation 命名，并接入真实 Supervisor。
-实现与验收进度见 [PLAN](PLAN.md)。专业 Agent 仍为合成示例，不代表三个真实 Agent
+首期骨架、更名和模型 Supervisor 适配已实现；在线验收状态见 [PLAN](PLAN.md)。
+专业 Agent 仍为合成示例，不代表三个真实 Agent
 或医学 Benchmark 编译已经验证。
 
 旧 Workflow、Preparation Graph、Resolver、BIRStore 和通用 harness 是参考资产。

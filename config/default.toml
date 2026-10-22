@@ -9,6 +9,11 @@ input_policy = "image-only"
 max_calls = 1200
 context_chars = 64000
 
+[supervisor]
+context_chars = 64000
+artifact_chars = 4000
+max_artifacts = 4
+
 [paths]
 dataset_catalog = "datasets/dataset_catalog.json"
 bir_template = "config/bir_template"

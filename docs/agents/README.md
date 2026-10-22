@@ -1,11 +1,11 @@
 # Agent 与业务能力
 
-首期验证协作机制，使用 Scripted Supervisor 和极简专业 Agent。
-目标行为不等于已经验证的实现。
+协作机制支持 Scripted 或模型 Supervisor；专业 Agent 仍为极简合成实现。
+实现与在线验收分别记录于 [PLAN](../PLAN.md)，不能将离线测试当作模型自主性证明。
 
-| 角色/能力 | 文档 | 首期 |
+| 角色/能力 | 文档 | 当前接入状态 |
 | --- | --- | --- |
-| Supervisor | [Supervisor](supervisor.md) | 注入的 Scripted 决策 |
+| Supervisor | [Supervisor](supervisor.md) | Scripted / ModelSupervisor，可显式选择 |
 | Coding | [Coding](coding.md) | 普通节点，合成数据处理 |
 | Task Planning | [Task Planning](task-planning.md) | 有私有状态的合成子图 |
 | Generation | [Generation](generation.md) | 后续接口与职责 |

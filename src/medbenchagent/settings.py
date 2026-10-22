@@ -8,9 +8,10 @@ import tomllib
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -45,6 +46,49 @@ class LlmSettings:
     max_retries: int
     default_temperature: float
     reasoning_effort: str
+
+
+@dataclass(frozen=True)
+class SupervisorSettings:
+    """Only the model and context limits needed by independent supervision."""
+
+    llm: LlmSettings
+    context_chars: int
+    artifact_chars: int
+    max_artifacts: int
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "llm": asdict(self.llm),
+            "supervisor": {
+                "context_chars": self.context_chars,
+                "artifact_chars": self.artifact_chars,
+                "max_artifacts": self.max_artifacts,
+            },
+        }
+
+    @classmethod
+    def from_snapshot(cls, values: dict[str, Any]) -> "SupervisorSettings":
+        if not isinstance(values, dict) or set(values) != {"llm", "supervisor"}:
+            raise ValueError("Supervisor settings require llm and supervisor sections")
+        if (not isinstance(values["llm"], dict)
+                or set(values["llm"]) != set(LlmSettings.__dataclass_fields__)):
+            raise ValueError("Unexpected or missing LLM configuration fields")
+        limits = values["supervisor"]
+        if (not isinstance(limits, dict)
+                or set(limits) != {"context_chars", "artifact_chars", "max_artifacts"}):
+            raise ValueError("Unexpected or missing Supervisor limit fields")
+        llm = _llm_settings(values["llm"])
+        url = urlsplit(llm.base_url)
+        if (url.scheme not in {"http", "https"} or not url.netloc or url.username is not None
+                or url.password is not None or url.query or url.fragment):
+            raise ValueError("llm.base_url must be an HTTP(S) base URL without credentials or query")
+        return cls(
+            llm=llm,
+            context_chars=_integer(limits["context_chars"], "supervisor.context_chars", minimum=1),
+            artifact_chars=_integer(limits["artifact_chars"], "supervisor.artifact_chars", minimum=1),
+            max_artifacts=_integer(limits["max_artifacts"], "supervisor.max_artifacts", minimum=1),
+        )
 
 
 @dataclass(frozen=True)
@@ -255,6 +299,57 @@ def _number(value: object, key: str, *, minimum: float, maximum: float) -> float
     return result
 
 
+def _llm_settings(llm: dict[str, Any]) -> LlmSettings:
+    return LlmSettings(
+        model=_optional_string(llm["model"], "llm.model"),
+        base_url=_string(llm["base_url"], "llm.base_url"),
+        timeout_seconds=_number(
+            llm["timeout_seconds"], "llm.timeout_seconds", minimum=0.000001, maximum=float("inf"),
+        ),
+        max_retries=_integer(llm["max_retries"], "llm.max_retries", minimum=0),
+        default_temperature=_number(
+            llm["default_temperature"], "llm.default_temperature", minimum=0, maximum=2,
+        ),
+        reasoning_effort=_optional_string(llm["reasoning_effort"], "llm.reasoning_effort"),
+    )
+
+
+def _apply_environment(values: dict[str, Any]) -> list[str]:
+    """Apply the established overrides only to sections requested by the caller."""
+    env_keys = []
+    for name, (section, key) in _ENVIRONMENT_OVERRIDES.items():
+        if section not in values or not os.getenv(name):
+            continue
+        value: Any = os.environ[name]
+        try:
+            if (section, key) in {("llm", "timeout_seconds"), ("rag", "min_rerank_score")}:
+                value = float(value)
+                if not math.isfinite(value):
+                    raise ValueError("must be finite")
+            elif (section, key) == ("llm", "max_retries"):
+                value = _integer(int(value), name)
+        except ValueError as exc:
+            raise ValueError(f"Invalid environment variable {name}: {exc}") from exc
+        values[section][key] = value
+        env_keys.append(f"{section}.{key}")
+    return env_keys
+
+
+def load_supervisor_settings(config_path: Path | None = None) -> SupervisorSettings:
+    """Read only llm/supervisor values; do not parse datasets or preflight other services."""
+    load_project_env()
+    defaults = _read_toml(DEFAULT_CONFIG_PATH)
+    values = {name: defaults[name] for name in ("llm", "supervisor")}
+    raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
+    if raw_path:
+        path = (Path(raw_path).expanduser().resolve() if config_path is not None
+                else _resolve_path(str(raw_path), "MEDBENCH_CONFIG"))
+        override = _read_toml(path)
+        _merge(values, {name: override[name] for name in values if name in override})
+    _apply_environment(values)
+    return SupervisorSettings.from_snapshot(values)
+
+
 
 
 def _dataset_sources(values: object) -> tuple[dict[str, Any], ...]:
@@ -339,14 +434,7 @@ def _settings_from(values: dict[str, Any], default_path: Path, local_path: Path 
         paths=PathSettings(
             **{key: _resolve_path(value, f"paths.{key}") for key, value in paths.items()}
         ),
-        llm=LlmSettings(
-            model=_optional_string(llm["model"], "llm.model"),
-            base_url=_string(llm["base_url"], "llm.base_url"),
-            timeout_seconds=_number(llm["timeout_seconds"], "llm.timeout_seconds", minimum=0.000001, maximum=float("inf")),
-            max_retries=_integer(llm["max_retries"], "llm.max_retries", minimum=0),
-            default_temperature=_number(llm["default_temperature"], "llm.default_temperature", minimum=0, maximum=2),
-            reasoning_effort=_optional_string(llm["reasoning_effort"], "llm.reasoning_effort"),
-        ),
+        llm=_llm_settings(llm),
         rag=RagSettings(
             embedding_base_url=_optional_string(rag["embedding_base_url"], "rag.embedding_base_url"),
             embedding_model=_optional_string(rag["embedding_model"], "rag.embedding_model"),
@@ -386,24 +474,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     if local_path:
         override = _read_toml(local_path)
         _merge(values, override)
-    env_keys: list[str] = []
-    overrides = {target: (name, os.environ[name]) for name, target in _ENVIRONMENT_OVERRIDES.items()
-                 if os.getenv(name)}
-    for (section, key), (environment_name, value) in overrides.items():
-        if value:
-            try:
-                if (section, key) in {("llm", "timeout_seconds"), ("rag", "min_rerank_score")}:
-                    value = float(value)
-                    # The settings validator below remains authoritative for ranges.
-                    if not math.isfinite(value):
-                        raise ValueError("must be finite")
-                elif (section, key) == ("llm", "max_retries"):
-                    value = _integer(int(value), environment_name)
-            except ValueError as exc:
-                raise ValueError(f"Invalid environment variable {environment_name}: {exc}") from exc
-            values[section][key] = value
-            if f"{section}.{key}" not in env_keys:
-                env_keys.append(f"{section}.{key}")
+    env_keys = _apply_environment(values)
     try:
         return _settings_from(values, DEFAULT_CONFIG_PATH, local_path, env_keys)
     except ValueError as exc:

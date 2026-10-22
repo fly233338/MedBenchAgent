@@ -4,23 +4,48 @@
 
 The `refractor` branch provides an independent LangGraph coordination core with named
 agent nodes, explicit work handoffs, a Case-based file reader and SQLite checkpoints.
-The current example is **scripted**: it makes no model calls, uses no OpenHands runtime
-and processes no medical dataset. Passing its tests demonstrates routing and recovery,
-not autonomous collaboration or a generated benchmark.
+The Supervisor supports `scripted` (default, offline) and `llm` modes. Professional
+Coding and Planning agents still use **scripted synthetic implementations**; neither
+mode uses OpenHands or a medical dataset. The output labels Supervisor and professional
+agent modes separately. This is not a complete autonomous benchmark compiler.
 
 ```powershell
 uv sync --locked --python 3.12
-uv run --locked python -m medbenchagent.compilation run --directory .runtime/core-demo --compilation-id demo --pause-for-input
-uv run --locked python -m medbenchagent.compilation resume --directory .runtime/core-demo --compilation-id demo --answer "Continue"
+uv run --locked python -m medbenchagent.compilation run --directory .runtime/compilation-demo --compilation-id demo --pause-for-input
+uv run --locked python -m medbenchagent.compilation resume --directory .runtime/compilation-demo --compilation-id demo --answer "Continue"
 uv run --locked pytest tests/test_compilation_graph.py -q
 ```
 
 Use a separate run directory and add `--initial-evidence` to start with an existing
-overview: the same graph then starts with Planning rather than Coding. Request inputs
-and results determine later delegations. The example's policy is replaceable.
-The run directory holds `demo.json` (frozen example options), `checkpoints.sqlite`
-and request-owned files under `artifacts/`. Reusing `run` on an existing directory is
-rejected; `resume` continues it without resetting private agent state.
+overview. In scripted mode this selects a different delegation order in the same graph.
+In model mode the Supervisor chooses the next action from registered capabilities and evidence.
+
+For model mode, configure a reachable Chat service in a TOML file (the existing
+`[llm]` keys) and provide any credential through `MEDBENCH_LLM_API_KEY`:
+
+```powershell
+uv run --locked python -m medbenchagent.compilation run --directory .runtime/model-supervisor --compilation-id live --supervisor llm --config config/local.toml
+uv run --locked python -m medbenchagent.compilation resume --directory .runtime/model-supervisor --compilation-id live
+uv run --locked pytest tests/test_compilation_supervisor.py tests/test_llm.py -q
+```
+
+`--goal` supplies a goal for a new run; its default requests the synthetic Case-linked task
+and derived reference data. `--pause-for-input` is a scripted demonstration option;
+the model decides for itself whether to ask a question. Add `--answer` on resume only
+when a question is pending.
+
+Only `llm` and `supervisor` configuration sections are loaded for model mode. There is no
+RAG or Preparation preflight. Limits `supervisor.context_chars`, `artifact_chars` and
+`max_artifacts` bound the full request, each preview and preview count. Truncation and omitted
+previews are explicit; an oversized full request fails with its size instead of silently
+dropping required context. Invalid model choices use the existing bounded repair path.
+
+The run directory holds `run.json` (mode, goal, options and non-secret model configuration),
+`checkpoints.sqlite` and request-owned files under `artifacts/`. Reusing `run` on an existing
+directory is rejected. `resume` uses the saved mode/model without reading a new configuration
+or rediscovering a model; credentials can still be supplied through the environment.
+Model failures preserve checkpoints and never fall back to Scripted execution.
+No compatibility reader is provided for earlier demonstration runs.
 
 See the [architecture](docs/ARCHITECTURE.md), [agent boundaries](docs/agents/README.md),
 [Case contracts](docs/DATA_LAYER.md), and [implementation status](docs/PLAN.md).
