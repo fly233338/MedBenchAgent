@@ -1,4 +1,4 @@
-# Compilation Core 实施计划
+# Compilation 实施计划
 
 ## 状态
 
@@ -6,19 +6,25 @@
 - [x] 第一步：架构、数据、任务和 Agent 文档先行；文档独立提交后开始代码。
 - [x] 第二步：最小协作契约、Case 类型、DatasetReader 与任务契约。
 - [x] 第三步：独立协作图、合成示例、一个多轮协作测试及一个最小恢复测试。
-- [ ] 后续：接入真实 Supervisor、OpenHands、Planner 和业务能力。
+- [x] 本阶段第一步：更新架构、计划和 Supervisor 文档，随后再修改代码。
+- [ ] 本阶段第二步：统一包名、上下文名称、入口和测试引用。
+- [ ] 本阶段第三步：模型 Supervisor、相关配置冻结和模型适配测试。
+- [ ] 在线验证：可用模型配置下执行一次轻量合成协作，记录真实结果。
+- [ ] 后续：接入 OpenHands、Planner 和业务能力。
 - [ ] 后续：切换 CLI/TUI，删除被替代实现。
 
-本期范围止于第三步。真实模型和医学数据接入不属于完成声明。
+当前阶段仅完成命名整理和真实 Supervisor 接入；OpenHands、医学数据和完整 Planner
+不在本阶段范围。真实调用必须另有运行记录，不能用离线测试替代。
 
-当前独立入口为 python -m medbenchagent.compilation_core，演示实现位于 demo.py；
-它不是生产模型或自制 Coding Runtime。CLI/TUI 切换仍是后续工作。
+目标独立入口为 python -m medbenchagent.compilation，合成专业 Agent 位于 demo.py。
+支持 --supervisor scripted|llm，默认 scripted；真实模式与专业 Agent 模式分别标示。
+CLI/TUI 切换仍是后续工作。
 
 ## 提交顺序
 
-1. 文档：ARCHITECTURE、DATA_LAYER、TASK_DISCOVERY、PLAN、各 Agent 文档。
-2. 契约/Reader：纯类型、文件引用、小型 JSON/JSONL 读取。
-3. 骨架/验证：节点注册、决策循环、checkpoint、独立入口及两个测试。
+1. 更新本阶段文档，记录目标与实现状态。
+2. 更名为 compilation / CompilationContext，更新全部引用，不保留别名。
+3. 接入模型 Supervisor、运行配置和有界产物预览，验证后提交。
 
 只提交本次工作，不混入原工作区 AGENTS.md 修改。
 
@@ -32,7 +38,12 @@
 继续，检查私有进度、请求、引用及已 checkpoint 工作未重跑。
 不增加真实调用次数要求或大量故障注入。
 
-运行相关检查并复用已有数据类型测试。Core 不导入 Workflow、Resolver、
+更名后继续运行两个既有协作测试。只新增一个聚焦模型适配的测试，复用模型通信测试。
+非法 Agent、产物 ID 及结构错误必须反馈修正；模型错误不得触发 Scripted 回退。
+可用配置下进行一次轻量真实 Supervisor 验证，不限定顺序或调用次数。
+若配置不可用，明确记录在线验证未完成。
+
+运行相关检查。Compilation 不导入 Workflow、Resolver、
 Preparation Graph、BIRStore 或旧 harness。
 
 ## 后续资产迁移
@@ -48,16 +59,16 @@ Preparation Graph、BIRStore 或旧 harness。
 | CLI/TUI | 新核心和真实能力就绪后切换 |
 | 旧调度、阶段协议、冗余状态、无效测试 | 调用方切换后及时删除 |
 
-旧代码可供参考，但 Core 不通过旧 Workflow 执行。
+旧代码可供参考，但 Compilation 不通过旧 Workflow 执行。
 不建立兼容层、通用 Runtime、队列、新 Resolver DSL 或 Artifact 版本系统。
 
 ## 首期验证记录
 
 - 新增协作测试仅两项：不同证据条件的多轮协作，以及新进程恢复。
-- uv run --locked pytest tests/test_compilation_core.py -q：2 passed。
+- 两个协作测试：2 passed；本阶段更名后再次验证。
 - uv run --locked ruff check .：通过。
 - 修改共享 Case 类型后运行既有回归：328 passed、4 skipped；跳过项依赖可选医学读取库。
-- 独立导入检查确认新 Core/示例不加载旧 Workflow、Preparation、Resolver、BIRStore 或 harness。
+- 独立导入检查确认 Compilation/示例不加载旧 Workflow、Preparation、Resolver、BIRStore 或 harness。
 - 文档相对链接检查通过；原工作区用户修改保留。
 
 这些结果只验证合成协作和基础恢复，不是实际模型、OpenHands 或医学 Benchmark 的验收。
