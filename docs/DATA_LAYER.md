@@ -1,60 +1,82 @@
-# Data layer contracts
+# Case 中心的数据契约
 
-数据层把只读来源转换为可查询、可追溯的 Dataset Bundle。LangGraph 负责协调，数据模块负责确定性执行和验证。
+## 状态与数据单元
 
-## 数据集内容与派生视图
+本文固定 canonical 语义。首期仅落地纯类型、小型 JSON/JSONL DatasetReader 和合成示例；
+不实现医学数据引擎或完整校验。旧 DatasetIndex/Prepared 流程等待能力迁入。
 
-Case/Evidence 的 asset value 直接保存最终 locator。普通 JPEG/PNG/WebP 引用原 source，零复制。
-转换图片固定保存于 Prepared/<dataset>/images/，image_manifest.jsonl 只登记这些实际 PNG。
-没有 convert 规则时跳过 Image；混合数据只转换需要转换的部分。
-Mask 是附带来源 digest 的 Case/reference feature，不进入模型输入。
+Dataset 是来源、Cases、Assets 与语义 Mapping 的集合。CaseRecord 是顶层临床单元，
+可以代表病灶、检查或纵向病例，粒度由 Mapping 声明。patient_id 可选，一个 Patient
+可对应多个 Case；一个 Case 最多关联一个已知 Patient。Study 是检查/采集分组，
+不与 Case 强制一一对应，Evidence 可给出 study_id。
+Image/Volume 是 Asset，不等于 Case。Benchmark Item 是任务在明确 Case 取样单元上的实例，
+可使用多图；首期不跨 Case 组合。SamplingUnit 保留取样职责，不等于 Case 或 Item。
 
-Understand 冻结路径规则 mapping 和 typed conversion plan。Text 生成 Cases，并将 accounting 留在 runtime。
-Published revision 只有 cases.jsonl、image_manifest.jsonl、metadata.json；不包含图片副本。
-metadata 保存来源绑定和 direct 图片集合摘要、字段语义及 sampling/split。访问时验证来源和 converted 图片内容。
+Dataset revision 是输入快照标识。Case ID 在 Dataset 内唯一，Evidence ID 在 Case 内唯一；
+Patient、Study、Entity 按 Dataset 命名空间解释，不自动跨来源合并。
 
-Profile、Card、DuckDB/access 缓存在 revision 外的 .derived/，可删除重建。DatasetAccess 始终绑定
-immutable revision 的 cases/image manifest，根目录 current.json 仅作为指针，不保存图片 projection。
+## Evidence 与关系
 
-## 多来源映射与查询
+保留 value、text、asset、region 四类和 id、name、value、ref、time、unit、view_id。
+name 是字段语义，不承担身份。value 为标量/简单列表，text 为文本，
+asset 的 value 引用 AssetEntry.asset_id；region 保留 normalized xyxy，
+通过 ref 锚定唯一目标图像 Evidence。
 
-多来源字段通过 understand 阶段的 accepted mapping 合并、保留或排除。值映射、缺失状态、数组边界和来源空间都保留在 mapping 和运行诊断中。
+补充轻量字段：
 
-`DatasetIndex` 绑定一个扁平访问收据，提供 Case 读取、字段值分页、Asset 查询、数据事实和 Scenario 上下文。来源关系与结构容量从这些事实及 Resolver 推导，不保留旧协议查询入口。
+- source_refs：SourceRef(source_id, path, record?, field?)，是来源描述，不是执行 DSL。
+- input_visibility：model_visible、reference_only、unknown，默认 unknown。
+- entity：可选 EntityRef(kind, id)，表示证据描述的临床实体。
+- study_id：可选检查/采集标识。
 
-Evidence Catalog 是完整数据事实清单，不是任务候选清单。Task Planning 需要区分图像可观察证据、患者/临床上下文、设备/行政元数据和仅用于校准的 spacing 等字段；字段存在本身不能支持一个 Axis 或 Leaf Task。
+model_visible 仅表示可被任务选择，不意味着自动成为输入。
+Mask、答案和校准信息不能因为格式是图像就成为模型输入。
+现有 MaskFeatureSet 保留来源绑定的几何含义，首期不要求计算。
 
-规划阶段不会把 access manifest 和全部 Case 内容直接交给模型。准备索引产生唯一的扁平
-`DatasetAccessReceipt`，规划使用它生成 Dataset Overview、Evidence Catalog、Relation
-Summary 和有界 Case Samples。每个规划证据文件记录 dataset revision 与输入
-digest；读取工具只返回分页或当前 Axis/Scenario 所需的切片。
+Evidence.ref 表达 Case 内锚定/关联。CaseRelation 用 subject、predicate、object、
+source_refs 表达 EvidenceRef(case_id, evidence_id) 或 EntityRef 之间的事实关系。
+EntityRef 只是标识，不要求实体数据库；关系含义由 Mapping 声明，并需来源依据。
 
-Receipt 在绑定和读取边界检查数据集身份、文件路径和内容摘要，所有消费者使用相同字段，不维护嵌套访问镜像。
-case/patient 计数取自实际 profile，缺少信息时不以零或空路径代替；可选 mapping、Card、sampling/split 的路径与摘要必须成对出现。
+多图需要共同临床语境；多视图需要实体/检查关联和 view_id 的含义；
+多时间点需要时间单位/基准或显式先后关系。不同病灶、器官、标本用 EntityRef 区分。
+图像数量、文件名顺序和相同 Patient ID 均不足以证明关系。未知保持未知。
 
-Mask 的 bbox、面积、质心、component、等效直径和 plane feature 必须由准备阶段写入
-Evidence，并绑定对应 Asset digest；Resolver 不读取原始 mask 文件。结构事实区分 primary
-asset 才能证明 multi-image 或 multi-view；region→mask 引用不等于多视图关系。
-NIfTI volume 保持原生 `[dim0, dim1, dim2]` shape，plane 固定使用 `axis=2`；bbox 使用
-voxel-edge normalization，centroid 使用 voxel-center normalization，volume component 使用
-26-connectivity，单 plane 使用 8-connectivity。spacing 和 physical measurement 只有来源单位
-明确时才保留，未知单位保持缺失。
-未知 role、visibility、关系或 manifest 顺序保持 unknown 并由规划代码保守排除，不能用字段数量或整数值猜测
-index、时间或医学语义。
+## Asset 与 Locator
 
-规划上下文可以引用准备阶段保存的 `mapping.json` 和语义证据。字段语义来自 metadata.json；宿主将字段含义、
-关系说明、覆盖限制和代表性 Case 组织成有界结构化 `leaf_context`；缺失的语义保持
-显式缺失。该上下文与 Evidence Catalog 一起传给 Leaf 设计，不依赖被截断的历史工具摘要。
+沿用 AssetEntry 的 asset_id、source_id、source_path、file_digest、kind、format、
+width、height、metadata。asset_id 是稳定身份；source_id + source_path 是 Locator；
+file_digest 描述内容而非身份。source_path 相对 source root，不能逃逸该目录。
+metadata 保存物理属性，Evidence 保存使用语境的可见性。
 
-## 运行契约
+新 Reader 只按 asset_id 解析，不猜测引用是路径还是 ID。旧路径兼作身份的行为在能力迁入时
+移除，不新增双格式读取。ImageEntry 仅负责呈现/导出，不是第二套资产登记。
 
-准备和构建使用 Run 冻结的配置、Catalog snapshot、Card 副本、事件日志和 operation ledger。业务依赖由 BIR canonical 文档校验；工具调用按参数和依赖幂等重放。
+## Dataset Manifest 与 Reader
 
-编译级 BIR 位于 `experiments/<session>/compilations/<id>/BIR/`，保存单数据集绑定、冻结的
-`DatasetAccessReceipt` 和规划 Evidence 的 canonical 引用。Run 保存 BIR 路径、摘要和文档引用，
-不维护全局 BIR revision；各业务文档通过 BIRStore 按自己的 revision/digest 校验写回。
+DatasetManifest 描述 dataset_id、revision、cases_path、assets_path、sources 和可选
+mapping_path、sampling_path、split_path。描述文件路径相对 manifest 所在目录；
+source_id 唯一，source root 相对 manifest 或为调用方明确给出的绝对路径。
+profile/DuckDB 是实现缓存，不是 Manifest 前提。
 
-绑定、规划、生成分别使用 BIR 根目录的 `dataset_binding.json`、`task_plan.json`、`generation.json`。
-共享状态不维护按数据集分组的 Plan、访问数据或生成结果字典；批处理在 Session 中创建独立 Compilation。
+| 操作 | 结果 |
+| --- | --- |
+| get_manifest() | DatasetManifest |
+| list_cases(offset, limit) | CasePage(items, next_offset) |
+| get_case(case_id) | CaseRecord |
+| get_evidence(case_id, evidence_id) | Evidence |
+| get_asset(asset_id) | AssetEntry |
+| resolve_asset(asset_id) | ResolvedLocator(source_id, path, file_digest) |
 
-新运行存储在 `.runtime/<run>/control`、`inputs`、`agents` 和 `preparation` 下。会话只持有编译引用；旧运行不迁移。
+Reader 绑定一个输入快照，检查重复 ID、基础关联和实际文件存在性。
+缺失文件/ID 明确报错，不以空记录掩盖。首期不做图像解码、全量摘要扫描、聚合统计或
+Scenario 可行性判断。
+
+## Mapping 与 Derived View
+
+Mapping 描述 Case 分组、身份映射、字段含义、单位、缺失、时间/视图和实体关系；
+不保存 Agent 执行状态，不建立新的可执行转换语言。
+
+Task-specific Derived View 绑定 dataset_id/revision，通过 case_id 及必要的 Evidence/Entity
+引用关联原 Case，只保存新增值，不复制整条 Case、临床表或原图。
+派生资产仍使用 AssetEntry 并保留来源关联。首期只需少量合成派生行，
+不实现通用 View 引擎、版本管理或全部 Schema 校验。

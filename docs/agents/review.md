@@ -1,15 +1,17 @@
-# Independent semantic review
+# Review（后续接入）
 
-**Input:** a canonical discovered/complete Task Plan, the same dataset evidence interface used for design, and unchanged user requirements.
+## 目标与输入输出
 
-**Output:** a BIR review document with checked Scenario IDs, findings, ownership and approved/rejected status. The reviewer cannot modify the plan or prepared data.
+独立检查任务语义、证据依据、用户目标和可行性。
+输入是 WorkRequest 引用的任务和证据，输出为发现及相关对象引用。
+不能直接修改 Planner 任务或 Coding 数据。
 
-**Private state:** each semantic call has a fresh context. Checked-Scenario progress is persisted against exact plan/data/requirement/Registry dependencies.
+## 状态与交接
 
-**Model-visible evidence:** complete Leaf definitions and deterministic validation summaries, source semantics, representative Cases, validated targets and cross-Scenario task summaries. Excluded non-structural Scenarios can be screened independently for missed coverage.
+一次检查优先 per-invocation；确有跨请求需求时再使用长期状态。
+问题返回 Supervisor，由其选择修订对象。共享结论不保存完整会话。
 
-**Feedback:** task/coverage findings belong to Planning. Source concerns identify known fields and evidence references and belong to Preparation. Blocking findings prevent publication; Supervisor routes the repair.
+## 实施状态
 
-**Recovery:** current checked Scenarios are reused. A changed plan invalidates the review receipt, so an old approval cannot authorize a new candidate.
-
-**Acceptance:** exact Scenario and Leaf coverage, source evidence present in the review payload, rejected review preventing publication and bounded targeted revision. Integration tests use scripted reviewers over real prepared image fixtures.
+首期仅职责文档，不实现评分或审批体系。旧 Review 可按证据接口迁入，
+但旧 BIR 发布门槛不是 Core 的运行条件。

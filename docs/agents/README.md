@@ -1,15 +1,25 @@
-# Agent and stage documentation
+# Agent 与业务能力
 
-| Responsibility | Document |
-| --- | --- |
-| Supervisor | [Supervisor](supervisor.md) |
-| Data Preparation | [Data Preparation](data-preparation.md) |
-| Task Planning | [Task Planning](task-planning.md) |
-| Independent semantic review | [Review](review.md) |
-| Allocation | [Allocation](allocation.md) |
-| Generation | [Generation](generation.md) |
-| Candidate audit, publication and export | [Delivery](delivery.md) |
+首期验证协作机制，使用 Scripted Supervisor 和极简专业 Agent。
+目标行为不等于已经验证的实现。
 
-Each document records inputs, outputs, private state, model-visible evidence, feedback, recovery and acceptance. Schemas and registered tool signatures remain the authority for fields. Update the owning document when changing a contract or handoff; keep architecture-level boundaries in the architecture overview rather than duplicating every field.
+| 角色/能力 | 文档 | 首期 |
+| --- | --- | --- |
+| Supervisor | [Supervisor](supervisor.md) | 注入的 Scripted 决策 |
+| Coding | [Coding](coding.md) | 普通节点，合成数据处理 |
+| Task Planning | [Task Planning](task-planning.md) | 有私有状态的合成子图 |
+| Generation | [Generation](generation.md) | 后续接口与职责 |
+| Review | [Review](review.md) | 后续接口与职责 |
+| Audit | [Audit](audit.md) | 后续接口与职责 |
+| Allocation | [Allocation](allocation.md) | 后续确定性业务能力 |
+| Delivery | [Delivery](delivery.md) | 后续交付能力 |
 
-Deterministic stages are tools, not additional autonomous agents. The existing Python package name is an implementation namespace; product terminology is MedD2B.
+Agent 接收 WorkRequest，返回 WorkResult，只通过 Supervisor 提出跨 Agent 需求。
+ArtifactRef 必须指向实际文件，completed 不等于 Benchmark 生成成功。
+work 需求不触发 interrupt；用户需求由 Supervisor 协调。
+
+私有消息、探索游标、SDK 会话不进入共享业务产物。Planner 使用 per-thread，
+独立请求通常 per-invocation，Coding 长期状态由 OpenHands 管理。
+不得统一强制 checkpointer=True。字段以纯契约为准，边界见 [架构](../ARCHITECTURE.md)。
+
+原 Data Preparation 职责归入 Coding，不再是独立必经 Agent。

@@ -20,7 +20,7 @@ Each round snapshots candidate files and accepted inputs under `attempts/<stage>
 
 Failure counters are independent of round counters. The first rejected candidate establishes a baseline; subsequent changed candidates count as progress only when Host-passed checks advance or remaining diagnostics shrink without regression. Progress resets consecutive no-progress failures. Rewrites alone and returning to an already achieved validation result do not reset them. Clarification does not consume a failure retry. Environment failures and explicit blocked controls stop; mapping revision has a separate finite budget. Stage iteration and active execution-time use is persisted and cumulative across rounds, including mapping revisions; waiting for user answers is excluded. OpenHands `LLMSummarizingCondenser` is configured from stage budgets, with model context/output reserves honored when supplied. Accepted facts and user decisions remain explicit in host prompts/files instead of relying on summaries alone.
 
-See [Data Preparation Agent](agents/data-preparation.md) for ownership and acceptance coverage.
+This describes the retained preparation implementation. New ownership and migration boundaries are documented in [Coding Agent](agents/coding.md).
 
 ## Real-runtime validation checklist — pending
 

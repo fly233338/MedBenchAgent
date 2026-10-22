@@ -1,38 +1,36 @@
-# Task Planning contract
+# Task Planning 契约
 
-The canonical product is `task_plan.json` at the compilation BIR root. Its dependencies bind `dataset_binding.json`, compilation requirements, `planning_extensions.json` and the frozen Registry. Planning reads and writes this document directly; checkpoints store references and execution context. A BIR and explicit Registry are required, including in tests.
+## 状态
 
-## Semantics and stages
+首期只有纯任务契约与 Scripted Planner。完整 Planner、Axis 语义调用、Scenario Screening
+和 Generation 尚未迁入 Core。示例通过不证明医学任务发现质量或模型自主性。
 
-The Registry defines Axis values and operation meanings. Models assess supported values; code constructs structurally feasible Scenarios. Screening validates atomic clinical targets and reference fields. Leaf design binds one validated target to inputs, a deterministic Resolver, output contract and equivalent question templates. Review checks task meaning, source grounding, wording, boundary applicability and duplication.
+## 职责与产物
 
-The canonical phases are access, axes, screening, leaves, complete and blocked. `pending_scenario_ids` is the one active queue. During screening it contains unreviewed candidates; during leaves it contains Scenarios requiring design/review. The model cannot bypass validation by changing a phase.
+保留 Axis → Cartesian Product → Scenario Screening → Leaf。模型判断语义，
+代码构造组合并检查结构。Task Family 在 Scenario 后选择，不作为新的 Axis。
 
-No explicit clinical goal means evidence-driven design. Explicit goals constrain screening and design, but do not imply a positive-case population filter or allocation preference. Exclusions distinguish insufficient evidence, unsupported tasks and user exclusions.
+DataRequirement 表达需求 ID、Dataset 输入身份、Case 范围、目的、所需表示、
+已有 Evidence 引用和满足条件。不指定调度顺序，不保存会话，不要求 Planner 编程。
 
-## Evidence interface
+SemanticTaskSpec 表达任务 ID、Scenario、Task Family、输入需求、参考答案要求、
+输出范式、证据、可行性和未满足需求 ID。Task Family 包括 closed_vqa、open_vqa、
+report_generation、visual_grounding、detection；这里只定义语义，不实现 Backend。
 
-Planning constructs bounded packets from verified dataset facts, frozen annotation metadata, relations, observed values and representative Cases. Current target/input fields and actively queried fields have priority. Omitted fields/examples/tasks are explicitly reported; required evidence exceeding the configured budget raises a diagnostic rather than disappearing.
+任务语义不强制包含 Resolver、执行程序、最终模板或 Benchmark 记录格式。
+程序由 Coding 处理，具体生成由后续 Generation 能力承担。
 
-Tools expose catalog pages, exact observed-value pages, annotation-metadata pointer/text pages and saved Leaf pages. Long value excerpts are explicitly marked as excerpts, never answer labels. Representative samples cover observed categories, missingness, relations and numeric boundaries; a bounded sample is not proof of complete dataset coverage.
+## 交接与续接
 
-Axis and screening receive their own source facts. Design and independent review share `scenario_evidence_context`; review gets original semantics and representative Cases, not only a generated Leaf summary. Dynamic Leaf evidence is injected once by the planning adapter. The generic harness has no planning-specific context logic.
+缺少数据表示时保存草稿和 DataRequirement，返回 needs_input + work 需求。
+Supervisor 决定委派对象；Planner 不直接调用 Coding，也不 interrupt 整个协作图。
+新请求携带需求及新数据引用，Planner 从私有 checkpoint 继续并判断需求是否满足。
 
-## Deterministic contracts
+Task Plan 保存任务、证据与可行性；checkpoint 保存消息、游标和待续接工作。
+Coding completed 不能直接将任务标为 feasible。不可行任务可排除或调整，
+不必使整个 Compilation 失败。
 
-- Model inputs and reference evidence are separate. Mask geometry and other immutable reference features never become model inputs.
-- Input role order comes from Resolver declarations and the frozen Sampling manifest.
-- `eligible_count` counts successfully resolved SamplingUnits. Scenario structural capacity counts Cases.
-- Closed-label options cover the Resolver answer domain; missing and explicit negative values remain distinct.
-- Explicit `map_label` transformations are validated; unmapped values stay ineligible.
-- Template count comes from configuration. Generation records the seeded template choice; Audit recomputes it.
-- Duplicate Leaf semantics are detected across Scenarios.
-- An excluded Scenario has a reason and evidence. All-excluded plans can be valid plans, but cannot publish an empty benchmark.
+## 验证
 
-## Revision and review
-
-Supervisor can reopen named non-structurally-excluded Scenarios with a reason and current issue IDs. A revision preserves unrelated leaves, records its history atomically in the plan and invalidates dependent allocation, generation, review and candidate receipts. The per-Scenario rework budget is enforced.
-
-Independent review records findings and checked Scenarios in its own BIR document. Findings identify their owner and whether they block delivery. Source concerns require known fields and evidence references. Publication cannot override a rejected semantic review.
-
-See [Task Planning Agent](agents/task-planning.md) and [Review](agents/review.md).
+首期用合成字段派生验证请求、文件和任务草稿的关联，只做基础身份/结构检查。
+详见 [Planner](agents/task-planning.md) 与 [PLAN](PLAN.md)。

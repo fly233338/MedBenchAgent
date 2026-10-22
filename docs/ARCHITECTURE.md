@@ -1,77 +1,99 @@
-# MedD2B architecture
+# MedD2B Compilation Core
 
-MedD2B uses LangGraph and OpenHands to compile one medical dataset into an annotation-grounded benchmark. Models interpret semantics and choose work; code validates contracts, resolves references, executes data operations and enforces publication gates.
+## 实施状态与范围
 
-## Ownership
+本分支独立重建 Agentic Benchmark Compiler 的协作骨架。本文固定目标边界；
+当前先完成文档，代码与验收状态见 [PLAN](PLAN.md)。首期只有 Scripted Supervisor、
+极简测试 Agent 和合成数据，不代表模型自主协作或 Benchmark 编译已验证。
 
-| Owner | Canonical responsibility |
-| --- | --- |
-| Dataset | Accepted prepared revisions, source/content bindings |
-| Compilation | One dataset binding, optional user constraints, Registry, Task Plan, allocation, review, candidate and delivery |
-| Run and Agent checkpoints | Execution position, private context, pending questions, operation replay |
-| Session | Messages and references to independent compilation runs |
+旧 Workflow、Preparation Graph、Resolver、BIRStore 和通用 harness 是参考资产。
+Core 不导入它们，也不通过兼容层执行原流水线。真实模型、OpenHands、完整
+Task Planning、Generation、Review、Audit 随后按能力迁入。
 
-A submission creates `experiments/<session>/compilations/<id>/`, with a configuration snapshot and BIR. A retry resumes that same compilation. Sessions do not own or overwrite a shared BIR. Batch submission queues independent compilations; source joining and multi-image tasks remain features within a dataset.
+## 调用方式
 
-Inside each BIR, `dataset_binding.json`, `task_plan.json`, `generation.json` and `planning_extensions.json` have fixed locations alongside allocation, review, candidate and delivery documents. Compilation tools bind one dataset; planning and generation read that identity from BIR. Allocation counts and capacities are keyed directly by Leaf ID. Dataset candidate lists and the session batch queue remain collections.
+使用原生 LangGraph StateGraph：Supervisor 集中决策、具名专业节点串行执行、
+结果返回 Supervisor。注册表在构图时装配节点，运行时每次选择一个目标。
+图不包含 Coding → Planner 或其他固定业务阶段连线。
 
-Each BIR business document owns its atomic `_commit`, revision, content digest and dependency digests. The manifest fixes compilation and Registry identity. Reads reject changed dependencies. Checkpoints retain execution state, dependency-bound evidence caches and references, without parallel Plan, allocation or access documents. UI summaries are read from BIR. Internal schemas have stable, unversioned identifiers; old internal layouts and checkpoints have no migration or compatibility reader.
+```mermaid
+flowchart TD
+    U[目标和输入引用] --> S[Supervisor]
+    S -->|动态选择| C[Coding 节点]
+    S -->|动态选择| P[Task Planning 子图]
+    C --> R[检查并收集 WorkResult]
+    P --> R
+    R --> S
+    S --> H[等待用户 interrupt]
+    H --> S
+    S --> E[END]
+    C <--> A[文件产物]
+    P <--> A
+    C -. 后续接入 .-> O[OpenHands Conversation / Workspace]
+    K[(SQLite Checkpointer)] -.-> S
+    K -.-> P
+```
 
-Dataset identity is fixed independently of the benchmark brief. Revising requirements invalidates planning and downstream work, while retaining the same binding. BIR initialization distinguishes stale derivatives that need rebuilding from corrupted content, which is rejected. Selection questions and their dependency digests are validated before committing a binding or extension choice.
+Agent-as-Tool 与具名节点都是官方支持的组合。工具适合对话式委派；
+这里使用具名节点，以保持明确交接和可检查的子图状态。这是官方 Custom Workflow
+原语的组合，不是新的 Agent Runtime。
 
-## Supervision
+参考：[Multi-agent](https://docs.langchain.com/oss/python/langchain/multi-agent)、
+[Subagents](https://docs.langchain.com/oss/python/langchain/multi-agent/subagents)、
+[Subgraphs](https://docs.langchain.com/oss/python/langgraph/use-subgraphs)、
+[Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api)。
 
-Supervisor remains a model-driven tool loop. It can inspect current evidence/coverage, prepare sources, bind a dataset, delegate planning, request independent review, reopen specific Scenarios, allocate, generate, audit and publish.
+## 状态所有权
 
-Tool availability describes valid dependencies, not one compulsory sequence. A complete plan allows review and allocation; review can also diagnose a discovered draft. A current reviewed candidate allows publication. Review findings can return work to planning or, for explicit source concerns, preparation. Rework is bounded and does not relax user constraints.
+| 所有者 | 内容 | 持久化 |
+| --- | --- | --- |
+| Supervisor | 目标、请求、结果摘要、产物引用、协调进度 | 父图 SQLite checkpoint |
+| Planner | 私有探索上下文、草稿游标、待满足需求 | per-thread 子图，checkpointer=True |
+| Coding 适配节点 | 本次请求、结果及必要会话引用 | 父图交接记录 |
+| OpenHands（后续） | Conversation、工具事件、脚本和 Workspace | SDK 与工作区 |
+| 一次性专业子图 | 单次调用内状态 | per-invocation，默认 checkpointer=None |
+| 文件产物 | 其他 Agent 可读取的业务内容 | Compilation 目录 |
 
-A delegated agent's outcome is separate from the success of the delegation call. The top-level `agent_outcome` carries `complete`, `progress`, `needs_input`, `failed` or `blocked`, diagnostics, questions and artifact references. A successful tool call does not imply a completed child or compilation. Missing facts become scoped LangGraph interrupts; answers return to their owner. Preparation-only requests never enter benchmark planning.
+每个 Compilation 使用稳定 thread_id。子图直接注册具名节点，由 LangGraph 管理
+namespace；不手工拼接，也不依赖 dispatcher 内隐式调用顺序。None 表示单次调用
+继承 checkpoint，False 才表示禁用。不得统一强制所有 Agent 使用 True。
 
-## Boundaries
+父子图仅交接 request、result，不共享完整 messages。输入输出 schema 隔离私有字段。
+决策函数、客户端、文件服务通过 Runtime context 注入，不序列化。
+不另存 Agent state.json，不在 LangGraph 中复制 OpenHands 完整状态。
 
-- `workflow/`: orchestration, business clarification/evidence adapters, scoped revision and user-facing business projections.
-- `runtime/`: generic action execution, model transport, checkpoint/interrupt integration, operation logs, process adapters and presentation of events.
-- `preparation/`: source freezing, stage sessions, candidate snapshots, deterministic acceptance and publication.
-- `agents/`: evidence-grounded task design and independent semantic review.
-- `planning/`: Registry, Resolver, BIR, dataset/extension binding and dataset-local allocation.
-- `data/`: canonical annotations, assets, index, source semantics and evidence sampling.
-- `generation/` and `audit/`: deterministic generation and candidate audit, followed by publication and portable export. These stages have no Agent-private sessions or forwarding Agent modules.
-- `evaluation/` in the source package: read-only package loading and evaluation configuration; model inference is independent.
+## 工作契约
 
-The generic harness receives domain callbacks; it does not import BIR, interpret Leaf evidence or recognize dataset-selection states.
+- ArtifactRef：artifact_id、kind、path（相对 Compilation 根目录）。
+- WorkRequest：request_id、compilation_id、agent_id、objective、scope、inputs、constraints。
+- WorkResult：request_id、outcome、summary、artifacts、issues、needs。
+- outcome：completed、progress、needs_input、blocked、failed。
+- needs：需求标识、work/user 类型、说明及可选 detail_ref。
 
-## Preparation and planning
+Host 在执行前分配并 checkpoint 请求；恢复沿用标识，新输入形成新请求。
+scope 是业务标识列表，Core 不解释临床语义。结果关联当前请求，输出文件必须存在。
+已交接文件不原地修订。completed 只表示本次工作完成，不等于 Benchmark 已交付。
+work 需求返回 Supervisor，不触发 interrupt；只有等待用户时暂停父图。
+专业工作 failed/blocked 也返回 Supervisor，由其决定下一步。
 
-Preparation keeps Understand → Text → conditional Image → Package → Publish. Ordinary repair and clarification continue the same stage's OpenHands session. Candidate snapshots are immutable per round; a semantic mapping revision creates a new session epoch. Only host-accepted artifacts cross stage boundaries.
+## 文件与恢复
 
-Host validation reports passed checks. A first failed candidate establishes the repair baseline; a changed candidate must advance those checks or resolve diagnostics without regression to reset consecutive no-progress failures. Editing bytes alone does not count. Clarification does not consume this failure allowance. Stage iteration and active execution-time budgets are cumulative across rounds and restored from checkpoints; user waiting time is excluded.
+首期仅需 checkpoints.sqlite 和 artifacts/<request_id>/ 文件。
+使用 SqliteSaver 与 durability="sync"。已 checkpoint 的工作续接时复用；
+未完成节点可能重放，示例文件写入因此使用稳定请求路径和幂等的相同内容写入。
+不承诺任意外部命令在崩溃窗口内 exactly-once。
 
-Task Planning keeps Axis → Scenario → Leaf. There is one canonical pending Scenario queue. Deterministic transitions directly invoke the dedicated semantic Axis/screening calls; Leaf exploration retains a tool loop. Context construction belongs to Planning, prioritizes required/query evidence, reports omissions and supports exact paged reads. Design and review use the same source-evidence interface in separate calls.
+等待用户使用同一 thread_id 的 Command(resume=...)；普通未完成执行用 None 续接；
+已结束线程不是待恢复工作。首期不引入提交账本、队列、版本发布或依赖失效引擎。
+BIR 将来只负责业务语义与产物关系；首期不实例化 BIRStore 或复制协调状态。
+Dataset revision/file_digest 继续表达输入身份，不成为 Artifact 版本体系。
 
-Planning requires the compilation BIR and its frozen Registry. Pure validators receive Registry explicitly. Prompts have one source in Registry; imports do not load a repository-default Registry. Tests construct real temporary BIR fixtures rather than enabling a second local-file planning mode.
+## 模块边界
 
-Derived dataset facts are cached on disk by the verified binding digest, outside checkpoints. Planning read caches also bind requirements, extensions, Scenario and rework round. A blocked planning attempt records input and clarification references so changed inputs permit another attempt. Completed Scenario lists, copied review reports and generated Leaf prompt contexts are not parallel state.
+- compilation_core：契约、图装配、结果检查、文件交接及独立入口。
+- data：Case/Evidence/Asset、Dataset Manifest、Reader；不依赖 Agent。
+- planning/contracts：DataRequirement、SemanticTaskSpec；不含 Resolver。
+- 专业 Agent/示例：可使用 Reader 和任务契约，不能相互直接委派。
+- 旧 runtime/preparation/workflow：后续选择性抽取，不是 Core 的依赖。
 
-`planning.context_chars` bounds the complete serialized model request, including system instructions, output schema, tool definitions, evidence, tool results and repair turns. Direct planning/review calls and the planning tool loop share this final transport check. Every retry is checked again. Required content is never silently truncated; an oversized request reports its size and configured limit so the query can be narrowed or the budget increased.
-
-Allocation is dataset-local. Generation and Audit share `resolve_task_input`, frozen ordering and deterministic Resolver answers. Reference-only evidence stays out of model input. `eligible_count` counts SamplingUnits; structural Scenario capacity counts Cases.
-
-`DatasetAccessReceipt` is a flat data-layer contract produced by Prepared indexing and consumed unchanged by binding, planning, generation and audit. It verifies dataset identity, file digests and actual profile counts. Benchmark items have one strict contract: `item_id`, `dataset_id`, `leaf_task_id`, ordered `input_images` and optional sampling metadata. Generation validates before writing; audit rejects old aliases or malformed records with explicit quarantine reasons. `generation.fetch_batch_size` controls source pagination.
-
-## Local PDF retrieval
-
-The PDF retrieval component retains embedding, Chroma retrieval and reranking. Cache identity binds selected document byte digests, chunking strategy/parameters and embedding endpoint/model. Content is checked before reuse, including repeated retrieval on one reader; obsolete cache layouts are not read. Paragraph chunking always consumes text even when overlap exceeds the preceding short paragraph.
-
-This component is not exposed uniformly to all semantic model calls. Shared tool registration, autonomous retrieval loops for every model and OpenHands cross-process access remain deferred; no MCP service or additional communication layer is introduced.
-
-## Publication and recovery
-
-Audit writes an unpublished candidate and quarantine; it never writes a delivery completion marker. Publication requires a current approved semantic review and a valid candidate. Shortfalls/rejections require a limitation explanation. It writes the compilation report and a hash-bound completion marker before recording delivery in BIR.
-
-Audit enforces the total per-image limit from the canonical brief; intake resolves its default from the frozen configuration. Publication recovery verifies and reuses a completed package without rewriting its files, then records any missing BIR receipt.
-
-Default delivery references Prepared/source images. Export verifies those image digests, copies only model inputs and produces relative paths. The standalone package reader validates package files and images after relocation.
-
-LangGraph resumes execution from checkpoints. BIR dependency invalidation drives necessary downstream work after a revision; accepted datasets and previous delivery directories remain intact. OpenHands persisted user events deduplicate host feedback across process restarts.
-
-Details and verification responsibilities live in [Agent documents](agents/README.md).
+详见 [数据契约](DATA_LAYER.md)、[任务契约](TASK_DISCOVERY.md)、[Agent 文档](agents/README.md)。

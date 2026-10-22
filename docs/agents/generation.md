@@ -1,17 +1,19 @@
-# Generation
+# Generation（后续接入）
 
-**Input:** canonical Task Plan and dataset-local allocation, frozen sampling/presentation manifests and seed.
+## 目标与输入输出
 
-**Output:** benchmark JSONL and BIR `generation.json`, binding file content, plan and allocation. The entry point lives in `generation.items` and reads its dataset from `dataset_binding.json`.
+消费 SemanticTaskSpec、Case 取样和任务派生数据，生成 Benchmark Item。
+Backend 接受 task_spec、data_refs、output_directory，返回产物引用。
+closed_vqa、open_vqa、report_generation、visual_grounding、detection
+目前仅定义 Task Family 语义，不实现全部 Backend。
 
-Items use only `item_id`, `dataset_id` and `leaf_task_id` for their respective identities. The strict shared model includes ordered `input_images` and sampling metadata; legacy aliases and undeclared fields are rejected at output/audit boundaries. Dataset binding receipts validate source identity and content before generation. `generation.fetch_batch_size` is the source pagination setting.
+## 状态与边界
 
-**Execution:** a deterministic tool. It resolves ordered model inputs and references with the shared Resolver, chooses equivalent templates using the seed, and records input image paths/digests, role bindings, options, answer and reference IDs.
+确定性生成可作为普通工具；自主 Generation Agent 仍通过 WorkRequest/WorkResult 接入。
+独立工作优先 per-invocation，不强制长期会话。模型输入和参考证据必须分开。
 
-**State:** the operation ledger records execution and the BIR receipt references the output. Generation has no private Agent state; source data remains in the dataset index.
+## 反馈、恢复与实施状态
 
-**Feedback:** shortages are returned for audit/supervision. Missing or changed images are ineligible. Generation does not reinterpret labels or invent mappings.
-
-**Recovery:** input dependencies and output digest are checked. Completed effects are replayable; a plan/allocation change requires regenerated output.
-
-**Acceptance:** input ordering, answer reconstruction, reference-only separation, deterministic templates and canonical dependency invalidation. Relevant tests cover generation, task inputs, masks and end-to-end compilation.
+数据不足或格式不满足返回结构化结果，不捏造样本。
+后续只实现实际副作用需要的幂等性，首期不建设发布、审计或版本体系。
+旧 generation 是参考资产，新 Core 不调用其 Resolver/BIR 路径。
