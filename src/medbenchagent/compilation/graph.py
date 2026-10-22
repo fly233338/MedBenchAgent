@@ -53,7 +53,7 @@ class SupervisorView:
 
 
 @dataclass(frozen=True)
-class CoreContext:
+class CompilationContext:
     directory: Path
     decide: Callable[[SupervisorView], SupervisorDecision]
 
@@ -99,7 +99,7 @@ def build_compilation_graph(
     if checkpointer is None or isinstance(checkpointer, bool):
         raise ValueError("The parent graph needs an actual checkpointer")
 
-    def supervisor(state: CompilationState, config: RunnableConfig, runtime: Runtime[CoreContext]):
+    def supervisor(state: CompilationState, config: RunnableConfig, runtime: Runtime[CompilationContext]):
         compilation_id = _identifier.validate_python(state["compilation_id"])
         if config.get("configurable", {}).get("thread_id") != compilation_id:
             raise ValueError("thread_id must equal compilation_id")
@@ -136,7 +136,7 @@ def build_compilation_graph(
         assert isinstance(decision, Finish)
         return {"summary": decision.summary, "next_node": END, "status": "completed"}
 
-    def collect(state: CompilationState, runtime: Runtime[CoreContext]):
+    def collect(state: CompilationState, runtime: Runtime[CompilationContext]):
         request = WorkRequest.model_validate(state["request"])
         known = _catalog(state, runtime.context.directory)
         try:
@@ -185,7 +185,7 @@ def build_compilation_graph(
             "question": None, "status": "running",
         }
 
-    builder = StateGraph(CompilationState, context_schema=CoreContext)
+    builder = StateGraph(CompilationState, context_schema=CompilationContext)
     builder.add_node("supervisor", supervisor)
     builder.add_node("collect", collect)
     builder.add_node("ask_user", ask_user)

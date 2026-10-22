@@ -8,12 +8,12 @@ import sys
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from medbenchagent.compilation_core.artifacts import read_json_artifact, resolve_artifact
-from medbenchagent.compilation_core.contracts import ArtifactRef
-from medbenchagent.compilation_core.demo import (
+from medbenchagent.compilation.artifacts import read_json_artifact, resolve_artifact
+from medbenchagent.compilation.contracts import ArtifactRef
+from medbenchagent.compilation.demo import (
     create_synthetic_inputs, demo_agents, scripted_supervisor,
 )
-from medbenchagent.compilation_core.graph import CoreContext, build_compilation_graph
+from medbenchagent.compilation.graph import CompilationContext, build_compilation_graph
 from medbenchagent.data.dataset import FileDatasetReader
 from medbenchagent.planning.contracts import DataRequirement, SemanticTaskSpec
 
@@ -43,7 +43,7 @@ def test_multi_round_collaboration_uses_evidence_and_isolates_state(tmp_path):
                     "artifacts": [ref.model_dump(mode="json") for ref in inputs],
                 },
                 config,
-                context=CoreContext(directory, scripted_supervisor(directory)),
+                context=CompilationContext(directory, scripted_supervisor(directory)),
                 durability="sync",
             )
             assert output["status"] == "completed"
@@ -101,7 +101,7 @@ def _demo_process(directory, *arguments):
     # Each invocation has a fresh interpreter and SDK-independent module graph.
     completed = subprocess.run(
         [
-            sys.executable, "-m", "medbenchagent.compilation_core", *arguments,
+            sys.executable, "-m", "medbenchagent.compilation", *arguments,
             "--directory", str(directory), "--compilation-id", "resume-demo",
         ],
         capture_output=True, text=True, encoding="utf-8", env=environment,

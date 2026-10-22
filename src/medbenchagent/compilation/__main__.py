@@ -1,4 +1,4 @@
-"""Run or resume the explicitly scripted Compilation Core example."""
+"""Run or resume the explicitly scripted Compilation example."""
 
 import argparse
 import json
@@ -10,7 +10,7 @@ from pydantic import TypeAdapter
 
 from .contracts import Identifier
 from .demo import create_synthetic_inputs, demo_agents, scripted_supervisor
-from .graph import CoreContext, build_compilation_graph
+from .graph import CompilationContext, build_compilation_graph
 
 
 def main(argv=None):
@@ -48,7 +48,7 @@ def main(argv=None):
                 raise ValueError("The directory belongs to another Compilation")
             if not (directory / "checkpoints.sqlite").is_file():
                 raise ValueError("No saved checkpoint exists")
-        context = CoreContext(
+        context = CompilationContext(
             directory=directory,
             decide=scripted_supervisor(directory, pause_for_input=options["pause_for_input"]),
         )

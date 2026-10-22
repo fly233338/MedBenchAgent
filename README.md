@@ -1,6 +1,6 @@
 # MedD2B — Medical Data to Benchmark
 
-## Independent Compilation Core
+## Independent Compilation
 
 The `refractor` branch provides an independent LangGraph coordination core with named
 agent nodes, explicit work handoffs, a Case-based file reader and SQLite checkpoints.
@@ -10,9 +10,9 @@ not autonomous collaboration or a generated benchmark.
 
 ```powershell
 uv sync --locked --python 3.12
-uv run --locked python -m medbenchagent.compilation_core run --directory .runtime/core-demo --compilation-id demo --pause-for-input
-uv run --locked python -m medbenchagent.compilation_core resume --directory .runtime/core-demo --compilation-id demo --answer "Continue"
-uv run --locked pytest tests/test_compilation_core.py -q
+uv run --locked python -m medbenchagent.compilation run --directory .runtime/core-demo --compilation-id demo --pause-for-input
+uv run --locked python -m medbenchagent.compilation resume --directory .runtime/core-demo --compilation-id demo --answer "Continue"
+uv run --locked pytest tests/test_compilation_graph.py -q
 ```
 
 Use a separate run directory and add `--initial-evidence` to start with an existing

@@ -15,7 +15,7 @@ from medbenchagent.planning.contracts import DataRequirement, SemanticTaskSpec
 
 from .artifacts import read_json_artifact, resolve_artifact, write_artifact, write_json_artifact
 from .contracts import ArtifactRef, AskUser, Delegate, Finish, WorkNeed, WorkRequest, WorkResult
-from .graph import AgentInput, AgentOutput, AgentSpec, CoreContext, SupervisorView
+from .graph import AgentInput, AgentOutput, AgentSpec, CompilationContext, SupervisorView
 
 
 def _latest(references, kind):
@@ -116,7 +116,7 @@ def create_synthetic_inputs(
     return inputs
 
 
-def coding_node(state: AgentInput, runtime: Runtime[CoreContext]) -> AgentOutput:
+def coding_node(state: AgentInput, runtime: Runtime[CompilationContext]) -> AgentOutput:
     request = WorkRequest.model_validate(state["request"])
     directory = runtime.context.directory
     reader = _reader(directory, request.inputs)
@@ -156,7 +156,7 @@ class PlannerState(AgentInput, AgentOutput, total=False):
 
 
 def build_scripted_planner():
-    def plan(state: PlannerState, runtime: Runtime[CoreContext]):
+    def plan(state: PlannerState, runtime: Runtime[CompilationContext]):
         request = WorkRequest.model_validate(state["request"])
         directory = runtime.context.directory
         reader = _reader(directory, request.inputs)
@@ -221,7 +221,7 @@ def build_scripted_planner():
         }
 
     builder = StateGraph(
-        PlannerState, input_schema=AgentInput, output_schema=AgentOutput, context_schema=CoreContext,
+        PlannerState, input_schema=AgentInput, output_schema=AgentOutput, context_schema=CompilationContext,
     )
     builder.add_node("plan", plan)
     builder.add_edge(START, "plan")
