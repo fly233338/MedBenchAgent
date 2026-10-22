@@ -56,6 +56,8 @@ def run_local_worker(payload: dict) -> CodingCandidate:
     environment = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
                    "OPENHANDS_SUPPRESS_BANNER": "1", "MEDBENCH_CODING_LLM_API_KEY": get_coding_api_key()}
     environment.pop("MEDBENCH_LLM_API_KEY", None)
+    environment["PATH"] = os.pathsep.join((str(python.parent), environment.get("PATH", "")))
+    environment["VIRTUAL_ENV"] = str(python.parent.parent)
     # The separate environment needs only this package's lightweight worker and contracts.
     source = str(Path(__file__).resolve().parents[2])
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (source, environment.get("PYTHONPATH"))))

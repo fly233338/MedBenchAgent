@@ -4,10 +4,11 @@
 
 The `refactor` branch provides an independent LangGraph coordination core with named
 agent nodes, explicit work handoffs, a Case-based file reader and SQLite checkpoints.
-The Supervisor supports `scripted` (default, offline) and `llm` modes. Professional
-Coding and Planning agents still use **scripted synthetic implementations**; neither
-mode uses OpenHands or a medical dataset. The output labels Supervisor and professional
-agent modes separately. This is not a complete autonomous benchmark compiler.
+The Supervisor supports `scripted` and `llm`; Coding independently supports `scripted`
+and `openhands`. Both default to Scripted for offline development. The Planner remains
+a **scripted synthetic implementation**. All four combinations use the same graph;
+output labels `supervisor_mode`, `coding_mode`, and `planner_mode` separately. The demo
+uses synthetic data and is not a complete autonomous medical benchmark compiler.
 
 ```powershell
 uv sync --locked --python 3.12
@@ -20,7 +21,7 @@ Use a separate run directory and add `--initial-evidence` to start with an exist
 overview. In scripted mode this selects a different delegation order in the same graph.
 In model mode the Supervisor chooses the next action from registered capabilities and evidence.
 
-For model mode, configure a reachable Chat service in a TOML file (the existing
+For a model Supervisor, configure a reachable Chat service in a TOML file (the existing
 `[llm]` keys) and provide any credential through `MEDBENCH_LLM_API_KEY`:
 
 ```powershell
@@ -29,22 +30,49 @@ uv run --locked python -m medbenchagent.compilation resume --directory .runtime/
 uv run --locked pytest tests/test_compilation_supervisor.py tests/test_llm.py -q
 ```
 
+For OpenHands Coding, use the existing local `coding.worker_venv` (default `.venv-coding`)
+with the SDK/Tools versions pinned in `config/coding-worker.requirements.txt`. Compilation
+does not install or upgrade that environment. Configure `[coding.llm]` to override any
+fields of the resolved common `[llm]`; omitted fields inherit common values, including
+the common environment overrides. Use `MEDBENCH_CODING_LLM_API_KEY` for a separate
+credential, or omit it to reuse the common Chat credential.
+
+```powershell
+uv run --locked python -m medbenchagent.compilation run --directory .runtime/openhands-demo --compilation-id coding-demo --coding openhands --config config/local.toml
+uv run --locked python -m medbenchagent.compilation resume --directory .runtime/openhands-demo --compilation-id coding-demo
+```
+
+Add `--supervisor llm` to combine both real adapters. `[coding]` controls local execution:
+80 iterations per request, a 3600-second timeout, 4096 output tokens, and condenser limits
+of 80 events / 24000 tokens by default. These settings are independent of old Preparation budgets.
+
 `--goal` supplies a goal for a new run; its default requests the synthetic Case-linked task
 and derived reference data. `--pause-for-input` is a scripted demonstration option;
 the model decides for itself whether to ask a question. Add `--answer` on resume only
 when a question is pending.
 
-Only `llm` and `supervisor` configuration sections are loaded for model mode. There is no
+Only the selected agents' model/execution configuration is loaded. There is no
 RAG or Preparation preflight. Limits `supervisor.context_chars`, `artifact_chars` and
 `max_artifacts` bound the full request, each preview and preview count. Truncation and omitted
 previews are explicit; an oversized full request fails with its size instead of silently
 dropping required context. Invalid model choices use the existing bounded repair path.
 
-The run directory holds `run.json` (mode, goal, options and non-secret model configuration),
-`checkpoints.sqlite` and request-owned files under `artifacts/`. Reusing `run` on an existing
+Coding uses **Workstreams**. The Supervisor requests a new Workstream with a null ID or
+continues one of the Host-assigned IDs. Scope describes the current job, not session identity.
+Each Workstream owns a stable Conversation and independent workspace/persistence directories.
+Completing a request does not close it. Different Workstreams exchange formal `ArtifactRef`
+files, not private histories or mutable workspace files; tools remain independent of lifecycle.
+
+The run directory holds `run.json` (modes, goal, options and non-secret model/execution settings),
+`checkpoints.sqlite`, request-owned files under `artifacts/`, and private Coding directories
+under `coding/<workstream_id>/`. The Workstream catalog lives only in checkpoints. Reusing `run` on an existing
 directory is rejected. `resume` uses the saved mode/model without reading a new configuration
 or rediscovering a model; credentials can still be supplied through the environment.
-Model failures preserve checkpoints and never fall back to Scripted execution.
+Supervisor model failures preserve checkpoints. Coding failures return `WorkResult` to the
+Supervisor; neither adapter falls back to Scripted execution. SDK Host messages are deduplicated
+by request ID, and persisted FinishTool results can be handed off without rerunning completed
+work. Formal files are copied from request-local candidates and cannot be overwritten with
+different bytes. Local execution is not an OS sandbox or an exactly-once command guarantee.
 No compatibility reader is provided for earlier demonstration runs.
 
 See the [architecture](docs/ARCHITECTURE.md), [agent boundaries](docs/agents/README.md),

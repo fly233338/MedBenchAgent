@@ -9,7 +9,7 @@
 - [x] 上阶段：统一 compilation 命名、模型 Supervisor、配置冻结和模型适配测试。
 - [x] 本阶段第一步：确定 Workstream、Coding 职责和验收边界，先提交文档。
 - [x] 本阶段第二步：Workstream 契约及 Local OpenHands Coding 接入。
-- [ ] 本阶段第三步：独立 Coding 模式、配置冻结、合成示例和针对性验证。
+- [x] 本阶段第三步：独立 Coding 模式、配置冻结、合成示例和针对性验证。
 - [ ] 在线验证：当前 Chat 服务连接失败，尚未执行真实模型协作。
 - [ ] 后续：接入真实 Planner 和业务能力。
 - [ ] 后续：切换 CLI/TUI，删除被替代实现。
@@ -81,7 +81,7 @@ Preparation Graph、BIRStore 或旧 harness。
 
 | 资产 | 处理 |
 | --- | --- |
-| OpenHands 会话、事件、工作区 | 抽取到 Coding 普通节点，SDK 拥有长期状态 |
+| OpenHands 会话、事件、工作区 | 已接入 Workstream Coding 普通节点；旧 Runtime 保留给旧调用方 |
 | Axis、Cartesian Product、Scenario、证据工具 | 迁入 Planner 私有子图 |
 | 数据读取、图像转换、Mask 几何 | 普通工具，不按格式拆 Agent |
 | Leaf Resolver/模板耦合 | 拆为语义任务、数据需求和生成能力 |
@@ -116,3 +116,26 @@ Preparation Graph、BIRStore 或旧 harness。
   检查时主工作目录与独立 Worktree 均无其他本地模型配置。因此未执行真实模型协作，
   在线验收仍未完成；离线结果不替代这一项。
 - 文档链接和命名引用检查通过。OpenHands、真实专业 Planner、医学数据及 CLI/TUI 切换仍未迁入。
+
+## Workstream Coding 阶段验证记录
+
+- Workstream 目录与请求同 checkpoint，支持创建、续接、跨 Agent 校验和按历史生成摘要；
+  scope 不参与会话身份。协调图没有新增固定业务阶段或独立 Session Manager。
+- Local OpenHands Adapter 使用 SDK/Tools 1.49.6、每个 Workstream 的独立目录与原生
+  FinishTool 结构化结果。正式文件由 Host 复制登记；SDK 消息不进入父图或另一个状态账本。
+- 相关回归：57 passed，覆盖 A → B → A、跨 Compilation 隔离、产物复制、非法路径、
+  内容冲突、缺失输入、环境不可用、两个 SDK/Graph 恢复窗口和四种入口组合。
+- uv run --locked pytest -q：341 passed（4 条第三方/既有测试警告）。
+  uv run --locked ruff check .：通过。
+- 本机原生 SDK 离线检查确认 Conversation 保存/重新加载、FinishTool 恢复、PowerShell
+  和 File Editor 执行，以及 SDK 持久化未写入提供的测试凭据。修正了旧 worker 示例中的
+  过期 Condenser 导入路径，并在 Windows 显式使用 PowerShell，避免自动选到 tmux。
+- 额外以本地模拟 HTTP 模型运行真实 SDK 子进程：3 次模拟模型响应驱动 File Editor 创建
+  calculate.py、Terminal 执行并产生 answer.txt；Host 交接两份文件，同请求重放未再次调用模型。
+  本机记录位于 .runtime/coding-transport-5b65d495/（忽略目录，不提交）。这不是在线模型验收。
+- SDK 内置 PowerShell 探测有固定 5 秒超时；与其他检查并行时曾出现一次不可用反馈，
+  单独复测通过。本轮没有改写第三方 SDK 的探测机制。
+- 2026-10-22 再次检查默认 Coding 模型端点 http://127.0.0.1:8005/v1，模型发现仍为
+  ConnectError。未完成真实模型 Smoke Test；离线结果不替代在线协作或医学数据验证。
+- 用户已有 AGENTS.md 修改保留。已替换旧 agent_mode/单模型快照字段和单 Conversation 假设；
+  仍有调用方的旧 Runtime 未删除，Planner、医学数据、Docker、Skill 系统及 CLI/TUI 迁移仍属后续。

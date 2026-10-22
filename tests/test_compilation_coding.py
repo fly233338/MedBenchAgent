@@ -89,7 +89,8 @@ def coding_settings(monkeypatch):
     monkeypatch.setattr(settings, "load_project_env", lambda: None)
     for name in (*settings._ENVIRONMENT_OVERRIDES, "MEDBENCH_CONFIG"):
         monkeypatch.delenv(name, raising=False)
-    return replace(load_coding_settings(), llm=replace(load_coding_settings().llm, model="test-model"))
+    configured = load_coding_settings()
+    return replace(configured, llm=replace(configured.llm, model="test-model"))
 
 
 def test_workstreams_reuse_isolate_and_exchange_formal_artifacts(tmp_path, coding_settings):

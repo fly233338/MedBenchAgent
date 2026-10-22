@@ -22,6 +22,16 @@ default_sample_count = 1000 # Used only when the user did not supply a count; la
 # model = "your-chat-model" # Optional when /v1/models returns exactly one model.
 reasoning_effort = "medium" # Must be supported by the configured gateway/model.
 
+# Independent Compilation Coding settings; not the old Preparation runtime.
+[coding]
+worker_venv = ".venv-coding" # Must already be provisioned; no automatic installation.
+
+[coding.llm]
+# Omitted fields inherit the common [llm] after common environment overrides.
+# model = "your-coding-model"
+# base_url = "http://127.0.0.1:8005/v1"
+# Set MEDBENCH_CODING_LLM_API_KEY in the environment for a separate credential.
+
 [rag]
 embedding_base_url = "http://127.0.0.1:8001/v1"
 # embedding_model = "Qwen/Qwen3-Embedding-0.6B" # Required only for multi-model endpoints.

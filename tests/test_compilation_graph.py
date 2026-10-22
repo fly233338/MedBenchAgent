@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from medbenchagent.compilation.artifacts import read_json_artifact, resolve_artifact
@@ -115,10 +117,13 @@ def test_checkpoint_resumes_in_a_new_process_without_repeating_completed_work(tm
     directory = tmp_path / "restart"
     before = _demo_process(directory, "run", "--pause-for-input")
     assert before["status"] == "waiting" and len(before["questions"]) == 1
-    assert before["supervisor_mode"] == before["agent_mode"] == "scripted"
+    assert before["supervisor_mode"] == before["coding_mode"] == before["planner_mode"] == "scripted"
     saved_options = json.loads((directory / "run.json").read_text(encoding="utf-8"))
     assert saved_options["supervisor_mode"] == "scripted"
-    assert saved_options["model_settings"] is None
+    assert saved_options["supervisor_settings"] is saved_options["coding_settings"] is None
+    assert saved_options["coding_mode"] == "scripted"
+    assert len(before["workstreams"]) == 1
+    assert before["history"][0]["workstream_id"] == before["history"][2]["workstream_id"]
     assert [row["agent_id"] for row in before["history"]] == [
         "coding", "task_planner", "coding",
     ]
@@ -130,6 +135,7 @@ def test_checkpoint_resumes_in_a_new_process_without_repeating_completed_work(tm
     assert after["status"] == "completed" and after["questions"] == []
     assert json.loads((directory / "run.json").read_text(encoding="utf-8")) == saved_options
     assert after["history"][:-1] == before["history"]
+    assert after["workstreams"] == before["workstreams"]
     assert after["history"][-1]["agent_id"] == "task_planner"
     assert after["artifacts"][:len(before["artifacts"])] == before["artifacts"]
     for path, original in files.items():
@@ -143,3 +149,121 @@ def test_checkpoint_resumes_in_a_new_process_without_repeating_completed_work(tm
     assert read_json_artifact(
         directory, ArtifactRef.model_validate(final_plan),
     )["feasibility"] == "feasible"
+
+
+@pytest.mark.parametrize("supervisor_mode", ["scripted", "llm"])
+@pytest.mark.parametrize("coding_mode", ["scripted", "openhands"])
+def test_cli_modes_freeze_independent_models_and_resume(tmp_path, monkeypatch, capsys,
+                                                       supervisor_mode, coding_mode):
+    from types import SimpleNamespace
+
+    from test_compilation_coding import FakeRunner
+    import medbenchagent.compilation.coding as coding
+    from medbenchagent.compilation.__main__ import main
+    from medbenchagent.compilation.demo import DERIVED_OUTPUT, OVERVIEW_OUTPUT
+    from medbenchagent.compilation.coding_worker import CodingCandidate
+    import medbenchagent.runtime.llm as transport
+    import medbenchagent.runtime.model_services as services
+    import medbenchagent.settings as settings
+
+    monkeypatch.setattr(settings, "load_project_env", lambda: None)
+    for name in (*settings._ENVIRONMENT_OVERRIDES, "MEDBENCH_CONFIG"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MEDBENCH_LLM_API_KEY", "supervisor-secret")
+    monkeypatch.setenv("MEDBENCH_CODING_LLM_API_KEY", "coding-secret")
+    configuration = tmp_path / "models.toml"
+    configuration.write_text(
+        '[llm]\nmodel="supervisor-model"\nbase_url="http://supervisor.invalid/v1"\n'
+        '[coding.llm]\nmodel="coding-model"\nbase_url="http://coding.invalid/v1"\n', encoding="utf-8",
+    )
+    discoveries = []
+
+    def discover(kind, url, model, key):
+        discoveries.append(kind)
+        assert key == ("coding-secret" if kind == "Coding" else "supervisor-secret")
+        return model
+
+    monkeypatch.setattr(services, "resolve_model_service", discover)
+
+    def perform(payload):
+        assert payload["settings"]["llm"]["model"] == "coding-model"
+        assert payload["settings"]["llm"]["base_url"] == "http://coding.invalid/v1"
+        inputs = {item["kind"]: Path(item["read_path"]) for item in payload["inputs"]}
+        reader = FileDatasetReader(inputs["dataset"])
+        manifest = reader.get_manifest()
+        dataset = {"dataset_id": manifest.dataset_id, "revision": manifest.revision}
+        if "data_requirement" in inputs:
+            requirement = json.loads(inputs["data_requirement"].read_text(encoding="utf-8"))
+            data = {"dataset": dataset, "requirement_id": requirement["requirement_id"], "rows": [
+                {"case_id": case_id, "doubled_value": reader.get_evidence(case_id, "value").value * 2,
+                 "source_evidence_ids": ["value"]} for case_id in requirement["case_ids"]
+            ]}
+            kind = "derived_view"
+        else:
+            data = {"dataset": dataset, "case_ids": [case.case_id for case in reader.list_cases().items],
+                    "fields": ["value", "view"]}
+            kind = "dataset_overview"
+        (Path(payload["output_directory"]) / "view.json").write_text(json.dumps(data), encoding="utf-8")
+        return CodingCandidate(request_id=payload["request"]["request_id"], outcome="completed",
+                               summary="Synthetic data prepared", files=[{"path": "view.json", "kind": kind}])
+
+    runner = FakeRunner(perform)
+    monkeypatch.setattr(coding, "run_local_worker", runner)
+
+    def create(**kwargs):
+        assert kwargs["model"] == "supervisor-model"
+        view = json.loads(kwargs["messages"][1]["content"])
+        refs = view["available_artifacts"]
+        kinds = {ref["kind"] for ref in refs}
+        last = view["last_result"]
+        if len(view["history"]) == 1 and "dataset_overview" in kinds and not view["user_answers"]:
+            decision = {"action": "ask_user", "question": "Continue the synthetic exercise?"}
+        elif last and not last["needs"] and "task_plan" in kinds and "derived_view" in kinds:
+            decision = {"action": "finish", "summary": "Synthetic exercise complete"}
+        else:
+            needs_coding = "dataset_overview" not in kinds or bool(last and last["needs"])
+            decision = {
+                "action": "delegate", "agent_id": "coding" if needs_coding else "task_planner",
+                "objective": "Inspect or prepare the requested data" if needs_coding else "Design the task",
+                "input_artifact_ids": [ref["artifact_id"] for ref in refs],
+                "constraints": [DERIVED_OUTPUT if "data_requirement" in kinds else OVERVIEW_OUTPUT],
+                "workstream_id": (view["workstreams"][0]["workstream_id"]
+                                  if needs_coding and view["workstreams"] else None),
+            }
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"decision": decision})))])
+
+    monkeypatch.setattr(transport, "_client", lambda _settings: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    ))
+    directory = tmp_path / "run"
+    common = ["--directory", str(directory), "--compilation-id", "modes"]
+    arguments = ["run", *common, "--supervisor", supervisor_mode, "--coding", coding_mode]
+    if supervisor_mode == "llm" or coding_mode == "openhands":
+        arguments.extend(["--config", str(configuration)])
+    if supervisor_mode == "scripted":
+        arguments.append("--pause-for-input")
+    main(arguments)
+    before = json.loads(capsys.readouterr().out)
+    assert before["status"] == "waiting"
+    saved = (directory / "run.json").read_text(encoding="utf-8")
+    assert "secret" not in saved
+    assert discoveries == (["Supervisor"] if supervisor_mode == "llm" else []) + (
+        ["Coding"] if coding_mode == "openhands" else [])
+    configuration.write_text("not valid TOML anymore", encoding="utf-8")
+    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "changed")
+    monkeypatch.setenv("MEDBENCH_LLM_BASE_URL", "http://changed.invalid/v1")
+    monkeypatch.setattr(services, "resolve_model_service", lambda *_args: pytest.fail("Resume must not discover models"))
+    main(["resume", *common, "--answer", "Continue"])
+    after = json.loads(capsys.readouterr().out)
+    assert after["status"] == "completed"
+    assert after["supervisor_mode"] == supervisor_mode and after["coding_mode"] == coding_mode
+    assert after["planner_mode"] == "scripted"
+    assert after["supervisor_model"] == ("supervisor-model" if supervisor_mode == "llm" else None)
+    assert after["coding_model"] == ("coding-model" if coding_mode == "openhands" else None)
+    assert (directory / "run.json").read_text(encoding="utf-8") == saved
+    assert after["workstreams"] == before["workstreams"] and len(after["workstreams"]) == 1
+    assert all(row["outcome"] != "failed" for row in after["history"])
+    assert len(runner.payloads) == (2 if coding_mode == "openhands" else 0)
+    with pytest.raises(SystemExit) as rejected:
+        main(["resume", *common, "--coding", "scripted"])
+    assert rejected.value.code == 2

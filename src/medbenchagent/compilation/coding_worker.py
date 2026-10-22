@@ -131,7 +131,8 @@ def _conversation(payload):
     model = payload["settings"]["llm"]
     name = model["model"]
     llm = LLM(
-        model=name if name.startswith("openai/") else f"openai/{name}",
+        # /models supplied an exact served ID, which may itself contain slashes.
+        model=f"openai/{name}",
         base_url=model["base_url"], api_key=SecretStr(key),
         usage_id="compilation_coding", num_retries=model["max_retries"],
         timeout=max(1, math.ceil(model["timeout_seconds"])),

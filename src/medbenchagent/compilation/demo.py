@@ -1,4 +1,4 @@
-"""Explicitly scripted example agents; no model calls or medical interpretation."""
+"""Synthetic inputs, scripted defaults and explicit output requirements for the demo."""
 
 import base64
 import hashlib
@@ -18,10 +18,20 @@ from .contracts import ArtifactRef, AskUser, Delegate, Finish, WorkNeed, WorkReq
 from .graph import AgentInput, AgentOutput, AgentSpec, CompilationContext, SupervisorView
 
 
+OVERVIEW_OUTPUT = (
+    "Submit a JSON artifact of kind dataset_overview with dataset={dataset_id, revision} "
+    "from the input manifest, case_ids (all Case IDs), and fields (unique evidence names)."
+)
+DERIVED_OUTPUT = (
+    "JSON object with dataset={dataset_id, revision}, requirement_id matching this requirement, "
+    "and rows=[{case_id, doubled_value, source_evidence_ids}]. Each doubled_value is twice the "
+    "Case's original value evidence; source_evidence_ids is ['value']. Submit as kind derived_view."
+)
 DEFAULT_DEMO_GOAL = (
     "Create a feasible SemanticTaskSpec for a synthetic task that reports twice each Case's "
     "value. Provide the Case-linked derived reference data needed by the task. "
-    "The available professional agents are scripted test implementations, not medical agents."
+    "The Task Planner is a scripted synthetic example; this is not medical benchmark generation. "
+    + OVERVIEW_OUTPUT + " " + DERIVED_OUTPUT
 )
 
 
@@ -176,7 +186,7 @@ def build_scripted_planner():
             requirement = DataRequirement(
                 requirement_id="double-value", dataset=_dataset_ref(reader), case_ids=case_ids,
                 purpose="Provide a reference answer for each synthetic Case",
-                representation="JSON rows with case_id, doubled_value and source_evidence_ids",
+                representation=DERIVED_OUTPUT,
                 evidence_refs=evidence,
                 acceptance_criteria=["Preserve Case IDs", "Double the original value exactly"],
             )
@@ -243,6 +253,7 @@ def demo_agents() -> dict[str, AgentSpec]:
             "input it produces an overview; with a data_requirement it produces Case-linked "
             "derived values satisfying that requirement.",
             coding_node,
+            uses_workstreams=True,
         ),
         "task_planner": AgentSpec(
             "Scripted task designer with persistent private progress. Requires a dataset "
@@ -257,22 +268,29 @@ def scripted_supervisor(directory: Path, *, pause_for_input: bool = False):
     """A response-driven test policy, explicitly not a model's autonomous reasoning."""
     def decide(view: SupervisorView):
         references = list(view.artifacts)
-        if view.last_result and view.last_result.outcome in {"failed", "blocked"}:
+        if view.last_result and (view.last_result.outcome in {"failed", "blocked"}
+                or (view.last_result.outcome == "needs_input" and not any(
+                    need.detail_ref and need.detail_ref.kind == "data_requirement"
+                    for need in view.last_result.needs))):
             return Finish(summary=f"Scripted run stopped: {view.last_result.summary}")
+        coding_stream = next((item.workstream_id for item in reversed(view.workstreams)
+                              if item.agent_id == "coding"), None)
         plan = _latest(references, "task_plan")
         if plan and read_json_artifact(directory, plan)["feasibility"] == "feasible":
             return Finish(summary="Scripted collaboration complete; no benchmark was generated")
         if _latest(references, "dataset_overview") is None:
             return Delegate(
                 agent_id="coding", objective="Inspect the available synthetic data",
-                inputs=references,
+                workstream_id=coding_stream, scope=["synthetic-values"],
+                inputs=references, constraints=[OVERVIEW_OUTPUT],
             )
         if pause_for_input and _latest(references, "derived_view") and not view.answers:
             return AskUser(question="Continue planning with the new synthetic evidence?")
         if view.last_result and any(need.kind == "work" for need in view.last_result.needs):
             return Delegate(
                 agent_id="coding", objective=view.last_result.needs[0].summary,
-                inputs=references,
+                workstream_id=coding_stream, scope=["synthetic-values"],
+                inputs=references, constraints=[DERIVED_OUTPUT],
             )
         return Delegate(
             agent_id="task_planner", objective="Design or revise the evidence-grounded task",
