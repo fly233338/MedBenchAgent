@@ -25,3 +25,34 @@ Supervisor 只看到 Workstream 标识、初始范围和结果摘要；跨 Works
 不得统一强制 checkpointer=True。字段以纯契约为准，边界见 [架构](../ARCHITECTURE.md)。
 
 原 Data Preparation 职责归入 Coding，不再是独立必经 Agent。
+
+## 公共接口与交接
+
+`compilation.interfaces` 提供 AgentInput/Output、AgentSpec、CompilationContext 和 SupervisorView。
+Graph 只接收注册的节点；节点读取 request，返回 result。带私有状态的子图使用窄输入/输出
+schema；普通节点和外部 SDK Adapter 不必包装为 Subgraph。Assembly 根据冻结模式构造节点，
+不创建数据，也不将专业 Agent 的内部 Tool 展开到顶层 Graph。
+
+| 契约 | 主要字段与含义 |
+| --- | --- |
+| ArtifactRef | artifact_id、kind、相对 Compilation 根目录的 path、被引用文件的 SHA-256 digest |
+| WorkRequest | request_id、compilation_id、agent_id、workstream_id、objective、scope、inputs、constraints |
+| WorkResult | request_id、outcome、summary、artifacts、issues、needs |
+| Workstream | Host 分配的 workstream_id、所属 Agent、初始目标与 scope |
+| 协调记录 | 完整 request/result 元数据及正式引用；不含文件内容或 SDK 消息 |
+
+outcome 为 completed、progress、needs_input、blocked 或 failed；completed 仅表示本请求完成。
+need 包含 need_id、work/user 类型、summary 及可选 detail_ref。旧 needs/issues 是有来源的报告，
+不会因为后续一次 completed 被自动标为已解决。历史记录及目录可通过 Supervisor inspect 查询。
+
+Host 在执行前分配并 checkpoint 请求；恢复沿用身份，新业务要求形成新请求。使用稳定
+compilation_id/thread_id、SqliteSaver 和同步 durability；等待用户通过 Command(resume=...)，
+普通未完成节点以 None 续接。子图自己的持久化方式由实现决定，不统一强制 checkpointer=True。
+
+正式文件必须真实存在并归属于本请求的输出目录，由 Host 登记摘要。读取或交接发现内容
+变化时明确反馈，不重算引用来掩盖变更。摘要只覆盖该文件，不递归覆盖 Manifest 的依赖。
+候选文件与正式产物分离，已交接文件不原地修改，相同字节重放可复用。
+
+静态 Prompt 通过包资源加载，实际启用文本和摘要随 run.json 冻结；恢复不重新读源码指令。
+模型凭据只从环境读取。专业失败通过 WorkResult 返回；未捕获的宿主程序错误保留失败 checkpoint。
+Skill 仅是 OpenHands Coding 的可选领域扩展，其他 Agent 不需要 Skill 层。

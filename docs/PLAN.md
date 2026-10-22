@@ -1,98 +1,51 @@
-# Compilation 实施计划
+# Compilation 基础架构收敛
 
-## 状态
+## 当前阶段
 
-- [x] 首期在独立 Worktree 实施；当前已迁回主工作目录，工作分支为 refactor，用户修改保留。
-- [x] 第一步：架构、数据、任务和 Agent 文档先行；文档独立提交后开始代码。
-- [x] 第二步：最小协作契约、Case 类型、DatasetReader 与任务契约。
-- [x] 第三步：独立协作图、合成示例、一个多轮协作测试及一个最小恢复测试。
-- [x] 上阶段：统一 compilation 命名、模型 Supervisor、配置冻结和模型适配测试。
-- [x] 本阶段第一步：确定 Workstream、Coding 职责和验收边界，先提交文档。
-- [x] 本阶段第二步：Workstream 契约及 Local OpenHands Coding 接入。
-- [x] 本阶段第三步：独立 Coding 模式、配置冻结、合成示例和针对性验证。
-- [ ] 在线验证：当前 Chat 服务连接失败，尚未执行真实模型协作。
-- [ ] 后续：接入真实 Planner 和业务能力。
-- [ ] 后续：切换 CLI/TUI，删除被替代实现。
+基线为 refactor / 72a7f66。保留 Workstream、OpenHands Coding 与现有协作语义，
+本轮不迁入真实 Planner、Generation、医学 Skill、Docker 或旧 CLI/TUI。
 
-本阶段目标是基于 Workstream 的通用 OpenHands Coding Agent。医学数据、完整 Planner、
-Benchmark Generation、Docker 和 Skill 系统不在本阶段范围。
-真实调用必须另有运行记录，不能用离线测试替代。
+- [x] 模块审计与图示架构规范。
+- [ ] 公共接口、运行记录、单一 Assembly、Prompt 资源与冻结。
+- [ ] Supervisor 有界上下文与私有 inspect 查询、可查询工作记录。
+- [ ] Artifact 内容校验、执行关联、清理与回归验证。
 
-当前独立入口为 python -m medbenchagent.compilation，合成专业 Agent 位于 demo.py。
-新增 --coding scripted|openhands，与 --supervisor scripted|llm 独立，默认均为 scripted。
-输出分别标示 Supervisor、Coding 和 Planner 模式；Planner 继续 scripted。
-CLI/TUI 切换仍是后续工作。
+## 模块调整
 
-## 提交顺序
+| 当前职责 | 目标模块 | 原因 |
+| --- | --- | --- |
+| graph 中跨模块使用的接口 | compilation.interfaces | 专业 Agent 不依赖 Graph 实现 |
+| CLI 的配置与运行快照逻辑 | compilation.run | 运行记录有单独所有者，Assembly 不导入 CLI |
+| CLI 与 demo_agents 的装配 | compilation.assembly | 按冻结模式创建，停止先装 Demo 再替换 |
+| Supervisor / Coding 静态常量 | prompts 包资源 | 动态上下文不混入静态文件，恢复使用冻结原文 |
+| 各 Agent 的上下文构造 | 保留在所属 Agent | 不建立万能 Context Schema 或 Manager |
+| Artifact / 关联日志 | 原模块内增强 | 文件内容身份和诊断关联，不新增账本 |
 
-1. 文档与接口边界：明确 Workstream 所有权、候选结果及恢复规则。
-2. Coding 实现：最小工作契约扩展、会话映射、SDK 恢复及正式产物交接。
-3. 入口与验收：独立模型覆盖、模式装配、合成示例、测试和使用说明。
+## 施工与提交
 
-只提交本次工作，不混入原工作区 AGENTS.md 修改。
+1. Architecture 图、模块规范及本计划。保留用户 AGENTS.md 修改，只提交本轮新增约束。
+2. 接口、Run、Assembly 与 Prompt/Context。Graph 历史保存 request/result，支持按 ID 查询；
+   Supervisor 最终仍只返回 Delegate / AskUser / Finish。
+3. Artifact digest、关联日志、打包与回归检查，清理被替代常量和定义，不留旧导入别名。
 
-## 本阶段接口与实施约束
+Supervisor 默认近期记录 8 条、目录页 20 条、每次决策最多 4 次 inspect；所有限额冻结。
+目标与用户回答不静默截断，必需内容或查询超限明确报错并保留 checkpoint。
+需求与问题是有来源的历史反馈，不根据后续 completed 自动推断旧需求已经解决。
 
-- Delegate 的 workstream_id=null 表示为支持 Workstream 的 Agent 新建；已有 ID 表示续接。
-  Host 分配 ID，目录与 WorkRequest 一同 checkpoint。未知 ID 或所属 Agent 不匹配均拒绝。
-- AgentSpec 增加默认关闭的 uses_workstreams；Graph 按能力处理，不硬编码业务阶段。
-  Supervisor 只看到初始目标、范围及从协调历史生成的最近结果，不接收 SDK 状态。
-- 一个 Workstream 一个稳定 Conversation、Workspace 和 SDK 持久化目录。scope、工具集
-  不决定会话身份；请求完成不关闭 Workstream，不新增 Session Manager 或 Agent 层级。
-- 独立 worker 使用当前 OpenHands SDK/Tools 1.49.6，基础 Terminal、File Editor 和原生压缩。
-  从 SDK 用户消息去重，已完成请求从 FinishTool 结构化事件恢复，不另存会话状态账本。
-- Host 检查当前请求候选文件并复制为正式产物。跨 Workstream 仅通过 ArtifactRef 分享，
-  不依赖其他 Workspace 的临时文件。工作失败返回 Supervisor，不回退 Scripted。
-- [coding.llm] 覆盖已解析的公共 [llm]；两个 Agent 分别冻结配置，凭据只从环境读取。
-  Coding 默认 80 次迭代、3600 秒、4096 输出 tokens、80 个压缩事件、24000 压缩 tokens。
-- 运行入口只读取相关配置和现有 Coding 环境，不初始化 RAG 或旧准备链，不自动安装依赖。
-  resume 使用冻结配置；Workstream 目录只存在于 checkpoint，不在 run.json 重复登记。
+## 验收
 
-## 本阶段验收
+- 现有四种模式、跨进程恢复、Workstream 续接/隔离和正式产物行为不退化。
+- 新 Agent 通过 Assembly 注册；Graph 不依赖具体实现，专业 Agent 不导入 Graph。
+- 包内 Prompt 随 wheel 发布；修改源码资源后未完成运行使用原快照，新运行使用新文本。
+- 大量历史/目录下实际模型请求有界，旧 Artifact、Workstream 和反馈仍可通过 inspect 找到。
+- Artifact 文件变化在读取与交接时被识别，不重新登记摘要掩盖修改；不变内容可重放。
+- 现有日志与 SDK 事件可通过标识关联，显式模型设置不触发旧配置加载，不记录凭据。
+- 复用现有 Scripted / Fake SDK 测试，执行相关 Ruff / Pytest；公共契约修改后跑全量回归。
+- 本轮不要求真实模型 API，不增加历史 Schema 或运行兼容分支。
 
-- 保留现有协作和恢复测试，以 Fake SDK/Runner 聚焦验证 A → B → A 会话复用与隔离。
-- 检查相同 scope 可新建不同 Workstream、跨 Compilation 隔离、跨正式产物读取，
-  修改临时文件不影响已交接内容，不能提交其他 Workstream 的候选文件。
-- 覆盖 Host 消息已持久化、SDK 已完成但 Graph 尚未记录结果两个恢复窗口。
-- 扩展 Supervisor 的 Workstream 选择修正和入口四种模式组合、配置覆盖及冻结测试。
-- 运行相关 Pytest 和 uv run --locked ruff check .；可用模型下执行轻量真实 Smoke Test，
-  包含同一 Workstream 再次委派和跨 Workstream 正式产物读取，否则记录在线验收未完成。
-- 保留有调用方的旧 Runtime；新 Compilation 不加载 Workflow、Preparation、Resolver、BIRStore。
+## 本阶段验证记录
 
-## 既有骨架验收
-
-多轮协作测试使用同一 Graph 和两种初始证据条件，由 Scripted Supervisor 选择不同顺序。
-覆盖重复调用、需求、实际文件产生、新证据改变草稿及私有状态隔离。
-图不写死业务顺序；Scripted 结果不代表模型自主性。
-
-恢复测试在已有产物后 interrupt 并关闭进程，新进程用同一 SQLite、Compilation ID
-继续，检查私有进度、请求、引用及已 checkpoint 工作未重跑。
-不增加真实调用次数要求或大量故障注入。
-
-更名后继续运行两个既有协作测试。只新增一个聚焦模型适配的测试，复用模型通信测试。
-非法 Agent、产物 ID 及结构错误必须反馈修正；模型错误不得触发 Scripted 回退。
-可用配置下进行一次轻量真实 Supervisor 验证，不限定顺序或调用次数。
-若配置不可用，明确记录在线验证未完成。
-
-运行相关检查。Compilation 不导入 Workflow、Resolver、
-Preparation Graph、BIRStore 或旧 harness。
-
-## 后续资产迁移
-
-| 资产 | 处理 |
-| --- | --- |
-| OpenHands 会话、事件、工作区 | 已接入 Workstream Coding 普通节点；旧 Runtime 保留给旧调用方 |
-| Axis、Cartesian Product、Scenario、证据工具 | 迁入 Planner 私有子图 |
-| 数据读取、图像转换、Mask 几何 | 普通工具，不按格式拆 Agent |
-| Leaf Resolver/模板耦合 | 拆为语义任务、数据需求和生成能力 |
-| BIR 写入/依赖校验 | 有业务需求时选取，首期不实例化 |
-| Generation、Review、Audit | 相同契约或普通工具接入 |
-| CLI/TUI | 新核心和真实能力就绪后切换 |
-| 旧调度、阶段协议、冗余状态、无效测试 | 调用方切换后及时删除 |
-
-旧代码可供参考，但 Compilation 不通过旧 Workflow 执行。
-不建立兼容层、通用 Runtime、队列、新 Resolver DSL 或 Artifact 版本系统。
-
+实施后填写实际执行的检查，不能用离线结果代替在线模型或医学 Benchmark 验收。
 ## 首期验证记录
 
 - 新增协作测试仅两项：不同证据条件的多轮协作，以及新进程恢复。
