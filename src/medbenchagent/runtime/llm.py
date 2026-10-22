@@ -89,6 +89,31 @@ def complete_json(
                                    request_char_budget=request_char_budget).model_dump(exclude_unset=True)
 
 
+def _json_messages(system_prompt: str, user_prompt: str, schema: type[BaseModel]) -> list[dict]:
+    return [{"role": "system", "content": system_prompt + "\nReturn JSON matching this schema:\n"
+             + json.dumps(schema.model_json_schema(), ensure_ascii=False)},
+            {"role": "user", "content": user_prompt}]
+
+
+def _json_request(settings, model, messages, *, temperature=None, stream=False) -> dict:
+    request = {
+        "model": model,
+        "temperature": settings.default_temperature if temperature is None else temperature,
+        "response_format": {"type": "json_object"}, "messages": messages, "stream": stream,
+    }
+    if settings.reasoning_effort:
+        request["reasoning_effort"] = settings.reasoning_effort
+    return request
+
+
+def json_request_chars(system_prompt: str, user_prompt: str, schema: type[BaseModel],
+                       llm_settings: LlmSettings) -> int:
+    """Measure the same initial request that complete_validated_json actually sends."""
+    request = _json_request(llm_settings, llm_settings.model,
+                            _json_messages(system_prompt, user_prompt, schema))
+    return len(json.dumps(request, ensure_ascii=False))
+
+
 def complete_validated_json(
     system_prompt: str, user_prompt: str, schema: type[T], *,
     validate: Callable[[T], None] | None = None,
@@ -109,22 +134,13 @@ def complete_validated_json(
         settings = app_settings.llm
         model = (settings.model if getattr(app_settings, "service_status", {}).get("chat") == "available"
                  else resolve_model_service("Chat", settings.base_url, settings.model, get_llm_api_key()))
-    messages = [{"role": "system", "content": system_prompt + "\nReturn JSON matching this schema:\n"
-                 + json.dumps(schema.model_json_schema(), ensure_ascii=False)},
-                {"role": "user", "content": user_prompt}]
+    messages = _json_messages(system_prompt, user_prompt, schema)
     previous: tuple[str, str] | None = None
     for attempt in range(3):
         started = time.perf_counter()
         try:
-            request = {
-                "model": model,
-                "temperature": settings.default_temperature if temperature is None else temperature,
-                "response_format": {"type": "json_object"},
-                "messages": messages,
-                "stream": on_chunk is not None,
-            }
-            if settings.reasoning_effort:
-                request["reasoning_effort"] = settings.reasoning_effort
+            request = _json_request(settings, model, messages, temperature=temperature,
+                                    stream=on_chunk is not None)
             if request_char_budget is not None:
                 actual = len(json.dumps(request, ensure_ascii=False))
                 if actual > request_char_budget:

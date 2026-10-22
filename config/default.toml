@@ -13,6 +13,9 @@ context_chars = 64000
 context_chars = 64000
 artifact_chars = 4000
 max_artifacts = 4
+history_items = 8
+catalog_page_size = 20
+max_lookups = 4
 
 [coding]
 worker_venv = ".venv-coding"

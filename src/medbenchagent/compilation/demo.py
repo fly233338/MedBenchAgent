@@ -15,7 +15,7 @@ from medbenchagent.planning.contracts import DataRequirement, SemanticTaskSpec
 
 from .artifacts import read_json_artifact, resolve_artifact, write_artifact, write_json_artifact
 from .contracts import ArtifactRef, AskUser, Delegate, Finish, WorkNeed, WorkRequest, WorkResult
-from .graph import AgentInput, AgentOutput, AgentSpec, CompilationContext, SupervisorView
+from .interfaces import AgentInput, AgentOutput, AgentSpec, CompilationContext, SupervisorView
 
 
 OVERVIEW_OUTPUT = (
@@ -246,22 +246,23 @@ def build_scripted_planner():
     return builder.compile(checkpointer=True)
 
 
-def demo_agents() -> dict[str, AgentSpec]:
-    return {
-        "coding": AgentSpec(
-            "Scripted data worker. Requires a dataset artifact. Without a data_requirement "
-            "input it produces an overview; with a data_requirement it produces Case-linked "
-            "derived values satisfying that requirement.",
-            coding_node,
-            uses_workstreams=True,
-        ),
-        "task_planner": AgentSpec(
-            "Scripted task designer with persistent private progress. Requires a dataset "
-            "artifact. Designs or revises a SemanticTaskSpec, requests missing reference "
-            "data, and checks a supplied derived_view against its pending requirement.",
-            build_scripted_planner(),
-        ),
-    }
+def scripted_coding_spec() -> AgentSpec:
+    return AgentSpec(
+        "Scripted data worker. Requires a dataset artifact. Without a data_requirement "
+        "input it produces an overview; with a data_requirement it produces Case-linked "
+        "derived values satisfying that requirement.",
+        coding_node,
+        uses_workstreams=True,
+    )
+
+
+def scripted_planner_spec() -> AgentSpec:
+    return AgentSpec(
+        "Scripted task designer with persistent private progress. Requires a dataset "
+        "artifact. Designs or revises a SemanticTaskSpec, requests missing reference "
+        "data, and checks a supplied derived_view against its pending requirement.",
+        build_scripted_planner(),
+    )
 
 
 def scripted_supervisor(directory: Path, *, pause_for_input: bool = False):

@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -50,6 +50,19 @@ class WorkResult(Contract):
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     issues: list[WorkIssue] = Field(default_factory=list)
     needs: list[WorkNeed] = Field(default_factory=list)
+
+
+class WorkRecord(Contract):
+    """One checkpoint-owned handoff, without SDK messages or file contents."""
+
+    request: WorkRequest
+    result: WorkResult
+
+    @model_validator(mode="after")
+    def matching_request(self):
+        if self.request.request_id != self.result.request_id:
+            raise ValueError("Recorded result belongs to another request")
+        return self
 
 
 class Delegate(Contract):

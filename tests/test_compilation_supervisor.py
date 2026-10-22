@@ -12,9 +12,10 @@ import medbenchagent.runtime.llm as transport
 import medbenchagent.settings as settings_module
 from medbenchagent.compilation.artifacts import write_json_artifact
 from medbenchagent.compilation.contracts import (
-    AskUser, Delegate, Finish, WorkNeed, WorkRequest, WorkResult, Workstream,
+    AskUser, Delegate, Finish, WorkNeed, WorkRecord, WorkRequest, WorkResult, Workstream,
 )
-from medbenchagent.compilation.graph import SupervisorView
+from medbenchagent.compilation.interfaces import SupervisorView
+from medbenchagent.prompts import load_prompt
 from medbenchagent.compilation.supervisor import ModelSupervisor
 from medbenchagent.settings import SupervisorSettings, load_supervisor_settings
 
@@ -92,7 +93,8 @@ def test_model_supervisor_repairs_choices_and_uses_bounded_frozen_context(tmp_pa
         transport, "resolve_model_service",
         lambda *_args: pytest.fail("A frozen model must not be rediscovered on each call"),
     )
-    supervisor = ModelSupervisor(tmp_path, settings)
+    instructions = load_prompt("supervisor.md")
+    supervisor = ModelSupervisor(tmp_path, settings, instructions=instructions)
     decision = supervisor(view)
     assert isinstance(decision, Delegate) and decision.inputs == [evidence]
     assert len(requests) == 3
@@ -101,7 +103,8 @@ def test_model_supervisor_repairs_choices_and_uses_bounded_frozen_context(tmp_pa
     payload = json.loads(requests[0]["messages"][1]["content"])
     assert payload["artifact_previews"][0]["truncated"] is True
     assert len(payload["artifact_previews"][0]["content"]) == 40
-    assert payload["omitted_preview_ids"] == [plan.artifact_id]
+    assert payload["omitted_counts"]["previews"] == 1
+    assert "omitted_preview_ids" not in payload
     assert "UNREAD_TAIL" not in json.dumps(payload)
     assert all("path" not in ref for ref in payload["available_artifacts"])
     assert all(item["model"] == "frozen-model" for item in requests)
@@ -113,8 +116,9 @@ def test_model_supervisor_repairs_choices_and_uses_bounded_frozen_context(tmp_pa
         Workstream(workstream_id="ws-other", agent_id="other", objective="Other work", scope=["same"]),
     )
     scoped = replace(view, workstreams=streams, workstream_agents=("inspector", "other"),
-                     history=({"request_id": "previous", "agent_id": "inspector",
-                               "workstream_id": "ws-inspect", "outcome": "completed", "summary": "Inspected"},))
+                     history=(WorkRecord(request=WorkRequest(request_id="previous", compilation_id=view.compilation_id,
+                               agent_id="inspector", workstream_id="ws-inspect", objective="Inspect"),
+                               result=WorkResult(request_id="previous", outcome="completed", summary="Inspected")),))
     answers = iter([
         {"decision": {"action": "delegate", "agent_id": "inspector", "objective": "Continue",
                       "workstream_id": "unknown"}},
@@ -142,7 +146,7 @@ def test_model_supervisor_repairs_choices_and_uses_bounded_frozen_context(tmp_pa
         supervisor(view)
     count = len(requests)
     with pytest.raises(transport.RequestContextBudgetError):
-        ModelSupervisor(tmp_path, replace(settings, context_chars=1))(view)
+        ModelSupervisor(tmp_path, replace(settings, context_chars=1), instructions=instructions)(view)
     assert len(requests) == count
 
     def unavailable(**_kwargs):
@@ -152,4 +156,76 @@ def test_model_supervisor_repairs_choices_and_uses_bounded_frozen_context(tmp_pa
         chat=SimpleNamespace(completions=SimpleNamespace(create=unavailable)),
     ))
     with pytest.raises(transport.ModelUnavailable):
+        supervisor(view)
+
+
+def test_bounded_context_inspects_old_artifacts_and_preserves_reported_feedback(tmp_path, monkeypatch):
+    from medbenchagent.compilation.supervisor import SupervisorLookupLimit
+
+    monkeypatch.setattr(settings_module, "load_project_env", lambda: None)
+    for name in (*settings_module._ENVIRONMENT_OVERRIDES, "MEDBENCH_CONFIG"):
+        monkeypatch.delenv(name, raising=False)
+    configured = load_supervisor_settings()
+    settings = replace(configured, llm=replace(configured.llm, model="offline"), context_chars=14000,
+                       catalog_page_size=1)
+    first = WorkRequest(request_id="old", compilation_id="long", agent_id="inspector",
+                        workstream_id="ws-0", objective="Create the earlier evidence")
+    old = write_json_artifact(tmp_path, first, "old.json", kind="legacy-note", value={"evidence": "HISTORICAL"})
+    refs, history, streams = [], [], []
+    for index in range(1000):
+        ref = old if index == 0 else old.model_copy(update={
+            "artifact_id": f"artifact-{index}", "kind": "recent-note", "path": f"artifacts/r-{index}/note.json",
+        })
+        request = first if index == 0 else WorkRequest(
+            request_id=f"r-{index}", compilation_id="long", agent_id="inspector",
+            workstream_id=f"ws-{index}", objective="Later work " * 60,
+        )
+        result = WorkResult(request_id=request.request_id, outcome="needs_input" if index == 0 else "completed",
+                            summary="A long work summary " * 100, artifacts=[ref],
+                            needs=[WorkNeed(need_id="old-need", kind="work", summary="Check the old evidence",
+                                            detail_ref=old)] if index == 0 else [])
+        refs.append(ref)
+        history.append(WorkRecord(request=request, result=result))
+        streams.append(Workstream(workstream_id=f"ws-{index}", agent_id="inspector",
+                                  objective="Independent work " * 50, scope=[f"scope-{index}"]))
+    view = SupervisorView(compilation_id="long", goal="Find and inspect the earlier evidence",
+                          agents={"inspector": "Inspect evidence"}, artifacts=tuple(refs), last_result=history[-1].result,
+                          history=tuple(history), answers=("Retain my original constraint",),
+                          workstreams=tuple(streams), workstream_agents=("inspector",))
+    answers = iter([
+        {"action": "inspect", "target": "work", "feedback_only": True},
+        {"action": "inspect", "target": "artifacts", "kind": "legacy-note", "request_id": "old", "limit": 1},
+        {"action": "inspect", "target": "preview", "ids": [old.artifact_id]},
+        {"action": "delegate", "agent_id": "inspector", "workstream_id": "ws-0", "objective": "Verify old evidence",
+         "input_artifact_ids": [old.artifact_id]},
+    ])
+    requests = []
+
+    def create(**kwargs):
+        assert len(json.dumps(kwargs, ensure_ascii=False)) <= settings.context_chars
+        requests.append(json.loads(kwargs["messages"][1]["content"]))
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({"decision": next(answers)}),
+        ))])
+
+    monkeypatch.setattr(transport, "_client", lambda _: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    ))
+    supervisor = ModelSupervisor(tmp_path, settings, instructions=load_prompt("supervisor.md"))
+    decision = supervisor(view)
+    assert decision.inputs == [old] and decision.workstream_id == "ws-0"
+    assert requests[0]["goal"] == view.goal and requests[0]["user_answers"] == list(view.answers)
+    assert requests[0]["omitted_counts"]["history"] > 0 and requests[0]["omitted_counts"]["artifacts"] > 0
+    assert old.artifact_id not in {row["artifact_id"] for row in requests[0]["available_artifacts"]}
+    feedback = requests[1]["inspections"][-1]["items"][0]
+    assert feedback["need_count"] == 1 and feedback["needs"][0]["need_id"] == "old-need"
+    assert requests[2]["inspections"][-1]["items"][0]["artifact_id"] == old.artifact_id
+    assert "HISTORICAL" in requests[3]["inspections"][-1]["items"][0]["content"]
+    assert all("omitted_preview_ids" not in payload for payload in requests)
+    count = len(requests)
+    with pytest.raises(transport.RequestContextBudgetError):
+        supervisor(replace(view, answers=("Must not truncate this user answer " * 1000,)))
+    assert len(requests) == count
+    answers = iter([{"action": "inspect", "target": "artifacts", "limit": 1}] * (settings.max_lookups + 1))
+    with pytest.raises(SupervisorLookupLimit):
         supervisor(view)

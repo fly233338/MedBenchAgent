@@ -1,7 +1,6 @@
 """Serial Supervisor coordination using LangGraph's own state and persistence."""
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -12,18 +11,11 @@ from langgraph.types import interrupt
 from pydantic import TypeAdapter
 
 from .artifacts import _within, register_file
+from . import interfaces
 from .contracts import (
     ArtifactRef, AskUser, Delegate, Finish, Identifier, SupervisorDecision, Text,
-    WorkIssue, WorkRequest, WorkResult, Workstream,
+    WorkIssue, WorkRecord, WorkRequest, WorkResult, Workstream,
 )
-
-
-class AgentInput(TypedDict):
-    request: dict[str, Any]
-
-
-class AgentOutput(TypedDict):
-    result: dict[str, Any]
 
 
 class CompilationState(TypedDict, total=False):
@@ -34,58 +26,12 @@ class CompilationState(TypedDict, total=False):
     result: dict[str, Any]
     artifacts: list[dict[str, Any]]
     workstreams: list[dict[str, Any]]
-    history: list[dict[str, str]]
+    history: list[dict[str, Any]]
     answers: list[str]
     question: str | None
     next_node: str
     status: Literal["running", "waiting", "completed"]
     summary: str
-
-
-@dataclass(frozen=True)
-class SupervisorView:
-    compilation_id: str
-    goal: str
-    agents: Mapping[str, str]
-    artifacts: tuple[ArtifactRef, ...]
-    last_result: WorkResult | None
-    history: tuple[dict[str, str], ...]
-    answers: tuple[str, ...]
-    workstreams: tuple[Workstream, ...] = ()
-    workstream_agents: tuple[str, ...] = ()
-
-    def validate_workstream(self, agent_id: str, workstream_id: str | None) -> None:
-        if workstream_id is None:
-            return
-        if agent_id not in self.workstream_agents:
-            raise ValueError(f"Agent does not use Workstreams: {agent_id}")
-        selected = next(
-            (item for item in self.workstreams if item.workstream_id == workstream_id), None,
-        )
-        if selected is None:
-            raise ValueError(f"Unknown Workstream ID: {workstream_id}")
-        if selected.agent_id != agent_id:
-            raise ValueError("Workstream belongs to another Agent")
-
-    def workstream_summaries(self) -> list[dict[str, Any]]:
-        latest = {row["workstream_id"]: row for row in self.history if "workstream_id" in row}
-        return [
-            {**item.model_dump(mode="json"), "last_result": latest.get(item.workstream_id)}
-            for item in self.workstreams
-        ]
-
-
-@dataclass(frozen=True)
-class CompilationContext:
-    directory: Path
-    decide: Callable[[SupervisorView], SupervisorDecision]
-
-
-@dataclass(frozen=True)
-class AgentSpec:
-    description: str
-    node: Any  # A LangGraph node function or a compiled subgraph with AgentInput/AgentOutput.
-    uses_workstreams: bool = False
 
 
 _decision = TypeAdapter(SupervisorDecision)
@@ -111,7 +57,7 @@ def _catalog(state: CompilationState, directory: Path) -> dict[str, ArtifactRef]
 
 
 def build_compilation_graph(
-    agents: Mapping[str, AgentSpec], *, checkpointer
+    agents: Mapping[str, interfaces.AgentSpec], *, checkpointer
 ):
     """Assemble named nodes; policies choose work and agents choose their persistence."""
     agents = dict(agents)
@@ -125,18 +71,20 @@ def build_compilation_graph(
     if checkpointer is None or isinstance(checkpointer, bool):
         raise ValueError("The parent graph needs an actual checkpointer")
 
-    def supervisor(state: CompilationState, config: RunnableConfig, runtime: Runtime[CompilationContext]):
+    def supervisor(state: CompilationState, config: RunnableConfig, runtime: Runtime[interfaces.CompilationContext]):
         compilation_id = _identifier.validate_python(state["compilation_id"])
         if config.get("configurable", {}).get("thread_id") != compilation_id:
             raise ValueError("thread_id must equal compilation_id")
         goal = _text.validate_python(state["goal"])
+        if runtime.context.goal != goal:
+            raise ValueError("Runtime goal must match the Compilation checkpoint")
         known = _catalog(state, runtime.context.directory)
-        view = SupervisorView(
+        view = interfaces.SupervisorView(
             compilation_id=compilation_id, goal=goal,
             agents={name: spec.description for name, spec in agents.items()},
             artifacts=tuple(known.values()),
             last_result=WorkResult.model_validate(state["result"]) if state.get("result") else None,
-            history=tuple(dict(row) for row in state.get("history", [])),
+            history=tuple(WorkRecord.model_validate(row) for row in state.get("history", [])),
             answers=tuple(state.get("answers", [])),
             workstreams=tuple(Workstream.model_validate(row) for row in state.get("workstreams", [])),
             workstream_agents=tuple(name for name, spec in agents.items() if spec.uses_workstreams),
@@ -175,7 +123,7 @@ def build_compilation_graph(
         assert isinstance(decision, Finish)
         return {"summary": decision.summary, "next_node": END, "status": "completed"}
 
-    def collect(state: CompilationState, runtime: Runtime[CompilationContext]):
+    def collect(state: CompilationState, runtime: Runtime[interfaces.CompilationContext]):
         request = WorkRequest.model_validate(state["request"])
         known = _catalog(state, runtime.context.directory)
         try:
@@ -205,12 +153,7 @@ def build_compilation_graph(
                 issues=[WorkIssue(code="invalid_handoff", message=str(exc))],
             )
         known.update(accepted)
-        record = {
-            "request_id": request.request_id, "agent_id": request.agent_id,
-            "outcome": result.outcome, "summary": result.summary,
-        }
-        if request.workstream_id is not None:
-            record["workstream_id"] = request.workstream_id
+        record = WorkRecord(request=request, result=result).model_dump(mode="json")
         return {
             "result": result.model_dump(mode="json"),
             "artifacts": [ref.model_dump(mode="json") for ref in known.values()],
@@ -226,12 +169,12 @@ def build_compilation_graph(
             "question": None, "status": "running",
         }
 
-    builder = StateGraph(CompilationState, context_schema=CompilationContext)
+    builder = StateGraph(CompilationState, context_schema=interfaces.CompilationContext)
     builder.add_node("supervisor", supervisor)
     builder.add_node("collect", collect)
     builder.add_node("ask_user", ask_user)
     for name, spec in agents.items():
-        builder.add_node(name, spec.node, input_schema=AgentInput)
+        builder.add_node(name, spec.node, input_schema=interfaces.AgentInput)
         builder.add_edge(name, "collect")
     builder.add_edge(START, "supervisor")
     builder.add_conditional_edges(

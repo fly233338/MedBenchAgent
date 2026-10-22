@@ -56,6 +56,9 @@ class SupervisorSettings:
     context_chars: int
     artifact_chars: int
     max_artifacts: int
+    history_items: int
+    catalog_page_size: int
+    max_lookups: int
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -64,6 +67,9 @@ class SupervisorSettings:
                 "context_chars": self.context_chars,
                 "artifact_chars": self.artifact_chars,
                 "max_artifacts": self.max_artifacts,
+                "history_items": self.history_items,
+                "catalog_page_size": self.catalog_page_size,
+                "max_lookups": self.max_lookups,
             },
         }
 
@@ -73,13 +79,17 @@ class SupervisorSettings:
             raise ValueError("Supervisor settings require llm and supervisor sections")
         limits = values["supervisor"]
         if (not isinstance(limits, dict)
-                or set(limits) != {"context_chars", "artifact_chars", "max_artifacts"}):
+                or set(limits) != {"context_chars", "artifact_chars", "max_artifacts", "history_items",
+                                   "catalog_page_size", "max_lookups"}):
             raise ValueError("Unexpected or missing Supervisor limit fields")
         return cls(
             llm=_checked_llm_settings(values["llm"]),
             context_chars=_integer(limits["context_chars"], "supervisor.context_chars", minimum=1),
             artifact_chars=_integer(limits["artifact_chars"], "supervisor.artifact_chars", minimum=1),
             max_artifacts=_integer(limits["max_artifacts"], "supervisor.max_artifacts", minimum=1),
+            history_items=_integer(limits["history_items"], "supervisor.history_items", minimum=1),
+            catalog_page_size=_integer(limits["catalog_page_size"], "supervisor.catalog_page_size", minimum=1),
+            max_lookups=_integer(limits["max_lookups"], "supervisor.max_lookups", minimum=1),
         )
 
 

@@ -76,3 +76,19 @@ def write_json_artifact(
 
 def read_json_artifact(root: str | Path, reference: ArtifactRef) -> Any:
     return json.loads(resolve_artifact(root, reference).read_text(encoding="utf-8"))
+
+
+def preview_artifact(root: str | Path, reference: ArtifactRef, *, limit: int) -> dict[str, Any]:
+    """Bounded text only; no recursive dataset or workspace exploration."""
+    if limit <= 0:
+        raise ValueError("Artifact preview limit must be positive")
+    preview = {"artifact_id": reference.artifact_id, "kind": reference.kind}
+    try:
+        with resolve_artifact(root, reference).open(encoding="utf-8") as stream:
+            content = stream.read(limit + 1)
+        preview.update(content=content[:limit], truncated=len(content) > limit)
+    except UnicodeError:
+        preview["unavailable"] = "Artifact is not UTF-8 text"
+    except OSError:
+        preview["unavailable"] = "Registered artifact is not readable"
+    return preview

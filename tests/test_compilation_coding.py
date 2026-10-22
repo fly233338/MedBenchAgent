@@ -12,7 +12,9 @@ from medbenchagent.compilation.artifacts import resolve_artifact
 from medbenchagent.compilation.coding import OpenHandsCodingAgent
 from medbenchagent.compilation.coding_worker import CodingCandidate, execute_turn
 from medbenchagent.compilation.contracts import ArtifactRef, Delegate, Finish, WorkRequest, WorkResult
-from medbenchagent.compilation.graph import CompilationContext, build_compilation_graph
+from medbenchagent.compilation.graph import build_compilation_graph
+from medbenchagent.compilation.interfaces import CompilationContext
+from medbenchagent.prompts import load_prompt
 from medbenchagent.settings import load_coding_settings
 
 
@@ -95,7 +97,7 @@ def coding_settings(monkeypatch):
 
 def test_workstreams_reuse_isolate_and_exchange_formal_artifacts(tmp_path, coding_settings):
     runner = FakeRunner()
-    agent = OpenHandsCodingAgent(coding_settings, runner=runner)
+    agent = OpenHandsCodingAgent(coding_settings, instructions=load_prompt("coding.md"), runner=runner)
     saw_inputs = []
 
     def perform(payload):
@@ -120,13 +122,13 @@ def test_workstreams_reuse_isolate_and_exchange_formal_artifacts(tmp_path, codin
             workstream_id=view.workstreams[0].workstream_id if index == 2 else None,
         )
 
-    context = CompilationContext(tmp_path, decide)
+    context = CompilationContext(tmp_path, decide, "Share code")
     config = {"configurable": {"thread_id": "streams"}}
     with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
         graph = build_compilation_graph({"coding": agent.spec()}, checkpointer=saver)
         output = graph.invoke({"compilation_id": "streams", "goal": "Share code"}, config,
                               context=context, durability="sync")
-    assert [item["outcome"] for item in output["history"]] == ["completed"] * 3
+    assert [item["result"]["outcome"] for item in output["history"]] == ["completed"] * 3
     a, b, again = runner.payloads
     assert a["conversation_id"] == again["conversation_id"] != b["conversation_id"]
     assert a["workspace"] == again["workspace"] != b["workspace"]
@@ -151,14 +153,14 @@ def test_workstreams_reuse_isolate_and_exchange_formal_artifacts(tmp_path, codin
     assert (formal.read_bytes(), formal.stat().st_mtime_ns) == original
 
     other = request.model_copy(update={"compilation_id": "another", "request_id": "another-1", "inputs": []})
-    other_context = CompilationContext(tmp_path / "another", decide)
+    other_context = CompilationContext(tmp_path / "another", decide, "Share code")
     agent({"request": other.model_dump()}, SimpleNamespace(context=other_context))
     assert runner.payloads[-1]["conversation_id"] != a["conversation_id"]
     assert runner.payloads[-1]["workspace"] != a["workspace"]
 
     # The real Host rejects paths outside this request, even if the file exists.
     external = Path(a["output_directory"]) / "answer.txt"
-    malicious = OpenHandsCodingAgent(coding_settings, runner=lambda payload: CodingCandidate(
+    malicious = OpenHandsCodingAgent(coding_settings, instructions=load_prompt("coding.md"), runner=lambda payload: CodingCandidate(
         request_id=payload["request"]["request_id"], outcome="completed", summary="bad path",
         files=[{"path": str(external), "kind": "report"}],
     ))
@@ -173,7 +175,7 @@ def test_workstreams_reuse_isolate_and_exchange_formal_artifacts(tmp_path, codin
     assert missing["outcome"] == "needs_input" and missing["needs"][0]["kind"] == "work"
     assert len(runner.payloads) == before
 
-    unavailable = OpenHandsCodingAgent(replace(coding_settings, worker_python=str(tmp_path / "no-python")))
+    unavailable = OpenHandsCodingAgent(replace(coding_settings, worker_python=str(tmp_path / "no-python")), instructions=load_prompt("coding.md"))
     blocked = unavailable({"request": bad_request.model_dump()}, SimpleNamespace(context=context))["result"]
     assert blocked["outcome"] == "blocked" and blocked["issues"][0]["code"] == "environment_unavailable"
 
@@ -185,10 +187,10 @@ def test_sdk_replay_after_host_send_or_finish_before_graph_checkpoint(tmp_path, 
                 Delegate(agent_id="coding", objective="Produce a report", scope=["free-form"]))
 
     config = {"configurable": {"thread_id": "recover"}}
-    context = CompilationContext(tmp_path, decide)
+    context = CompilationContext(tmp_path, decide, "Recover a request")
     runner = FakeRunner(crash=crash)
     with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
-        graph = build_compilation_graph({"coding": OpenHandsCodingAgent(coding_settings, runner=runner).spec()},
+        graph = build_compilation_graph({"coding": OpenHandsCodingAgent(coding_settings, instructions=load_prompt("coding.md"), runner=runner).spec()},
                                         checkpointer=saver)
         with pytest.raises(Crash):
             graph.invoke({"compilation_id": "recover", "goal": "Recover a request"}, config,
@@ -201,7 +203,7 @@ def test_sdk_replay_after_host_send_or_finish_before_graph_checkpoint(tmp_path, 
     # Fresh graph, adapter and fake SDK objects load only on-disk state.
     restored = FakeRunner()
     with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
-        graph = build_compilation_graph({"coding": OpenHandsCodingAgent(coding_settings, runner=restored).spec()},
+        graph = build_compilation_graph({"coding": OpenHandsCodingAgent(coding_settings, instructions=load_prompt("coding.md"), runner=restored).spec()},
                                         checkpointer=saver)
         after = graph.invoke(None, config, context=context, durability="sync")
     assert after["status"] == "completed"

@@ -6,8 +6,8 @@
 本轮不迁入真实 Planner、Generation、医学 Skill、Docker 或旧 CLI/TUI。
 
 - [x] 模块审计与图示架构规范。
-- [ ] 公共接口、运行记录、单一 Assembly、Prompt 资源与冻结。
-- [ ] Supervisor 有界上下文与私有 inspect 查询、可查询工作记录。
+- [x] 公共接口、运行记录、单一 Assembly、Prompt 资源与冻结。
+- [x] Supervisor 有界上下文与私有 inspect 查询、可查询工作记录。
 - [ ] Artifact 内容校验、执行关联、清理与回归验证。
 
 ## 模块调整
@@ -45,7 +45,12 @@ Supervisor 默认近期记录 8 条、目录页 20 条、每次决策最多 4 �
 
 ## 本阶段验证记录
 
-实施后填写实际执行的检查，不能用离线结果代替在线模型或医学 Benchmark 验收。
+- 接口/装配/Prompt/Context 阶段：57 项相关测试通过，Ruff 通过。
+- 1000 条历史与目录的请求预算、旧反馈/产物查询、单条目录页、多次 inspect 和查询超限已覆盖。
+- 修改源码 Prompt 后，已有运行从冻结文本恢复，新运行读取新文本；已验证快照摘要损坏被拒绝。
+- uv build --wheel 成功；主环境和独立 Coding Python 均从 wheel 读取两份 Prompt 资源，
+  资源加载不导入 LangGraph 或 OpenHands。此验证不调用模型。
+- 后续补齐 Artifact / 关联日志检查与全量回归；离线结果不能代替在线模型或医学 Benchmark 验收。
 ## 首期验证记录
 
 - 新增协作测试仅两项：不同证据条件的多轮协作，以及新进程恢复。

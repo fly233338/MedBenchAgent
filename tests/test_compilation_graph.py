@@ -13,9 +13,12 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from medbenchagent.compilation.artifacts import read_json_artifact, resolve_artifact
 from medbenchagent.compilation.contracts import ArtifactRef
 from medbenchagent.compilation.demo import (
-    create_synthetic_inputs, demo_agents, scripted_supervisor,
+    create_synthetic_inputs, scripted_supervisor,
 )
-from medbenchagent.compilation.graph import CompilationContext, build_compilation_graph
+from medbenchagent.compilation.graph import build_compilation_graph
+from medbenchagent.compilation.interfaces import CompilationContext
+from medbenchagent.compilation.assembly import assemble_compilation
+from medbenchagent.compilation.run import RunOptions
 from medbenchagent.data.dataset import FileDatasetReader
 from medbenchagent.planning.contracts import DataRequirement, SemanticTaskSpec
 
@@ -29,8 +32,12 @@ def _private_planner_checkpoint(saver, config):
 
 
 def test_multi_round_collaboration_uses_evidence_and_isolates_state(tmp_path):
-    with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
-        graph = build_compilation_graph(demo_agents(), checkpointer=saver)
+    options = RunOptions(compilation_id="test", goal="Derive a Case-linked synthetic task", supervisor_mode="scripted",
+                         coding_mode="scripted", initial_evidence=False, pause_for_input=False,
+                         supervisor_settings=None, coding_settings=None, prompts={})
+    with assemble_compilation(options, tmp_path) as (agents, _), \
+            SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
+        graph = build_compilation_graph(agents, checkpointer=saver)
         traces = []
         for initial_evidence in (False, True):
             identifier = "known" if initial_evidence else "raw"
@@ -45,16 +52,16 @@ def test_multi_round_collaboration_uses_evidence_and_isolates_state(tmp_path):
                     "artifacts": [ref.model_dump(mode="json") for ref in inputs],
                 },
                 config,
-                context=CompilationContext(directory, scripted_supervisor(directory)),
+                context=CompilationContext(directory, scripted_supervisor(directory), options.goal),
                 durability="sync",
             )
             assert output["status"] == "completed"
-            trace = [entry["agent_id"] for entry in output["history"]]
+            trace = [entry["request"]["agent_id"] for entry in output["history"]]
             traces.append(trace)
-            request_ids = [entry["request_id"] for entry in output["history"]]
+            request_ids = [entry["request"]["request_id"] for entry in output["history"]]
             assert len(request_ids) == len(set(request_ids))
             assert all(identifier in item for item in request_ids)
-            assert all(row["outcome"] != "failed" for row in output["history"])
+            assert all(row["result"]["outcome"] != "failed" for row in output["history"])
             assert "planning_pass" not in output and "pending_requirement_id" not in output
             private = _private_planner_checkpoint(saver, config)
             assert private["planning_pass"] == 2
@@ -246,7 +253,7 @@ def test_cli_modes_freeze_independent_models_and_resume(tmp_path, monkeypatch, c
     before = json.loads(capsys.readouterr().out)
     assert before["status"] == "waiting"
     saved = (directory / "run.json").read_text(encoding="utf-8")
-    assert "secret" not in saved
+    assert "supervisor-secret" not in saved and "coding-secret" not in saved
     assert discoveries == (["Supervisor"] if supervisor_mode == "llm" else []) + (
         ["Coding"] if coding_mode == "openhands" else [])
     configuration.write_text("not valid TOML anymore", encoding="utf-8")

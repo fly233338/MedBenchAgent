@@ -54,6 +54,8 @@ packages = ["src/medbenchagent"]
 "src/medbenchagent/prompts/data_preparation_understand.md" = "medbenchagent/prompts/data_preparation_understand.md"
 "src/medbenchagent/prompts/data_preparation_prepare_text.md" = "medbenchagent/prompts/data_preparation_prepare_text.md"
 "src/medbenchagent/prompts/data_preparation_prepare_image.md" = "medbenchagent/prompts/data_preparation_prepare_image.md"
+"src/medbenchagent/prompts/supervisor.md" = "medbenchagent/prompts/supervisor.md"
+"src/medbenchagent/prompts/coding.md" = "medbenchagent/prompts/coding.md"
 
 [dependency-groups]
 dev = [
