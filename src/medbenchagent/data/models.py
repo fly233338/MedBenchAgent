@@ -12,6 +12,34 @@ class CanonicalModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class SourceRef(CanonicalModel):
+    """A source location, not an executable transformation expression."""
+
+    source_id: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    record: str | None = None
+    field: str | None = None
+
+
+class EntityRef(CanonicalModel):
+    """Dataset-scoped clinical identity without a separate entity database."""
+
+    kind: str = Field(min_length=1)
+    id: str = Field(min_length=1)
+
+
+class EvidenceRef(CanonicalModel):
+    case_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+
+
+class CaseRelation(CanonicalModel):
+    subject: EvidenceRef | EntityRef
+    predicate: str = Field(min_length=1)
+    object: EvidenceRef | EntityRef
+    source_refs: list[SourceRef] = Field(min_length=1)
+
+
 class MaskPlaneFeature(CanonicalModel):
     """Deterministic geometry for one indexed plane of a mask."""
 
@@ -116,6 +144,10 @@ class Evidence(CanonicalModel):
     ref: list[str] = Field(default_factory=list)
     mask: MaskFeatureSet | None = None
     view_id: str | None = None
+    source_refs: list[SourceRef] = Field(default_factory=list)
+    input_visibility: Literal["model_visible", "reference_only", "unknown"] = "unknown"
+    entity: EntityRef | None = None
+    study_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def value_contract(self):
@@ -125,9 +157,11 @@ class Evidence(CanonicalModel):
         if self.type == "text" and not isinstance(self.value, str):
             raise ValueError("text Evidence requires a string value")
         if self.type == "asset" and (not isinstance(self.value, str) or not self.value):
-            raise ValueError("asset Evidence requires an final image locator")
+            raise ValueError("asset Evidence requires a stable Asset ID")
         if self.mask is not None and self.type != "asset":
             raise ValueError("Mask features are only valid on asset Evidence")
+        if self.mask is not None and self.input_visibility == "model_visible":
+            raise ValueError("Mask features cannot be model-visible input")
         if self.view_id is not None and not self.view_id.strip():
             raise ValueError("view_id must be a non-empty stable identifier")
         if self.type == "region":
@@ -147,9 +181,10 @@ class CaseRecord(CanonicalModel):
     case_id: str = Field(min_length=1)
     patient_id: str | None = None
     evidence: list[Evidence]
+    relations: list[CaseRelation] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def relations(self):
+    def validate_relations(self):
         return validate_case(self)
 
 
@@ -220,7 +255,9 @@ class PresentationSpec(CanonicalModel):
         return self
 
 
-def validate_case(case: CaseRecord, assets: dict[str, ImageEntry] | None = None) -> CaseRecord:
+def validate_case(
+    case: CaseRecord, assets: dict[str, AssetEntry | ImageEntry] | None = None
+) -> CaseRecord:
     ids = {item.id for item in case.evidence}
     if len(ids) != len(case.evidence):
         raise ValueError(f"Duplicate Evidence ID in Case {case.case_id}")
@@ -228,7 +265,7 @@ def validate_case(case: CaseRecord, assets: dict[str, ImageEntry] | None = None)
         if any(ref not in ids for ref in item.ref):
             raise ValueError(f"Evidence {item.id} references an unknown Evidence")
         if item.type == "asset" and item.mask is None and assets is not None and item.value not in assets:
-            raise ValueError(f"Evidence {item.id} references an unknown image path")
+            raise ValueError(f"Evidence {item.id} references an unknown Asset ID")
         if item.id in item.ref or len(item.ref) != len(set(item.ref)):
             raise ValueError("Self or duplicate Evidence ref")
         if item.type == "region":
@@ -245,5 +282,10 @@ def validate_case(case: CaseRecord, assets: dict[str, ImageEntry] | None = None)
             visit(parent, path | {identifier})
     for identifier in graph:
         visit(identifier, set())
+    for relation in case.relations:
+        for endpoint in (relation.subject, relation.object):
+            if isinstance(endpoint, EvidenceRef):
+                if endpoint.case_id != case.case_id or endpoint.evidence_id not in ids:
+                    raise ValueError("Case relation references an unknown local Evidence")
     return case
 

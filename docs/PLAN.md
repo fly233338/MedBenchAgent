@@ -4,7 +4,7 @@
 
 - [x] 创建正常 refractor 分支及独立 Worktree，保留原工作区用户修改。
 - [x] 第一步：架构、数据、任务和 Agent 文档先行；文档独立提交后开始代码。
-- [ ] 第二步：最小协作契约、Case 类型、DatasetReader 与任务契约。
+- [x] 第二步：最小协作契约、Case 类型、DatasetReader 与任务契约。
 - [ ] 第三步：独立协作图、合成示例、一个多轮协作测试及一个最小恢复测试。
 - [ ] 后续：接入真实 Supervisor、OpenHands、Planner 和业务能力。
 - [ ] 后续：切换 CLI/TUI，删除被替代实现。
