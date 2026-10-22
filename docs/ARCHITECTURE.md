@@ -3,7 +3,7 @@
 ## 实施状态与范围
 
 本分支独立重建 Agentic Benchmark Compiler 的协作骨架。本文固定目标边界；
-当前先完成文档，代码与验收状态见 [PLAN](PLAN.md)。首期只有 Scripted Supervisor、
+首期骨架已实现，代码与验收状态见 [PLAN](PLAN.md)。首期只有 Scripted Supervisor、
 极简测试 Agent 和合成数据，不代表模型自主协作或 Benchmark 编译已验证。
 
 旧 Workflow、Preparation Graph、Resolver、BIRStore 和通用 harness 是参考资产。
@@ -79,6 +79,7 @@ work 需求返回 Supervisor，不触发 interrupt；只有等待用户时暂停
 ## 文件与恢复
 
 首期仅需 checkpoints.sqlite 和 artifacts/<request_id>/ 文件。
+演示入口另外保存 demo.json，记录最初选项，恢复时不重新选择这些选项。
 使用 SqliteSaver 与 durability="sync"。已 checkpoint 的工作续接时复用；
 未完成节点可能重放，示例文件写入因此使用稳定请求路径和幂等的相同内容写入。
 不承诺任意外部命令在崩溃窗口内 exactly-once。
@@ -95,5 +96,19 @@ Dataset revision/file_digest 继续表达输入身份，不成为 Artifact 版�
 - planning/contracts：DataRequirement、SemanticTaskSpec；不含 Resolver。
 - 专业 Agent/示例：可使用 Reader 和任务契约，不能相互直接委派。
 - 旧 runtime/preparation/workflow：后续选择性抽取，不是 Core 的依赖。
+
+## 接入接口
+
+build_compilation_graph(agents, checkpointer=...) 接收 Agent 名称到 AgentSpec(description, node)
+的映射。node 是普通节点函数或已编译子图。节点只接收 AgentInput.request，返回
+AgentOutput.result；有私有字段的子图必须设置这两个窄 input_schema/output_schema。
+
+CoreContext(directory, decide) 通过 invoke 的 context 注入。decide 接收 SupervisorView，
+返回 Delegate、AskUser 或 Finish；View 包含能力描述、已登记引用、最后结果、协调摘要
+及用户回答。生产核心不读取演示策略，也不要求所有 Agent 采用同一种持久化。
+子图的持久化设置由专业实现自己确定。新增 Agent 只需新增实现和注册项。
+
+结果契约/文件检查失败会以 failed WorkResult 返回 Supervisor。专业实现应把业务失败
+表达为 WorkResult；未捕获的程序异常保留 LangGraph 的失败 checkpoint，供修复后续接。
 
 详见 [数据契约](DATA_LAYER.md)、[任务契约](TASK_DISCOVERY.md)、[Agent 文档](agents/README.md)。

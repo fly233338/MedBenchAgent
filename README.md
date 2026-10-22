@@ -1,5 +1,34 @@
 # MedD2B — Medical Data to Benchmark
 
+## Independent Compilation Core
+
+The `refractor` branch provides an independent LangGraph coordination core with named
+agent nodes, explicit work handoffs, a Case-based file reader and SQLite checkpoints.
+The current example is **scripted**: it makes no model calls, uses no OpenHands runtime
+and processes no medical dataset. Passing its tests demonstrates routing and recovery,
+not autonomous collaboration or a generated benchmark.
+
+```powershell
+uv sync --locked --python 3.12
+uv run --locked python -m medbenchagent.compilation_core run --directory .runtime/core-demo --compilation-id demo --pause-for-input
+uv run --locked python -m medbenchagent.compilation_core resume --directory .runtime/core-demo --compilation-id demo --answer "Continue"
+uv run --locked pytest tests/test_compilation_core.py -q
+```
+
+Use a separate run directory and add `--initial-evidence` to start with an existing
+overview: the same graph then starts with Planning rather than Coding. Request inputs
+and results determine later delegations. The example's policy is replaceable.
+The run directory holds `demo.json` (frozen example options), `checkpoints.sqlite`
+and request-owned files under `artifacts/`. Reusing `run` on an existing directory is
+rejected; `resume` continues it without resetting private agent state.
+
+See the [architecture](docs/ARCHITECTURE.md), [agent boundaries](docs/agents/README.md),
+[Case contracts](docs/DATA_LAYER.md), and [implementation status](docs/PLAN.md).
+The existing `medd2b` CLI/TUI below remains a migration reference; the core does not call
+its Workflow, Preparation Graph, Resolver, BIRStore or harness.
+
+## Existing capabilities awaiting migration
+
 MedD2B compiles one annotated medical dataset into a traceable Medical VLM benchmark. A real Supervisor chooses expert work, inspects coverage, requests scoped revisions, and publishes only after semantic review and deterministic audit.
 
 Provide a dataset or raw source and optional requirements. With no clinical goal, Task Planning designs tasks from the available evidence. Explicit clinical goals constrain discovery and screening. One dataset may contain multiple sources, modalities, images and linked studies.

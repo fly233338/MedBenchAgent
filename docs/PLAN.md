@@ -5,11 +5,14 @@
 - [x] 创建正常 refractor 分支及独立 Worktree，保留原工作区用户修改。
 - [x] 第一步：架构、数据、任务和 Agent 文档先行；文档独立提交后开始代码。
 - [x] 第二步：最小协作契约、Case 类型、DatasetReader 与任务契约。
-- [ ] 第三步：独立协作图、合成示例、一个多轮协作测试及一个最小恢复测试。
+- [x] 第三步：独立协作图、合成示例、一个多轮协作测试及一个最小恢复测试。
 - [ ] 后续：接入真实 Supervisor、OpenHands、Planner 和业务能力。
 - [ ] 后续：切换 CLI/TUI，删除被替代实现。
 
 本期范围止于第三步。真实模型和医学数据接入不属于完成声明。
+
+当前独立入口为 python -m medbenchagent.compilation_core，演示实现位于 demo.py；
+它不是生产模型或自制 Coding Runtime。CLI/TUI 切换仍是后续工作。
 
 ## 提交顺序
 
@@ -47,3 +50,14 @@ Preparation Graph、BIRStore 或旧 harness。
 
 旧代码可供参考，但 Core 不通过旧 Workflow 执行。
 不建立兼容层、通用 Runtime、队列、新 Resolver DSL 或 Artifact 版本系统。
+
+## 首期验证记录
+
+- 新增协作测试仅两项：不同证据条件的多轮协作，以及新进程恢复。
+- uv run --locked pytest tests/test_compilation_core.py -q：2 passed。
+- uv run --locked ruff check .：通过。
+- 修改共享 Case 类型后运行既有回归：328 passed、4 skipped；跳过项依赖可选医学读取库。
+- 独立导入检查确认新 Core/示例不加载旧 Workflow、Preparation、Resolver、BIRStore 或 harness。
+- 文档相对链接检查通过；原工作区用户修改保留。
+
+这些结果只验证合成协作和基础恢复，不是实际模型、OpenHands 或医学 Benchmark 的验收。
