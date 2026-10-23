@@ -26,6 +26,31 @@ from medbenchagent.settings import get_llm_api_key
 AGENT_LIMIT_ERRORS = (ModelCallLimitExceededError, ToolCallLimitExceededError, GraphRecursionError)
 
 
+class OperationTools(AgentMiddleware):
+    """Expose only the current operation's tools and reject stale tool calls."""
+
+    def __init__(self, operations):
+        self.operations = operations
+
+    def allowed(self, context, name):
+        allowed = self.operations[context.request.operation]
+        return allowed is None or name in allowed
+
+    def wrap_model_call(self, request, handler):
+        return handler(request.override(tools=[t for t in request.tools
+            if self.allowed(request.runtime.context, t.name)]))
+
+    def wrap_tool_call(self, request, handler):
+        if not self.allowed(request.runtime.context, request.tool_call["name"]):
+            return ToolMessage(content="Tool is not available for the current operation",
+                               tool_call_id=request.tool_call["id"], status="error")
+        return handler(request)
+
+
+def operation_instructions(instructions, operation):
+    return instructions[operation] if isinstance(instructions, dict) else instructions
+
+
 def chat_model(settings, limits):
     """Use the configured Chat-compatible transport without model discovery."""
     return ChatOpenAI(

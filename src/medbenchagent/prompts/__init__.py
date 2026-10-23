@@ -11,6 +11,7 @@ class PromptSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     text: str = Field(min_length=1)
+    resources: dict[str, str] = Field(default_factory=dict)
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -33,3 +34,26 @@ def load_prompt(resource: str) -> str:
 def freeze_prompt(resource: str) -> PromptSnapshot:
     text = load_prompt(resource)
     return PromptSnapshot(text=text, digest=hashlib.sha256(text.encode("utf-8")).hexdigest())
+
+
+COMPOSITIONS = {
+    "supervisor": ("common.md", "supervisor.md"),
+    "profile": ("common.md", "data_processing.md", "data_profile.md"),
+    "prepare_task_data": ("common.md", "data_processing.md", "data_prepare.md"),
+    "discover_scenarios": ("common.md", "planner.md", "planner_discover.md"),
+    "design_leaves": ("common.md", "planner.md", "planner_design.md"),
+    "generate": ("common.md", "generation.md"),
+    "review_plan": ("common.md", "review.md"),
+    "review_candidate": ("common.md", "review.md"),
+    "coding": ("common.md", "coding.md"),
+    "coding_handoff": ("data_coding_handoff.md",),
+    "structured_repair": ("structured_repair.md",),
+}
+
+
+def freeze_composition(name):
+    resources = COMPOSITIONS[name] + (("structured_repair.md",) if name not in {"structured_repair", "coding", "coding_handoff"} else ())
+    parts = {resource: load_prompt(resource) for resource in resources}
+    text = "\n\n".join(parts.values())
+    return PromptSnapshot(text=text, digest=hashlib.sha256(text.encode()).hexdigest(),
+                          resources={key: hashlib.sha256(value.encode()).hexdigest() for key, value in parts.items()})

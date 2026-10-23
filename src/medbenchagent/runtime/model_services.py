@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 
 import httpx
 
-from medbenchagent.settings import AppSettings, get_llm_api_key, get_rag_api_key
 
 
 class ModelDiscoveryError(RuntimeError):
@@ -38,36 +36,3 @@ def resolve_model_service(kind: str, base_url: str, explicit_model: str, api_key
     if len(models) != 1:
         raise ModelDiscoveryError(f"{kind} endpoint has multiple models; configure an explicit model")
     return models[0]
-
-
-def resolve_run_services(settings: AppSettings) -> AppSettings:
-    """Freeze identities once; unavailable RAG services remain disabled for this run."""
-    chat = resolve_model_service("Chat", settings.llm.base_url, settings.llm.model, get_llm_api_key())
-    rag_models = {}
-    status = {"chat": "available"}
-    for kind in ("embedding", "reranker"):
-        base_url = getattr(settings.rag, f"{kind}_base_url")
-        explicit = getattr(settings.rag, f"{kind}_model")
-        if not base_url:
-            rag_models[f"{kind}_model"] = ""
-            status[kind] = "endpoint is not configured"
-            continue
-        try:
-            rag_models[f"{kind}_model"] = resolve_model_service(
-                kind.capitalize(), base_url, explicit, get_rag_api_key(kind))
-            status[kind] = "available"
-        except ModelDiscoveryError as exc:
-            rag_models[f"{kind}_model"] = ""
-            status[kind] = str(exc)
-    return replace(settings, llm=replace(settings.llm, model=chat),
-                   rag=replace(settings.rag, **rag_models), service_status=status)
-
-
-def verify_frozen_services(settings: AppSettings) -> None:
-    """Use current credentials to confirm saved identities, without rediscovering choices."""
-    resolve_model_service("Chat", settings.llm.base_url, settings.llm.model, get_llm_api_key())
-    for kind in ("embedding", "reranker"):
-        if settings.service_status.get(kind) != "available":
-            continue
-        resolve_model_service(kind.capitalize(), getattr(settings.rag, f"{kind}_base_url"),
-                              getattr(settings.rag, f"{kind}_model"), get_rag_api_key(kind))

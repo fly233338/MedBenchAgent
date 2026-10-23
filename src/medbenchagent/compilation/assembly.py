@@ -28,54 +28,44 @@ def assemble_compilation(
             settings = SupervisorSettings.from_snapshot(options.supervisor_settings)
             decide = ModelSupervisor(directory, settings, model=model_for(settings),
                                      instructions=options.prompts["supervisor"].text)
-        else:
-            from .demo import scripted_supervisor
-            decide = scripted_supervisor(directory, pause_for_input=options.pause_for_input)
         if options.coding_mode == "openhands":
             from medbenchagent.settings import CodingSettings
             from .coding import OpenHandsCodingAgent
 
             coding_agent = OpenHandsCodingAgent(CodingSettings.from_snapshot(options.coding_settings),
                                                instructions=options.prompts["coding"].text)
-            coding = coding_agent.spec()
-        else:
-            from .demo import scripted_coding_spec
-            coding = scripted_coding_spec()
         if options.planner_mode == "llm":
             from medbenchagent.settings import TaskPlannerSettings
             from medbenchagent.agents.semantic_planner import build_planner_spec
             settings = TaskPlannerSettings.from_snapshot(options.planner_settings)
-            planner = build_planner_spec(settings, model=model_for(settings), instructions=options.prompts["planner"].text)
-        else:
-            from .demo import scripted_planner_spec
-            planner = scripted_planner_spec()
-        agents = {"coding": coding, "task_planner": planner}
-        if options.source_manifest is not None and options.planner_mode == "scripted":
-            agents.pop("task_planner")
-        if options.dataset_manifest is not None and options.coding_mode == "scripted":
-            # Synthetic Coding is not advertised as a capability on real data.
-            agents.pop("coding")
+            planner = build_planner_spec(settings, model=model_for(settings), instructions={key: options.prompts[key].text for key in ("discover_scenarios", "design_leaves")})
+        agents = {"task_planner": planner}
         from medbenchagent.settings import WorkAgentSettings
         if options.data_processing_mode == "llm":
             from medbenchagent.agents.data_processing import build_data_processing_spec
             settings = WorkAgentSettings.from_snapshot(options.professional_settings["data_processing"])
-            agents.pop("coding", None)
             agents["data_processing"] = build_data_processing_spec(settings, coding_agent,
-                instructions=options.prompts["data_processing"].text, model=model_for(settings))
+                instructions={key: options.prompts[key].text for key in ("profile", "prepare_task_data", "coding_handoff")}, model=model_for(settings))
         if options.generation_mode == "llm":
             from medbenchagent.agents.generation import build_generation_spec
             settings = WorkAgentSettings.from_snapshot(options.professional_settings["generation"])
-            agents["generation"] = build_generation_spec(settings, instructions=options.prompts["generation"].text,
+            agents["generation"] = build_generation_spec(settings, instructions={"generate": options.prompts["generate"].text},
                                                         model=model_for(settings))
         if options.review_mode == "llm":
             from medbenchagent.agents.benchmark_review import build_review_spec
             settings = WorkAgentSettings.from_snapshot(options.professional_settings["review"])
-            agents["review"] = build_review_spec(settings, instructions=options.prompts["review"].text, model=model_for(settings))
+            agents["review"] = build_review_spec(settings, instructions={key: options.prompts[key].text for key in ("review_plan", "review_candidate")}, model=model_for(settings))
         if options.delivery_enabled:
             from medbenchagent.agents.delivery import delivery_spec
             agents["delivery"] = delivery_spec()
+        from functools import partial
+        from .policy import attach_checks, check_goal, readiness
+        agents = {role: attach_checks(spec, directory, role) for role, spec in agents.items()}
         additional_agents = dict(additional_agents or {})
         if additional_agents.keys() & agents.keys():
             raise ValueError("Additional agents cannot replace a frozen built-in selection")
         agents.update(additional_agents)
-        yield agents, CompilationContext(directory.resolve(), decide, options.goal)
+        yield agents, CompilationContext(directory.resolve(), decide, options.goal,
+            goal_spec=options.goal_spec, repair_limits=options.repair_limits,
+            check_goal=partial(check_goal, directory, options.goal_spec, options.benchmark_request),
+            readiness=partial(readiness, directory, agents))

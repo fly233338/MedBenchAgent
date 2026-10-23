@@ -1,13 +1,7 @@
-dataset_sources = []
 
 [benchmark]
 default_sample_count = 1000
 default_language = "en"
-input_policy = "image-only"
-
-[planning]
-max_calls = 1200
-context_chars = 64000
 
 [supervisor]
 context_chars = 64000
@@ -86,13 +80,6 @@ summary_keep_tokens = 3000
 # Omitted fields inherit the resolved [llm], including its environment overrides.
 [coding.llm]
 
-[paths]
-dataset_catalog = "datasets/dataset_catalog.json"
-bir_template = "config/bir_template"
-materials_root = "materials"
-runs_root = ".runtime"
-prepared_datasets_root = "datasets/Prepared"
-
 [llm]
 model = ""
 base_url = "http://127.0.0.1:8005/v1"
@@ -115,24 +102,7 @@ result_limit = 5
 min_rerank_score = 0.5
 reranker_max_length = 8192
 
-[generation]
-seed = 0
-max_tasks_per_image = 20
-# Per response format. Optional total across all formats (unset means no total limit):
-# max_total_tasks_per_image = 1
-fetch_batch_size = 128
-# Number of semantically equivalent question templates per Leaf Task (3-5).
-question_template_count = 3
-
-[harness]
-max_calls = 60
-max_seconds = 7200
-max_failures = 3
-max_reworks = 3
-
-[data_processing]
-backend = "local"
-coding_worker_image = "medbench-openhands:local"
-coding_worker_venv = ".venv-coding"
-preparation_attempt_limits = { understand = 2, prepare_text = 2, prepare_image = 2, mapping_revision_cycles = 1 }
-preparation_stage_budgets = { understand = { max_iterations = 80, timeout_seconds = 1800, condenser_max_events = 80, condenser_max_tokens = 24000 }, prepare_text = { max_iterations = 80, timeout_seconds = 3600, condenser_max_events = 80, condenser_max_tokens = 24000 }, prepare_image = { max_iterations = 80, timeout_seconds = 3600, condenser_max_events = 80, condenser_max_tokens = 24000 } }
+[compilation.repair_limits]
+per_problem = 3
+no_progress = 3
+total = 12

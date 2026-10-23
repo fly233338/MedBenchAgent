@@ -28,7 +28,7 @@ from medbenchagent.data.task_data import (
 )
 from medbenchagent.generation.backends import backend_catalog
 from medbenchagent.planning.contracts import TaskPlan
-from medbenchagent.runtime.native import chat_model, loop_middleware
+from medbenchagent.runtime.native import OperationTools, chat_model, loop_middleware
 from .handoff import (
     WorkState,
     WorkContext,
@@ -92,6 +92,9 @@ def validate_candidate(runtime, call_id, path):
         raise ValueError(
             "Submit a dataset_profile or task_data Manifest; supporting files remain referenced members"
         )
+    expected = {"profile": "dataset_profile", "prepare_task_data": "task_data"}[runtime.context.request.operation]
+    if receipt["kind"] != expected:
+        raise ValueError(f"This operation publishes {expected}")
     value = schema.model_validate_json(actual.read_bytes())
     allowed = _allowed_sources(runtime.context, call)
     sources = []
@@ -104,6 +107,10 @@ def validate_candidate(runtime, call_id, path):
         sources.append(DatasetSource(source_id=source.source_id, root=str(root)))
     value = value.model_copy(update={"sources": sources})
     if isinstance(value, DatasetProfile):
+        bases = [read_json_artifact(runtime.context.directory, ref) for ref in runtime.context.request.inputs
+                 if ref.kind == "source_manifest"]
+        if not any(base["dataset"] == value.dataset.model_dump() for base in bases):
+            raise ValueError("Profile belongs to a different delegated Dataset")
         sealed = seal_profile(value, actual.parent)
     else:
         if value.backend_id not in {row["backend_id"] for row in backend_catalog()}:
@@ -119,12 +126,15 @@ def validate_candidate(runtime, call_id, path):
             and all(
                 value.backend_id in plan.scenarios[key].backend_ids for key in value.scenario_ids
             )
-            and set(value.requirement_ids) <= plan.requirements.keys()
+            and set(value.requirements) <= plan.requirements.keys()
             for plan in plans
         ):
             raise ValueError(
                 "Candidate backend, Scenarios or requirements do not match a delegated TaskPlan"
             )
+        profiles = [ref for ref in runtime.context.request.inputs if ref.kind == "dataset_profile"]
+        if profiles and value.profile is None:
+            raise ValueError("Bind the Profile used to prepare this TaskData")
         if value.profile is not None:
             profile_ref = get_ref(runtime, value.profile.artifact_id, "dataset_profile")
             if binding(profile_ref) != value.profile:
@@ -134,7 +144,20 @@ def validate_candidate(runtime, call_id, path):
     content = (sealed.model_dump_json(indent=2) + "\n").encode("utf-8")
     verified = actual.parent / ("validated-" + hashlib.sha256(content).hexdigest() + ".json")
     write_once(verified, content)
-    (ProfileReader if isinstance(sealed, DatasetProfile) else TaskDataReader)(verified)
+    reader = (ProfileReader if isinstance(sealed, DatasetProfile) else TaskDataReader)(verified)
+    if isinstance(reader, TaskDataReader):
+        from medbenchagent.data.task_data import validate_preparation
+        from medbenchagent.planning.contracts import DataRequirement
+        if not sealed.requirements:
+            raise ValueError("TaskData must bind its preparation requirements")
+        for key, product in sealed.requirements.items():
+            ref = get_ref(runtime, product.artifact_id, "data_requirement")
+            requirement = DataRequirement.model_validate(read_json_artifact(runtime.context.directory, ref))
+            if binding(ref) != product or key != requirement.requirement_id:
+                raise ValueError("Stale preparation requirement binding")
+            if not any(p.requirements.get(key) == requirement for p in plans):
+                raise ValueError("Preparation requirement differs from delegated plan")
+            validate_preparation(reader, requirement)
     return sealed, verified, receipt["kind"]
 
 
@@ -199,15 +222,15 @@ def data_processing_tools():
         request = WorkRequest(
             request_id=f"call-{identity}",
             compilation_id=context.compilation_id,
-            agent_id="coding",
+            agent_id="coding", operation="execute",
             workstream_id=workstream_id,
             objective=objective,
             inputs=inputs,
             constraints=[
                 *context.request.constraints,
                 *constraints,
-                "Return candidate Manifest paths with kind dataset_profile or task_data. "
-                "Supporting files may remain beside the Manifest. Host seals member digests and checks counts. "
+                context.instructions["coding_handoff"] if isinstance(context.instructions, dict) else "Use the supplied canonical contracts.",
+                "Parent operation: " + context.request.operation,
                 "Contracts: "
                 + json.dumps(data_contracts(), ensure_ascii=False)
                 + " Backend reference contracts: "
@@ -366,6 +389,7 @@ def build_data_processing_spec(settings, coding, *, instructions, model=None):
         name="data_processing_agent",
         middleware=[
             WorkInstructions(DataProcessingState),
+            OperationTools({'profile': None, 'prepare_task_data': None}),
             *loop_middleware(
                 model,
                 settings.loop,
@@ -396,5 +420,5 @@ def build_data_processing_spec(settings, coding, *, instructions, model=None):
         "Inspect delegated raw sources, produce evidence-grounded Profiles, prepare backend-scoped TaskData, "
         "and validate/submit data. Owns internal OpenHands Coding calls and local repair; requires source_manifest, "
         "dataset_profile or dataset inputs and any applicable TaskPlan/data requirements.",
-        node,
+        node, operations=('profile', 'prepare_task_data'),
     )

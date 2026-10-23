@@ -52,16 +52,19 @@ packages = ["src/medbenchagent"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/medbenchagent/schemas/annotation.schema.json" = "medbenchagent/schemas/annotation.schema.json"
-"src/medbenchagent/prompts/data_preparation_agent.md" = "medbenchagent/prompts/data_preparation_agent.md"
-"src/medbenchagent/prompts/data_preparation_understand.md" = "medbenchagent/prompts/data_preparation_understand.md"
-"src/medbenchagent/prompts/data_preparation_prepare_text.md" = "medbenchagent/prompts/data_preparation_prepare_text.md"
-"src/medbenchagent/prompts/data_preparation_prepare_image.md" = "medbenchagent/prompts/data_preparation_prepare_image.md"
-"src/medbenchagent/prompts/supervisor.md" = "medbenchagent/prompts/supervisor.md"
-"src/medbenchagent/prompts/planner.md" = "medbenchagent/prompts/planner.md"
-"src/medbenchagent/prompts/data_processing.md" = "medbenchagent/prompts/data_processing.md"
-"src/medbenchagent/prompts/generation.md" = "medbenchagent/prompts/generation.md"
-"src/medbenchagent/prompts/review.md" = "medbenchagent/prompts/review.md"
 "src/medbenchagent/prompts/coding.md" = "medbenchagent/prompts/coding.md"
+"src/medbenchagent/prompts/common.md" = "medbenchagent/prompts/common.md"
+"src/medbenchagent/prompts/data_coding_handoff.md" = "medbenchagent/prompts/data_coding_handoff.md"
+"src/medbenchagent/prompts/data_prepare.md" = "medbenchagent/prompts/data_prepare.md"
+"src/medbenchagent/prompts/data_processing.md" = "medbenchagent/prompts/data_processing.md"
+"src/medbenchagent/prompts/data_profile.md" = "medbenchagent/prompts/data_profile.md"
+"src/medbenchagent/prompts/generation.md" = "medbenchagent/prompts/generation.md"
+"src/medbenchagent/prompts/planner.md" = "medbenchagent/prompts/planner.md"
+"src/medbenchagent/prompts/planner_design.md" = "medbenchagent/prompts/planner_design.md"
+"src/medbenchagent/prompts/planner_discover.md" = "medbenchagent/prompts/planner_discover.md"
+"src/medbenchagent/prompts/review.md" = "medbenchagent/prompts/review.md"
+"src/medbenchagent/prompts/structured_repair.md" = "medbenchagent/prompts/structured_repair.md"
+"src/medbenchagent/prompts/supervisor.md" = "medbenchagent/prompts/supervisor.md"
 
 [dependency-groups]
 dev = [

@@ -14,7 +14,7 @@ from medbenchagent.generation.execution import CandidateReader, load_execution
 from medbenchagent.audit.generation import audit_candidate
 from medbenchagent.planning.contracts import TaskPlan
 from medbenchagent.data.task_data import TaskDataReader
-from medbenchagent.runtime.native import chat_model, loop_middleware
+from medbenchagent.runtime.native import OperationTools, chat_model, loop_middleware
 from .handoff import (
     WorkContext,
     WorkState,
@@ -109,6 +109,9 @@ def review_tools():
     ):
         """Submit semantic findings and actual review coverage. Candidate approval requires a matching complete Audit."""
         target = get_ref(runtime, target_id)
+        expected = "task_plan" if runtime.context.request.operation == "review_plan" else "generation_candidate"
+        if target.kind != expected:
+            raise ValueError("Review target does not match this operation")
         sampled = False
         if target.kind == "generation_candidate":
             candidate = CandidateReader(resolve_artifact(runtime.context.directory, target))
@@ -197,6 +200,7 @@ def build_review_spec(settings, *, instructions, model=None):
         name="review_agent",
         middleware=[
             WorkInstructions(),
+            OperationTools({"review_plan": {"inspect_artifact", "inspect_task_case", "finalize_review"}, "review_candidate": None}),
             *loop_middleware(
                 model,
                 settings.loop,
@@ -223,5 +227,5 @@ def build_review_spec(settings, *, instructions, model=None):
         "Independent semantic review of TaskPlans or generation candidates. Read-only on targets; writes findings, "
         "coverage and deterministic Audit/Review reports bound to exact target content. Candidate review requires "
         "its specs, TaskPlans and TaskData inputs. Return issues to Supervisor without modifying another agent's products.",
-        node,
+        node, operations=('review_plan', 'review_candidate'),
     )

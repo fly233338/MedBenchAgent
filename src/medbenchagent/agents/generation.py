@@ -27,7 +27,7 @@ from medbenchagent.generation.execution import (
     finalize_candidate,
     CandidateReader,
 )
-from medbenchagent.runtime.native import chat_model, loop_middleware
+from medbenchagent.runtime.native import OperationTools, chat_model, loop_middleware
 from .handoff import (
     WorkState,
     WorkContext,
@@ -135,6 +135,10 @@ def generation_tools():
         plan_ref = get_ref(runtime, task_plan_id, "task_plan")
         data_ref = get_ref(runtime, task_data_id, "task_data")
         plan = TaskPlan.model_validate(read_json_artifact(runtime.context.directory, plan_ref))
+        from medbenchagent.planning.semantic import scoped_objects
+        scopes = [s for s in runtime.context.request.scope if s.artifact_id == task_plan_id]
+        if not scopes or task_id not in scoped_objects(plan, scopes)[1]:
+            raise ValueError("Task is outside the delegated scope")
         reader = TaskDataReader(resolve_artifact(runtime.context.directory, data_ref))
         spec = GenerationSpec(
             task_plan=binding(plan_ref),
@@ -370,6 +374,7 @@ def build_generation_spec(settings, *, instructions, model=None):
         name="generation_agent",
         middleware=[
             WorkInstructions(GenerationState, {"quarantined": {}}),
+            OperationTools({'generate': None}),
             *loop_middleware(
                 model,
                 settings.loop,
@@ -396,5 +401,5 @@ def build_generation_spec(settings, *, instructions, model=None):
         "Prepare execution, allocate counts and assemble questions from ready Leaf definitions and accepted TaskData. "
         "Supports VQA, reports, grounding and detection; returns immutable batches/candidates and data or task issues. "
         "Bind TaskPlans, TaskData and any referenced specs/batches explicitly.",
-        node,
+        node, operations=('generate',),
     )

@@ -56,7 +56,7 @@ def delivery_spec():
             destination = directory / "artifacts" / request.request_id / "delivery" / identity
             reason = (
                 "\n".join([request.objective, *request.constraints])
-                if "allow_limited_delivery" in request.scope
+                if runtime.context.goal_spec.allow_limited_delivery
                 else ""
             )
             path = publish_delivery(
@@ -91,6 +91,6 @@ def delivery_spec():
     return AgentSpec(
         "Deterministic portable delivery. Bind exactly one candidate, matching Audit/Review and all referenced "
         "specs, TaskPlans and TaskData. Empty or blocking results cannot publish. For a nonempty limited delivery, "
-        "include allow_limited_delivery in scope and explain the limitation in the objective/constraints.",
-        node,
+        "the frozen goal must permit limited delivery; explain limitations in the objective/constraints.",
+        node, operations=("publish",),
     )

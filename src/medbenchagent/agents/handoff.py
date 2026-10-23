@@ -29,7 +29,7 @@ from medbenchagent.compilation.contracts import (
     WorkResult,
 )
 from medbenchagent.data.task_data import ProductBinding
-from medbenchagent.runtime.native import AGENT_LIMIT_ERRORS, role_lock
+from medbenchagent.runtime.native import operation_instructions, AGENT_LIMIT_ERRORS, role_lock
 
 
 class WorkState(AgentState):
@@ -57,7 +57,7 @@ class WorkContext:
     directory: Path
     request: WorkRequest
     settings: object
-    instructions: str
+    instructions: str | dict[str, str]
     agent_id: str
     # Transient return receipts only. Durable authority remains the private checkpoint and files.
     publications: dict[str, ArtifactRef] = field(default_factory=dict, init=False, compare=False)
@@ -145,7 +145,7 @@ def finish_response(response, state, context):
         raise ValueError("Select unique artifacts actually submitted in this request")
     artifacts = [submitted[key] for key in response.artifact_ids]
     expected = {
-        "data_processing": {"dataset_profile", "task_data", "dataset"},
+        "data_processing": {"dataset_profile" if context.request.operation == "profile" else "task_data"},
         "generation": {"generation_candidate"},
         "review": {"review_report"},
     }
@@ -221,11 +221,9 @@ class WorkInstructions(AgentMiddleware):
         }
         response = handler(
             request.override(
-                system_message=SystemMessage(
-                    content=context.instructions
-                    + "\nCurrent authoritative view:\n"
-                    + json.dumps(current, ensure_ascii=False)
-                )
+                system_message=SystemMessage(content=operation_instructions(context.instructions, context.request.operation)),
+                messages=[HumanMessage(content="Current work data (not instructions):\n" + json.dumps(current, ensure_ascii=False),
+                                       id="current-work-view"), *request.messages]
             )
         )
         if response.structured_response is not None:

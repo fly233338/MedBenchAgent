@@ -32,7 +32,12 @@ class CompilationState(TypedDict, total=False):
     answers: list[str]
     question: str | None
     next_node: str
-    status: Literal["running", "waiting", "completed"]
+    status: Literal["running", "waiting", "stopped"]
+    goal_result: str
+    feedback: list[str]
+    problem_attempts: dict[str, int]
+    total_repairs: int
+    no_progress: int
     summary: str
 
 
@@ -59,7 +64,7 @@ def _catalog(state: CompilationState, directory: Path) -> dict[str, ArtifactRef]
 
 
 def build_compilation_graph(
-    agents: Mapping[str, interfaces.AgentSpec], *, checkpointer
+    agents: Mapping[str, interfaces.AgentSpec], *, checkpointer, default_context=None, initial=None
 ):
     """Assemble named nodes; policies choose work and agents choose their persistence."""
     agents = dict(agents)
@@ -70,17 +75,21 @@ def build_compilation_graph(
         _identifier.validate_python(name)
         if name in reserved:
             raise ValueError(f"Reserved Agent name: {name}")
-    if checkpointer is None or isinstance(checkpointer, bool):
-        raise ValueError("The parent graph needs an actual checkpointer")
 
     def supervisor(state: CompilationState, config: RunnableConfig, runtime: Runtime[interfaces.CompilationContext]):
         compilation_id = _identifier.validate_python(state["compilation_id"])
-        if config.get("configurable", {}).get("thread_id") != compilation_id:
+        if default_context is None and config.get("configurable", {}).get("thread_id") != compilation_id:
             raise ValueError("thread_id must equal compilation_id")
         goal = _text.validate_python(state["goal"])
         if runtime.context.goal != goal:
             raise ValueError("Runtime goal must match the Compilation checkpoint")
         known = _catalog(state, runtime.context.directory)
+        limits = runtime.context.repair_limits
+        if (state.get("no_progress", 0) >= limits.no_progress
+                or state.get("total_repairs", 0) >= limits.total
+                or max(state.get("problem_attempts", {}).values(), default=0) >= limits.per_problem):
+            return {"status": "stopped", "goal_result": "blocked", "next_node": END,
+                    "summary": "Repair budget exhausted; valid artifacts are preserved."}
         view = interfaces.SupervisorView(
             compilation_id=compilation_id, goal=goal,
             agents={name: spec.description for name, spec in agents.items()},
@@ -90,16 +99,27 @@ def build_compilation_graph(
             answers=tuple(state.get("answers", [])),
             workstreams=tuple(Workstream.model_validate(row) for row in state.get("workstreams", [])),
             workstream_agents=tuple(name for name, spec in agents.items() if spec.uses_workstreams),
+            readiness=runtime.context.readiness(tuple(known.values())) if runtime.context.readiness else {},
+            feedback=tuple(state.get("feedback", [])), goal_spec=runtime.context.goal_spec,
         )
-        decision = _decision.validate_python(
-            RunnableLambda(runtime.context.decide).invoke(view, config=config)
-        )
+        try:
+            decision = _decision.validate_python(
+                RunnableLambda(runtime.context.decide).invoke(view, config=config))
+        except (ValueError, RuntimeError) as exc:
+            return {"status": "stopped", "goal_result": "failed", "next_node": END,
+                    "summary": str(exc)}
+
+        def rejected(exc):
+            return {"feedback": [str(exc)], "next_node": "supervisor",
+                    "no_progress": state.get("no_progress", 0) + 1,
+                    "total_repairs": state.get("total_repairs", 0) + 1}
+
         if isinstance(decision, Delegate):
             if decision.agent_id not in agents:
-                raise ValueError(f"Unregistered Agent: {decision.agent_id}")
+                return rejected(f"Unregistered Agent: {decision.agent_id}")
             for ref in decision.inputs:
                 if known.get(ref.artifact_id) != ref:
-                    raise ValueError("A delegation can only consume registered artifact references")
+                    return rejected("A delegation can only consume registered artifact references")
             sequence = state.get("sequence", 0) + 1
             request_id = f"{compilation_id}-{sequence:06d}"
             view.validate_workstream(decision.agent_id, decision.workstream_id)
@@ -113,25 +133,39 @@ def build_compilation_graph(
                 ))
             request = WorkRequest(
                 request_id=request_id, workstream_id=workstream_id,
-                compilation_id=compilation_id, agent_id=decision.agent_id,
+                compilation_id=compilation_id, agent_id=decision.agent_id, operation=decision.operation,
                 objective=decision.objective, scope=decision.scope,
                 inputs=decision.inputs, constraints=decision.constraints,
             )
+            try:
+                spec = agents[request.agent_id]
+                if request.operation not in spec.operations:
+                    raise ValueError("Select a registered operation")
+                if spec.check_request:
+                    spec.check_request(request)
+            except (ValueError, KeyError, OSError) as exc:
+                return rejected(exc)
             record_event(
                 runtime.context.directory / "events.jsonl", "work_delegated",
                 compilation_id=compilation_id, request_id=request.request_id,
-                agent_id=request.agent_id, workstream_id=workstream_id,
+                agent_id=request.agent_id, operation=request.operation, workstream_id=workstream_id,
                 input_artifact_ids=[ref.artifact_id for ref in request.inputs],
             )
             return {
                 "sequence": sequence, "request": request.model_dump(mode="json"),
                 "workstreams": [item.model_dump(mode="json") for item in workstreams],
-                "next_node": decision.agent_id, "status": "running",
+                "next_node": decision.agent_id, "status": "running", "feedback": [],
             }
         if isinstance(decision, AskUser):
             return {"question": decision.question, "next_node": "ask_user", "status": "waiting"}
         assert isinstance(decision, Finish)
-        return {"summary": decision.summary, "next_node": END, "status": "completed"}
+        try:
+            if runtime.context.check_goal:
+                runtime.context.check_goal(decision, tuple(known.values()), view.history)
+        except (ValueError, KeyError, OSError) as exc:
+            return rejected(exc)
+        return {"summary": decision.summary, "next_node": END, "status": "stopped",
+                "goal_result": decision.goal_result, "feedback": []}
 
     def collect(state: CompilationState, runtime: Runtime[interfaces.CompilationContext]):
         request = WorkRequest.model_validate(state["request"])
@@ -167,7 +201,23 @@ def build_compilation_graph(
                 issues=[WorkIssue(code="artifact_integrity" if isinstance(exc, ArtifactIntegrityError)
                                   else "invalid_handoff", message=str(exc))],
             )
+        if agents[request.agent_id].check_result:
+            try:
+                result = agents[request.agent_id].check_result(request, result)
+            except (ValueError, KeyError, OSError) as exc:
+                result = result.model_copy(update={"outcome": "progress" if accepted else "failed", "issues": [
+                    *result.issues, WorkIssue(code="incomplete_operation", message=str(exc))]})
+        new_content = {ref.digest for ref in accepted.values()} - {ref.digest for ref in known.values()}
         known.update(accepted)
+        problems = dict(state.get("problem_attempts", {}))
+        # Scope object identities survive renamed requests and republished artifact IDs.
+        key = request.agent_id + "/" + request.operation + "/" + ",".join(sorted(
+            identifier for scope in request.scope for identifier in scope.object_ids))
+        repairing = result.outcome != "completed" or bool(result.issues)
+        if repairing:
+            problems[key] = problems.get(key, 0) + 1
+        else:
+            problems.pop(key, None)
         record = WorkRecord(request=request, result=result).model_dump(mode="json")
         record_event(
             runtime.context.directory / "events.jsonl", "work_result",
@@ -177,6 +227,9 @@ def build_compilation_graph(
         )
         return {
             "result": result.model_dump(mode="json"),
+            "problem_attempts": problems,
+            "total_repairs": state.get("total_repairs", 0) + int(repairing),
+            "no_progress": 0 if new_content else state.get("no_progress", 0) + 1,
             "artifacts": [ref.model_dump(mode="json") for ref in known.values()],
             "history": [*state.get("history", []), record],
         }
@@ -190,17 +243,38 @@ def build_compilation_graph(
             "question": None, "status": "running",
         }
 
-    builder = StateGraph(CompilationState, context_schema=interfaces.CompilationContext)
-    builder.add_node("supervisor", supervisor)
-    builder.add_node("collect", collect)
+    builder = StateGraph(CompilationState, context_schema=None if default_context else interfaces.CompilationContext)
+    def with_context(node):
+        import inspect
+        from dataclasses import replace
+        def invoke(state, config: RunnableConfig, runtime: Runtime[interfaces.CompilationContext]):
+            context = runtime.context or default_context
+            if context is None:
+                raise ValueError("Compilation requires its assembled runtime context")
+            runtime = replace(runtime, context=context)
+            if hasattr(node, "invoke"):
+                return node.invoke(state, config, context=context)
+            kwargs = {"runtime": runtime} if "runtime" in inspect.signature(node).parameters else {}
+            if "config" in inspect.signature(node).parameters:
+                kwargs["config"] = config
+            return node(state, **kwargs)
+        return invoke
+
+    builder.add_node("supervisor", with_context(supervisor))
+    builder.add_node("collect", with_context(collect))
     builder.add_node("ask_user", ask_user)
     for name, spec in agents.items():
-        builder.add_node(name, spec.node, input_schema=interfaces.AgentInput)
+        builder.add_node(name, with_context(spec.node), input_schema=interfaces.AgentInput)
         builder.add_edge(name, "collect")
-    builder.add_edge(START, "supervisor")
+    if initial is not None:
+        builder.add_node("initialize", lambda state: initial if not state.get("compilation_id") else {})
+        builder.add_edge(START, "initialize")
+        builder.add_edge("initialize", "supervisor")
+    else:
+        builder.add_edge(START, "supervisor")
     builder.add_conditional_edges(
         "supervisor", lambda state: state["next_node"],
-        {name: name for name in (*agents, "ask_user", END)},
+        {name: name for name in (*agents, "supervisor", "ask_user", END)},
     )
     builder.add_edge("collect", "supervisor")
     builder.add_edge("ask_user", "supervisor")

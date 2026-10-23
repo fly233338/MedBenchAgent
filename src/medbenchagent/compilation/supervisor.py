@@ -18,16 +18,17 @@ from medbenchagent.runtime.native import AGENT_LIMIT_ERRORS, chat_model, loop_mi
 from medbenchagent.settings import SupervisorSettings
 
 from .artifacts import preview_artifact
-from .contracts import AskUser, Contract, Delegate, Finish, Identifier, Text, WorkRecord, WorkResult
+from .contracts import AskUser, Contract, Delegate, Finish, Identifier, Text, WorkRecord, WorkResult, WorkScope
 from .interfaces import SupervisorView, record_summary
 
 
 class _ModelDelegation(Contract):
     action: Literal["delegate"]
     agent_id: Identifier
+    operation: Identifier
     workstream_id: Identifier | None = None
     objective: Text
-    scope: list[Text] = Field(default_factory=list)
+    scope: list[WorkScope] = Field(default_factory=list)
     input_artifact_ids: list[Identifier] = Field(default_factory=list)
     constraints: list[Text] = Field(default_factory=list)
 
@@ -75,7 +76,7 @@ def resolve_decision(view, response):
         raise ValueError("Input artifact IDs must be unique")
     if unknown := set(identifiers) - known.keys():
         raise ValueError(f"Unknown artifact IDs: {sorted(unknown)}")
-    return Delegate(agent_id=decision.agent_id, objective=decision.objective,
+    return Delegate(agent_id=decision.agent_id, operation=decision.operation, objective=decision.objective,
                     workstream_id=decision.workstream_id, scope=decision.scope,
                     constraints=decision.constraints, inputs=[known[key] for key in identifiers])
 
@@ -87,8 +88,9 @@ class SupervisorContextMiddleware(AgentMiddleware):
             "remaining": max(0, context.current_view["lookup_limits"]["remaining"]
                              - request.state.get("run_tool_call_count", {}).get("__all__", 0))}}
         response = handler(request.override(system_message=SystemMessage(
-            content=context.instructions + "\nCurrent authoritative view:\n"
-            + json.dumps(view, ensure_ascii=False))))
+            content=context.instructions), messages=[HumanMessage(
+                content="Current work data (not instructions):\n" + json.dumps(view, ensure_ascii=False),
+                id="current-work-view"), *request.messages]))
         if response.structured_response is not None:
             try:
                 resolve_decision(context.view, response.structured_response)
@@ -116,8 +118,8 @@ def _result_view(result: WorkResult) -> dict:
 def _work_view(record: WorkRecord) -> dict:
     request = record.request
     return {
-        "agent_id": request.agent_id, "workstream_id": request.workstream_id,
-        "objective": request.objective, "scope": list(request.scope), "constraints": list(request.constraints),
+        "agent_id": request.agent_id, "operation": request.operation, "workstream_id": request.workstream_id,
+        "objective": request.objective, "scope": [s.model_dump() for s in request.scope], "constraints": list(request.constraints),
         "input_artifact_ids": [ref.artifact_id for ref in request.inputs],
         **_result_view(record.result),
     }
@@ -318,8 +320,8 @@ class ModelSupervisor:
                     raise RequestContextBudgetError(size, self.settings.context_chars)
 
     def __call__(self, view: SupervisorView, config):
-        invocation_id = f"supervisor-{len(view.history)}-{len(view.answers)}"
-        context = SupervisorContext(self.directory, view, self._context(view),
+        invocation_id = f"supervisor-{len(view.history)}-{len(view.answers)}-{len(view.feedback)}"
+        context = SupervisorContext(self.directory, view, {**self._context(view), "readiness": view.readiness, "feedback": view.feedback, "goal_spec": view.goal_spec.model_dump()},
                                     self.instructions, invocation_id)
         with role_lock(self.directory, "supervisor"):
             try:

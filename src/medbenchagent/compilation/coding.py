@@ -11,16 +11,14 @@ import subprocess
 import uuid
 
 from filelock import FileLock, Timeout
-from langgraph.runtime import Runtime
 
 from medbenchagent.runtime.construction import record_event
 from medbenchagent.settings import CodingSettings, get_coding_api_key
 from medbenchagent.data.dataset import file_digest
 
-from .artifacts import ArtifactIntegrityError, _within, resolve_artifact, write_artifact
+from .artifacts import _within, resolve_artifact
 from .coding_worker import CandidateNeed, CodingCandidate, failure
-from .contracts import WorkNeed, WorkRequest, WorkResult
-from .interfaces import AgentInput, AgentOutput, AgentSpec, CompilationContext
+from .contracts import WorkRequest
 
 
 def _stop_process(process):
@@ -95,39 +93,10 @@ class OpenHandsCodingAgent:
         self.instructions = instructions
         self.runner = runner or run_local_worker
 
-    def spec(self) -> AgentSpec:
-        return AgentSpec(
-            "OpenHands general-purpose Coding Agent. Explores supplied files, writes and executes "
-            "code, checks results, and submits files or reports needs/failures. Select a Workstream "
-            "to resume its private working context, or create a new one. Share work only via artifacts.",
-            self, uses_workstreams=True,
-        )
-
-    def __call__(self, state: AgentInput, runtime: Runtime[CompilationContext]) -> AgentOutput:
-        request = WorkRequest.model_validate(state["request"])
-        directory = runtime.context.directory.resolve()
-        try:
-            result = self._execute(directory, request, runtime.context.goal)
-        except ArtifactIntegrityError as exc:
-            result = self._result(failure(request.request_id, "failed", "artifact_integrity", str(exc)), [])
-        except (ValueError, OSError) as exc:
-            result = WorkResult(
-                **failure(request.request_id, "failed", "invalid_handoff", str(exc)).model_dump(
-                    exclude={"files", "needs"}),
-            )
-        return {"result": result.model_dump(mode="json")}
-
-    def _execute(self, directory: Path, request: WorkRequest, goal: str) -> WorkResult:
-        candidate, files = self.execute_candidate(directory, request, goal)
-        for item in files:
-            if file_digest(Path(item["read_path"])) != item["digest"]:
-                raise ArtifactIntegrityError("Coding candidate changed before handoff")
-        artifacts = [write_artifact(directory, request, item["path"], kind=item["kind"],
-                                   content=Path(item["read_path"]).read_bytes()) for item in files]
-        return self._result(candidate, artifacts)
-
     def execute_candidate(self, directory: Path, request: WorkRequest, goal: str):
         """Execute/recover one SDK call and return candidate receipts, without publication."""
+        if request.operation != "execute":
+            raise ValueError("Coding only accepts internal execute requests")
         if request.workstream_id is None:
             raise ValueError("Coding requests require a Host-assigned Workstream ID")
         root = _within(directory, f"coding/{request.workstream_id}")
@@ -182,11 +151,3 @@ class OpenHandsCodingAgent:
         except Timeout:
             return failure(request.request_id, "blocked", "workstream_busy",
                            "This Workstream is already executing another request"), []
-
-    @staticmethod
-    def _result(candidate, artifacts):
-        return WorkResult(
-            request_id=candidate.request_id, outcome=candidate.outcome, summary=candidate.summary,
-            artifacts=artifacts, issues=candidate.issues,
-            needs=[WorkNeed(**need.model_dump()) for need in candidate.needs],
-        )
