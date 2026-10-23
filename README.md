@@ -17,6 +17,16 @@ uv sync --locked --python 3.12
 Copy-Item config/local.toml.example config/local.toml
 ```
 
+The default development group includes pytest, Ruff, Studio tooling and openpyxl for the BrEaST
+example. Use `--no-dev` for the core environment. Standalone PDF retrieval and optional medical
+readers have explicit extras:
+
+```powershell
+uv sync --locked --extra rag --extra data-processing
+```
+
+These extras belong to the main environment; Coding has its own separately provisioned dependencies.
+
 Set model endpoints/identities in `config/local.toml` and credentials through `.env` or environment
 variables (`.env.example`). Each new run freezes model settings, repair budgets and composed
 prompts. Restore uses that snapshot; incompatible code/tool changes require a new run.
@@ -27,6 +37,9 @@ Provision the separate Coding environment before using Data Processing:
 uv venv .venv-coding --python 3.12
 uv pip install --python .venv-coding/Scripts/python.exe -r config/coding-worker.requirements.txt
 ```
+
+Data Processing invokes `python -m medbenchagent.agents.coding_worker` in that environment.
+Supervisor and Coding implementations live under `agents`; Compilation owns coordination and assembly.
 
 Use `config/sources.example.json` as the SourceManifest template. It contains a dataset identity
 and named source directories; relative roots resolve against the manifest. Alternatively supply
@@ -110,7 +123,14 @@ remain. Historical internal schemas and checkpoints are not supported through co
 
 Development verification uses tiny local files, Fake Model calls through real `create_agent`, and a
 persistent SDK substitute. It checks connected handoffs, local repair, checkpoint resume and package
-reading. No live model, real Coding task, complete medical dataset acceptance or full pytest run is
-claimed. See [implementation record](docs/PLAN.md), [architecture](docs/ARCHITECTURE.md),
+reading. Install the extras explicitly when running the retained domain tests:
+
+```powershell
+uv run --locked --extra rag --extra data-processing pytest -q
+uv run --locked ruff check .
+```
+
+Offline tests do not establish live-model autonomy, real Coding task success or complete medical
+dataset acceptance. See [implementation record](docs/PLAN.md), [architecture](docs/ARCHITECTURE.md),
 [agent operations](docs/agents/README.md), [data](docs/DATA_LAYER.md) and [planning](docs/TASK_DISCOVERY.md).
 The package reader and external evaluation boundary are documented in [EVALUATION](docs/EVALUATION.md).

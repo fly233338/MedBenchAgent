@@ -2,20 +2,20 @@
 
 本项目基于 LangGraph 构建 **MedD2B（Agentic Benchmark Compiler）**，目标是通过自主多智能体协作，将异构医学影像数据集转化为可用、可追溯的 Benchmark。
 
-系统以数据及其证据为出发点，由 Supervisor 自主协调 Coding、Task Planning 等专业 Agent。保留 Axis 驱动的任务空间发现，数据处理、任务规划、Benchmark 生成与模型评测保持明确边界。
+系统以数据及其证据为出发点，由 Supervisor 自主协调 Data Processing、Task Planning、Generation 和 Review。Coding 是 Data Processing 内部的 OpenHands 执行能力；Allocation、Audit、Delivery 是确定性操作。保留 Axis 驱动的任务空间发现，数据处理、任务规划、Benchmark 生成与外部模型评测保持明确边界。
 
 ## 按需阅读
 
 - 涉及系统架构、模块职责和运行机制时，阅读 `docs/ARCHITECTURE.md`；涉及数据或任务契约时，阅读对应文档。其他任务只阅读直接相关的代码和文档。
-- 当前 `compilation` 是新协作架构的基础。旧 Workflow、Preparation、Resolver 等实现作为待迁移资产，不应将旧架构的设计限制重新引入新核心。
+- `compilation` 是唯一正式协作与恢复核心。旧 Workflow、Preparation、Resolver 等编排已删除，不恢复历史执行链、导入转发或数据格式兼容分支。
 - 默认参数、数据与模型配置以项目配置为准，不在代码中硬编码本机路径或密钥。
 
 ## 架构与实现原则
 
 - **保持最小化的多智能体协作骨架。** Supervisor 负责自主决策和委派，专业 Agent 负责各自领域的工作。Agent 之间通过明确的工作契约和产物引用协作，不在顶层硬编码固定业务流水线。
 - **优先使用成熟框架的原生能力。** 使用 LangGraph 的 State、Subgraph、Checkpoint、Interrupt 等机制，以及 OpenHands 自身的执行和会话管理能力。避免重新开发通用 Agent Runtime、消息系统或重复的状态管理机制。
-- **明确状态和产物的所有权。** Agent 私有状态不与共享业务状态混用；共享状态尽量只保存协调信息和产物引用。避免在 Checkpoint、BIR、Runtime 和文件中重复维护同一份事实。
-- **保持稳定的数据与任务接口。** Canonical Dataset 以 Case 为顶层数据单元，通过 Evidence、Asset 和显式关联表达数据语义。Task Planning 负责语义任务设计和数据需求，Coding Agent 负责数据理解、程序生成、转换与修复。
+- **明确状态和产物的所有权。** Agent 私有状态不与共享业务状态混用；共享状态尽量只保存协调信息和产物引用。避免在 Checkpoint、Runtime 和文件中重复维护同一份事实。
+- **保持稳定的数据与任务接口。** Canonical Dataset 以 Case 为顶层数据单元，通过 Evidence、Asset 和显式关联表达数据语义。Task Planning 负责语义任务设计和数据需求，Data Processing 负责数据理解、准备和候选验收，Coding 负责其委派的程序生成、转换与修复。
 - **模型与代码各司其职。** 模型负责语义判断、自主规划和工具选择；代码负责契约检查、确定性操作和必要的结果验证。不要将所有业务逻辑交给模型，也不要以固定流程替代 Agent 决策。
 - **避免不必要的抽象和过度设计。** 新增模块、接口、Agent、状态文件或中间层应有明确用途。优先复用现有能力，不为假设的未来场景提前建设复杂机制。
 - 长任务应支持恢复；具有外部副作用的操作应尽量幂等。保留有效产物，避免恢复或重试时无意义地重复执行。
@@ -47,7 +47,7 @@
 - 新增模块时，应确认其具有独立且明确的职责，并遵循现有代码组织方式。确有必要可以新增文件，但应同步清理被替代的旧实现，避免平行抽象、重复状态和重复功能。
 - 修改稳定架构边界或引入新的模块类别时，应同步更新 `docs/ARCHITECTURE.md`。普通功能扩展不应擅自改变已经确定的基础架构。
 - 静态 Agent Prompt 按项目统一的资源组织方式管理；动态 WorkRequest、数据证据和运行上下文由代码装配，不混入静态 Prompt 文件。
-- 新协作核心的标准包名为 `medbenchagent.compilation`。公共 Agent 接口与 Graph 实现分离，专业 Agent 不导入顶层协调图；具体实现由 Assembly 装配。
+- 协作核心的标准包名为 `medbenchagent.compilation`。公共 Agent 接口与 Graph 实现分离，Supervisor 与专业 Agent 实现归属 `medbenchagent.agents`，不导入顶层协调图；具体实现由 Assembly 装配。
 - Skill 仅作为 OpenHands Coding Agent 的可选领域扩展，与 Workstream 生命周期独立，不作为其他 Agent 的统一要求，不提前建立全局 Skill Manager。
 - 静态 Agent 指令使用包资源加载，在新 Compilation 开始时冻结实际文本与摘要；恢复使用快照，动态工作要求和证据仍由所属 Agent 装配。
 - `docs/ARCHITECTURE.md` 以实际模块依赖图、运行时交接图、Agent 内部结构图和状态归属表为主；图中明确区分代码依赖与运行调用，不把后续规划画成已实现组件。协议细节、配置和验收记录放在对应文档。

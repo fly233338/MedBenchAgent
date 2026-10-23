@@ -18,4 +18,4 @@ scope 的每项为 artifact_id、kind（artifact/scenario/task/requirement）和
 生成可完成但存在缺口。run.json 固定 goal_kind、计划层次、数量及受限交付政策。
 
 静态 Prompt 按 common+role+operation 组合并冻结。动态请求和材料是工作数据，工具 schema 来自唯一类型。
-恢复使用快照与兼容实现；历史摘要不是正式证据。父图不保存专业角色对话。
+恢复使用冻结快照并要求实现指纹匹配；历史摘要不是正式证据。父图不保存专业角色对话。
