@@ -44,7 +44,6 @@ build-backend = "hatchling.build"
 packages = ["src/medbenchagent"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/medbenchagent/agents/data_processing/coding/skills" = "medbenchagent/agents/data_processing/coding/skills"
 "src/medbenchagent/agents/data_processing/coding/prompts/base.md" = "medbenchagent/agents/data_processing/coding/prompts/base.md"
 "src/medbenchagent/agents/_shared/prompts/common.md" = "medbenchagent/agents/_shared/prompts/common.md"
 "src/medbenchagent/agents/data_processing/coding/prompts/handoff.md" = "medbenchagent/agents/data_processing/coding/prompts/handoff.md"

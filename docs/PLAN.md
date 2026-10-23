@@ -68,6 +68,56 @@
 本轮未运行真实模型协作、真实 OpenHands 数据处理或完整医学数据验收。已有用户数据、Checkpoint 和
 正式产物文件未清除；旧 Run 和旧格式不迁移，也不承诺旧格式可由当前 Reader 读取。
 
+## Agent 模块化与领域能力扩展（2026-10-23）
+
+基于 refactor@7a713a7，按五组提交完成多图修复、角色包迁移、原生 Skill 接线、目标/范围协作与离线验收。
+
+- BrEaST 主图使用唯一 Evidence ID，病例标签关联图像集合。多主图 Mask 无明确映射时保持未绑定，
+  Mapping 记录未知关系；单图 Mask 保留明确关联，缺失标签不补造。
+- 每个角色拥有 agent/tools/资源；DP、Planner 的私有状态与辅助逻辑归 state，Delivery 为确定性 node。
+  Coding 嵌入 DP，公共交接和组合器归 agents._shared。旧模块直接删除；迁移时核对 11 个 Prompt 组合文本一致，
+  随后仅补充 Supervisor 的 readiness 查询说明。
+- 三组包内 Skill 随 Run 冻结正文与随附资源，配置仅选择受维护名称；SDK 1.49.6 原生加载与调用，
+  禁止自动加载公共/用户/项目 Skill 和记忆。允许列表、资源摘要或解析结果不一致时拒绝执行。
+- data.tabular 提供实际 CSV/XLSX 统计与身份检查，data.sources 提供有界来源检查；影像和几何直接复用现有 API。
+  未创建顶层 Tool Manager、全局 Skill 注册器或平行数据处理实现。
+- Run 由目标和来源派生角色集合，只加载/发现必要模型。Profile 不初始化 Planner/Generation/Review，
+  Canonical Scenario Plan 不初始化 DP/Coding；Executable Plan 不启用 Generation/Review/Delivery。
+  原始来源启动时检查可读性，后续引用由 Reader 保持内容校验，不默认复制整份来源。
+- 就绪建议按 Requirement、Scenario、Task 返回准确范围与依赖，并通过现有 Supervisor inspect 分页。
+  Requirement 不展开同场景需求；Task 修订不授权修改同场景其他任务。建议与委派/完工检查使用同一契约。
+- RAG 保持独立，文档明确现行 retrieve 调用与未来文档摘要/检索配置绑定要求，没有预建 Retriever 抽象。
+
+### BrEaST 结构离线场景
+
+动态生成四个 Case、多图、Mask 和一个缺失标签，使用真实 Graph/create_agent/工具与持久化 Coding 替身。
+场景的预设决策只属于测试脚本，不写入生产协调图：
+
+| 委派 | 范围及实际结果 |
+| --- | --- |
+| Profile → Scenario Discovery | 观察全部四个 Case，保留分类和空间两个方向及两个需求 |
+| 分类准备 | 只处理 classification 需求，产生三条有标签的 TaskData，记录缺失标签 Case |
+| 空间准备 | 只处理 spatial 需求；指定的多图 Case 缺少 Mask 映射，返回具体 blocker |
+| Leaf Design → Generation | 只处理分类场景/任务；请求四题，实际候选三题，缺口一题 |
+| Review → Leaf Repair | 审查拒绝措辞，只修订 classify Leaf，复用已接受 TaskData |
+| Generation → Review → Delivery | 重新生成/批准后交付三题，保留空间需求，最终 partial |
+
+准备后中断再恢复；禁止读取当前 Prompt/Skill 来源，重放已完成 SDK 请求不再次执行代码。
+检查 Checkpoint 中全部 11 次 WorkRecord 的 operation、scope、输入、回执与阻塞原因；TaskData 引用和修改时间保持不变。
+
+### 实际验收
+
+- 全套轻量离线测试 61 项通过，无跳过；唯一 pytest 警告来自 pynrrd 的 datetime.utcnow 弃用。
+- 后续补强的 Skill 解析失败、冻结资源、目标配置隔离及综合场景分别定向复测通过。
+- 独立 .venv-coding 中运行真实 SDK 的 Skill 加载和 InvokeSkillExecutor，验证坏 Skill 不会静默缺失；
+  同环境执行实际图像读取与 Mask 几何函数，不调用模型。
+- Ruff、源码 compileall、文档相对链接及 git diff --check 通过。
+- sdist → wheel 构建通过。修正了 Skill 目录重复 force-include；wheel 包含 13 份 Prompt、3 份 SKILL.md 和参考资源。
+- 干净基础环境安装 wheel 后，72 个核心模块导入、11 个组合加载、Skill 冻结/验证和两个 CLI 帮助入口通过；
+  该环境未安装 OpenHands、RAG、表格或测试可选依赖。SDK 专属检查在独立 Coding 环境执行。
+
+边界：未调用真实模型、未开展真实自主 Coding 或全医学数据验收。旧运行不迁移；原有数据、Checkpoint 和正式产物未删除。
+
 ## 后续
 
 使用实际配置观察小规模自主协作，依据具体失败改进 Prompt；按实际数据需求补充表示能力。

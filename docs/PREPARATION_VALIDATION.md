@@ -16,4 +16,6 @@ Planner 根据实际 TaskData 证据作任务适用性判断并记录 acceptance
 旧 understand/text/image Preparation 阶段协议、Publisher 和独立 Worker 已移除。保留可复用的
 asset_adapters、readers、mask_geometry 与源文件摘要工具供 Coding 明确调用。
 表格处理直接使用 Coding 独立环境中的 pandas/openpyxl/xlrd；不维护表格读取薄包装或旧来源索引协议。
-本轮只验证小型合成文件与 SDK 替身，不声明真实医学质量或外部执行 exactly-once。
+data.tabular.inspect_table 为 CSV/XLSX 提供实际统计：扫描行数、完整性、缺失值、重复/缺失 ID 与有界预览。
+max_rows 限制扫描时 complete=false；来源分页不等同于全量目录索引。
+离线验证使用合成文件、SDK 执行替身和原生 SDK Skill 加载/调用；不声明真实医学质量或外部执行 exactly-once。

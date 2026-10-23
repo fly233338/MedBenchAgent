@@ -1,6 +1,6 @@
 # MedD2B — Agentic Benchmark Compiler
 
-MedBenchAgent uses five native LangChain agents inside one LangGraph Compilation:
+MedBenchAgent provides five native LangChain agents inside one LangGraph Compilation:
 Supervisor, Data Processing, Task Planning, Generation and Review. Data Processing owns
 OpenHands Coding. Allocation, Audit and Delivery are deterministic operations.
 
@@ -40,6 +40,9 @@ uv pip install --python .venv-coding/Scripts/python.exe -r config/coding-worker.
 
 Data Processing invokes `python -m medbenchagent.agents.data_processing.coding.worker` in that environment.
 Supervisor and Coding implementations live under `agents`; Compilation owns coordination and assembly.
+`[coding.skills].enabled` selects packaged `tabular-inspection`, `medical-image` and `mask-geometry`
+skills (all enabled by default; `[]` disables them). Runs freeze their contents and resource digests;
+OpenHands selects and invokes skills natively. Public/user/project skill auto-loading stays disabled.
 
 Use `config/sources.example.json` as the SourceManifest template. It contains a dataset identity
 and named source directories; relative roots resolve against the manifest. Alternatively supply
@@ -138,3 +141,13 @@ Offline tests do not establish live-model autonomy, real Coding task success or 
 dataset acceptance. See [implementation record](docs/PLAN.md), [architecture](docs/ARCHITECTURE.md),
 [agent operations](docs/agents/README.md), [data](docs/DATA_LAYER.md) and [planning](docs/TASK_DISCOVERY.md).
 The package reader and external evaluation boundary are documented in [EVALUATION](docs/EVALUATION.md).
+
+The BrEaST-shaped offline workflow test generates four tiny source Cases, retains a missing label and an
+unknown multi-image Mask association, repairs a rejected Leaf, resumes a checkpoint and delivers three
+of four requested items as `partial`. The Coding SDK contract test runs in `.venv-coding` when provisioned;
+it exercises native Skill parsing and invocation without calling a model.
+
+Standalone retrieval remains `LocalPdfRag(...).retrieve(query, limit=...)` under the `rag` extra.
+It returns PDF/page/chunk locations, excerpts and retrieval scores. No Agent currently calls it.
+Future Planner/Review integration must additionally bind document digests, retrieval configuration and
+evidence identities to the Run; literature cannot replace dataset annotations. No generic Retriever layer is introduced.

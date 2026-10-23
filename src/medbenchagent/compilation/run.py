@@ -103,8 +103,6 @@ def create_run(
         raise ValueError("This directory already contains a run; use resume")
     if sample_count is not None and (type(sample_count) is not int or sample_count <= 0 or "generation" not in roles):
         raise ValueError("sample_count requires enabled Generation and a positive integer")
-    if source_manifest is not None and dataset_manifest is not None:
-        raise ValueError("Select a source manifest or a canonical Dataset, not both")
     if source_manifest is not None:
         from medbenchagent.data.task_data import SourceManifest
         source = SourceManifest.model_validate_json(source_manifest.read_bytes())

@@ -34,7 +34,10 @@ def freeze_skills(directory: Path, names: list[str]) -> FrozenSkills:
     available = {entry.name: entry for entry in source.iterdir() if entry.is_dir()}
     if len(names) != len(set(names)) or set(names) - available.keys():
         raise ValueError("Coding skills must select distinct packaged skill names")
+    directory = Path(directory).resolve()
     root = directory / SKILL_ROOT
+    if root.is_symlink() or not root.resolve().is_relative_to(directory):
+        raise ValueError("Frozen skill directory escapes run")
     contents = {}
 
     def collect(node, prefix):
@@ -51,6 +54,8 @@ def freeze_skills(directory: Path, names: list[str]) -> FrozenSkills:
                                               for key, value in contents.items()})
     for name, content in contents.items():
         target = root / name
+        if target.is_symlink() or not target.resolve().is_relative_to(root.resolve()):
+            raise ValueError("Frozen skill resource escapes its directory")
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             if target.read_bytes() != content:
@@ -65,7 +70,7 @@ def freeze_skills(directory: Path, names: list[str]) -> FrozenSkills:
 def verify_skills(directory: Path, snapshot: FrozenSkills) -> Path:
     directory = Path(directory).resolve()
     root = directory / SKILL_ROOT
-    if not root.resolve().is_relative_to(directory):
+    if root.is_symlink() or not root.resolve().is_relative_to(directory):
         raise ValueError("Frozen skill directory escapes run")
     actual = {}
     for path in root.rglob("*"):

@@ -9,6 +9,9 @@
 flowchart TB
     CLI[CLI / TUI] --> Runner[runtime.graph_runner]
     Studio[compilation.studio] --> Assembly[compilation.assembly]
+    Assembly --> Run[compilation.run]
+    Run --> Prompting[agents._shared.prompting]
+    Run --> SkillSnapshot[DP Coding skills snapshot helpers]
     Runner --> Assembly
     Runner & Studio --> Graph[compilation.graph]
     Assembly --> Policy[compilation.policy]
@@ -26,6 +29,7 @@ flowchart TB
     Coding --> Worker[agents.data_processing.coding.worker]
     Worker --> Public
     Worker --> SDK[OpenHands SDK]
+    Worker --> SkillSnapshot
     CLI --> Sessions[session UI records]
     CLI --> UIService[runtime.conversation_service]
     UIService --> Sessions
@@ -80,6 +84,8 @@ DP 与 Planner 分别具有两个 operation；工具边界由代码检查，状�
 DP、Planner、Generation、Review 接收按 operation 索引的冻结指令；Supervisor 与 Coding 接收组合文本。
 Coding 仅接受 DP 内部 execute 请求并返回候选；DP 检查后提交。Allocation、Audit、Delivery
 没有模型循环。摘要不承担业务事实来源，来源正文不拼入静态系统指令。
+Coding 的 AgentContext 使用 Run 冻结的包内 Skill 集合，由 SDK 原生 InvokeSkillTool 按需调用。
+Skill 正文与随附资源只保存在运行目录，SDK 加载时核对名称和摘要；不读取来源数据中的 Skill 指令。
 
 ## 状态归属
 
