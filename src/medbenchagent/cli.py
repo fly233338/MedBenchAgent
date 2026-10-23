@@ -1,130 +1,129 @@
-"""Command-line arguments, prompts and terminal rendering."""
-
-from __future__ import annotations
-
+"""One CLI for the canonical Compilation core and its experiment UI."""
 import argparse
 import json
-import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from uuid import uuid4
 
+from medbenchagent.compilation.contracts import GoalSpec
+from medbenchagent.compilation.run import create_run
+from medbenchagent.runtime.graph_runner import execute_compilation, inspect_compilation
 from medbenchagent.runtime import sessions
 
-if TYPE_CHECKING:
-    from medbenchagent.runtime.conversation_service import ConversationService
-    from medbenchagent.runtime.graph_runner import RunEvent
 
-
-def _parser() -> argparse.ArgumentParser:
+def _parser():
     parser = argparse.ArgumentParser(prog="medd2b")
-    parser.add_argument("--config", type=Path, help="TOML template for newly created experiments")
-    commands = parser.add_subparsers(dest="command")
-    create = commands.add_parser("create", help="Create an experiment")
+    sub = parser.add_subparsers(dest="command")
+    create = sub.add_parser("create", help="Create an experiment and editable config")
     create.add_argument("experiment")
-    run = commands.add_parser("run", help="Submit a request to an existing experiment")
-    run.add_argument("experiment")
-    run.add_argument("request")
-    run.add_argument("--dataset", dest="dataset_id")
-    batch = commands.add_parser("batch", help="Compile datasets independently")
+    create.add_argument("--config", type=Path)
+    run = sub.add_parser("run", help="Start a Compilation from explicit real inputs")
+    run.add_argument("experiment", nargs="?")
+    run.add_argument("--directory", type=Path)
+    run.add_argument("--compilation-id")
+    run.add_argument("--config", type=Path)
+    run.add_argument("--prepare-only", action="store_true", help="Freeze a run for Studio without executing agents")
+    run.add_argument("--goal", default="Compile and deliver a traceable benchmark from the supplied data.")
+    source = run.add_mutually_exclusive_group(required=True)
+    source.add_argument("--source-manifest", type=Path)
+    source.add_argument("--dataset-manifest", type=Path)
+    source.add_argument("--dataset", help="Registered dataset ID")
+    for command in (run,):
+        _goal_arguments(command)
+    batch = sub.add_parser("batch", help="Run registered datasets independently in one experiment")
     batch.add_argument("experiment")
     batch.add_argument("dataset_ids", nargs="+")
-    batch.add_argument("--request", default="Compile this dataset into a benchmark")
-    resume = commands.add_parser("resume", help="Resume a session run by its ID")
-    resume.add_argument("experiment")
-    resume.add_argument("run_id")
-    register = commands.add_parser("register", help="Register a prepared Dataset Bundle")
+    batch.add_argument("--goal", default="Compile and deliver a traceable benchmark.")
+    _goal_arguments(batch)
+    resume = sub.add_parser("resume")
+    resume.add_argument("--directory", type=Path, required=True)
+    resume.add_argument("--answer")
+    inspect = sub.add_parser("inspect")
+    inspect.add_argument("--directory", type=Path, required=True)
+    register = sub.add_parser("register")
     register.add_argument("--dataset-id", required=True)
-    register.add_argument("--bundle", required=True)
-    export = commands.add_parser("export", help="Export a published portable benchmark package")
+    register.add_argument("--manifest", type=Path, required=True)
+    register.add_argument("--kind", choices=("source", "dataset"), default="dataset")
+    export = sub.add_parser("export")
     export.add_argument("source", type=Path)
     export.add_argument("destination", type=Path)
+    demo = sub.add_parser("demo", help="Create a tiny explicit source fixture; does not call models")
+    demo.add_argument("--directory", type=Path, required=True)
+    sub.add_parser("tui")
     return parser
 
 
-def _render(event: RunEvent) -> None:
-    payload = event.payload
-    if event.kind == "initialized":
-        print(f"Run {event.run_session_id} initialized: {payload.get('run_directory')}")
-    elif event.kind == "progress":
-        print(payload.get("text", ""))
-    elif event.kind == "artifact":
-        print(f"[artifact] {payload.get('name')}: {payload.get('path')}")
-    elif event.kind == "view":
-        from medbenchagent.runtime.presentation import compilation_text
-        print(compilation_text({"view": payload, "status": "running"}))
-    elif event.kind == "finished":
-        print(f"Run {event.run_session_id}: {payload.get('status')}. {payload.get('summary', '')}")
-        if payload.get("run_directory"):
-            print(f"Run directory: {payload['run_directory']}")
-    elif event.kind == "error":
-        print(f"Run {event.run_session_id}: {payload.get('status')}. {payload.get('summary', '')}", file=sys.stderr)
-        if payload.get("recovery_hint"):
-            print(payload["recovery_hint"], file=sys.stderr)
-        if payload.get("run_directory"):
-            print(f"Preserved run artifacts: {payload['run_directory']}", file=sys.stderr)
+def _goal_arguments(parser):
+    parser.add_argument("--goal-kind", choices=("profile", "plan", "benchmark"), default="benchmark")
+    parser.add_argument("--plan-level", choices=("scenarios", "executable_leaves"))
+    parser.add_argument("--sample-count", type=int)
+    parser.add_argument("--no-limited-delivery", action="store_true")
 
 
-def _consume(service: ConversationService, events: Iterable[RunEvent]) -> int:
+def goal_options(args):
+    return {"goal_spec": GoalSpec(kind=args.goal_kind,
+        plan_level=(args.plan_level or "scenarios") if args.goal_kind == "plan" else args.plan_level,
+        allow_limited_delivery=not args.no_limited_delivery), "sample_count": args.sample_count}
+
+
+def _consume(events):
     status = 0
-    events = iter(events)
-    while True:
-        event = next(events, None)
-        if event is None:
-            return status
-        if event.kind == "needs_input":
-            question = event.payload["question"]
-            print(f"\n{question}")
-            close = getattr(events, "close", None)
-            if close is not None:
-                close()
-            try:
-                answer = input("Your response: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\nRun checkpoint preserved; use the resume command later.", file=sys.stderr)
-                return 130
-            if not answer:
-                print("Answer cannot be empty; use the resume command later.", file=sys.stderr)
-                return 2
-            service.answer(event.run_session_id, answer)
-            events = iter(service.resume(event.run_session_id, answer=answer))
-            continue
-        _render(event)
-        if event.kind == "error":
-            status = event.payload.get("exit_code", 1)
-            if status == 130:
-                return status
-        elif event.kind == "finished" and event.payload.get("status") in {"blocked", "failed"}:
+    for event in events:
+        print(json.dumps({"run_id": event.run_session_id, "event": event.kind, **event.payload}, ensure_ascii=False))
+        if event.kind == "finished" and event.payload.get("goal_result") in {"blocked", "failed"}:
             status = 1
+    return status
 
 
-def run_command(args: argparse.Namespace) -> int:
-    if args.command == "export":
-        from medbenchagent.generation.delivery import export_benchmark
-        print(export_benchmark(args.source, args.destination))
-        return 0
-    if args.command == "register":
-        from medbenchagent.data.dataset_catalog import register_dataset
-
-        print(json.dumps(register_dataset(args.dataset_id, args.bundle), ensure_ascii=False, indent=2))
-        return 0
-    if args.command == "create":
-        sessions.create_experiment(args.experiment, template=args.config)
-        print(f"Created experiment {args.experiment}")
-        return 0
-    from medbenchagent.runtime.conversation_service import ConversationService
-
-    service = ConversationService(args.experiment)
-    service.reconcile()
-    if args.command == "run":
-        submission = service.submit(args.request, dataset_id=args.dataset_id)
-        for run_id in submission.run_ids:
-            print(f"Queued run: {run_id}")
-        return _consume(service, service.drive())
-    if args.command == "batch":
-        submission = service.submit_batch(args.dataset_ids, args.request)
-        for run_id in submission.run_ids:
-            print(f"Queued compilation: {run_id}")
-        return _consume(service, service.drive())
-    if args.command == "resume":
-        return _consume(service, service.resume(args.run_id))
-    raise ValueError(f"Unknown command: {args.command}")
+def main(argv=None):
+    parser = _parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.command in {None, "tui"}:
+            from medbenchagent.tui import MBAApp
+            MBAApp().run()
+            return
+        if args.command == "create":
+            print(json.dumps(sessions.create_experiment(args.experiment, template=args.config)))
+        elif args.command == "run":
+            inputs = {key: getattr(args, key) for key in ("source_manifest", "dataset_manifest") if getattr(args, key)}
+            if args.dataset:
+                from medbenchagent.data.dataset_catalog import registered_input
+                inputs = registered_input(args.dataset)
+            if args.experiment:
+                if args.directory or args.compilation_id or args.config:
+                    raise ValueError("Experiment runs use their experiment directory and config")
+                run = sessions.add_run(args.experiment, args.goal, **inputs, **goal_options(args))
+                directory = Path(run["directory"])
+            else:
+                identifier = args.compilation_id or "run-" + uuid4().hex[:12]
+                directory = args.directory or Path(".runtime") / identifier
+                create_run(directory, compilation_id=identifier, goal=args.goal, config_path=args.config,
+                           **inputs, **goal_options(args))
+            if args.prepare_only:
+                print(directory.resolve())
+                return
+            raise SystemExit(_consume(execute_compilation(directory)))
+        elif args.command == "batch":
+            from medbenchagent.data.dataset_catalog import registered_input
+            if len(set(args.dataset_ids)) != len(args.dataset_ids):
+                raise ValueError("Batch dataset IDs must be distinct")
+            status = 0
+            for identifier in args.dataset_ids:
+                run = sessions.add_run(args.experiment, args.goal, **registered_input(identifier), **goal_options(args))
+                status = max(status, _consume(execute_compilation(run["directory"])))
+            raise SystemExit(status)
+        elif args.command == "resume":
+            raise SystemExit(_consume(execute_compilation(args.directory, resume=True, answer=args.answer)))
+        elif args.command == "inspect":
+            print(json.dumps(inspect_compilation(args.directory), ensure_ascii=False, indent=2))
+        elif args.command == "register":
+            from medbenchagent.data.dataset_catalog import register_dataset
+            print(json.dumps(register_dataset(args.dataset_id, args.manifest, kind=args.kind)))
+        elif args.command == "export":
+            from medbenchagent.generation.publication import export_benchmark
+            print(export_benchmark(args.source, args.destination))
+        elif args.command == "demo":
+            from medbenchagent.compilation.demo import create_demo_source
+            print(create_demo_source(args.directory))
+    except (ValueError, OSError, KeyError, RuntimeError) as exc:
+        parser.exit(2, f"{exc}\n")

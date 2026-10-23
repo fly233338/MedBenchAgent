@@ -1,130 +1,45 @@
-"""annotation dataset registry."""
-
+"""Register source or current canonical Dataset manifests, without legacy bundles."""
 import json
-from pathlib import Path
 import re
-from medbenchagent import settings
-from medbenchagent.data.bundle_catalog import read_card, verify_bundle
+from pathlib import Path
+from filelock import FileLock
+from medbenchagent.settings import PROJECT_ROOT
 from medbenchagent.runtime.run_artifacts import atomic_write_json
+from medbenchagent.data.dataset import FileDatasetReader
+from medbenchagent.data.task_data import SourceManifest
 
-DATASET_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-
-
-class DatasetCatalogError(ValueError):
-    pass
+CATALOG_PATH = PROJECT_ROOT / ".runtime" / "datasets.json"
 
 
 def validate_dataset_id(value):
-    if not isinstance(value, str) or not DATASET_ID_PATTERN.fullmatch(value):
-        raise DatasetCatalogError("unsafe id")
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*", value):
+        raise ValueError("Invalid dataset ID")
     return value
 
 
-def normalize_dataset_id(value: str) -> str:
-    """Derive a safe dynamic ID from a user-facing dataset name or directory."""
-    if not isinstance(value, str):
-        raise DatasetCatalogError("dataset name must be a string")
-    normalized = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
-    if not normalized:
-        raise DatasetCatalogError("dataset name cannot produce a safe id")
-    return validate_dataset_id(normalized)
-
-
-def resolve_path(value):
-    path = Path(value).expanduser()
-    return path.resolve() if path.is_absolute() else (settings.PROJECT_ROOT / path).resolve()
-
-
-def prepared_bundle_entry(dataset_id, *, prepared_root=None):
-    """Build an entry for one valid direct Prepared/<dataset_id> bundle."""
+def register_dataset(dataset_id, manifest, *, kind="dataset", catalog=CATALOG_PATH):
     validate_dataset_id(dataset_id)
-    root = Path(prepared_root or settings.get_settings().paths.prepared_datasets_root).resolve()
-    bundle = root / dataset_id
-    verified = verify_bundle(bundle)
-    access = verified["ready"]["access"]
-    cases = Path(access["cases_path"])
-    card = verified["card"]
-    if card.get("dataset_id") != dataset_id:
-        raise DatasetCatalogError("Prepared bundle Card dataset_id does not match its directory")
-    value = {
-        "dataset_id": dataset_id,
-        "name": card["name"],
-        "description": card["description"],
-        "available": True,
-        "cases_path": str(cases),
-        "image_manifest_path": access["image_manifest_path"],
-        "profile_path": access["profile_path"],
-        "dataset_card_path": access["dataset_card_path"],
-    }
-    for name in ("split", "sampling"):
-        path_key = f"{name}_manifest_path"
-        digest_key = f"{name}_manifest_digest"
-        if access.get(path_key):
-            value[path_key] = access[path_key]
-            value[digest_key] = access.get(digest_key)
-    return value
-
-
-def load_dataset_catalog(catalog_path=None):
-    path = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(path, {"datasets": []})
-        return []
-    value = json.loads(path.read_text(encoding="utf-8"))
-    entries = value.get("datasets", [])
-    for entry in entries:
-        validate_dataset_id(entry["dataset_id"])
-    return entries
-
-
-
-
-def load_prepared(entry):
-    bundle = resolve_path(entry["cases_path"]).parent
-    verified = verify_bundle(bundle)
-    access = verified["ready"]["access"]
-    frozen_card_path = resolve_path(entry["dataset_card_path"])
-    card = verified["card"] if frozen_card_path == resolve_path(access["dataset_card_path"]) else read_card(frozen_card_path)
-    if card["dataset_id"] != entry["dataset_id"] or access["dataset_id"] != entry["dataset_id"]:
-        raise DatasetCatalogError("Catalog identity does not match the prepared dataset")
-    if card.get("annotation_digest") != access["annotation_digest"] or card.get("image_manifest_digest") != access["image_manifest_digest"]:
-        raise DatasetCatalogError("Frozen Dataset Card does not match annotation bundle")
-    return card, access
-
-
-def register_dataset(dataset_id, bundle, *, catalog_path=None):
-    validate_dataset_id(dataset_id)
-    bundle = Path(bundle).resolve()
-    verified = verify_bundle(bundle)
-    card = verified["card"]
-    access = verified["ready"]["access"]
-    if card["dataset_id"] != dataset_id or access["dataset_id"] != dataset_id:
-        raise DatasetCatalogError("Registration identity does not match the prepared dataset")
-    entry = {
-        "dataset_id": dataset_id,
-        "name": card["name"],
-        "description": card["description"],
-        "available": True,
-        "cases_path": access["cases_path"],
-        "image_manifest_path": access["image_manifest_path"],
-        "profile_path": access["profile_path"],
-        "dataset_card_path": access["dataset_card_path"],
-    }
-    for name in ("split", "sampling"):
-        path_key = f"{name}_manifest_path"
-        digest_key = f"{name}_manifest_digest"
-        if access.get(path_key):
-            entry[path_key] = access[path_key]
-            entry[digest_key] = access.get(digest_key)
-    target = Path(catalog_path or settings.get_settings().paths.dataset_catalog)
-    entries = (
-        [e for e in load_dataset_catalog(target) if e["dataset_id"] != dataset_id]
-        if target.exists()
-        else []
-    )
-    atomic_write_json(
-        target, {"datasets": entries + [entry]}
-    )
+    path = Path(manifest).resolve()
+    if kind == "dataset":
+        dataset = FileDatasetReader(path).get_manifest()
+    elif kind == "source":
+        dataset = SourceManifest.model_validate_json(path.read_bytes()).dataset
+    else:
+        raise ValueError("Expected source or dataset")
+    if dataset.dataset_id != dataset_id:
+        raise ValueError("Registration ID differs from the manifest Dataset")
+    catalog = Path(catalog)
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(catalog) + ".lock"):
+        entries = json.loads(catalog.read_text(encoding="utf-8")) if catalog.exists() else {}
+        entry = {"kind": kind, "manifest": str(path)}
+        if dataset_id in entries and entries[dataset_id] != entry:
+            raise ValueError("Dataset registration already points to another manifest")
+        entries[dataset_id] = entry
+        atomic_write_json(catalog, entries)
     return entry
 
+
+def registered_input(dataset_id, catalog=CATALOG_PATH):
+    entry = json.loads(Path(catalog).read_text(encoding="utf-8"))[dataset_id]
+    return {"source_manifest" if entry["kind"] == "source" else "dataset_manifest": Path(entry["manifest"])}

@@ -1,7 +1,5 @@
 {
   "dependencies": ["."],
   "env": "./.env",
-  "graphs": {
-    "benchmark_builder": "./src/medbenchagent/workflow/graph.py:benchmark_graph"
-  }
+  "graphs": {"benchmark_builder": "./src/medbenchagent/compilation/studio.py:graph"}
 }
