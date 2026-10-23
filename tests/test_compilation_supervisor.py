@@ -94,7 +94,7 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
         assert any("messages" in row.checkpoint["channel_values"] for row in private)
     assert all(binding.get("parallel_tool_calls") is False for binding in model.bindings)
     logs = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert any(row["event_type"] == "agent_model_call" for row in logs)
+    assert any(row["event_type"] == "model_started" for row in logs)
 
 
 def test_context_queries_and_frozen_budgets(tmp_path):

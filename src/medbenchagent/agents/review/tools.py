@@ -1,6 +1,7 @@
 """Review tools."""
 
 import json
+from medbenchagent.runtime.construction import record_event
 from langchain.tools import tool, ToolRuntime
 from medbenchagent.compilation.artifacts import read_json_artifact, resolve_artifact
 from medbenchagent.generation.contracts import AuditReport, ReviewFinding, ReviewReport
@@ -163,6 +164,10 @@ def review_tools():
             semantic_sampled=sampled,
         )
         output = publish_value(runtime, "review_report", report)
+        context = runtime.context
+        record_event(context.directory / "events.jsonl", "review_submitted", compilation_id=context.compilation_id,
+                     request_id=context.invocation_id, agent_id="review", operation=context.request.operation,
+                     approved=approved, artifact_id=output.artifact_id)
         return tool_result(
             runtime,
             {"artifact_id": output.artifact_id, "approved": approved, "semantic_sampled": sampled},

@@ -36,3 +36,8 @@ class ConversationService:
     def inspect(self, run_id):
         run = next(row for row in self.record()["runs"] if row["id"] == run_id)
         return inspect_compilation(run["directory"])
+
+    def activity_reader(self, run_id):
+        from medbenchagent.runtime.activity import ActivityReader
+        run = next(row for row in self.record()["runs"] if row["id"] == run_id)
+        return ActivityReader(run["directory"])

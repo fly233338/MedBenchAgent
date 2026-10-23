@@ -1,6 +1,8 @@
 """Small LangChain integration helpers, not another agent runtime or state store."""
 
 import json
+from time import perf_counter
+from uuid import uuid4
 from pathlib import Path
 
 from filelock import FileLock
@@ -100,20 +102,20 @@ class InvocationGuard(AgentMiddleware):
                 self.context_chars,
             )
         context = request.runtime.context
-        record_event(
-            context.directory / "events.jsonl",
-            "agent_model_call",
-            compilation_id=context.compilation_id,
-            agent_id=context.agent_id,
-            request_id=context.invocation_id,
-            estimated_tokens=tokens,
-        )
-        # This provider option is also enforced for writes on the code side below.
-        return handler(
-            request.override(
-                model_settings={**request.model_settings, "parallel_tool_calls": False}
-            )
-        )
+        identity = {"compilation_id": context.compilation_id, "agent_id": context.agent_id,
+                    "request_id": context.invocation_id, "operation": getattr(getattr(context, "request", None), "operation", "decide"),
+                    "model_call_id": uuid4().hex}
+        record_event(context.directory / "events.jsonl", "model_started", **identity, estimated_tokens=tokens)
+        started = perf_counter()
+        try:
+            result = handler(request.override(model_settings={**request.model_settings, "parallel_tool_calls": False}))
+        except Exception as exc:
+            record_event(context.directory / "events.jsonl", "model_failed", **identity,
+                         elapsed_ms=int((perf_counter() - started) * 1000), summary=str(exc))
+            raise
+        record_event(context.directory / "events.jsonl", "model_finished", **identity,
+                     elapsed_ms=int((perf_counter() - started) * 1000))
+        return result
 
     def wrap_tool_call(self, request, handler):
         calls = next(
@@ -124,45 +126,29 @@ class InvocationGuard(AgentMiddleware):
             ),
             [],
         )
+        context = request.runtime.context
+        identity = {"compilation_id": context.compilation_id, "agent_id": context.agent_id,
+                    "request_id": context.invocation_id, "operation": getattr(getattr(context, "request", None), "operation", "decide"),
+                    "tool_name": request.tool_call["name"], "tool_call_id": request.tool_call["id"]}
+        record_event(context.directory / "events.jsonl", "tool_started", **identity, arguments=request.tool_call.get("args", {}))
+        started = perf_counter()
         try:
-            if (
-                request.tool_call["name"] in self.write_tools
-                and sum(call["name"] in self.write_tools for call in calls) > 1
-            ):
-                raise ValueError(
-                    "Call only one state-changing tool per model turn; then read its new revision"
-                )
+            if request.tool_call["name"] in self.write_tools and sum(call["name"] in self.write_tools for call in calls) > 1:
+                raise ValueError("Call only one state-changing tool per model turn; then read its new revision")
             result = handler(request)
-            context = request.runtime.context
-            record_event(
-                context.directory / "events.jsonl",
-                "agent_tool_result",
-                compilation_id=context.compilation_id,
-                agent_id=context.agent_id,
-                request_id=context.invocation_id,
-                tool_name=request.tool_call["name"],
-                tool_call_id=request.tool_call["id"],
-                status="completed",
-            )
+            messages = getattr(result, "update", {}).get("messages", [])
+            receipt = messages[-1] if messages else result
+            failed = getattr(receipt, "status", None) == "error"
+            record_event(context.directory / "events.jsonl", "tool_failed" if failed else "tool_finished", **identity,
+                         elapsed_ms=int((perf_counter() - started) * 1000), output=getattr(receipt, "content", str(receipt)))
             return result
-        except (ValueError, KeyError, FileNotFoundError) as exc:
-            context = request.runtime.context
-            record_event(
-                context.directory / "events.jsonl",
-                "agent_tool_result",
-                compilation_id=context.compilation_id,
-                agent_id=context.agent_id,
-                request_id=context.invocation_id,
-                tool_name=request.tool_call["name"],
-                tool_call_id=request.tool_call["id"],
-                status="rejected",
-                error_type=type(exc).__name__,
-            )
-            return ToolMessage(
-                content=json.dumps({"error": type(exc).__name__, "detail": str(exc)}),
-                tool_call_id=request.tool_call["id"],
-                status="error",
-            )
+        except Exception as exc:
+            record_event(context.directory / "events.jsonl", "tool_failed", **identity,
+                         elapsed_ms=int((perf_counter() - started) * 1000), summary=str(exc), error_type=type(exc).__name__)
+            if not isinstance(exc, (ValueError, KeyError, FileNotFoundError)):
+                raise
+            return ToolMessage(content=json.dumps({"error": type(exc).__name__, "detail": str(exc)}),
+                               tool_call_id=request.tool_call["id"], status="error")
 
 
 def loop_middleware(model, limits, context_chars, *, write_tools=()):

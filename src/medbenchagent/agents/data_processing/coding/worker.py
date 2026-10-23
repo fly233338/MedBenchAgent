@@ -21,6 +21,7 @@ from pydantic import Field
 
 from medbenchagent.compilation.contracts import Contract, Identifier, Text, WorkIssue, WorkOutcome, WorkRequest
 from .skills import FrozenSkills, load_native_skills
+from medbenchagent.runtime.construction import record_event
 
 
 class CandidateFile(Contract):
@@ -111,6 +112,33 @@ def execute_turn(conversation, finish_tool, request: WorkRequest, prompt: str) -
                    "sdk_incomplete", f"OpenHands stopped without a submitted result (status={status})")
 
 
+def activity_callback(payload, secrets=()):
+    """Project only executable actions and observations, never SDK reasoning messages."""
+    from openhands.sdk.event import ActionEvent, ObservationEvent
+    from openhands.sdk.event.conversation_error import ConversationErrorEvent
+    from time import perf_counter
+    started = {}
+    identity = {"compilation_id": payload["request"]["compilation_id"], "agent_id": "coding",
+                "request_id": payload["request"]["request_id"], "parent_request_id": payload.get("parent_request_id"),
+                "operation": payload.get("parent_operation") or "execute", "workstream_id": payload["request"]["workstream_id"]}
+    path = Path(payload["run_directory"]) / "events.jsonl"
+    def observe(event):
+        values = {**identity, "event_id": payload["conversation_id"] + ":" + str(event.id)}
+        if isinstance(event, ActionEvent):
+            started[event.tool_call_id] = perf_counter()
+            record_event(path, "coding_action", redactions=secrets, **values, tool_name=event.tool_name,
+                         tool_call_id=event.tool_call_id, arguments=event.action.model_dump(mode="json") if event.action else {})
+        elif isinstance(event, ObservationEvent):
+            beginning = started.pop(event.tool_call_id, None)
+            output = "".join(getattr(part, "text", "") for part in event.observation.to_llm_content)
+            record_event(path, "coding_observation", redactions=secrets, **values, tool_name=event.tool_name,
+                         tool_call_id=event.tool_call_id, output=output, status="failed" if event.observation.is_error else "completed",
+                         elapsed_ms=int((perf_counter() - beginning) * 1000) if beginning is not None else None)
+        elif isinstance(event, ConversationErrorEvent):
+            record_event(path, "coding_error", redactions=secrets, **values, summary=event.detail)
+    return observe
+
+
 def _conversation(payload):
     runtime = payload["settings"]["coding"]
     for package, expected in runtime["sdk_packages"].items():
@@ -166,6 +194,7 @@ def _conversation(payload):
         stuck_detection=True, delete_on_close=False, visualizer=None,
         observability_metadata={name: payload["request"][name]
                                 for name in ("compilation_id", "request_id", "agent_id", "workstream_id")},
+        callbacks=[activity_callback(payload, [key])],
     )
     # Resolving the builtin parser does not initialize terminal tools or call a model.
     return conversation, resolve_tool(finish_spec, conversation.state)[0]

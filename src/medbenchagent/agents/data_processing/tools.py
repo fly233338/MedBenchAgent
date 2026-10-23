@@ -96,7 +96,8 @@ def data_processing_tools():
                 runtime, calls[request.request_id], updates={"coding_sessions": sessions}
             )
         candidate, files = context.coding.execute_candidate(
-            context.directory, request, context.goal
+            context.directory, request, context.goal,
+            parent_request_id=context.invocation_id, parent_operation=context.request.operation,
         )
         receipt = {
             "call_id": request.request_id,

@@ -150,6 +150,7 @@ def build_compilation_graph(
                 compilation_id=compilation_id, request_id=request.request_id,
                 agent_id=request.agent_id, operation=request.operation, workstream_id=workstream_id,
                 input_artifact_ids=[ref.artifact_id for ref in request.inputs],
+                summary=request.objective, scope=[scope.model_dump() for scope in request.scope],
             )
             return {
                 "sequence": sequence, "request": request.model_dump(mode="json"),
@@ -224,6 +225,8 @@ def build_compilation_graph(
             compilation_id=request.compilation_id, request_id=request.request_id,
             agent_id=request.agent_id, workstream_id=request.workstream_id,
             outcome=result.outcome, artifact_ids=[ref.artifact_id for ref in result.artifacts],
+            operation=request.operation, summary=result.summary,
+            issues=[issue.model_dump() for issue in result.issues], needs=[need.model_dump(mode="json") for need in result.needs],
         )
         return {
             "result": result.model_dump(mode="json"),

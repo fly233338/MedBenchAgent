@@ -98,7 +98,7 @@ class OpenHandsCodingAgent:
         self.skills = skills
         self.runner = runner or run_local_worker
 
-    def execute_candidate(self, directory: Path, request: WorkRequest, goal: str):
+    def execute_candidate(self, directory: Path, request: WorkRequest, goal: str, *, parent_request_id=None, parent_operation=None):
         """Execute/recover one SDK call and return candidate receipts, without publication."""
         if request.operation != "execute":
             raise ValueError("Coding only accepts internal execute requests")
@@ -131,6 +131,7 @@ class OpenHandsCodingAgent:
             "workspace": str(workspace), "output_directory": str(output),
         }
         payload = {
+            "parent_request_id": parent_request_id, "parent_operation": parent_operation,
             "run_directory": str(directory.resolve()), "skills": self.skills.model_dump(mode="json"),
             **details, "conversation_id": conversation_id,
             "persistence_dir": str(_within(root, "conversations")),
@@ -142,7 +143,13 @@ class OpenHandsCodingAgent:
         try:
             with FileLock(str(root / ".lock"), timeout=0):
                 output.mkdir(parents=True, exist_ok=True)
+                identity = {"compilation_id": request.compilation_id, "request_id": request.request_id,
+                            "agent_id": "coding", "operation": parent_operation or request.operation,
+                            "parent_request_id": parent_request_id, "workstream_id": request.workstream_id}
+                record_event(directory / "events.jsonl", "coding_started", **identity, summary=request.objective)
                 candidate = CodingCandidate.model_validate(self.runner(payload))
+                record_event(directory / "events.jsonl", "coding_finished", **identity,
+                             summary=candidate.summary, outcome=candidate.outcome, issues=[issue.model_dump() for issue in candidate.issues])
                 if candidate.request_id != request.request_id:
                     raise ValueError("Coding candidate belongs to another request")
                 # Validate every candidate before publishing any file.
