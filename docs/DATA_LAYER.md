@@ -3,14 +3,14 @@
 ## 状态与数据单元
 
 本文固定 canonical 语义。当前实现纯类型、小型 JSON/JSONL DatasetReader、内容成员校验、
-可移植快照和 BrEaST 样例入口；旧 DatasetIndex/Prepared 引擎仍等待迁移。
+可移植快照和 BrEaST 样例入口。旧 DatasetIndex/Prepared 执行链已移除。
 
 Dataset 是来源、Cases、Assets 与语义 Mapping 的集合。CaseRecord 是顶层临床单元，
 可以代表病灶、检查或纵向病例，粒度由 Mapping 声明。patient_id 可选，一个 Patient
 可对应多个 Case；一个 Case 最多关联一个已知 Patient。Study 是检查/采集分组，
 不与 Case 强制一一对应，Evidence 可给出 study_id。
 Image/Volume 是 Asset，不等于 Case。Benchmark Item 是任务在明确 Case 取样单元上的实例，
-可使用多图；首期不跨 Case 组合。SamplingUnit 保留取样职责，不等于 Case 或 Item。
+可使用多项有序输入；复合病例需由数据处理明确构造粒度与来源关联。
 
 Dataset revision 是输入快照标识。Case ID 在 Dataset 内唯一，Evidence ID 在 Case 内唯一；
 Patient、Study、Entity 按 Dataset 命名空间解释，不自动跨来源合并。
@@ -82,17 +82,11 @@ Reader 绑定一个输入快照，检查重复 ID、基础关联和实际文件�
 缺失文件/ID 明确报错，不以空记录掩盖。读取执行内容检查，适合小型本地开发数据。
 证据目录与字段统计由 planning 的确定性查询完成；Reader 不判断 Scenario 语义，不执行医学转换。
 
-## Mapping 与 Derived View
+## Mapping 与派生数据
 
-Mapping 描述 Case 分组、身份映射、字段含义、单位、缺失、时间/视图和实体关系；
-不保存 Agent 执行状态，不建立新的可执行转换语言。
-
-Task-specific Derived View 绑定 dataset_id/revision，通过 case_id 及必要的 Evidence/Entity
-引用关联原 Case，只保存新增值，不复制整条 Case、临床表或原图。
-派生资产仍使用 AssetEntry 并保留来源关联。首期只需少量合成派生行，
-不实现通用 View 引擎。当前 Planner 需求交接使用 dataset、requirement_id 和 rows，
-rows 每行有唯一 case_id；新增字段由需求规定。需求方记录接受的 Artifact ID/digest 和理由，
-不会仅凭加工 Agent 的 completed 状态自动接受。
+Mapping 描述 Case 分组、身份、字段含义、单位和实体/时间/视图关系，不是执行 DSL。
+派生值和资产经 Data Processing 整理到 TaskData，保留 SourceRef、准备脚本、参数和必要元信息。
+不再使用旧 derived_view 交接或并行读取格式。
 
 ## SourceManifest 与 DatasetProfile
 
@@ -105,7 +99,7 @@ Planner 可直接引用 observation_id 开展场景规划，抽样与未知信�
 ## TaskData
 
 data.task_data 定义后端准备结果，区别于原始来源和可复用 Canonical Dataset：
-- TaskDataManifest：DatasetRef、backend_id、scenario_ids、requirement_ids、可选 Profile 绑定、
+- TaskDataManifest：DatasetRef、backend_id、scenario_ids、requirements（需求 ID → ProductBinding）、可选 Profile 绑定、
   cases_path、assets_path、来源与成员摘要，以及由真实文件计算的 case_count/scenario_counts。
 - TaskCase：case_id、scenario_ids、fields 和 source_refs。同一后端多个场景可共享一行 Case。
 - TaskField：name、type（asset/text/value）、value、input_visibility、source_refs、关联 ref 和 metadata。
@@ -117,5 +111,7 @@ TaskDataReader 验证 Case/Asset 身份、字段关联、覆盖统计及所有�
 TaskData.profile 记录其 Profile 来源；Planner 在当前请求中检查并接受实际 TaskData，
 Generation 只消费此准备契约，不读取 derived_view 或原始目录重新推断任务数据。
 
-现有 derived_view 仍作为旧演示及数据准备中间能力保留，统一清理留待下一轮；它不是
-Generation 的另一种输入格式。大型数据索引、原始文件转换与真实医学质量验收不由 Reader 自动完成。
+TaskData 还声明 case_granularity、input_relationships、preparation_scripts 和 preparation_parameters。
+兼容表示可以共享数据；相同 backend 不要求同一物理 JSONL。minimum_cases 和字段规则来自绑定需求。
+准备脚本与参数可追溯，空间资源在 metadata 声明 width/height、单位等必要信息。
+大型索引、原始文件转换与医学质量判断不由 Reader 自动完成。

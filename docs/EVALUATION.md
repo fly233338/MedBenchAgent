@@ -13,8 +13,8 @@ Evaluation is provisioned separately on the model-serving host. The main
 ignored repository-root `evaluation/` overlay beside the checkout before running
 these commands.
 
-The construction contract now supplies `image_manifest.jsonl`, keyed by final relative image path,
-and each benchmark item contains ordered `inputs` (asset, text or value entries). Asset entries carry
+The portable package lists resource identities in `benchmark_manifest.json`;
+each benchmark item contains ordered `inputs` (asset, text or value entries). Asset entries carry
 verified resource paths and digests; the loader resolves those paths without requiring a single image or PNG/JPEG format.
 Source paths are provenance and must not be used for inference. The external evaluation overlay must
 consume this contract; it is not maintained or migrated by the main package. Verify its loader/CLI

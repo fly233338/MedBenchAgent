@@ -1,61 +1,21 @@
-# Agent 与业务能力
+# Agent 操作与交接
 
-协作机制支持 Scripted 或模型 Supervisor；Coding 可独立选择 Scripted 或 OpenHands，
-Supervisor、Data Processing、Planner、Generation、Review 使用原生 create_agent；合成实现保留为开发夹具。
-实现与在线验收分别记录于 [PLAN](../PLAN.md)，不能将离线测试当作模型自主性证明。
-
-| 角色/能力 | 文档 | 当前接入状态 |
+| 角色 | operation | 交付 |
 | --- | --- | --- |
-| Supervisor | [Supervisor](supervisor.md) | Scripted / ModelSupervisor，可显式选择 |
-| Data Processing | [Data Processing](data-processing.md) | Profile、TaskData、Coding 候选检查与提交 |
-| Coding | [Coding](coding.md) | Data Processing 内部的 OpenHands；独立适配保留 |
-| Task Planning | [Task Planning](task-planning.md) | 原生模型 Planner / 合成子图，正式 TaskPlan |
-| Generation | [Generation](generation.md) | VQA、报告、定位、检测组装及候选提交 |
-| Review | [Review](review.md) | 原生独立语义审查与覆盖记录 |
-| Audit | [Audit](audit.md) | 当前候选的确定性检查 |
-| Allocation | [Allocation](allocation.md) | 原始目标绑定与容量分配 |
-| Delivery | [Delivery](delivery.md) | 确定性可移植包与独立读取 |
+| [Supervisor](supervisor.md) | Delegate / AskUser / Finish | 下一步工作或有证据的目标结果 |
+| [Data Processing](data-processing.md) | profile / prepare_task_data | Profile / TaskData |
+| [Planner](task-planning.md) | discover_scenarios / design_leaves | 同一 TaskPlan 的场景或 Leaf 成果 |
+| [Generation](generation.md) | generate | Spec、Allocation、批次、候选和真实缺口 |
+| [Review](review.md) | review_plan / review_candidate | 只读目标上的正式 Review，候选另附 Audit |
+| [Delivery](delivery.md) | publish | 可独立读取的正式包 |
 
-Agent 接收 WorkRequest，返回 WorkResult，只通过 Supervisor 提出跨 Agent 需求。
-ArtifactRef 必须指向实际文件，completed 不等于 Benchmark 生成成功。
-work 需求不触发 interrupt；用户需求由 Supervisor 协调。
+[Coding](coding.md) 仅由 DP 内部使用；[Allocation](allocation.md)、[Audit](audit.md) 与 Delivery 是确定性能力。
+WorkRequest 包含 operation、明确 scope 和 ArtifactRef 输入；WorkResult 表达本次工作结果。
+scope 的每项为 artifact_id、kind（artifact/scenario/task/requirement）和对象 ID 列表；整份输入用 artifact。
+自由描述写在 objective/constraints，空 scope 不隐式扩大为全计划。
 
-私有消息、探索游标、SDK 会话不进入共享业务产物。Supervisor 与模型 Planner 使用 per-thread，
-Coding 每个 Workstream 的长期状态由 OpenHands 管理。
-Supervisor 只看到 Workstream 标识、初始范围和结果摘要；跨 Workstream 通过正式产物共享。
-不得统一强制 checkpointer=True。字段以纯契约为准，边界见 [架构](../ARCHITECTURE.md)。
+操作 completed、数据就绪、目标 succeeded 三者分开。发现可完成并留有准备需求；审查可完成但拒绝批准；
+生成可完成但存在缺口。run.json 固定 goal_kind、计划层次、数量及受限交付政策。
 
-Data Processing 在内部组织 Coding 执行、候选检查和提交；启用时不向 Supervisor 注册独立 Coding。
-所有专业操作可被选择，何时启动或重复调用哪个角色留待下一轮统一工作流 Prompt，不写为固定图阶段。
-
-## 公共接口与交接
-
-`compilation.interfaces` 提供 AgentInput/Output、AgentSpec、CompilationContext 和 SupervisorView。
-Graph 只接收注册的节点；节点读取 request，返回 result。带私有状态的子图使用窄输入/输出
-schema；普通节点和外部 SDK Adapter 不必包装为 Subgraph。Assembly 根据冻结模式构造节点，
-不创建数据，也不将专业 Agent 的内部 Tool 展开到顶层 Graph。
-
-| 契约 | 主要字段与含义 |
-| --- | --- |
-| ArtifactRef | artifact_id、kind、相对 Compilation 根目录的 path、被引用文件的 SHA-256 digest |
-| WorkRequest | request_id、compilation_id、agent_id、workstream_id、objective、scope、inputs、constraints |
-| WorkResult | request_id、outcome、summary、artifacts、issues、needs |
-| Workstream | Host 分配的 workstream_id、所属 Agent、初始目标与 scope |
-| 协调记录 | 完整 request/result 元数据及正式引用；不含文件内容或 SDK 消息 |
-
-outcome 为 completed、progress、needs_input、blocked 或 failed；completed 仅表示本请求完成。
-need 包含 need_id、work/user 类型、summary 及可选 detail_ref。旧 needs/issues 是有来源的报告，
-不会因为后续一次 completed 被自动标为已解决。历史记录及目录可通过 Supervisor inspect 查询。
-
-Host 在执行前分配并 checkpoint 请求；恢复沿用身份，新业务要求形成新请求。使用稳定
-compilation_id/thread_id、SqliteSaver 和同步 durability；等待用户通过 Command(resume=...)，
-普通未完成节点以 None 续接。子图自己的持久化方式由实现决定，不统一强制 checkpointer=True。
-
-正式文件必须真实存在并归属于本请求的输出目录，由 Host 登记摘要。读取或交接发现内容
-变化时明确反馈，不重算引用来掩盖变更。ArtifactRef 摘要覆盖引用文件；DatasetManifest 的
-members 进一步覆盖其真实成员，由 DatasetReader 校验。
-候选文件与正式产物分离，已交接文件不原地修改，相同字节重放可复用。
-
-静态 Prompt 通过包资源加载，实际启用文本和摘要随 run.json 冻结；恢复不重新读源码指令。
-模型凭据只从环境读取。专业失败通过 WorkResult 返回；未捕获的宿主程序错误保留失败 checkpoint。
-Skill 仅是 OpenHands Coding 的可选领域扩展，其他 Agent 不需要 Skill 层。
+静态 Prompt 按 common+role+operation 组合并冻结。动态请求和材料是工作数据，工具 schema 来自唯一类型。
+恢复使用快照与兼容实现；历史摘要不是正式证据。父图不保存专业角色对话。

@@ -1,45 +1,45 @@
-# 全部 Agent 能力接入与必要接口调整
+# 目标协作流程与单一 Compilation 执行链
 
 ## 已实现
 
-- 五个 create_agent 角色：Supervisor、Data Processing、Task Planning、Generation、Review。
-- Data Processing 拥有内部 OpenHands Coding；执行候选与正式数据提交分离，可在同一委派中多次执行。
-- 原始 SourceManifest、可独立规划的 DatasetProfile、后端共享 TaskData / cases.jsonl。
-- 场景级规划发布、Scenario 后端选择、数据需求范围和 TaskData 接受。
-- Leaf 字段绑定与组装定义；GenerationSpec 改为执行绑定和参数。
-- VQA（闭集/开放）、报告、定位、检测的确定性组装、数量分配、批次和隔离。
-- 独立语义 Review、确定性 Audit、实际内容绑定与可移植 Delivery。
-- 五角色配置与 Prompt 冻结、--all-agents / 单角色开关、原始来源入口和数量目标。
-- BenchmarkItem 统一使用有序 inputs，直接消费者已同步调整，不保留 input_images 双格式读取。
+- WorkRequest/Delegate 显式 operation 和带产物归属的 scope；请求、完成结果、目标结果分别检查。
+- DP profile/prepare_task_data；Planner discover_scenarios/design_leaves；Generation generate；Review 双操作；确定性 publish。
+- 第一轮 Planner 可 completed 并返回待准备需求；设计完成按本次范围检查。
+- 准备需求结构化字段/关系/粒度/最低覆盖；TaskData 绑定真实需求产物及内容。
+- TaskData 验收证据使用对应 Reader；长 Case 支持 text_offset 续读。
+- Leaf 非空、字段、答案/映射和空间元信息检查复用真实组题路径。
+- 按操作限制工具；公共/角色/操作 Prompt 组合冻结；工作材料与静态指令分离。
+- 有界修复、无进展停止、不可变产物及原生恢复；Finish 另行核验 succeeded/partial/blocked/failed。
+- CLI、核心 TUI、Studio 共用图与 Assembly；登记/批量/导出均使用当前契约。
+- 删除旧 Workflow/BIR/Resolver/Harness/Preparation、独立 Coding 发布包装、旧示例协议及对应配置/测试。
+- 保留数据读取/转换、几何、源文件工具和独立 RAG；没有删除整个 data/generation/runtime 目录。
 
-## 本轮边界
+## 验证边界
 
-Graph 继续只协调。基础 Prompt 仅包含职责、工具用途和提交/证据约束，不固定跨 Agent 调度顺序。
-旧 Workflow、BIR、Resolver、Preparation 和旧 CLI/TUI 保留给当前调用方，统一清理及新工作流
-Prompt 编排属于下一轮。本轮不声称实际模型已经能稳定自主完成所有协作路径。
+只扩展两个能力场景：真实图/Fake Model 的完整交接与中断恢复，以及审查绑定、局部 Leaf 修订、
+数据复用和重新生成/审查/交付。保留并调整直接受影响的 SDK、Supervisor、契约和入口检查。
 
-新工具和领域操作有真实实现，不注册空后端。原始格式转换仍由 Coding 按当前需求编程完成；
-生成后端只消费准备好的 TaskData。Local SDK 不承诺操作系统沙箱或任意命令 exactly-once。
+本轮不运行全量 pytest，不执行真实模型、真实 OpenHands 编程、医学全量样本或吞吐验收。
+离线图贯通证明接口和执行路径可用，不证明模型能稳定自主选择全部步骤。
 
-## 轻量验证
+收口结果：
+- 18 项直接相关检查通过；局部返工补强后只复测两个能力场景，均通过。
+- Ruff、内部模块导入、11 个 Prompt 组合加载通过。
+- 测试收集 46 项，无悬空导入；没有执行全量测试。
+- CLI 与模块入口帮助、TUI 核心界面及共用 Runner 空 Checkpoint 恢复 smoke 通过。
+- Studio 工厂离线装配及输入 Schema 检查通过；未启动真实 Studio 服务运行模型。
+- Wheel 构建成功，文档相对链接与 git diff --check 通过。
 
-新增两个关键离线用例：
-1. Profile（无规范化样本）→ 场景级计划 → Data Processing 候选验收 → 多场景共享 TaskData
-   → Leaf → 五类任务组装；同时检查全部角色装配及原生工具/交接调用。
-2. 完整候选 Audit/Review → 可移植 Delivery 与独立读取；拒绝对新候选复用旧报告。
+旧运行格式不迁移；已有正式文件仍保留在原目录。
 
-替换被 GenerationSpec 新契约取代的单一 closed_vqa 测试。复用直接受影响的旧 Coding、
-Planner、生成、Audit、题目输入和交付检查，不运行全量 pytest 或真实模型/真实 OpenHands 编程。
+## 后续
 
-2026-10-23 收口检查：
-- 两个新增能力用例通过；与直接受影响的既有检查合计 17 项通过。
-- 后续局部调整只复测相关能力/Coding 检查，未运行全量 pytest。
-- uv run --locked ruff check . 通过；独立入口帮助和文档相对链接检查通过。
-- uv build --wheel 成功，确认六份启用角色/Coding Prompt 随包发布。
-- 独立解释器导入新增 Agent 不加载旧 BIR、Resolver、旧 Planner、旧 Review 或 Workflow。
-- 未调用真实模型、真实 OpenHands 编程或大规模数据处理；能力用例使用小型合成文件。
+使用实际配置观察小规模自主协作，依据具体失败改进 Prompt；按实际数据需求补充表示能力。
+不提前建设通用筛选 DSL、复杂调度框架或全面质量验证平台。
 
-## 下一轮
+## Prompt 来源
 
-统一处理旧入口及遗留依赖，整理角色与跨 Agent 工作流 Prompt，之后观察真实运行并调整协作策略。
-保留用户已有 AGENTS.md 修改，本轮提交只包含本次能力和接口变更。
+包资源共 13 份：common、五个模型角色与 Coding、DP/Planner 四个操作片段、Coding 交接和 structured repair。
+实际冻结 11 个调用组合，repair 片段随适用组合加载。工具说明保留在唯一工具定义旁；动态请求、
+类型生成的 Schema、查询结果及 Host 错误由代码装配。旧 Registry Prompt 与 Preparation 指令已移除。
+本轮沿用现有 prompt-authoring skill，保留 AGENTS.md，不建立额外开发期角色体系。

@@ -36,4 +36,4 @@ def call(name, arguments, number):
 
 
 def current_view(messages):
-    return json.loads(messages[0].content.split("Current authoritative view:\n", 1)[1])
+    return json.loads(next(m.content.split("Current work data (not instructions):\n", 1)[1] for m in messages if isinstance(m.content, str) and "Current work data (not instructions):\n" in m.content))

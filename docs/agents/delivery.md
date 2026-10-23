@@ -1,19 +1,9 @@
 # Delivery
 
-agents.delivery 是薄的确定性具名节点，generation.publication 实现无 BIR/Harness 依赖的打包。
-不新增第六个模型 Agent。
+publish 是确定性节点，核验选定候选、Audit、Review 与原始数量目标的精确绑定，重算 Audit，
+写入独立包及 complete.json 成员摘要，并通过 evaluation.loader 重读。
 
-输入必须明确选择一个 generation_candidate、匹配的 audit_report、review_report、
-benchmark_request，以及候选引用的 GenerationSpec、TaskPlan、TaskData。
-节点检查数量目标一致、Review 通过、无阻断发现、Audit 与当前真实内容一致。
-
-非空且有数量不足或隔离项时，Supervisor 可在 WorkRequest.scope 中加入 allow_limited_delivery，
-并在 objective/constraints 说明限制；说明原样进入报告。空候选不得发布。
-
-默认输出可移植包：benchmark.jsonl、benchmark_manifest.json、Audit/Review 报告、
-quarantine.jsonl、TaskPlan/GenerationSpec 依据、compilation_report.md 及实际输入资源。
-complete.json 绑定所有文件摘要。正式 delivery_manifest ArtifactRef 指向该完成标记。
-evaluation.loader.load_benchmark_package 可独立验证和读取，无需构造 checkpoint。
-
-Finish 仍只表示协调结束，WorkResult 包装完成不改变原目标或实际 shortfall。
-旧 generation.delivery 保留给旧入口；本轮不切换旧 CLI/TUI，也不定义完整调度工作流。
+包包含题目、有序资源引用、隔离记录、任务计划、执行规格、审查报告和实际数量说明。
+非空受限交付遵循冻结 goal_spec.allow_limited_delivery，保留 requested_count 并说明限制；
+空候选、阻断问题或错内容批准不能发布。交付操作 completed 与最终目标 partial 可以同时成立。
+export 复制包内所有被摘要绑定的文件，不重新生成数据。

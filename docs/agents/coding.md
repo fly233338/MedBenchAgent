@@ -1,75 +1,14 @@
-# Coding Agent
+# OpenHands Coding
 
-当前完整能力入口由 Data Processing 内部调用 execute_candidate，只有通过数据校验后才正式提交。
-下面的独立 WorkRequest/Workstream 适配仍保留给已有演示和调用方，下一轮统一清理。
+Coding 是 Data Processing 的内部执行能力，不向 Supervisor 注册独立角色。内部 WorkRequest.operation
+固定 execute；DP 拥有 Workstream 和由持久化 tool_call_id 派生的调用身份。
 
-## Data Processing 内部调用
+Adapter 提供只读输入位置、Workspace 和 output_directory；SDK 使用 Terminal、File Editor、原生压缩
+及持久化。FinishTool 提交 CodingSubmission.result 候选，不分配正式 Artifact ID。
+execute_candidate 返回候选和实际文件收据。DP 检查/修复后提交，SDK 对话不进入父图。
 
-Data Processing 从自己的私有 checkpoint 选择 Coding Workstream，按持久化 tool_call_id 派生
-独立 Call ID。SDK 继续按该请求身份去重、恢复；一项外层委派可以包含多个调用。
-execute_candidate 返回 SDK 结果和候选文件收据（路径、类型、真实摘要），不写正式 Artifact。
-Data Processing 可检查候选内容、校验来源/成员/覆盖，或者发起新调用修复，再通过
-submit_data_artifacts 发布 Profile 或 TaskData。SDK 历史不进入父图。
+同一调用恢复复用已保存的完成结果；新修复创建新调用身份，可沿用自己的 Workstream。
+角色配置和静态指令来自冻结快照，输出只能位于当前请求目录。数据来源/任务约束来自 DP 结构化交接。
+Local 执行不承诺操作系统沙箱或任意外部命令 exactly-once。
 
-## 目标与职责
-
-在 Compilation 任意阶段探索来源、理解数据、编写/运行转换、修复或报告不可行。
-数据准备属于 Coding 的能力，不以 Understand/Text/Image 阶段协议作为必经入口。
-医学影像函数作为 Tool/Skill 使用，不按格式拆 Agent。
-
-## 输入、输出与能力
-
-输入为 WorkRequest 的目标、范围、Dataset/需求/证据引用及约束。
-Host 额外注入冻结的 Compilation Goal 作为只读背景；适用的长期用户要求由 Supervisor
-写入本次 constraints，不传递 Supervisor 完整历史。静态 Coding 指令来自 run.json 的冻结快照。
-输出为 WorkResult 和实际数据、代码或报告引用。Coding 不直接调用 Planner，
-缺少信息时返回 need。
-
-## 私有状态与持久化
-
-一个 Compilation 可以包含多个 Coding Workstream。Supervisor 委派时使用
-workstream_id=null 新建，或指定目录中已有 ID 续接；实际标识由 Host 分配并 checkpoint。
-scope 描述本次工作的范围，不是会话标识。同一 scope 可以新建不同 Workstream。
-
-每个 Workstream 拥有稳定 Conversation ID、独立 Workspace 和 SDK 持久化目录。
-SDK 拥有消息、事件及执行进度；父图只保存最小 Workstream 目录、请求及交接摘要。
-Supervisor 看不到 SDK 内部状态。请求完成不关闭 Workstream，不另建 Session Manager。
-
-Terminal、File Editor 和 SDK 原生上下文压缩是本轮基础能力，工具配置不决定 Workstream
-身份。所有 Workstream 使用本次 Compilation 冻结的 Coding 配置；完整 Skill 系统留待后续。
-
-## 正式产物交接
-
-Host 提供正式输入文件的实际读取位置、当前 Workspace 和请求输出目录。
-不同 Workstream 通过 ArtifactRef 共享数据、代码和 Mapping，不读取其他 Workspace 的临时文件。
-修改正式输入时先在自己的 Workspace 中产生工作副本，再提交新的文件。
-
-SDK FinishTool 使用嵌套结构化候选结果：request_id、outcome、summary、files(path/kind)、
-issues、needs。needs 本轮使用 need_id/kind/summary，详细材料作为文件提交。
-模型不分配 ArtifactRef。Host 检查当前请求输出目录内的实际文件，复制到
-artifacts/<request_id>/ 后登记；只允许相同内容重放，不覆盖已交接文件。
-ArtifactRef 必须携带文件 SHA-256 digest。输入读取和产物交接均校验内容身份；发现变化返回
-artifact_integrity，不能重新登记摘要来替换已接受引用。该摘要不递归覆盖 Manifest 引用的文件。
-具体输出类型和字段要求来自 WorkRequest 或 DataRequirement，不写入通用 Adapter。
-
-## 反馈、失败与恢复
-
-在当前 Workstream 的 SDK 用户消息中按 request_id 去重。已发送但未完成的请求继续运行；
-有效 FinishTool 结果已持久化时只重新交接，不重新运行 Agent。
-缺少输入返回 needs_input；环境不可用或不能继续返回 blocked；执行异常、超时或无效
-产物返回 failed，由 Supervisor 决定下一步，不自动回退 Scripted。
-
-请求日志头记录 compilation_id、request_id、agent_id 和 workstream_id；相同标识传入 SDK
-原生 observability metadata。详细工具事件仍归 SDK，不复制为中央执行账本，不新增外部 tracing 服务。
-
-SDK 状态不复制到 LangGraph 或额外状态文件。Local Runtime 不承诺操作系统沙箱、
-跨进程终端存活或任意外部命令 exactly-once。
-
-## 首期与后续
-
-本轮复用 Local OpenHands 执行能力并拆出候选入口，实施进度见 [PLAN](../PLAN.md)。
-旧 Runtime 保留给尚未迁移的调用方；新实现不依赖旧 Workflow、Preparation Graph、
-StageRequest 或 StageResult。真实模型和医学数据验收不在本轮范围。
-
-官方接口：[Persistence](https://docs.openhands.dev/sdk/guides/convo-persistence)、
-[Structured Output](https://docs.openhands.dev/sdk/guides/structured-output)。
+运行环境由 config/coding-worker.requirements.txt 单独安装；不在启动时自动安装或退回脚本实现。

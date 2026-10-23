@@ -5,7 +5,7 @@ import json
 import pytest
 
 from medbenchagent.compilation.artifacts import resolve_artifact
-from medbenchagent.compilation.demo import create_synthetic_inputs
+from dataset_fixtures import create_synthetic_inputs
 from medbenchagent.data.dataset import FileDatasetReader, snapshot_dataset
 
 

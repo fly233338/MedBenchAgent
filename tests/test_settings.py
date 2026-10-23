@@ -1,57 +1,8 @@
+from pathlib import Path
 import json
 import os
-from pathlib import Path
-
 import pytest
-
-from medbenchagent.runtime.run_artifacts import initialize_run
-from medbenchagent.planning.bir import BIRStore
-from medbenchagent.settings import load_project_env, load_settings
-
-
-@pytest.mark.parametrize("name,value,section,key,expected", [
-    ("MEDBENCH_LLM_TIMEOUT_SECONDS", "0.5", "llm", "timeout_seconds", 0.5),
-    ("MEDBENCH_LLM_MAX_RETRIES", "0", "llm", "max_retries", 0),
-    ("RAG_MIN_RERANK_SCORE", "0.5", "rag", "min_rerank_score", 0.5),
-    ("RAG_MIN_RERANK_SCORE", "1", "rag", "min_rerank_score", 1),
-])
-def test_numeric_environment_overrides(monkeypatch, name, value, section, key, expected):
-    monkeypatch.setenv(name, value)
-    assert getattr(getattr(load_settings(), section), key) == expected
-
-
-@pytest.mark.parametrize("name,value", [
-    ("MEDBENCH_LLM_TIMEOUT_SECONDS", "zero"), ("MEDBENCH_LLM_TIMEOUT_SECONDS", "0"),
-    ("MEDBENCH_LLM_TIMEOUT_SECONDS", "inf"), ("RAG_MIN_RERANK_SCORE", "nan"),
-    ("RAG_MIN_RERANK_SCORE", "1.1"), ("MEDBENCH_LLM_MAX_RETRIES", "1.5"),
-    ("MEDBENCH_LLM_MAX_RETRIES", "-1"),
-])
-def test_invalid_numeric_environment_names_variable(monkeypatch, name, value):
-    monkeypatch.setenv(name, value)
-    with pytest.raises(ValueError, match=name):
-        load_settings()
-
-
-def test_model_override_and_key_default(monkeypatch):
-    from medbenchagent.settings import get_llm_api_key
-    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "new")
-    monkeypatch.setenv("MEDBENCH_LLM_API_KEY", "new")
-    assert load_settings().llm.model == "new"
-    assert get_llm_api_key() == "new"
-    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "")
-    monkeypatch.setenv("MEDBENCH_LLM_API_KEY", "")
-    assert load_settings().llm.model == ""
-    assert get_llm_api_key() == "local-vllm"
-
-
-def test_coding_worker_virtualenv_is_resolved_from_project_config(tmp_path):
-    local = tmp_path / "worker.toml"
-    local.write_text("[data_processing]\ncoding_worker_venv = 'worker-env'\n", encoding="utf-8")
-
-    settings = load_settings(local)
-
-    assert settings.data_processing["coding_worker_venv"] == str((Path.cwd() / "worker-env").resolve())
-
+from medbenchagent.settings import load_project_env
 
 def test_compilation_coding_config_overrides_common_llm_and_freezes_without_credentials(tmp_path, monkeypatch):
     import medbenchagent.settings as settings
@@ -71,7 +22,7 @@ def test_compilation_coding_config_overrides_common_llm_and_freezes_without_cred
         '[rag]\nchunk_size="must not be parsed"\n'
         '[data_processing]\nbackend="must not be initialized"\n', encoding="utf-8",
     )
-    monkeypatch.setattr(settings, "_settings_from", lambda *_: pytest.fail("Do not load full app settings"))
+    monkeypatch.setattr(settings, "load_settings", lambda *_: pytest.fail("Do not load full app settings"))
     supervisor = settings.load_supervisor_settings(local)
     coding = settings.load_coding_settings(local)
     assert supervisor.llm.model == "common-environment-model"
@@ -92,7 +43,6 @@ def test_compilation_coding_config_overrides_common_llm_and_freezes_without_cred
     with pytest.raises(ValueError, match="Unknown configuration key: coding.llm.api_key"):
         settings.load_coding_settings(local)
 
-
 def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / ".env").write_text("MEDBENCH_LLM_MODEL=from-file\n", encoding="utf-8")
     monkeypatch.setattr("medbenchagent.settings.PROJECT_ROOT", tmp_path)
@@ -101,163 +51,3 @@ def test_load_project_env_preserves_process_environment(tmp_path: Path, monkeypa
     load_project_env()
 
     assert os.environ["MEDBENCH_LLM_MODEL"] == "from-process"
-
-
-def test_explicit_toml_then_environment_override_and_empty_value(tmp_path: Path, monkeypatch) -> None:
-    local = tmp_path / "local.toml"
-    local.write_text(
-        "[llm]\nmodel = 'from-toml'\ntimeout_seconds = 30\n"
-        "[rag]\nmin_rerank_score = 0.25\n"
-        "[generation]\nquestion_template_count = 5\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "from-environment")
-    monkeypatch.setenv("RAG_MIN_RERANK_SCORE", "")
-
-    settings = load_settings(local)
-
-    assert settings.llm.model == "from-environment"
-    assert settings.llm.timeout_seconds == 30
-    assert settings.rag.min_rerank_score == 0.25
-    assert settings.generation.question_template_count == 5
-    assert settings.environment_overrides == ("llm.model",)
-    assert settings.local_config_path == local.resolve()
-
-
-@pytest.mark.parametrize("count", [1, 2, 6])
-def test_question_template_count_requires_three_to_five(tmp_path: Path, count: int) -> None:
-    local = tmp_path / "local.toml"
-    local.write_text(f"[generation]\nquestion_template_count = {count}\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="question_template_count must be between 3 and 5"):
-        load_settings(local)
-
-
-def test_cli_config_path_selects_file_over_environment_and_snapshots_remote_rag(tmp_path, monkeypatch):
-    from medbenchagent.settings import active_settings, get_settings, run_settings
-
-    selected = tmp_path / "selected.toml"
-    selected.write_text("[llm]\nmodel='selected'\n"
-                        "[rag]\nembedding_base_url='http://embed/v1'\n"
-                        "embedding_model='embed-v1'\nreranker_base_url='http://rerank/v1'\n"
-                        "reranker_model='rerank-v1'\n", encoding="utf-8")
-    from_env = tmp_path / "from-env.toml"
-    from_env.write_text("[llm]\nmodel='from-env'\n", encoding="utf-8")
-    monkeypatch.setenv("MEDBENCH_CONFIG", str(from_env))
-    monkeypatch.setenv("MEDBENCH_LLM_MODEL", "field-override")
-    monkeypatch.chdir(tmp_path)
-
-    assert load_settings().local_config_path == from_env
-    settings = load_settings(Path("selected.toml"))
-    assert settings.local_config_path == selected
-    assert settings.llm.model == "field-override"
-    assert settings.rag.embedding_model == "embed-v1"
-    with active_settings(settings):
-        assert get_settings() is settings
-        run = initialize_run(tmp_path / "runs", bir_path=bir(tmp_path), settings=settings)
-    selected.write_text("[rag]\nembedding_model='changed'\n", encoding="utf-8")
-    with run_settings(run["effective_config_path"]) as saved:
-        assert saved.rag.embedding_model == "embed-v1"
-        assert saved.rag.reranker_base_url == "http://rerank/v1"
-    snapshot = json.loads(Path(run["effective_config_path"]).read_text(encoding="utf-8"))
-    assert snapshot["config_sources"]["local"]["path"] == str(selected)
-    assert snapshot["environment_overrides"] == ["llm.model"]
-
-
-def test_explicit_toml_rejects_unknown_keys(tmp_path: Path) -> None:
-    local = tmp_path / "local.toml"
-    local.write_text("[generation]\nunknown = 1\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="Unknown configuration key: generation.unknown"):
-        load_settings(local)
-
-
-def test_initialize_run_writes_secret_free_effective_configuration(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("MEDBENCH_LLM_API_KEY", "not-in-snapshot")
-    settings = load_settings()
-
-    run = initialize_run(
-        tmp_path / "runs",
-        bir_path=bir(tmp_path),
-        settings=settings,
-        graph_overrides={"seed": 9, "max_tasks_per_image": 7},
-    )
-
-    snapshot = json.loads(Path(run["effective_config_path"]).read_text(encoding="utf-8"))
-    assert snapshot["graph_overrides"] == {"seed": 9, "max_tasks_per_image": 7}
-    assert snapshot["settings"]["generation"]["seed"] == 9
-    assert snapshot["settings"]["generation"]["max_tasks_per_image"] == 7
-    assert "not-in-snapshot" not in json.dumps(snapshot)
-
-
-def test_initialize_run_accepts_stale_work_but_rejects_corruption(tmp_path):
-    store = BIRStore(bir(tmp_path))
-    store.update("benchmark_info.json", {"sample_count": 1}, run_id="r", actor="test")
-    store.update("allocation.json", {"requested_count": 1}, run_id="r", actor="test",
-                 dependencies={"benchmark_info.json": store.digest("benchmark_info.json")})
-    store.update("benchmark_info.json", {"sample_count": 2}, run_id="r", actor="test")
-    run = initialize_run(tmp_path / "runs", bir_path=store.root)
-    assert run["bir_path"] == str(store.root)
-    assert store.current("allocation.json") is None
-    assert store.validate().warnings
-    path = store.root / "allocation.json"
-    value = json.loads(path.read_text(encoding="utf-8"))
-    value["requested_count"] = 999
-    path.write_text(json.dumps(value), encoding="utf-8")
-    with pytest.raises(ValueError, match="content digest mismatch"):
-        initialize_run(tmp_path / "runs", bir_path=store.root)
-
-
-def test_source_settings_normalize_paths_and_resume_snapshot(tmp_path, monkeypatch):
-    from medbenchagent.settings import run_settings
-    monkeypatch.setattr("medbenchagent.settings.PROJECT_ROOT", tmp_path)
-    local = tmp_path / "sources.toml"
-    local.write_text("[[dataset_sources]]\ndataset_id='ecd'\nname='ECD'\ndescription='Original dataset'\n"
-                     "[[dataset_sources.sources]]\nid='images'\nroot='raw/ecd'\n", encoding="utf-8")
-    cfg = load_settings(local)
-    assert cfg.dataset_sources[0]["sources"][0]["root"] == str(tmp_path / "raw/ecd")
-    run = initialize_run(tmp_path / "runs", bir_path=bir(tmp_path), settings=cfg)
-    local.write_text("dataset_sources=[]\n", encoding="utf-8")
-    with run_settings(run["effective_config_path"]) as saved:
-        assert saved.dataset_sources == cfg.dataset_sources
-
-
-@pytest.mark.parametrize("text,match", [
-    ("[[dataset_sources]]\ndataset_id='a'\nname='A'\ndescription='Data'\nsources=[]\n", "at least 1"),
-    ("[[dataset_sources]]\ndataset_id='A/b'\nname='A'\ndescription='Data'\nsources=[]\n", "unsafe id"),
-    ("[[dataset_sources]]\ndataset_id='a'\nname='A'\ndescription='Data'\n"
-     "sources=[{id='x',root='raw'}, {id='x',root='raw2'}]\n", "Source IDs must be unique"),
-    (("[[dataset_sources]]\ndataset_id='a'\nname='A'\ndescription='Data'\nsources=[{id='x',root='raw'}]\n") * 2,
-     "Duplicate dataset_sources"),
-])
-def test_invalid_source_configuration(tmp_path, text, match):
-    local = tmp_path / "sources.toml"
-    local.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match=match):
-        load_settings(local)
-
-
-def test_benchmark_settings_are_saved_and_validated(tmp_path):
-    from medbenchagent.settings import run_settings
-    local = tmp_path / "defaults.toml"
-    local.write_text("[benchmark]\ndefault_sample_count=35\n", encoding="utf-8")
-    cfg = load_settings(local)
-    run = initialize_run(tmp_path / "runs", bir_path=bir(tmp_path), settings=cfg)
-    local.write_text("[benchmark]\ndefault_sample_count=1\n", encoding="utf-8")
-    with run_settings(run["effective_config_path"]) as saved:
-        assert saved.benchmark.default_sample_count == 35
-    for section, key in (("benchmark", "default_sample_count"),):
-        local.write_text(f"[{section}]\n{key}=0\n", encoding="utf-8")
-        with pytest.raises(ValueError, match="positive"):
-            load_settings(local)
-
-
-def test_removed_semantic_audit_config_is_rejected(tmp_path):
-    local = tmp_path / "obsolete.toml"
-    local.write_text("[audit]\nsemantic_samples_per_task=10\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="Unknown configuration key: audit"):
-        load_settings(local)
-
-
-def bir(tmp_path):
-    return BIRStore.initialize(tmp_path / "BIR", Path(__file__).resolve().parents[1] / "config/bir_template", "test").root

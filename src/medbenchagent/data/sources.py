@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from medbenchagent.data.contracts import Source
+from medbenchagent.data.dataset import DatasetSource
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 
 
@@ -20,7 +20,7 @@ def digest_file(path):
 
 
 
-def inventory_source(source: Source, destination):
+def inventory_source(source: DatasetSource, destination):
     root = Path(source.root).resolve()
     if not root.is_dir():
         raise ValueError(f"Source directory does not exist: {root}")
@@ -30,7 +30,7 @@ def inventory_source(source: Source, destination):
     if all(
         (destination / name).is_file() for name in ("files.jsonl", "source.json")
     ):
-        saved = Source.model_validate_json(
+        saved = DatasetSource.model_validate_json(
             (destination / "source.json").read_text(encoding="utf-8")
         )
         if saved != source:
@@ -62,7 +62,7 @@ def inventory_source(source: Source, destination):
 
 def verify_source(manifest):
     manifest = Path(manifest)
-    source = Source.model_validate_json((manifest / "source.json").read_text(encoding="utf-8"))
+    source = DatasetSource.model_validate_json((manifest / "source.json").read_text(encoding="utf-8"))
     root = Path(source.root)
     count = 0
     with (manifest / "files.jsonl").open(encoding="utf-8") as handle:

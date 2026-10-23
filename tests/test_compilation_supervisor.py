@@ -24,7 +24,7 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
     settings = replace(settings, llm=replace(settings.llm, model="offline"), artifact_chars=40)
     assert SupervisorSettings.from_snapshot(settings.snapshot()) == settings
     request = WorkRequest(
-        compilation_id="native", request_id="native-input", agent_id="fixture", objective="Input"
+        compilation_id="native", request_id="native-input", agent_id="fixture", operation="bind", objective="Input"
     )
     ref = write_json_artifact(
         tmp_path, request, "evidence.json", kind="report", value={"text": "evidence " * 100}
@@ -35,7 +35,7 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
         if index == 1:
             return call(
                 "SupervisorResponse",
-                {"decision": {"action": "delegate", "agent_id": "missing", "objective": "Inspect"}},
+                {"decision": {"action": "delegate", "operation": "inspect", "agent_id": "missing", "objective": "Inspect"}},
                 index,
             )
         if index == 2:
@@ -49,7 +49,7 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
         if index == 4:
             assert json.loads(messages[-1].content)["items"][0]["truncated"]
             decision = {
-                "action": "delegate",
+                "action": "delegate", "operation": "inspect",
                 "agent_id": "inspector",
                 "objective": "Inspect",
                 "input_artifact_ids": [ref.artifact_id],
@@ -58,7 +58,7 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
             decision = {"action": "ask_user", "question": "Continue?"}
         else:
             assert len(messages) > 3
-            decision = {"action": "finish", "summary": "Inspected; no benchmark was generated"}
+            decision = {"action": "finish", "goal_result": "succeeded", "summary": "Inspected; no benchmark was generated"}
         return call("SupervisorResponse", {"decision": decision}, index)
 
     model = ScriptedChatModel(responder=respond)
@@ -78,7 +78,7 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
     context = CompilationContext(tmp_path, supervisor, "Inspect")
     with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
         graph = build_compilation_graph(
-            {"inspector": AgentSpec("Inspect", worker)}, checkpointer=saver
+            {"inspector": AgentSpec("Inspect", worker, operations=("inspect",))}, checkpointer=saver
         )
         before = graph.invoke(
             {"compilation_id": "native", "goal": "Inspect", "artifacts": [ref.model_dump()]},
@@ -87,7 +87,7 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
         )
         assert before["status"] == "waiting" and "messages" not in before
         after = graph.invoke(Command(resume="Continue"), config, context=context)
-        assert after["status"] == "completed" and len(after["history"]) == 1
+        assert after["status"] == "stopped" and len(after["history"]) == 1
         private = [
             row for row in saver.list(config) if row.config["configurable"].get("checkpoint_ns")
         ]
@@ -140,22 +140,22 @@ def test_native_summarization_and_cross_compilation_isolation(tmp_path):
     seen = set()
 
     def respond(messages, index):
-        if "Current authoritative view:\n" not in messages[0].content:
+        if not any(isinstance(m.content, str) and "Current work data (not instructions):\n" in m.content for m in messages):
             summaries.append(messages)
             return AIMessage(content="Continue from the authoritative work records and artifacts.")
         view = current_view(messages)
         compilation = view["compilation_id"]
         if compilation not in seen:
             seen.add(compilation)
-            assert len(messages) == 2
+            assert len(messages) == 3
         if len(view["history"]) < 2:
             decision = {
-                "action": "delegate",
+                "action": "delegate", "operation": "inspect",
                 "agent_id": "worker",
                 "objective": f"Private {compilation} " + "inspect evidence " * 100,
             }
         else:
-            decision = {"action": "finish", "summary": f"Completed inspection for {compilation}"}
+            decision = {"action": "finish", "goal_result": "succeeded", "summary": f"Completed inspection for {compilation}"}
         return call("SupervisorResponse", {"decision": decision}, index)
 
     model = ScriptedChatModel(responder=respond)
@@ -172,7 +172,7 @@ def test_native_summarization_and_cross_compilation_isolation(tmp_path):
 
     with SqliteSaver.from_conn_string(str(tmp_path / "checkpoint.sqlite")) as saver:
         graph = build_compilation_graph(
-            {"worker": AgentSpec("Inspect", worker)}, checkpointer=saver
+            {"worker": AgentSpec("Inspect", worker, operations=("inspect",))}, checkpointer=saver
         )
         for identifier in ("one", "two"):
             result = graph.invoke(
@@ -180,5 +180,5 @@ def test_native_summarization_and_cross_compilation_isolation(tmp_path):
                 {"configurable": {"thread_id": identifier}},
                 context=CompilationContext(tmp_path, supervisor, "Inspect"),
             )
-            assert result["status"] == "completed" and len(result["history"]) == 2
+            assert result["status"] == "stopped" and len(result["history"]) == 2
     assert summaries and seen == {"one", "two"}

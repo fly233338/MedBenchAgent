@@ -1,24 +1,11 @@
-# Data Processing Agent
+# Data Processing
 
-使用 create_agent 接收来源、Profile、TaskPlan、DataRequirement 或已有数据，选择领域操作。
-本轮只固定职责和工具契约，不固定“先 Profile 再整理”的协作顺序。
+原生 Agent 拥有 profile 和 prepare_task_data 两种操作，分别加载操作 Prompt。
+工具覆盖来源检查、canonical schema 查询、Coding 执行、候选阅读/检查/修复和正式提交。
 
-| 工具 | 能力 |
-| --- | --- |
-| inspect_sources / inspect_artifact | 检查显式委派的来源目录或正式 JSON 产品 |
-| describe_data_contracts | 返回实际 Profile、TaskData、Case、Asset Schema 和后端能力 |
-| invoke_coding / inspect_coding | 创建或续接内部 Coding Workstream，执行或检查调用收据 |
-| inspect_data_candidate / inspect_candidate_cases | 检查真实候选 Manifest 与 Case 内容 |
-| validate_data_candidate | 核验来源范围、成员摘要、Case 结构与实际覆盖 |
-| submit_data_artifacts | 验证并提交正式 Profile / TaskData |
+准备任务明确绑定 TaskPlan、DataRequirement 与来源/Profile。兼容的多个场景可以共享 TaskData；
+同一 backend 不保证相同 Case 粒度或输入关系，不能据此强制合并。
 
-Coding 原生循环返回候选，Data Processing 决定是否接受。一次委派可以进行多次 Coding 调用；
-Call ID 从持久化工具调用身份派生，重放沿用同一次 SDK 请求。私有 checkpoint 保存调用参数和文件收据，
-不复制 SDK 内部历史或建立另一份执行账本。
-
-候选来源只能位于显式委派的源目录或本 Coding Workspace。Profile 的来源身份与真实文件绑定，
-TaskData 的统计由实际 Case 文件计算，正式 TaskData 复制为自包含快照。
-自然语言接受条件仍由需求方判断；结构有效不等于任务语义已经成立。
-
-静态指令位于 prompts/data_processing.md，Coding 使用现有 prompts/coding.md。
-SDK 环境仍需预先配置，Local Runtime 不承诺操作系统沙箱或任意命令 exactly-once。
+Coding 成功只产生候选。DP 验证来源、内容、字段和计数后提交；Planner 另行验收任务适用性。
+不生成临床答案、不改变任务目标，缺失或歧义作为具体工作需求返回 Supervisor。
+细节见 [候选检查](../PREPARATION_VALIDATION.md)。

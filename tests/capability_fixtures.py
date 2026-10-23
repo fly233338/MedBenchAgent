@@ -22,7 +22,7 @@ from medbenchagent.compilation.artifacts import (
 )
 from medbenchagent.compilation.coding import OpenHandsCodingAgent
 from medbenchagent.compilation.coding_worker import CodingCandidate
-from medbenchagent.compilation.contracts import ArtifactRef, WorkRequest
+from medbenchagent.compilation.contracts import ArtifactRef, WorkRequest, WorkScope
 from medbenchagent.data.dataset import DatasetRef, DatasetSource, file_digest
 from medbenchagent.data.models import SourceRef
 from medbenchagent.data.task_data import (
@@ -43,7 +43,7 @@ from medbenchagent.settings import (
     load_planner_settings,
     load_work_agent_settings,
 )
-from test_compilation_coding import FakeRunner
+from coding_fixtures import FakeRunner
 
 
 class ToolCalls:
@@ -52,6 +52,7 @@ class ToolCalls:
         self.context, self.known = context, known
         self.state = state if state is not None else {}
         self.number = 0
+        self.trace = []
         self.state.update(
             (middleware or WorkInstructions()).before_agent(
                 self.state, SimpleNamespace(context=context)
@@ -72,6 +73,9 @@ class ToolCalls:
         ):
             path = self.context.directory / self.state["draft_path"]
             arguments["base_revision"] = json.loads(path.read_text())["revision"]
+        self.trace.append({"name": name, "args": json.loads(json.dumps(
+            {key: value for key, value in arguments.items() if key != "runtime"},
+            default=lambda value: value.model_dump(mode="json"))), "id": f"tool-{self.number}"})
         value = function(**arguments)
         if isinstance(value, Command):
             self.state.update(value.update)
@@ -81,7 +85,8 @@ class ToolCalls:
                     for row in self.state.get("submitted", [])
                 }
             )
-            return json.loads(value.update["messages"][-1].content)
+            value = json.loads(value.update["messages"][-1].content)
+        self.trace[-1]["result"] = value
         return value
 
 
@@ -104,7 +109,7 @@ def build_capabilities(tmp_path):
     source_file.write_text(source.model_dump_json(), encoding="utf-8")
     source_ref = write_json_artifact(
         directory,
-        WorkRequest(request_id="input", compilation_id="cap", agent_id="input", objective="Source"),
+        WorkRequest(request_id="cap-input", compilation_id="cap", agent_id="input", operation="bind", objective="Source"),
         "sources.json",
         kind="source_manifest",
         value=source.model_dump(mode="json"),
@@ -132,7 +137,7 @@ def build_capabilities(tmp_path):
         from pathlib import Path
 
         output = Path(payload["output_directory"])
-        if "profile" not in mutable:
+        if payload["request"]["objective"] == "Inspect sources":
             (output / "profile.json").write_text(profile.model_dump_json(), encoding="utf-8")
             files = [{"path": "profile.json", "kind": "dataset_profile"}]
         else:
@@ -206,7 +211,7 @@ def build_capabilities(tmp_path):
                     sources=source.sources,
                     backend_id=backend,
                     scenario_ids=scopes,
-                    requirement_ids=[f"prepare-{backend}"],
+                    requirements={f"prepare-{backend}": binding(mutable["requirements"][f"prepare-{backend}"])},
                     profile=binding(mutable["profile"]),
                 )
                 (destination / "manifest.json").write_text(
@@ -227,14 +232,21 @@ def build_capabilities(tmp_path):
         coding_settings, instructions=load_prompt("coding.md"), runner=runner
     )
 
+    operations = {"profile": "profile", "scenarios": "discover_scenarios", "prepare": "prepare_task_data",
+                  "leaves": "design_leaves", "generate": "generate", "target": "bind"}
+    identifiers = {name: f"cap-{index:06d}" for index, name in enumerate(operations, 1)}
+    identifiers["target"] = "cap-input"
+    stages = []
+
     def request(identifier, agent, inputs=None):
-        return WorkRequest(
-            compilation_id="cap",
-            request_id=identifier,
-            agent_id=agent,
-            objective="Exercise capabilities",
-            inputs=list(known.values()) if inputs is None else inputs,
-        )
+        selected = list(known.values()) if inputs is None else inputs
+        plans = [r for r in selected if r.kind == "task_plan"]
+        if plans:
+            selected = [r for r in selected if r.kind != "task_plan" or r == plans[-1]]
+        target = plans[-1] if plans else next((r for r in selected if r.kind == "dataset_profile"), source_ref)
+        return WorkRequest(compilation_id="cap", request_id=identifiers[identifier], agent_id=agent,
+                           operation=operations[identifier], objective="Exercise capabilities",
+                           scope=[WorkScope(artifact_id=target.artifact_id)] if selected else [], inputs=selected)
 
     dp_settings = load_work_agent_settings("data_processing")
     dp = ToolCalls(
@@ -262,6 +274,7 @@ def build_capabilities(tmp_path):
         "submit_data_artifacts", call_id=result["call_id"], paths=["profile.json"]
     )
     profile_ref = ArtifactRef.model_validate(profile_result["artifacts"][0])
+    stages.append(dp)
     mutable["profile"] = profile_ref
     reader = ProfileReader(resolve_artifact(directory, profile_ref))
     planner_settings = load_planner_settings()
@@ -332,6 +345,7 @@ def build_capabilities(tmp_path):
                 dataset=dataset,
                 purpose="Prepare task Cases",
                 representation="Backend Cases",
+                required_fields=[{"name": "views", "type": "asset", "input_visibility": "model_visible", "purpose": "Ordered observations"}],
                 evidence_refs=evidence,
                 acceptance_criteria=["Preserve source facts"],
                 affected_scenario_ids=scenarios if backend == "vqa" else scenarios[:1],
@@ -343,6 +357,9 @@ def build_capabilities(tmp_path):
         known[row["artifact_id"]] for row in scene_result["artifacts"] if row["kind"] == "task_plan"
     )
     assert not read_json_artifact(directory, scenario_ref)["tasks"]
+    stages.append(planner)
+    mutable["requirements"] = {read_json_artifact(directory, ref)["requirement_id"]: ref
+                               for ref in known.values() if ref.kind == "data_requirement"}
     dp = ToolCalls(
         data_processing_tools(),
         replace(dp.context, request=request("prepare", "data_processing")),
@@ -361,6 +378,7 @@ def build_capabilities(tmp_path):
         call_id=result["call_id"],
         paths=[row["path"] for row in result["files"]],
     )
+    stages.append(dp)
     task_refs = {}
     task_readers = {}
     for raw_ref in published["artifacts"]:
@@ -396,7 +414,7 @@ def build_capabilities(tmp_path):
         task = SemanticTaskSpec(
             task_id=family,
             dataset=dataset,
-            scenario_id=scenarios[0],
+            scenario_id=scenarios[1] if family == "open_vqa" else scenarios[0],
             task_family=family,
             objective="Answer from prepared evidence",
             input_requirements=["Ordered input views"],
@@ -426,6 +444,7 @@ def build_capabilities(tmp_path):
     leaf_ref = next(
         known[row["artifact_id"]] for row in leaf_result["artifacts"] if row["kind"] == "task_plan"
     )
+    stages.append(planner)
     goal = write_json_artifact(
         directory,
         request("target", "input", []),
@@ -471,7 +490,9 @@ def build_capabilities(tmp_path):
             "finalize_generation", spec_ids=specs, batch_ids=batches, allocation_id=allocation
         )["artifact_id"]
     ]
+    stages.append(generation)
     return SimpleNamespace(
+        stages=stages, produce=produce, source_ref=source_ref, target_ref=goal,
         directory=directory,
         known=known,
         candidate_ref=candidate_ref,
