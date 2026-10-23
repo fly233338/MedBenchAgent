@@ -8,8 +8,8 @@ from pydantic import model_validator
 
 from medbenchagent import prompts
 from medbenchagent.settings import (
-    CodingSettings, SupervisorSettings, get_coding_api_key, get_llm_api_key,
-    load_coding_settings, load_project_env, load_supervisor_settings,
+    CodingSettings, SupervisorSettings, TaskPlannerSettings, get_coding_api_key, get_llm_api_key,
+    load_coding_settings, load_project_env, load_supervisor_settings, load_planner_settings,
 )
 
 from .contracts import Contract, Identifier, Text
@@ -20,7 +20,9 @@ class RunOptions(Contract):
     goal: Text
     supervisor_mode: Literal["scripted", "llm"]
     coding_mode: Literal["scripted", "openhands"]
-    planner_mode: Literal["scripted"] = "scripted"
+    planner_mode: Literal["scripted", "llm"] = "scripted"
+    dataset_manifest: str | None = None
+    planner_settings: dict[str, Any] | None = None
     initial_evidence: bool
     pause_for_input: bool
     supervisor_settings: dict[str, Any] | None
@@ -33,6 +35,7 @@ class RunOptions(Contract):
         for agent, mode, active, snapshot, schema in (
             ("supervisor", self.supervisor_mode, "llm", self.supervisor_settings, SupervisorSettings),
             ("coding", self.coding_mode, "openhands", self.coding_settings, CodingSettings),
+            ("planner", self.planner_mode, "llm", self.planner_settings, TaskPlannerSettings),
         ):
             if mode == active:
                 if snapshot is None:
@@ -53,19 +56,28 @@ def create_run(
     directory: Path, *, compilation_id: str, goal: str,
     supervisor_mode: str = "scripted", coding_mode: str = "scripted",
     config_path: Path | None = None, initial_evidence: bool = False, pause_for_input: bool = False,
+    planner_mode: str = "scripted", dataset_manifest: Path | None = None,
 ) -> RunOptions:
     directory = directory.resolve()
     path = directory / "run.json"
     if path.exists() or (directory / "checkpoints.sqlite").exists():
         raise ValueError("This directory already contains a run; use resume")
-    if supervisor_mode == coding_mode == "scripted" and config_path is not None:
-        raise ValueError("--config requires --supervisor llm or --coding openhands")
+    if supervisor_mode == coding_mode == planner_mode == "scripted" and config_path is not None:
+        raise ValueError("--config requires a model-driven agent")
+    if dataset_manifest is not None:
+        from medbenchagent.data.dataset import FileDatasetReader
+        FileDatasetReader(dataset_manifest)
+        if planner_mode != "llm" or supervisor_mode != "llm":
+            raise ValueError("Real datasets require --supervisor llm --planner llm; scripted agents are synthetic fixtures")
+        if initial_evidence:
+            raise ValueError("--initial-evidence belongs to the synthetic demonstration")
     if supervisor_mode == "llm" and pause_for_input:
         raise ValueError("--pause-for-input belongs to the scripted Supervisor")
     snapshots, instructions = {}, {}
     for agent, mode, active, loader, credential in (
         ("supervisor", supervisor_mode, "llm", load_supervisor_settings, get_llm_api_key),
         ("coding", coding_mode, "openhands", load_coding_settings, get_coding_api_key),
+        ("planner", planner_mode, "llm", load_planner_settings, get_llm_api_key),
     ):
         if mode == active:
             from medbenchagent.runtime.model_services import resolve_model_service
@@ -77,6 +89,8 @@ def create_run(
             instructions[agent] = prompts.freeze_prompt(f"{agent}.md")
     options = RunOptions(
         compilation_id=compilation_id, goal=goal, supervisor_mode=supervisor_mode,
+        planner_mode=planner_mode, planner_settings=snapshots.get("planner"),
+        dataset_manifest=str(dataset_manifest.resolve()) if dataset_manifest is not None else None,
         coding_mode=coding_mode, initial_evidence=initial_evidence, pause_for_input=pause_for_input,
         supervisor_settings=snapshots.get("supervisor"), coding_settings=snapshots.get("coding"),
         prompts=instructions,

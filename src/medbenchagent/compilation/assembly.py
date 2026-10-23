@@ -1,7 +1,7 @@
 """Explicit composition of selected implementations; no data creation or plugin manager."""
 
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from .interfaces import AgentSpec, CompilationContext
@@ -13,15 +13,20 @@ def assemble_compilation(
     options: RunOptions, directory: Path, *, additional_agents: Mapping[str, AgentSpec] | None = None,
 ):
     """Yield the registry and injected context, then release owned model clients."""
-    cleanup = None
-    try:
+    with ExitStack() as stack:
+        def model_for(settings):
+            from medbenchagent.runtime.native import chat_model
+            model = chat_model(settings.llm, settings.loop)
+            if getattr(model, "root_client", None) is not None:
+                stack.callback(model.root_client.close)
+            return model
+
         if options.supervisor_mode == "llm":
             from medbenchagent.settings import SupervisorSettings
-            from medbenchagent.runtime.llm import clear_client_cache
             from .supervisor import ModelSupervisor
 
-            cleanup = clear_client_cache
-            decide = ModelSupervisor(directory, SupervisorSettings.from_snapshot(options.supervisor_settings),
+            settings = SupervisorSettings.from_snapshot(options.supervisor_settings)
+            decide = ModelSupervisor(directory, settings, model=model_for(settings),
                                      instructions=options.prompts["supervisor"].text)
         else:
             from .demo import scripted_supervisor
@@ -35,14 +40,20 @@ def assemble_compilation(
         else:
             from .demo import scripted_coding_spec
             coding = scripted_coding_spec()
-        # The current run contract explicitly selects a scripted Planner.
-        from .demo import scripted_planner_spec
-        agents = {"coding": coding, "task_planner": scripted_planner_spec()}
+        if options.planner_mode == "llm":
+            from medbenchagent.settings import TaskPlannerSettings
+            from medbenchagent.agents.semantic_planner import build_planner_spec
+            settings = TaskPlannerSettings.from_snapshot(options.planner_settings)
+            planner = build_planner_spec(settings, model=model_for(settings), instructions=options.prompts["planner"].text)
+        else:
+            from .demo import scripted_planner_spec
+            planner = scripted_planner_spec()
+        agents = {"coding": coding, "task_planner": planner}
+        if options.dataset_manifest is not None and options.coding_mode == "scripted":
+            # Synthetic Coding is not advertised as a capability on real data.
+            agents.pop("coding")
         additional_agents = dict(additional_agents or {})
         if additional_agents.keys() & agents.keys():
             raise ValueError("Additional agents cannot replace a frozen built-in selection")
         agents.update(additional_agents)
         yield agents, CompilationContext(directory.resolve(), decide, options.goal)
-    finally:
-        if cleanup is not None:
-            cleanup()

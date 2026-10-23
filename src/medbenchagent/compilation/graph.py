@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
-from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
@@ -91,7 +91,9 @@ def build_compilation_graph(
             workstreams=tuple(Workstream.model_validate(row) for row in state.get("workstreams", [])),
             workstream_agents=tuple(name for name, spec in agents.items() if spec.uses_workstreams),
         )
-        decision = _decision.validate_python(runtime.context.decide(view))
+        decision = _decision.validate_python(
+            RunnableLambda(runtime.context.decide).invoke(view, config=config)
+        )
         if isinstance(decision, Delegate):
             if decision.agent_id not in agents:
                 raise ValueError(f"Unregistered Agent: {decision.agent_id}")

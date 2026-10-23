@@ -30,6 +30,8 @@ dependencies = [
     "textual>=6.0.0",
     "tomlkit>=0.13.0",
     "xlrd==2.0.2",
+    "langchain>=1.4.7,<1.5",
+    "langchain-openai>=1.7.2,<1.8",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +57,7 @@ packages = ["src/medbenchagent"]
 "src/medbenchagent/prompts/data_preparation_prepare_text.md" = "medbenchagent/prompts/data_preparation_prepare_text.md"
 "src/medbenchagent/prompts/data_preparation_prepare_image.md" = "medbenchagent/prompts/data_preparation_prepare_image.md"
 "src/medbenchagent/prompts/supervisor.md" = "medbenchagent/prompts/supervisor.md"
+"src/medbenchagent/prompts/planner.md" = "medbenchagent/prompts/planner.md"
 "src/medbenchagent/prompts/coding.md" = "medbenchagent/prompts/coding.md"
 
 [dependency-groups]

@@ -7,11 +7,11 @@ from pathlib import Path
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
-from medbenchagent.data.dataset import DatasetManifest, DatasetRef, FileDatasetReader
+from medbenchagent.data.dataset import DatasetManifest, DatasetRef, FileDatasetReader, seal_manifest
 from medbenchagent.data.models import (
     AssetEntry, CaseRecord, CaseRelation, EntityRef, Evidence, EvidenceRef, SourceRef,
 )
-from medbenchagent.planning.contracts import DataRequirement, SemanticTaskSpec
+from medbenchagent.planning.contracts import DataRequirement, SemanticTaskSpec, TaskPlan
 
 from .artifacts import read_json_artifact, resolve_artifact, write_artifact, write_json_artifact
 from .contracts import ArtifactRef, AskUser, Delegate, Finish, WorkNeed, WorkRequest, WorkResult
@@ -121,6 +121,7 @@ def create_synthetic_inputs(
         assets_path="assets.jsonl", sources=[{"source_id": "raw", "root": "."}],
         mapping_path="mapping.json",
     )
+    manifest = seal_manifest(directory / "artifacts" / request.request_id / "dataset", manifest)
     dataset = write_json_artifact(
         directory, request, "dataset/manifest.json", kind="dataset", value=manifest.model_dump(),
     )
@@ -222,10 +223,33 @@ def build_scripted_planner():
             output_paradigm="number", evidence_refs=evidence,
             feasibility="needs_data" if pending else "feasible",
             requirement_ids=[pending] if pending else [],
+            input_evidence_refs=evidence, reference_evidence_refs=evidence,
+        )
+        requirements = {}
+        for ref in request.inputs:
+            if ref.kind == "data_requirement":
+                item = DataRequirement.model_validate(read_json_artifact(directory, ref))
+                requirements[item.requirement_id] = item
+        if pending:
+            requirements[requirement.requirement_id] = requirement
+        plan = TaskPlan(
+            plan_id="synthetic-plan", revision=planning_pass, dataset=_dataset_ref(reader),
+            dataset_digest=next(ref.digest for ref in request.inputs if ref.kind == "dataset"),
+            axis_assessments={axis: [{"value": value, "supported": True, "reason": "Synthetic fixture",
+                                     "evidence_refs": evidence}]
+                              for axis, value in (("input_structure", "single-value"), ("operation", "doubling"),
+                                                  ("clinical_target", "synthetic-value"))},
+            scenarios={"synthetic-values": {"scenario_id": "synthetic-values", "input_structure": "single-value",
+                       "operation": "doubling", "clinical_target": "synthetic-value", "decision": "keep",
+                       "reason": "Synthetic fixture", "evidence_refs": evidence}},
+            tasks={task.task_id: task}, requirements=requirements,
+            acceptances={} if pending else {data["requirement_id"]: {
+                "artifact_id": derived.artifact_id, "digest": derived.digest,
+                "reason": "Verified exact doubled values", "evidence_refs": evidence}},
         )
         artifacts.append(write_json_artifact(
             directory, request, "plan.json", kind="task_plan",
-            value=task.model_dump(mode="json"),
+            value=plan.model_dump(mode="json"),
         ))
         result = WorkResult(
             request_id=request.request_id, outcome="needs_input" if pending else "completed",
@@ -277,7 +301,7 @@ def scripted_supervisor(directory: Path, *, pause_for_input: bool = False):
         coding_stream = next((item.workstream_id for item in reversed(view.workstreams)
                               if item.agent_id == "coding"), None)
         plan = _latest(references, "task_plan")
-        if plan and read_json_artifact(directory, plan)["feasibility"] == "feasible":
+        if plan and all(task["feasibility"] == "feasible" for task in read_json_artifact(directory, plan)["tasks"].values()):
             return Finish(summary="Scripted collaboration complete; no benchmark was generated")
         if _latest(references, "dataset_overview") is None:
             return Delegate(

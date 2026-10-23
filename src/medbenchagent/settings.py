@@ -8,7 +8,7 @@ import tomllib
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -49,6 +49,29 @@ class LlmSettings:
 
 
 @dataclass(frozen=True)
+class AgentLoopSettings:
+    """Native agent invocation limits; never cumulative compilation quotas."""
+
+    max_model_calls: int = 24
+    max_tool_calls: int = 64
+    context_tokens: int = 24000
+    max_output_tokens: int = 4096
+    summary_trigger_tokens: int = 8000
+    summary_keep_tokens: int = 2000
+
+    @classmethod
+    def parse(cls, values):
+        if not isinstance(values, dict) or set(values) != set(cls.__dataclass_fields__):
+            raise ValueError("Unexpected or missing agent loop settings")
+        result = cls(**{key: _integer(value, f"loop.{key}", minimum=1)
+                       for key, value in values.items()})
+        if not (result.summary_keep_tokens < result.summary_trigger_tokens
+                < result.context_tokens - result.max_output_tokens):
+            raise ValueError("Agent summary limits must leave room for context and output")
+        return result
+
+
+@dataclass(frozen=True)
 class SupervisorSettings:
     """Only the model and context limits needed by independent supervision."""
 
@@ -59,6 +82,7 @@ class SupervisorSettings:
     history_items: int
     catalog_page_size: int
     max_lookups: int
+    loop: AgentLoopSettings = field(default_factory=AgentLoopSettings)
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -70,6 +94,7 @@ class SupervisorSettings:
                 "history_items": self.history_items,
                 "catalog_page_size": self.catalog_page_size,
                 "max_lookups": self.max_lookups,
+                "loop": asdict(self.loop),
             },
         }
 
@@ -80,7 +105,7 @@ class SupervisorSettings:
         limits = values["supervisor"]
         if (not isinstance(limits, dict)
                 or set(limits) != {"context_chars", "artifact_chars", "max_artifacts", "history_items",
-                                   "catalog_page_size", "max_lookups"}):
+                                   "catalog_page_size", "max_lookups", "loop"}):
             raise ValueError("Unexpected or missing Supervisor limit fields")
         return cls(
             llm=_checked_llm_settings(values["llm"]),
@@ -90,7 +115,34 @@ class SupervisorSettings:
             history_items=_integer(limits["history_items"], "supervisor.history_items", minimum=1),
             catalog_page_size=_integer(limits["catalog_page_size"], "supervisor.catalog_page_size", minimum=1),
             max_lookups=_integer(limits["max_lookups"], "supervisor.max_lookups", minimum=1),
+            loop=AgentLoopSettings.parse(limits["loop"]),
         )
+
+
+@dataclass(frozen=True)
+class TaskPlannerSettings:
+    llm: LlmSettings
+    context_chars: int
+    page_size: int
+    preview_chars: int
+    max_scenarios: int
+    loop: AgentLoopSettings
+
+    def snapshot(self):
+        values = asdict(self)
+        return {"llm": values.pop("llm"), "planner": values}
+
+    @classmethod
+    def from_snapshot(cls, values):
+        if not isinstance(values, dict) or set(values) != {"llm", "planner"}:
+            raise ValueError("Planner settings require llm and planner sections")
+        limits = values["planner"]
+        if set(limits) != {"context_chars", "page_size", "preview_chars", "max_scenarios", "loop"}:
+            raise ValueError("Unexpected or missing Planner settings")
+        return cls(llm=_checked_llm_settings(values["llm"]),
+                   loop=AgentLoopSettings.parse(limits["loop"]),
+                   **{key: _integer(limits[key], f"planner.{key}", minimum=1)
+                      for key in ("context_chars", "page_size", "preview_chars", "max_scenarios")})
 
 
 @dataclass(frozen=True)
@@ -418,6 +470,20 @@ def load_supervisor_settings(config_path: Path | None = None) -> SupervisorSetti
         _merge(values, {name: override[name] for name in values if name in override})
     _apply_environment(values)
     return SupervisorSettings.from_snapshot(values)
+
+
+def load_planner_settings(config_path: Path | None = None) -> TaskPlannerSettings:
+    load_project_env()
+    defaults = _read_toml(DEFAULT_CONFIG_PATH)
+    values = {name: defaults[name] for name in ("llm", "planner")}
+    raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
+    if raw_path:
+        path = (Path(raw_path).expanduser().resolve() if config_path is not None
+                else _resolve_path(str(raw_path), "MEDBENCH_CONFIG"))
+        override = _read_toml(path)
+        _merge(values, {name: override[name] for name in values if name in override})
+    _apply_environment(values)
+    return TaskPlannerSettings.from_snapshot(values)
 
 
 def load_coding_settings(config_path: Path | None = None) -> CodingSettings:

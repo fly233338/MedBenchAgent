@@ -60,7 +60,7 @@ class SupervisorView:
 @dataclass(frozen=True)
 class CompilationContext:
     directory: Path
-    decide: Callable[[SupervisorView], SupervisorDecision]
+    decide: Callable[..., SupervisorDecision]  # RunnableConfig is injected when accepted.
     goal: str
 
 

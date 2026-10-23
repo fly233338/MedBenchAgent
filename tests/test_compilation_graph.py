@@ -71,7 +71,7 @@ def test_multi_round_collaboration_uses_evidence_and_isolates_state(tmp_path):
             for ref in refs:
                 assert resolve_artifact(directory, ref).is_file()
             plans = [
-                SemanticTaskSpec.model_validate(read_json_artifact(directory, ref))
+                SemanticTaskSpec.model_validate(read_json_artifact(directory, ref)["tasks"]["synthetic-double"])
                 for ref in refs if ref.kind == "task_plan"
             ]
             assert [plan.feasibility for plan in plans] == ["needs_data", "feasible"]
@@ -155,21 +155,21 @@ def test_checkpoint_resumes_in_a_new_process_without_repeating_completed_work(tm
     final_plan = next(ref for ref in reversed(after["artifacts"]) if ref["kind"] == "task_plan")
     assert read_json_artifact(
         directory, ArtifactRef.model_validate(final_plan),
-    )["feasibility"] == "feasible"
+    )["tasks"]["synthetic-double"]["feasibility"] == "feasible"
 
 
 @pytest.mark.parametrize("supervisor_mode", ["scripted", "llm"])
 @pytest.mark.parametrize("coding_mode", ["scripted", "openhands"])
 def test_cli_modes_freeze_independent_models_and_resume(tmp_path, monkeypatch, capsys,
                                                        supervisor_mode, coding_mode):
-    from types import SimpleNamespace
+    from native_agent_fixtures import ScriptedChatModel, call, current_view
 
     from test_compilation_coding import FakeRunner
     import medbenchagent.compilation.coding as coding
     from medbenchagent.compilation.__main__ import main
     from medbenchagent.compilation.demo import DERIVED_OUTPUT, OVERVIEW_OUTPUT
     from medbenchagent.compilation.coding_worker import CodingCandidate
-    import medbenchagent.runtime.llm as transport
+    import medbenchagent.runtime.native as transport
     import medbenchagent.runtime.model_services as services
     import medbenchagent.settings as settings
 
@@ -217,9 +217,8 @@ def test_cli_modes_freeze_independent_models_and_resume(tmp_path, monkeypatch, c
     runner = FakeRunner(perform)
     monkeypatch.setattr(coding, "run_local_worker", runner)
 
-    def create(**kwargs):
-        assert kwargs["model"] == "supervisor-model"
-        view = json.loads(kwargs["messages"][1]["content"])
+    def respond(messages, index):
+        view = current_view(messages)
         refs = view["available_artifacts"]
         kinds = {ref["kind"] for ref in refs}
         last = view["last_result"]
@@ -237,11 +236,12 @@ def test_cli_modes_freeze_independent_models_and_resume(tmp_path, monkeypatch, c
                 "workstream_id": (view["workstreams"][0]["workstream_id"]
                                   if needs_coding and view["workstreams"] else None),
             }
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"decision": decision})))])
+        return call("SupervisorResponse", {"decision": decision}, index)
 
-    monkeypatch.setattr(transport, "_client", lambda _settings: SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
-    ))
+    def model(settings, limits):
+        assert settings.model == "supervisor-model"
+        return ScriptedChatModel(responder=respond)
+    monkeypatch.setattr(transport, "chat_model", model)
     directory = tmp_path / "run"
     common = ["--directory", str(directory), "--compilation-id", "modes"]
     arguments = ["run", *common, "--supervisor", supervisor_mode, "--coding", coding_mode]

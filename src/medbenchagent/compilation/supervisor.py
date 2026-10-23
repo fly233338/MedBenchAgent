@@ -1,15 +1,20 @@
 """Model decisions with bounded, inspectable context owned by the Supervisor."""
 
 import json
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
 from pydantic import Field
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ModelResponse
+from langchain.agents.structured_output import ToolStrategy
+from langchain.tools import tool, ToolRuntime
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
-from medbenchagent.runtime.construction import event_context
-from medbenchagent.runtime.llm import (
-    RequestContextBudgetError, complete_validated_json, json_request_chars,
-)
+from medbenchagent.runtime.llm import RequestContextBudgetError
+from medbenchagent.runtime.native import AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
 from medbenchagent.settings import SupervisorSettings
 
 from .artifacts import preview_artifact
@@ -28,7 +33,6 @@ class _ModelDelegation(Contract):
 
 
 class _Inspection(Contract):
-    action: Literal["inspect"]
     target: Literal["artifacts", "workstreams", "work", "preview"]
     ids: list[Identifier] = Field(default_factory=list, description="IDs of the selected target type")
     kind: Text | None = None
@@ -41,11 +45,60 @@ class _Inspection(Contract):
 
 
 class SupervisorResponse(Contract):
-    decision: Annotated[_ModelDelegation | _Inspection | AskUser | Finish, Field(discriminator="action")]
+    decision: Annotated[_ModelDelegation | AskUser | Finish, Field(discriminator="action")]
 
 
-class SupervisorLookupLimit(RuntimeError):
-    """Reading is bounded; exhausting the budget is not evidence that work is finished."""
+@dataclass(frozen=True)
+class SupervisorContext:
+    directory: Path
+    view: SupervisorView
+    current_view: dict
+    instructions: str
+    invocation_id: str
+    agent_id: str = "supervisor"
+
+    @property
+    def compilation_id(self):
+        return self.view.compilation_id
+
+
+def resolve_decision(view, response):
+    decision = response.decision
+    if not isinstance(decision, _ModelDelegation):
+        return decision
+    if decision.agent_id not in view.agents:
+        raise ValueError(f"Unregistered Agent: {decision.agent_id}")
+    view.validate_workstream(decision.agent_id, decision.workstream_id)
+    known = {ref.artifact_id: ref for ref in view.artifacts}
+    identifiers = decision.input_artifact_ids
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("Input artifact IDs must be unique")
+    if unknown := set(identifiers) - known.keys():
+        raise ValueError(f"Unknown artifact IDs: {sorted(unknown)}")
+    return Delegate(agent_id=decision.agent_id, objective=decision.objective,
+                    workstream_id=decision.workstream_id, scope=decision.scope,
+                    constraints=decision.constraints, inputs=[known[key] for key in identifiers])
+
+
+class SupervisorContextMiddleware(AgentMiddleware):
+    def wrap_model_call(self, request, handler):
+        context = request.runtime.context
+        view = {**context.current_view, "lookup_limits": {**context.current_view["lookup_limits"],
+            "remaining": max(0, context.current_view["lookup_limits"]["remaining"]
+                             - request.state.get("run_tool_call_count", {}).get("__all__", 0))}}
+        response = handler(request.override(system_message=SystemMessage(
+            content=context.instructions + "\nCurrent authoritative view:\n"
+            + json.dumps(view, ensure_ascii=False))))
+        if response.structured_response is not None:
+            try:
+                resolve_decision(context.view, response.structured_response)
+            except ValueError as exc:
+                message = response.result[0]
+                return ModelResponse(result=[message, *[
+                    ToolMessage(content=str(exc), tool_call_id=call["id"], status="error")
+                    for call in message.tool_calls
+                ]])
+        return response
 
 
 def _result_view(result: WorkResult) -> dict:
@@ -92,12 +145,28 @@ def _excerpt(value: Any, text_limit: int, item_limit: int, field: str = "") -> t
 
 
 class ModelSupervisor:
-    def __init__(self, directory: Path, settings: SupervisorSettings, *, instructions: str):
+    def __init__(self, directory: Path, settings: SupervisorSettings, *, instructions: str, model=None):
         if not settings.llm.model:
             raise ValueError("Resolve the Supervisor model before starting a run")
         self.directory = Path(directory).resolve()
         self.settings = settings
         self.instructions = instructions
+        model = model or chat_model(settings.llm, settings.loop)
+
+        @tool
+        def inspect(query: _Inspection, runtime: ToolRuntime[SupervisorContext]) -> dict:
+            """Read registered artifacts, work records, Workstreams or bounded artifact content.
+
+            Use offset/limit for catalog pages and IDs for exact objects. Never scans private state.
+            """
+            return self._inspect(runtime.context.view, query)
+
+        self.agent = create_agent(
+            model, tools=[inspect], response_format=ToolStrategy(SupervisorResponse),
+            context_schema=SupervisorContext, checkpointer=True, name="supervisor_agent",
+            middleware=[SupervisorContextMiddleware(), *loop_middleware(
+                model, replace(settings.loop, max_tool_calls=min(settings.max_lookups, settings.loop.max_tool_calls)), settings.context_chars)],
+        )
 
     @staticmethod
     def _artifact_catalog(view: SupervisorView) -> list[dict]:
@@ -161,11 +230,25 @@ class ModelSupervisor:
             known = {ref.artifact_id: ref for ref in view.artifacts}
             selected = [preview_artifact(self.directory, known[row["artifact_id"]], limit=self.settings.artifact_chars)
                         for row in selected]
-        end = query.offset + len(selected)
-        return {"query": query.model_dump(mode="json", exclude_none=True), "items": selected,
-                "total": len(matching), "offset": query.offset, "next_offset": end if end < len(matching) else None}
+        text_limit, item_limit = self.settings.artifact_chars, self.settings.catalog_page_size
+        budget = self.settings.context_chars // 4
+        while True:
+            projected = [_excerpt(row, text_limit, item_limit)[0] for row in selected]
+            end = query.offset + len(selected)
+            result = {"query": query.model_dump(mode="json", exclude_none=True), "items": projected,
+                      "total": len(matching), "offset": query.offset,
+                      "next_offset": end if end < len(matching) else None}
+            size = len(json.dumps(result, ensure_ascii=False))
+            if size <= budget:
+                return result
+            if len(selected) > 1:
+                selected.pop()
+            elif text_limit > 1 or item_limit > 1:
+                text_limit, item_limit = max(1, text_limit // 2), max(1, item_limit // 2)
+            else:
+                raise RequestContextBudgetError(size, budget)
 
-    def _context(self, view: SupervisorView, inspections: tuple[dict, ...] = ()) -> dict:
+    def _context(self, view: SupervisorView) -> dict:
         result = view.last_result
         candidates = ([need.detail_ref for need in result.needs if need.detail_ref is not None]
                       + list(result.artifacts)) if result else list(view.artifacts)
@@ -188,7 +271,7 @@ class ModelSupervisor:
                     "catalog_totals": {"artifacts": len(view.artifacts), "workstreams": len(view.workstreams),
                                        "work": len(view.history), "feedback_records": sum(
                                            bool(row.result.needs or row.result.issues) for row in view.history)},
-                    "lookup_limits": {"remaining": self.settings.max_lookups - len(inspections),
+                    "lookup_limits": {"remaining": min(self.settings.max_lookups, self.settings.loop.max_tool_calls),
                                       "catalog_page_size": self.settings.catalog_page_size,
                                       "preview_items": self.settings.max_artifacts,
                                       "preview_chars": self.settings.artifact_chars}}
@@ -199,7 +282,6 @@ class ModelSupervisor:
             "workstreams": view.workstream_summaries()[-self.settings.history_items:],
             "available_artifacts": [catalog[key] for key in priority if key in catalog],
             "artifact_previews": previews,
-            "inspections": [dict(item, items=list(item["items"])) for item in inspections],
         }
         text_limit, item_limit = self.settings.artifact_chars, self.settings.catalog_page_size
         while True:
@@ -214,20 +296,15 @@ class ModelSupervisor:
                     context[name], truncated = _excerpt(value, text_limit, item_limit)
                 if truncated:
                     clipped.append(name)
-            for page in context["inspections"]:
-                end = page["offset"] + len(page["items"])
-                page["next_offset"] = end if end < page["total"] else None
             context["omitted_counts"] = {
                 "history": len(view.history) - len(context["history"]),
                 "workstreams": len(view.workstreams) - len(context["workstreams"]),
                 "artifacts": len(view.artifacts) - len(context["available_artifacts"]),
                 "previews": len(unique) - len(context["artifact_previews"]),
-                "inspections": len(inspections) - len(context["inspections"]),
             }
             context["truncated_sections"] = clipped
-            size = json_request_chars(self.instructions, json.dumps(context, ensure_ascii=False),
-                                      SupervisorResponse, self.settings.llm)
-            if size <= self.settings.context_chars:
+            size = len(self.instructions) + len(json.dumps(context, ensure_ascii=False))
+            if size <= self.settings.context_chars // 2:
                 return context
             # Drop less important projections before reducing detail in the current feedback/read.
             for name in ("history", "workstreams", "available_artifacts", "artifact_previews"):
@@ -235,60 +312,25 @@ class ModelSupervisor:
                     optional[name].pop(0 if name in {"history", "workstreams"} else -1)
                     break
             else:
-                if len(optional["inspections"]) > 1:
-                    optional["inspections"].pop(0)
-                elif optional["inspections"] and len(optional["inspections"][0]["items"]) > 1:
-                    optional["inspections"][0]["items"].pop()
-                elif text_limit > 1 or item_limit > 1:
+                if text_limit > 1 or item_limit > 1:
                     text_limit, item_limit = max(1, text_limit // 2), max(1, item_limit // 2)
                 else:
                     raise RequestContextBudgetError(size, self.settings.context_chars)
 
-    def __call__(self, view: SupervisorView):
-        with event_context(
-            construction_events_path=str(self.directory / "events.jsonl"),
-            compilation_id=view.compilation_id, agent_id="supervisor", operation="supervisor_decision",
-            request_id=None, workstream_id=None, artifact_id=None, artifact_ids=None, agent=None,
-            model=self.settings.llm.model, reasoning_effort=self.settings.llm.reasoning_effort,
-        ):
-            return self._decide(view)
-
-    def _decide(self, view: SupervisorView):
-        known = {ref.artifact_id: ref for ref in view.artifacts}
-        inspections, reads = [], {}
-
-        def resolve(response: SupervisorResponse):
-            decision = response.decision
-            if isinstance(decision, _Inspection):
-                self._validate_inspection(view, decision)
-                key = decision.model_dump_json()
-                if len(inspections) < self.settings.max_lookups and key not in reads:
-                    # Validate offsets against the filtered catalog inside the existing repair path.
-                    reads[key] = self._inspect(view, decision)
-                return decision
-            if not isinstance(decision, _ModelDelegation):
-                return decision
-            if decision.agent_id not in view.agents:
-                raise ValueError(f"Unregistered Agent: {decision.agent_id}")
-            view.validate_workstream(decision.agent_id, decision.workstream_id)
-            identifiers = decision.input_artifact_ids
-            if len(identifiers) != len(set(identifiers)):
-                raise ValueError("Input artifact IDs must be unique")
-            if unknown := set(identifiers) - known.keys():
-                raise ValueError(f"Unknown artifact IDs: {sorted(unknown)}")
-            return Delegate(agent_id=decision.agent_id, objective=decision.objective,
-                            workstream_id=decision.workstream_id, scope=decision.scope,
-                            constraints=decision.constraints, inputs=[known[key] for key in identifiers])
-
-        while True:
-            response = complete_validated_json(
-                self.instructions, json.dumps(self._context(view, tuple(inspections)), ensure_ascii=False),
-                SupervisorResponse, validate=resolve, request_char_budget=self.settings.context_chars,
-                llm_settings=self.settings.llm,
-            )
-            decision = resolve(response)
-            if not isinstance(decision, _Inspection):
-                return decision
-            if len(inspections) >= self.settings.max_lookups:
-                raise SupervisorLookupLimit(f"Supervisor exhausted max_lookups={self.settings.max_lookups}")
-            inspections.append(reads[decision.model_dump_json()])
+    def __call__(self, view: SupervisorView, config):
+        invocation_id = f"supervisor-{len(view.history)}-{len(view.answers)}"
+        context = SupervisorContext(self.directory, view, self._context(view),
+                                    self.instructions, invocation_id)
+        with role_lock(self.directory, "supervisor"):
+            try:
+                result = self.agent.invoke(
+                    {"messages": [HumanMessage(content="Choose the next action using the current view.",
+                                               id=invocation_id)], "structured_response": None},
+                    {**config, "recursion_limit": self.settings.loop.max_model_calls * 6 + 20}, context=context,
+                )
+            except AGENT_LIMIT_ERRORS as exc:
+                raise RuntimeError(f"Supervisor invocation budget exhausted: {exc}") from exc
+        response = result.get("structured_response")
+        if response is None:
+            raise RuntimeError("Supervisor ended without a valid current decision")
+        return resolve_decision(view, response)

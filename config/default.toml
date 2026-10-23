@@ -17,6 +17,28 @@ history_items = 8
 catalog_page_size = 20
 max_lookups = 4
 
+[supervisor.loop]
+max_model_calls = 12
+max_tool_calls = 4
+context_tokens = 24000
+max_output_tokens = 4096
+summary_trigger_tokens = 8000
+summary_keep_tokens = 2000
+
+[planner]
+context_chars = 96000
+page_size = 20
+preview_chars = 6000
+max_scenarios = 10000
+
+[planner.loop]
+max_model_calls = 60
+max_tool_calls = 120
+context_tokens = 32000
+max_output_tokens = 4096
+summary_trigger_tokens = 12000
+summary_keep_tokens = 3000
+
 [coding]
 worker_venv = ".venv-coding"
 max_iterations = 80

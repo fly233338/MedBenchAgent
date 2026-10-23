@@ -1,15 +1,15 @@
 # Agent 与业务能力
 
 协作机制支持 Scripted 或模型 Supervisor；Coding 可独立选择 Scripted 或 OpenHands，
-Planner 仍为极简合成实现。
+Supervisor 和 Planner 的模型实现使用原生 create_agent；合成实现保留为开发夹具。
 实现与在线验收分别记录于 [PLAN](../PLAN.md)，不能将离线测试当作模型自主性证明。
 
 | 角色/能力 | 文档 | 当前接入状态 |
 | --- | --- | --- |
 | Supervisor | [Supervisor](supervisor.md) | Scripted / ModelSupervisor，可显式选择 |
 | Coding | [Coding](coding.md) | Scripted / Local OpenHands，按 Workstream 复用会话 |
-| Task Planning | [Task Planning](task-planning.md) | 有私有状态的合成子图 |
-| Generation | [Generation](generation.md) | 后续接口与职责 |
+| Task Planning | [Task Planning](task-planning.md) | 原生模型 Planner / 合成子图，正式 TaskPlan |
+| Generation | [Generation](generation.md) | closed_vqa GenerationSpec 与校验；后端后续接入 |
 | Review | [Review](review.md) | 后续接口与职责 |
 | Audit | [Audit](audit.md) | 后续接口与职责 |
 | Allocation | [Allocation](allocation.md) | 后续确定性业务能力 |
@@ -19,12 +19,13 @@ Agent 接收 WorkRequest，返回 WorkResult，只通过 Supervisor 提出跨 Ag
 ArtifactRef 必须指向实际文件，completed 不等于 Benchmark 生成成功。
 work 需求不触发 interrupt；用户需求由 Supervisor 协调。
 
-私有消息、探索游标、SDK 会话不进入共享业务产物。Planner 使用 per-thread，
-独立请求通常 per-invocation，Coding 每个 Workstream 的长期状态由 OpenHands 管理。
+私有消息、探索游标、SDK 会话不进入共享业务产物。Supervisor 与模型 Planner 使用 per-thread，
+Coding 每个 Workstream 的长期状态由 OpenHands 管理。
 Supervisor 只看到 Workstream 标识、初始范围和结果摘要；跨 Workstream 通过正式产物共享。
 不得统一强制 checkpointer=True。字段以纯契约为准，边界见 [架构](../ARCHITECTURE.md)。
 
-原 Data Preparation 职责归入 Coding，不再是独立必经 Agent。
+当前数据加工仍使用 Coding；后续 Data Processing 将在内部组织 Coding 执行和验收，
+本轮没有注册该角色，也不强制加工步骤。
 
 ## 公共接口与交接
 
@@ -50,7 +51,8 @@ compilation_id/thread_id、SqliteSaver 和同步 durability；等待用户通过
 普通未完成节点以 None 续接。子图自己的持久化方式由实现决定，不统一强制 checkpointer=True。
 
 正式文件必须真实存在并归属于本请求的输出目录，由 Host 登记摘要。读取或交接发现内容
-变化时明确反馈，不重算引用来掩盖变更。摘要只覆盖该文件，不递归覆盖 Manifest 的依赖。
+变化时明确反馈，不重算引用来掩盖变更。ArtifactRef 摘要覆盖引用文件；DatasetManifest 的
+members 进一步覆盖其真实成员，由 DatasetReader 校验。
 候选文件与正式产物分离，已交接文件不原地修改，相同字节重放可复用。
 
 静态 Prompt 通过包资源加载，实际启用文本和摘要随 run.json 冻结；恢复不重新读源码指令。
