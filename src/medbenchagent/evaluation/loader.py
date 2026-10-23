@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import hashlib
+from medbenchagent.contracts import BenchmarkItem
 
 PACKAGE_FILES = ("benchmark.jsonl", "benchmark_manifest.json", "audit_report.json", "quarantine.jsonl")
 
@@ -39,15 +40,16 @@ def load_benchmark_package(directory):
     for line in (root / "benchmark.jsonl").read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
-        item = json.loads(line)
+        item = BenchmarkItem.model_validate_json(line).model_dump(mode="json", exclude_unset=True)
         if item["item_id"] in ids:
             raise ValueError("Duplicate benchmark item")
         ids.add(item["item_id"])
         if f"{item['dataset_id']}::{item['leaf_task_id']}" not in manifest["tasks"]:
             raise ValueError("Benchmark task is missing from manifest")
-        if not item.get("input_images"):
-            raise ValueError("Benchmark item has no model image inputs")
-        for asset in item["input_images"]:
+        for entry in item["inputs"]:
+            if entry["kind"] != "asset":
+                continue
+            asset = entry["value"]
             path = Path(asset["path"])
             if manifest.get("package_mode") == "portable" and (path.is_absolute() or not (root / path).resolve().is_relative_to(root)):
                 raise ValueError("Portable image reference escapes package")

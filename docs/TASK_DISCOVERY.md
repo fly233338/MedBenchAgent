@@ -1,62 +1,48 @@
 # Task Planning 契约
 
-## 语义任务与执行准备
+## 输入与证据
 
-原生 Planner 使用 create_agent，自主查询证据、提交判断并发布 TaskPlan。
-保留 Axis → Cartesian Product → Scenario Screening → SemanticTaskSpec 的业务关系；
-不使用全局 phase 锁。Task Family 在 Scenario 后选择，语义可行不等于生成后端执行就绪。
+Planner 接受一个 dataset_profile 或 canonical dataset 作为当前规划依据，可附带明确选定的
+TaskPlan 和 TaskData。完整 Canonical Dataset 不再是场景发现的前置条件。
+TaskPlan.dataset 标识源 Dataset；dataset_digest 绑定当前规划依据文件（Profile 或 Dataset Manifest）。
 
-三个 Axis 为 input_structure、operation、clinical_target。模型提出值及支持/不支持判断，
-提供 EvidenceRef 和理由；代码构造确定性 Scenario ID、检查引用和组合完整性。
-变更 Axis 判断前先排除受影响的任务；重新判断 Scenario 后可以修订任务重新纳入。
-未受影响的组合和任务保留。
+PlanningEvidenceRef 可为 Profile 的 observation_id，也可为 case_id/evidence_id。
+两者是不同证据来源，均要求实际存在；不是历史 Schema 的兼容读取。
+Profile 的采样范围和未知项必须保持可见，不能将抽样证据当作全量扫描结论。
 
-## 当前唯一的 TaskPlan
+## 场景与数据要求
 
-TaskPlan 包含 plan_id、revision、DatasetRef、dataset_digest、axis_assessments、scenarios、
-tasks、requirements、acceptances 和 exclusions。它不包含 messages、执行模板、Resolver
-或 Agent 调度阶段。旧业务链的 TaskPlanState 仍是待迁移资产，不被新路径读取或转换。
+保留 input_structure、operation、clinical_target 三个 Axis，模型提交判断，代码构造组合。
+SemanticScenario 可记录 backend_ids；Backend 不作为新的 Axis。
+DataRequirement 增加 affected_scenario_ids、backend_id，仍保留 affected_task_ids 和接受条件。
+场景级需求可以在 Leaf 不存在时提交。
 
-每次草稿写入要求 base_revision 等于当前草稿 revision，并产生 revision + 1 的不可变草稿。
-保存已有 SemanticTaskSpec 时，其 revision 同样必须递增一，change_reason 说明修改原因。
-新请求可以显式绑定一个已发布计划；没有绑定时可续接同一 Dataset 下本角色的私有草稿。
-新 Dataset 输入不隐式沿用旧判断；旧计划与不同 Dataset 内容绑定不匹配时明确反馈。
+publish_task_plan 校验 Axis/Scenario 覆盖、引用和已有任务的可行性，允许保留的 Scenario 暂无 Leaf。
+这项能力支持中间交接，但不规定何时委派数据处理或何时再次调用 Planner。
+DataRequirement 的新数据通过 accept_data_requirement 接受；已有 TaskData 也可直接通过
+accept_task_data 接受。接受记录绑定内容身份、理由和证据。处理 Agent 的 completed 不等于需求已满足。
 
-SemanticTaskSpec 保留 task_id、Scenario、Task Family、objective、input_requirements、
-reference_requirements、output_paradigm、feasibility 和 requirement_ids，并记录：
-- evidence_refs：任务成立的证据；
-- input_evidence_refs：代表性的模型输入证据，必须明确 model_visible；
-- reference_evidence_refs：参考答案依据，可以是 reference_only。
+## Leaf 与组装
 
-输入/reference 的实际跨 Case 选择与执行参数归属 GenerationSpec。Planner 不把模板、
-选项生成或程序执行混入语义任务。
+SemanticTaskSpec 保留语义要求、证据、可行性、修订和排除；新增：
+- task_data：接受的 TaskData Artifact ID/digest。
+- capability_category：可执行 Leaf 必须明确的能力类别。
+- assembly：backend_id、input_fields、question_templates、question_fields、reference_field、
+  output_spec、options 和 label_map。
 
-## 数据需求与排除
+input_fields 是有序字段名列表；asset 字段可包含有序 Asset ID 列表。
+question_fields 将模板变量绑定到实际字段；模板另可使用 options、task_objective。
+只支持声明式命名占位符，不执行模板表达式或任意代码。
+复杂数据加工在 Data Processing 完成；输入和问题插值不能读取 reference-only 或 unknown 字段。
 
-DataRequirement 绑定 Dataset、Case 范围、目的、表示、证据、接受条件、affected_task_ids
-和 source_role（task_planner 或 generation）。新需求或对未接受需求的修改由 Planner 提交；
-已接受需求的含义改变需要新 ID。
+可执行 Leaf 要求 TaskData 已被接受、Dataset 一致、后端被 Scenario 选择且字段可解析。
+语义草稿可以尚未绑定执行数据；Generation 不会将这种草稿当成可执行任务。
+GenerationSpec 仅选择 Leaf 修订、TaskData、Case 范围、数量和种子，不重复定义模板或答案规则。
 
-返回的 derived_view 使用 dataset、requirement_id、rows；每行以 case_id 关联原 Case，
-新增字段由需求定义。接受工具检查版本、唯一 Case 和范围，Planner 判断自然语言接受条件；
-接受记录绑定实际 Artifact ID/digest、理由和 EvidenceRef。后续发布或完成需要显式绑定
-仍被活动任务使用的已接受 derived_view，Host 重新检查文件与身份。
+## 修订与交接
 
-新数据被接受后，仍需显式修订任务为 feasible。历史 completed 不自动满足需求。
-任务排除保留定义、理由和证据；仅服务于已排除任务的需求不再作为活动阻塞，历史仍可查询。
+草稿写入使用 base_revision，已有任务修订递增 task revision，正式产品不可变。
+同一后端多个 Scenario 可以共享 TaskData，同一 Case 可以支持多个 Scenario。
+历史成果是否复用取决于明确的输入绑定，而非摘要中的旧结论。
 
-## 发布与交接
-
-publish_task_plan 验证三个 Axis、支持组合的覆盖、Scenario 判断、任务可行性和全部引用，
-然后登记不可变 TaskPlan 及 DataRequirement。proposed 任务或未判断的 Scenario 不能发布。
-没有支持组合时可发布带不支持依据的空计划。
-
-需求尚未满足的计划可以发布并返回 needs_input；Host 根据正式需求形成 WorkNeed。
-模型最终响应只选择本请求已提交的 ID，不能凭文本把草稿当成正式产物。
-completed 要求选择与当前草稿一致的正式计划，并且不存在活动未接受需求。
-是否已经生成 Benchmark 由后续产物决定。
-
-## 验证
-
-离线测试通过实际 create_agent 工具循环覆盖规划、提出需求、接收派生数据、修订、发布、
-私有状态续接、并行写拒绝及无有效最终响应的失败路径。真实模型和医学语义质量由运行者验收。
+当前操作与基本约束已实现；完整的发现、整理、Leaf 设计和返工策略下一轮统一写入 Prompt。

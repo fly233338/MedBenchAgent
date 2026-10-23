@@ -1,7 +1,9 @@
-# Allocation（后续业务能力）
+# Allocation
 
-依据任务容量和用户要求确定取样数量，是业务工具，不规定为独立 Agent。
-消费 Task Plan/数据引用，输出分配产物，不保存私有会话。
+generation.execution.allocate_counts 提供无 BIR/模型依赖的确定性分配。
+Generation 提供执行配置对应的真实容量和绑定 benchmark_request 的原始数量目标；
+按任务均衡分配，在各任务容量内继续分配剩余数量。
 
-容量不足是事实结果，不能扩大目标或捏造样本。必要的解释由 Supervisor 协调。
-首期不接入旧 planning.allocation 或 BIR/Resolver 依赖；生成迁入时再抽取算法。
+Allocation 保存目标引用、requested、counts 和 capacities。容量不足不修改 requested，
+最终候选和交付报告计算实际 shortfall。没有独立 Allocation Agent 或额外分配状态库。
+旧 planning.allocation 仍服务旧入口，清理留待下一轮。

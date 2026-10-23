@@ -1,19 +1,20 @@
 # Agent 与业务能力
 
 协作机制支持 Scripted 或模型 Supervisor；Coding 可独立选择 Scripted 或 OpenHands，
-Supervisor 和 Planner 的模型实现使用原生 create_agent；合成实现保留为开发夹具。
+Supervisor、Data Processing、Planner、Generation、Review 使用原生 create_agent；合成实现保留为开发夹具。
 实现与在线验收分别记录于 [PLAN](../PLAN.md)，不能将离线测试当作模型自主性证明。
 
 | 角色/能力 | 文档 | 当前接入状态 |
 | --- | --- | --- |
 | Supervisor | [Supervisor](supervisor.md) | Scripted / ModelSupervisor，可显式选择 |
-| Coding | [Coding](coding.md) | Scripted / Local OpenHands，按 Workstream 复用会话 |
+| Data Processing | [Data Processing](data-processing.md) | Profile、TaskData、Coding 候选检查与提交 |
+| Coding | [Coding](coding.md) | Data Processing 内部的 OpenHands；独立适配保留 |
 | Task Planning | [Task Planning](task-planning.md) | 原生模型 Planner / 合成子图，正式 TaskPlan |
-| Generation | [Generation](generation.md) | closed_vqa GenerationSpec 与校验；后端后续接入 |
-| Review | [Review](review.md) | 后续接口与职责 |
-| Audit | [Audit](audit.md) | 后续接口与职责 |
-| Allocation | [Allocation](allocation.md) | 后续确定性业务能力 |
-| Delivery | [Delivery](delivery.md) | 后续交付能力 |
+| Generation | [Generation](generation.md) | VQA、报告、定位、检测组装及候选提交 |
+| Review | [Review](review.md) | 原生独立语义审查与覆盖记录 |
+| Audit | [Audit](audit.md) | 当前候选的确定性检查 |
+| Allocation | [Allocation](allocation.md) | 原始目标绑定与容量分配 |
+| Delivery | [Delivery](delivery.md) | 确定性可移植包与独立读取 |
 
 Agent 接收 WorkRequest，返回 WorkResult，只通过 Supervisor 提出跨 Agent 需求。
 ArtifactRef 必须指向实际文件，completed 不等于 Benchmark 生成成功。
@@ -24,8 +25,8 @@ Coding 每个 Workstream 的长期状态由 OpenHands 管理。
 Supervisor 只看到 Workstream 标识、初始范围和结果摘要；跨 Workstream 通过正式产物共享。
 不得统一强制 checkpointer=True。字段以纯契约为准，边界见 [架构](../ARCHITECTURE.md)。
 
-当前数据加工仍使用 Coding；后续 Data Processing 将在内部组织 Coding 执行和验收，
-本轮没有注册该角色，也不强制加工步骤。
+Data Processing 在内部组织 Coding 执行、候选检查和提交；启用时不向 Supervisor 注册独立 Coding。
+所有专业操作可被选择，何时启动或重复调用哪个角色留待下一轮统一工作流 Prompt，不写为固定图阶段。
 
 ## 公共接口与交接
 

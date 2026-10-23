@@ -3,7 +3,7 @@
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from langchain.agents import AgentState, create_agent
@@ -32,7 +32,7 @@ from medbenchagent.compilation.contracts import (
 )
 from medbenchagent.compilation.interfaces import AgentSpec
 from medbenchagent.data.dataset import FileDatasetReader
-from medbenchagent.data.models import EvidenceRef
+from medbenchagent.data.task_data import ProfileReader, TaskDataReader
 from medbenchagent.planning.contracts import (
     Axis,
     AxisAssessment,
@@ -41,6 +41,7 @@ from medbenchagent.planning.contracts import (
     SemanticTaskSpec,
     TaskExclusion,
     TaskPlan,
+    PlanningEvidenceRef,
 )
 from medbenchagent.planning import semantic
 from medbenchagent.runtime.native import AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
@@ -64,10 +65,11 @@ class PlannerResponse(Contract):
 class PlannerContext:
     directory: Path
     request: WorkRequest
-    reader: FileDatasetReader
+    reader: FileDatasetReader | ProfileReader
     dataset: ArtifactRef
     settings: object
     instructions: str
+    task_data: dict[str, TaskDataReader] = field(default_factory=dict)
     agent_id: str = "task_planner"
 
     @property
@@ -138,7 +140,7 @@ def _update(runtime, base_revision, operation):
         raise ValueError(f"Stale draft revision: expected {plan.revision}")
     operation(plan)
     plan.revision += 1
-    semantic.validate_plan(plan, context.reader)
+    semantic.validate_plan(plan, context.reader, task_data=context.task_data)
     path = _save(plan, context)
     return Command(
         update={
@@ -219,16 +221,61 @@ def _verify_acceptances(plan, context):
     for requirement_id in semantic.active_requirements(plan) & plan.acceptances.keys():
         accepted = plan.acceptances[requirement_id]
         ref = bound.get(accepted.artifact_id)
-        if ref is None or ref.digest != accepted.digest or ref.kind != "derived_view":
+        if (
+            ref is None
+            or ref.digest != accepted.digest
+            or ref.kind not in {"derived_view", "task_data"}
+        ):
             raise ValueError(
                 "Bind the accepted derived_view artifact to this request before publishing or completing"
             )
+        if ref.kind == "task_data":
+            _check_task_data(plan, context, ref.artifact_id, requirement_id)
+            continue
         value = read_json_artifact(context.directory, ref)
         if (
             value.get("dataset") != plan.dataset.model_dump()
             or value.get("requirement_id") != requirement_id
         ):
             raise ValueError("Accepted derived_view does not match this requirement and Dataset")
+    for identifier, accepted in plan.task_data_acceptances.items():
+        if any(
+            task.task_data
+            and task.task_data.artifact_id == identifier
+            and key not in plan.exclusions
+            for key, task in plan.tasks.items()
+        ):
+            reader = _check_task_data(plan, context, identifier)
+            if reader.content_digest != accepted.digest:
+                raise ValueError("Accepted TaskData changed")
+
+
+def _check_task_data(plan, context, identifier, requirement_id=None):
+    reader = context.task_data[identifier]
+    manifest = reader.manifest
+    if manifest.dataset != plan.dataset:
+        raise ValueError("TaskData binds a different Dataset")
+    if isinstance(context.reader, ProfileReader) and (
+        manifest.profile is None
+        or manifest.profile.artifact_id != context.dataset.artifact_id
+        or manifest.profile.digest != context.dataset.digest
+    ):
+        raise ValueError("TaskData must bind the current Profile")
+    if set(manifest.scenario_ids) - plan.scenarios.keys():
+        raise ValueError("TaskData references an unknown Scenario")
+    if requirement_id is not None:
+        requirement = plan.requirements[requirement_id]
+        if requirement_id not in manifest.requirement_ids or requirement.backend_id not in {
+            None,
+            manifest.backend_id,
+        }:
+            raise ValueError("TaskData does not answer this data requirement/backend")
+        if set(requirement.affected_scenario_ids) - set(manifest.scenario_ids):
+            raise ValueError("TaskData is missing required Scenarios")
+        if set(requirement.case_ids) - {case.case_id for case in reader.cases}:
+            raise ValueError("TaskData is missing required Cases")
+    reader.verify_integrity()
+    return reader
 
 
 def _recover_publications(context):
@@ -244,7 +291,9 @@ def _recover_publications(context):
             if path.stem != _product_digest(value):
                 raise ValueError("Published content does not match its immutable submission name")
             if isinstance(value, TaskPlan):
-                semantic.validate_plan(value, context.reader, publish=True)
+                semantic.validate_plan(
+                    value, context.reader, publish=True, task_data=context.task_data
+                )
                 _verify_acceptances(value, context)
             recovered.append(
                 register_file(
@@ -285,7 +334,7 @@ class PlannerContextMiddleware(AgentMiddleware):
             raise ValueError(
                 "Task Plan binds a different dataset artifact; begin a new plan for new evidence"
             )
-        semantic.validate_plan(plan, context.reader)
+        semantic.validate_plan(plan, context.reader, task_data=context.task_data)
         return {
             "active_request_id": context.invocation_id,
             "draft_path": _save(plan, context),
@@ -337,9 +386,79 @@ class PlannerContextMiddleware(AgentMiddleware):
 
 def planner_tools():
     @tool
+    def inspect_profile(runtime: ToolRuntime[PlannerContext]) -> dict:
+        """Read source Profile coverage, observations and unknowns; no fully normalized Dataset is required."""
+        if not isinstance(runtime.context.reader, ProfileReader):
+            raise ValueError("The current input is a canonical Dataset, not a Profile")
+        return _bounded(
+            runtime.context.reader.read_mapping(), runtime.context.settings.preview_chars
+        )
+
+    @tool
+    def list_generation_backends() -> list[dict]:
+        """Read actual backend families, prepared-data expectations and supported output contracts."""
+        from medbenchagent.generation.backends import backend_catalog
+
+        return backend_catalog()
+
+    @tool
+    def inspect_task_data(
+        artifact_id: str,
+        runtime: ToolRuntime[PlannerContext],
+        case_id: str | None = None,
+        offset: int = 0,
+        limit: int = 10,
+    ) -> dict:
+        """Inspect bound prepared Cases, fields and coverage for a backend, with bounded pages."""
+        reader = runtime.context.task_data[artifact_id]
+        reader.verify_integrity()
+        if case_id is not None:
+            return _bounded(
+                reader.get_case(case_id).model_dump(mode="json"),
+                runtime.context.settings.preview_chars,
+            )
+        rows = [
+            {
+                "case_id": case.case_id,
+                "scenario_ids": case.scenario_ids,
+                "fields": [
+                    {"name": f.name, "type": f.type, "input_visibility": f.input_visibility}
+                    for f in case.fields
+                ],
+            }
+            for case in reader.cases
+        ]
+        result = semantic.page(
+            runtime.context.reader,
+            rows,
+            offset,
+            limit,
+            scope={"task_data": artifact_id},
+            ceiling=runtime.context.settings.page_size,
+        )
+        result["backend_id"] = reader.manifest.backend_id
+        return _bounded(result, runtime.context.settings.preview_chars)
+
+    @tool
     def inspect_dataset(runtime: ToolRuntime[PlannerContext]) -> dict:
         """Read complete deterministic counts and a bounded evidence-name catalog for this snapshot."""
         reader = runtime.context.reader
+        if isinstance(reader, ProfileReader):
+            profile = reader.profile
+            reader.verify_integrity()
+            return {
+                "dataset": profile.dataset.model_dump(),
+                "coverage": profile.coverage,
+                "inspected_scope": profile.inspected_scope,
+                "case_count": None,
+                "inspected_sample_count": len(profile.samples),
+                "unknowns": profile.unknowns,
+                "observations": [
+                    o.model_dump(mode="json")
+                    for o in profile.observations[: runtime.context.settings.page_size]
+                ],
+                "truncated": len(profile.observations) > runtime.context.settings.page_size,
+            }
         catalog = semantic.evidence_catalog(reader)
         return {
             "dataset": semantic.dataset_ref(reader),
@@ -579,7 +698,7 @@ def planner_tools():
         scenario_id: str,
         keep: bool,
         reason: str,
-        evidence_refs: list[EvidenceRef],
+        evidence_refs: list[PlanningEvidenceRef],
         base_revision: int,
         runtime: ToolRuntime[PlannerContext],
     ) -> Command:
@@ -589,6 +708,43 @@ def planner_tools():
             scenario = plan.scenarios[scenario_id]
             scenario.decision = "keep" if keep else "exclude"
             scenario.reason, scenario.evidence_refs = reason, evidence_refs
+
+        return _update(runtime, base_revision, apply)
+
+    @tool
+    def set_scenario_backends(
+        scenario_id: str,
+        backend_ids: list[str],
+        base_revision: int,
+        runtime: ToolRuntime[PlannerContext],
+    ) -> Command:
+        """Select implemented backends for a Scenario; backend selection does not add an Axis."""
+
+        def apply(plan):
+            if len(backend_ids) != len(set(backend_ids)):
+                raise ValueError("Duplicate backend IDs")
+            plan.scenarios[scenario_id].backend_ids = backend_ids
+
+        return _update(runtime, base_revision, apply)
+
+    @tool
+    def accept_task_data(
+        artifact_id: str,
+        reason: str,
+        evidence_refs: list[PlanningEvidenceRef],
+        base_revision: int,
+        runtime: ToolRuntime[PlannerContext],
+    ) -> Command:
+        """Accept inspected prepared TaskData as a basis for Leaf design, with your evidence and reason."""
+
+        def apply(plan):
+            reader = _check_task_data(plan, runtime.context, artifact_id)
+            plan.task_data_acceptances[artifact_id] = RequirementAcceptance(
+                artifact_id=artifact_id,
+                digest=reader.content_digest,
+                reason=reason,
+                evidence_refs=evidence_refs,
+            )
 
         return _update(runtime, base_revision, apply)
 
@@ -625,7 +781,7 @@ def planner_tools():
         requirement_id: str,
         artifact_id: str,
         reason: str,
-        evidence_refs: list[EvidenceRef],
+        evidence_refs: list[PlanningEvidenceRef],
         base_revision: int,
         runtime: ToolRuntime[PlannerContext],
     ) -> Command:
@@ -637,12 +793,24 @@ def planner_tools():
                 (
                     item
                     for item in runtime.context.request.inputs
-                    if item.artifact_id == artifact_id and item.kind == "derived_view"
+                    if item.artifact_id == artifact_id
+                    and item.kind in {"derived_view", "task_data"}
                 ),
                 None,
             )
             if ref is None:
                 raise ValueError("Acceptance requires a bound derived_view input")
+            if ref.kind == "task_data":
+                reader = _check_task_data(plan, runtime.context, artifact_id, requirement_id)
+                acceptance = RequirementAcceptance(
+                    artifact_id=artifact_id,
+                    digest=reader.content_digest,
+                    reason=reason,
+                    evidence_refs=evidence_refs,
+                )
+                plan.acceptances[requirement_id] = acceptance
+                plan.task_data_acceptances[artifact_id] = acceptance
+                return
             value = read_json_artifact(runtime.context.directory, ref)
             if (
                 value.get("dataset") != plan.dataset.model_dump()
@@ -687,7 +855,7 @@ def planner_tools():
         plan = _load(runtime.state, context)
         if plan.revision != base_revision:
             raise ValueError("Stale draft revision")
-        semantic.validate_plan(plan, context.reader, publish=True)
+        semantic.validate_plan(plan, context.reader, publish=True, task_data=context.task_data)
         _verify_acceptances(plan, context)
         references = []
         for requirement in plan.requirements.values():
@@ -734,6 +902,11 @@ def planner_tools():
         )
 
     return [
+        inspect_profile,
+        list_generation_backends,
+        inspect_task_data,
+        set_scenario_backends,
+        accept_task_data,
         inspect_dataset,
         read_evidence_catalog,
         read_field_values,
@@ -759,7 +932,7 @@ def build_planner_spec(settings, *, instructions, model=None):
         item.name
         for item in tools
         if item.name.startswith(
-            ("record_", "build_", "save_", "propose_", "accept_", "exclude_", "publish_")
+            ("record_", "build_", "save_", "set_", "propose_", "accept_", "exclude_", "publish_")
         )
     ]
     agent = create_agent(
@@ -780,16 +953,23 @@ def build_planner_spec(settings, *, instructions, model=None):
         request = WorkRequest.model_validate(state["request"])
         directory = runtime.context.directory
         try:
-            datasets = [ref for ref in request.inputs if ref.kind == "dataset"]
+            datasets = [ref for ref in request.inputs if ref.kind in {"dataset", "dataset_profile"}]
             if len(datasets) != 1:
                 raise ValueError("Planner requires exactly one bound Dataset artifact")
             context = PlannerContext(
                 directory,
                 request,
-                FileDatasetReader(resolve_artifact(directory, datasets[0])),
+                (ProfileReader if datasets[0].kind == "dataset_profile" else FileDatasetReader)(
+                    resolve_artifact(directory, datasets[0])
+                ),
                 datasets[0],
                 settings,
                 instructions,
+                task_data={
+                    ref.artifact_id: TaskDataReader(resolve_artifact(directory, ref))
+                    for ref in request.inputs
+                    if ref.kind == "task_data"
+                },
             )
             with role_lock(directory, "task_planner"):
                 result = agent.invoke(
@@ -826,6 +1006,7 @@ def build_planner_spec(settings, *, instructions, model=None):
     return AgentSpec(
         "Semantic task planning from a canonical Dataset: evidence queries, Axis/Scenario judgments, "
         "task revision, data requirements and formal Task Plan publication. Requires one dataset; "
-        "may consume a selected task_plan and derived_view inputs. Does not generate benchmark items.",
+        "accepts one dataset or dataset_profile, a selected task_plan and prepared task_data inputs. "
+        "Can publish Scenario-level requirements before Leaf design, and later define Leaf assembly. Does not generate items.",
         node,
     )

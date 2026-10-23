@@ -1,22 +1,19 @@
-# Review（后续接入）
+# Review Agent
 
-## 目标与输入输出
+agents.benchmark_review 使用独立 create_agent 审查 TaskPlan 或 generation_candidate。
+它读取显式绑定的任务、准备数据和题目，只写自己的 Audit/Review 产物，不修改被审查对象。
 
-独立检查任务语义、证据依据、用户目标和可行性。
-输入是 WorkRequest 引用的任务和证据，输出为发现及相关对象引用。
-不能直接修改 Planner 任务或 Coding 数据。
+工具包括 inspect_artifact、inspect_task_case、inspect_candidate、run_candidate_audit 和 finalize_review。
+语义 findings 保存实际对象 ID、问题类别、证据 Artifact ID、阻断状态和建议责任方。
 
-## 状态与交接
+候选审查必须有针对同一内容身份的完整 Audit。批准需要：
+- Audit 通过，且检查数量等于当前候选数量。
+- 覆盖当前任务和 Scenario，至少检查每个有生成结果任务的一条真实题目。
+- 没有阻断 findings 或未完成审查范围。
 
-后续模型 Review 使用角色私有工作状态，每次激活重新绑定当前审查对象和依赖身份。
-问题返回 Supervisor，由其选择修订对象。共享结论不保存完整会话。
+Report 记录实际 checked_item_ids，Host 标明是否为语义抽样。
+TaskPlan 审查不要求候选 Audit，但批准仍需覆盖声明的任务和 Scenario。
+旧候选通过不授权新候选，Review 的 completed 仅表示审查工作结束。
 
-## 实施状态
-
-首期仅职责文档，不实现评分或审批体系。旧 Review 可按证据接口迁入，
-但旧 BIR 发布门槛不是 Core 的运行条件。
-
-迁入时保留语义 findings 与确定性 Audit 两层。Review 对任务和候选只读，只写自己的报告。
-finalize_review 必须检查本次对象、证据依据、必需 Audit 覆盖和未检查范围；旧候选的通过
-不能授权新候选。局部修改后，最终发布前仍需针对完整当前候选检查全局数量、重复和配额。
-本轮只落实这些边界，尚未注册 Review Agent。
+本轮完成能力和基础角色 Prompt；具体何时启动 Review、如何安排多轮复查由后续工作流 Prompt 决定。
+不执行对被评测模型回答的 LLM-as-judge，也不声称替代医学专家验收。

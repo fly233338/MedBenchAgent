@@ -58,6 +58,9 @@ packages = ["src/medbenchagent"]
 "src/medbenchagent/prompts/data_preparation_prepare_image.md" = "medbenchagent/prompts/data_preparation_prepare_image.md"
 "src/medbenchagent/prompts/supervisor.md" = "medbenchagent/prompts/supervisor.md"
 "src/medbenchagent/prompts/planner.md" = "medbenchagent/prompts/planner.md"
+"src/medbenchagent/prompts/data_processing.md" = "medbenchagent/prompts/data_processing.md"
+"src/medbenchagent/prompts/generation.md" = "medbenchagent/prompts/generation.md"
+"src/medbenchagent/prompts/review.md" = "medbenchagent/prompts/review.md"
 "src/medbenchagent/prompts/coding.md" = "medbenchagent/prompts/coding.md"
 
 [dependency-groups]

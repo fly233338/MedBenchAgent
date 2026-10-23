@@ -38,7 +38,7 @@ def test_sampling_units_select_views_and_all_consumers_agree(tmp_path):
     assert capacity == len(items) == 3
     assert [row["input_assets"] for row in items] == [["a2"], ["a1"], ["b1"]]
     assert audit_task_items(cases, items, [task], context)["accepted"] == 3
-    items[0]["input_images"][0]["path"] = "wrong.png"
+    items[0]["inputs"][0]["value"]["path"] = "wrong.png"
     assert audit_task_items(cases, items, [task], context)["rejected"] == 1
 
 

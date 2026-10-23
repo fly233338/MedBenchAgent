@@ -93,3 +93,29 @@ Task-specific Derived View 绑定 dataset_id/revision，通过 case_id 及必要
 不实现通用 View 引擎。当前 Planner 需求交接使用 dataset、requirement_id 和 rows，
 rows 每行有唯一 case_id；新增字段由需求规定。需求方记录接受的 Artifact ID/digest 和理由，
 不会仅凭加工 Agent 的 completed 状态自动接受。
+
+## SourceManifest 与 DatasetProfile
+
+SourceManifest 包含 DatasetRef 和具名来源目录，CLI 将目录解析为绝对路径后登记为正式输入。
+DatasetProfile 包含来源、字段/资产/关系概况、inspected_scope、coverage、unknowns、observations
+及可选 samples。observations 必须有唯一 observation_id 和真实 SourceRef；samples 可以为空。
+ProfileReader 核验被引用来源文件的成员摘要；Profile 不是完整规范化数据的同义词。
+Planner 可直接引用 observation_id 开展场景规划，抽样与未知信息保持可见。
+
+## TaskData
+
+data.task_data 定义后端准备结果，区别于原始来源和可复用 Canonical Dataset：
+- TaskDataManifest：DatasetRef、backend_id、scenario_ids、requirement_ids、可选 Profile 绑定、
+  cases_path、assets_path、来源与成员摘要，以及由真实文件计算的 case_count/scenario_counts。
+- TaskCase：case_id、scenario_ids、fields 和 source_refs。同一后端多个场景可共享一行 Case。
+- TaskField：name、type（asset/text/value）、value、input_visibility、source_refs、关联 ref 和 metadata。
+  asset value 可以是单个或有序多个 Asset ID；value 可保存准备好的结构化 reference。
+- PreparedAsset：稳定 ID、来源位置、实际文件摘要、kind、format 和可选属性；不限定 PNG/JPEG。
+
+TaskDataReader 验证 Case/Asset 身份、字段关联、覆盖统计及所有成员。正式提交时复制为不可变
+自包含快照，图像等资源通过引用共享，不按 Leaf 重复复制。
+TaskData.profile 记录其 Profile 来源；Planner 在当前请求中检查并接受实际 TaskData，
+Generation 只消费此准备契约，不读取 derived_view 或原始目录重新推断任务数据。
+
+现有 derived_view 仍作为旧演示及数据准备中间能力保留，统一清理留待下一轮；它不是
+Generation 的另一种输入格式。大型数据索引、原始文件转换与真实医学质量验收不由 Reader 自动完成。

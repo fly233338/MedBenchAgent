@@ -1,5 +1,16 @@
 # Coding Agent
 
+当前完整能力入口由 Data Processing 内部调用 execute_candidate，只有通过数据校验后才正式提交。
+下面的独立 WorkRequest/Workstream 适配仍保留给已有演示和调用方，下一轮统一清理。
+
+## Data Processing 内部调用
+
+Data Processing 从自己的私有 checkpoint 选择 Coding Workstream，按持久化 tool_call_id 派生
+独立 Call ID。SDK 继续按该请求身份去重、恢复；一项外层委派可以包含多个调用。
+execute_candidate 返回 SDK 结果和候选文件收据（路径、类型、真实摘要），不写正式 Artifact。
+Data Processing 可检查候选内容、校验来源/成员/覆盖，或者发起新调用修复，再通过
+submit_data_artifacts 发布 Profile 或 TaskData。SDK 历史不进入父图。
+
 ## 目标与职责
 
 在 Compilation 任意阶段探索来源、理解数据、编写/运行转换、修复或报告不可行。
@@ -56,9 +67,9 @@ SDK 状态不复制到 LangGraph 或额外状态文件。Local Runtime 不承诺
 
 ## 首期与后续
 
-本轮接入通用 Local OpenHands Coding，Planner 保持合成实现，实施进度见 [PLAN](../PLAN.md)。
+本轮复用 Local OpenHands 执行能力并拆出候选入口，实施进度见 [PLAN](../PLAN.md)。
 旧 Runtime 保留给尚未迁移的调用方；新实现不依赖旧 Workflow、Preparation Graph、
-StageRequest 或 StageResult。真实医学数据及完整准备校验不在本轮范围。
+StageRequest 或 StageResult。真实模型和医学数据验收不在本轮范围。
 
 官方接口：[Persistence](https://docs.openhands.dev/sdk/guides/convo-persistence)、
 [Structured Output](https://docs.openhands.dev/sdk/guides/structured-output)。

@@ -15,6 +15,7 @@ from langgraph.runtime import Runtime
 
 from medbenchagent.runtime.construction import record_event
 from medbenchagent.settings import CodingSettings, get_coding_api_key
+from medbenchagent.data.dataset import file_digest
 
 from .artifacts import ArtifactIntegrityError, _within, resolve_artifact, write_artifact
 from .coding_worker import CandidateNeed, CodingCandidate, failure
@@ -117,6 +118,16 @@ class OpenHandsCodingAgent:
         return {"result": result.model_dump(mode="json")}
 
     def _execute(self, directory: Path, request: WorkRequest, goal: str) -> WorkResult:
+        candidate, files = self.execute_candidate(directory, request, goal)
+        for item in files:
+            if file_digest(Path(item["read_path"])) != item["digest"]:
+                raise ArtifactIntegrityError("Coding candidate changed before handoff")
+        artifacts = [write_artifact(directory, request, item["path"], kind=item["kind"],
+                                   content=Path(item["read_path"]).read_bytes()) for item in files]
+        return self._result(candidate, artifacts)
+
+    def execute_candidate(self, directory: Path, request: WorkRequest, goal: str):
+        """Execute/recover one SDK call and return candidate receipts, without publication."""
         if request.workstream_id is None:
             raise ValueError("Coding requests require a Host-assigned Workstream ID")
         root = _within(directory, f"coding/{request.workstream_id}")
@@ -133,7 +144,7 @@ class OpenHandsCodingAgent:
                     need_id=f"{request.request_id}-input", kind="work",
                     summary=f"Restore or replace registered input {ref.artifact_id}",
                 ))
-                return self._result(candidate, [])
+                return candidate, []
             if not path.is_relative_to(_within(directory, "artifacts")):
                 raise ValueError("Coding inputs must be formal artifacts, not workspace files")
             inputs.append({**ref.model_dump(mode="json"), "read_path": str(path)})
@@ -165,13 +176,12 @@ class OpenHandsCodingAgent:
                     if not actual.is_file() or actual in seen:
                         raise ValueError(f"Missing or duplicate Coding output: {item.path}")
                     seen.add(actual)
-                    files.append((actual.relative_to(output).as_posix(), item.kind, actual.read_bytes()))
-                artifacts = [write_artifact(directory, request, name, kind=kind, content=content)
-                             for name, kind, content in files]
-                return self._result(candidate, artifacts)
+                    files.append({"path": actual.relative_to(output).as_posix(), "kind": item.kind,
+                                  "read_path": str(actual), "digest": file_digest(actual)})
+                return candidate, files
         except Timeout:
-            return self._result(failure(request.request_id, "blocked", "workstream_busy",
-                                        "This Workstream is already executing another request"), [])
+            return failure(request.request_id, "blocked", "workstream_busy",
+                           "This Workstream is already executing another request"), []
 
     @staticmethod
     def _result(candidate, artifacts):

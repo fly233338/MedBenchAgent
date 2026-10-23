@@ -146,6 +146,27 @@ class TaskPlannerSettings:
 
 
 @dataclass(frozen=True)
+class WorkAgentSettings:
+    llm: LlmSettings
+    context_chars: int
+    page_size: int
+    preview_chars: int
+    loop: AgentLoopSettings
+
+    def snapshot(self):
+        values = asdict(self)
+        return {"llm": values.pop("llm"), "agent": values}
+
+    @classmethod
+    def from_snapshot(cls, values):
+        if set(values) != {"llm", "agent"} or set(values["agent"]) != {"context_chars", "page_size", "preview_chars", "loop"}:
+            raise ValueError("Unexpected native Agent configuration")
+        limits = values["agent"]
+        return cls(llm=_checked_llm_settings(values["llm"]), loop=AgentLoopSettings.parse(limits["loop"]),
+                   **{key: _integer(limits[key], key, minimum=1) for key in ("context_chars", "page_size", "preview_chars")})
+
+
+@dataclass(frozen=True)
 class CodingSettings:
     """Frozen model and local execution settings, shared by this run's Workstreams."""
 
@@ -484,6 +505,33 @@ def load_planner_settings(config_path: Path | None = None) -> TaskPlannerSetting
         _merge(values, {name: override[name] for name in values if name in override})
     _apply_environment(values)
     return TaskPlannerSettings.from_snapshot(values)
+
+
+def load_work_agent_settings(role: str, config_path: Path | None = None) -> WorkAgentSettings:
+    section = {"data_processing": "data_processing_agent", "generation": "generation_agent", "review": "review_agent"}[role]
+    load_project_env()
+    defaults = _read_toml(DEFAULT_CONFIG_PATH)
+    values = {"llm": defaults["llm"], section: defaults[section]}
+    raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
+    if raw_path:
+        path = Path(raw_path).expanduser().resolve() if config_path is not None else _resolve_path(str(raw_path), "MEDBENCH_CONFIG")
+        override = _read_toml(path)
+        _merge(values, {name: override[name] for name in values if name in override})
+    _apply_environment(values)
+    return WorkAgentSettings.from_snapshot({"llm": values["llm"], "agent": values[section]})
+
+
+def load_compilation_target(config_path: Path | None = None, *, sample_count: int | None = None):
+    load_project_env()
+    values = {"benchmark": _read_toml(DEFAULT_CONFIG_PATH)["benchmark"]}
+    raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
+    if raw_path:
+        path = Path(raw_path).expanduser().resolve() if config_path is not None else _resolve_path(str(raw_path), "MEDBENCH_CONFIG")
+        override = _read_toml(path)
+        if "benchmark" in override:
+            _merge(values, {"benchmark": override["benchmark"]})
+    return {"sample_count": _integer(sample_count if sample_count is not None else values["benchmark"]["default_sample_count"], "sample_count", minimum=1),
+            "language": _string(values["benchmark"]["default_language"], "language")}
 
 
 def load_coding_settings(config_path: Path | None = None) -> CodingSettings:

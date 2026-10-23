@@ -53,7 +53,7 @@ def test_canonical_stages_and_portable_export_survive_relocation(tmp_path, monke
     shutil.rmtree(tmp_path / "runtime")
     portable = load_benchmark_package(moved)
     assert portable["manifest"]["benchmark_id"] == original["manifest"]["benchmark_id"]
-    assert Path(portable["items"][0]["input_images"][0]["path"]).is_relative_to(moved)
+    assert Path(portable["items"][0]["inputs"][0]["value"]["path"]).is_relative_to(moved)
 
 
 def test_source_image_mutation_is_rejected_before_export(tmp_path, monkeypatch):

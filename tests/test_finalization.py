@@ -50,4 +50,4 @@ def test_minimal_bundle_drives_planning_generation_and_delivery(tmp_path):
     cases = [json.loads(line) for line in Path(access["cases_path"]).read_text().splitlines()]
     compiled = compile_fixture(tmp_path / "compiled", plan, cases, access=access)
     delivered = json.loads((Path(compiled["candidate_path"]) / "benchmark.jsonl").read_text())
-    assert Path(delivered["input_images"][0]["path"]).read_bytes() == (tmp_path / "raw/raw.jpg").read_bytes()
+    assert Path(delivered["inputs"][0]["value"]["path"]).read_bytes() == (tmp_path / "raw/raw.jpg").read_bytes()

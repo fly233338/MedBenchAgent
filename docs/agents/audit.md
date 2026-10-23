@@ -1,16 +1,13 @@
-# Audit（后续接入）
+# Audit
 
-## 目标与输入输出
+audit.generation 提供新候选的确定性检查，不新增模型 Agent。
+针对确切 GenerationSpec、TaskPlan 和 TaskData 重建预期题目，检查：
+- 对象、Case、执行配置与内容身份。
+- 问题、输入顺序、reference、选项和溯源一致性。
+- 输入/reference 分离及空间 reference 目标与坐标规则。
+- 重复 task/Case 和同任务重复题目内容。
+- 实际数量、分配配额及原始目标绑定。
 
-检查生成产物的身份关联、输入/参考分离和实际需要的确定性约束。
-输入为产物引用，输出为检查结果与诊断，不替代模型语义判断。
-
-## 状态与交接
-
-确定性检查通常为普通函数/节点，无需持久 Agent。
-未来如需 Audit Agent，仍使用 WorkRequest/WorkResult，不直接调用其他 Agent。
-
-## 实施状态
-
-首期只有 Core 交接时的基础类型、文件存在和请求归属检查。
-完整 Benchmark Audit、隔离区、质量评分和发布门槛不在本期实现。
+AuditReport 绑定候选 Artifact ID/digest，记录检查数量、结果和可定位 findings。
+Audit 保持候选只读；需要隔离或修改时由 Generation 形成新候选。
+Delivery 再核对实际内容与该报告一致。旧 audit.task_items 保留给旧入口，待统一清理。

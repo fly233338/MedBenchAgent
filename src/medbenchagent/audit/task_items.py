@@ -12,7 +12,7 @@ from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.planning.bir import BIRStore
 from typing import Any, Iterable
 
-from medbenchagent.generation.items import _input_assets, _input_bindings
+from medbenchagent.generation.items import _input_assets, _input_bindings, _question_inputs
 from medbenchagent.planning.resolver import NotApplicable, ResolverContext, encode_closed_label, resolve_task_input
 from pydantic import ValidationError
 from medbenchagent.contracts import BenchmarkItem
@@ -86,7 +86,7 @@ def audit_task_items(
                         expected = encode_closed_label(expected)
                     except ValueError:
                         errors.append("invalid_label_encoding")
-                if item.get("input_images") != resolved.presentations:
+                if item.get("inputs") != _question_inputs(case, resolved):
                     errors.append("input_presentation_mismatch")
                 expected_bindings = _input_bindings(case, resolved.input_bindings)
                 template_index = item.get("template_index", -1)

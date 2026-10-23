@@ -1,0 +1,4 @@
+{
+  "dataset": {"dataset_id": "your-dataset", "revision": "source-1"},
+  "sources": [{"source_id": "raw", "root": "../datasets/your-dataset"}]
+}

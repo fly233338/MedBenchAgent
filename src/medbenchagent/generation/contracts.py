@@ -1,153 +1,141 @@
-"""Executable closed-VQA configuration. No generator, Resolver DSL or runtime state."""
+"""Execution bindings and immutable generation products; Leaf owns assembly semantics."""
 
-from string import Formatter
-from typing import Literal
-
+from typing import Any
 from pydantic import Field, model_validator
 
-from medbenchagent.data.dataset import DatasetRef
+from medbenchagent.contracts import BenchmarkItem
 from medbenchagent.data.models import CanonicalModel
-from medbenchagent.planning.semantic import validate_plan
-
-
-class ProductBinding(CanonicalModel):
-    artifact_id: str = Field(min_length=1)
-    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class EvidenceSelection(CanonicalModel):
-    name: str = Field(min_length=1)
-    evidence_type: Literal["asset", "text", "value"]
+from medbenchagent.data.task_data import ProductBinding, TaskDataReader
+from medbenchagent.planning.contracts import TaskPlan
 
 
 class GenerationSpec(CanonicalModel):
     task_plan: ProductBinding
     task_id: str = Field(min_length=1)
     task_revision: int = Field(ge=1)
-    dataset: DatasetRef
-    dataset_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    task_family: Literal["closed_vqa"] = "closed_vqa"
-    case_ids: list[str] = Field(min_length=1)
-    inputs: list[EvidenceSelection] = Field(min_length=1)
-    reference_field: str = Field(min_length=1)
-    derived_data: ProductBinding | None = None
-    reference_rule: Literal["identity", "label_map"] = "identity"
-    label_map: dict[str, str] = Field(default_factory=dict)
-    output_format: Literal["label"] = "label"
-    backend: Literal["closed_vqa_template"] = "closed_vqa_template"
-    templates: list[str] = Field(min_length=1)
-    options: list[str] = Field(min_length=2)
+    task_data: ProductBinding
+    case_ids: list[str] = Field(default_factory=list)
     sample_count: int = Field(ge=1)
     seed: int = Field(ge=0)
 
+
+class CaseFailure(CanonicalModel):
+    case_id: str
+    code: str
+    message: str
+
+
+class GenerationBatch(CanonicalModel):
+    spec: ProductBinding
+    case_ids: list[str]
+    items: list[BenchmarkItem]
+    failures: list[CaseFailure] = Field(default_factory=list)
+
+
+class Allocation(CanonicalModel):
+    target: ProductBinding
+    requested: int = Field(ge=1)
+    counts: dict[str, int]
+    capacities: dict[str, int]
+
     @model_validator(mode="after")
-    def closed_output(self):
-        if len(self.case_ids) != len(set(self.case_ids)) or len(self.options) != len(
-            set(self.options)
+    def quotas(self):
+        if (
+            set(self.counts) != set(self.capacities)
+            or sum(self.counts.values()) > self.requested
+            or any(value < 0 or value > self.capacities[key] for key, value in self.counts.items())
         ):
-            raise ValueError("Case IDs and options must be unique")
-        if len(self.inputs) != len({(item.name, item.evidence_type) for item in self.inputs}):
-            raise ValueError("Input selectors must be unique")
-        if any(not item.strip() for item in [*self.options, *self.templates]):
-            raise ValueError("Options and templates cannot be empty")
-        if self.reference_rule == "label_map":
-            if not self.label_map or set(self.label_map.values()) - set(self.options):
-                raise ValueError("label_map must map into the declared options")
-        elif self.label_map:
-            raise ValueError("identity reference rule cannot contain a label_map")
-        for template in self.templates:
-            for _, name, format_spec, conversion in Formatter().parse(template):
-                if name is not None and (
-                    name not in {"options", "task_objective"} or format_spec or conversion
-                ):
-                    raise ValueError("Templates may only interpolate options and task_objective")
+            raise ValueError("Allocation must respect actual capacities and the unchanged target")
+        return self
+
+
+class GenerationCandidate(CanonicalModel):
+    allocation: Allocation
+    specs: list[ProductBinding]
+    batches: list[ProductBinding]
+    items_path: str = "items.jsonl"
+    quarantine_path: str = "quarantine.jsonl"
+    members: dict[str, str]
+    counts: dict[str, int]
+    task_counts: dict[str, dict[str, int]]
+    failures: list[CaseFailure] = Field(default_factory=list)
+
+
+class AuditReport(CanonicalModel):
+    target: ProductBinding
+    passed: bool
+    checked_count: int
+    findings: list[dict[str, Any]]
+    counts: dict[str, int]
+
+
+class ReviewFinding(CanonicalModel):
+    object_id: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    blocking: bool
+    summary: str = Field(min_length=1)
+    evidence_artifact_ids: list[str] = Field(min_length=1)
+    suggested_owner: str = Field(min_length=1)
+
+
+class ReviewReport(CanonicalModel):
+    target: ProductBinding
+    audit: ProductBinding | None = None
+    findings: list[ReviewFinding]
+    checked_task_ids: list[str]
+    checked_scenario_ids: list[str] = Field(default_factory=list)
+    checked_item_ids: list[str] = Field(default_factory=list)
+    unchecked_scope: list[str] = Field(default_factory=list)
+    approved: bool
+    semantic_sampled: bool = False
+
+    @model_validator(mode="after")
+    def coverage(self):
+        if any(
+            len(values) != len(set(values))
+            for values in (self.checked_task_ids, self.checked_scenario_ids, self.checked_item_ids)
+        ):
+            raise ValueError("Review coverage IDs must be unique")
+        if self.approved and (self.unchecked_scope or any(f.blocking for f in self.findings)):
+            raise ValueError("Approved Review cannot contain blocking findings or unchecked scope")
         return self
 
 
 def validate_generation_spec(
-    spec, *, plan, plan_artifact_id, plan_digest, reader, derived_views=None
+    spec, *, plan: TaskPlan, plan_artifact_id: str, plan_digest: str, reader: TaskDataReader
 ):
-    """Validate bindings and execution inputs, without claiming backend readiness or generating items.
+    from .backends import validate_leaf
 
-    derived_views contains Host-verified artifact_id -> (digest, decoded canonical derived_view).
-    The Host must read these through the formal artifact reader before calling this function.
-    """
     spec = GenerationSpec.model_validate(spec)
-    validate_plan(plan, reader, publish=True)
-    if spec.task_plan.artifact_id != plan_artifact_id or spec.task_plan.digest != plan_digest:
-        raise ValueError("GenerationSpec does not bind the supplied Task Plan artifact")
+    if spec.task_plan != ProductBinding(artifact_id=plan_artifact_id, digest=plan_digest):
+        raise ValueError("GenerationSpec binds another Task Plan")
     task = plan.tasks[spec.task_id]
     if (
-        task.revision != spec.task_revision
-        or task.task_family != spec.task_family
+        task.task_id in plan.exclusions
         or task.feasibility != "feasible"
-        or task.task_id in plan.exclusions
-        or task.output_paradigm != "label"
+        or task.revision != spec.task_revision
     ):
-        raise ValueError(
-            "Task revision, family or semantic feasibility is not executable by this spec"
-        )
+        raise ValueError("Task revision is excluded or not ready")
+    if task.task_data != spec.task_data or reader.content_digest != spec.task_data.digest:
+        raise ValueError("GenerationSpec binds another TaskData product")
+    acceptance = plan.task_data_acceptances.get(spec.task_data.artifact_id)
+    if acceptance is None or acceptance.digest != spec.task_data.digest:
+        raise ValueError("Planner has not accepted this TaskData")
+    if set(task.requirement_ids) - plan.acceptances.keys():
+        raise ValueError("Leaf has unaccepted data requirements")
+    if task.dataset != reader.manifest.dataset:
+        raise ValueError("TaskData belongs to another source dataset revision")
+    if plan.scenarios[task.scenario_id].decision != "keep":
+        raise ValueError("Task Scenario is not kept")
     if (
-        spec.dataset != plan.dataset
-        or spec.dataset_digest != plan.dataset_digest
-        or reader.content_digest != spec.dataset_digest
+        task.assembly is not None
+        and task.assembly.backend_id not in plan.scenarios[task.scenario_id].backend_ids
     ):
-        raise ValueError("GenerationSpec binds a different Dataset snapshot")
-    expected_inputs = {
-        (
-            reader.get_evidence(ref.case_id, ref.evidence_id).name,
-            reader.get_evidence(ref.case_id, ref.evidence_id).type,
-        )
-        for ref in task.input_evidence_refs
-    }
-    if {(item.name, item.evidence_type) for item in spec.inputs} != expected_inputs:
-        raise ValueError("Execution inputs do not match the task's input evidence semantics")
-    derived = None
-    if spec.derived_data is not None:
-        entry = (derived_views or {}).get(spec.derived_data.artifact_id)
-        if entry is None or entry[0] != spec.derived_data.digest:
-            raise ValueError("Missing or stale derived data")
-        value = entry[1]
-        requirement_id = value.get("requirement_id")
-        acceptance = plan.acceptances.get(requirement_id)
-        if (
-            requirement_id not in task.requirement_ids
-            or acceptance is None
-            or acceptance.artifact_id != spec.derived_data.artifact_id
-            or acceptance.digest != spec.derived_data.digest
-            or value.get("dataset") != spec.dataset.model_dump()
-        ):
-            raise ValueError("Derived data was not accepted for this task and Dataset")
-        rows = value.get("rows", [])
-        derived = {row["case_id"]: row for row in rows}
-        if len(derived) != len(rows):
-            raise ValueError("Duplicate derived Cases")
-    for case_id in spec.case_ids:
-        case = reader.get_case(case_id)
-        chosen = set()
-        for selector in spec.inputs:
-            matches = [
-                e
-                for e in case.evidence
-                if e.name == selector.name and e.type == selector.evidence_type
-            ]
-            if not matches or any(e.input_visibility != "model_visible" for e in matches):
-                raise ValueError("Generation inputs are missing or not model_visible")
-            chosen.update(e.id for e in matches)
-        if derived is None:
-            names = {
-                reader.get_evidence(ref.case_id, ref.evidence_id).name
-                for ref in task.reference_evidence_refs
-            }
-            if spec.reference_field not in names:
-                raise ValueError("Reference field does not match the task evidence")
-            references = [e for e in case.evidence if e.name == spec.reference_field]
-            if len(references) != 1 or references[0].id in chosen:
-                raise ValueError("Reference must resolve uniquely and cannot be a model input")
-            answer = references[0].value
-        else:
-            answer = derived[case_id][spec.reference_field]
-        label = spec.label_map.get(str(answer)) if spec.reference_rule == "label_map" else answer
-        if not isinstance(label, str) or label not in spec.options:
-            raise ValueError(f"Reference is outside the closed options for Case {case_id}")
+        raise ValueError("Leaf backend is not selected by its Scenario")
+    validate_leaf(task, reader)
+    if len(spec.case_ids) != len(set(spec.case_ids)):
+        raise ValueError("Duplicate selected Cases")
+    eligible = {case.case_id for case in reader.cases if task.scenario_id in case.scenario_ids}
+    if set(spec.case_ids) - eligible:
+        raise ValueError("Selected Cases do not belong to this Scenario")
     return spec

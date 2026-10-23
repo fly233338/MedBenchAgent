@@ -56,6 +56,16 @@ def _input_bindings(case: dict[str, Any], bindings: list[dict[str, Any]]) -> lis
     ]
 
 
+def _question_inputs(case, resolved):
+    inputs = [{"kind": "asset", "role": "image", "value": value} for value in resolved.presentations]
+    evidence = {item["id"]: item for item in case.get("evidence", [])}
+    for identifier in resolved.input_evidence_ids:
+        item = evidence[identifier]
+        if item["type"] in {"text", "value"}:
+            inputs.append({"kind": item["type"], "role": item["name"], "value": item["value"]})
+    return inputs
+
+
 def _template_cycle(seed: int, dataset_id: str, leaf_id: str, count: int) -> list[int]:
     payload = json.dumps([seed, dataset_id, leaf_id], separators=(",", ":"), ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).digest()
@@ -121,7 +131,7 @@ def generate_task_items(
                 "capability_category": leaf.capability_category.value,
                 "task_paradigm": leaf.task_paradigm.value,
                 "options": list(leaf.options) if leaf.options is not None else None,
-                "input_images": resolved.presentations,
+                "inputs": _question_inputs(case, resolved),
                 "input_bindings": _input_bindings(case, resolved.input_bindings),
                 "input_assets": _input_assets(case, resolved.input_evidence_ids),
                 "input_evidence_ids": resolved.input_evidence_ids,

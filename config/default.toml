@@ -47,6 +47,42 @@ max_output_tokens = 4096
 condenser_max_events = 80
 condenser_max_tokens = 24000
 
+[data_processing_agent]
+context_chars = 128000
+page_size = 20
+preview_chars = 6000
+[data_processing_agent.loop]
+max_model_calls = 40
+max_tool_calls = 80
+context_tokens = 40000
+max_output_tokens = 4096
+summary_trigger_tokens = 18000
+summary_keep_tokens = 4000
+
+[generation_agent]
+context_chars = 96000
+page_size = 64
+preview_chars = 6000
+[generation_agent.loop]
+max_model_calls = 60
+max_tool_calls = 120
+context_tokens = 32000
+max_output_tokens = 4096
+summary_trigger_tokens = 12000
+summary_keep_tokens = 3000
+
+[review_agent]
+context_chars = 96000
+page_size = 20
+preview_chars = 6000
+[review_agent.loop]
+max_model_calls = 40
+max_tool_calls = 80
+context_tokens = 32000
+max_output_tokens = 4096
+summary_trigger_tokens = 12000
+summary_keep_tokens = 3000
+
 # Omitted fields inherit the resolved [llm], including its environment overrides.
 [coding.llm]
 

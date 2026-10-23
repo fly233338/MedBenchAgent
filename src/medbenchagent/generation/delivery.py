@@ -118,7 +118,10 @@ def export_benchmark(source, destination):
     for item in items:
         from medbenchagent.contracts import BenchmarkItem
         BenchmarkItem.model_validate(item)
-        for asset in item.get("input_images", []):
+        for entry in item.get("inputs", []):
+            if entry["kind"] != "asset":
+                continue
+            asset = entry["value"]
             original = Path(asset["path"])
             original = original if original.is_absolute() else source / original
             digest = digest_file(original)
@@ -132,11 +135,15 @@ def export_benchmark(source, destination):
             asset["path"] = relative
             asset_files[relative] = digest
     _write_jsonl(destination / "benchmark.jsonl", items)
-    for name in ("audit_report.json", "quarantine.jsonl", "compilation_report.md"):
-        shutil.copy2(source / name, destination / name)
+    source_files = json.loads((source / "complete.json").read_text(encoding="utf-8"))["files"]
+    metadata_files = set(source_files) - {"benchmark.jsonl", "benchmark_manifest.json"} - set(manifest.get("assets", {}))
+    for name in metadata_files:
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / name, target)
     manifest.update(package_mode="portable", asset_base=".", assets=asset_files)
     atomic_write_json(destination / "benchmark_manifest.json", manifest)
-    files = {name: digest_file(destination / name) for name in (*PACKAGE_FILES, "compilation_report.md")}
+    files = {name: digest_file(destination / name) for name in {"benchmark.jsonl", "benchmark_manifest.json", *metadata_files}}
     atomic_write_json(destination / "complete.json", {"schema_version": "benchmark-delivery",
         "benchmark_id": manifest["benchmark_id"], "files": {**files, **asset_files}})
     verify_package(destination)

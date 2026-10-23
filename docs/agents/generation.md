@@ -1,23 +1,41 @@
-# Generation 执行契约（后端后续接入）
+# Generation Agent 与后端
 
-当前实现 generation.contracts.GenerationSpec 和 validate_generation_spec，尚未注册 Generation
-Agent、prepare_task_execution 工具或生成后端。closed_vqa_template 是已定义的配置标识，
-不能作为后端已实现的声明。旧 generation.items 仍服务旧入口。
+agents.generation 通过 create_agent 接入；generation.backends / execution 实现确定性业务操作。
+Generation 的直接输入是 TaskPlan 中可执行 Leaf 及其已接受 TaskData，不读取原始目录推断任务。
 
-GenerationSpec 绑定 TaskPlan Artifact ID/digest、task_id/task_revision、DatasetRef/digest，
-以及可选已接受 derived_data ID/digest。首个配置限定 closed_vqa / label：
-case_ids、输入 EvidenceSelection、reference_field、identity/label_map 参考规则、
-templates、options、sample_count 和 seed。
+## 工具
 
-确定性校验检查当前 TaskPlan、任务未排除且语义 feasible、Dataset 和派生数据身份、
-输入选择与任务证据语义一致、模型输入明确 model_visible、reference 不混入输入，
-参考值落在闭集选项内。模板只允许 options、task_objective 插值。
-sample_count 是目标数量，本轮不执行采样，也不声称能够达到目标。
+查询后端、TaskData、批次/候选样本、失败与隔离记录；prepare_task_execution 发布执行配置；
+allocate_generation_budget 分配真实容量；generate_task_batch 生成指定批次；
+quarantine_generated_items 记录隔离理由；finalize_generation 提交候选。
+propose_data_requirement 可发布执行性缺口，返回 Supervisor 协调。
 
-后续 prepare_task_execution 将接受 Generation 提出的具体配置，执行校验并发布正式配置。
-模板、选项、绑定或采样修订必须实际改变配置；自由文本只解释修改原因。
-语义问题返回 Supervisor → Planner，缺少数据表示返回数据需求；后端不支持应报告能力缺口。
+Allocation 必须绑定 benchmark_request，保留原始数量目标。容量不足体现为 shortfall。
+相同任务和 Case 不通过模板变化重复计数；重新执行时显式选择替换批次，不能合并重叠尝试。
 
-Review 报告必须绑定准确的候选和依赖身份；提交候选前执行必需的确定性 Audit。
-Delivery 核验计划、数据、候选、报告和真实数量，并产生可独立读取的包。
-这些运行能力尚未迁入新 Compilation。
+## 当前实现的后端
+
+| Backend | Task Family | 输出 |
+| --- | --- | --- |
+| vqa | closed_vqa / open_vqa | label、labels、number、text、index |
+| report_generation | report_generation | text |
+| visual_grounding | visual_grounding | bbox |
+| detection | detection | detections |
+
+后端不按原始文件后缀或图像数量分派。输入字段可含多个有序资源、文本和数值；
+资源引用由 TaskDataReader 校验，原始解析和转换由 Data Processing 负责。
+这表示能够组装已准备的数据，不表示后端能自行解码所有医学格式。
+
+空间 reference 是带 asset_id、box、coordinate_system 的对象；检测是额外带 label 的对象列表。
+坐标系统支持 normalized_xyxy、pixel_xyxy、physical_xyzxyz，物理坐标需要 unit。
+所有目标必须锚定实际输入资产。复杂派生值由数据处理预先计算。
+
+## 执行与产物
+
+GenerationSpec 绑定 TaskPlan/Leaf 修订、TaskData、Case 范围、sample_count 和 seed。
+Leaf 持有模板、字段、选项及答案规则。后端按固定种子选择 Case/模板，产生 BenchmarkItem。
+题目使用有序 inputs，每项有 kind（asset/text/value）、role 和 value；asset value 带实际文件位置和摘要。
+输入资源可以是多种文件格式，题目不再要求 input_images。
+
+批次记录成功题目和 CaseFailure；候选包含实际 items.jsonl、quarantine.jsonl、成员摘要、
+执行配置/批次引用、数量目标和真实统计。候选发布不代表已经通过审查或交付。

@@ -32,6 +32,18 @@ max_scenarios = 10000
 max_model_calls = 60
 max_tool_calls = 120
 
+# New professional agents use the common [llm], independently frozen when enabled.
+[data_processing_agent.loop]
+max_model_calls = 40
+max_tool_calls = 80
+
+[generation_agent]
+page_size = 64 # Also bounds a generation batch request.
+
+[review_agent.loop]
+max_model_calls = 40
+max_tool_calls = 80
+
 # Independent Compilation Coding settings; not the old Preparation runtime.
 [coding]
 worker_venv = ".venv-coding" # Must already be provisioned; no automatic installation.
