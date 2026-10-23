@@ -2,6 +2,7 @@
 import json
 import shutil
 from types import SimpleNamespace
+import pytest
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
@@ -183,8 +184,19 @@ def test_review_and_delivery_bind_exact_candidate_contents(tmp_path):
     exported = tmp_path / "exported"
     export_benchmark(package, exported)
     assert (exported / "review_report.json").read_bytes() == (package / "review_report.json").read_bytes()
-    assert len(load_benchmark_package(exported)["items"]) == 5
+    exported_items = load_benchmark_package(exported)["items"]
+    assert len(exported_items) == 5
     from pathlib import Path
+
+    asset_path = Path(next(entry["value"]["path"] for item in exported_items
+                           for entry in item["inputs"] if entry["kind"] == "asset"))
+    for member in (exported / "benchmark.jsonl", asset_path):
+        original = member.read_bytes()
+        member.write_bytes(original + b" ")
+        with pytest.raises(ValueError, match="changed"):
+            load_benchmark_package(exported)
+        member.write_bytes(original)
+    assert len(load_benchmark_package(exported)["items"]) == 5
 
     assert all(
         Path(entry["value"]["path"]).is_relative_to(package)

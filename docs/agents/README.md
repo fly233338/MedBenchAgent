@@ -15,7 +15,7 @@ scope 的每项为 artifact_id、kind（artifact/scenario/task/requirement）和
 自由描述写在 objective/constraints，空 scope 不隐式扩大为全计划。
 
 操作 completed、数据就绪、目标 succeeded 三者分开。发现可完成并留有准备需求；审查可完成但拒绝批准；
-生成可完成但存在缺口。run.json 固定 goal_kind、计划层次、数量及受限交付政策。
+生成可完成但存在缺口。run.json 的 goal_spec 固定目标类型、计划层次与受限交付政策，benchmark_request 固定数量。
 
 静态 Prompt 按 common+role+operation 组合并冻结。动态请求和材料是工作数据，工具 schema 来自唯一类型。
 恢复使用冻结快照并要求实现指纹匹配；历史摘要不是正式证据。父图不保存专业角色对话。

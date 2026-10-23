@@ -139,7 +139,7 @@ def create_run(
 def resume_run(directory: Path, compilation_id: str) -> RunOptions:
     options = RunOptions.model_validate_json((directory / "run.json").read_text(encoding="utf-8"))
     if options.implementation_digest != implementation_digest():
-        raise ValueError("This run uses incompatible code/contracts/tools. Start a new run; artifacts remain readable.")
+        raise ValueError("This run uses incompatible code/contracts/tools. Start a new run; existing files are left untouched.")
     if options.compilation_id != compilation_id:
         raise ValueError("The directory belongs to another Compilation")
     if not (directory / "checkpoints.sqlite").is_file():

@@ -9,6 +9,23 @@ from dataset_fixtures import create_synthetic_inputs
 from medbenchagent.data.dataset import FileDatasetReader, snapshot_dataset
 
 
+def test_benchmark_item_accepts_ordered_inputs_and_rejects_retired_fields():
+    from medbenchagent.contracts import BenchmarkItem
+
+    item = {
+        "item_id": "item", "dataset_id": "data", "scenario_id": "scenario",
+        "leaf_task_id": "leaf", "case_id": "case", "capability_category": "Recognition",
+        "task_paradigm": "VQA", "output_spec": "label", "question": "Which label?",
+        "answer": "A", "inputs": [{"kind": "text", "value": "Context"},
+                                    {"kind": "value", "value": 3}],
+    }
+    assert [entry.value for entry in BenchmarkItem.model_validate(item).inputs] == ["Context", 3]
+    for name, value in {"sampling_unit_id": "case", "split": "test", "view_ids": [],
+                        "panel_id": "panel", "sampling_order": 0, "input_bindings": []}.items():
+        with pytest.raises(ValueError, match="Extra inputs"):
+            BenchmarkItem.model_validate({**item, name: value})
+
+
 def test_frozen_dataset_members_and_portable_snapshot(tmp_path):
     ref = create_synthetic_inputs(tmp_path / "original", "data")[0]
     source = resolve_artifact(tmp_path / "original", ref)

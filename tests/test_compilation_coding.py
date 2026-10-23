@@ -1,11 +1,27 @@
 """SDK candidate recovery remains independent from formal data publication."""
 from dataclasses import replace
+import sys
 import pytest
-from medbenchagent.agents.coding import OpenHandsCodingAgent
+from medbenchagent.agents.coding import OpenHandsCodingAgent, run_local_worker
 from medbenchagent.compilation.contracts import WorkRequest
 from medbenchagent.prompts import load_prompt
 from medbenchagent.settings import load_coding_settings
 from coding_fixtures import FakeRunner, Crash
+
+
+def test_worker_module_returns_structured_environment_failure_without_sdk_calls(tmp_path):
+    request = WorkRequest(compilation_id="worker", request_id="one", agent_id="coding",
+                          operation="execute", workstream_id="owned", objective="Check transport")
+    candidate = run_local_worker({
+        "request": request.model_dump(mode="json"),
+        "settings": {"coding": {"worker_python": sys.executable, "timeout_seconds": 30,
+                                 "sdk_packages": {"pydantic": "0.0.0"}}},
+        "log_path": str(tmp_path / "worker.log"), "workspace": str(tmp_path),
+    })
+    assert candidate.request_id == request.request_id
+    assert candidate.outcome == "blocked"
+    assert candidate.issues[0].code == "environment_unavailable"
+    assert "Frozen Coding dependency differs: pydantic" in candidate.issues[0].message
 
 
 def test_workstreams_reuse_isolate_and_exchange_formal_artifacts(tmp_path):

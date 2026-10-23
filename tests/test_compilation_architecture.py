@@ -30,10 +30,39 @@ def test_assembly_freezes_prompts_and_resumes_without_live_sources(tmp_path, mon
     monkeypatch.setattr(services, "resolve_model_service", lambda *_: pytest.fail("Resume contacted model service"))
     assert run.resume_run(directory, "freeze") == options
     document = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+    for selector in ("supervisor_mode", "coding_mode", "planner_mode"):
+        with pytest.raises(ValueError, match="Extra inputs"):
+            run.RunOptions.model_validate({**document, selector: "llm"})
+    with monkeypatch.context() as changed:
+        changed.setattr(run, "implementation_digest", lambda: "different-implementation")
+        with pytest.raises(ValueError, match="incompatible"):
+            run.resume_run(directory, "freeze")
+    assert json.loads((directory / "run.json").read_text(encoding="utf-8")) == document
     document["prompts"]["coding"]["text"] += "tampered"
     (directory / "run.json").write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ValueError, match="content digest"):
         run.resume_run(directory, "freeze")
+
+
+def test_studio_assembles_frozen_run_without_live_discovery_or_model_calls(tmp_path, monkeypatch):
+    from medbenchagent.compilation.demo import create_demo_source
+    from medbenchagent.compilation.studio import graph as studio_graph
+    import medbenchagent.runtime.model_services as services
+    import medbenchagent.runtime.native as native
+    from native_agent_fixtures import ScriptedChatModel
+
+    source = create_demo_source(tmp_path / "source")
+    monkeypatch.setattr(services, "resolve_model_service", lambda *_: "offline")
+    directory = tmp_path / "studio"
+    run.create_run(directory, compilation_id="studio", goal="Compile", source_manifest=source)
+    monkeypatch.setattr(services, "resolve_model_service", lambda *_: pytest.fail("Studio rediscovered models"))
+    monkeypatch.setattr(prompts, "load_prompt", lambda *_: pytest.fail("Studio reread live prompts"))
+    monkeypatch.setattr(native, "chat_model", lambda *_: ScriptedChatModel(
+        responder=lambda *_: pytest.fail("Assembly called a model")))
+    graph = studio_graph({"configurable": {"directory": str(directory), "thread_id": "studio"}})
+    assert graph.get_input_jsonschema()
+    assert (directory / "studio-thread.txt").read_text() == "studio"
+    assert not (directory / "checkpoints.sqlite").exists()
 
 
 def test_agent_interfaces_do_not_depend_on_graph_or_sdk():
