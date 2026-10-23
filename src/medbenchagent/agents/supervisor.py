@@ -17,9 +17,9 @@ from medbenchagent.runtime.llm import RequestContextBudgetError
 from medbenchagent.runtime.native import AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
 from medbenchagent.settings import SupervisorSettings
 
-from .artifacts import preview_artifact
-from .contracts import AskUser, Contract, Delegate, Finish, Identifier, Text, WorkRecord, WorkResult, WorkScope
-from .interfaces import SupervisorView, record_summary
+from medbenchagent.compilation.artifacts import preview_artifact
+from medbenchagent.compilation.contracts import AskUser, Contract, Delegate, Finish, Identifier, Text, WorkRecord, WorkResult, WorkScope
+from medbenchagent.compilation.interfaces import SupervisorView, record_summary
 
 
 class _ModelDelegation(Contract):

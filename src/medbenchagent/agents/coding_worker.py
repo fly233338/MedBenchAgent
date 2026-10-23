@@ -19,7 +19,7 @@ import uuid
 
 from pydantic import Field
 
-from .contracts import Contract, Identifier, Text, WorkIssue, WorkOutcome, WorkRequest
+from medbenchagent.compilation.contracts import Contract, Identifier, Text, WorkIssue, WorkOutcome, WorkRequest
 
 
 class CandidateFile(Contract):

@@ -20,8 +20,8 @@ from medbenchagent.compilation.artifacts import (
     write_json_artifact,
     resolve_artifact,
 )
-from medbenchagent.compilation.coding import OpenHandsCodingAgent
-from medbenchagent.compilation.coding_worker import CodingCandidate
+from medbenchagent.agents.coding import OpenHandsCodingAgent
+from medbenchagent.agents.coding_worker import CodingCandidate
 from medbenchagent.compilation.contracts import ArtifactRef, WorkRequest, WorkScope
 from medbenchagent.data.dataset import DatasetRef, DatasetSource, file_digest
 from medbenchagent.data.models import SourceRef

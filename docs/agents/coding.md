@@ -12,3 +12,5 @@ execute_candidate 返回候选和实际文件收据。DP 检查/修复后提交�
 Local 执行不承诺操作系统沙箱或任意外部命令 exactly-once。
 
 运行环境由 config/coding-worker.requirements.txt 单独安装；不在启动时自动安装或退回脚本实现。
+适配器位于 medbenchagent.agents.coding，子进程入口为 python -m medbenchagent.agents.coding_worker。
+Worker 从 stdin 接收内部请求并在 stdout 返回候选；旧 Compilation 模块路径和 Dockerfile 已删除。

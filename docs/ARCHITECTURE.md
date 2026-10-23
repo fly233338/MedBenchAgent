@@ -14,11 +14,11 @@ flowchart TB
     Assembly --> Policy[compilation.policy]
     Graph --> Public[compilation.interfaces / contracts / artifacts]
     Policy --> Domain[data / planning / generation validators]
-    Assembly --> Agents[Supervisor / DP / Planner / Generation / Review / Delivery]
+    Assembly --> Agents[agents: Supervisor / DP / Planner / Generation / Review / Delivery]
     Agents --> Public
     Agents --> Domain
     Agents --> Native[runtime.native / create_agent]
-    DP[Data Processing] --> Coding[OpenHands execution adapter / SDK]
+    DP[agents.data_processing] --> Coding[agents.coding / coding_worker / OpenHands SDK]
     CLI --> Sessions[session UI records]
     CLI --> UIService[runtime.conversation_service]
     UIService --> Sessions
@@ -26,6 +26,7 @@ flowchart TB
 ```
 
 Policy 是 Assembly 注入的请求、结果与目标检查函数，领域语义仍由 Reader、规划及生成模块检查。
+Supervisor 实现位于 agents.supervisor；Coding 适配器与子进程也归属 agents，由 Assembly 注入 DP。
 Graph 不导入领域实现或 SDK。实验记录不是第二个执行账本；standalone RAG、图像转换与几何函数
 是保留的库能力，不是额外 Agent。旧 Workflow/BIR/Resolver/Harness/Preparation 编排已移除。
 

@@ -41,15 +41,23 @@ def test_agent_interfaces_do_not_depend_on_graph_or_sdk():
     assert all(not hasattr(graph, name) for name in (
         "AgentInput", "AgentOutput", "AgentSpec", "CompilationContext", "SupervisorView",
     ))
-    for name in ("interfaces", "graph", "coding", "supervisor", "demo", "__main__"):
+    for name in ("interfaces", "graph", "demo", "__main__"):
         tree = ast.parse((root / f"{name}.py").read_text(encoding="utf-8"))
         dependencies = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
-        if name in {"interfaces", "coding", "supervisor", "demo"}:
+        if name in {"interfaces", "demo"}:
             assert "graph" not in dependencies and "medbenchagent.compilation.graph" not in dependencies
         if name in {"interfaces", "graph", "__main__"}:
             assert not {"coding", "coding_worker", "supervisor"}.intersection(dependencies)
         if name in {"interfaces", "graph"}:
             assert not any("openhands" in module for module in dependencies)
+            assert not any(module.startswith("medbenchagent.agents") for module in dependencies)
+    for path in (root.parent / "agents").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        dependencies = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+        dependencies += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                         for alias in node.names]
+        assert not {"medbenchagent.compilation.graph", "medbenchagent.compilation.assembly",
+                    "medbenchagent.runtime.graph_runner"}.intersection(dependencies), path
     assert not hasattr(__import__("medbenchagent.compilation.demo", fromlist=["demo_agents"]), "demo_agents")
     with pytest.raises((FileNotFoundError, ValueError)):
         prompts.load_prompt("missing.md")

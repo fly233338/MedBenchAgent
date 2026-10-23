@@ -12,7 +12,7 @@ from medbenchagent.compilation.artifacts import write_json_artifact
 from medbenchagent.compilation.contracts import WorkRequest, WorkResult
 from medbenchagent.compilation.graph import build_compilation_graph
 from medbenchagent.compilation.interfaces import AgentSpec, CompilationContext, SupervisorView
-from medbenchagent.compilation.supervisor import ModelSupervisor, _Inspection
+from medbenchagent.agents.supervisor import ModelSupervisor, _Inspection
 from medbenchagent.prompts import load_prompt
 from medbenchagent.settings import load_supervisor_settings, SupervisorSettings
 from medbenchagent.runtime.llm import RequestContextBudgetError

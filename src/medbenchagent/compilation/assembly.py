@@ -23,14 +23,14 @@ def assemble_compilation(
 
         if options.supervisor_mode == "llm":
             from medbenchagent.settings import SupervisorSettings
-            from .supervisor import ModelSupervisor
+            from medbenchagent.agents.supervisor import ModelSupervisor
 
             settings = SupervisorSettings.from_snapshot(options.supervisor_settings)
             decide = ModelSupervisor(directory, settings, model=model_for(settings),
                                      instructions=options.prompts["supervisor"].text)
         if options.coding_mode == "openhands":
             from medbenchagent.settings import CodingSettings
-            from .coding import OpenHandsCodingAgent
+            from medbenchagent.agents.coding import OpenHandsCodingAgent
 
             coding_agent = OpenHandsCodingAgent(CodingSettings.from_snapshot(options.coding_settings),
                                                instructions=options.prompts["coding"].text)

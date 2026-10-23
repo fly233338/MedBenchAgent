@@ -95,7 +95,7 @@ def test_profile_taskdata_leaf_generation_capabilities(tmp_path, monkeypatch):
 
     import medbenchagent.runtime.native as native
     import medbenchagent.runtime.model_services as services
-    import medbenchagent.compilation.coding as coding
+    import medbenchagent.agents.coding as coding
     original = coding.OpenHandsCodingAgent
     monkeypatch.setattr(services, "resolve_model_service", lambda *_: "offline")
     monkeypatch.setattr(native, "chat_model", lambda *_: ScriptedChatModel(responder=respond))

@@ -1,7 +1,7 @@
 """SDK candidate recovery remains independent from formal data publication."""
 from dataclasses import replace
 import pytest
-from medbenchagent.compilation.coding import OpenHandsCodingAgent
+from medbenchagent.agents.coding import OpenHandsCodingAgent
 from medbenchagent.compilation.contracts import WorkRequest
 from medbenchagent.prompts import load_prompt
 from medbenchagent.settings import load_coding_settings
