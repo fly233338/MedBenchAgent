@@ -161,7 +161,11 @@ def validate_plan(plan: TaskPlan, reader, *, publish=False, task_data=None):
         if requirement.backend_id is not None and requirement.backend_id not in BACKENDS:
             raise ValueError("DataRequirement selects an unavailable backend")
     for acceptance in [*plan.acceptances.values(), *plan.task_data_acceptances.values()]:
-        validate_evidence(reader, acceptance.evidence_refs)
+        accepted_reader = (task_data or {}).get(acceptance.artifact_id)
+        if accepted_reader is None or accepted_reader.content_digest != acceptance.digest:
+            raise ValueError("Bind accepted TaskData to validate its evidence")
+        for evidence in acceptance.evidence_refs:
+            validate_evidence(reader if isinstance(evidence, ProfileEvidenceRef) else accepted_reader, [evidence])
     for exclusion in plan.exclusions.values():
         validate_evidence(reader, exclusion.evidence_refs)
     for task in plan.tasks.values():
@@ -226,8 +230,6 @@ def validate_plan(plan: TaskPlan, reader, *, publish=False, task_data=None):
             for s in plan.scenarios.values()
         ):
             raise ValueError("Scenario is no longer supported by the current Axis assessments")
-        if any(s.decision == "pending" for s in plan.scenarios.values()):
-            raise ValueError("Complete Scenario decisions before publication")
         if any(
             task.feasibility == "proposed"
             for key, task in plan.tasks.items()
@@ -264,3 +266,63 @@ def active_requirements(plan):
 
 def pending_requirements(plan):
     return active_requirements(plan) - plan.acceptances.keys()
+
+
+def scoped_objects(plan, scope):
+    """Resolve explicit objects without expanding a single-task repair to its siblings."""
+    scenarios, tasks, requirements = set(), set(), set()
+    for item in scope:
+        if item.kind == "artifact":
+            return set(plan.scenarios), set(plan.tasks), set(plan.requirements)
+        if item.kind == "scenario":
+            scenarios.update(item.object_ids)
+        elif item.kind == "task":
+            tasks.update(item.object_ids)
+        elif item.kind == "requirement":
+            requirements.update(item.object_ids)
+    scenarios.update(s for key in requirements for s in plan.requirements[key].affected_scenario_ids)
+    tasks.update(key for key, task in plan.tasks.items() if task.scenario_id in scenarios)
+    requirements.update(key for key, r in plan.requirements.items()
+                        if set(r.affected_scenario_ids) & scenarios or set(r.affected_task_ids) & tasks)
+    requirements.update(key for identifier in tasks for key in plan.tasks[identifier].requirement_ids)
+    scenarios.update(plan.tasks[key].scenario_id for key in tasks)
+    return scenarios, tasks, requirements
+
+
+def check_operation_complete(plan, operation, scope, *, task_data=None):
+    scenarios, tasks, requirements = scoped_objects(plan, scope)
+    if operation == "discover_scenarios":
+        if set(plan.axis_assessments) != set(AXES):
+            raise ValueError("Assess all three Axes before completing discovery")
+        for key in scenarios:
+            scenario = plan.scenarios[key]
+            if scenario.decision == "pending":
+                raise ValueError(f"Scenario {key} still needs a decision")
+            if scenario.decision != "keep":
+                continue
+            if not scenario.backend_ids:
+                raise ValueError(f"Scenario {key} needs a backend; retain technical blockers")
+            for backend in scenario.backend_ids:
+                if not any(key in r.affected_scenario_ids and r.backend_id == backend
+                           and r.required_fields for r in plan.requirements.values()) and not any(
+                               identifier in plan.task_data_acceptances and reader.manifest.backend_id == backend
+                               and key in reader.manifest.scenario_ids
+                               for identifier, reader in (task_data or {}).items()):
+                    raise ValueError(f"Scenario {key}/{backend} needs a concrete preparation requirement")
+    elif operation == "design_leaves":
+        if not tasks - plan.exclusions.keys():
+            raise ValueError("No executable Leaf in the selected scope")
+        for key in scenarios:
+            if plan.scenarios[key].decision == "keep" and not any(
+                task.scenario_id == key and (task.assembly or task.task_id in plan.exclusions)
+                for task in plan.tasks.values()
+            ):
+                raise ValueError(f"Scenario {key} has no Leaf decision")
+        for key in tasks - plan.exclusions.keys():
+            task = plan.tasks[key]
+            if task.feasibility != "feasible" or task.assembly is None:
+                raise ValueError(f"Leaf {key} is not executable")
+        if requirements & pending_requirements(plan):
+            raise ValueError("Accept in-scope requirements before completing Leaf design")
+    else:
+        raise ValueError(f"Unsupported Planner operation: {operation}")

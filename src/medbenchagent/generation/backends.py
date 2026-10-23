@@ -63,9 +63,11 @@ def validate_leaf(task: SemanticTaskSpec, reader: TaskDataReader):
         raise ValueError("Closed VQA requires label(s) and explicit options")
     if task.output_paradigm != assembly.output_spec:
         raise ValueError("Leaf output paradigm and assembly output differ")
+    matched = 0
     for case in reader.cases:
         if task.scenario_id not in case.scenario_ids:
             continue
+        matched += 1
         fields = {field.name: field for field in case.fields}
         needed = {
             *assembly.input_fields,
@@ -85,10 +87,16 @@ def validate_leaf(task: SemanticTaskSpec, reader: TaskDataReader):
             raise ValueError(
                 "Question interpolation requires prepared text or values, not asset paths"
             )
+        try:
+            assemble_item(task, reader, case.case_id, 0)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError(f"Case {case.case_id}: {exc}") from exc
+    if not matched:
+        raise ValueError("An executable Leaf needs nonempty Scenario Cases")
     return task
 
 
-def _region(value: Any, asset_ids: set[str], *, label=False):
+def _region(value: Any, asset_ids: set[str], reader, *, label=False):
     if not isinstance(value, dict):
         raise ValueError("Region references require an object")
     if value.get("asset_id") not in asset_ids:
@@ -113,6 +121,13 @@ def _region(value: Any, asset_ids: set[str], *, label=False):
         raise ValueError("Pixel coordinates must be nonnegative")
     if system == "physical_xyzxyz" and not value.get("unit"):
         raise ValueError("Physical coordinates require a unit")
+    metadata = reader.assets[value["asset_id"]].metadata
+    if system == "pixel_xyxy":
+        width, height = metadata.get("width"), metadata.get("height")
+        if not width or not height or coordinates[2] > width or coordinates[3] > height:
+            raise ValueError("Pixel coordinates require matching asset width/height and valid bounds")
+    if system == "physical_xyzxyz" and metadata.get("unit") != value.get("unit"):
+        raise ValueError("Physical coordinates must match the asset's declared unit")
     if label and (not isinstance(value.get("label"), str) or not value["label"].strip()):
         raise ValueError("Detection targets require a label")
 
@@ -183,12 +198,12 @@ def assemble_item(task: SemanticTaskSpec, reader: TaskDataReader, case_id: str, 
     if output == "index" and (type(answer) is not int or not 0 <= answer < len(inputs)):
         raise ValueError("Reference index is outside ordered inputs")
     if output == "bbox":
-        _region(answer, set(assets))
+        _region(answer, set(assets), reader)
     if output == "detections":
         if not isinstance(answer, list):
             raise ValueError("Detection reference must be a list")
         for target in answer:
-            _region(target, set(assets), label=True)
+            _region(target, set(assets), reader, label=True)
     identity = {"task": task.model_dump(mode="json"), "case_id": case_id, "seed": seed}
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     template_index = int(digest[:16], 16) % len(assembly.question_templates)

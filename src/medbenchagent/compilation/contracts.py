@@ -21,13 +21,48 @@ class ArtifactRef(Contract):
     digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
+class WorkScope(Contract):
+    """Objects in one explicitly delegated input; whole artifacts use kind=artifact."""
+
+    artifact_id: Identifier
+    kind: Literal["artifact", "scenario", "task", "requirement"] = "artifact"
+    object_ids: list[Text] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def explicit_objects(self):
+        if (self.kind == "artifact") != (not self.object_ids):
+            raise ValueError("Use artifact for the whole input, otherwise supply object IDs")
+        if len(set(self.object_ids)) != len(self.object_ids):
+            raise ValueError("Duplicate scope objects")
+        return self
+
+
+class GoalSpec(Contract):
+    kind: Literal["profile", "plan", "benchmark"] = "benchmark"
+    plan_level: Literal["scenarios", "executable_leaves"] | None = None
+    allow_limited_delivery: bool = True
+
+    @model_validator(mode="after")
+    def level(self):
+        if (self.kind == "plan") != (self.plan_level is not None):
+            raise ValueError("Only plan goals require plan_level")
+        return self
+
+
+class RepairLimits(Contract):
+    per_problem: int = Field(default=3, ge=1)
+    no_progress: int = Field(default=3, ge=1)
+    total: int = Field(default=12, ge=1)
+
+
 class WorkRequest(Contract):
     request_id: Identifier
     compilation_id: Identifier
     agent_id: Identifier
+    operation: Identifier
     workstream_id: Identifier | None = None
     objective: Text
-    scope: list[Text] = Field(default_factory=list)
+    scope: list[WorkScope] = Field(default_factory=list)
     inputs: list[ArtifactRef] = Field(default_factory=list)
     constraints: list[Text] = Field(default_factory=list)
 
@@ -69,9 +104,10 @@ class WorkRecord(Contract):
 class Delegate(Contract):
     action: Literal["delegate"] = "delegate"
     agent_id: Identifier
+    operation: Identifier
     workstream_id: Identifier | None = None
     objective: Text
-    scope: list[Text] = Field(default_factory=list)
+    scope: list[WorkScope] = Field(default_factory=list)
     inputs: list[ArtifactRef] = Field(default_factory=list)
     constraints: list[Text] = Field(default_factory=list)
 
@@ -82,7 +118,7 @@ class Workstream(Contract):
     workstream_id: Identifier
     agent_id: Identifier
     objective: Text
-    scope: list[Text] = Field(default_factory=list)
+    scope: list[WorkScope] = Field(default_factory=list)
 
 
 class AskUser(Contract):
@@ -95,6 +131,8 @@ class Finish(Contract):
 
     action: Literal["finish"] = "finish"
     summary: Text
+    goal_result: Literal["succeeded", "partial", "blocked", "failed"]
+    evidence_artifact_ids: list[Identifier] = Field(default_factory=list)
 
 
 SupervisorDecision = Annotated[Delegate | AskUser | Finish, Field(discriminator="action")]

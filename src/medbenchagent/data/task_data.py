@@ -112,8 +112,12 @@ class TaskCase(CanonicalModel):
 class TaskDataManifest(SourceManifest):
     backend_id: str = Field(min_length=1)
     scenario_ids: list[str] = Field(min_length=1)
-    requirement_ids: list[str] = Field(default_factory=list)
+    requirements: dict[str, ProductBinding] = Field(default_factory=dict)
     profile: ProductBinding | None = None
+    case_granularity: str = Field(default="source Case", min_length=1)
+    input_relationships: list[str] = Field(default_factory=list)
+    preparation_scripts: list[DatasetMember] = Field(default_factory=list)
+    preparation_parameters: dict[str, Any] = Field(default_factory=dict)
     cases_path: str = "cases.jsonl"
     assets_path: str = "assets.jsonl"
     members: list[DatasetMember] = Field(default_factory=list)
@@ -170,6 +174,7 @@ def seal_profile(profile: DatasetProfile, root: Path):
 def _task_references(manifest, cases, assets):
     refs = {(None, manifest.cases_path), (None, manifest.assets_path)}
     refs.update((asset.source_id, asset.source_path) for asset in assets)
+    refs.update((m.source_id, m.path) for m in manifest.preparation_scripts)
     for case in cases:
         refs.update((ref.source_id, ref.path) for ref in case.source_refs)
         refs.update((ref.source_id, ref.path) for field in case.fields for ref in field.source_refs)
@@ -182,6 +187,7 @@ def seal_task_data(manifest: TaskDataManifest, root: Path):
     counts = {key: sum(key in case.scenario_ids for case in cases) for key in manifest.scenario_ids}
     return manifest.model_copy(
         update={
+            "preparation_scripts": _members(root, manifest.sources, {(m.source_id, m.path) for m in manifest.preparation_scripts}),
             "case_count": len(cases),
             "scenario_counts": counts,
             "members": _members(root, manifest.sources, _task_references(manifest, cases, assets)),
@@ -388,3 +394,24 @@ def snapshot_task_data(source: Path, destination: Path):
     write_once(target, (copied.model_dump_json(indent=2) + "\n").encode())
     TaskDataReader(target)
     return target
+
+
+def validate_preparation(reader, requirement):
+    """Check factual preparation requirements; semantic acceptance belongs to Planner."""
+    manifest = reader.manifest
+    if manifest.dataset != requirement.dataset or manifest.backend_id != requirement.backend_id:
+        raise ValueError("Prepared data does not match requirement Dataset/backend")
+    if manifest.case_granularity != requirement.case_granularity:
+        raise ValueError("Prepared Case granularity differs from the requirement")
+    if not set(requirement.input_relationships) <= set(manifest.input_relationships):
+        raise ValueError("Prepared input relationships are incomplete")
+    for scenario in requirement.affected_scenario_ids:
+        rows = [c for c in reader.cases if scenario in c.scenario_ids]
+        if len(rows) < requirement.minimum_cases:
+            raise ValueError(f"Scenario {scenario} does not meet minimum Case coverage")
+        for case in rows:
+            fields = {f.name: f for f in case.fields}
+            for expected in requirement.required_fields:
+                actual = fields.get(expected.name)
+                if actual is None or (actual.type, actual.input_visibility) != (expected.type, expected.input_visibility):
+                    raise ValueError(f"Case {case.case_id}: incompatible field {expected.name}")

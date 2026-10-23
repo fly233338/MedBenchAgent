@@ -54,6 +54,13 @@ class LeafAssembly(CanonicalModel):
         return self
 
 
+class RequiredField(CanonicalModel):
+    name: str = Field(min_length=1)
+    type: Literal["asset", "text", "value"]
+    input_visibility: Literal["model_visible", "reference_only", "unknown"]
+    purpose: str = Field(min_length=1)
+
+
 class DataRequirement(CanonicalModel):
     requirement_id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
     dataset: DatasetRef
@@ -66,6 +73,10 @@ class DataRequirement(CanonicalModel):
     affected_scenario_ids: list[str] = Field(default_factory=list)
     backend_id: str | None = None
     source_role: Literal["task_planner", "generation"] = "task_planner"
+    required_fields: list[RequiredField] = Field(default_factory=list)
+    case_granularity: str = Field(default="source Case", min_length=1)
+    input_relationships: list[str] = Field(default_factory=list)
+    minimum_cases: int = Field(default=1, ge=1)
 
 
 class SemanticTaskSpec(CanonicalModel):

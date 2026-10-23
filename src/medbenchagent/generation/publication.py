@@ -131,3 +131,18 @@ def publish_delivery(
     )
     load_benchmark_package(root)
     return root / "complete.json"
+
+
+def export_benchmark(source, destination):
+    """Copy exactly the files bound by a portable package, preserving review evidence."""
+    from medbenchagent.evaluation.loader import verify_package
+    source, destination = Path(source).resolve(), Path(destination).resolve()
+    verify_package(source)
+    load_benchmark_package(source)
+    if destination.exists():
+        raise ValueError("Export destination already exists")
+    marker = json.loads((source / "complete.json").read_text(encoding="utf-8"))
+    for name in [*marker["files"], "complete.json"]:
+        write_once(destination / name, (source / name).read_bytes())
+    load_benchmark_package(destination)
+    return destination

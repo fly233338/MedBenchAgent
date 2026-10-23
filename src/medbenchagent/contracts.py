@@ -3,6 +3,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+CapabilityCategory = Literal["Recognition", "Localization", "Quantification", "Comparison", "Integration", "Generation"]
+TaskParadigm = Literal["VQA", "Visual Grounding", "Report Generation", "Detection"]
+OutputSpec = Literal["label", "labels", "number", "text", "bbox", "index", "detections"]
+
 class QuestionInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: Literal["asset", "text", "value"]
@@ -27,9 +31,9 @@ class BenchmarkItem(BaseModel):
     scenario_id: str = Field(min_length=1)
     leaf_task_id: str = Field(min_length=1)
     case_id: str = Field(min_length=1)
-    capability_category: Literal["Recognition", "Localization", "Quantification", "Comparison", "Integration", "Generation"]
-    task_paradigm: Literal["VQA", "Visual Grounding", "Report Generation", "Detection"]
-    output_spec: Literal["label", "labels", "number", "text", "bbox", "index", "detections"]
+    capability_category: CapabilityCategory
+    task_paradigm: TaskParadigm
+    output_spec: OutputSpec
     question: str = Field(min_length=1)
     template_index: int = Field(default=0, ge=0)
     template_count: int = Field(default=1, ge=1)

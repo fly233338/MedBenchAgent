@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from medbenchagent.planning.task_space import CapabilityCategory, OutputSpec, TaskParadigm
+from medbenchagent.contracts import CapabilityCategory, OutputSpec, TaskParadigm
 
 
 class MetricSpec(BaseModel):
