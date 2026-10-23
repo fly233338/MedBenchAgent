@@ -43,21 +43,9 @@ def data_processing_tools():
             root = Path(entry.root)
             if not root.is_absolute() or not root.is_dir():
                 raise ValueError("Delegated source roots must be existing absolute directories")
-            files = sorted(root.iterdir())
-            selected = files[offset : offset + runtime.context.settings.page_size]
-            rows.append(
-                {
-                    "source_id": entry.source_id,
-                    "root": entry.root,
-                    "coverage": "top-level only",
-                    "entries": [
-                        {"name": path.name, "directory": path.is_dir()} for path in selected
-                    ],
-                    "next_offset": offset + len(selected)
-                    if offset + len(selected) < len(files)
-                    else None,
-                }
-            )
+            from medbenchagent.data.sources import inspect_source
+            rows.append({"source_id": entry.source_id, **inspect_source(
+                root, offset=offset, limit=runtime.context.settings.page_size)})
         return {"dataset": source.dataset.model_dump(), "sources": rows}
 
     @tool

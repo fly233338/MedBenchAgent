@@ -10,6 +10,8 @@ default_language = "en"
 
 [coding]
 worker_venv = ".venv-coding" # Provision separately using config/coding-worker.requirements.txt.
+[coding.skills]
+enabled = ["tabular-inspection", "medical-image", "mask-geometry"] # [] disables domain skills.
 [coding.llm]
 # model = "your-coding-model"
 # Omitted values inherit [llm]. MEDBENCH_CODING_LLM_API_KEY can supply a separate key.

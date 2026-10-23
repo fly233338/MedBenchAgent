@@ -31,7 +31,7 @@ def assemble_compilation(
         from medbenchagent.agents.data_processing.coding.adapter import OpenHandsCodingAgent
 
         coding_agent = OpenHandsCodingAgent(CodingSettings.from_snapshot(options.coding_settings),
-                                           instructions=options.prompts["coding"].text)
+                                           instructions=options.prompts["coding"].text, skills=options.coding_skills)
         from medbenchagent.settings import TaskPlannerSettings
         from medbenchagent.agents.task_planning.agent import build_planner_spec
         settings = TaskPlannerSettings.from_snapshot(options.planner_settings)

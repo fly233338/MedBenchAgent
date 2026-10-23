@@ -20,6 +20,7 @@ import uuid
 from pydantic import Field
 
 from medbenchagent.compilation.contracts import Contract, Identifier, Text, WorkIssue, WorkOutcome, WorkRequest
+from .skills import FrozenSkills, load_native_skills
 
 
 class CandidateFile(Contract):
@@ -118,6 +119,7 @@ def _conversation(payload):
 
     from pydantic import SecretStr
     from openhands.sdk import Agent, Conversation, LLM, Tool
+    from openhands.sdk.context import AgentContext
     from openhands.sdk.context.condenser import LLMSummarizingCondenser
     from openhands.sdk.tool.registry import resolve_tool
     from openhands.tools.file_editor import FileEditorTool
@@ -143,6 +145,10 @@ def _conversation(payload):
     finish_spec = Tool(name="FinishTool", params={"response_schema": CodingSubmission.model_json_schema()})
     agent = Agent(
         llm=llm,
+        agent_context=AgentContext(
+            skills=load_native_skills(Path(payload["run_directory"]), FrozenSkills.model_validate(payload["skills"])),
+            load_user_skills=False, load_public_skills=False, load_project_skills=False, load_memory=False,
+        ),
         tools=[Tool(name=TerminalTool.name, params={"terminal_type": "powershell"} if os.name == "nt" else {}),
                Tool(name=FileEditorTool.name), finish_spec],
         include_default_tools=["ThinkTool"],

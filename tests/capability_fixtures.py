@@ -19,6 +19,7 @@ from medbenchagent.compilation.artifacts import (
     write_json_artifact,
     resolve_artifact,
 )
+from medbenchagent.agents.data_processing.coding.skills import freeze_skills
 from medbenchagent.agents.data_processing.coding.adapter import OpenHandsCodingAgent
 from medbenchagent.agents.data_processing.coding.worker import CodingCandidate
 from medbenchagent.compilation.contracts import ArtifactRef, WorkRequest, WorkScope
@@ -228,7 +229,7 @@ def build_capabilities(tmp_path):
     coding_settings = load_coding_settings()
     coding_settings = replace(coding_settings, llm=replace(coding_settings.llm, model="offline"))
     coding = OpenHandsCodingAgent(
-        coding_settings, instructions=freeze_composition("coding").text, runner=runner
+        coding_settings, instructions=freeze_composition("coding").text, skills=freeze_skills(directory, coding_settings.skill_names), runner=runner
     )
 
     operations = {"profile": "profile", "scenarios": "discover_scenarios", "prepare": "prepare_task_data",

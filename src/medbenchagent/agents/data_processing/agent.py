@@ -17,9 +17,10 @@ from .state import DataProcessingContext, DataProcessingState
 
 def build_data_processing_spec(settings, coding, *, instructions, model=None):
     model = model or chat_model(settings.llm, settings.loop)
+    tools = data_processing_tools()
     agent = create_agent(
         model,
-        tools=data_processing_tools(),
+        tools=tools,
         response_format=ToolStrategy(WorkResponse),
         state_schema=DataProcessingState,
         context_schema=DataProcessingContext,
@@ -27,7 +28,8 @@ def build_data_processing_spec(settings, coding, *, instructions, model=None):
         name="data_processing_agent",
         middleware=[
             WorkInstructions(DataProcessingState),
-            OperationTools({'profile': None, 'prepare_task_data': None}),
+            OperationTools({'profile': {t.name for t in tools} - {'inspect_candidate_cases'},
+                            'prepare_task_data': {t.name for t in tools}}),
             *loop_middleware(
                 model,
                 settings.loop,

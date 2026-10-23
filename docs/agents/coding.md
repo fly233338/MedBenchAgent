@@ -14,3 +14,15 @@ Local 执行不承诺操作系统沙箱或任意外部命令 exactly-once。
 运行环境由 config/coding-worker.requirements.txt 单独安装；不在启动时自动安装或退回脚本实现。
 适配器位于 medbenchagent.agents.data_processing.coding.adapter，子进程入口为 python -m medbenchagent.agents.data_processing.coding.worker。
 Worker 从 stdin 接收内部请求并在 stdout 返回候选；旧 Compilation 模块路径和 Dockerfile 已删除。
+
+
+## 冻结领域 Skill
+
+[coding.skills].enabled 选择包内 tabular-inspection、medical-image、mask-geometry，可设为空列表。
+创建 Run 时复制所选 SKILL.md 及随附资源到 resources/coding-skills，run.json 只保存名称和逐文件摘要。
+恢复及每次调用先校验快照；Worker 通过 SDK 1.49.6 原生加载器加载，使用 AgentContext 与 InvokeSkillTool。
+加载结果必须与允许集合完全一致，解析失败不得静默跳过。公共、用户、项目 Skill 和记忆自动加载关闭。
+Coding 按需调用技能，同一会话始终使用同一允许集合；Skill 不是 Workstream 生命周期或新调度层。
+
+表格检查使用 data.tabular.inspect_table，来源分页使用 data.sources.inspect_source；影像与几何直接复用
+现有 Reader/Adapter/Mask API。统计结果带扫描范围，缺失标签和不明确的关系不自动补全。

@@ -20,6 +20,7 @@ from medbenchagent.data.dataset import file_digest
 from medbenchagent.compilation.artifacts import _within, resolve_artifact
 from medbenchagent.compilation.contracts import WorkRequest
 from .worker import CandidateNeed, CodingCandidate, failure
+from .skills import FrozenSkills, verify_skills
 
 
 def _stop_process(process):
@@ -87,11 +88,14 @@ def run_local_worker(payload: dict) -> CodingCandidate:
 
 
 class OpenHandsCodingAgent:
-    def __init__(self, settings: CodingSettings, *, instructions: str, runner: Callable | None = None):
+    def __init__(self, settings: CodingSettings, *, instructions: str, skills: FrozenSkills, runner: Callable | None = None):
         if not settings.llm.model:
             raise ValueError("Resolve the Coding model before starting a run")
         self.settings = settings
         self.instructions = instructions
+        if skills.names != settings.skill_names:
+            raise ValueError("Coding skill snapshot differs from settings")
+        self.skills = skills
         self.runner = runner or run_local_worker
 
     def execute_candidate(self, directory: Path, request: WorkRequest, goal: str):
@@ -100,6 +104,7 @@ class OpenHandsCodingAgent:
             raise ValueError("Coding only accepts internal execute requests")
         if request.workstream_id is None:
             raise ValueError("Coding requests require a Host-assigned Workstream ID")
+        verify_skills(directory, self.skills)
         root = _within(directory, f"coding/{request.workstream_id}")
         workspace = _within(root, "workspace")
         output = _within(workspace, f"outputs/{request.request_id}")
@@ -126,6 +131,7 @@ class OpenHandsCodingAgent:
             "workspace": str(workspace), "output_directory": str(output),
         }
         payload = {
+            "run_directory": str(directory.resolve()), "skills": self.skills.model_dump(mode="json"),
             **details, "conversation_id": conversation_id,
             "persistence_dir": str(_within(root, "conversations")),
             "log_path": str(_within(root, f"logs/{request.request_id}.log")),

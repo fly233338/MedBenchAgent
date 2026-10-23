@@ -85,7 +85,7 @@ Coding 仅接受 DP 内部 execute 请求并返回候选；DP 检查后提交。
 
 | 所有者 | 内容与位置 |
 | --- | --- |
-| Run | run.json：目标类型、数量、配置、修复限额、Prompt 组合和实现指纹 |
+| Run | run.json：目标类型、数量、配置、修复限额、Prompt 组合、Skill 资源摘要和实现指纹；resources/coding-skills 保存 Skill 内容 |
 | 父图 | 请求/结果、正式引用、用户答案、反馈、少量修复/无进展计数 |
 | 专业 Agent | 私有消息、当前 operation、草稿/提交引用、请求临时状态 |
 | DP / SDK | DP 拥有 Coding 会话与调用身份；SDK 保存自己的对话和执行记录 |

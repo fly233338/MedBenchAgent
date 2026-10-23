@@ -9,6 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from medbenchagent.compilation.assembly import assemble_compilation
 from medbenchagent.compilation.graph import build_compilation_graph
 from medbenchagent.compilation.run import RunOptions, implementation_digest
+from medbenchagent.agents.data_processing.coding.skills import verify_skills
 from medbenchagent.runtime.graph_runner import initial_state
 
 
@@ -24,6 +25,7 @@ def graph(config: RunnableConfig):
     options = RunOptions.model_validate_json((directory / "run.json").read_bytes())
     if options.implementation_digest != implementation_digest():
         raise ValueError("Incompatible run implementation; create a new run")
+    verify_skills(directory, options.coding_skills)
     # Server owns checkpoint persistence. Clients live for this graph instance.
     stack = ExitStack()
     try:

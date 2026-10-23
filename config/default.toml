@@ -41,6 +41,9 @@ max_output_tokens = 4096
 condenser_max_events = 80
 condenser_max_tokens = 24000
 
+[coding.skills]
+enabled = ["tabular-inspection", "medical-image", "mask-geometry"]
+
 [data_processing_agent]
 context_chars = 128000
 page_size = 20

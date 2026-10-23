@@ -14,6 +14,7 @@ from medbenchagent.settings import (
 )
 
 from .contracts import Contract, Identifier, Text, GoalSpec, RepairLimits
+from medbenchagent.agents.data_processing.coding.skills import FrozenSkills, freeze_skills, verify_skills
 
 
 class RunOptions(Contract):
@@ -33,6 +34,7 @@ class RunOptions(Contract):
     planner_settings: dict[str, Any]
     supervisor_settings: dict[str, Any]
     coding_settings: dict[str, Any]
+    coding_skills: FrozenSkills
     prompts: dict[str, prompts.PromptSnapshot]
 
     @model_validator(mode="after")
@@ -56,6 +58,8 @@ class RunOptions(Contract):
         required.add("structured_repair")
         if set(self.prompts) != required:
             raise ValueError("Prompt snapshots must match the selected model-driven agents")
+        if self.coding_skills.names != self.coding_settings["coding"]["skill_names"]:
+            raise ValueError("Frozen skills must match Coding configuration")
         return self
 
 
@@ -128,6 +132,7 @@ def create_run(
         delivery_enabled=delivery_enabled, professional_settings=professional,
         benchmark_request=load_compilation_target(config_path, sample_count=sample_count) if generation_mode == "llm" else None,
         supervisor_settings=snapshots["supervisor"], coding_settings=snapshots["coding"],
+        coding_skills=freeze_skills(directory, snapshots["coding"]["coding"]["skill_names"]),
         prompts=instructions,
     )
     directory.mkdir(parents=True, exist_ok=True)
@@ -140,6 +145,7 @@ def resume_run(directory: Path, compilation_id: str) -> RunOptions:
     options = RunOptions.model_validate_json((directory / "run.json").read_text(encoding="utf-8"))
     if options.implementation_digest != implementation_digest():
         raise ValueError("This run uses incompatible code/contracts/tools. Start a new run; existing files are left untouched.")
+    verify_skills(directory, options.coding_skills)
     if options.compilation_id != compilation_id:
         raise ValueError("The directory belongs to another Compilation")
     if not (directory / "checkpoints.sqlite").is_file():

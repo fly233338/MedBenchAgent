@@ -161,6 +161,7 @@ class CodingSettings:
     llm: LlmSettings
     worker_python: str
     sdk_packages: dict[str, str]
+    skill_names: list[str]
     max_iterations: int
     timeout_seconds: float
     max_output_tokens: int
@@ -197,10 +198,13 @@ class CodingSettings:
         }
         if limits["condenser_max_events"] <= 2:
             raise ValueError("coding.condenser_max_events must exceed the two retained events")
+        names = runtime["skill_names"]
+        if not isinstance(names, list) or any(not isinstance(name, str) or not name for name in names) or len(names) != len(set(names)):
+            raise ValueError("coding.skills.enabled requires distinct skill names")
         return cls(
             llm=_checked_llm_settings(values["llm"]), worker_python=worker_python,
             sdk_packages={name: _string(value, name) for name, value in packages.items()},
-            timeout_seconds=timeout, **limits,
+            skill_names=names, timeout_seconds=timeout, **limits,
         )
 
 
@@ -440,6 +444,7 @@ def load_coding_settings(config_path: Path | None = None) -> CodingSettings:
     _merge(values["llm"], overrides, prefix="coding.llm")
     runtime = dict(values["coding"])
     runtime.pop("llm")
+    runtime["skill_names"] = runtime.pop("skills")["enabled"]
     venv = _resolve_path(runtime.pop("worker_venv"), "coding.worker_venv")
     runtime["worker_python"] = str(venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
     requirements = PROJECT_ROOT / "config" / "coding-worker.requirements.txt"
