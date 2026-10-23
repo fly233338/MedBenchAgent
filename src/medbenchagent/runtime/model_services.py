@@ -15,7 +15,7 @@ class ModelDiscoveryError(RuntimeError):
         self.models, self.kind = list(models), kind
 
 
-def resolve_model_service(kind: str, base_url: str, explicit_model: str, api_key: str | None) -> str:
+def available_models(kind: str, base_url: str, api_key: str | None) -> list[str]:
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         response = httpx.get(f"{base_url.rstrip('/')}/models", headers=headers, timeout=15)
@@ -33,6 +33,11 @@ def resolve_model_service(kind: str, base_url: str, explicit_model: str, api_key
     models = [item["id"] for item in data]
     if not models or len(models) != len(set(models)):
         raise ModelDiscoveryError(f"{kind} /models returned no unique models")
+    return models
+
+
+def resolve_model_service(kind: str, base_url: str, explicit_model: str, api_key: str | None) -> str:
+    models = available_models(kind, base_url, api_key)
     if explicit_model:
         if explicit_model not in models:
             raise ModelDiscoveryError(f"{kind} model {explicit_model!r} is unavailable", models=models, kind=kind)

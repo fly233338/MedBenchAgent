@@ -22,16 +22,27 @@ class ConversationService:
     def save_draft(self, draft):
         sessions.save_draft(self.name, draft, root=self.root)
 
-    def run(self, run_id, *, resume=False, answer=None, stop_requested=None):
+    def run(self, run_id, *, resume=False, answer=None, question_id=None, stop_requested=None):
         run = next(row for row in self.record()["runs"] if row["id"] == run_id)
-        for event in execute_compilation(run["directory"], resume=resume, answer=answer, stop_requested=stop_requested):
-            if event.kind in {"finished", "needs_input"}:
-                with FileLock(self.folder / "session.lock"):
-                    record = self.record()
-                    text = event.payload.get("summary", "") or str(event.payload.get("questions", []))
-                    record["messages"].append({"role": "assistant", "text": text, "run_id": run_id})
-                    sessions.save_experiment(record, root=self.root)
-            yield event
+        with FileLock(self.folder / "execution.lock", timeout=0):
+            for event in execute_compilation(run["directory"], resume=resume, answer=answer,
+                                             question_id=question_id, stop_requested=stop_requested):
+                message = None
+                if event.kind == "needs_input":
+                    question = event.payload["questions"][0]
+                    message = {"id": "question-" + event.payload["question_id"], "role": "assistant",
+                               "text": question.get("question", str(question)), "kind": "question",
+                               "after_work": len(event.payload["history"])}
+                elif event.kind == "answer_accepted":
+                    message = {"id": "answer-" + event.payload["question_id"], "role": "user",
+                               "text": event.payload["answer"], "after_work": event.payload["after_work"]}
+                if message:
+                    with FileLock(self.folder / "session.lock"):
+                        record = self.record()
+                        if not any(row.get("id") == message["id"] and row.get("run_id") == run_id for row in record["messages"]):
+                            record["messages"].append({**message, "run_id": run_id})
+                            sessions.save_experiment(record, root=self.root)
+                yield event
 
     def inspect(self, run_id):
         run = next(row for row in self.record()["runs"] if row["id"] == run_id)

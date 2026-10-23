@@ -131,6 +131,7 @@ def test_artifact_digest_detects_changes_and_cannot_be_reregistered_over_an_acce
     assert result["result"]["issues"][0]["code"] == "artifact_integrity"
     assert result["artifacts"] == [ref.model_dump()]
     records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    records = [row for row in records if row["event_type"] != "supervisor_decision"]
     assert [row["event_type"] for row in records] == ["work_delegated", "work_result"]
     assert all(row["compilation_id"] == "integrity" and row["request_id"] == seed.request_id
                and row["agent_id"] == "writer" for row in records)

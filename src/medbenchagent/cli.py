@@ -79,7 +79,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command in {None, "tui"}:
-            from medbenchagent.tui import MBAApp
+            from medbenchagent.tui.app import MBAApp
             MBAApp().run()
             return
         if args.command == "create":

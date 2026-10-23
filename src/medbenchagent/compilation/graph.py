@@ -32,7 +32,7 @@ class CompilationState(TypedDict, total=False):
     answers: list[str]
     question: str | None
     next_node: str
-    status: Literal["running", "waiting", "stopped"]
+    status: Literal["running", "waiting", "paused", "stopped"]
     goal_result: str
     feedback: list[str]
     problem_attempts: dict[str, int]
@@ -152,12 +152,17 @@ def build_compilation_graph(
                 input_artifact_ids=[ref.artifact_id for ref in request.inputs],
                 summary=request.objective, scope=[scope.model_dump() for scope in request.scope],
             )
+            record_event(runtime.context.directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
+                         request_id=request.request_id, agent_id="supervisor", decision="delegate", target_agent=request.agent_id,
+                         operation=request.operation, summary=request.objective)
             return {
                 "sequence": sequence, "request": request.model_dump(mode="json"),
                 "workstreams": [item.model_dump(mode="json") for item in workstreams],
                 "next_node": decision.agent_id, "status": "running", "feedback": [],
             }
         if isinstance(decision, AskUser):
+            record_event(runtime.context.directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
+                         agent_id="supervisor", decision="ask_user", summary=decision.question)
             return {"question": decision.question, "next_node": "ask_user", "status": "waiting"}
         assert isinstance(decision, Finish)
         try:
@@ -165,6 +170,8 @@ def build_compilation_graph(
                 runtime.context.check_goal(decision, tuple(known.values()), view.history)
         except (ValueError, KeyError, OSError) as exc:
             return rejected(exc)
+        record_event(runtime.context.directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
+                     agent_id="supervisor", decision="finish", goal_result=decision.goal_result, summary=decision.summary)
         return {"summary": decision.summary, "next_node": END, "status": "stopped",
                 "goal_result": decision.goal_result, "feedback": []}
 

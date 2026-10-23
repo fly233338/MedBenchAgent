@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
+from urllib.parse import urlsplit
 
 import tomlkit
 from pydantic import BaseModel, ConfigDict, Field
@@ -141,6 +142,14 @@ def connection_values(config: Path) -> dict:
 
 
 def save_connection(config: Path, values: dict):
+    for value in (values["base_url"], values.get("coding_base_url", "")):
+        if not value:
+            continue
+        url = urlsplit(value)
+        if url.scheme not in {"http", "https"} or not url.netloc or url.username or url.password or url.query or url.fragment:
+            raise ValueError("模型地址必须是无凭据和查询参数的 HTTP(S) 地址")
+    if not values["base_url"]:
+        raise ValueError("请填写 Chat 服务地址")
     document = tomlkit.parse(config.read_text(encoding="utf-8"))
     document.setdefault("llm", {}).update({key: values[key] for key in ("base_url", "model")})
     coding = document.setdefault("coding", {})
@@ -156,6 +165,16 @@ def set_session_credentials(common="", coding=""):
             os.environ[name] = value.strip()
 
 
+def _check_coding_environment(settings):
+    if not Path(settings.worker_python).is_file():
+        raise ValueError(f"Coding Python 不存在：{settings.worker_python}")
+    code = "import importlib.metadata,json; print(json.dumps({p:importlib.metadata.version(p) for p in ['openhands-sdk','openhands-tools']}))"
+    result = subprocess.run([settings.worker_python, "-c", code], capture_output=True, text=True,
+                            encoding="utf-8", timeout=20, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    if result.returncode or json.loads(result.stdout) != settings.sdk_packages:
+        raise ValueError("Coding 环境缺少固定版本的 OpenHands SDK/Tools，请按 requirements 配置")
+
+
 def check_connections(config: Path, draft: InputDraft):
     from medbenchagent.runtime.model_services import resolve_model_service
     roles = required_roles(draft.goal_spec(), raw_source=not bool(draft.canonical_manifest))
@@ -163,12 +182,17 @@ def check_connections(config: Path, draft: InputDraft):
     resolved = {"model": resolve_model_service("Chat", common.llm.base_url, common.llm.model, get_llm_api_key())}
     if "coding" in roles:
         settings = load_coding_settings(config)
-        if not Path(settings.worker_python).is_file():
-            raise ValueError(f"Coding Python 不存在：{settings.worker_python}")
-        code = "import importlib.metadata,json; print(json.dumps({p:importlib.metadata.version(p) for p in ['openhands-sdk','openhands-tools']}))"
-        result = subprocess.run([settings.worker_python, "-c", code], capture_output=True, text=True,
-                                encoding="utf-8", timeout=20, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        if result.returncode or json.loads(result.stdout) != settings.sdk_packages:
-            raise ValueError("Coding 环境缺少固定版本的 OpenHands SDK/Tools，请按 requirements 配置")
+        _check_coding_environment(settings)
         resolved["coding_model"] = resolve_model_service("Coding", settings.llm.base_url, settings.llm.model, get_coding_api_key())
     return resolved
+
+
+def probe_connections(config: Path, draft: InputDraft):
+    from medbenchagent.runtime.model_services import available_models
+    common = load_supervisor_settings(config)
+    result = {"model": available_models("Chat", common.llm.base_url, get_llm_api_key())}
+    if "coding" in required_roles(draft.goal_spec(), raw_source=not bool(draft.canonical_manifest)):
+        coding = load_coding_settings(config)
+        _check_coding_environment(coding)
+        result["coding_model"] = available_models("Coding", coding.llm.base_url, get_coding_api_key())
+    return result

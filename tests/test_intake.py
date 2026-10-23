@@ -48,3 +48,26 @@ def test_draft_boundaries_and_nonsecret_connection_settings(tmp_path):
     save_connection(config, values)
     assert "never-store-this" not in config.read_text(encoding="utf-8")
     assert connection_values(config)["model"] == "offline"
+
+
+def test_connection_probe_exposes_model_choices_and_skips_unused_coding(tmp_path, monkeypatch):
+    import httpx
+    import medbenchagent.runtime.model_services as models
+    from medbenchagent.runtime.intake import probe_connections, check_connections
+    create_experiment("connect", root=tmp_path)
+    path = config_path("connect", tmp_path)
+    values = connection_values(path)
+    values["worker_venv"] = str(tmp_path / "missing-coding")
+    save_connection(path, values)
+    monkeypatch.setattr(models.httpx, "get", lambda url, **_: httpx.Response(200,
+        json={"data": [{"id": "one"}, {"id": "two"}]}, request=httpx.Request("GET", url)))
+    draft = InputDraft(goal="Plan", goal_kind="scenarios", canonical_manifest="selected.json")
+    assert probe_connections(path, draft) == {"model": ["one", "two"]}
+    with pytest.raises(models.ModelDiscoveryError) as error:
+        check_connections(path, draft)
+    assert error.value.models == ["one", "two"]
+    values["model"] = "two"
+    save_connection(path, values)
+    assert check_connections(path, draft) == {"model": "two"}
+    with pytest.raises(ValueError, match="Coding Python"):
+        probe_connections(path, InputDraft(goal="Profile", goal_kind="profile"))
