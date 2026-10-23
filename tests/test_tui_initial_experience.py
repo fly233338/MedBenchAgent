@@ -12,7 +12,7 @@ def test_new_rejects_existing_name_before_configuration(tmp_path):
 
 
 @pytest.mark.parametrize("size", [(80, 24), (140, 45)])
-def test_chat_workbench_keeps_composer_visible_and_opens_settings(tmp_path, size):
+def test_chat_workbench_keeps_composer_visible_and_opens_settings(tmp_path, monkeypatch, size):
     from medbenchagent.tui.widgets import Composer
     from medbenchagent.tui.dialogs import ConnectionScreen
     async def check():
@@ -30,6 +30,14 @@ def test_chat_workbench_keeps_composer_visible_and_opens_settings(tmp_path, size
             assert isinstance(app.screen, ConnectionScreen)
             assert "[llm]" in app.screen.query_one("#advanced-config", TextArea).text
             await pilot.press("escape")
+            dispatched = []
+            monkeypatch.setattr(app, "execute", lambda *args: dispatched.append(args))
+            app.selected_run = "prepared-run"
+            app.view = {"status": "ready"}
+            app.render_status()
+            await pilot.click("#resume")
+            assert dispatched[0][2] == "prepared-run" and dispatched[0][-1] is False
+            app.running = False
     asyncio.run(check())
 
 
@@ -57,4 +65,20 @@ def test_history_reading_and_activity_selection_do_not_jump_or_mix_runs(tmp_path
             await pilot.pause()
             assert history.scroll_y == position and app.unread > 0
             assert app.query_one("#new-content").display
+    asyncio.run(check())
+
+
+def test_first_launch_prefers_existing_local_configuration(tmp_path, monkeypatch):
+    import medbenchagent.settings as settings
+    from medbenchagent.runtime.intake import connection_values
+    source = settings.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace('model = ""', 'model = "existing-model"', 1)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/local.toml").write_text(source, encoding="utf-8")
+    monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("MEDBENCH_CONFIG", raising=False)
+    async def check():
+        app = MBAApp(root=tmp_path / "experiments")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert connection_values(tmp_path / "experiments/default/config.toml")["model"] == "existing-model"
     asyncio.run(check())

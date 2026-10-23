@@ -93,6 +93,8 @@ def state_view(snapshot, directory, options, *, active=False):
 def inspect_compilation(directory):
     directory = Path(directory).resolve()
     options = RunOptions.model_validate_json((directory / "run.json").read_bytes())
+    if (directory / "studio-thread.txt").exists():
+        return {**_view({}, directory, options), "status": "external", "summary": "请在绑定的 Studio 线程中查看和恢复此运行"}
     active = False
     try:
         with FileLock(directory / "execution.lock", timeout=0):
@@ -113,6 +115,8 @@ def inspect_compilation(directory):
 
 def execute_compilation(directory, *, resume=False, answer=None, question_id=None, stop_requested=None):
     directory = Path(directory).resolve()
+    if (directory / "studio-thread.txt").exists():
+        raise ValueError("This run belongs to Studio; resume its bound Studio thread")
     options = RunOptions.model_validate_json((directory / "run.json").read_bytes())
     identifier = options.compilation_id
     config = {"configurable": {"thread_id": identifier}, "recursion_limit": 300}

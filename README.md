@@ -17,6 +17,19 @@ uv sync --locked --python 3.12
 Copy-Item config/local.toml.example config/local.toml
 ```
 
+For the main user interface, run `uv run --locked medd2b tui` (or just `uv run --locked medd2b`).
+The single-column chat workbench creates a default experiment automatically. Describe the task,
+select local source directories, confirm the goal/count, and start. It creates SourceManifest and Run
+files for you. Quoted Windows paths with spaces are supported. Key files must belong to a selected source.
+An existing canonical Dataset remains an advanced input option.
+
+Use **设置** to discover/select models, check the Coding environment and select skills. Non-sensitive
+settings apply to new runs; password inputs last only for the current process and never enter the
+experiment configuration, chat history or activity events. Existing environment credentials continue
+to work. Hand-written TOML and manifests are only needed for advanced CLI/library use.
+The wheel bundles the same default configuration and Coding dependency pins. In an installed-wheel
+session, experiment/output paths and `.env` are relative to the launch directory; source checkouts retain the project root.
+
 The default development group includes pytest, Ruff, Studio tooling and openpyxl for the BrEaST
 example. Use `--no-dev` for the core environment. Standalone PDF retrieval and optional medical
 readers have explicit extras:
@@ -64,7 +77,7 @@ Only roles needed by the selected goal/input are configured. Canonical Scenario 
 Coding; Profile and Plan runs do not initialize Generation, Review or Delivery.
 Limited nonempty delivery is permitted by default and reports `partial`; `--no-limited-delivery`
 requires full delivery. The original requested quantity is never reduced to hide a shortfall.
-`goal_result` is succeeded, partial, blocked or failed, separately from running/waiting/stopped.
+`goal_result` is succeeded, partial, blocked or failed, separately from running/paused/waiting/stopped.
 
 ```powershell
 uv run --locked medd2b create research --config config/local.toml
@@ -75,10 +88,18 @@ uv run --locked medd2b batch research example --sample-count 20
 uv run --locked medd2b export PATH_TO_DELIVERY NEW_DESTINATION
 ```
 
-The TUI retains experiment/run lists, editable configuration for new runs, goal/input submission,
-progress, saved questions/resume and artifact paths. Stop waits for a graph boundary; it does not
-pretend that arbitrary external Coding commands can be rolled back. Experiments index runs and UI
-messages; the Compilation checkpoint remains the execution authority.
+The TUI keeps a compact Agent activity table above the chat. Coding appears under Data Processing.
+Select a row or **活动** to inspect recent tool arguments, commands and bounded output, filtered by role.
+Activities update while work is still running; no reasoning transcript or estimated completion percentage
+is shown. **历史** switches runs, **产物** shows readable summaries, verified paths and portable export.
+Enter sends; Shift+Enter/Ctrl+J inserts a newline. Reading older messages does not force scrolling to the end.
+
+**暂停** requests a pause after the current parent graph node: Coding may still be executing until then.
+**继续** resumes the saved pending node. Questions appear in the chat and are answered in the same input.
+Closing during execution requests the same safe pause. A run with an unfinished checkpoint and no execution
+lock is shown as interrupted/recoverable, not falsely running. Prepared runs offer **开始** without recreating inputs;
+runs already bound to Studio remain managed by their Studio thread. Experiment files contain UI messages/drafts
+and run references; Checkpoint remains the execution authority. Finished runs cannot be resumed.
 
 For Studio, freeze a dedicated run without executing its agents, then point LangGraph at it:
 

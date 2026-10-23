@@ -118,6 +118,45 @@
 
 边界：未调用真实模型、未开展真实自主 Coding 或全医学数据验收。旧运行不迁移；原有数据、Checkpoint 和正式产物未删除。
 
+## TUI 用户入口与实时 Agent 活动（2026-10-23）
+
+基于 refactor@e2d023e，参考 develop 的聊天、问答和事件筛选体验，按四组提交完成输入适配、活动接线、
+单列工作台和恢复验收。没有引入旧 Workflow、旧来源发现状态文件、任务队列或新的执行账本。
+
+- runtime.intake 管理 UI 草稿，辅助填写明确路径和数量；用户确认目标后自动生成 SourceManifest/Run。
+  SourceManifest.key_files 保存已选来源内的相对文件引用和用途。目录可读性检查使用有界 scandir，
+  输入检查与连接检测在后台执行，不做预先全量数据扫描。
+- 首次建立默认实验，优先沿用显式模板、MEDBENCH_CONFIG 或已有 local.toml；连接向导列出模型、
+  检查所需 Coding SDK 版本并选择 Skill。非敏感设置供新运行使用，密码输入只进入本进程环境。
+- TUI 改为单列聊天、运行摘要和紧凑 Agent 表，Coding 位于 DP 下。活动详情可按角色筛选并查看
+  有界工具参数、命令和输出；历史、产物、配置按需打开。保留阅读位置、未读提示、草稿和原地回答。
+- 原生模型/工具 middleware 与 SDK callbacks 写入同一运行的诊断事件。事件关联请求、父 DP 请求与工具调用，
+  过滤凭据、截断输出、不记录 SDK thought/reasoning。ActivityReader 使用字节游标、有界缓存和事件去重。
+- 父图增加 paused，运行服务在保存边界更新状态并保留 next；等待实际 interrupt 和终止状态优先。
+  运行锁与 Checkpoint 共同区分执行、暂停、等待、结束和无执行器的异常中断。问答按 interrupt ID 校验，
+  回答只在 Checkpoint 接受后记入 UI 消息，不维护 pending_answer 执行状态。
+- 交付数量来自正式产物，Review 拒绝与工作失败分别展示。日志不驱动恢复，修复身份、无进展算法和专业循环未改写。
+- 删除原 tui.py 的品牌大图、常驻表单和原始 JSON 日志主界面；UI 分为 app/widgets/dialogs。
+  wheel 打包现有 config/default.toml 与 Coding requirements，安装后可读取默认配置；没有第二份受维护配置。
+
+### 离线验收
+
+- `uv run --locked --extra rag --extra data-processing pytest -q`：71 项通过，无跳过；唯一警告为 pynrrd 的上游弃用提示。后续准备运行/Studio 边界和 UI 回归定向复测通过。
+- TUI 端到端：自然语言输入含空格目录 → 确认 4 题/关键文件 → 长 Coding 调用期间看到活动 → 请求暂停 →
+  保存后继续 → 聊天中回答 interrupt → 局部 Leaf 修订 → 交付 3/4、缺口 1、结果 partial。
+  重开窄终端后仍显示结束结果，已完成 Coding 未重执行，回答未重复记录。
+- 原生 SDK 1.49.6 回调测试使用真实 ActionEvent/ObservationEvent，检查父请求关联和推理/密钥过滤；不调用模型。
+- 独立检查覆盖半行日志、重复读取、角色筛选、运行切换隔离、长输出、错误路径、空输入、多模型选择、
+  缺失 Coding 环境、配置不保存密钥、首次启动配置优先级、暂停边界和过期回答拒绝。
+- Textual Pilot 覆盖 80×24、100×35、140×45，验证输入框可见、历史阅读不跳动、活动详情与设置弹窗；
+  对实际端到端界面导出 SVG 并渲染检查。修正了退出轮询访问卸载控件、结束时活动短暂清空等问题。
+- Ruff、源码 compileall、sdist → wheel 构建、必要 CLI 入口和受维护 Markdown 链接检查通过。
+- 干净基础环境安装 wheel，77 个核心模块与冻结资源可加载，80×24 TUI 和设置界面可启动；
+  不依赖 OpenHands、RAG、openpyxl 或 pytest。默认配置与仓库源文件逐字节一致。
+
+本轮仍为本地合成数据、真实 Graph/Fake Model 与 SDK 事件替身验证，未运行真实模型自主医学数据处理。
+旧运行不迁移；既有数据、Checkpoint 和正式产物未删除。
+
 ## 后续
 
 使用实际配置观察小规模自主协作，依据具体失败改进 Prompt；按实际数据需求补充表示能力。

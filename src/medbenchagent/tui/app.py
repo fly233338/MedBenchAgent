@@ -1,5 +1,6 @@
 """Single-column chat workbench; execution and projections belong to runtime services."""
 import threading
+import os
 from pathlib import Path
 
 from rich.text import Text
@@ -17,7 +18,7 @@ from .widgets import Composer, ChatMessage
 from .dialogs import DraftScreen, ConnectionScreen, HistoryScreen, ActivityScreen, ArtifactsScreen
 
 STATES = {"ready": "准备启动", "running": "运行中", "paused": "已暂停", "waiting": "等待回答",
-          "stopped": "已结束", "interrupted": "异常中断，可恢复", "unavailable": "运行不可用"}
+          "stopped": "已结束", "interrupted": "异常中断，可恢复", "unavailable": "运行不可用", "external": "由 Studio 管理"}
 RESULTS = {"succeeded": "目标完成", "partial": "部分交付", "blocked": "目标受阻", "failed": "目标失败"}
 
 
@@ -97,7 +98,12 @@ class MBAApp(App):
 
     def on_mount(self):
         if not (self.root / "default" / "session.json").exists():
-            sessions.create_experiment("default", root=self.root, template=self.config_template)
+            from medbenchagent.settings import PROJECT_ROOT, load_project_env
+            load_project_env()
+            configured = os.getenv("MEDBENCH_CONFIG")
+            existing = (PROJECT_ROOT / Path(configured).expanduser()).resolve() if configured else PROJECT_ROOT / "config" / "local.toml"
+            template = self.config_template or (existing if existing.is_file() else None)
+            sessions.create_experiment("default", root=self.root, template=template)
         self.query_one("#agents", DataTable).add_columns("Agent", "当前 / 最近动作", "耗时")
         self.query_one("#new-content").display = False
         self.query_one("#agents").display = False
@@ -135,9 +141,10 @@ class MBAApp(App):
             self.query_one("#new-content").display = False
         self.selection += 1
         self.selected_run = run_id
-        self.reader = self.service.activity_reader(run_id)
-        self.latest_activity.clear()
-        self.scope_labels.clear()
+        if not preserve_scroll or self.reader is None:
+            self.reader = self.service.activity_reader(run_id)
+            self.latest_activity.clear()
+            self.scope_labels.clear()
         self.load_run(self.experiment, run_id, self.selection, viewport)
 
     @work(thread=True, group="load-view", exclusive=True)
@@ -201,7 +208,8 @@ class MBAApp(App):
         self.query_one("#run-status", Static).update(Text(f"{status}{background} · {quantity} · {result}", overflow="ellipsis", no_wrap=True))
         self.query_one("#title", Static).update(Text(f"MedD2B · {self.experiment}", overflow="ellipsis", no_wrap=True))
         self.query_one("#pause", Button).disabled = not self.running or self.stop_event.is_set()
-        self.query_one("#resume", Button).disabled = self.running or self.view.get("status") not in {"paused", "interrupted"}
+        self.query_one("#resume", Button).disabled = self.running or not self.selected_run or self.view.get("status") not in {"ready", "paused", "interrupted"}
+        self.query_one("#resume", Button).label = "开始" if self.view.get("status") == "ready" else "继续"
         self.query_one("#settings", Button).disabled = self.running
 
     def render_agents(self):
@@ -221,7 +229,11 @@ class MBAApp(App):
                     text = "上次：" + text
                 duration = f"{elapsed(row)}s" if row["running"] and self.running and (self.experiment, self.selected_run) == (self.active_experiment, self.active_run) else f"{row['event']['elapsed_ms'] / 1000:.1f}s" if row["event"].get("elapsed_ms") is not None else "—"
             else:
-                text, duration = "待委派", "—"
+                previous = next((work for work in reversed(self.view.get("history", [])) if work["agent_id"] == agent), None)
+                text = {"completed": "本次工作完成", "blocked": "本次工作受阻", "failed": "本次工作失败"}.get(previous["outcome"], "已返回") if previous else "暂无活动记录" if self.view.get("status") != "ready" else "待委派"
+                duration = "—"
+            if agent == "supervisor" and self.view.get("status") == "stopped":
+                text = "已结束 · " + RESULTS.get(self.view.get("goal_result"), "")
             table.add_row(label, text[:max(20, self.size.width - 35)], duration, key=agent)
         table.styles.height = min(9, max(2, len(enabled) + 1))
         table.display = bool(enabled)
@@ -336,15 +348,15 @@ class MBAApp(App):
         self.active_run, self.active_experiment = run_id, self.experiment
         self.stop_event.clear()
         self.render_status()
-        self.execute(self.experiment, draft, run_id, answer, self.view.get("question_id") if answer is not None else None)
+        self.execute(self.experiment, draft, run_id, answer, self.view.get("question_id") if answer is not None else None,
+                     run_id is not None and self.view.get("status") != "ready")
 
     @work(thread=True, exclusive=True, group="execution")
-    def execute(self, experiment, draft, run_id, answer, question_id):
+    def execute(self, experiment, draft, run_id, answer, question_id, resume):
         phase = "connection"
         try:
             service = ConversationService(experiment, root=self.root)
-            resume = run_id is not None
-            if not resume:
+            if run_id is None:
                 check_connections(sessions.config_path(experiment, self.root), draft)
                 if self.stop_event.is_set():
                     return

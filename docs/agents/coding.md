@@ -26,3 +26,7 @@ Coding 按需调用技能，同一会话始终使用同一允许集合；Skill �
 
 表格检查使用 data.tabular.inspect_table，来源分页使用 data.sources.inspect_source；影像与几何直接复用
 现有 Reader/Adapter/Mask API。统计结果带扫描范围，缺失标签和不明确的关系不自动补全。
+
+Worker 使用 SDK 1.49.6 的 Conversation callbacks 投影 ActionEvent、ObservationEvent 和会话错误。
+只记录工具动作、参数、截断观察和关联身份，不记录 thought/reasoning；事件带父 DP request ID。
+该诊断通道与 stdout 候选协议分离，日志缺失不改变正式验收或 SDK 恢复事实。

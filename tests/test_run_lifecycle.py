@@ -41,6 +41,16 @@ def test_pause_question_resume_and_stale_answer_use_checkpoint(tmp_path, monkeyp
     assert service.inspect(identifier)["status"] == "paused" and calls == []
     assert list(service.run(identifier, resume=True, stop_requested=lambda: True))[-1].kind == "paused"
     assert len(calls) == 1
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    from filelock import FileLock
+    from medbenchagent.compilation.graph import build_compilation_graph
+    directory = Path(row["directory"])
+    with SqliteSaver.from_conn_string(str(directory / "checkpoints.sqlite")) as saver:
+        graph = build_compilation_graph({"data_processing": AgentSpec("Source inspection", node, operations=("profile",))}, checkpointer=saver)
+        graph.update_state({"configurable": {"thread_id": identifier}}, {"status": "running"})
+    assert service.inspect(identifier)["status"] == "interrupted"
+    with FileLock(directory / "execution.lock"):
+        assert service.inspect(identifier)["status"] == "running"
     events = list(service.run(identifier, resume=True))
     waiting = service.inspect(identifier)
     assert events[-1].kind == "needs_input" and waiting["status"] == "waiting"
@@ -55,3 +65,7 @@ def test_pause_question_resume_and_stale_answer_use_checkpoint(tmp_path, monkeyp
     with pytest.raises(ValueError, match="ended"):
         list(service.run(identifier, resume=True))
     assert (Path(row["directory"]) / "checkpoints.sqlite").exists()
+    (directory / "studio-thread.txt").write_text("studio-owner", encoding="utf-8")
+    assert service.inspect(identifier)["status"] == "external"
+    with pytest.raises(ValueError, match="Studio"):
+        list(service.run(identifier, resume=True))

@@ -92,7 +92,8 @@ def validate_draft(draft: InputDraft, output: Path):
         if output.resolve().is_relative_to(path):
             raise ValueError("数据目录不能包含运行输出目录，请选择实际数据子目录")
         try:
-            next(path.iterdir(), None)
+            with os.scandir(path) as entries:
+                next(entries, None)
         except OSError as exc:
             raise ValueError(f"无法读取数据目录：{path}") from exc
     sources = [DatasetSource(source_id=f"source-{index + 1}", root=str(path)) for index, path in enumerate(roots)]

@@ -13,8 +13,10 @@ from urllib.parse import urlsplit
 from dotenv import load_dotenv
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.toml"
+_SOURCE_LAYOUT = Path(__file__).resolve().parents[1].name == "src"
+PROJECT_ROOT = Path(__file__).resolve().parents[2] if _SOURCE_LAYOUT else Path.cwd()
+_CONFIG_ROOT = PROJECT_ROOT / "config" if _SOURCE_LAYOUT else Path(__file__).parent / "_config"
+DEFAULT_CONFIG_PATH = _CONFIG_ROOT / "default.toml"
 
 _ENVIRONMENT_OVERRIDES = {
     "RAG_MIN_RERANK_SCORE": ("rag", "min_rerank_score"),
@@ -447,7 +449,7 @@ def load_coding_settings(config_path: Path | None = None) -> CodingSettings:
     runtime["skill_names"] = runtime.pop("skills")["enabled"]
     venv = _resolve_path(runtime.pop("worker_venv"), "coding.worker_venv")
     runtime["worker_python"] = str(venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
-    requirements = PROJECT_ROOT / "config" / "coding-worker.requirements.txt"
+    requirements = _CONFIG_ROOT / "coding-worker.requirements.txt"
     pins = dict(line.strip().split("==", 1) for line in requirements.read_text(encoding="utf-8").splitlines()
                 if line.startswith(("openhands-sdk==", "openhands-tools==")))
     runtime["sdk_packages"] = pins

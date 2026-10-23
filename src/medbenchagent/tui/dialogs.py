@@ -142,10 +142,32 @@ class DraftScreen(Dialog):
             try:
                 draft = self.read_draft()
                 if action == "start-draft":
-                    validate_draft(draft, self.output / "draft-check")
-                self.dismiss((draft, action == "start-draft"))
+                    self.query_one("#start-draft", Button).disabled = True
+                    self.query_one("#draft-error", Static).update("正在检查输入…")
+                    self.validate(draft)
+                else:
+                    self.dismiss((draft, False))
             except (ValueError, OSError) as exc:
                 self.query_one("#draft-error", Static).update(Text(str(exc)))
+
+    @work(thread=True, exclusive=True)
+    def validate(self, draft):
+        try:
+            validate_draft(draft, self.output / "draft-check")
+            error = ""
+        except Exception as exc:
+            error = str(sanitize(str(exc)))
+        if self.is_mounted and self.app.is_running:
+            self.app.call_from_thread(self.validated, draft, error)
+
+    def validated(self, draft, error):
+        if not self.is_mounted:
+            return
+        if error:
+            self.query_one("#draft-error", Static).update(Text(error))
+            self.query_one("#start-draft", Button).disabled = False
+        else:
+            self.dismiss((draft, True))
 
 
 class ConnectionScreen(Dialog):
@@ -226,9 +248,11 @@ class ConnectionScreen(Dialog):
                 path.write_text(self.config.read_text(encoding="utf-8"), encoding="utf-8")
                 save_connection(path, values)
                 result = probe_connections(path, self.draft)
-            self.app.call_from_thread(self.probed, result, "连接与环境检查通过；多模型端点请选择模型。")
+            if self.is_mounted and self.app.is_running:
+                self.app.call_from_thread(self.probed, result, "连接与环境检查通过；多模型端点请选择模型。")
         except Exception as exc:
-            self.app.call_from_thread(self.probed, {}, str(sanitize(str(exc))))
+            if self.is_mounted and self.app.is_running:
+                self.app.call_from_thread(self.probed, {}, str(sanitize(str(exc))))
 
     def probed(self, result, message):
         if not self.is_mounted:
@@ -339,7 +363,8 @@ class ExportScreen(Dialog):
             message = f"已导出：{path}"
         except (OSError, ValueError) as exc:
             message = str(exc)
-        self.app.call_from_thread(self.exported, message)
+        if self.is_mounted and self.app.is_running:
+            self.app.call_from_thread(self.exported, message)
 
     def exported(self, message):
         if self.is_mounted:
@@ -386,7 +411,11 @@ class ArtifactsScreen(Dialog):
         if event.button.id == "cancel":
             self.dismiss(None)
         elif self.selected:
-            path = resolve_artifact(self.directory, self.selected)
+            try:
+                path = resolve_artifact(self.directory, self.selected)
+            except (OSError, ValueError) as exc:
+                self.query_one("#artifact-summary", TextArea).load_text(str(sanitize(str(exc))))
+                return
             if event.button.id == "copy-artifact":
                 self.app.copy_to_clipboard(str(path))
                 self.notify("路径已复制")

@@ -1,6 +1,7 @@
 """Run-owned configuration and prompt snapshots, with no Agent assembly or legacy BIR."""
 
 from dataclasses import replace
+import os
 from pathlib import Path
 from typing import Any
 
@@ -111,7 +112,8 @@ def create_run(
             if directory.is_relative_to(root):
                 raise ValueError("Run output directory must not be inside a source directory")
             try:
-                next(root.iterdir(), None)
+                with os.scandir(root) as entries:
+                    next(entries, None)
             except OSError as exc:
                 raise ValueError(f"Source {item.source_id} directory is not readable: {root}") from exc
         roots = {item.source_id: (source_manifest.parent / item.root).resolve() for item in source.sources}
