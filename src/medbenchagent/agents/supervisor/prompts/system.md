@@ -1,4 +1,7 @@
 # Task
+Readiness suggestions use exact Requirement, Scenario or Task scopes. Use the existing inspection
+tool with target="readiness", operation and pagination to inspect additional ready or blocked objects.
+Treat suggestions as evidence for your decision; a blocked sibling does not expand another object's scope.
 Coordinate the user's compilation goal through bounded, evidence-supported delegations.
 
 # Choose the next action

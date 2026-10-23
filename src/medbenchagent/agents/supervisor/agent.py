@@ -34,13 +34,14 @@ class _ModelDelegation(Contract):
 
 
 class _Inspection(Contract):
-    target: Literal["artifacts", "workstreams", "work", "preview"]
+    target: Literal["artifacts", "workstreams", "work", "preview", "readiness"]
     ids: list[Identifier] = Field(default_factory=list, description="IDs of the selected target type")
     kind: Text | None = None
     request_id: Identifier | None = None
     workstream_id: Identifier | None = None
     agent_id: Identifier | None = None
     feedback_only: bool = False
+    operation: Identifier | None = None
     offset: int = Field(default=0, ge=0)
     limit: int | None = Field(default=None, ge=1)
 
@@ -157,7 +158,7 @@ class ModelSupervisor:
 
         @tool
         def inspect(query: _Inspection, runtime: ToolRuntime[SupervisorContext]) -> dict:
-            """Read registered artifacts, work records, Workstreams or bounded artifact content.
+            """Read artifacts, work, Workstreams, readiness suggestions or bounded artifact content.
 
             Use offset/limit for catalog pages and IDs for exact objects. Never scans private state.
             """
@@ -190,7 +191,8 @@ class ModelSupervisor:
             raise ValueError(f"Inspection limit cannot exceed {ceiling}")
         if len(query.ids) > self.settings.catalog_page_size or len(query.ids) != len(set(query.ids)):
             raise ValueError("Inspection IDs must be unique and fit catalog_page_size")
-        known = ({ref.artifact_id for ref in view.artifacts} if query.target in {"artifacts", "preview"}
+        known = ({row["suggestion_id"] for rows in (view.readiness.get("available_operations", []), view.readiness.get("blocked_reasons", [])) for row in rows} if query.target == "readiness"
+                 else {ref.artifact_id for ref in view.artifacts} if query.target in {"artifacts", "preview"}
                  else {item.workstream_id for item in view.workstreams} if query.target == "workstreams"
                  else {row.request.request_id for row in view.history})
         if unknown := set(query.ids) - known:
@@ -202,6 +204,8 @@ class ModelSupervisor:
             raise ValueError(f"Unknown Workstream ID: {query.workstream_id}")
         if query.kind is not None and query.target != "artifacts":
             raise ValueError("kind filters the artifact catalog only")
+        if query.operation is not None and query.target != "readiness":
+            raise ValueError("operation filters readiness only")
         if query.feedback_only and query.target != "work":
             raise ValueError("feedback_only filters reported work needs/issues only")
         if query.target == "preview" and (not query.ids or any(
@@ -212,7 +216,11 @@ class ModelSupervisor:
 
     def _inspect(self, view: SupervisorView, query: _Inspection) -> dict:
         self._validate_inspection(view, query)
-        if query.target in {"artifacts", "preview"}:
+        if query.target == "readiness":
+            rows = [{**row, "ready": ready} for name, ready in (("available_operations", True), ("blocked_reasons", False))
+                    for row in view.readiness.get(name, [])]
+            key = "suggestion_id"
+        elif query.target in {"artifacts", "preview"}:
             rows, key = self._artifact_catalog(view), "artifact_id"
         elif query.target == "workstreams":
             rows, key = view.workstream_summaries(), "workstream_id"
@@ -221,7 +229,7 @@ class ModelSupervisor:
         matching = [row for row in rows if (not query.ids or row[key] in query.ids)
                     and all(expected is None or row.get(name) == expected
                             for name, expected in (("kind", query.kind), ("request_id", query.request_id),
-                                                   ("workstream_id", query.workstream_id), ("agent_id", query.agent_id)))
+                                                   ("workstream_id", query.workstream_id), ("agent_id", query.agent_id), ("operation", query.operation)))
                     and (not query.feedback_only or row.get("need_count") or row.get("issue_count"))]
         if query.offset > len(matching):
             raise ValueError(f"Inspection offset exceeds {len(matching)} matching records")
@@ -235,7 +243,7 @@ class ModelSupervisor:
         text_limit, item_limit = self.settings.artifact_chars, self.settings.catalog_page_size
         budget = self.settings.context_chars // 4
         while True:
-            projected = [_excerpt(row, text_limit, item_limit)[0] for row in selected]
+            projected = selected if query.target == "readiness" else [_excerpt(row, text_limit, item_limit)[0] for row in selected]
             end = query.offset + len(selected)
             result = {"query": query.model_dump(mode="json", exclude_none=True), "items": projected,
                       "total": len(matching), "offset": query.offset,
@@ -271,6 +279,7 @@ class ModelSupervisor:
         required = {"compilation_id": view.compilation_id, "goal": view.goal, "agents": dict(view.agents),
                     "workstream_agents": list(view.workstream_agents), "user_answers": list(view.answers),
                     "catalog_totals": {"artifacts": len(view.artifacts), "workstreams": len(view.workstreams),
+                                       "readiness": sum(len(view.readiness.get(key, [])) for key in ("available_operations", "blocked_reasons")),
                                        "work": len(view.history), "feedback_records": sum(
                                            bool(row.result.needs or row.result.issues) for row in view.history)},
                     "lookup_limits": {"remaining": min(self.settings.max_lookups, self.settings.loop.max_tool_calls),
@@ -278,6 +287,8 @@ class ModelSupervisor:
                                       "preview_items": self.settings.max_artifacts,
                                       "preview_chars": self.settings.artifact_chars}}
         optional = {
+            "readiness": {name: view.readiness.get(name, [])[:self.settings.catalog_page_size]
+                          for name in ("available_operations", "blocked_reasons")},
             "last_result": _result_view(result) if result else None,
             "history": [dict(record_summary(row), need_count=len(row.result.needs), issue_count=len(row.result.issues))
                         for row in view.history[-self.settings.history_items:]],
@@ -321,7 +332,7 @@ class ModelSupervisor:
 
     def __call__(self, view: SupervisorView, config):
         invocation_id = f"supervisor-{len(view.history)}-{len(view.answers)}-{len(view.feedback)}"
-        context = SupervisorContext(self.directory, view, {**self._context(view), "readiness": view.readiness, "feedback": view.feedback, "goal_spec": view.goal_spec.model_dump()},
+        context = SupervisorContext(self.directory, view, {**self._context(view), "feedback": view.feedback, "goal_spec": view.goal_spec.model_dump()},
                                     self.instructions, invocation_id)
         with role_lock(self.directory, "supervisor"):
             try:

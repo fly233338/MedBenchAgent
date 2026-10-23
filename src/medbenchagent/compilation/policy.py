@@ -63,6 +63,37 @@ def check_request(directory, request):
             plan, reader, prepared = planning_inputs(directory, request.inputs, plans[0])
             from medbenchagent.planning.semantic import validate_plan
             validate_plan(plan, reader, task_data=prepared)
+            from medbenchagent.planning.semantic import scoped_objects
+            _, _, requirement_ids = scoped_objects(plan, request.scope)
+            if request.operation == "prepare_task_data":
+                bound = set()
+                for ref in request.inputs:
+                    if ref.kind == "data_requirement":
+                        value = read_json_artifact(directory, ref)
+                        key = value["requirement_id"]
+                        if key in plan.requirements and value == plan.requirements[key].model_dump(mode="json"):
+                            bound.add(key)
+                if requirement_ids - bound:
+                    raise ValueError(f"Bind exact preparation requirements: {sorted(requirement_ids - bound)}")
+            if request.operation == "design_leaves":
+                for key in sorted(requirement_ids):
+                    requirement = plan.requirements[key]
+                    matches = [data for data in prepared.values() if key in data.manifest.requirements]
+                    from medbenchagent.data.task_data import validate_preparation
+                    valid = False
+                    for data in matches:
+                        product = data.manifest.requirements[key]
+                        original = inputs.get(product.artifact_id)
+                        if original is None or original.digest != product.digest or read_json_artifact(directory, original) != requirement.model_dump(mode="json"):
+                            continue
+                        try:
+                            validate_preparation(data, requirement)
+                            valid = True
+                            break
+                        except ValueError:
+                            continue
+                    if not valid:
+                        raise ValueError(f"Requirement {key} lacks matching prepared TaskData")
             if request.operation == "generate":
                 from medbenchagent.planning.semantic import check_operation_complete
                 check_operation_complete(plan, "design_leaves", request.scope, task_data=prepared)
@@ -128,8 +159,19 @@ def check_result(directory, request, result):
         from medbenchagent.planning.semantic import scoped_objects
         plan, _, _ = planning_inputs(directory, request.inputs, plans[0])
         _, _, required = scoped_objects(plan, request.scope)
+        if covered - required:
+            raise ValueError("Preparation published requirements outside its delegated scope")
         if required - covered:
             raise ValueError(f"Preparation left requirements unresolved: {sorted(required - covered)}")
+    if request.operation == "generate":
+        from medbenchagent.planning.semantic import scoped_objects
+        plan_ref = next(ref for ref in request.inputs if ref.kind == "task_plan")
+        plan, _, _ = planning_inputs(directory, request.inputs, plan_ref)
+        _, tasks, _ = scoped_objects(plan, request.scope)
+        for ref in products:
+            candidate = CandidateReader(resolve_artifact(directory, ref))
+            if set(candidate.manifest.allocation.counts) - tasks:
+                raise ValueError("Generation published tasks outside its delegated scope")
     if request.agent_id == "task_planner":
         from medbenchagent.planning.semantic import validate_plan, check_operation_complete
         if len(products) != 1:
@@ -223,52 +265,84 @@ def readiness(directory, agents, artifacts):
     primary = {"profile": {"source_manifest"}, "discover_scenarios": {"dataset", "dataset_profile"},
                "prepare_task_data": {"task_plan"}, "design_leaves": {"task_plan"}, "generate": {"task_plan"},
                "review_plan": {"task_plan"}, "review_candidate": {"generation_candidate"}, "publish": {"generation_candidate"}}
+    from medbenchagent.planning.contracts import TaskPlan
+    from medbenchagent.planning.semantic import active_requirements, scoped_objects
+    import hashlib
+
+    def scopes(operation, target, value):
+        if target.kind != "task_plan" or operation not in {"prepare_task_data", "design_leaves", "generate"}:
+            return [WorkScope(artifact_id=target.artifact_id)]
+        plan = TaskPlan.model_validate(value)
+        if operation == "prepare_task_data":
+            groups = [("requirement", sorted(active_requirements(plan) - plan.acceptances.keys()))]
+        elif operation == "design_leaves":
+            groups = [("scenario", [key for key, scene in plan.scenarios.items() if scene.decision == "keep"]),
+                      ("task", [key for key in plan.tasks if key not in plan.exclusions])]
+        else:
+            groups = [("task", [key for key in plan.tasks if key not in plan.exclusions])]
+        return [WorkScope(artifact_id=target.artifact_id, kind=kind, object_ids=[key])
+                for kind, keys in groups for key in keys]
+
     ready, blocked = [], []
     for role, spec in agents.items():
         for operation in spec.operations:
-            candidates = [r for r in artifacts if r.kind in primary[operation]]
+            candidates = [r for r in artifacts if r.kind in primary.get(operation, set())]
             if not candidates:
-                blocked.append({"agent_id": role, "operation": operation, "reason": f"Missing {sorted(primary[operation])}"})
+                blocked.append({"suggestion_id": f"{role}-{operation}-missing", "agent_id": role,
+                                "operation": operation, "reason": f"Missing {sorted(primary.get(operation, set()))}"})
             for target in candidates[-4:]:
-                entry = {"agent_id": role, "operation": operation, "scope": [WorkScope(artifact_id=target.artifact_id).model_dump()]}
                 try:
-                    chosen = {target.artifact_id: target}
                     value = read(target)
-                    dependencies(value, chosen)
-                    if target.kind == "task_plan":
-                        for ref in artifacts:
-                            if ref.kind in {"dataset", "dataset_profile"} and ref.digest == value["dataset_digest"]:
-                                chosen[ref.artifact_id] = ref
-                            if ref.kind == "data_requirement" and read(ref) in value["requirements"].values():
-                                chosen[ref.artifact_id] = ref
-                            if operation == "design_leaves" and ref.kind == "task_data" and read(ref)["dataset"] == value["dataset"]:
-                                chosen[ref.artifact_id] = ref
-                                dependencies(read(ref), chosen)
-                    if operation in {"generate", "publish"}:
-                        chosen.update({r.artifact_id: r for r in artifacts if r.kind == "benchmark_request"})
-                    if operation == "publish":
-                        for kind, flag in (("review_report", "approved"), ("audit_report", "passed")):
-                            matches = [r for r in artifacts if r.kind == kind and read(r).get(flag)
-                                       and read(r)["target"] == {"artifact_id": target.artifact_id, "digest": target.digest}]
-                            if matches:
-                                ref = sorted(matches, key=lambda r: r.artifact_id)[0]
-                                chosen[ref.artifact_id] = ref
-                                dependencies(read(ref), chosen)
-                    # Candidate/spec dependencies include plans whose original evidence is still needed.
-                    for ref in list(chosen.values()):
-                        if ref.kind == "task_plan":
-                            plan = read(ref)
-                            chosen.update({r.artifact_id: r for r in artifacts
-                                if r.kind in {"dataset", "dataset_profile"} and r.digest == plan["dataset_digest"]})
-                    request = WorkRequest(request_id="readiness", compilation_id="readiness", agent_id=role,
-                        operation=operation, objective="Check selected dependencies", scope=[WorkScope(artifact_id=target.artifact_id)],
-                        inputs=list(chosen.values()))
-                    check_request(directory, request)
-                    ready.append({**entry, "input_artifact_ids": list(chosen)})
+                    selected_scopes = scopes(operation, target, value)
                 except (ValueError, KeyError, OSError) as exc:
-                    blocked.append({**entry, "reason": str(exc)})
+                    blocked.append({"suggestion_id": target.artifact_id + "-" + operation,
+                                    "agent_id": role, "operation": operation, "reason": str(exc)})
+                    continue
+                for scope in selected_scopes:
+                    entry = {"agent_id": role, "operation": operation, "scope": [scope.model_dump()]}
+                    entry["suggestion_id"] = "suggestion-" + hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()[:20]
+                    try:
+                        chosen = {target.artifact_id: target}
+                        dependencies(value, chosen)
+                        if target.kind == "task_plan":
+                            plan = TaskPlan.model_validate(value)
+                            scenes, _, needed = scoped_objects(plan, [scope])
+                            for ref in artifacts:
+                                if ref.kind in {"dataset", "dataset_profile"} and ref.digest == value["dataset_digest"]:
+                                    chosen[ref.artifact_id] = ref
+                                if ref.kind == "data_requirement":
+                                    requirement = read(ref)
+                                    key = requirement["requirement_id"]
+                                    if key in needed and requirement == value["requirements"][key]:
+                                        chosen[ref.artifact_id] = ref
+                                if operation == "design_leaves" and ref.kind == "task_data":
+                                    data = read(ref)
+                                    if data["dataset"] == value["dataset"] and set(data["scenario_ids"]) & scenes:
+                                        chosen[ref.artifact_id] = ref
+                                        dependencies(data, chosen)
+                        if operation in {"generate", "publish"}:
+                            chosen.update({r.artifact_id: r for r in artifacts if r.kind == "benchmark_request"})
+                        if operation == "publish":
+                            for kind, flag in (("review_report", "approved"), ("audit_report", "passed")):
+                                matches = [r for r in artifacts if r.kind == kind and read(r).get(flag)
+                                           and read(r)["target"] == {"artifact_id": target.artifact_id, "digest": target.digest}]
+                                if matches:
+                                    ref = sorted(matches, key=lambda r: r.artifact_id)[0]
+                                    chosen[ref.artifact_id] = ref
+                                    dependencies(read(ref), chosen)
+                        for ref in list(chosen.values()):
+                            if ref.kind == "task_plan":
+                                bound_plan = read(ref)
+                                chosen.update({r.artifact_id: r for r in artifacts if r.kind in {"dataset", "dataset_profile"}
+                                               and r.digest == bound_plan["dataset_digest"]})
+                        request = WorkRequest(request_id="readiness", compilation_id="readiness", agent_id=role,
+                            operation=operation, objective="Check selected dependencies", scope=[scope], inputs=list(chosen.values()))
+                        check_request(directory, request)
+                        ready.append({**entry, "input_artifact_ids": list(chosen)})
+                    except (ValueError, KeyError, OSError) as exc:
+                        blocked.append({**entry, "reason": str(exc)})
     return {"available_operations": ready, "blocked_reasons": blocked,
-            "note": "Recent bounded suggestions, not an implicit latest selection. Inspect older products when useful."}
+            "note": "Recent plan revisions; inspect target=readiness for pages. Suggestions do not schedule work."}
 
 
 def attach_checks(spec, directory, role):

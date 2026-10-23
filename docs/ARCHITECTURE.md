@@ -96,4 +96,7 @@ Coding 仅接受 DP 内部 execute 请求并返回候选；DP 检查后提交。
 CLI 使用 SQLite；Studio 使用平台注入的 Checkpointer。一目录一运行，Studio 另绑定单一线程。
 恢复使用冻结指令，代码/工具/契约指纹不匹配时拒绝恢复。配置和凭据入口保持分离。
 Supervisor/Planner 固定为原生模型实现，Coding 固定使用 OpenHands；Run 不保存单值实现选择器。
-专业角色启停仍由 Run 冻结，测试替身通过模型和执行器注入。
+启用角色由目标与输入类型决定，冻结配置的存在性是唯一装配依据；测试替身通过模型和执行器注入。
+Profile 只启用 Supervisor/DP/Coding；Scenario Plan 在 Canonical 输入下只需 Supervisor/Planner，原始输入增加 DP/Coding。
+Executable Leaf Plan 使用 Supervisor/DP/Coding/Planner；Benchmark 才启用 Generation/Review/Delivery。
+对象级就绪建议由 Policy 临时计算并复用请求检查，Supervisor 分页查询；它不保存第二套状态或自动调度工作。

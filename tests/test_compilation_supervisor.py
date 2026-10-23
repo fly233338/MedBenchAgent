@@ -125,6 +125,14 @@ def test_context_queries_and_frozen_budgets(tmp_path):
         supervisor._context(replace(view, answers=("Required answer " * 10000,)))
     query = supervisor._inspect(view, _Inspection(target="work", limit=1))
     assert query["items"] == [] and query["total"] == 0
+    rows = [{"suggestion_id": f"suggestion-{i}", "agent_id": "worker", "operation": "prepare",
+             "scope": [{"artifact_id": "plan", "kind": "requirement", "object_ids": [str(i)]}],
+             "input_artifact_ids": [f"input-{j}" for j in range(3)]} for i in range(3)]
+    ready_view = replace(view, readiness={"available_operations": rows})
+    page = supervisor._inspect(ready_view, _Inspection(target="readiness", offset=1, limit=1, operation="prepare"))
+    assert page["total"] == 3 and page["next_offset"] == 2
+    assert page["items"][0]["input_artifact_ids"] == rows[1]["input_artifact_ids"]
+    assert len(supervisor._context(ready_view)["readiness"]["available_operations"]) == 1
     with pytest.raises(ValueError, match="cannot exceed"):
         supervisor._inspect(view, _Inspection(target="work", limit=2))
 

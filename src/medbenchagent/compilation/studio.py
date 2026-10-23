@@ -25,7 +25,8 @@ def graph(config: RunnableConfig):
     options = RunOptions.model_validate_json((directory / "run.json").read_bytes())
     if options.implementation_digest != implementation_digest():
         raise ValueError("Incompatible run implementation; create a new run")
-    verify_skills(directory, options.coding_skills)
+    if options.coding_skills is not None:
+        verify_skills(directory, options.coding_skills)
     # Server owns checkpoint persistence. Clients live for this graph instance.
     stack = ExitStack()
     try:

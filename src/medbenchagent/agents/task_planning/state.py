@@ -130,15 +130,19 @@ def _update(runtime, base_revision, operation):
         raise ValueError("Scenario changes require discover_scenarios")
     if all(scope.kind != "artifact" for scope in context.request.scope):
         scenarios, tasks, requirements = semantic.scoped_objects(before, context.request.scope)
+        explicit_scenarios = {key for scope in context.request.scope if scope.kind == "scenario" for key in scope.object_ids}
         if plan.axis_assessments != before.axis_assessments:
             raise ValueError("Axis changes require explicit whole-plan scope")
-        for name, allowed in (("scenarios", scenarios), ("tasks", tasks), ("requirements", requirements)):
+        for name, allowed in (("scenarios", explicit_scenarios), ("tasks", tasks), ("requirements", requirements),
+                              ("acceptances", requirements), ("exclusions", tasks)):
             old, new = getattr(before, name), getattr(plan, name)
             for key in old.keys() | new.keys():
                 if old.get(key) != new.get(key) and key not in allowed:
                     value = new.get(key)
-                    related = name == "tasks" and value and value.scenario_id in scenarios
-                    related = related or (name == "requirements" and value and set(value.affected_scenario_ids) <= scenarios)
+                    related = key not in old and name == "tasks" and value and value.scenario_id in explicit_scenarios
+                    related = related or (key not in old and name == "requirements" and value and (
+                        bool(value.affected_scenario_ids) and set(value.affected_scenario_ids) <= explicit_scenarios
+                        or bool(value.affected_task_ids) and set(value.affected_task_ids) <= tasks))
                     if not related:
                         raise ValueError("Draft change exceeds the delegated scope")
     plan.revision += 1

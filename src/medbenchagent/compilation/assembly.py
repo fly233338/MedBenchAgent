@@ -27,32 +27,35 @@ def assemble_compilation(
         settings = SupervisorSettings.from_snapshot(options.supervisor_settings)
         decide = ModelSupervisor(directory, settings, model=model_for(settings),
                                  instructions=options.prompts["supervisor"].text)
-        from medbenchagent.settings import CodingSettings
-        from medbenchagent.agents.data_processing.coding.adapter import OpenHandsCodingAgent
+        agents = {}
+        if options.coding_settings is not None:
+            from medbenchagent.settings import CodingSettings
+            from medbenchagent.agents.data_processing.coding.adapter import OpenHandsCodingAgent
 
-        coding_agent = OpenHandsCodingAgent(CodingSettings.from_snapshot(options.coding_settings),
-                                           instructions=options.prompts["coding"].text, skills=options.coding_skills)
-        from medbenchagent.settings import TaskPlannerSettings
-        from medbenchagent.agents.task_planning.agent import build_planner_spec
-        settings = TaskPlannerSettings.from_snapshot(options.planner_settings)
-        planner = build_planner_spec(settings, model=model_for(settings), instructions={key: options.prompts[key].text for key in ("discover_scenarios", "design_leaves")})
-        agents = {"task_planner": planner}
+            coding_agent = OpenHandsCodingAgent(CodingSettings.from_snapshot(options.coding_settings),
+                                               instructions=options.prompts["coding"].text, skills=options.coding_skills)
+        if options.planner_settings is not None:
+            from medbenchagent.settings import TaskPlannerSettings
+            from medbenchagent.agents.task_planning.agent import build_planner_spec
+            settings = TaskPlannerSettings.from_snapshot(options.planner_settings)
+            planner = build_planner_spec(settings, model=model_for(settings), instructions={key: options.prompts[key].text for key in ("discover_scenarios", "design_leaves")})
+            agents["task_planner"] = planner
         from medbenchagent.settings import WorkAgentSettings
-        if options.data_processing_mode == "llm":
+        if "data_processing" in options.professional_settings:
             from medbenchagent.agents.data_processing.agent import build_data_processing_spec
             settings = WorkAgentSettings.from_snapshot(options.professional_settings["data_processing"])
             agents["data_processing"] = build_data_processing_spec(settings, coding_agent,
                 instructions={key: options.prompts[key].text for key in ("profile", "prepare_task_data", "coding_handoff")}, model=model_for(settings))
-        if options.generation_mode == "llm":
+        if "generation" in options.professional_settings:
             from medbenchagent.agents.generation.agent import build_generation_spec
             settings = WorkAgentSettings.from_snapshot(options.professional_settings["generation"])
             agents["generation"] = build_generation_spec(settings, instructions={"generate": options.prompts["generate"].text},
                                                         model=model_for(settings))
-        if options.review_mode == "llm":
+        if "review" in options.professional_settings:
             from medbenchagent.agents.review.agent import build_review_spec
             settings = WorkAgentSettings.from_snapshot(options.professional_settings["review"])
             agents["review"] = build_review_spec(settings, instructions={key: options.prompts[key].text for key in ("review_plan", "review_candidate")}, model=model_for(settings))
-        if options.delivery_enabled:
+        if options.goal_spec.kind == "benchmark":
             from medbenchagent.agents.delivery.node import delivery_spec
             agents["delivery"] = delivery_spec()
         from functools import partial

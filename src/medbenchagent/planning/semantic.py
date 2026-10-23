@@ -280,11 +280,13 @@ def scoped_objects(plan, scope):
             tasks.update(item.object_ids)
         elif item.kind == "requirement":
             requirements.update(item.object_ids)
-    scenarios.update(s for key in requirements for s in plan.requirements[key].affected_scenario_ids)
+    # Only explicitly selected Scenarios expand to their tasks and requirements.
+    # Related Scenarios below provide context, not authority over siblings.
     tasks.update(key for key, task in plan.tasks.items() if task.scenario_id in scenarios)
     requirements.update(key for key, r in plan.requirements.items()
                         if set(r.affected_scenario_ids) & scenarios or set(r.affected_task_ids) & tasks)
     requirements.update(key for identifier in tasks for key in plan.tasks[identifier].requirement_ids)
+    scenarios.update(s for key in requirements for s in plan.requirements[key].affected_scenario_ids)
     scenarios.update(plan.tasks[key].scenario_id for key in tasks)
     return scenarios, tasks, requirements
 

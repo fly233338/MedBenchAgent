@@ -55,8 +55,10 @@ uv run --locked medd2b resume --directory .runtime/example
 uv run --locked medd2b resume --directory .runtime/example --answer "The two studies are explicitly paired in the source mapping."
 ```
 
-`python -m medbenchagent.compilation` exposes the same CLI. Use `--goal-kind profile` for source
+`python -m medbenchagent.compilation` exposes the same CLI. Use `--goal-kind profile` with a SourceManifest for source
 understanding, or `--goal-kind plan --plan-level scenarios|executable_leaves` for planning.
+Only roles needed by the selected goal/input are configured. Canonical Scenario planning does not initialize
+Coding; Profile and Plan runs do not initialize Generation, Review or Delivery.
 Limited nonempty delivery is permitted by default and reports `partial`; `--no-limited-delivery`
 requires full delivery. The original requested quantity is never reduced to hide a shortfall.
 `goal_result` is succeeded, partial, blocked or failed, separately from running/waiting/stopped.
