@@ -62,10 +62,12 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
     metadata.mkdir(parents=True)
     pixels.mkdir(parents=True)
     shutil.copyfile(workbook, metadata / "source.xlsx")
-    assets, cases = [], []
+    assets, cases, unknown_relations = [], [], []
     for row in records:
         case_id = f"case-{int(row['CaseID']):03d}"
         evidence = []
+        image_names = [name.strip() for name in str(row["Image_filename"] or "").split("&") if name.strip()]
+        image_ids = [f"image-{index}" for index in range(len(image_names))]
 
         def source(field):
             return SourceRef(
@@ -77,7 +79,7 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
             ("Mask_tumor_filename", False),
             ("Mask_other_filename", False),
         ):
-            names = str(row[column]).split("&") if row[column] else []
+            names = [name.strip() for name in str(row[column] or "").split("&") if name.strip()]
             for index, name in enumerate(names):
                 name = name.strip()
                 path = images[name]
@@ -100,15 +102,18 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
                 )
                 evidence.append(
                     Evidence(
-                        id="image" if visible else f"{column.lower()}-{index}",
+                        id=image_ids[index] if visible else f"{column.lower()}-{index}",
                         name="image" if visible else column.lower(),
                         type="asset",
                         value=asset_id,
-                        ref=[] if visible else ["image"],
+                        ref=[] if visible or len(image_ids) != 1 else image_ids,
                         source_refs=[source(column)],
                         input_visibility="model_visible" if visible else "reference_only",
                     )
                 )
+                if not visible and len(image_ids) != 1:
+                    unknown_relations.append({"case_id": case_id, "mask_evidence_id": f"{column.lower()}-{index}",
+                                              "reason": "No explicit mask-to-image mapping for this Case"})
         for column, value in row.items():
             if column in {"CaseID", "Image_filename", "Mask_tumor_filename", "Mask_other_filename"}:
                 continue
@@ -119,7 +124,7 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
                     name=name,
                     type="value",
                     value=value,
-                    ref=["image"],
+                    ref=image_ids,
                     source_refs=[source(column)],
                     input_visibility="reference_only",
                 )
@@ -130,7 +135,7 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
             "".join(row.model_dump_json() + "\n" for row in rows), encoding="utf-8"
         )
     mapping = {
-        "case_unit": "One source lesion record and its named ultrasound image; no patient/study grouping inferred",
+        "case_unit": "One source lesion record and its ordered named ultrasound images; no patient/study grouping inferred",
         "case_id": "case- plus source CaseID padded to three digits",
         "patient_id": "unknown",
         "study_id": "unknown",
@@ -142,7 +147,9 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
             not in {"CaseID", "Image_filename", "Mask_tumor_filename", "Mask_other_filename"}
         },
         "data_dictionary": dictionary,
-        "input_policy": "Only image is model_visible; annotations and masks are reference_only",
+        "input_policy": "Only image-* Evidence is model_visible; Case labels reference all primary images; masks are reference_only",
+        "mask_binding": "A mask references the sole primary image only; multiple-image Cases require explicit source mapping",
+        "unknown_relations": unknown_relations,
         "selection": {"order": "ascending numeric CaseID", "limit": limit, "actual": len(cases)},
         "derivations": "None; original values and masks preserved, no bounding boxes inferred",
     }

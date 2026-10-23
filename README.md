@@ -114,6 +114,8 @@ uv run --locked python scripts/prepare_breast_example.py --workbook datasets/US/
 Keep real data and run outputs in ignored directories. BrEaST Case granularity is a lesion record;
 unknown patient/study relationships stay unknown. Preparing an example does not establish medical
 quality or autonomous model performance.
+Primary images have distinct Evidence IDs. Case labels reference the image set; a Mask in a multi-image
+Case stays unbound unless the source supplies an explicit association. Missing labels stay missing.
 
 ## Implementation and validation
 
