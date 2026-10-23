@@ -33,7 +33,7 @@ def create_experiment(name, *, root=EXPERIMENTS_ROOT, template=None):
 
 def load_experiment(name, *, root=EXPERIMENTS_ROOT):
     record = json.loads((experiment_path(name, root) / "session.json").read_text(encoding="utf-8"))
-    if set(record) != {"name", "runs", "messages"}:
+    if not {"name", "runs", "messages"} <= record.keys() or set(record) - {"name", "runs", "messages", "draft"}:
         raise ValueError("This experiment uses an old execution format; create a new experiment")
     return record
 
@@ -50,17 +50,30 @@ def config_path(name, root=EXPERIMENTS_ROOT):
     return experiment_path(name, root) / "config.toml"
 
 
-def add_run(name, goal, *, root=EXPERIMENTS_ROOT, **options):
-    from medbenchagent.compilation.run import create_run
+def save_draft(name, draft, *, root=EXPERIMENTS_ROOT):
     folder = experiment_path(name, root)
     with FileLock(folder / "session.lock"):
         record = load_experiment(name, root=root)
-        identifier = "run-" + uuid4().hex[:12]
-        directory = folder / "runs" / identifier
-        create_run(directory, compilation_id=identifier, goal=goal,
-                   config_path=config_path(name, root), **options)
+        record["draft"] = draft.model_dump(mode="json")
+        save_experiment(record, root=root)
+
+
+def add_run(name, goal, *, root=EXPERIMENTS_ROOT, draft=None, **options):
+    from medbenchagent.compilation.run import create_run
+    folder = experiment_path(name, root)
+    identifier = "run-" + uuid4().hex[:12]
+    directory = folder / "runs" / identifier
+    if draft is not None:
+        from medbenchagent.runtime.intake import prepare_input
+        options = {**options, **prepare_input(draft, directory)}
+    create_run(directory, compilation_id=identifier, goal=goal,
+               config_path=config_path(name, root), **options)
+    with FileLock(folder / "session.lock"):
+        record = load_experiment(name, root=root)
         run = {"id": identifier, "directory": str(directory), "goal": goal}
         record["runs"].append(run)
         record["messages"].append({"role": "user", "text": goal, "run_id": identifier})
+        if draft is not None:
+            record["draft"] = draft.model_dump(mode="json")
         save_experiment(record, root=root)
     return run

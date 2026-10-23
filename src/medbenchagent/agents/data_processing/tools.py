@@ -46,7 +46,8 @@ def data_processing_tools():
             from medbenchagent.data.sources import inspect_source
             rows.append({"source_id": entry.source_id, **inspect_source(
                 root, offset=offset, limit=runtime.context.settings.page_size)})
-        return {"dataset": source.dataset.model_dump(), "sources": rows}
+        return {"dataset": source.dataset.model_dump(), "sources": rows,
+                "key_files": [item.model_dump() for item in source.key_files]}
 
     @tool
     def invoke_coding(

@@ -16,6 +16,12 @@ class ConversationService:
     def submit(self, goal, **options):
         return sessions.add_run(self.name, goal, root=self.root, **options)
 
+    def submit_draft(self, draft):
+        return sessions.add_run(self.name, draft.goal, root=self.root, draft=draft)
+
+    def save_draft(self, draft):
+        sessions.save_draft(self.name, draft, root=self.root)
+
     def run(self, run_id, *, resume=False, answer=None, stop_requested=None):
         run = next(row for row in self.record()["runs"] if row["id"] == run_id)
         for event in execute_compilation(run["directory"], resume=resume, answer=answer, stop_requested=stop_requested):

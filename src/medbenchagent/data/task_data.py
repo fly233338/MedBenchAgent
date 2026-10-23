@@ -3,7 +3,7 @@
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from pydantic import Field, model_validator
@@ -17,14 +17,32 @@ class ProductBinding(CanonicalModel):
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class KeyFile(CanonicalModel):
+    source_id: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    purpose: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def relative_path(self):
+        path = PurePosixPath(self.path)
+        if path.is_absolute() or ".." in path.parts or "\\" in self.path or ":" in self.path or path.as_posix() != self.path:
+            raise ValueError("Key files require source-relative paths")
+        return self
+
+
 class SourceManifest(CanonicalModel):
     dataset: DatasetRef
     sources: list[DatasetSource] = Field(min_length=1)
+    key_files: list[KeyFile] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def unique_sources(self):
         if len({s.source_id for s in self.sources}) != len(self.sources):
             raise ValueError("Source IDs must be unique")
+        if any(item.source_id not in {s.source_id for s in self.sources} for item in self.key_files):
+            raise ValueError("Key file refers to an unknown source")
+        if len({(item.source_id, item.path) for item in self.key_files}) != len(self.key_files):
+            raise ValueError("Duplicate key file")
         return self
 
 

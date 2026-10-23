@@ -10,6 +10,10 @@ import httpx
 class ModelDiscoveryError(RuntimeError):
     """A model endpoint cannot provide the requested identity."""
 
+    def __init__(self, message, *, models=(), kind=None):
+        super().__init__(message)
+        self.models, self.kind = list(models), kind
+
 
 def resolve_model_service(kind: str, base_url: str, explicit_model: str, api_key: str | None) -> str:
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -31,8 +35,8 @@ def resolve_model_service(kind: str, base_url: str, explicit_model: str, api_key
         raise ModelDiscoveryError(f"{kind} /models returned no unique models")
     if explicit_model:
         if explicit_model not in models:
-            raise ModelDiscoveryError(f"{kind} model {explicit_model!r} is unavailable")
+            raise ModelDiscoveryError(f"{kind} model {explicit_model!r} is unavailable", models=models, kind=kind)
         return explicit_model
     if len(models) != 1:
-        raise ModelDiscoveryError(f"{kind} endpoint has multiple models; configure an explicit model")
+        raise ModelDiscoveryError(f"{kind} endpoint has multiple models; configure an explicit model", models=models, kind=kind)
     return models[0]

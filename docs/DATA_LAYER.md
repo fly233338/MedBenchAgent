@@ -1,5 +1,9 @@
 # Case 中心的数据契约
 
+原始 SourceManifest 可记录 key_files：source_id、来源内相对 path 和用户给出的 purpose。
+关键文件只标记已授权目录内的输入重点，不扩大来源范围，也不建立新的标签或病例关联。
+运行前检查目录与关键文件可读性；TUI 草稿通过 runtime.intake 自动生成技术契约。
+
 ## 状态与数据单元
 
 本文固定 canonical 语义。当前实现纯类型、小型 JSON/JSONL DatasetReader、内容成员校验、

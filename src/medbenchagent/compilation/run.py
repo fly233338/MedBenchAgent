@@ -108,10 +108,17 @@ def create_run(
         source = SourceManifest.model_validate_json(source_manifest.read_bytes())
         for item in source.sources:
             root = (source_manifest.parent / item.root).resolve()
+            if directory.is_relative_to(root):
+                raise ValueError("Run output directory must not be inside a source directory")
             try:
                 next(root.iterdir(), None)
             except OSError as exc:
                 raise ValueError(f"Source {item.source_id} directory is not readable: {root}") from exc
+        roots = {item.source_id: (source_manifest.parent / item.root).resolve() for item in source.sources}
+        from medbenchagent.data.dataset import _relative_file
+        for item in source.key_files:
+            with _relative_file(roots[item.source_id], item.path).open("rb") as handle:
+                handle.read(1)
     if dataset_manifest is not None:
         from medbenchagent.data.dataset import FileDatasetReader
         FileDatasetReader(dataset_manifest)
