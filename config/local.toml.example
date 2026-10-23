@@ -22,6 +22,16 @@ default_sample_count = 1000 # Used only when the user did not supply a count; la
 # model = "your-chat-model" # Optional when /v1/models returns exactly one model.
 reasoning_effort = "medium" # Must be supported by the configured gateway/model.
 
+# Native Planner uses the common [llm]; only enabled roles are loaded and frozen.
+[planner]
+page_size = 20
+preview_chars = 6000
+max_scenarios = 10000
+
+[planner.loop]
+max_model_calls = 60
+max_tool_calls = 120
+
 # Independent Compilation Coding settings; not the old Preparation runtime.
 [coding]
 worker_venv = ".venv-coding" # Must already be provisioned; no automatic installation.

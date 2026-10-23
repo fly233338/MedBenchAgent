@@ -46,7 +46,8 @@ config/local.toml
 *.bundle
 
 # Local experiment scripts
-scripts/
+scripts/*
+!scripts/prepare_breast_example.py
 
 # Evaluation is provisioned separately on the model-serving host.
 /evaluation/

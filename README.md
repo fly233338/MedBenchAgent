@@ -2,94 +2,104 @@
 
 ## Independent Compilation
 
-The `refactor` branch provides an independent LangGraph coordination core with named
-agent nodes, explicit work handoffs, a Case-based file reader and SQLite checkpoints.
-The Supervisor supports `scripted` and `llm`; Coding independently supports `scripted`
-and `openhands`. Both default to Scripted for offline development. The Planner remains
-a **scripted synthetic implementation**. All four combinations use the same graph;
-output labels `supervisor_mode`, `coding_mode`, and `planner_mode` separately. The demo
-uses synthetic data and is not a complete autonomous medical benchmark compiler.
+The independent Compilation entrypoint uses named LangGraph nodes and formal WorkRequest /
+WorkResult handoffs. Supervisor and Task Planner support `scripted` or `llm`; the model
+implementations use LangChain `create_agent`, native ToolStrategy, private persistent state,
+summarization and invocation limits. Coding remains an optional OpenHands adapter with its own
+execution loop. The default Scripted agents are synthetic development fixtures.
+
+The native Planner reads a canonical Case dataset, records Axis and Scenario judgments, revises
+semantic tasks, requests and accepts derived data, and publishes immutable Task Plans.
+It does **not** generate or deliver benchmark items. GenerationSpec currently supplies the first
+closed-VQA execution contract and validation only; new Generation, Review and Delivery execution
+remain future work. The old `medd2b` CLI/TUI below still uses the old workflow.
+
+### Offline synthetic demonstration
 
 ```powershell
 uv sync --locked --python 3.12
 uv run --locked python -m medbenchagent.compilation run --directory .runtime/compilation-demo --compilation-id demo --pause-for-input
 uv run --locked python -m medbenchagent.compilation resume --directory .runtime/compilation-demo --compilation-id demo --answer "Continue"
-uv run --locked pytest tests/test_compilation_graph.py -q
 ```
 
-Use a separate run directory and add `--initial-evidence` to start with an existing
-overview. In scripted mode this selects a different delegation order in the same graph.
-In model mode the Supervisor chooses the next action from registered capabilities and evidence.
+Use a new directory for each compilation. `--initial-evidence` adds a synthetic overview and
+demonstrates a different delegation path. `--pause-for-input` belongs to the Scripted Supervisor.
+The model Supervisor decides when a question is needed.
 
-For a model Supervisor, configure a reachable Chat service in a TOML file (the existing
-`[llm]` keys) and provide any credential through `MEDBENCH_LLM_API_KEY`:
+### Real Dataset input and native planning
+
+Prepare a small reproducible BrEaST snapshot directly from the source workbook and PNG files.
+The script defaults to the first 20 source records ordered by numeric CaseID. Source files are
+read-only; the output must be a new directory. Each Case represents one source lesion record,
+with unknown patient/study grouping preserved. Annotations and masks remain reference-only.
 
 ```powershell
-uv run --locked python -m medbenchagent.compilation run --directory .runtime/model-supervisor --compilation-id live --supervisor llm --config config/local.toml
-uv run --locked python -m medbenchagent.compilation resume --directory .runtime/model-supervisor --compilation-id live
-uv run --locked pytest tests/test_compilation_supervisor.py tests/test_llm.py -q
+uv run --locked python scripts/prepare_breast_example.py --workbook datasets/US/BrEaST/BrEaST-Lesions-USG-clinical-data-Dec-15-2023.xlsx --image-root datasets/US/BrEaST --output .runtime/breast-input
+uv run --locked python -m medbenchagent.compilation run --directory .runtime/breast-planning --compilation-id breast-planning --supervisor llm --planner llm --dataset-manifest .runtime/breast-input/manifest.json --config config/local.toml
+uv run --locked python -m medbenchagent.compilation resume --directory .runtime/breast-planning --compilation-id breast-planning
 ```
 
-For OpenHands Coding, use the existing local `coding.worker_venv` (default `.venv-coding`)
-with the SDK/Tools versions pinned in `config/coding-worker.requirements.txt`. Compilation
-does not install or upgrade that environment. Configure `[coding.llm]` to override any
-fields of the resolved common `[llm]`; omitted fields inherit common values, including
-the common environment overrides. Use `MEDBENCH_CODING_LLM_API_KEY` for a separate
-credential, or omit it to reuse the common Chat credential.
+Copy `config/local.toml.example` to `config/local.toml` and configure the common `[llm]`
+endpoint/model. Credentials use `MEDBENCH_LLM_API_KEY`. The endpoint must support tool calling;
+actual model compatibility and semantic quality are evaluated by the operator.
+The implementation's offline tests do not call a real model.
+
+`--dataset-manifest` accepts only the current canonical DatasetManifest, including content
+members. The CLI copies verified records, Mapping, assets and referenced source files into
+the run. Real input requires `--supervisor llm --planner llm` and never creates synthetic data
+or registers synthetic Coding. The default real-input goal is to publish an evidence-grounded
+Task Plan; use `--goal` for explicit requirements. Data that needs processing produces a formal
+requirement; enabling existing Coding is optional, and the new Data Processing role is not yet implemented.
+
+### Optional OpenHands Coding
+
+Use `--coding openhands` to register the existing local Coding capability. Its independent
+Python environment must already be provisioned using `config/coding-worker.requirements.txt`.
+`[coding.llm]` overrides common model fields, and `MEDBENCH_CODING_LLM_API_KEY` can provide a
+separate credential. Missing values inherit the common configuration.
 
 ```powershell
-uv run --locked python -m medbenchagent.compilation run --directory .runtime/openhands-demo --compilation-id coding-demo --coding openhands --config config/local.toml
-uv run --locked python -m medbenchagent.compilation resume --directory .runtime/openhands-demo --compilation-id coding-demo
+uv run --locked python -m medbenchagent.compilation run --directory .runtime/coding-demo --compilation-id coding-demo --supervisor llm --coding openhands --config config/local.toml
 ```
 
-Add `--supervisor llm` to combine both real adapters. `[coding]` controls local execution:
-80 iterations per request, a 3600-second timeout, 4096 output tokens, and condenser limits
-of 80 events / 24000 tokens by default. These settings are independent of old Preparation budgets.
+Each Workstream owns its SDK Conversation and workspace. Request-local candidates are copied into
+formal handoffs. No automatic worker installation, generic session manager or exactly-once shell
+execution is provided. This iteration does not move Coding inside a Data Processing agent.
 
-`--goal` supplies a goal for a new run; its default requests the synthetic Case-linked task
-and derived reference data. `--pause-for-input` is a scripted demonstration option;
-the model decides for itself whether to ask a question. Add `--answer` on resume only
-when a question is pending.
+### Ownership, limits and recovery
 
-Only the selected agents' model/execution configuration is loaded. There is no
-RAG or Preparation preflight. Limits `supervisor.context_chars`, `artifact_chars` and
-`max_artifacts` bound the full request, each preview and preview count. `history_items` defaults
-to 8, `catalog_page_size` to 20, and `max_lookups` to 4. The Supervisor can use its own read-only
-`inspect` capability to page through registered artifacts, Workstreams and earlier work records,
-or preview an artifact by ID. Optional projections are bounded with explicit omission counts;
-the goal and user answers are never silently truncated. Exhausting a budget is an explicit failure.
-Invalid model choices use the existing bounded repair path. Reported needs/issues remain traceable
-feedback, not an automatically resolved requirements ledger.
+The run directory contains:
+- `run.json`: selected modes, goal, initial source location, non-secret model/limit snapshots and frozen prompts.
+- `checkpoints.sqlite`: coordination records and native private role namespaces.
+- `planner/drafts/`: immutable content-addressed domain drafts referenced by Planner state.
+- `artifacts/<request_id>/`: submitted Task Plans, requirements and frozen Dataset contents.
+- `coding/<workstream_id>/`: SDK state and workspace, when enabled.
+- `events.jsonl`: correlated model calls, tool results and formal handoffs; not recovery state.
 
-Coding uses **Workstreams**. The Supervisor requests a new Workstream with a null ID or
-continues one of the Host-assigned IDs. Scope describes the current job, not session identity.
-Each Workstream owns a stable Conversation and independent workspace/persistence directories.
-Completing a request does not close it. Different Workstreams exchange formal `ArtifactRef`
-files, not private histories or mutable workspace files; tools remain independent of lifecycle.
+Resume uses the saved configuration/prompts and checkpoint-selected artifacts; it does not reopen
+the original Dataset or discover a new model. Credentials may rotate through the environment.
+Changed source prompts affect new runs only. Historical run layouts are not migrated.
 
-The run directory holds `run.json` (modes, goal, options, non-secret model/execution settings,
-and the enabled agents' frozen prompt text/digests),
-`checkpoints.sqlite`, request-owned files under `artifacts/`, and private Coding directories
-under `coding/<workstream_id>/`. The Workstream catalog lives only in checkpoints. Reusing `run` on an existing
-directory is rejected. `resume` uses the saved mode/model without reading a new configuration
-or rediscovering a model. Updating source prompts changes new runs only; credentials can still
-be supplied through the environment. Static instructions live in the packaged `medbenchagent.prompts`
-resources; dynamic work context and tool schemas remain with their implementations.
-Supervisor model failures preserve checkpoints. Coding failures return `WorkResult` to the
-Supervisor; neither adapter falls back to Scripted execution. SDK Host messages are deduplicated
-by request ID, and persisted FinishTool results can be handed off without rerunning completed
-work. Formal files are copied from request-local candidates and cannot be overwritten with
-different bytes. Every ArtifactRef carries a SHA-256 digest, checked on Host reads and handoffs;
-this covers the referenced file, not a Dataset manifest's entire dependency tree.
-`events.jsonl` correlates Host decisions and handoffs; Coding request logs and SDK metadata carry
-the applicable IDs without copying private tool histories. Logs are diagnostic, not recovery state.
-Local execution is not an OS sandbox or an exactly-once command guarantee.
-No compatibility reader is provided for earlier demonstration runs.
+`[supervisor]` retains bounded directory/history/preview settings. `[planner]` controls
+`context_chars`, `page_size`, `preview_chars` and `max_scenarios`.
+Each role's `[...loop]` controls model/tool calls per invocation, context tokens, output reservation
+and summary trigger/retention. These are invocation limits, not cumulative thread quotas.
+Actual requests are checked including tools, current facts and history. Summaries are working context;
+task and evidence facts are re-read from the current immutable products.
 
-See the [architecture](docs/ARCHITECTURE.md), [agent boundaries](docs/agents/README.md),
-[Case contracts](docs/DATA_LAYER.md), and [implementation status](docs/PLAN.md).
-The existing `medd2b` CLI/TUI below remains a migration reference; the core does not call
-its Workflow, Preparation Graph, Resolver, BIRStore or harness.
+Task Plan publication validates Scenario coverage, task feasibility and evidence links. Accepting
+derived data is a recorded Planner judgment plus deterministic identity/scope checks. Model completion
+alone cannot replace publication, satisfy a requirement, or establish benchmark delivery.
+New requests clear prior final responses and submitted IDs while retaining private history.
+Limit exhaustion returns failure, preserving valid publications. Unexpected runtime errors retain the checkpoint.
+
+Dataset members cover records, optional metadata, assets and referenced source files. Changed bytes are
+rejected rather than silently assigned a new accepted digest. The current FileDatasetReader performs
+eager content verification and is intended for small local inputs, not large-dataset throughput.
+
+See [architecture](docs/ARCHITECTURE.md), [agent boundaries](docs/agents/README.md),
+[Case contracts](docs/DATA_LAYER.md), [task contracts](docs/TASK_DISCOVERY.md), and
+[implementation status](docs/PLAN.md).
 
 ## Existing capabilities awaiting migration
 
