@@ -15,15 +15,15 @@ flowchart TB
     Graph --> Public[compilation.interfaces / contracts / artifacts]
     Policy --> Domain[data / planning / generation validators]
     Assembly --> Agents[agents: Supervisor / DP / Planner / Generation / Review]
-    Assembly --> Delivery[agents.delivery]
-    Assembly --> Coding[agents.coding]
+    Assembly --> Delivery[agents.delivery.node]
+    Assembly --> Coding[agents.data_processing.coding.adapter]
     Agents --> Public
     Agents --> Domain
     Agents --> Native[runtime.native / create_agent]
     Delivery --> Public
     Delivery --> Domain
     Coding --> Public
-    Coding --> Worker[agents.coding_worker]
+    Coding --> Worker[agents.data_processing.coding.worker]
     Worker --> Public
     Worker --> SDK[OpenHands SDK]
     CLI --> Sessions[session UI records]
@@ -33,7 +33,7 @@ flowchart TB
 ```
 
 Policy 是 Assembly 注入的请求、结果与目标检查函数，领域语义仍由 Reader、规划及生成模块检查。
-Supervisor 实现位于 agents.supervisor；Coding 适配器与子进程也归属 agents，由 Assembly 注入 DP。
+Supervisor 实现位于 agents.supervisor.agent；Coding 适配器与子进程也归属 agents，由 Assembly 注入 DP。
 DP 通过注入的适配器调用 Coding，不导入其私有实现；下图单独表示运行时交接。
 Graph 不导入领域实现或 SDK。实验记录不是第二个执行账本；standalone RAG、图像转换与几何函数
 是保留的库能力，不是额外 Agent。旧 Workflow/BIR/Resolver/Harness/Preparation 编排已移除。
@@ -58,6 +58,9 @@ flowchart TD
 
 正常工作顺序：Profile → 场景/backend/需求 → TaskData → 验收/Leaf → 组题 → Review/Audit → Delivery。
 这是依赖形成的协作路径；每次结束均回到 Supervisor。修复只委派所需对象，保留无关有效产物。
+
+各角色以包组织：agent.py 装配模型循环，tools.py 暴露工具；DP/Planner 的 state.py 持有角色私有状态与辅助逻辑。
+共享交接与 Prompt 组合位于 agents._shared；角色/操作 Markdown 随角色打包。Coding 是 DP 内部子包。
 
 ## Agent 内部结构
 

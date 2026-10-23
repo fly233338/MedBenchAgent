@@ -38,7 +38,7 @@ uv venv .venv-coding --python 3.12
 uv pip install --python .venv-coding/Scripts/python.exe -r config/coding-worker.requirements.txt
 ```
 
-Data Processing invokes `python -m medbenchagent.agents.coding_worker` in that environment.
+Data Processing invokes `python -m medbenchagent.agents.data_processing.coding.worker` in that environment.
 Supervisor and Coding implementations live under `agents`; Compilation owns coordination and assembly.
 
 Use `config/sources.example.json` as the SourceManifest template. It contains a dataset identity

@@ -25,29 +25,29 @@ def load_prompt(resource: str) -> str:
     path = PurePosixPath(resource)
     if path.is_absolute() or ".." in path.parts or path.suffix != ".md" or "\\" in resource or ":" in resource:
         raise ValueError("Expected a package-relative Markdown prompt resource")
-    text = files(__package__).joinpath(resource).read_text(encoding="utf-8")
+    text = files("medbenchagent.agents").joinpath(resource).read_text(encoding="utf-8")
     if not text.strip():
         raise ValueError(f"Empty prompt resource: {resource}")
     return text
 
 
 COMPOSITIONS = {
-    "supervisor": ("common.md", "supervisor.md"),
-    "profile": ("common.md", "data_processing.md", "data_profile.md"),
-    "prepare_task_data": ("common.md", "data_processing.md", "data_prepare.md"),
-    "discover_scenarios": ("common.md", "planner.md", "planner_discover.md"),
-    "design_leaves": ("common.md", "planner.md", "planner_design.md"),
-    "generate": ("common.md", "generation.md"),
-    "review_plan": ("common.md", "review.md"),
-    "review_candidate": ("common.md", "review.md"),
-    "coding": ("common.md", "coding.md"),
-    "coding_handoff": ("data_coding_handoff.md",),
-    "structured_repair": ("structured_repair.md",),
+    "supervisor": ("_shared/prompts/common.md", "supervisor/prompts/system.md"),
+    "profile": ("_shared/prompts/common.md", "data_processing/prompts/base.md", "data_processing/prompts/profile.md"),
+    "prepare_task_data": ("_shared/prompts/common.md", "data_processing/prompts/base.md", "data_processing/prompts/prepare_task_data.md"),
+    "discover_scenarios": ("_shared/prompts/common.md", "task_planning/prompts/base.md", "task_planning/prompts/discover.md"),
+    "design_leaves": ("_shared/prompts/common.md", "task_planning/prompts/base.md", "task_planning/prompts/design.md"),
+    "generate": ("_shared/prompts/common.md", "generation/prompts/base.md"),
+    "review_plan": ("_shared/prompts/common.md", "review/prompts/base.md"),
+    "review_candidate": ("_shared/prompts/common.md", "review/prompts/base.md"),
+    "coding": ("_shared/prompts/common.md", "data_processing/coding/prompts/base.md"),
+    "coding_handoff": ("data_processing/coding/prompts/handoff.md",),
+    "structured_repair": ("_shared/prompts/structured_repair.md",),
 }
 
 
 def freeze_composition(name):
-    resources = COMPOSITIONS[name] + (("structured_repair.md",) if name not in {"structured_repair", "coding", "coding_handoff"} else ())
+    resources = COMPOSITIONS[name] + (("_shared/prompts/structured_repair.md",) if name not in {"structured_repair", "coding", "coding_handoff"} else ())
     parts = {resource: load_prompt(resource) for resource in resources}
     text = "\n\n".join(parts.values())
     return PromptSnapshot(text=text, digest=hashlib.sha256(text.encode()).hexdigest(),

@@ -8,7 +8,7 @@ from pathlib import Path
 from langgraph.checkpoint.sqlite import SqliteSaver
 import pytest
 
-from medbenchagent import prompts
+from medbenchagent.agents._shared import prompting as prompts
 from medbenchagent.compilation import graph, interfaces, run
 from medbenchagent.compilation.contracts import Delegate, Finish, WorkRequest, WorkResult
 
@@ -80,7 +80,7 @@ def test_agent_interfaces_do_not_depend_on_graph_or_sdk():
         if name in {"interfaces", "graph"}:
             assert not any("openhands" in module for module in dependencies)
             assert not any(module.startswith("medbenchagent.agents") for module in dependencies)
-    for path in (root.parent / "agents").glob("*.py"):
+    for path in (root.parent / "agents").rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         dependencies = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
         dependencies += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)

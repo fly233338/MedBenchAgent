@@ -1,15 +1,9 @@
-"""Native Generation agent exposing actual prepared-data backends and candidate operations."""
+"""Generation tools."""
 
 import hashlib
 import json
-
-from langchain.agents import create_agent
-from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import tool, ToolRuntime
-
 from medbenchagent.compilation.artifacts import read_json_artifact, resolve_artifact, register_file
-from medbenchagent.compilation.contracts import WorkRequest
-from medbenchagent.compilation.interfaces import AgentSpec
 from medbenchagent.data.task_data import TaskDataReader
 from medbenchagent.planning.contracts import TaskPlan, DataRequirement
 from medbenchagent.generation.backends import backend_catalog
@@ -27,20 +21,17 @@ from medbenchagent.generation.execution import (
     finalize_candidate,
     CandidateReader,
 )
-from medbenchagent.runtime.native import OperationTools, chat_model, loop_middleware
-from .handoff import (
+from medbenchagent.agents._shared.handoff import (
     WorkState,
     WorkContext,
-    WorkResponse,
-    WorkInstructions,
     binding,
     bound_path,
     get_ref,
     inspect_artifact,
-    invoke_work,
     publish_value,
     tool_result,
 )
+
 
 
 class GenerationState(WorkState):
@@ -359,47 +350,3 @@ def generation_tools():
         propose_data_requirement,
         finalize_generation,
     ]
-
-
-def build_generation_spec(settings, *, instructions, model=None):
-    model = model or chat_model(settings.llm, settings.loop)
-    tools = generation_tools()
-    agent = create_agent(
-        model,
-        tools=tools,
-        response_format=ToolStrategy(WorkResponse),
-        state_schema=GenerationState,
-        context_schema=WorkContext,
-        checkpointer=True,
-        name="generation_agent",
-        middleware=[
-            WorkInstructions(GenerationState, {"quarantined": {}}),
-            OperationTools({'generate': None}),
-            *loop_middleware(
-                model,
-                settings.loop,
-                settings.context_chars,
-                write_tools=[t.name for t in tools if not t.name.startswith(("inspect_", "list_"))],
-            ),
-        ],
-    )
-
-    def node(state, config, runtime):
-        return invoke_work(
-            agent,
-            WorkContext(
-                runtime.context.directory,
-                WorkRequest.model_validate(state["request"]),
-                settings,
-                instructions,
-                "generation",
-            ),
-            config,
-        )
-
-    return AgentSpec(
-        "Prepare execution, allocate counts and assemble questions from ready Leaf definitions and accepted TaskData. "
-        "Supports VQA, reports, grounding and detection; returns immutable batches/candidates and data or task issues. "
-        "Bind TaskPlans, TaskData and any referenced specs/batches explicitly.",
-        node, operations=('generate',),
-    )

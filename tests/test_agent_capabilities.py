@@ -7,16 +7,16 @@ import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from medbenchagent.agents.benchmark_review import review_tools
-from medbenchagent.agents.delivery import delivery_spec
-from medbenchagent.agents.handoff import WorkContext
+from medbenchagent.agents.review.tools import review_tools
+from medbenchagent.agents.delivery.node import delivery_spec
+from medbenchagent.agents._shared.handoff import WorkContext
 from medbenchagent.compilation.artifacts import resolve_artifact
 from medbenchagent.compilation.contracts import WorkRequest, WorkScope, GoalSpec, ArtifactRef
 from medbenchagent.compilation.run import create_run
 from medbenchagent.compilation.assembly import assemble_compilation
 from medbenchagent.compilation.graph import build_compilation_graph
 from medbenchagent.evaluation.loader import load_benchmark_package
-from medbenchagent.prompts import freeze_composition
+from medbenchagent.agents._shared.prompting import freeze_composition
 from medbenchagent.settings import load_work_agent_settings
 from capability_fixtures import ToolCalls, build_capabilities
 from coding_fixtures import FakeRunner
@@ -96,7 +96,7 @@ def test_profile_taskdata_leaf_generation_capabilities(tmp_path, monkeypatch):
 
     import medbenchagent.runtime.native as native
     import medbenchagent.runtime.model_services as services
-    import medbenchagent.agents.coding as coding
+    import medbenchagent.agents.data_processing.coding.adapter as coding
     original = coding.OpenHandsCodingAgent
     monkeypatch.setattr(services, "resolve_model_service", lambda *_: "offline")
     monkeypatch.setattr(native, "chat_model", lambda *_: ScriptedChatModel(responder=respond))
@@ -231,8 +231,9 @@ def test_review_and_delivery_bind_exact_candidate_contents(tmp_path):
 
     # A semantic rejection routes only the Leaf back for repair. Prepared data is reused.
     from dataclasses import replace
-    from medbenchagent.agents.semantic_planner import planner_tools, PlannerContextMiddleware
-    from medbenchagent.agents.generation import generation_tools
+    from medbenchagent.agents.task_planning.tools import planner_tools
+    from medbenchagent.agents.task_planning.agent import PlannerContextMiddleware
+    from medbenchagent.agents.generation.tools import generation_tools
     from medbenchagent.generation.contracts import ReviewFinding
     plan_ref = next(r for r in bundle.generation.context.request.inputs if r.kind == "task_plan")
     review.call("finalize_review", target_id=bundle.candidate_ref.artifact_id,

@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import model_validator, Field
 
-from medbenchagent import prompts
+from medbenchagent.agents._shared import prompting as prompts
 from medbenchagent.settings import (
     CodingSettings, SupervisorSettings, TaskPlannerSettings, get_coding_api_key, get_llm_api_key,
     load_coding_settings, load_project_env, load_supervisor_settings, load_planner_settings,

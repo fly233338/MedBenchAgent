@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from medbenchagent.agents.coding_worker import CodingCandidate, execute_turn
+from medbenchagent.agents.data_processing.coding.worker import CodingCandidate, execute_turn
 from medbenchagent.compilation.contracts import WorkRequest
 
 class Crash(BaseException):

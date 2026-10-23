@@ -12,8 +12,8 @@ from medbenchagent.compilation.artifacts import write_json_artifact
 from medbenchagent.compilation.contracts import WorkRequest, WorkResult
 from medbenchagent.compilation.graph import build_compilation_graph
 from medbenchagent.compilation.interfaces import AgentSpec, CompilationContext, SupervisorView
-from medbenchagent.agents.supervisor import ModelSupervisor, _Inspection
-from medbenchagent.prompts import load_prompt
+from medbenchagent.agents.supervisor.agent import ModelSupervisor, _Inspection
+from medbenchagent.agents._shared.prompting import load_prompt
 from medbenchagent.settings import load_supervisor_settings, SupervisorSettings
 from medbenchagent.runtime.llm import RequestContextBudgetError
 from native_agent_fixtures import ScriptedChatModel, call, current_view
@@ -63,7 +63,7 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
 
     model = ScriptedChatModel(responder=respond)
     supervisor = ModelSupervisor(
-        tmp_path, settings, instructions=load_prompt("supervisor.md"), model=model
+        tmp_path, settings, instructions=load_prompt("supervisor/prompts/system.md"), model=model
     )
 
     def worker(state):
@@ -109,7 +109,7 @@ def test_context_queries_and_frozen_budgets(tmp_path):
         responder=lambda *_: pytest.fail("Context-only test must not call a model")
     )
     supervisor = ModelSupervisor(
-        tmp_path, settings, instructions=load_prompt("supervisor.md"), model=model
+        tmp_path, settings, instructions=load_prompt("supervisor/prompts/system.md"), model=model
     )
     view = SupervisorView(
         compilation_id="bounded",
@@ -160,7 +160,7 @@ def test_native_summarization_and_cross_compilation_isolation(tmp_path):
 
     model = ScriptedChatModel(responder=respond)
     supervisor = ModelSupervisor(
-        tmp_path, settings, instructions=load_prompt("supervisor.md"), model=model
+        tmp_path, settings, instructions=load_prompt("supervisor/prompts/system.md"), model=model
     )
 
     def worker(state):

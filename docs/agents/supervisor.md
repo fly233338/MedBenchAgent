@@ -1,6 +1,6 @@
 # Supervisor
 
-实现位于 medbenchagent.agents.supervisor，由 Compilation Assembly 装配。
+实现位于 medbenchagent.agents.supervisor.agent，由 Compilation Assembly 装配。
 
 通过原生 create_agent 和 ToolStrategy 选择 Delegate、AskUser、Finish。每次委派指定角色、operation、
 精确输入与 scope。Host 注入使用同一请求检查生成的就绪建议和阻塞原因，并在实际执行前再次检查。

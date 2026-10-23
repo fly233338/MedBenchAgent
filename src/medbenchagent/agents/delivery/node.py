@@ -10,7 +10,7 @@ from medbenchagent.compilation.interfaces import AgentSpec
 from medbenchagent.generation.contracts import AuditReport, ReviewReport
 from medbenchagent.generation.execution import CandidateReader, load_execution
 from medbenchagent.generation.publication import publish_delivery
-from .handoff import binding, bound_path
+from medbenchagent.agents._shared.handoff import binding, bound_path
 
 
 def delivery_spec():

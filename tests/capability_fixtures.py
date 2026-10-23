@@ -7,21 +7,20 @@ import inspect
 
 from langgraph.types import Command
 
-from medbenchagent.agents.data_processing import DataProcessingContext, data_processing_tools
-from medbenchagent.agents.generation import generation_tools
-from medbenchagent.agents.handoff import WorkContext, WorkInstructions, binding
-from medbenchagent.agents.semantic_planner import (
-    PlannerContext,
-    PlannerContextMiddleware,
-    planner_tools,
-)
+from medbenchagent.agents.data_processing.state import DataProcessingContext
+from medbenchagent.agents.data_processing.tools import data_processing_tools
+from medbenchagent.agents.generation.tools import generation_tools
+from medbenchagent.agents._shared.handoff import WorkContext, WorkInstructions, binding
+from medbenchagent.agents.task_planning.state import PlannerContext
+from medbenchagent.agents.task_planning.agent import PlannerContextMiddleware
+from medbenchagent.agents.task_planning.tools import planner_tools
 from medbenchagent.compilation.artifacts import (
     read_json_artifact,
     write_json_artifact,
     resolve_artifact,
 )
-from medbenchagent.agents.coding import OpenHandsCodingAgent
-from medbenchagent.agents.coding_worker import CodingCandidate
+from medbenchagent.agents.data_processing.coding.adapter import OpenHandsCodingAgent
+from medbenchagent.agents.data_processing.coding.worker import CodingCandidate
 from medbenchagent.compilation.contracts import ArtifactRef, WorkRequest, WorkScope
 from medbenchagent.data.dataset import DatasetRef, DatasetSource, file_digest
 from medbenchagent.data.models import SourceRef
@@ -37,7 +36,7 @@ from medbenchagent.data.task_data import (
     PreparedAsset,
 )
 from medbenchagent.generation.execution import CandidateReader
-from medbenchagent.prompts import freeze_composition
+from medbenchagent.agents._shared.prompting import freeze_composition
 from medbenchagent.settings import (
     load_coding_settings,
     load_planner_settings,

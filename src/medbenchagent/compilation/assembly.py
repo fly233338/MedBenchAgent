@@ -22,38 +22,38 @@ def assemble_compilation(
             return model
 
         from medbenchagent.settings import SupervisorSettings
-        from medbenchagent.agents.supervisor import ModelSupervisor
+        from medbenchagent.agents.supervisor.agent import ModelSupervisor
 
         settings = SupervisorSettings.from_snapshot(options.supervisor_settings)
         decide = ModelSupervisor(directory, settings, model=model_for(settings),
                                  instructions=options.prompts["supervisor"].text)
         from medbenchagent.settings import CodingSettings
-        from medbenchagent.agents.coding import OpenHandsCodingAgent
+        from medbenchagent.agents.data_processing.coding.adapter import OpenHandsCodingAgent
 
         coding_agent = OpenHandsCodingAgent(CodingSettings.from_snapshot(options.coding_settings),
                                            instructions=options.prompts["coding"].text)
         from medbenchagent.settings import TaskPlannerSettings
-        from medbenchagent.agents.semantic_planner import build_planner_spec
+        from medbenchagent.agents.task_planning.agent import build_planner_spec
         settings = TaskPlannerSettings.from_snapshot(options.planner_settings)
         planner = build_planner_spec(settings, model=model_for(settings), instructions={key: options.prompts[key].text for key in ("discover_scenarios", "design_leaves")})
         agents = {"task_planner": planner}
         from medbenchagent.settings import WorkAgentSettings
         if options.data_processing_mode == "llm":
-            from medbenchagent.agents.data_processing import build_data_processing_spec
+            from medbenchagent.agents.data_processing.agent import build_data_processing_spec
             settings = WorkAgentSettings.from_snapshot(options.professional_settings["data_processing"])
             agents["data_processing"] = build_data_processing_spec(settings, coding_agent,
                 instructions={key: options.prompts[key].text for key in ("profile", "prepare_task_data", "coding_handoff")}, model=model_for(settings))
         if options.generation_mode == "llm":
-            from medbenchagent.agents.generation import build_generation_spec
+            from medbenchagent.agents.generation.agent import build_generation_spec
             settings = WorkAgentSettings.from_snapshot(options.professional_settings["generation"])
             agents["generation"] = build_generation_spec(settings, instructions={"generate": options.prompts["generate"].text},
                                                         model=model_for(settings))
         if options.review_mode == "llm":
-            from medbenchagent.agents.benchmark_review import build_review_spec
+            from medbenchagent.agents.review.agent import build_review_spec
             settings = WorkAgentSettings.from_snapshot(options.professional_settings["review"])
             agents["review"] = build_review_spec(settings, instructions={key: options.prompts[key].text for key in ("review_plan", "review_candidate")}, model=model_for(settings))
         if options.delivery_enabled:
-            from medbenchagent.agents.delivery import delivery_spec
+            from medbenchagent.agents.delivery.node import delivery_spec
             agents["delivery"] = delivery_spec()
         from functools import partial
         from .policy import attach_checks, check_goal, readiness

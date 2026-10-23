@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
+import medbenchagent
 import os
 from pathlib import Path
 import signal
@@ -18,7 +19,7 @@ from medbenchagent.data.dataset import file_digest
 
 from medbenchagent.compilation.artifacts import _within, resolve_artifact
 from medbenchagent.compilation.contracts import WorkRequest
-from .coding_worker import CandidateNeed, CodingCandidate, failure
+from .worker import CandidateNeed, CodingCandidate, failure
 
 
 def _stop_process(process):
@@ -45,7 +46,7 @@ def run_local_worker(payload: dict) -> CodingCandidate:
     environment["PATH"] = os.pathsep.join((str(python.parent), environment.get("PATH", "")))
     environment["VIRTUAL_ENV"] = str(python.parent.parent)
     # The separate environment needs only this package's lightweight worker and contracts.
-    source = str(Path(__file__).resolve().parents[2])
+    source = str(Path(medbenchagent.__file__).resolve().parent.parent)
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (source, environment.get("PYTHONPATH"))))
     log = Path(payload["log_path"])
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +56,7 @@ def run_local_worker(payload: dict) -> CodingCandidate:
                      workstream_id=request.workstream_id)
         with log.open("a", encoding="utf-8") as stderr:
             process = subprocess.Popen(
-                [str(python), "-m", "medbenchagent.agents.coding_worker"],
+                [str(python), "-m", "medbenchagent.agents.data_processing.coding.worker"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
                 text=True, encoding="utf-8", cwd=payload["workspace"], env=environment,
                 start_new_session=os.name != "nt",
