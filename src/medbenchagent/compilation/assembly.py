@@ -21,24 +21,21 @@ def assemble_compilation(
                 stack.callback(model.root_client.close)
             return model
 
-        if options.supervisor_mode == "llm":
-            from medbenchagent.settings import SupervisorSettings
-            from medbenchagent.agents.supervisor import ModelSupervisor
+        from medbenchagent.settings import SupervisorSettings
+        from medbenchagent.agents.supervisor import ModelSupervisor
 
-            settings = SupervisorSettings.from_snapshot(options.supervisor_settings)
-            decide = ModelSupervisor(directory, settings, model=model_for(settings),
-                                     instructions=options.prompts["supervisor"].text)
-        if options.coding_mode == "openhands":
-            from medbenchagent.settings import CodingSettings
-            from medbenchagent.agents.coding import OpenHandsCodingAgent
+        settings = SupervisorSettings.from_snapshot(options.supervisor_settings)
+        decide = ModelSupervisor(directory, settings, model=model_for(settings),
+                                 instructions=options.prompts["supervisor"].text)
+        from medbenchagent.settings import CodingSettings
+        from medbenchagent.agents.coding import OpenHandsCodingAgent
 
-            coding_agent = OpenHandsCodingAgent(CodingSettings.from_snapshot(options.coding_settings),
-                                               instructions=options.prompts["coding"].text)
-        if options.planner_mode == "llm":
-            from medbenchagent.settings import TaskPlannerSettings
-            from medbenchagent.agents.semantic_planner import build_planner_spec
-            settings = TaskPlannerSettings.from_snapshot(options.planner_settings)
-            planner = build_planner_spec(settings, model=model_for(settings), instructions={key: options.prompts[key].text for key in ("discover_scenarios", "design_leaves")})
+        coding_agent = OpenHandsCodingAgent(CodingSettings.from_snapshot(options.coding_settings),
+                                           instructions=options.prompts["coding"].text)
+        from medbenchagent.settings import TaskPlannerSettings
+        from medbenchagent.agents.semantic_planner import build_planner_spec
+        settings = TaskPlannerSettings.from_snapshot(options.planner_settings)
+        planner = build_planner_spec(settings, model=model_for(settings), instructions={key: options.prompts[key].text for key in ("discover_scenarios", "design_leaves")})
         agents = {"task_planner": planner}
         from medbenchagent.settings import WorkAgentSettings
         if options.data_processing_mode == "llm":

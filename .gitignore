@@ -20,7 +20,7 @@ TODO.md
 .coverage
 htmlcov/
 
-# Runtime planning artifacts (DuckDB, inventories, and local RAG indexes)
+# Compilation runs, experiment records, and local retrieval caches
 benchmarks/
 .runtime/
 experiments/
@@ -48,10 +48,10 @@ config/local.toml
 scripts/*
 !scripts/prepare_breast_example.py
 
-# Evaluation is provisioned separately on the model-serving host.
+# Local external evaluation code is outside the maintained compiler.
 /evaluation/
 
-# Evaluation outputs; keep the checked-in report summarizer.
+# Local evaluation outputs
 results/*
 
 

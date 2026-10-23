@@ -47,10 +47,6 @@ class OperationTools(AgentMiddleware):
         return handler(request)
 
 
-def operation_instructions(instructions, operation):
-    return instructions[operation] if isinstance(instructions, dict) else instructions
-
-
 def chat_model(settings, limits):
     """Use the configured Chat-compatible transport without model discovery."""
     return ChatOpenAI(

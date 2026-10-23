@@ -1,4 +1,4 @@
-"""Atomic JSON writing for UI records and source inventories."""
+"""Atomic JSON writing for UI records, dataset registration and retrieval caches."""
 import json
 from pathlib import Path
 

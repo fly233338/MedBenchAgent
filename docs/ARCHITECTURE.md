@@ -66,6 +66,7 @@ flowchart LR
 ```
 
 DP 与 Planner 分别具有两个 operation；工具边界由代码检查，状态推进由真实回执决定。
+DP、Planner、Generation、Review 接收按 operation 索引的冻结指令；Supervisor 与 Coding 接收组合文本。
 Coding 仅接受 DP 内部 execute 请求并返回候选；DP 检查后提交。Allocation、Audit、Delivery
 没有模型循环。摘要不承担业务事实来源，来源正文不拼入静态系统指令。
 
@@ -83,3 +84,5 @@ Coding 仅接受 DP 内部 execute 请求并返回候选；DP 检查后提交。
 
 CLI 使用 SQLite；Studio 使用平台注入的 Checkpointer。一目录一运行，Studio 另绑定单一线程。
 恢复使用冻结指令，代码/工具/契约指纹不匹配时拒绝恢复。配置和凭据入口保持分离。
+Supervisor/Planner 固定为原生模型实现，Coding 固定使用 OpenHands；Run 不保存单值实现选择器。
+专业角色启停仍由 Run 冻结，测试替身通过模型和执行器注入。

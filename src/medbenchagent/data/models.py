@@ -201,7 +201,7 @@ class AssetEntry(CanonicalModel):
 
     @model_validator(mode="after")
     def semantic_metadata(self):
-        role = self.metadata.get("semantic_role", self.metadata.get("role"))
+        role = self.metadata.get("semantic_role")
         visibility = self.metadata.get("input_visibility")
         if role is not None and role not in {
             "primary", "model_input", "image", "volume", "annotation", "mask", "label", "calibration", "reference"
@@ -209,27 +209,6 @@ class AssetEntry(CanonicalModel):
             raise ValueError("Asset semantic_role is not supported")
         if visibility is not None and visibility not in {"model_visible", "reference_only", "unknown"}:
             raise ValueError("Asset input_visibility is not supported")
-        return self
-
-
-class ImageEntry(CanonicalModel):
-    path: str = Field(min_length=1)
-    file_digest: str = Field(min_length=1)
-    format: str = Field(min_length=1)
-    width: int = Field(gt=0)
-    height: int = Field(gt=0)
-    source_id: str = Field(min_length=1)
-    source_path: str = Field(min_length=1)
-    source_digest: str = Field(min_length=1)
-    kind: Literal["image", "volume"] = "image"
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-    @model_validator(mode="after")
-    def visible_image(self):
-        if self.metadata.get("input_visibility") == "reference_only":
-            raise ValueError("Reference-only features belong in Case Evidence, not the image manifest")
-        self.metadata.setdefault("input_visibility", "model_visible")
         return self
 
 
@@ -256,7 +235,7 @@ class PresentationSpec(CanonicalModel):
 
 
 def validate_case(
-    case: CaseRecord, assets: dict[str, AssetEntry | ImageEntry] | None = None
+    case: CaseRecord, assets: dict[str, AssetEntry] | None = None
 ) -> CaseRecord:
     ids = {item.id for item in case.evidence}
     if len(ids) != len(case.evidence):

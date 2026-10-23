@@ -49,7 +49,9 @@ file_digest 描述内容而非身份。source_path 相对 source root，不能�
 metadata 保存物理属性，Evidence 保存使用语境的可见性。
 
 新 Reader 只按 asset_id 解析，不猜测引用是路径还是 ID。旧路径兼作身份的行为在能力迁入时
-移除，不新增双格式读取。ImageEntry 仅负责呈现/导出，不是第二套资产登记。
+移除，不新增双格式读取。资产登记与呈现工具统一使用 AssetEntry；派生输出通过实际文件与摘要交接。
+metadata.semantic_role 是唯一的资产语义角色键，不将 metadata.role 解释为别名。
+契约 Schema 由当前 Pydantic 类型生成，校验以对应模型和 Reader 为准。
 
 ## Dataset Manifest 与 Reader
 

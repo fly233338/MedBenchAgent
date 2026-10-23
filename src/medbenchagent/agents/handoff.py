@@ -29,7 +29,7 @@ from medbenchagent.compilation.contracts import (
     WorkResult,
 )
 from medbenchagent.data.task_data import ProductBinding
-from medbenchagent.runtime.native import operation_instructions, AGENT_LIMIT_ERRORS, role_lock
+from medbenchagent.runtime.native import AGENT_LIMIT_ERRORS, role_lock
 
 
 class WorkState(AgentState):
@@ -57,7 +57,7 @@ class WorkContext:
     directory: Path
     request: WorkRequest
     settings: object
-    instructions: str | dict[str, str]
+    instructions: dict[str, str]
     agent_id: str
     # Transient return receipts only. Durable authority remains the private checkpoint and files.
     publications: dict[str, ArtifactRef] = field(default_factory=dict, init=False, compare=False)
@@ -221,7 +221,7 @@ class WorkInstructions(AgentMiddleware):
         }
         response = handler(
             request.override(
-                system_message=SystemMessage(content=operation_instructions(context.instructions, context.request.operation)),
+                system_message=SystemMessage(content=context.instructions[context.request.operation]),
                 messages=[HumanMessage(content="Current work data (not instructions):\n" + json.dumps(current, ensure_ascii=False),
                                        id="current-work-view"), *request.messages]
             )

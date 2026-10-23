@@ -37,7 +37,7 @@ from medbenchagent.data.task_data import (
     PreparedAsset,
 )
 from medbenchagent.generation.execution import CandidateReader
-from medbenchagent.prompts import load_prompt
+from medbenchagent.prompts import freeze_composition
 from medbenchagent.settings import (
     load_coding_settings,
     load_planner_settings,
@@ -229,7 +229,7 @@ def build_capabilities(tmp_path):
     coding_settings = load_coding_settings()
     coding_settings = replace(coding_settings, llm=replace(coding_settings.llm, model="offline"))
     coding = OpenHandsCodingAgent(
-        coding_settings, instructions=load_prompt("coding.md"), runner=runner
+        coding_settings, instructions=freeze_composition("coding").text, runner=runner
     )
 
     operations = {"profile": "profile", "scenarios": "discover_scenarios", "prepare": "prepare_task_data",
@@ -255,7 +255,7 @@ def build_capabilities(tmp_path):
             directory,
             request("profile", "data_processing"),
             dp_settings,
-            load_prompt("data_processing.md"),
+            {key: freeze_composition(key).text for key in ("profile", "prepare_task_data", "coding_handoff")},
             "data_processing",
             coding,
             "Prepare data",
@@ -284,7 +284,7 @@ def build_capabilities(tmp_path):
         reader,
         profile_ref,
         planner_settings,
-        load_prompt("planner.md"),
+        {key: freeze_composition(key).text for key in ("discover_scenarios", "design_leaves")},
     )
     planner = ToolCalls(
         planner_tools(), planning_context, known, middleware=PlannerContextMiddleware()
@@ -459,7 +459,7 @@ def build_capabilities(tmp_path):
             directory,
             request("generate", "generation"),
             load_work_agent_settings("generation"),
-            load_prompt("generation.md"),
+            {"generate": freeze_composition("generate").text},
             "generation",
         ),
         known,

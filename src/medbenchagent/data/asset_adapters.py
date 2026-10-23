@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from PIL import Image
 from .sources import digest_file
 from typing import Any
@@ -438,17 +438,6 @@ def _render_pixels(*, decoded, policy):
 
 
 SUPPORTED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
-
-def contained_path(root, relative):
-    value = PurePosixPath(relative.replace("\\", "/"))
-    if value.is_absolute() or ".." in value.parts or any(":" in part for part in value.parts):
-        raise ValueError(f"Unsafe presentation path: {relative}")
-    root = Path(root).resolve()
-    path = (root / relative).resolve()
-    if not path.is_relative_to(root):
-        raise ValueError(f"Presentation escapes root: {relative}")
-    return path
-
 
 def verify_image(path, expected_digest=None):
     path = Path(path)

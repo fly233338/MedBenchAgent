@@ -229,7 +229,7 @@ def data_processing_tools():
             constraints=[
                 *context.request.constraints,
                 *constraints,
-                context.instructions["coding_handoff"] if isinstance(context.instructions, dict) else "Use the supplied canonical contracts.",
+                context.instructions["coding_handoff"],
                 "Parent operation: " + context.request.operation,
                 "Contracts: "
                 + json.dumps(data_contracts(), ensure_ascii=False)

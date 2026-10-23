@@ -113,4 +113,4 @@ persistent SDK substitute. It checks connected handoffs, local repair, checkpoin
 reading. No live model, real Coding task, complete medical dataset acceptance or full pytest run is
 claimed. See [implementation record](docs/PLAN.md), [architecture](docs/ARCHITECTURE.md),
 [agent operations](docs/agents/README.md), [data](docs/DATA_LAYER.md) and [planning](docs/TASK_DISCOVERY.md).
-The external evaluation overlay is documented separately in [EVALUATION](docs/EVALUATION.md).
+The package reader and external evaluation boundary are documented in [EVALUATION](docs/EVALUATION.md).

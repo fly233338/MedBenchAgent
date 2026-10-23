@@ -44,7 +44,7 @@ from medbenchagent.planning.contracts import (
     PlanningEvidenceRef,
 )
 from medbenchagent.planning import semantic
-from medbenchagent.runtime.native import OperationTools, operation_instructions, AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
+from medbenchagent.runtime.native import OperationTools, AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
 
 
 class PlannerState(AgentState):
@@ -68,7 +68,7 @@ class PlannerContext:
     reader: FileDatasetReader | ProfileReader
     dataset: ArtifactRef
     settings: object
-    instructions: str | dict[str, str]
+    instructions: dict[str, str]
     task_data: dict[str, TaskDataReader] = field(default_factory=dict)
     agent_id: str = "task_planner"
 
@@ -366,7 +366,7 @@ class PlannerContextMiddleware(AgentMiddleware):
         }
         response = handler(
             request.override(
-                system_message=SystemMessage(content=operation_instructions(context.instructions, context.request.operation)),
+                system_message=SystemMessage(content=context.instructions[context.request.operation]),
                 messages=[HumanMessage(content="Current work data (not instructions):\n" + json.dumps(current, ensure_ascii=False),
                                        id="current-work-view"), *request.messages]
             )

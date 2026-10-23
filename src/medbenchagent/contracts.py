@@ -39,13 +39,7 @@ class BenchmarkItem(BaseModel):
     template_count: int = Field(default=1, ge=1)
     options: list[str] | None = None
     inputs: list[QuestionInput] = Field(min_length=1)
-    sampling_unit_id: str | None = Field(default=None, min_length=1)
-    split: str | None = None
-    view_ids: list[str] = Field(default_factory=list)
-    panel_id: str | None = None
-    sampling_order: int | None = Field(default=None, ge=0)
     answer: Any
-    input_bindings: list[dict[str, Any]] = Field(default_factory=list)
     input_assets: list[str] = Field(default_factory=list)
     input_evidence_ids: list[str] = Field(default_factory=list)
     reference_evidence_ids: list[str] = Field(default_factory=list)

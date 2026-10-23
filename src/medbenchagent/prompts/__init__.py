@@ -31,11 +31,6 @@ def load_prompt(resource: str) -> str:
     return text
 
 
-def freeze_prompt(resource: str) -> PromptSnapshot:
-    text = load_prompt(resource)
-    return PromptSnapshot(text=text, digest=hashlib.sha256(text.encode("utf-8")).hexdigest())
-
-
 COMPOSITIONS = {
     "supervisor": ("common.md", "supervisor.md"),
     "profile": ("common.md", "data_processing.md", "data_profile.md"),

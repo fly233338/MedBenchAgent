@@ -15,7 +15,7 @@ from medbenchagent.compilation.run import create_run
 from medbenchagent.compilation.assembly import assemble_compilation
 from medbenchagent.compilation.graph import build_compilation_graph
 from medbenchagent.evaluation.loader import load_benchmark_package
-from medbenchagent.prompts import load_prompt
+from medbenchagent.prompts import freeze_composition
 from medbenchagent.settings import load_work_agent_settings
 from capability_fixtures import ToolCalls, build_capabilities
 from coding_fixtures import FakeRunner
@@ -28,7 +28,7 @@ def test_profile_taskdata_leaf_generation_capabilities(tmp_path, monkeypatch):
         operation="review_candidate", objective="Review generated content",
         scope=[WorkScope(artifact_id=bundle.candidate_ref.artifact_id)], inputs=list(bundle.known.values()))
     review = ToolCalls(review_tools(), WorkContext(bundle.directory, request,
-        load_work_agent_settings("review"), load_prompt("review.md"), "review"), bundle.known)
+        load_work_agent_settings("review"), {key: freeze_composition(key).text for key in ("review_plan", "review_candidate")}, "review"), bundle.known)
     audit = review.call("run_candidate_audit", candidate_id=bundle.candidate_ref.artifact_id)
     review.call("finalize_review", target_id=bundle.candidate_ref.artifact_id, audit_id=audit["artifact_id"],
         findings=[], checked_task_ids=list(bundle.plan.tasks),
@@ -142,7 +142,7 @@ def test_review_and_delivery_bind_exact_candidate_contents(tmp_path):
             bundle.directory,
             request,
             load_work_agent_settings("review"),
-            load_prompt("review.md"),
+            {key: freeze_composition(key).text for key in ("review_plan", "review_candidate")},
             "review",
         ),
         bundle.known,
