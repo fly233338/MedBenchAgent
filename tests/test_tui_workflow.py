@@ -9,6 +9,7 @@ from breast_fixtures import create_breast_source
 from coding_fixtures import FakeRunner
 from native_agent_fixtures import ScriptedChatModel
 from test_breast_workflow import BreastScript
+
 from medbenchagent.agents.data_processing.coding.adapter import OpenHandsCodingAgent
 from medbenchagent.compilation.contracts import ArtifactRef
 from medbenchagent.data.task_data import SourceManifest
@@ -32,39 +33,65 @@ def test_tui_directory_to_partial_delivery_live_activity_pause_and_answer(tmp_pa
     raw = tmp_path / "BrEaST source"
     script = BreastScript(tmp_path / "unknown", raw, create_breast_source(raw))
     config = tomlkit.parse(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
-    for section in ("supervisor", "planner", "data_processing_agent", "generation_agent", "review_agent"):
+    for section in (
+        "supervisor",
+        "planner",
+        "data_processing_agent",
+        "generation_agent",
+        "review_agent",
+    ):
         config[section]["context_chars"] = 2000000
-        config[section]["loop"].update(context_tokens=500000, summary_trigger_tokens=300000, summary_keep_tokens=10000)
+        config[section]["loop"].update(
+            context_tokens=500000,
+            summary_trigger_tokens=300000,
+            summary_keep_tokens=10000,
+        )
     template = tmp_path / "config.toml"
     template.write_text(tomlkit.dumps(config), encoding="utf-8")
     monkeypatch.setattr(ui, "check_connections", lambda *_: {})
     monkeypatch.setattr(services, "resolve_model_service", lambda *_: "offline")
-    monkeypatch.setattr(native, "chat_model", lambda *_: ScriptedChatModel(responder=script.respond))
+    monkeypatch.setattr(
+        native,
+        "chat_model",
+        lambda *_: ScriptedChatModel(responder=script.respond),
+    )
     original_initial = runner_module.initial_state
+
     def initial(directory, options):
         script.directory = directory
-        script.dataset = SourceManifest.model_validate_json(Path(options.source_manifest).read_bytes()).dataset
+        script.dataset = SourceManifest.model_validate_json(
+            Path(options.source_manifest).read_bytes()
+        ).dataset
         state = original_initial(directory, options)
         for row in state["artifacts"]:
             ref = ArtifactRef.model_validate(row)
             script.known[ref.artifact_id] = script.latest[ref.kind] = ref
         return state
+
     monkeypatch.setattr(runner_module, "initial_state", initial)
     original_check = policy.check_result
+
     def checked(directory, request, result):
         result = original_check(directory, request, result)
         script.observe(result)
         script.completed.append((request, result))
         return result
+
     monkeypatch.setattr(policy, "check_result", checked)
     entered, release = threading.Event(), threading.Event()
+
     def produce(payload):
         if payload["request"]["objective"] == "profile":
             entered.set()
             assert release.wait(20)
         return script.produce(payload)
+
     runner = FakeRunner(produce)
-    monkeypatch.setattr(coding, "OpenHandsCodingAgent", lambda settings, **kw: OpenHandsCodingAgent(settings, **kw, runner=runner))
+    monkeypatch.setattr(
+        coding,
+        "OpenHandsCodingAgent",
+        lambda settings, **kw: OpenHandsCodingAgent(settings, **kw, runner=runner),
+    )
 
     async def until(pilot, predicate, seconds=60):
         for _ in range(int(seconds * 20)):
@@ -74,15 +101,26 @@ def test_tui_directory_to_partial_delivery_live_activity_pause_and_answer(tmp_pa
         raise AssertionError("TUI did not reach the expected state")
 
     async def check():
-        sessions.create_session("breast", root=tmp_path / "runs", runtime_root=tmp_path / "runtime", template=template)
-        app = MBAApp(root=tmp_path / "runs", runtime_root=tmp_path / "runtime", config_template=template)
+        sessions.create_session(
+            "breast",
+            root=tmp_path / "runs",
+            runtime_root=tmp_path / "runtime",
+            template=template,
+        )
+        app = MBAApp(
+            root=tmp_path / "runs",
+            runtime_root=tmp_path / "runtime",
+            config_template=template,
+        )
         async with app.run_test(size=(100, 35)) as pilot:
             await pilot.pause()
             app.pop_screen()
             app.select_run("breast")
             await until(pilot, lambda: app.view.get("status") == "draft")
             app.query_one(Composer).focus()
-            app.query_one(Composer).load_text(f'Build 4 questions using "{raw}". Preserve missing and unknown relations.')
+            app.query_one(Composer).load_text(
+                f'Build 4 questions using "{raw}". Preserve missing and unknown relations.'
+            )
             await pilot.press("enter")
             assert isinstance(app.screen, DraftScreen)
             app.screen.query_one("#key-files", TextArea).load_text(f"{script.workbook} | Labels")
@@ -105,7 +143,13 @@ def test_tui_directory_to_partial_delivery_live_activity_pause_and_answer(tmp_pa
             await until(pilot, lambda: not app.running and app.view.get("status") == "stopped")
             assert app.view["goal_result"] == "partial"
             assert app.view["counts"]["accepted"] == 3 and app.view["target_count"] == 4
-            await until(pilot, lambda: app.latest_activity.get("supervisor", {}).get("event", {}).get("decision") == "finish")
+            await until(
+                pilot,
+                lambda: (
+                    app.latest_activity.get("supervisor", {}).get("event", {}).get("decision")
+                    == "finish"
+                ),
+            )
             assert len(app.view["history"]) == 11
             messages = app.service.record()["messages"]
             assert len([m for m in messages if m.get("id") == "answer-" + question_id]) == 1
@@ -122,6 +166,7 @@ def test_tui_directory_to_partial_delivery_live_activity_pause_and_answer(tmp_pa
             assert reopened.selected_run == identifier and not reopened.running
             assert reopened.view["goal_result"] == "partial"
             assert reopened.query_one(Composer).region.bottom <= 24
+
     try:
         asyncio.run(check())
     finally:

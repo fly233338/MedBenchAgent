@@ -15,8 +15,18 @@ from medbenchagent.runtime.construction import record_event
 from .artifacts import ArtifactIntegrityError, _within, register_file
 from . import interfaces
 from .contracts import (
-    ArtifactRef, AskUser, Delegate, Finish, Identifier, SupervisorDecision, Text,
-    WorkIssue, WorkRecord, WorkRequest, WorkResult, Workstream,
+    ArtifactRef,
+    AskUser,
+    Delegate,
+    Finish,
+    Identifier,
+    SupervisorDecision,
+    Text,
+    WorkIssue,
+    WorkRecord,
+    WorkRequest,
+    WorkResult,
+    Workstream,
 )
 
 
@@ -56,6 +66,7 @@ def _catalog(state: CompilationState, directory: Path) -> dict[str, ArtifactRef]
         actual = _within(directory, ref.path)
         if ref.artifact_id in known and known[ref.artifact_id] != ref:
             raise ValueError("An Artifact ID cannot refer to different files")
+
         if actual in paths and paths[actual] != ref.artifact_id:
             raise ValueError("One artifact file cannot have multiple identities")
         known[ref.artifact_id] = ref
@@ -76,48 +87,85 @@ def build_compilation_graph(
         if name in reserved:
             raise ValueError(f"Reserved Agent name: {name}")
 
-    def supervisor(state: CompilationState, config: RunnableConfig, runtime: Runtime[interfaces.CompilationContext]):
+    def supervisor(
+        state: CompilationState,
+        config: RunnableConfig,
+        runtime: Runtime[interfaces.CompilationContext],
+    ):
         compilation_id = _identifier.validate_python(state["compilation_id"])
-        if default_context is None and config.get("configurable", {}).get("thread_id") != compilation_id:
+        if (
+            default_context is None
+            and config.get("configurable", {}).get("thread_id") != compilation_id
+        ):
             raise ValueError("thread_id must equal compilation_id")
         goal = _text.validate_python(state["goal"])
         if runtime.context.goal != goal:
             raise ValueError("Runtime goal must match the Compilation checkpoint")
         known = _catalog(state, runtime.context.directory)
         limits = runtime.context.repair_limits
-        if (state.get("no_progress", 0) >= limits.no_progress
-                or state.get("total_repairs", 0) >= limits.total
-                or max(state.get("problem_attempts", {}).values(), default=0) >= limits.per_problem):
-            record_event(runtime.context.runtime_directory / "events.jsonl", "repair_exhausted",
-                         compilation_id=compilation_id, agent_id="supervisor", total_repairs=state.get("total_repairs", 0))
-            return {"status": "stopped", "goal_result": "blocked", "next_node": END,
-                    "summary": "Repair budget exhausted; valid artifacts are preserved."}
+        if (
+            state.get("no_progress", 0) >= limits.no_progress
+            or state.get("total_repairs", 0) >= limits.total
+            or max(state.get("problem_attempts", {}).values(), default=0) >= limits.per_problem
+        ):
+            record_event(
+                runtime.context.runtime_directory / "events.jsonl",
+                "repair_exhausted",
+                compilation_id=compilation_id,
+                agent_id="supervisor",
+                total_repairs=state.get("total_repairs", 0),
+            )
+            return {
+                "status": "stopped",
+                "goal_result": "blocked",
+                "next_node": END,
+                "summary": "Repair budget exhausted; valid artifacts are preserved.",
+            }
         view = interfaces.SupervisorView(
-            compilation_id=compilation_id, goal=goal,
+            compilation_id=compilation_id,
+            goal=goal,
             agents={name: spec.description for name, spec in agents.items()},
             artifacts=tuple(known.values()),
             last_result=WorkResult.model_validate(state["result"]) if state.get("result") else None,
             history=tuple(WorkRecord.model_validate(row) for row in state.get("history", [])),
             answers=tuple(state.get("answers", [])),
-            workstreams=tuple(Workstream.model_validate(row) for row in state.get("workstreams", [])),
+            workstreams=tuple(
+                Workstream.model_validate(row) for row in state.get("workstreams", [])
+            ),
             workstream_agents=tuple(name for name, spec in agents.items() if spec.uses_workstreams),
-            readiness=runtime.context.readiness(tuple(known.values())) if runtime.context.readiness else {},
-            feedback=tuple(state.get("feedback", [])), goal_spec=runtime.context.goal_spec,
+            readiness=runtime.context.readiness(tuple(known.values()))
+            if runtime.context.readiness
+            else {},
+            feedback=tuple(state.get("feedback", [])),
+            goal_spec=runtime.context.goal_spec,
         )
         try:
             decision = _decision.validate_python(
-                RunnableLambda(runtime.context.decide).invoke(view, config=config))
+                RunnableLambda(runtime.context.decide).invoke(view, config=config)
+            )
         except (ValueError, RuntimeError) as exc:
-            return {"status": "stopped", "goal_result": "failed", "next_node": END,
-                    "summary": str(exc)}
+            return {
+                "status": "stopped",
+                "goal_result": "failed",
+                "next_node": END,
+                "summary": str(exc),
+            }
 
         def rejected(exc):
-            record_event(runtime.context.runtime_directory / "events.jsonl", "decision_rejected",
-                         compilation_id=compilation_id, agent_id="supervisor", error_type=type(exc).__name__,
-                         summary="Decision did not satisfy the work contract")
-            return {"feedback": [str(exc)], "next_node": "supervisor",
-                    "no_progress": state.get("no_progress", 0) + 1,
-                    "total_repairs": state.get("total_repairs", 0) + 1}
+            record_event(
+                runtime.context.runtime_directory / "events.jsonl",
+                "decision_rejected",
+                compilation_id=compilation_id,
+                agent_id="supervisor",
+                error_type=type(exc).__name__,
+                summary="Decision did not satisfy the work contract",
+            )
+            return {
+                "feedback": [str(exc)],
+                "next_node": "supervisor",
+                "no_progress": state.get("no_progress", 0) + 1,
+                "total_repairs": state.get("total_repairs", 0) + 1,
+            }
 
         if isinstance(decision, Delegate):
             if decision.agent_id not in agents:
@@ -132,15 +180,24 @@ def build_compilation_graph(
             workstreams = list(view.workstreams)
             if agents[decision.agent_id].uses_workstreams and workstream_id is None:
                 workstream_id = f"ws-{request_id}"
-                workstreams.append(Workstream(
-                    workstream_id=workstream_id, agent_id=decision.agent_id,
-                    objective=decision.objective, scope=decision.scope,
-                ))
+                workstreams.append(
+                    Workstream(
+                        workstream_id=workstream_id,
+                        agent_id=decision.agent_id,
+                        objective=decision.objective,
+                        scope=decision.scope,
+                    )
+                )
             request = WorkRequest(
-                request_id=request_id, workstream_id=workstream_id,
-                compilation_id=compilation_id, agent_id=decision.agent_id, operation=decision.operation,
-                objective=decision.objective, scope=decision.scope,
-                inputs=decision.inputs, constraints=decision.constraints,
+                request_id=request_id,
+                workstream_id=workstream_id,
+                compilation_id=compilation_id,
+                agent_id=decision.agent_id,
+                operation=decision.operation,
+                objective=decision.objective,
+                scope=decision.scope,
+                inputs=decision.inputs,
+                constraints=decision.constraints,
             )
             try:
                 spec = agents[request.agent_id]
@@ -151,23 +208,45 @@ def build_compilation_graph(
             except (ValueError, KeyError, OSError) as exc:
                 return rejected(exc)
             record_event(
-                runtime.context.runtime_directory / "events.jsonl", "work_delegated",
-                compilation_id=compilation_id, request_id=request.request_id,
-                agent_id=request.agent_id, operation=request.operation, workstream_id=workstream_id,
+                runtime.context.runtime_directory / "events.jsonl",
+                "work_delegated",
+                compilation_id=compilation_id,
+                request_id=request.request_id,
+                agent_id=request.agent_id,
+                operation=request.operation,
+                workstream_id=workstream_id,
                 input_artifact_ids=[ref.artifact_id for ref in request.inputs],
-                summary=request.objective, scope=[scope.model_dump() for scope in request.scope],
+                summary=request.objective,
+                scope=[scope.model_dump() for scope in request.scope],
             )
-            record_event(runtime.context.runtime_directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
-                         request_id=request.request_id, agent_id="supervisor", decision="delegate", target_agent=request.agent_id,
-                         operation=request.operation, summary=request.objective)
+            record_event(
+                runtime.context.runtime_directory / "events.jsonl",
+                "supervisor_decision",
+                compilation_id=compilation_id,
+                request_id=request.request_id,
+                agent_id="supervisor",
+                decision="delegate",
+                target_agent=request.agent_id,
+                operation=request.operation,
+                summary=request.objective,
+            )
             return {
-                "sequence": sequence, "request": request.model_dump(mode="json"),
+                "sequence": sequence,
+                "request": request.model_dump(mode="json"),
                 "workstreams": [item.model_dump(mode="json") for item in workstreams],
-                "next_node": decision.agent_id, "status": "running", "feedback": [],
+                "next_node": decision.agent_id,
+                "status": "running",
+                "feedback": [],
             }
         if isinstance(decision, AskUser):
-            record_event(runtime.context.runtime_directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
-                         agent_id="supervisor", decision="ask_user", summary=decision.question)
+            record_event(
+                runtime.context.runtime_directory / "events.jsonl",
+                "supervisor_decision",
+                compilation_id=compilation_id,
+                agent_id="supervisor",
+                decision="ask_user",
+                summary=decision.question,
+            )
             return {"question": decision.question, "next_node": "ask_user", "status": "waiting"}
         assert isinstance(decision, Finish)
         try:
@@ -175,10 +254,22 @@ def build_compilation_graph(
                 runtime.context.check_goal(decision, tuple(known.values()), view.history)
         except (ValueError, KeyError, OSError) as exc:
             return rejected(exc)
-        record_event(runtime.context.runtime_directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
-                     agent_id="supervisor", decision="finish", goal_result=decision.goal_result, summary=decision.summary)
-        return {"summary": decision.summary, "next_node": END, "status": "stopped",
-                "goal_result": decision.goal_result, "feedback": []}
+        record_event(
+            runtime.context.runtime_directory / "events.jsonl",
+            "supervisor_decision",
+            compilation_id=compilation_id,
+            agent_id="supervisor",
+            decision="finish",
+            goal_result=decision.goal_result,
+            summary=decision.summary,
+        )
+        return {
+            "summary": decision.summary,
+            "next_node": END,
+            "status": "stopped",
+            "goal_result": decision.goal_result,
+            "feedback": [],
+        }
 
     def collect(state: CompilationState, runtime: Runtime[interfaces.CompilationContext]):
         request = WorkRequest.model_validate(state["request"])
@@ -190,14 +281,24 @@ def build_compilation_graph(
             accepted = {}
             for ref in result.artifacts:
                 expected = register_file(
-                    runtime.context.directory, request, ref.path, kind=ref.kind,
+                    runtime.context.directory,
+                    request,
+                    ref.path,
+                    kind=ref.kind,
                 )
                 if expected.digest != ref.digest:
                     raise ArtifactIntegrityError(f"Artifact content changed: {ref.artifact_id}")
+
                 if expected != ref:
-                    raise ValueError("Output artifact identity does not match its producing request")
+                    raise ValueError(
+                        "Output artifact identity does not match its producing request"
+                    )
+
                 if ref.artifact_id in known and known[ref.artifact_id] != ref:
-                    raise ArtifactIntegrityError("Cannot replace a registered artifact identity or content")
+                    raise ArtifactIntegrityError(
+                        "Cannot replace a registered artifact identity or content"
+                    )
+
                 if ref.artifact_id in accepted:
                     raise ValueError("Duplicate output Artifact ID")
                 accepted[ref.artifact_id] = ref
@@ -209,23 +310,46 @@ def build_compilation_graph(
             # Invalid handoffs are feedback, not a claim of successful business work.
             accepted = {}
             result = WorkResult(
-                request_id=request.request_id, outcome="failed",
+                request_id=request.request_id,
+                outcome="failed",
                 summary="Agent returned an invalid handoff",
-                issues=[WorkIssue(code="artifact_integrity" if isinstance(exc, ArtifactIntegrityError)
-                                  else "invalid_handoff", message=str(exc))],
+                issues=[
+                    WorkIssue(
+                        code="artifact_integrity"
+                        if isinstance(exc, ArtifactIntegrityError)
+                        else "invalid_handoff",
+                        message=str(exc),
+                    )
+                ],
             )
         if agents[request.agent_id].check_result:
             try:
                 result = agents[request.agent_id].check_result(request, result)
             except (ValueError, KeyError, OSError) as exc:
-                result = result.model_copy(update={"outcome": "progress" if accepted else "failed", "issues": [
-                    *result.issues, WorkIssue(code="incomplete_operation", message=str(exc))]})
-        new_content = {ref.digest for ref in accepted.values()} - {ref.digest for ref in known.values()}
+                result = result.model_copy(
+                    update={
+                        "outcome": "progress" if accepted else "failed",
+                        "issues": [
+                            *result.issues,
+                            WorkIssue(code="incomplete_operation", message=str(exc)),
+                        ],
+                    }
+                )
+        new_content = {ref.digest for ref in accepted.values()} - {
+            ref.digest for ref in known.values()
+        }
         known.update(accepted)
         problems = dict(state.get("problem_attempts", {}))
         # Scope object identities survive renamed requests and republished artifact IDs.
-        key = request.agent_id + "/" + request.operation + "/" + ",".join(sorted(
-            identifier for scope in request.scope for identifier in scope.object_ids))
+        key = (
+            request.agent_id
+            + "/"
+            + request.operation
+            + "/"
+            + ",".join(
+                sorted(identifier for scope in request.scope for identifier in scope.object_ids)
+            )
+        )
         repairing = result.outcome != "completed" or bool(result.issues)
         if repairing:
             problems[key] = problems.get(key, 0) + 1
@@ -233,22 +357,44 @@ def build_compilation_graph(
             problems.pop(key, None)
         record = WorkRecord(request=request, result=result).model_dump(mode="json")
         for ref in accepted.values():
-            record_event(runtime.context.runtime_directory / "events.jsonl", "artifact_submitted",
-                         compilation_id=request.compilation_id, request_id=request.request_id, agent_id=request.agent_id,
-                         workstream_id=request.workstream_id, operation=request.operation,
-                         artifact_id=ref.artifact_id, kind=ref.kind, digest=ref.digest, artifact_path=ref.path)
+            record_event(
+                runtime.context.runtime_directory / "events.jsonl",
+                "artifact_submitted",
+                compilation_id=request.compilation_id,
+                request_id=request.request_id,
+                agent_id=request.agent_id,
+                workstream_id=request.workstream_id,
+                operation=request.operation,
+                artifact_id=ref.artifact_id,
+                kind=ref.kind,
+                digest=ref.digest,
+                artifact_path=ref.path,
+            )
         if repairing:
-            record_event(runtime.context.runtime_directory / "events.jsonl", "repair_requested",
-                         compilation_id=request.compilation_id, request_id=request.request_id, agent_id=request.agent_id,
-                         operation=request.operation, problem_key=key, attempt=problems[key],
-                         issue_codes=[issue.code for issue in result.issues])
+            record_event(
+                runtime.context.runtime_directory / "events.jsonl",
+                "repair_requested",
+                compilation_id=request.compilation_id,
+                request_id=request.request_id,
+                agent_id=request.agent_id,
+                operation=request.operation,
+                problem_key=key,
+                attempt=problems[key],
+                issue_codes=[issue.code for issue in result.issues],
+            )
         record_event(
-            runtime.context.runtime_directory / "events.jsonl", "work_result",
-            compilation_id=request.compilation_id, request_id=request.request_id,
-            agent_id=request.agent_id, workstream_id=request.workstream_id,
-            outcome=result.outcome, artifact_ids=[ref.artifact_id for ref in result.artifacts],
-            operation=request.operation, summary=result.summary,
-            issues=[issue.model_dump() for issue in result.issues], needs=[need.model_dump(mode="json") for need in result.needs],
+            runtime.context.runtime_directory / "events.jsonl",
+            "work_result",
+            compilation_id=request.compilation_id,
+            request_id=request.request_id,
+            agent_id=request.agent_id,
+            workstream_id=request.workstream_id,
+            outcome=result.outcome,
+            artifact_ids=[ref.artifact_id for ref in result.artifacts],
+            operation=request.operation,
+            summary=result.summary,
+            issues=[issue.model_dump() for issue in result.issues],
+            needs=[need.model_dump(mode="json") for need in result.needs],
         )
         return {
             "result": result.model_dump(mode="json"),
@@ -260,18 +406,27 @@ def build_compilation_graph(
         }
 
     def ask_user(state: CompilationState):
-        answer = interrupt({
-            "compilation_id": state["compilation_id"], "question": state["question"],
-        })
+        answer = interrupt(
+            {
+                "compilation_id": state["compilation_id"],
+                "question": state["question"],
+            }
+        )
         return {
             "answers": [*state.get("answers", []), _text.validate_python(answer)],
-            "question": None, "status": "running",
+            "question": None,
+            "status": "running",
         }
 
-    builder = StateGraph(CompilationState, context_schema=None if default_context else interfaces.CompilationContext)
+    builder = StateGraph(
+        CompilationState,
+        context_schema=None if default_context else interfaces.CompilationContext,
+    )
+
     def with_context(node, agent_id=None):
         import inspect
         from dataclasses import replace
+
         def invoke(state, config: RunnableConfig, runtime: Runtime[interfaces.CompilationContext]):
             context = runtime.context or default_context
             if context is None:
@@ -280,21 +435,34 @@ def build_compilation_graph(
             identity = {}
             if agent_id:
                 request = WorkRequest.model_validate(state["request"])
-                identity = {"compilation_id": request.compilation_id, "request_id": request.request_id,
-                            "agent_id": agent_id, "operation": request.operation, "workstream_id": request.workstream_id}
+                identity = {
+                    "compilation_id": request.compilation_id,
+                    "request_id": request.request_id,
+                    "agent_id": agent_id,
+                    "operation": request.operation,
+                    "workstream_id": request.workstream_id,
+                }
                 record_event(context.runtime_directory / "events.jsonl", "work_started", **identity)
             try:
                 if hasattr(node, "invoke"):
                     return node.invoke(state, config, context=context)
-                kwargs = {"runtime": runtime} if "runtime" in inspect.signature(node).parameters else {}
+                kwargs = (
+                    {"runtime": runtime} if "runtime" in inspect.signature(node).parameters else {}
+                )
                 if "config" in inspect.signature(node).parameters:
                     kwargs["config"] = config
                 return node(state, **kwargs)
             except Exception as exc:
                 if agent_id:
-                    record_event(context.runtime_directory / "events.jsonl", "work_failed", **identity,
-                                 error_type=type(exc).__name__, summary="Agent invocation failed")
+                    record_event(
+                        context.runtime_directory / "events.jsonl",
+                        "work_failed",
+                        **identity,
+                        error_type=type(exc).__name__,
+                        summary="Agent invocation failed",
+                    )
                 raise
+
         return invoke
 
     builder.add_node("supervisor", with_context(supervisor))
@@ -304,13 +472,17 @@ def build_compilation_graph(
         builder.add_node(name, with_context(spec.node, name), input_schema=interfaces.AgentInput)
         builder.add_edge(name, "collect")
     if initial is not None:
-        builder.add_node("initialize", lambda state: initial if not state.get("compilation_id") else {})
+        builder.add_node(
+            "initialize",
+            lambda state: initial if not state.get("compilation_id") else {},
+        )
         builder.add_edge(START, "initialize")
         builder.add_edge("initialize", "supervisor")
     else:
         builder.add_edge(START, "supervisor")
     builder.add_conditional_edges(
-        "supervisor", lambda state: state["next_node"],
+        "supervisor",
+        lambda state: state["next_node"],
         {name: name for name in (*agents, "supervisor", "ask_user", END)},
     )
     builder.add_edge("collect", "supervisor")

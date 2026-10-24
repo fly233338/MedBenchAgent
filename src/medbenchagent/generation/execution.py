@@ -35,7 +35,8 @@ def selected_cases(spec, task, reader):
         case.case_id for case in reader.cases if task.scenario_id in case.scenario_ids
     ]
     return sorted(
-        selected, key=lambda key: hashlib.sha256(f"{spec.seed}/{key}".encode()).hexdigest()
+        selected,
+        key=lambda key: hashlib.sha256(f"{spec.seed}/{key}".encode()).hexdigest(),
     )[: spec.sample_count]
 
 
@@ -81,6 +82,7 @@ def finalize_candidate(destination, *, batches, specs, allocation, quarantined):
     tasks = [spec.task_id for _, spec in specs]
     if len(tasks) != len(set(tasks)) or set(tasks) != set(allocation.counts):
         raise ValueError("Select exactly one execution specification for each allocated task")
+
     if len(spec_map) != len(specs) or len({ref.artifact_id for ref, _ in batches}) != len(batches):
         raise ValueError("Duplicate specification or batch selections")
     seen, items, failures, attempted = set(), [], [], set()
@@ -200,6 +202,7 @@ class CandidateReader:
     def verify_integrity(self):
         if file_digest(self.path) != self._digest:
             raise ValueError("Candidate Manifest changed")
+
         if (
             not {self.manifest.items_path, self.manifest.quarantine_path}
             <= self.manifest.members.keys()

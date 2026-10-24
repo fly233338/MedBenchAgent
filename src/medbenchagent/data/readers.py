@@ -19,12 +19,12 @@ class ImageReader:
         raise NotImplementedError
 
 
-
 class RasterReader(ImageReader):
     format = "raster:"
 
     def read_pixels(self, path):
         from PIL import Image
+
         from medbenchagent.data.asset_adapters import UnsupportedMedicalImage
 
         with Image.open(path) as image:
@@ -89,6 +89,7 @@ class DicomReader(ImageReader):
         def plain(value):
             if isinstance(value, (str, int, float)):
                 return value
+
             if hasattr(value, "__iter__"):
                 return [plain(v) for v in value]
             return str(value)
@@ -133,12 +134,6 @@ class DicomReader(ImageReader):
                     float(center) - 0.5 + (float(width) - 1) / 2,
                 ]
         return _plane(pixels), self.format, window, interpretation == "MONOCHROME1"
-
-
-
-
-
-
 
 
 def _plane(pixels):

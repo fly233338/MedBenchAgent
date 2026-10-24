@@ -1,9 +1,18 @@
 from runtime_fixtures import runtime_for
+
 import json
 from pathlib import Path
+
 import pytest
 
-from medbenchagent.runtime.intake import InputDraft, SelectedFile, suggest_draft, prepare_input, connection_values, save_connection
+from medbenchagent.runtime.intake import (
+    InputDraft,
+    SelectedFile,
+    suggest_draft,
+    prepare_input,
+    connection_values,
+    save_connection,
+)
 from medbenchagent.runtime.conversation_service import ConversationService
 from medbenchagent.runtime.sessions import create_session
 from medbenchagent.data.task_data import SourceManifest
@@ -11,6 +20,7 @@ from medbenchagent.data.task_data import SourceManifest
 
 def test_directory_draft_creates_run_without_user_manifest(tmp_path, monkeypatch):
     import medbenchagent.runtime.model_services as services
+
     monkeypatch.setattr(services, "resolve_model_service", lambda *_: "offline")
     raw = tmp_path / "data with spaces"
     raw.mkdir()
@@ -53,15 +63,24 @@ def test_draft_boundaries_and_nonsecret_connection_settings(tmp_path):
 
 def test_connection_probe_exposes_model_choices_and_skips_unused_coding(tmp_path, monkeypatch):
     import httpx
+
     import medbenchagent.runtime.model_services as models
     from medbenchagent.runtime.intake import probe_connections, check_connections
+
     create_session("connect", root=tmp_path, runtime_root=runtime_for(tmp_path))
     path = tmp_path / "connect/config.toml"
     values = connection_values(path)
     values["worker_venv"] = str(tmp_path / "missing-coding")
     save_connection(path, values)
-    monkeypatch.setattr(models.httpx, "get", lambda url, **_: httpx.Response(200,
-        json={"data": [{"id": "one"}, {"id": "two"}]}, request=httpx.Request("GET", url)))
+    monkeypatch.setattr(
+        models.httpx,
+        "get",
+        lambda url, **_: httpx.Response(
+            200,
+            json={"data": [{"id": "one"}, {"id": "two"}]},
+            request=httpx.Request("GET", url),
+        ),
+    )
     draft = InputDraft(goal="Plan", goal_kind="scenarios", canonical_manifest="selected.json")
     assert probe_connections(path, draft) == {"model": ["one", "two"]}
     with pytest.raises(models.ModelDiscoveryError) as error:

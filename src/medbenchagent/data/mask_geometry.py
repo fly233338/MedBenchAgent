@@ -43,16 +43,24 @@ def _components(mask: np.ndarray, offsets: Iterable[tuple[int, ...]]) -> int:
     return count
 
 
-def _bbox_centroid(mask: np.ndarray, *, x_axis: int, y_axis: int) -> tuple[list[float], list[float]]:
+def _bbox_centroid(
+    mask: np.ndarray, *, x_axis: int, y_axis: int
+) -> tuple[list[float], list[float]]:
     coordinates = np.nonzero(mask)
     x = coordinates[x_axis]
     y = coordinates[y_axis]
     width = mask.shape[x_axis]
     height = mask.shape[y_axis]
-    bbox = [float(x.min() / width), float(y.min() / height),
-            float((x.max() + 1) / width), float((y.max() + 1) / height)]
-    centroid = [float((x.astype(float) + 0.5).mean() / width),
-                float((y.astype(float) + 0.5).mean() / height)]
+    bbox = [
+        float(x.min() / width),
+        float(y.min() / height),
+        float((x.max() + 1) / width),
+        float((y.max() + 1) / height),
+    ]
+    centroid = [
+        float((x.astype(float) + 0.5).mean() / width),
+        float((y.astype(float) + 0.5).mean() / height),
+    ]
     return bbox, centroid
 
 
@@ -60,8 +68,12 @@ def _plane(mask: np.ndarray, index: int) -> MaskPlaneFeature:
     bbox, centroid = _bbox_centroid(mask, x_axis=0, y_axis=1)
     count = int(mask.sum())
     return MaskPlaneFeature(
-        axis=2, index=index, bbox=bbox, pixel_count=count,
-        area_fraction=float(count / mask.size), centroid=centroid,
+        axis=2,
+        index=index,
+        bbox=bbox,
+        pixel_count=count,
+        area_fraction=float(count / mask.size),
+        centroid=centroid,
         equivalent_diameter_pixels=_equivalent_diameter(count, 2),
     )
 
@@ -79,6 +91,7 @@ def extract_mask_features(
     array = np.asarray(data)
     if array.ndim not in {2, 3}:
         raise ValueError("Mask geometry requires a 2D image or 3D volume")
+
     if not foreground:
         raise ValueError("Mask geometry requires at least one foreground value")
     mask = np.isin(array, np.asarray(foreground))
@@ -86,16 +99,17 @@ def extract_mask_features(
         raise ValueError("Mask foreground is empty")
     if array.ndim == 3:
         bbox, centroid = _bbox_centroid(mask, x_axis=0, y_axis=1)
-        offsets = [offset for offset in np.ndindex((3, 3, 3))
-                   if offset != (1, 1, 1)]
+        offsets = [offset for offset in np.ndindex((3, 3, 3)) if offset != (1, 1, 1)]
         offsets = [tuple(value - 1 for value in offset) for offset in offsets]
-        planes = [_plane(mask[:, :, index], index)
-                  for index in range(mask.shape[2]) if bool(mask[:, :, index].any())]
+        planes = [
+            _plane(mask[:, :, index], index)
+            for index in range(mask.shape[2])
+            if bool(mask[:, :, index].any())
+        ]
         component_count = _components(mask, offsets)
     else:
         bbox, centroid = _bbox_centroid(mask, x_axis=1, y_axis=0)
-        offsets = [(dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1)
-                   if (dy, dx) != (0, 0)]
+        offsets = [(dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if (dy, dx) != (0, 0)]
         planes = []
         component_count = _components(mask, offsets)
     count = int(mask.sum())
@@ -104,17 +118,24 @@ def extract_mask_features(
     if array.ndim == 2 and known_spacing and len(known_spacing) >= 2:
         physical_area = float(count * known_spacing[0] * known_spacing[1])
     return MaskFeatureSet(
-        source_digest=source_digest, algorithm=ALGORITHM, channel=channel,
-        foreground=list(foreground), shape=list(array.shape), bbox=bbox,
-        pixel_count=count, area_fraction=float(count / mask.size), centroid=centroid,
+        source_digest=source_digest,
+        algorithm=ALGORITHM,
+        channel=channel,
+        foreground=list(foreground),
+        shape=list(array.shape),
+        bbox=bbox,
+        pixel_count=count,
+        area_fraction=float(count / mask.size),
+        centroid=centroid,
         component_count=component_count,
         equivalent_diameter_pixels=_equivalent_diameter(count, array.ndim),
-        spacing=known_spacing, physical_area=physical_area,
-        physical_unit=physical_unit if known_spacing else None, planes=planes,
+        spacing=known_spacing,
+        physical_area=physical_area,
+        physical_unit=physical_unit if known_spacing else None,
+        planes=planes,
     )
 
 
 def geometry_digest(features: MaskFeatureSet) -> str:
     payload = features.model_dump_json(exclude_none=True, by_alias=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-

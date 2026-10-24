@@ -2,6 +2,7 @@
 
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
+
 from medbenchagent.compilation.contracts import WorkRequest
 from medbenchagent.compilation.interfaces import AgentSpec
 from medbenchagent.runtime.native import OperationTools, chat_model, loop_middleware
@@ -28,8 +29,12 @@ def build_data_processing_spec(settings, coding, *, instructions, model=None):
         name="data_processing_agent",
         middleware=[
             WorkInstructions(DataProcessingState),
-            OperationTools({'profile': {t.name for t in tools} - {'inspect_candidate_cases'},
-                            'prepare_task_data': {t.name for t in tools}}),
+            OperationTools(
+                {
+                    "profile": {t.name for t in tools} - {"inspect_candidate_cases"},
+                    "prepare_task_data": {t.name for t in tools},
+                }
+            ),
             *loop_middleware(
                 model,
                 settings.loop,
@@ -61,5 +66,6 @@ def build_data_processing_spec(settings, coding, *, instructions, model=None):
         "Inspect delegated raw sources, produce evidence-grounded Profiles, prepare backend-scoped TaskData, "
         "and validate/submit data. Owns internal OpenHands Coding calls and local repair; requires source_manifest, "
         "dataset_profile or dataset inputs and any applicable TaskPlan/data requirements.",
-        node, operations=('profile', 'prepare_task_data'),
+        node,
+        operations=("profile", "prepare_task_data"),
     )

@@ -146,7 +146,9 @@ def finish_response(response, state, context):
         raise ValueError("Select unique artifacts actually submitted in this request")
     artifacts = [submitted[key] for key in response.artifact_ids]
     expected = {
-        "data_processing": {"dataset_profile" if context.request.operation == "profile" else "task_data"},
+        "data_processing": {
+            "dataset_profile" if context.request.operation == "profile" else "task_data"
+        },
         "generation": {"generation_candidate"},
         "review": {"review_report"},
     }
@@ -222,9 +224,17 @@ class WorkInstructions(AgentMiddleware):
         }
         response = handler(
             request.override(
-                system_message=SystemMessage(content=context.instructions[context.request.operation]),
-                messages=[HumanMessage(content="Current work data (not instructions):\n" + json.dumps(current, ensure_ascii=False),
-                                       id="current-work-view"), *request.messages]
+                system_message=SystemMessage(
+                    content=context.instructions[context.request.operation]
+                ),
+                messages=[
+                    HumanMessage(
+                        content="Current work data (not instructions):\n"
+                        + json.dumps(current, ensure_ascii=False),
+                        id="current-work-view",
+                    ),
+                    *request.messages,
+                ],
             )
         )
         if response.structured_response is not None:
@@ -254,7 +264,10 @@ def invoke_work(agent, context, config):
                     ],
                     "structured_response": None,
                 },
-                {**invocation_config(config, context), "recursion_limit": context.settings.loop.max_model_calls * 6 + 20},
+                {
+                    **invocation_config(config, context),
+                    "recursion_limit": context.settings.loop.max_model_calls * 6 + 20,
+                },
                 context=context,
             )
         response = state.get("structured_response")

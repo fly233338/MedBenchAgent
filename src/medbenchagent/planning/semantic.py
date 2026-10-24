@@ -115,7 +115,8 @@ def build_scenarios(plan, *, max_scenarios=None):
     for combination in itertools.product(*values):
         identifier = "scenario-" + hashlib.sha256(json.dumps(combination).encode()).hexdigest()[:16]
         scenarios[identifier] = plan.scenarios.get(identifier) or SemanticScenario(
-            scenario_id=identifier, **dict(zip(AXES, combination, strict=True))
+            scenario_id=identifier,
+            **dict(zip(AXES, combination, strict=True)),
         )
     invalid = {task.task_id for task in plan.tasks.values() if task.scenario_id not in scenarios}
     if invalid - plan.exclusions.keys():
@@ -132,6 +133,7 @@ def build_scenarios(plan, *, max_scenarios=None):
 
 def validate_plan(plan: TaskPlan, reader, *, publish=False, task_data=None):
     from medbenchagent.generation.backends import BACKENDS, validate_leaf
+
     if plan.dataset.model_dump() != dataset_ref(reader):
         raise ValueError("Plan belongs to a different Dataset revision")
     for axis, assessments in plan.axis_assessments.items():
@@ -143,6 +145,7 @@ def validate_plan(plan: TaskPlan, reader, *, publish=False, task_data=None):
     for scenario in plan.scenarios.values():
         if set(scenario.backend_ids) - BACKENDS.keys():
             raise ValueError("Scenario selects an unavailable backend")
+
         if set(scenario.requirement_ids) - plan.requirements.keys():
             raise ValueError("Scenario references an unknown DataRequirement")
         validate_evidence(reader, scenario.evidence_refs)
@@ -156,8 +159,10 @@ def validate_plan(plan: TaskPlan, reader, *, publish=False, task_data=None):
         validate_evidence(reader, requirement.evidence_refs)
         if publish and set(requirement.affected_task_ids) - plan.tasks.keys():
             raise ValueError("DataRequirement references an unknown affected task")
+
         if set(requirement.affected_scenario_ids) - plan.scenarios.keys():
             raise ValueError("DataRequirement references an unknown Scenario")
+
         if requirement.backend_id is not None and requirement.backend_id not in BACKENDS:
             raise ValueError("DataRequirement selects an unavailable backend")
     for acceptance in [*plan.acceptances.values(), *plan.task_data_acceptances.values()]:
@@ -165,7 +170,10 @@ def validate_plan(plan: TaskPlan, reader, *, publish=False, task_data=None):
         if accepted_reader is None or accepted_reader.content_digest != acceptance.digest:
             raise ValueError("Bind accepted TaskData to validate its evidence")
         for evidence in acceptance.evidence_refs:
-            validate_evidence(reader if isinstance(evidence, ProfileEvidenceRef) else accepted_reader, [evidence])
+            validate_evidence(
+                reader if isinstance(evidence, ProfileEvidenceRef) else accepted_reader,
+                [evidence],
+            )
     for exclusion in plan.exclusions.values():
         validate_evidence(reader, exclusion.evidence_refs)
     for task in plan.tasks.values():
@@ -177,6 +185,7 @@ def validate_plan(plan: TaskPlan, reader, *, publish=False, task_data=None):
             task_reader = (task_data or {}).get(task.task_data.artifact_id)
             if task_reader is None or task_reader.content_digest != task.task_data.digest:
                 raise ValueError("Bind the Leaf's exact TaskData input")
+
             if task_reader.manifest.dataset != plan.dataset:
                 raise ValueError("TaskData belongs to another source Dataset")
         validate_evidence(task_reader, task.input_evidence_refs, inputs=True)
@@ -188,12 +197,20 @@ def validate_plan(plan: TaskPlan, reader, *, publish=False, task_data=None):
         if plan.scenarios[task.scenario_id].decision != "keep":
             raise ValueError("Active task must belong to a kept Scenario")
         if task.feasibility == "feasible":
-            if not task.evidence_refs or (task.assembly is None and (not task.input_evidence_refs or not task.reference_evidence_refs)):
+            if not task.evidence_refs or (
+                task.assembly is None
+                and (not task.input_evidence_refs or not task.reference_evidence_refs)
+            ):
                 raise ValueError("Feasible task requires evidence for its inputs and reference")
             if task.assembly is not None:
-                accepted = plan.task_data_acceptances.get(task.task_data.artifact_id) if task.task_data else None
+                accepted = (
+                    plan.task_data_acceptances.get(task.task_data.artifact_id)
+                    if task.task_data
+                    else None
+                )
                 if accepted is None or accepted.digest != task.task_data.digest:
                     raise ValueError("Accept TaskData before publishing an executable Leaf")
+
                 if task.assembly.backend_id not in plan.scenarios[task.scenario_id].backend_ids:
                     raise ValueError("Leaf backend is not selected by its Scenario")
                 validate_leaf(task, task_reader)
@@ -222,14 +239,17 @@ def validate_plan(plan: TaskPlan, reader, *, publish=False, task_data=None):
         }
         if len(actual) != len(plan.scenarios):
             raise ValueError("Duplicate Scenario combinations")
+
         if len(current) != count:
             raise ValueError("Build and assess all supported Axis combinations before publication")
+
         if any(
             (s.input_structure, s.operation, s.clinical_target) not in current
             and s.decision != "exclude"
             for s in plan.scenarios.values()
         ):
             raise ValueError("Scenario is no longer supported by the current Axis assessments")
+
         if any(
             task.feasibility == "proposed"
             for key, task in plan.tasks.items()
@@ -253,9 +273,13 @@ def plan_summary(plan):
 
 def active_requirements(plan):
     return {
-        key for key, requirement in plan.requirements.items()
+        key
+        for key, requirement in plan.requirements.items()
         if (not requirement.affected_task_ids and not requirement.affected_scenario_ids)
-        or any(plan.scenarios[scenario].decision == "keep" for scenario in requirement.affected_scenario_ids)
+        or any(
+            plan.scenarios[scenario].decision == "keep"
+            for scenario in requirement.affected_scenario_ids
+        )
     } | {
         key
         for task_id, task in plan.tasks.items()
@@ -283,10 +307,17 @@ def scoped_objects(plan, scope):
     # Only explicitly selected Scenarios expand to their tasks and requirements.
     # Related Scenarios below provide context, not authority over siblings.
     tasks.update(key for key, task in plan.tasks.items() if task.scenario_id in scenarios)
-    requirements.update(key for key, r in plan.requirements.items()
-                        if set(r.affected_scenario_ids) & scenarios or set(r.affected_task_ids) & tasks)
-    requirements.update(key for identifier in tasks for key in plan.tasks[identifier].requirement_ids)
-    scenarios.update(s for key in requirements for s in plan.requirements[key].affected_scenario_ids)
+    requirements.update(
+        key
+        for key, r in plan.requirements.items()
+        if set(r.affected_scenario_ids) & scenarios or set(r.affected_task_ids) & tasks
+    )
+    requirements.update(
+        key for identifier in tasks for key in plan.tasks[identifier].requirement_ids
+    )
+    scenarios.update(
+        s for key in requirements for s in plan.requirements[key].affected_scenario_ids
+    )
     scenarios.update(plan.tasks[key].scenario_id for key in tasks)
     return scenarios, tasks, requirements
 
@@ -305,12 +336,18 @@ def check_operation_complete(plan, operation, scope, *, task_data=None):
             if not scenario.backend_ids:
                 raise ValueError(f"Scenario {key} needs a backend; retain technical blockers")
             for backend in scenario.backend_ids:
-                if not any(key in r.affected_scenario_ids and r.backend_id == backend
-                           and r.required_fields for r in plan.requirements.values()) and not any(
-                               identifier in plan.task_data_acceptances and reader.manifest.backend_id == backend
-                               and key in reader.manifest.scenario_ids
-                               for identifier, reader in (task_data or {}).items()):
-                    raise ValueError(f"Scenario {key}/{backend} needs a concrete preparation requirement")
+                if not any(
+                    key in r.affected_scenario_ids and r.backend_id == backend and r.required_fields
+                    for r in plan.requirements.values()
+                ) and not any(
+                    identifier in plan.task_data_acceptances
+                    and reader.manifest.backend_id == backend
+                    and key in reader.manifest.scenario_ids
+                    for identifier, reader in (task_data or {}).items()
+                ):
+                    raise ValueError(
+                        f"Scenario {key}/{backend} needs a concrete preparation requirement"
+                    )
     elif operation == "design_leaves":
         if not tasks - plan.exclusions.keys():
             raise ValueError("No executable Leaf in the selected scope")

@@ -1,4 +1,5 @@
 """Small real files and direct tool calls for the new capability boundaries; no model service."""
+
 from runtime_fixtures import runtime_for
 
 import json
@@ -44,6 +45,7 @@ from medbenchagent.settings import (
     load_planner_settings,
     load_work_agent_settings,
 )
+
 from coding_fixtures import FakeRunner
 
 
@@ -56,7 +58,8 @@ class ToolCalls:
         self.trace = []
         self.state.update(
             (middleware or WorkInstructions()).before_agent(
-                self.state, SimpleNamespace(context=context)
+                self.state,
+                SimpleNamespace(context=context),
             )
             or {}
         )
@@ -66,7 +69,9 @@ class ToolCalls:
         function = self.tools[name].func
         if "runtime" in inspect.signature(function).parameters:
             arguments["runtime"] = SimpleNamespace(
-                context=self.context, state=self.state, tool_call_id=f"tool-{self.number}"
+                context=self.context,
+                state=self.state,
+                tool_call_id=f"tool-{self.number}",
             )
         if (
             "base_revision" in inspect.signature(function).parameters
@@ -74,9 +79,18 @@ class ToolCalls:
         ):
             path = self.context.runtime_directory / self.state["draft_path"]
             arguments["base_revision"] = json.loads(path.read_text())["revision"]
-        self.trace.append({"name": name, "args": json.loads(json.dumps(
-            {key: value for key, value in arguments.items() if key != "runtime"},
-            default=lambda value: value.model_dump(mode="json"))), "id": f"tool-{self.number}"})
+        self.trace.append(
+            {
+                "name": name,
+                "args": json.loads(
+                    json.dumps(
+                        {key: value for key, value in arguments.items() if key != "runtime"},
+                        default=lambda value: value.model_dump(mode="json"),
+                    )
+                ),
+                "id": f"tool-{self.number}",
+            }
+        )
         value = function(**arguments)
         if isinstance(value, Command):
             self.state.update(value.update)
@@ -104,13 +118,20 @@ def build_capabilities(tmp_path):
     (raw / "right.volume").write_bytes(b"synthetic-volume-bytes")
     dataset = DatasetRef(dataset_id="synthetic-capabilities", revision="source")
     source = SourceManifest(
-        dataset=dataset, sources=[DatasetSource(source_id="raw", root=str(raw))]
+        dataset=dataset,
+        sources=[DatasetSource(source_id="raw", root=str(raw))],
     )
     source_file = tmp_path / "sources.json"
     source_file.write_text(source.model_dump_json(), encoding="utf-8")
     source_ref = write_json_artifact(
         directory,
-        WorkRequest(request_id="cap-input", compilation_id="cap", agent_id="input", operation="bind", objective="Source"),
+        WorkRequest(
+            request_id="cap-input",
+            compilation_id="cap",
+            agent_id="input",
+            operation="bind",
+            objective="Source",
+        ),
         "sources.json",
         kind="source_manifest",
         value=source.model_dump(mode="json"),
@@ -199,24 +220,32 @@ def build_capabilities(tmp_path):
                 destination.mkdir()
                 scopes = mutable["scenarios"] if backend == "vqa" else mutable["scenarios"][:1]
                 case = TaskCase(
-                    case_id="case-1", scenario_ids=scopes, fields=fields, source_refs=[citation]
+                    case_id="case-1",
+                    scenario_ids=scopes,
+                    fields=fields,
+                    source_refs=[citation],
                 )
                 (destination / "cases.jsonl").write_text(
-                    case.model_dump_json() + "\n", encoding="utf-8"
+                    case.model_dump_json() + "\n",
+                    encoding="utf-8",
                 )
                 (destination / "assets.jsonl").write_text(
-                    "".join(asset.model_dump_json() + "\n" for asset in assets), encoding="utf-8"
+                    "".join(asset.model_dump_json() + "\n" for asset in assets),
+                    encoding="utf-8",
                 )
                 manifest = TaskDataManifest(
                     dataset=dataset,
                     sources=source.sources,
                     backend_id=backend,
                     scenario_ids=scopes,
-                    requirements={f"prepare-{backend}": binding(mutable["requirements"][f"prepare-{backend}"])},
+                    requirements={
+                        f"prepare-{backend}": binding(mutable["requirements"][f"prepare-{backend}"])
+                    },
                     profile=binding(mutable["profile"]),
                 )
                 (destination / "manifest.json").write_text(
-                    manifest.model_dump_json(), encoding="utf-8"
+                    manifest.model_dump_json(),
+                    encoding="utf-8",
                 )
                 files.append({"path": f"{backend}/manifest.json", "kind": "task_data"})
         return CodingCandidate(
@@ -230,11 +259,20 @@ def build_capabilities(tmp_path):
     coding_settings = load_coding_settings()
     coding_settings = replace(coding_settings, llm=replace(coding_settings.llm, model="offline"))
     coding = OpenHandsCodingAgent(
-        coding_settings, instructions=freeze_composition("coding").text, skills=freeze_skills(runtime_for(directory), coding_settings.skill_names), runner=runner
+        coding_settings,
+        instructions=freeze_composition("coding").text,
+        skills=freeze_skills(runtime_for(directory), coding_settings.skill_names),
+        runner=runner,
     )
 
-    operations = {"profile": "profile", "scenarios": "discover_scenarios", "prepare": "prepare_task_data",
-                  "leaves": "design_leaves", "generate": "generate", "target": "bind"}
+    operations = {
+        "profile": "profile",
+        "scenarios": "discover_scenarios",
+        "prepare": "prepare_task_data",
+        "leaves": "design_leaves",
+        "generate": "generate",
+        "target": "bind",
+    }
     identifiers = {name: f"cap-{index:06d}" for index, name in enumerate(operations, 1)}
     identifiers["target"] = "cap-input"
     stages = []
@@ -244,10 +282,20 @@ def build_capabilities(tmp_path):
         plans = [r for r in selected if r.kind == "task_plan"]
         if plans:
             selected = [r for r in selected if r.kind != "task_plan" or r == plans[-1]]
-        target = plans[-1] if plans else next((r for r in selected if r.kind == "dataset_profile"), source_ref)
-        return WorkRequest(compilation_id="cap", request_id=identifiers[identifier], agent_id=agent,
-                           operation=operations[identifier], objective="Exercise capabilities",
-                           scope=[WorkScope(artifact_id=target.artifact_id)] if selected else [], inputs=selected)
+        target = (
+            plans[-1]
+            if plans
+            else next((r for r in selected if r.kind == "dataset_profile"), source_ref)
+        )
+        return WorkRequest(
+            compilation_id="cap",
+            request_id=identifiers[identifier],
+            agent_id=agent,
+            operation=operations[identifier],
+            objective="Exercise capabilities",
+            scope=[WorkScope(artifact_id=target.artifact_id)] if selected else [],
+            inputs=selected,
+        )
 
     dp_settings = load_work_agent_settings("data_processing")
     dp = ToolCalls(
@@ -256,11 +304,15 @@ def build_capabilities(tmp_path):
             directory,
             request("profile", "data_processing"),
             dp_settings,
-            {key: freeze_composition(key).text for key in ("profile", "prepare_task_data", "coding_handoff")},
+            {
+                key: freeze_composition(key).text
+                for key in ("profile", "prepare_task_data", "coding_handoff")
+            },
             "data_processing",
             coding,
             "Prepare data",
-         runtime_directory=runtime_for(directory)),
+            runtime_directory=runtime_for(directory),
+        ),
         known,
     )
     result = dp.call(
@@ -272,7 +324,9 @@ def build_capabilities(tmp_path):
     assert not dp.state["submitted"]
     dp.call("validate_data_candidate", call_id=result["call_id"], path="profile.json")
     profile_result = dp.call(
-        "submit_data_artifacts", call_id=result["call_id"], paths=["profile.json"]
+        "submit_data_artifacts",
+        call_id=result["call_id"],
+        paths=["profile.json"],
     )
     profile_ref = ArtifactRef.model_validate(profile_result["artifacts"][0])
     stages.append(dp)
@@ -286,9 +340,13 @@ def build_capabilities(tmp_path):
         profile_ref,
         planner_settings,
         {key: freeze_composition(key).text for key in ("discover_scenarios", "design_leaves")},
-     runtime_directory=runtime_for(directory))
+        runtime_directory=runtime_for(directory),
+    )
     planner = ToolCalls(
-        planner_tools(), planning_context, known, middleware=PlannerContextMiddleware()
+        planner_tools(),
+        planning_context,
+        known,
+        middleware=PlannerContextMiddleware(),
     )
     proof = [{"observation_id": "source-fields"}]
     from medbenchagent.planning.contracts import (
@@ -346,7 +404,14 @@ def build_capabilities(tmp_path):
                 dataset=dataset,
                 purpose="Prepare task Cases",
                 representation="Backend Cases",
-                required_fields=[{"name": "views", "type": "asset", "input_visibility": "model_visible", "purpose": "Ordered observations"}],
+                required_fields=[
+                    {
+                        "name": "views",
+                        "type": "asset",
+                        "input_visibility": "model_visible",
+                        "purpose": "Ordered observations",
+                    }
+                ],
                 evidence_refs=evidence,
                 acceptance_criteria=["Preserve source facts"],
                 affected_scenario_ids=scenarios if backend == "vqa" else scenarios[:1],
@@ -359,8 +424,11 @@ def build_capabilities(tmp_path):
     )
     assert not read_json_artifact(directory, scenario_ref)["tasks"]
     stages.append(planner)
-    mutable["requirements"] = {read_json_artifact(directory, ref)["requirement_id"]: ref
-                               for ref in known.values() if ref.kind == "data_requirement"}
+    mutable["requirements"] = {
+        read_json_artifact(directory, ref)["requirement_id"]: ref
+        for ref in known.values()
+        if ref.kind == "data_requirement"
+    }
     dp = ToolCalls(
         data_processing_tools(),
         replace(dp.context, request=request("prepare", "data_processing")),
@@ -390,7 +458,9 @@ def build_capabilities(tmp_path):
     planner = ToolCalls(
         planner_tools(),
         replace(
-            planning_context, request=request("leaves", "task_planner"), task_data=task_readers
+            planning_context,
+            request=request("leaves", "task_planner"),
+            task_data=task_readers,
         ),
         known,
         state=planner.state,
@@ -462,7 +532,8 @@ def build_capabilities(tmp_path):
             load_work_agent_settings("generation"),
             {"generate": freeze_composition("generate").text},
             "generation",
-         runtime_directory=runtime_for(directory)),
+            runtime_directory=runtime_for(directory),
+        ),
         known,
     )
     specs = []
@@ -482,18 +553,28 @@ def build_capabilities(tmp_path):
     ]
     batches = [
         generation.call(
-            "generate_task_batch", spec_id=identifier, allocation_id=allocation, offset=0, limit=1
+            "generate_task_batch",
+            spec_id=identifier,
+            allocation_id=allocation,
+            offset=0,
+            limit=1,
         )["artifact_id"]
         for identifier in specs
     ]
     candidate_ref = known[
         generation.call(
-            "finalize_generation", spec_ids=specs, batch_ids=batches, allocation_id=allocation
+            "finalize_generation",
+            spec_ids=specs,
+            batch_ids=batches,
+            allocation_id=allocation,
         )["artifact_id"]
     ]
     stages.append(generation)
     return SimpleNamespace(
-        stages=stages, produce=produce, source_ref=source_ref, target_ref=goal,
+        stages=stages,
+        produce=produce,
+        source_ref=source_ref,
+        target_ref=goal,
         directory=directory,
         known=known,
         candidate_ref=candidate_ref,

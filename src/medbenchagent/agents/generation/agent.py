@@ -2,6 +2,7 @@
 
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
+
 from medbenchagent.compilation.contracts import WorkRequest
 from medbenchagent.compilation.interfaces import AgentSpec
 from medbenchagent.runtime.native import OperationTools, chat_model, loop_middleware
@@ -28,7 +29,7 @@ def build_generation_spec(settings, *, instructions, model=None):
         name="generation_agent",
         middleware=[
             WorkInstructions(GenerationState, {"quarantined": {}}),
-            OperationTools({'generate': None}),
+            OperationTools({"generate": None}),
             *loop_middleware(
                 model,
                 settings.loop,
@@ -56,5 +57,6 @@ def build_generation_spec(settings, *, instructions, model=None):
         "Prepare execution, allocate counts and assemble questions from ready Leaf definitions and accepted TaskData. "
         "Supports VQA, reports, grounding and detection; returns immutable batches/candidates and data or task issues. "
         "Bind TaskPlans, TaskData and any referenced specs/batches explicitly.",
-        node, operations=('generate',),
+        node,
+        operations=("generate",),
     )

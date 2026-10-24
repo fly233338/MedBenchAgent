@@ -1,4 +1,5 @@
 """Run navigation and small creation/selection screens over existing services."""
+
 from pathlib import Path
 from uuid import uuid4
 
@@ -53,13 +54,35 @@ class RunsScreen(Screen):
     @on(Input.Changed, "#run-search")
     def filter_runs(self):
         query = self.query_one("#run-search", Input).value.casefold()
-        self.filtered = [row for row in self.rows if query in (row["name"] + " " + str(row.get("draft", {}))).casefold()]
+        self.filtered = [
+            row
+            for row in self.rows
+            if query in (row["name"] + " " + str(row.get("draft", {}))).casefold()
+        ]
         listing = self.query_one("#run-list", OptionList)
         listing.clear_options()
-        labels = {"draft": "DRAFT", "ready": "READY", "running": "RUNNING", "waiting": "WAITING", "paused": "PAUSED",
-                  "stopped": "STOPPED", "interrupted": "INTERRUPTED", "external": "Studio", "unavailable": "UNAVAILABLE"}
-        listing.add_options([Text(f"{row['name']}  ·  {labels.get(row['status'], row['status'])}\n{row.get('draft', {}).get('goal') or 'No goal set'}") for row in self.filtered])
-        self.query_one("#run-empty", Static).update("No runs. Create one." if not self.rows else "No matches.")
+        labels = {
+            "draft": "DRAFT",
+            "ready": "READY",
+            "running": "RUNNING",
+            "waiting": "WAITING",
+            "paused": "PAUSED",
+            "stopped": "STOPPED",
+            "interrupted": "INTERRUPTED",
+            "external": "Studio",
+            "unavailable": "UNAVAILABLE",
+        }
+        listing.add_options(
+            [
+                Text(
+                    f"{row['name']}  ·  {labels.get(row['status'], row['status'])}\n{row.get('draft', {}).get('goal') or 'No goal set'}"
+                )
+                for row in self.filtered
+            ]
+        )
+        self.query_one("#run-empty", Static).update(
+            "No runs. Create one." if not self.rows else "No matches."
+        )
         self.query_one("#run-empty").display = not self.filtered
         self.query_one("#clone-run", Button).disabled = not self.filtered
         if self.filtered:
@@ -78,8 +101,12 @@ class RunsScreen(Screen):
             self.app.action_new_run()
         elif event.button.id == "clone-run" and self.filtered:
             row = self.filtered[self.query_one("#run-list", OptionList).highlighted or 0]
-            self.app.push_screen(NameScreen(copy_name=row["name"]),
-                                 lambda name: self.app.create_named_run(name, Path(row["directory"])) if name else None)
+            self.app.push_screen(
+                NameScreen(copy_name=row["name"]),
+                lambda name: (
+                    self.app.create_named_run(name, Path(row["directory"])) if name else None
+                ),
+            )
 
     def action_new(self):
         self.app.action_new_run()
@@ -100,7 +127,10 @@ class NameScreen(Dialog):
         with Vertical(classes="dialog small-dialog"):
             yield Label("Clone run" if self.copy_name else "New run", classes="dialog-title")
             yield Static("One dataset. One compilation.")
-            yield Input((self.copy_name + "-copy") if self.copy_name else "run-" + uuid4().hex[:8], id="run-name")
+            yield Input(
+                (self.copy_name + "-copy") if self.copy_name else "run-" + uuid4().hex[:8],
+                id="run-name",
+            )
             yield Static("Name: a-z, 0-9, hyphens.", classes="muted")
             yield Static("", id="name-error")
             with Horizontal():
@@ -133,14 +163,24 @@ class NameScreen(Dialog):
 class DatasetScreen(Dialog):
     def __init__(self, draft, *, directory, catalog, frozen=False):
         super().__init__()
-        self.draft, self.directory, self.catalog, self.frozen = draft, Path(directory), Path(catalog), frozen
+        self.draft, self.directory, self.catalog, self.frozen = (
+            draft,
+            Path(directory),
+            Path(catalog),
+            frozen,
+        )
         self.entries = {}
         self.keys = []
 
     def compose(self):
         with Vertical(classes="dialog"):
             yield Label("Dataset", classes="dialog-title")
-            yield Static(Text("\n".join(self.draft.source_dirs) or self.draft.canonical_manifest or "No input"), id="dataset-current")
+            yield Static(
+                Text(
+                    "\n".join(self.draft.source_dirs) or self.draft.canonical_manifest or "No input"
+                ),
+                id="dataset-current",
+            )
             yield OptionList(id="datasets")
             yield Static("Source references only.", id="dataset-status")
             with Horizontal():
@@ -157,7 +197,14 @@ class DatasetScreen(Dialog):
         self.keys = sorted(self.entries)
         listing = self.query_one("#datasets", OptionList)
         listing.clear_options()
-        listing.add_options([Text(f"{key} · {self.entries[key]['kind']}\n{self.entries[key].get('revision', '')}") for key in self.keys])
+        listing.add_options(
+            [
+                Text(
+                    f"{key} · {self.entries[key]['kind']}\n{self.entries[key].get('revision', '')}"
+                )
+                for key in self.keys
+            ]
+        )
         if self.keys:
             listing.highlighted = 0
 
@@ -188,7 +235,10 @@ class DatasetScreen(Dialog):
             self.app.call_from_thread(self.registered)
         except Exception as exc:
             if self.is_mounted:
-                self.app.call_from_thread(self.query_one("#dataset-status", Static).update, Text(str(exc)))
+                self.app.call_from_thread(
+                    self.query_one("#dataset-status", Static).update,
+                    Text(str(exc)),
+                )
 
     def registered(self):
         if self.is_mounted:

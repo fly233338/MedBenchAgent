@@ -1,6 +1,8 @@
 import csv
+
 import pytest
 from breast_fixtures import create_breast_source
+
 from medbenchagent.data.tabular import inspect_table
 from medbenchagent.data.sources import inspect_source
 

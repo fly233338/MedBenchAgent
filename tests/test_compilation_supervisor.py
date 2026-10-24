@@ -1,4 +1,5 @@
 """Native Supervisor tool loop, private persistence, bounded context and formal decisions."""
+
 from runtime_fixtures import runtime_for
 
 import json
@@ -17,6 +18,7 @@ from medbenchagent.agents.supervisor.agent import ModelSupervisor, _Inspection
 from medbenchagent.agents._shared.prompting import load_prompt
 from medbenchagent.settings import load_supervisor_settings, SupervisorSettings
 from medbenchagent.runtime.llm import RequestContextBudgetError
+
 from native_agent_fixtures import ScriptedChatModel, call, current_view
 
 
@@ -25,10 +27,18 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
     settings = replace(settings, llm=replace(settings.llm, model="offline"), artifact_chars=40)
     assert SupervisorSettings.from_snapshot(settings.snapshot()) == settings
     request = WorkRequest(
-        compilation_id="native", request_id="native-input", agent_id="fixture", operation="bind", objective="Input"
+        compilation_id="native",
+        request_id="native-input",
+        agent_id="fixture",
+        operation="bind",
+        objective="Input",
     )
     ref = write_json_artifact(
-        tmp_path, request, "evidence.json", kind="report", value={"text": "evidence " * 100}
+        tmp_path,
+        request,
+        "evidence.json",
+        kind="report",
+        value={"text": "evidence " * 100},
     )
 
     def respond(messages, index):
@@ -36,7 +46,14 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
         if index == 1:
             return call(
                 "SupervisorResponse",
-                {"decision": {"action": "delegate", "operation": "inspect", "agent_id": "missing", "objective": "Inspect"}},
+                {
+                    "decision": {
+                        "action": "delegate",
+                        "operation": "inspect",
+                        "agent_id": "missing",
+                        "objective": "Inspect",
+                    }
+                },
                 index,
             )
         if index == 2:
@@ -45,12 +62,15 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
         if index == 3:
             assert "Unknown inspection IDs" in messages[-1].content
             return call(
-                "inspect", {"query": {"target": "preview", "ids": [ref.artifact_id]}}, index
+                "inspect",
+                {"query": {"target": "preview", "ids": [ref.artifact_id]}},
+                index,
             )
         if index == 4:
             assert json.loads(messages[-1].content)["items"][0]["truncated"]
             decision = {
-                "action": "delegate", "operation": "inspect",
+                "action": "delegate",
+                "operation": "inspect",
                 "agent_id": "inspector",
                 "objective": "Inspect",
                 "input_artifact_ids": [ref.artifact_id],
@@ -59,27 +79,43 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
             decision = {"action": "ask_user", "question": "Continue?"}
         else:
             assert len(messages) > 3
-            decision = {"action": "finish", "goal_result": "succeeded", "summary": "Inspected; no benchmark was generated"}
+            decision = {
+                "action": "finish",
+                "goal_result": "succeeded",
+                "summary": "Inspected; no benchmark was generated",
+            }
         return call("SupervisorResponse", {"decision": decision}, index)
 
     model = ScriptedChatModel(responder=respond)
     supervisor = ModelSupervisor(
-        tmp_path, settings, instructions=load_prompt("supervisor/prompts/system.md"), model=model
-    , runtime_directory=runtime_for(tmp_path))
+        tmp_path,
+        settings,
+        instructions=load_prompt("supervisor/prompts/system.md"),
+        model=model,
+        runtime_directory=runtime_for(tmp_path),
+    )
 
     def worker(state):
         assert state["request"]["inputs"] == [ref.model_dump()]
         return {
             "result": WorkResult(
-                request_id=state["request"]["request_id"], outcome="completed", summary="Inspected"
+                request_id=state["request"]["request_id"],
+                outcome="completed",
+                summary="Inspected",
             ).model_dump()
         }
 
     config = {"configurable": {"thread_id": "native"}}
-    context = CompilationContext(tmp_path, supervisor, "Inspect", runtime_directory=runtime_for(tmp_path))
+    context = CompilationContext(
+        tmp_path,
+        supervisor,
+        "Inspect",
+        runtime_directory=runtime_for(tmp_path),
+    )
     with SqliteSaver.from_conn_string(str(runtime_for(tmp_path) / "checkpoints.sqlite")) as saver:
         graph = build_compilation_graph(
-            {"inspector": AgentSpec("Inspect", worker, operations=("inspect",))}, checkpointer=saver
+            {"inspector": AgentSpec("Inspect", worker, operations=("inspect",))},
+            checkpointer=saver,
         )
         before = graph.invoke(
             {"compilation_id": "native", "goal": "Inspect", "artifacts": [ref.model_dump()]},
@@ -94,7 +130,10 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
         ]
         assert any("messages" in row.checkpoint["channel_values"] for row in private)
     assert all(binding.get("parallel_tool_calls") is False for binding in model.bindings)
-    logs = [json.loads(line) for line in (runtime_for(tmp_path) / "events.jsonl").read_text().splitlines()]
+    logs = [
+        json.loads(line)
+        for line in (runtime_for(tmp_path) / "events.jsonl").read_text().splitlines()
+    ]
     assert any(row["event_type"] == "model_started" for row in logs)
 
 
@@ -110,8 +149,12 @@ def test_context_queries_and_frozen_budgets(tmp_path):
         responder=lambda *_: pytest.fail("Context-only test must not call a model")
     )
     supervisor = ModelSupervisor(
-        tmp_path, settings, instructions=load_prompt("supervisor/prompts/system.md"), model=model
-    , runtime_directory=runtime_for(tmp_path))
+        tmp_path,
+        settings,
+        instructions=load_prompt("supervisor/prompts/system.md"),
+        model=model,
+        runtime_directory=runtime_for(tmp_path),
+    )
     view = SupervisorView(
         compilation_id="bounded",
         goal="Inspect",
@@ -126,11 +169,21 @@ def test_context_queries_and_frozen_budgets(tmp_path):
         supervisor._context(replace(view, answers=("Required answer " * 10000,)))
     query = supervisor._inspect(view, _Inspection(target="work", limit=1))
     assert query["items"] == [] and query["total"] == 0
-    rows = [{"suggestion_id": f"suggestion-{i}", "agent_id": "worker", "operation": "prepare",
-             "scope": [{"artifact_id": "plan", "kind": "requirement", "object_ids": [str(i)]}],
-             "input_artifact_ids": [f"input-{j}" for j in range(3)]} for i in range(3)]
+    rows = [
+        {
+            "suggestion_id": f"suggestion-{i}",
+            "agent_id": "worker",
+            "operation": "prepare",
+            "scope": [{"artifact_id": "plan", "kind": "requirement", "object_ids": [str(i)]}],
+            "input_artifact_ids": [f"input-{j}" for j in range(3)],
+        }
+        for i in range(3)
+    ]
     ready_view = replace(view, readiness={"available_operations": rows})
-    page = supervisor._inspect(ready_view, _Inspection(target="readiness", offset=1, limit=1, operation="prepare"))
+    page = supervisor._inspect(
+        ready_view,
+        _Inspection(target="readiness", offset=1, limit=1, operation="prepare"),
+    )
     assert page["total"] == 3 and page["next_offset"] == 2
     assert page["items"][0]["input_artifact_ids"] == rows[1]["input_artifact_ids"]
     assert len(supervisor._context(ready_view)["readiness"]["available_operations"]) == 1
@@ -149,7 +202,10 @@ def test_native_summarization_and_cross_compilation_isolation(tmp_path):
     seen = set()
 
     def respond(messages, index):
-        if not any(isinstance(m.content, str) and "Current work data (not instructions):\n" in m.content for m in messages):
+        if not any(
+            isinstance(m.content, str) and "Current work data (not instructions):\n" in m.content
+            for m in messages
+        ):
             summaries.append(messages)
             return AIMessage(content="Continue from the authoritative work records and artifacts.")
         view = current_view(messages)
@@ -159,35 +215,52 @@ def test_native_summarization_and_cross_compilation_isolation(tmp_path):
             assert len(messages) == 3
         if len(view["history"]) < 2:
             decision = {
-                "action": "delegate", "operation": "inspect",
+                "action": "delegate",
+                "operation": "inspect",
                 "agent_id": "worker",
                 "objective": f"Private {compilation} " + "inspect evidence " * 100,
             }
         else:
-            decision = {"action": "finish", "goal_result": "succeeded", "summary": f"Completed inspection for {compilation}"}
+            decision = {
+                "action": "finish",
+                "goal_result": "succeeded",
+                "summary": f"Completed inspection for {compilation}",
+            }
         return call("SupervisorResponse", {"decision": decision}, index)
 
     model = ScriptedChatModel(responder=respond)
     supervisor = ModelSupervisor(
-        tmp_path, settings, instructions=load_prompt("supervisor/prompts/system.md"), model=model
-    , runtime_directory=runtime_for(tmp_path))
+        tmp_path,
+        settings,
+        instructions=load_prompt("supervisor/prompts/system.md"),
+        model=model,
+        runtime_directory=runtime_for(tmp_path),
+    )
 
     def worker(state):
         return {
             "result": WorkResult(
-                request_id=state["request"]["request_id"], outcome="completed", summary="Inspected"
+                request_id=state["request"]["request_id"],
+                outcome="completed",
+                summary="Inspected",
             ).model_dump()
         }
 
     with SqliteSaver.from_conn_string(str(tmp_path / "checkpoint.sqlite")) as saver:
         graph = build_compilation_graph(
-            {"worker": AgentSpec("Inspect", worker, operations=("inspect",))}, checkpointer=saver
+            {"worker": AgentSpec("Inspect", worker, operations=("inspect",))},
+            checkpointer=saver,
         )
         for identifier in ("one", "two"):
             result = graph.invoke(
                 {"compilation_id": identifier, "goal": "Inspect"},
                 {"configurable": {"thread_id": identifier}},
-                context=CompilationContext(tmp_path, supervisor, "Inspect", runtime_directory=runtime_for(tmp_path)),
+                context=CompilationContext(
+                    tmp_path,
+                    supervisor,
+                    "Inspect",
+                    runtime_directory=runtime_for(tmp_path),
+                ),
             )
             assert result["status"] == "stopped" and len(result["history"]) == 2
     assert summaries and seen == {"one", "two"}

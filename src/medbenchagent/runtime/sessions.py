@@ -1,4 +1,5 @@
 """User-facing Runs; UI records never duplicate Compilation execution state."""
+
 import json
 import re
 from pathlib import Path
@@ -7,7 +8,11 @@ import tomlkit
 from filelock import FileLock
 
 from medbenchagent.settings import DEFAULT_CONFIG_PATH, load_paths, local_config_path, _merge
-from medbenchagent.runtime.run_artifacts import atomic_write_json, runtime_directory, separate_directories
+from medbenchagent.runtime.run_artifacts import (
+    atomic_write_json,
+    runtime_directory,
+    separate_directories,
+)
 
 
 def run_path(name, root=None):
@@ -39,7 +44,14 @@ def create_session(name, *, root=None, runtime_root=None, template=None):
     if runtime.exists():
         raise ValueError("Runtime location already exists; choose another Run name")
     document["paths"] = {"runs_root": str(run_root), "runtime_root": str(runtime_root)}
-    record = {"id": name, "name": name, "directory": str(directory), "runtime_directory": str(runtime), "messages": [], "draft": {"language": str(document["benchmark"]["default_language"])}}
+    record = {
+        "id": name,
+        "name": name,
+        "directory": str(directory),
+        "runtime_directory": str(runtime),
+        "messages": [],
+        "draft": {"language": str(document["benchmark"]["default_language"])},
+    }
     directory.mkdir(parents=True)
     runtime.mkdir(parents=True)
     (runtime / "locks").mkdir()
@@ -52,7 +64,10 @@ def load_session(directory):
     directory = Path(directory).resolve()
     runtime = session_directory(directory)
     record = json.loads((runtime / "session.json").read_text(encoding="utf-8"))
-    if Path(record["directory"]).resolve() != directory or Path(record["runtime_directory"]).resolve() != runtime:
+    if (
+        Path(record["directory"]).resolve() != directory
+        or Path(record["runtime_directory"]).resolve() != runtime
+    ):
         raise ValueError("Run identity does not match its stored locations")
     return record
 
@@ -91,8 +106,14 @@ def add_message(directory, message):
 
 def copy_session(directory, name, *, root=None, runtime_root=None):
     from medbenchagent.runtime.intake import InputDraft
+
     source = load_session(directory)
-    record = create_session(name, root=root, runtime_root=runtime_root, template=Path(directory) / "config.toml")
+    record = create_session(
+        name,
+        root=root,
+        runtime_root=runtime_root,
+        template=Path(directory) / "config.toml",
+    )
     save_draft(record["directory"], InputDraft.model_validate(source["draft"]))
     return load_session(record["directory"])
 
@@ -100,6 +121,7 @@ def copy_session(directory, name, *, root=None, runtime_root=None):
 def freeze_session(directory, draft=None, **options):
     from medbenchagent.compilation.run import create_run
     from medbenchagent.runtime.intake import InputDraft, prepare_input
+
     directory = Path(directory).resolve()
     record = load_session(directory)
     runtime = Path(record["runtime_directory"])
@@ -109,7 +131,13 @@ def freeze_session(directory, draft=None, **options):
         draft = draft or InputDraft.model_validate(record["draft"])
         save_draft(directory, draft)
         inputs = prepare_input(draft, directory) if not options else options
-        result = create_run(directory, compilation_id=record["id"], goal=draft.goal,
-                            config_path=directory / "config.toml", runtime_directory=runtime, **inputs)
+        result = create_run(
+            directory,
+            compilation_id=record["id"],
+            goal=draft.goal,
+            config_path=directory / "config.toml",
+            runtime_directory=runtime,
+            **inputs,
+        )
         add_message(directory, {"id": "goal", "role": "user", "text": draft.goal})
     return result

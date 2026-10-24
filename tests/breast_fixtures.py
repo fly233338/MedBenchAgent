@@ -1,4 +1,5 @@
 """Tiny BrEaST-shaped sources shared by conversion and collaboration checks."""
+
 from openpyxl import Workbook
 from PIL import Image
 
@@ -9,7 +10,9 @@ def create_breast_source(root):
     book = Workbook()
     sheet = book.active
     sheet.title = "BrEaST-Lesions-USG clinical dat"
-    sheet.append(["CaseID", "Image_filename", "Mask_tumor_filename", "Mask_other_filename", "Pathology"])
+    sheet.append(
+        ["CaseID", "Image_filename", "Mask_tumor_filename", "Mask_other_filename", "Pathology"]
+    )
     sheet.append([1, "one-a.png & one-b.png", "one-mask.png", None, "benign"])
     sheet.append([2, "two.png", "two-mask.png", None, "malignant"])
     sheet.append([3, "three.png", None, None, "benign"])

@@ -1,11 +1,16 @@
 """LangGraph Server factory using the same assembly and host policies."""
+
 from pathlib import Path
 from contextlib import ExitStack
 import weakref
 import os
+
 from filelock import FileLock
+
 from medbenchagent.data.task_data import write_once
+
 from langchain_core.runnables import RunnableConfig
+
 from medbenchagent.compilation.assembly import assemble_compilation
 from medbenchagent.compilation.graph import build_compilation_graph
 from medbenchagent.compilation.run import RunOptions, implementation_digest, verify_input
@@ -33,8 +38,12 @@ def graph(config: RunnableConfig):
     stack = ExitStack()
     try:
         agents, context = stack.enter_context(assemble_compilation(options, directory))
-        result = build_compilation_graph(agents, checkpointer=None, default_context=context,
-                                         initial=initial_state(directory, options))
+        result = build_compilation_graph(
+            agents,
+            checkpointer=None,
+            default_context=context,
+            initial=initial_state(directory, options),
+        )
     except Exception:
         stack.close()
         raise

@@ -1,9 +1,11 @@
 """Task Planning tools."""
 
 import json
+
 from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
+
 from medbenchagent.compilation.artifacts import (
     read_json_artifact,
     write_json_artifact,
@@ -20,7 +22,15 @@ from medbenchagent.planning.contracts import (
 )
 from medbenchagent.planning import semantic
 
-from .state import PlannerContext, _bounded, _check_task_data, _load, _product_digest, _update, _verify_acceptances
+from .state import (
+    PlannerContext,
+    _bounded,
+    _check_task_data,
+    _load,
+    _product_digest,
+    _update,
+    _verify_acceptances,
+)
 
 
 def planner_tools():
@@ -30,7 +40,8 @@ def planner_tools():
         if not isinstance(runtime.context.reader, ProfileReader):
             raise ValueError("The current input is a canonical Dataset, not a Profile")
         return _bounded(
-            runtime.context.reader.read_mapping(), runtime.context.settings.preview_chars
+            runtime.context.reader.read_mapping(),
+            runtime.context.settings.preview_chars,
         )
 
     @tool
@@ -57,9 +68,13 @@ def planner_tools():
         if case_id is not None:
             text = reader.get_case(case_id).model_dump_json()
             end = text_offset + runtime.context.settings.preview_chars
-            return {"artifact_id": artifact_id, "digest": reader.content_digest,
-                    "case_id": case_id, "text": text[text_offset:end],
-                    "next_text_offset": end if end < len(text) else None}
+            return {
+                "artifact_id": artifact_id,
+                "digest": reader.content_digest,
+                "case_id": case_id,
+                "text": text[text_offset:end],
+                "next_text_offset": end if end < len(text) else None,
+            }
         rows = [
             {
                 "case_id": case.case_id,
@@ -177,7 +192,8 @@ def planner_tools():
             for row in result["items"]
         ]
         result["relations"] = _bounded(
-            [r.model_dump(mode="json") for r in case.relations], context.settings.preview_chars
+            [r.model_dump(mode="json") for r in case.relations],
+            context.settings.preview_chars,
         )
         return result
 
@@ -223,6 +239,7 @@ def planner_tools():
             "exclusions",
         }:
             raise ValueError("Unknown Task Plan section")
+
         if text_offset < 0:
             raise ValueError("text_offset must be nonnegative")
         if object_id is not None:
@@ -253,7 +270,8 @@ def planner_tools():
             {
                 "id": row["id"],
                 "value": _bounded(
-                    row["value"], runtime.context.settings.preview_chars // max(1, limit)
+                    row["value"],
+                    runtime.context.settings.preview_chars // max(1, limit),
                 ),
             }
             for row in result["items"]
@@ -269,7 +287,8 @@ def planner_tools():
             raise ValueError("text_offset must be nonnegative")
         context = runtime.context
         ref = next(
-            (item for item in context.request.inputs if item.artifact_id == artifact_id), None
+            (item for item in context.request.inputs if item.artifact_id == artifact_id),
+            None,
         )
         if ref is None:
             raise ValueError("Artifact is not an input of this request")
@@ -332,7 +351,8 @@ def planner_tools():
             runtime,
             base_revision,
             lambda plan: semantic.build_scenarios(
-                plan, max_scenarios=runtime.context.settings.max_scenarios
+                plan,
+                max_scenarios=runtime.context.settings.max_scenarios,
             ),
         )
 
@@ -433,8 +453,10 @@ def planner_tools():
         def apply(plan):
             reader = _check_task_data(plan, runtime.context, artifact_id, requirement_id)
             acceptance = RequirementAcceptance(
-                artifact_id=artifact_id, digest=reader.content_digest,
-                reason=reason, evidence_refs=evidence_refs,
+                artifact_id=artifact_id,
+                digest=reader.content_digest,
+                reason=reason,
+                evidence_refs=evidence_refs,
             )
             plan.acceptances[requirement_id] = acceptance
             plan.task_data_acceptances[artifact_id] = acceptance

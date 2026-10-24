@@ -16,6 +16,7 @@ from medbenchagent.tui.widgets import Composer
 def test_run_entry_creation_commands_and_rendering(tmp_path, monkeypatch, size):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
+
     async def check():
         app = MBAApp(root=tmp_path / "runs", runtime_root=tmp_path / "runtime")
         async with app.run_test(size=size) as pilot:
@@ -53,7 +54,10 @@ def test_run_entry_creation_commands_and_rendering(tmp_path, monkeypatch, size):
             await pilot.press("escape")
             composer.load_text("Build 4 questions from the selected dataset.")
             app.chat("INPUT REQUIRED", "Do these views belong to the same case?")
-            app.view = {"status": "waiting", "enabled_agents": ["supervisor", "data_processing", "coding"]}
+            app.view = {
+                "status": "waiting",
+                "enabled_agents": ["supervisor", "data_processing", "coding"],
+            }
             app.render_status()
             app.render_agents()
             await pilot.pause()
@@ -66,16 +70,23 @@ def test_run_entry_creation_commands_and_rendering(tmp_path, monkeypatch, size):
             app.theme = "textual-light"
             await pilot.pause()
             app.save_screenshot(path=str(screenshots), filename=f"light-{size[0]}.svg")
+
     asyncio.run(check())
 
 
 def test_history_focus_and_other_run_activity_do_not_mix(tmp_path):
     from textual.containers import VerticalScroll
+
     from medbenchagent.runtime.activity import ActivityReader
     from medbenchagent.runtime.construction import record_event
 
-    record = sessions.create_session("history", root=tmp_path / "runs", runtime_root=tmp_path / "runtime")
+    record = sessions.create_session(
+        "history",
+        root=tmp_path / "runs",
+        runtime_root=tmp_path / "runtime",
+    )
     sessions.save_draft(record["directory"], InputDraft(goal="Review old evidence"))
+
     async def check():
         app = MBAApp(root=tmp_path / "runs", runtime_root=tmp_path / "runtime")
         async with app.run_test(size=(100, 35)) as pilot:
@@ -108,16 +119,26 @@ def test_history_focus_and_other_run_activity_do_not_mix(tmp_path):
                 await pilot.pause(0.02)
             assert app.selected_run == "copied"
             assert not (tmp_path / "runs/copied/run.json").exists()
+
     asyncio.run(check())
 
 
 def test_run_configuration_reuses_existing_local_defaults(tmp_path, monkeypatch):
     import medbenchagent.settings as settings
     from medbenchagent.runtime.intake import connection_values
-    source = settings.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace('model = ""', 'model = "existing-model"', 1)
+
+    source = settings.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace(
+        'model = ""',
+        'model = "existing-model"',
+        1,
+    )
     (tmp_path / "config").mkdir()
     (tmp_path / "config/local.toml").write_text(source, encoding="utf-8")
     monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
     monkeypatch.delenv("MEDBENCH_CONFIG", raising=False)
-    record = sessions.create_session("local", root=tmp_path / "runs", runtime_root=tmp_path / "runtime")
+    record = sessions.create_session(
+        "local",
+        root=tmp_path / "runs",
+        runtime_root=tmp_path / "runtime",
+    )
     assert connection_values(Path(record["directory"]) / "config.toml")["model"] == "existing-model"

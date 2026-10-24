@@ -16,7 +16,14 @@ class _Volume(AssetAdapter):
 def test_presentation_applies_window_crop_resize_before_slicing():
     adapter = _Volume()
     asset = AssetEntry(asset_id="v", kind="volume", format="test", source_path="v", file_digest="d")
-    spec = PresentationSpec(mode="slices", axis=0, indices=[1], window=(10, 40), crop=(0, 0, 1, 1), resize=(2, 2))
+    spec = PresentationSpec(
+        mode="slices",
+        axis=0,
+        indices=[1],
+        window=(10, 40),
+        crop=(0, 0, 1, 1),
+        resize=(2, 2),
+    )
     result = adapter.present(asset, spec)
     assert result.data.shape == (1, 2, 2)
     assert result.data.dtype == np.uint8
@@ -26,7 +33,9 @@ def test_presentation_applies_window_crop_resize_before_slicing():
 def test_real_medical_readers_materialize_png(tmp_path, format):
     from medbenchagent.data.sources import digest_path
     from medbenchagent.data.asset_adapters import materialize_image
+
     from PIL import Image
+
     source = tmp_path / "raw"
     source.mkdir()
     data = np.arange(4 * 4 * 3, dtype=np.uint16).reshape(4, 4, 3)
@@ -43,6 +52,7 @@ def test_real_medical_readers_materialize_png(tmp_path, format):
     else:
         pydicom = pytest.importorskip("pydicom")
         from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
         path = source / ("series" if format == "dicom_series" else "image.dcm")
         if format == "dicom_series":
             path.mkdir()
@@ -53,8 +63,16 @@ def test_real_medical_readers_materialize_png(tmp_path, format):
             meta.TransferSyntaxUID = ExplicitVRLittleEndian
             meta.MediaStorageSOPClassUID = pydicom.uid.SecondaryCaptureImageStorage
             meta.MediaStorageSOPInstanceUID = generate_uid()
-            ds = pydicom.dataset.FileDataset(str(destination), {}, file_meta=meta, preamble=b"\0" * 128)
-            ds.SOPClassUID, ds.SOPInstanceUID = meta.MediaStorageSOPClassUID, meta.MediaStorageSOPInstanceUID
+            ds = pydicom.dataset.FileDataset(
+                str(destination),
+                {},
+                file_meta=meta,
+                preamble=b"\0" * 128,
+            )
+            ds.SOPClassUID, ds.SOPInstanceUID = (
+                meta.MediaStorageSOPClassUID,
+                meta.MediaStorageSOPInstanceUID,
+            )
             ds.SeriesInstanceUID, ds.StudyInstanceUID, ds.PatientID = series, study, "test"
             ds.Rows, ds.Columns, ds.SamplesPerPixel = 4, 4, 1
             ds.BitsAllocated, ds.BitsStored, ds.HighBit, ds.PixelRepresentation = 16, 16, 15, 0
@@ -65,10 +83,24 @@ def test_real_medical_readers_materialize_png(tmp_path, format):
             ds.InstanceNumber = index + 1
             ds.PixelData = data[:, :, index].copy().tobytes()
             ds.save_as(destination, enforce_file_format=True)
-    asset = AssetEntry(asset_id="medical", source_id="s", source_path=path.relative_to(source).as_posix(),
-        kind="image" if format == "dicom" else "volume", format=format, file_digest=digest_path(path))
-    spec = PresentationSpec(mode="native", window=(-10, 100)) if format == "dicom" else PresentationSpec(
-        mode="slices", axis=0 if format == "dicom_series" else 2, indices=[1], window=(-10, 100))
+    asset = AssetEntry(
+        asset_id="medical",
+        source_id="s",
+        source_path=path.relative_to(source).as_posix(),
+        kind="image" if format == "dicom" else "volume",
+        format=format,
+        file_digest=digest_path(path),
+    )
+    spec = (
+        PresentationSpec(mode="native", window=(-10, 100))
+        if format == "dicom"
+        else PresentationSpec(
+            mode="slices",
+            axis=0 if format == "dicom_series" else 2,
+            indices=[1],
+            window=(-10, 100),
+        )
+    )
     output = tmp_path / "display.png"
     info = materialize_image(asset, spec, output, source_root=source)
     assert info["format"] == "PNG"
@@ -82,12 +114,17 @@ def test_real_medical_readers_materialize_png(tmp_path, format):
             expected = 255 - expected
         np.testing.assert_array_equal(np.asarray(image), expected)
 
-
     if format == "nifti":
         from medbenchagent.data.asset_adapters import NiftiVolumeAdapter
-        assert NiftiVolumeAdapter().load(asset, source_root=source).metadata["origin"] == [11, -7, 3]
+
+        assert NiftiVolumeAdapter().load(asset, source_root=source).metadata["origin"] == [
+            11,
+            -7,
+            3,
+        ]
     if format == "dicom_series":
         from medbenchagent.data.asset_adapters import DicomSeriesAdapter, AssetAdapterError
+
         (path / "2.dcm").unlink()
         ds = pydicom.dcmread(path / "1.dcm")
         ds.ImagePositionPatient = [0, 0, 0]

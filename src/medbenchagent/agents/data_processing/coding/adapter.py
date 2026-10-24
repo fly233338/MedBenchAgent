@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
+
 import medbenchagent
+
 import os
 from pathlib import Path
 import signal
@@ -28,9 +30,13 @@ from .skills import FrozenSkills, verify_skills
 def _stop_process(process):
     if process.poll() is None:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                           capture_output=True, timeout=30, check=False,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=30,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
         else:
             os.killpg(process.pid, signal.SIGKILL)
     process.communicate(timeout=10)
@@ -41,57 +47,106 @@ def run_local_worker(payload: dict) -> CodingCandidate:
     runtime = payload["settings"]["coding"]
     python = Path(runtime["worker_python"])
     if not python.is_file():
-        return failure(request.request_id, "blocked", "environment_unavailable",
-                       f"Coding interpreter does not exist: {python}")
-    environment = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
-                   "OPENHANDS_SUPPRESS_BANNER": "1", "LITELLM_LOCAL_MODEL_COST_MAP": "True",
-                   "MEDBENCH_CODING_LLM_API_KEY": get_coding_api_key()}
+        return failure(
+            request.request_id,
+            "blocked",
+            "environment_unavailable",
+            f"Coding interpreter does not exist: {python}",
+        )
+    environment = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "OPENHANDS_SUPPRESS_BANNER": "1",
+        "LITELLM_LOCAL_MODEL_COST_MAP": "True",
+        "MEDBENCH_CODING_LLM_API_KEY": get_coding_api_key(),
+    }
     environment.pop("MEDBENCH_LLM_API_KEY", None)
     environment["PATH"] = os.pathsep.join((str(python.parent), environment.get("PATH", "")))
     environment["VIRTUAL_ENV"] = str(python.parent.parent)
     # The separate environment needs only this package's lightweight worker and contracts.
     source = str(Path(medbenchagent.__file__).resolve().parent.parent)
-    environment["PYTHONPATH"] = os.pathsep.join(filter(None, (source, environment.get("PYTHONPATH"))))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (source, environment.get("PYTHONPATH")))
+    )
     log = Path(payload["log_path"])
     log.parent.mkdir(parents=True, exist_ok=True)
     try:
-        record_event(log, "coding_request", compilation_id=request.compilation_id,
-                     request_id=request.request_id, agent_id=request.agent_id,
-                     workstream_id=request.workstream_id)
+        record_event(
+            log,
+            "coding_request",
+            compilation_id=request.compilation_id,
+            request_id=request.request_id,
+            agent_id=request.agent_id,
+            workstream_id=request.workstream_id,
+        )
         with log.open("a", encoding="utf-8") as stderr:
             process = subprocess.Popen(
                 [str(python), "-m", "medbenchagent.agents.data_processing.coding.worker"],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
-                text=True, encoding="utf-8", cwd=payload["workspace"], env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr,
+                text=True,
+                encoding="utf-8",
+                cwd=payload["workspace"],
+                env=environment,
                 start_new_session=os.name != "nt",
-                creationflags=(subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
-                               if os.name == "nt" else 0),
+                creationflags=(
+                    subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+                    if os.name == "nt"
+                    else 0
+                ),
             )
             try:
-                stdout, _ = process.communicate(json.dumps(payload, ensure_ascii=False),
-                                                timeout=runtime["timeout_seconds"])
+                stdout, _ = process.communicate(
+                    json.dumps(payload, ensure_ascii=False),
+                    timeout=runtime["timeout_seconds"],
+                )
             except subprocess.TimeoutExpired:
                 _stop_process(process)
-                return failure(request.request_id, "failed", "coding_timeout",
-                               "Coding worker exceeded its frozen time budget")
+                return failure(
+                    request.request_id,
+                    "failed",
+                    "coding_timeout",
+                    "Coding worker exceeded its frozen time budget",
+                )
             except BaseException:
                 _stop_process(process)
                 raise
     except OSError as exc:
-        return failure(request.request_id, "blocked", "environment_unavailable",
-                       f"Cannot start Coding worker ({type(exc).__name__})")
+        return failure(
+            request.request_id,
+            "blocked",
+            "environment_unavailable",
+            f"Cannot start Coding worker ({type(exc).__name__})",
+        )
     if process.returncode:
-        return failure(request.request_id, "failed", "worker_exit",
-                       f"Coding worker exited with code {process.returncode}; see request log")
+        return failure(
+            request.request_id,
+            "failed",
+            "worker_exit",
+            f"Coding worker exited with code {process.returncode}; see request log",
+        )
     try:
         return CodingCandidate.model_validate_json(stdout)
     except ValueError:
-        return failure(request.request_id, "failed", "invalid_submission",
-                       "Coding worker did not return a valid candidate result; see request log")
+        return failure(
+            request.request_id,
+            "failed",
+            "invalid_submission",
+            "Coding worker did not return a valid candidate result; see request log",
+        )
 
 
 class OpenHandsCodingAgent:
-    def __init__(self, settings: CodingSettings, *, instructions: str, skills: FrozenSkills, runner: Callable | None = None):
+    def __init__(
+        self,
+        settings: CodingSettings,
+        *,
+        instructions: str,
+        skills: FrozenSkills,
+        runner: Callable | None = None,
+    ):
         if not settings.llm.model:
             raise ValueError("Resolve the Coding model before starting a run")
         self.settings = settings
@@ -101,10 +156,20 @@ class OpenHandsCodingAgent:
         self.skills = skills
         self.runner = runner or run_local_worker
 
-    def execute_candidate(self, directory: Path, request: WorkRequest, goal: str, *, runtime_directory: Path, parent_request_id=None, parent_operation=None):
+    def execute_candidate(
+        self,
+        directory: Path,
+        request: WorkRequest,
+        goal: str,
+        *,
+        runtime_directory: Path,
+        parent_request_id=None,
+        parent_operation=None,
+    ):
         """Execute/recover one SDK call and return candidate receipts, without publication."""
         if request.operation != "execute":
             raise ValueError("Coding only accepts internal execute requests")
+
         if request.workstream_id is None:
             raise ValueError("Coding requests require a Host-assigned Workstream ID")
         verify_skills(runtime_directory, self.skills)
@@ -117,12 +182,19 @@ class OpenHandsCodingAgent:
             try:
                 path = resolve_artifact(directory, ref)
             except FileNotFoundError:
-                candidate = failure(request.request_id, "needs_input", "input_missing",
-                                    f"Registered input is missing: {ref.artifact_id}")
-                candidate.needs.append(CandidateNeed(
-                    need_id=f"{request.request_id}-input", kind="work",
-                    summary=f"Restore or replace registered input {ref.artifact_id}",
-                ))
+                candidate = failure(
+                    request.request_id,
+                    "needs_input",
+                    "input_missing",
+                    f"Registered input is missing: {ref.artifact_id}",
+                )
+                candidate.needs.append(
+                    CandidateNeed(
+                        need_id=f"{request.request_id}-input",
+                        kind="work",
+                        summary=f"Restore or replace registered input {ref.artifact_id}",
+                    )
+                )
                 return candidate, []
             if not path.is_relative_to(_within(directory, "artifacts")):
                 raise ValueError("Coding inputs must be formal artifacts, not workspace files")
@@ -134,31 +206,53 @@ class OpenHandsCodingAgent:
                     if source_root.is_relative_to(directory / "artifacts"):
                         continue
                     separate_directories(directory, runtime_directory, [source_root])
-        conversation_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                        f"{request.compilation_id}/{request.agent_id}/{request.workstream_id}"))
+        conversation_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"{request.compilation_id}/{request.agent_id}/{request.workstream_id}",
+            )
+        )
         details = {
             "compilation_goal": goal,
-            "request": request.model_dump(mode="json"), "inputs": inputs,
-            "workspace": str(workspace), "output_directory": str(output),
+            "request": request.model_dump(mode="json"),
+            "inputs": inputs,
+            "workspace": str(workspace),
+            "output_directory": str(output),
         }
         payload = {
-            "parent_request_id": parent_request_id, "parent_operation": parent_operation,
-            "run_directory": str(directory.resolve()), "runtime_directory": str(runtime_directory.resolve()), "skills": self.skills.model_dump(mode="json"),
-            **details, "conversation_id": conversation_id,
+            "parent_request_id": parent_request_id,
+            "parent_operation": parent_operation,
+            "run_directory": str(directory.resolve()),
+            "runtime_directory": str(runtime_directory.resolve()),
+            "skills": self.skills.model_dump(mode="json"),
+            **details,
+            "conversation_id": conversation_id,
             "persistence_dir": str(_within(root, "conversations")),
             "log_path": str(_within(root, f"logs/{request.request_id}.log")),
             "settings": self.settings.snapshot(),
-            "prompt": self.instructions + "\n" + json.dumps(details, ensure_ascii=False, sort_keys=True),
+            "prompt": self.instructions
+            + "\n"
+            + json.dumps(details, ensure_ascii=False, sort_keys=True),
         }
         root.mkdir(parents=True, exist_ok=True)
         started = perf_counter()
-        identity = {"compilation_id": request.compilation_id, "request_id": request.request_id,
-                    "agent_id": "coding", "operation": parent_operation or request.operation,
-                    "parent_request_id": parent_request_id, "workstream_id": request.workstream_id}
+        identity = {
+            "compilation_id": request.compilation_id,
+            "request_id": request.request_id,
+            "agent_id": "coding",
+            "operation": parent_operation or request.operation,
+            "parent_request_id": parent_request_id,
+            "workstream_id": request.workstream_id,
+        }
         try:
             with FileLock(str(root / ".lock"), timeout=0):
                 output.mkdir(parents=True, exist_ok=True)
-                record_event(runtime_directory / "events.jsonl", "coding_started", **identity, summary=request.objective)
+                record_event(
+                    runtime_directory / "events.jsonl",
+                    "coding_started",
+                    **identity,
+                    summary=request.objective,
+                )
                 candidate = CodingCandidate.model_validate(self.runner(payload))
                 if candidate.request_id != request.request_id:
                     raise ValueError("Coding candidate belongs to another request")
@@ -169,17 +263,38 @@ class OpenHandsCodingAgent:
                     if not actual.is_file() or actual in seen:
                         raise ValueError(f"Missing or duplicate Coding output: {item.path}")
                     seen.add(actual)
-                    files.append({"path": actual.relative_to(output).as_posix(), "kind": item.kind,
-                                  "read_path": str(actual), "digest": file_digest(actual)})
-                record_event(runtime_directory / "events.jsonl", "coding_finished", **identity,
-                             elapsed_ms=int((perf_counter() - started) * 1000),
-                             summary=candidate.summary, outcome=candidate.outcome, issue_codes=[issue.code for issue in candidate.issues])
+                    files.append(
+                        {
+                            "path": actual.relative_to(output).as_posix(),
+                            "kind": item.kind,
+                            "read_path": str(actual),
+                            "digest": file_digest(actual),
+                        }
+                    )
+                record_event(
+                    runtime_directory / "events.jsonl",
+                    "coding_finished",
+                    **identity,
+                    elapsed_ms=int((perf_counter() - started) * 1000),
+                    summary=candidate.summary,
+                    outcome=candidate.outcome,
+                    issue_codes=[issue.code for issue in candidate.issues],
+                )
                 return candidate, files
         except Timeout:
-            return failure(request.request_id, "blocked", "workstream_busy",
-                           "This Workstream is already executing another request"), []
+            return failure(
+                request.request_id,
+                "blocked",
+                "workstream_busy",
+                "This Workstream is already executing another request",
+            ), []
         except Exception as exc:
-            record_event(runtime_directory / "events.jsonl", "coding_failed", **identity,
-                         elapsed_ms=int((perf_counter() - started) * 1000), error_type=type(exc).__name__,
-                         summary="Coding candidate failed Host validation or execution")
+            record_event(
+                runtime_directory / "events.jsonl",
+                "coding_failed",
+                **identity,
+                elapsed_ms=int((perf_counter() - started) * 1000),
+                error_type=type(exc).__name__,
+                summary="Coding candidate failed Host validation or execution",
+            )
             raise

@@ -25,7 +25,13 @@ class KeyFile(CanonicalModel):
     @model_validator(mode="after")
     def relative_path(self):
         path = PurePosixPath(self.path)
-        if path.is_absolute() or ".." in path.parts or "\\" in self.path or ":" in self.path or path.as_posix() != self.path:
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or "\\" in self.path
+            or ":" in self.path
+            or path.as_posix() != self.path
+        ):
             raise ValueError("Key files require source-relative paths")
         return self
 
@@ -39,8 +45,12 @@ class SourceManifest(CanonicalModel):
     def unique_sources(self):
         if len({s.source_id for s in self.sources}) != len(self.sources):
             raise ValueError("Source IDs must be unique")
-        if any(item.source_id not in {s.source_id for s in self.sources} for item in self.key_files):
+
+        if any(
+            item.source_id not in {s.source_id for s in self.sources} for item in self.key_files
+        ):
             raise ValueError("Key file refers to an unknown source")
+
         if len({(item.source_id, item.path) for item in self.key_files}) != len(self.key_files):
             raise ValueError("Duplicate key file")
         return self
@@ -122,6 +132,7 @@ class TaskCase(CanonicalModel):
         names = {field.name for field in self.fields}
         if len(names) != len(self.fields) or len(self.scenario_ids) != len(set(self.scenario_ids)):
             raise ValueError("Task Case fields and Scenario IDs must be unique")
+
         if any(set(field.ref) - names for field in self.fields):
             raise ValueError("Task field references an unknown field")
         return self
@@ -205,7 +216,11 @@ def seal_task_data(manifest: TaskDataManifest, root: Path):
     counts = {key: sum(key in case.scenario_ids for case in cases) for key in manifest.scenario_ids}
     return manifest.model_copy(
         update={
-            "preparation_scripts": _members(root, manifest.sources, {(m.source_id, m.path) for m in manifest.preparation_scripts}),
+            "preparation_scripts": _members(
+                root,
+                manifest.sources,
+                {(m.source_id, m.path) for m in manifest.preparation_scripts},
+            ),
             "case_count": len(cases),
             "scenario_counts": counts,
             "members": _members(root, manifest.sources, _task_references(manifest, cases, assets)),
@@ -220,7 +235,8 @@ def _verify_members(root, product, required):
     roots = _source_roots(root, product.sources)
     for member in product.members:
         path = _relative_file(
-            root if member.source_id is None else roots[member.source_id], member.path
+            root if member.source_id is None else roots[member.source_id],
+            member.path,
         )
         if file_digest(path) != member.digest:
             raise ValueError(f"Product member changed: {member.path}")
@@ -294,6 +310,7 @@ class TaskDataReader:
             self.cases
         ):
             raise ValueError("TaskData Case and Asset IDs must be unique")
+
         if len(self.manifest.scenario_ids) != len(set(self.manifest.scenario_ids)):
             raise ValueError("TaskData Scenario IDs must be unique")
         for case in self.cases:
@@ -388,12 +405,16 @@ def snapshot_profile(source: Path, destination: Path, *, runtime_directory: Path
     reader = ProfileReader(source)
     profile = reader.profile
     roots = _source_roots(source.parent, profile.sources)
-    copied = {key for key, root in roots.items() if root.is_relative_to(runtime_directory.resolve())}
+    copied = {
+        key for key, root in roots.items() if root.is_relative_to(runtime_directory.resolve())
+    }
     for member in profile.members:
         if member.source_id is not None and member.source_id not in copied:
             continue
         root = source.parent if member.source_id is None else roots[member.source_id]
-        relative = member.path if member.source_id is None else f"sources/{member.source_id}/{member.path}"
+        relative = (
+            member.path if member.source_id is None else f"sources/{member.source_id}/{member.path}"
+        )
         target = (destination / relative).resolve()
         if not target.is_relative_to(destination.resolve()):
             raise ValueError("Profile member escapes destination")
@@ -401,10 +422,19 @@ def snapshot_profile(source: Path, destination: Path, *, runtime_directory: Path
         if hashlib.sha256(content).hexdigest() != member.digest:
             raise ValueError("Profile member changed during snapshot")
         write_once(target, content)
-    frozen = profile.model_copy(update={"sources": [DatasetSource(
-        source_id=item.source_id,
-        root=f"sources/{item.source_id}" if item.source_id in copied else str(roots[item.source_id]),
-    ) for item in profile.sources]})
+    frozen = profile.model_copy(
+        update={
+            "sources": [
+                DatasetSource(
+                    source_id=item.source_id,
+                    root=f"sources/{item.source_id}"
+                    if item.source_id in copied
+                    else str(roots[item.source_id]),
+                )
+                for item in profile.sources
+            ]
+        }
+    )
     target = destination / "manifest.json"
     write_once(target, (frozen.model_dump_json(indent=2) + "\n").encode())
     ProfileReader(target)
@@ -447,8 +477,10 @@ def validate_preparation(reader, requirement):
     manifest = reader.manifest
     if manifest.dataset != requirement.dataset or manifest.backend_id != requirement.backend_id:
         raise ValueError("Prepared data does not match requirement Dataset/backend")
+
     if manifest.case_granularity != requirement.case_granularity:
         raise ValueError("Prepared Case granularity differs from the requirement")
+
     if not set(requirement.input_relationships) <= set(manifest.input_relationships):
         raise ValueError("Prepared input relationships are incomplete")
     for scenario in requirement.affected_scenario_ids:
@@ -459,5 +491,8 @@ def validate_preparation(reader, requirement):
             fields = {f.name: f for f in case.fields}
             for expected in requirement.required_fields:
                 actual = fields.get(expected.name)
-                if actual is None or (actual.type, actual.input_visibility) != (expected.type, expected.input_visibility):
+                if actual is None or (actual.type, actual.input_visibility) != (
+                    expected.type,
+                    expected.input_visibility,
+                ):
                     raise ValueError(f"Case {case.case_id}: incompatible field {expected.name}")

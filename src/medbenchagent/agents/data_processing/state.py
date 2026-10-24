@@ -3,6 +3,7 @@
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+
 from medbenchagent.compilation.artifacts import _within, read_json_artifact, resolve_artifact
 from medbenchagent.data.dataset import DatasetSource, file_digest
 from medbenchagent.data.task_data import (
@@ -25,7 +26,6 @@ from medbenchagent.agents._shared.handoff import (
     binding,
     get_ref,
 )
-
 
 
 class DataProcessingState(WorkState):
@@ -64,10 +64,18 @@ def _candidate(runtime, call_id, path):
     receipt = next((row for row in call["files"] if row["path"] == path), None)
     if receipt is None:
         raise ValueError("Select a file returned by this Coding call")
-    output = runtime.context.runtime_directory / "coding" / call["request"]["workstream_id"] / "workspace" / "outputs" / call_id
+    output = (
+        runtime.context.runtime_directory
+        / "coding"
+        / call["request"]["workstream_id"]
+        / "workspace"
+        / "outputs"
+        / call_id
+    )
     actual = _within(output, receipt["path"])
     if actual != Path(receipt["read_path"]).resolve():
         raise ValueError("Coding candidate location changed after execution")
+
     if file_digest(actual) != receipt["digest"]:
         raise ValueError("Coding candidate changed after execution; make a new Coding call")
     return call, receipt, actual
@@ -80,7 +88,9 @@ def validate_candidate(runtime, call_id, path):
         raise ValueError(
             "Submit a dataset_profile or task_data Manifest; supporting files remain referenced members"
         )
-    expected = {"profile": "dataset_profile", "prepare_task_data": "task_data"}[runtime.context.request.operation]
+    expected = {"profile": "dataset_profile", "prepare_task_data": "task_data"}[
+        runtime.context.request.operation
+    ]
     if receipt["kind"] != expected:
         raise ValueError(f"This operation publishes {expected}")
     value = schema.model_validate_json(actual.read_bytes())
@@ -95,8 +105,11 @@ def validate_candidate(runtime, call_id, path):
         sources.append(DatasetSource(source_id=source.source_id, root=str(root)))
     value = value.model_copy(update={"sources": sources})
     if isinstance(value, DatasetProfile):
-        bases = [read_json_artifact(runtime.context.directory, ref) for ref in runtime.context.request.inputs
-                 if ref.kind == "source_manifest"]
+        bases = [
+            read_json_artifact(runtime.context.directory, ref)
+            for ref in runtime.context.request.inputs
+            if ref.kind == "source_manifest"
+        ]
         if not any(base["dataset"] == value.dataset.model_dump() for base in bases):
             raise ValueError("Profile belongs to a different delegated Dataset")
         sealed = seal_profile(value, actual.parent)
@@ -136,13 +149,17 @@ def validate_candidate(runtime, call_id, path):
     if isinstance(reader, TaskDataReader):
         from medbenchagent.data.task_data import validate_preparation
         from medbenchagent.planning.contracts import DataRequirement
+
         if not sealed.requirements:
             raise ValueError("TaskData must bind its preparation requirements")
         for key, product in sealed.requirements.items():
             ref = get_ref(runtime, product.artifact_id, "data_requirement")
-            requirement = DataRequirement.model_validate(read_json_artifact(runtime.context.directory, ref))
+            requirement = DataRequirement.model_validate(
+                read_json_artifact(runtime.context.directory, ref)
+            )
             if binding(ref) != product or key != requirement.requirement_id:
                 raise ValueError("Stale preparation requirement binding")
+
             if not any(p.requirements.get(key) == requirement for p in plans):
                 raise ValueError("Preparation requirement differs from delegated plan")
             validate_preparation(reader, requirement)

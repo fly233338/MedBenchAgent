@@ -22,6 +22,7 @@ from medbenchagent.data.models import AssetEntry, CaseRecord, Evidence, SourceRe
 def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
     if limit < 1:
         raise ValueError("limit must be positive")
+
     if output.exists():
         raise ValueError("Use a new output directory; snapshots are immutable")
     book = load_workbook(workbook, read_only=True, data_only=True)
@@ -41,7 +42,8 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
                 },
             }
             for index, row in enumerate(
-                book["Data Dictionary"].iter_rows(values_only=True), start=1
+                book["Data Dictionary"].iter_rows(values_only=True),
+                start=1,
             )
             if index > 1 and row[0] is not None
         ]
@@ -66,12 +68,17 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
     for row in records:
         case_id = f"case-{int(row['CaseID']):03d}"
         evidence = []
-        image_names = [name.strip() for name in str(row["Image_filename"] or "").split("&") if name.strip()]
+        image_names = [
+            name.strip() for name in str(row["Image_filename"] or "").split("&") if name.strip()
+        ]
         image_ids = [f"image-{index}" for index in range(len(image_names))]
 
         def source(field):
             return SourceRef(
-                source_id="metadata", path="source.xlsx", record=str(row["CaseID"]), field=field
+                source_id="metadata",
+                path="source.xlsx",
+                record=str(row["CaseID"]),
+                field=field,
             )
 
         for column, visible in (
@@ -112,8 +119,13 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
                     )
                 )
                 if not visible and len(image_ids) != 1:
-                    unknown_relations.append({"case_id": case_id, "mask_evidence_id": f"{column.lower()}-{index}",
-                                              "reason": "No explicit mask-to-image mapping for this Case"})
+                    unknown_relations.append(
+                        {
+                            "case_id": case_id,
+                            "mask_evidence_id": f"{column.lower()}-{index}",
+                            "reason": "No explicit mask-to-image mapping for this Case",
+                        }
+                    )
         for column, value in row.items():
             if column in {"CaseID", "Image_filename", "Mask_tumor_filename", "Mask_other_filename"}:
                 continue
@@ -132,7 +144,8 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
         cases.append(CaseRecord(case_id=case_id, patient_id=None, evidence=evidence))
     for name, rows in (("cases.jsonl", cases), ("assets.jsonl", assets)):
         (output / name).write_text(
-            "".join(row.model_dump_json() + "\n" for row in rows), encoding="utf-8"
+            "".join(row.model_dump_json() + "\n" for row in rows),
+            encoding="utf-8",
         )
     mapping = {
         "case_unit": "One source lesion record and its ordered named ultrasound images; no patient/study grouping inferred",
@@ -154,7 +167,8 @@ def prepare(workbook: Path, image_root: Path, output: Path, limit: int = 20):
         "derivations": "None; original values and masks preserved, no bounding boxes inferred",
     }
     (output / "mapping.json").write_text(
-        json.dumps(mapping, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(mapping, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
     manifest = seal_manifest(
         output,
@@ -188,7 +202,10 @@ def main():
     args = parser.parse_args()
     print(
         prepare(
-            args.workbook.resolve(), args.image_root.resolve(), args.output.resolve(), args.limit
+            args.workbook.resolve(),
+            args.image_root.resolve(),
+            args.output.resolve(),
+            args.limit,
         )
     )
 

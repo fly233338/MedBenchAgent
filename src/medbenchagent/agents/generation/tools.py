@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+
 from langchain.tools import tool, ToolRuntime
+
 from medbenchagent.compilation.artifacts import read_json_artifact, resolve_artifact, register_file
 from medbenchagent.data.task_data import TaskDataReader
 from medbenchagent.planning.contracts import TaskPlan, DataRequirement
@@ -31,7 +33,6 @@ from medbenchagent.agents._shared.handoff import (
     publish_value,
     tool_result,
 )
-
 
 
 class GenerationState(WorkState):
@@ -127,6 +128,7 @@ def generation_tools():
         data_ref = get_ref(runtime, task_data_id, "task_data")
         plan = TaskPlan.model_validate(read_json_artifact(runtime.context.directory, plan_ref))
         from medbenchagent.planning.semantic import scoped_objects
+
         scopes = [s for s in runtime.context.request.scope if s.artifact_id == task_plan_id]
         if not scopes or task_id not in scoped_objects(plan, scopes)[1]:
             raise ValueError("Task is outside the delegated scope")
@@ -166,7 +168,8 @@ def generation_tools():
         for identifier in spec_ids:
             ref = get_ref(runtime, identifier, "generation_spec")
             _, spec, plan, reader = load_execution(
-                binding(ref), lambda p, k: bound_path(runtime, p, k)
+                binding(ref),
+                lambda p, k: bound_path(runtime, p, k),
             )
             if spec.task_id in capacities:
                 raise ValueError("Choose only one specification per task")
@@ -174,6 +177,7 @@ def generation_tools():
         goals = [ref for ref in runtime.context.request.inputs if ref.kind == "benchmark_request"]
         if len(goals) != 1:
             raise ValueError("Bind exactly one benchmark_request with the user quantity target")
+
         if (
             read_json_artifact(runtime.context.directory, goals[0])["sample_count"]
             != requested_count
@@ -182,7 +186,9 @@ def generation_tools():
         allocation = allocate_counts(capacities, requested_count, binding(goals[0]))
         ref = publish_value(runtime, "allocation", allocation)
         return tool_result(
-            runtime, {"artifact_id": ref.artifact_id, **allocation.model_dump()}, artifacts=[ref]
+            runtime,
+            {"artifact_id": ref.artifact_id, **allocation.model_dump()},
+            artifacts=[ref],
         )
 
     @tool
@@ -196,14 +202,19 @@ def generation_tools():
         _, spec, plan, reader = load_execution(binding(ref), lambda p, k: bound_path(runtime, p, k))
         allocation = Allocation.model_validate(
             read_json_artifact(
-                runtime.context.directory, get_ref(runtime, allocation_id, "allocation")
+                runtime.context.directory,
+                get_ref(runtime, allocation_id, "allocation"),
             )
         )
         selected = selected_cases(spec, plan.tasks[spec.task_id], reader)[
             : allocation.counts[spec.task_id]
         ]
         batch = generate_batch(
-            spec, binding(ref), plan.tasks[spec.task_id], reader, selected[offset : offset + limit]
+            spec,
+            binding(ref),
+            plan.tasks[spec.task_id],
+            reader,
+            selected[offset : offset + limit],
         )
         output = publish_value(runtime, "generation_batch", batch)
         return tool_result(
@@ -226,7 +237,8 @@ def generation_tools():
         for identifier in batch_ids:
             batch = GenerationBatch.model_validate(
                 read_json_artifact(
-                    runtime.context.directory, get_ref(runtime, identifier, "generation_batch")
+                    runtime.context.directory,
+                    get_ref(runtime, identifier, "generation_batch"),
                 )
             )
             known.update(item.item_id for item in batch.items)
@@ -234,7 +246,9 @@ def generation_tools():
             raise ValueError("Quarantine requires known items and a reason")
         selected = {**runtime.state.get("quarantined", {}), **dict.fromkeys(item_ids, reason)}
         return tool_result(
-            runtime, {"quarantined": item_ids, "reason": reason}, updates={"quarantined": selected}
+            runtime,
+            {"quarantined": item_ids, "reason": reason},
+            updates={"quarantined": selected},
         )
 
     @tool
@@ -275,7 +289,8 @@ def generation_tools():
         for identifier in spec_ids:
             ref = get_ref(runtime, identifier, "generation_spec")
             actual, spec, _, _ = load_execution(
-                binding(ref), lambda p, k: bound_path(runtime, p, k)
+                binding(ref),
+                lambda p, k: bound_path(runtime, p, k),
             )
             specs.append((actual, spec))
         for identifier in batch_ids:

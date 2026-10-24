@@ -1,4 +1,5 @@
 """Textual Run workbench. Compilation owns execution; screens own navigation."""
+
 import threading
 from pathlib import Path
 
@@ -19,20 +20,40 @@ from .widgets import Composer, ChatMessage
 from .dialogs import DraftScreen, ConnectionScreen, ActivityScreen, ArtifactsScreen
 from .screens import RunsScreen, NameScreen, DatasetScreen
 
-STATES = {"draft": "DRAFT", "ready": "READY", "running": "RUNNING", "paused": "PAUSED", "waiting": "WAITING",
-          "stopped": "STOPPED", "interrupted": "INTERRUPTED", "external": "STUDIO"}
+STATES = {
+    "draft": "DRAFT",
+    "ready": "READY",
+    "running": "RUNNING",
+    "paused": "PAUSED",
+    "waiting": "WAITING",
+    "stopped": "STOPPED",
+    "interrupted": "INTERRUPTED",
+    "external": "STUDIO",
+}
 RESULTS = {"succeeded": "SUCCESS", "partial": "PARTIAL", "blocked": "BLOCKED", "failed": "FAILED"}
-COMMANDS = {"new": "New run", "runs": "Browse runs", "dataset": "Select dataset",
-            "config": "Configure", "pause": "Pause", "resume": "Start / resume",
-            "events": "Trace", "artifacts": "Artifacts", "export": "Export", "help": "Keys"}
+COMMANDS = {
+    "new": "New run",
+    "runs": "Browse runs",
+    "dataset": "Select dataset",
+    "config": "Configure",
+    "pause": "Pause",
+    "resume": "Start / resume",
+    "events": "Trace",
+    "artifacts": "Artifacts",
+    "export": "Export",
+    "help": "Keys",
+}
 
 
 class MBAApp(App):
     TITLE = "MedD2B"
     CSS_PATH = "app.tcss"
-    BINDINGS = [Binding("ctrl+c", "request_quit", "Quit", priority=True),
-                Binding("ctrl+n", "new_run", "New run"), Binding("ctrl+r", "runs", "Runs"),
-                Binding("ctrl+p", "commands", "Commands")]
+    BINDINGS = [
+        Binding("ctrl+c", "request_quit", "Quit", priority=True),
+        Binding("ctrl+n", "new_run", "New run"),
+        Binding("ctrl+r", "runs", "Runs"),
+        Binding("ctrl+p", "commands", "Commands"),
+    ]
 
     def __init__(self, *, root=None, runtime_root=None, config_template=None):
         super().__init__()
@@ -112,14 +133,20 @@ class MBAApp(App):
     def action_copy_run(self):
         if self.selected_run:
             source = self.service.directory
-            self.push_screen(NameScreen(copy_name=self.selected_run), lambda name: self.create_named_run(name, source) if name else None)
+            self.push_screen(
+                NameScreen(copy_name=self.selected_run),
+                lambda name: self.create_named_run(name, source) if name else None,
+            )
 
     @work(thread=True, group="create-run", exclusive=True)
     def create_named_run(self, name, source=None):
         try:
             options = {"root": self.root, "runtime_root": self.runtime_root}
-            record = (sessions.copy_session(source, name, **options) if source else
-                      sessions.create_session(name, template=self.config_template, **options))
+            record = (
+                sessions.copy_session(source, name, **options)
+                if source
+                else sessions.create_session(name, template=self.config_template, **options)
+            )
             self.call_from_thread(self.open_created, record["name"])
         except Exception as exc:
             self.call_from_thread(self.notify, str(sanitize(str(exc))), severity="error")
@@ -131,7 +158,9 @@ class MBAApp(App):
 
     def select_run(self, name, *, preserve_scroll=False):
         history = self.query_one("#conversation", VerticalScroll)
-        viewport = (history.is_vertical_scroll_end, history.scroll_y) if preserve_scroll else (True, 0)
+        viewport = (
+            (history.is_vertical_scroll_end, history.scroll_y) if preserve_scroll else (True, 0)
+        )
         self.selected_run = name
         self.selection += 1
         if not preserve_scroll:
@@ -145,7 +174,14 @@ class MBAApp(App):
     def load_run(self, name, selection, viewport):
         try:
             service = ConversationService(sessions.run_path(name, self.root))
-            self.call_from_thread(self.loaded, name, selection, service.inspect(), service.record(), viewport)
+            self.call_from_thread(
+                self.loaded,
+                name,
+                selection,
+                service.inspect(),
+                service.record(),
+                viewport,
+            )
         except Exception as exc:
             self.call_from_thread(self.notify, str(sanitize(str(exc))), severity="error")
 
@@ -163,19 +199,32 @@ class MBAApp(App):
         for after_work in range(len(history) + 1):
             for index, message in enumerate(record["messages"]):
                 if message.get("after_work", 0) == after_work:
-                    self.chat("you" if message["role"] == "user" else "INPUT REQUIRED", message["text"],
-                              identity=message.get("id", f"message-{index}"))
+                    self.chat(
+                        "you" if message["role"] == "user" else "INPUT REQUIRED",
+                        message["text"],
+                        identity=message.get("id", f"message-{index}"),
+                    )
             if after_work < len(history):
                 item = history[after_work]
-                self.chat(AGENTS.get(item["agent_id"], item["agent_id"]), item["summary"], identity=item["request_id"])
+                self.chat(
+                    AGENTS.get(item["agent_id"], item["agent_id"]),
+                    item["summary"],
+                    identity=item["request_id"],
+                )
         self.show_question(view)
         if view["status"] == "stopped":
-            self.chat("RESULT", f"{RESULTS.get(view.get('goal_result'), '')}\n{view.get('summary', '')}", identity="finish")
+            self.chat(
+                "RESULT",
+                f"{RESULTS.get(view.get('goal_result'), '')}\n{view.get('summary', '')}",
+                identity="finish",
+            )
         if view.get("error"):
             self.chat("INTERRUPTED", view["error"], identity="execution-error")
         self.rendering_history = False
         history = self.query_one("#conversation", VerticalScroll)
-        self.call_after_refresh(history.scroll_end, animate=False) if viewport[0] else self.call_after_refresh(history.scroll_to, y=viewport[1], animate=False)
+        self.call_after_refresh(history.scroll_end, animate=False) if viewport[
+            0
+        ] else self.call_after_refresh(history.scroll_to, y=viewport[1], animate=False)
         self.render_status()
         self.render_agents()
 
@@ -199,23 +248,46 @@ class MBAApp(App):
     def show_question(self, view):
         if view.get("questions"):
             question = view["questions"][0]
-            self.chat("INPUT REQUIRED", question.get("question", str(question)),
-                      identity="question-" + str(view.get("question_id")))
+            self.chat(
+                "INPUT REQUIRED",
+                question.get("question", str(question)),
+                identity="question-" + str(view.get("question_id")),
+            )
             self.query_one(Composer).focus()
 
     def render_status(self):
         active = self.running and self.selected_run == self.active_run
-        status = "PAUSING" if active and self.stop_event.is_set() else "RUNNING" if active else STATES.get(self.view.get("status"), "Select run")
+        status = (
+            "PAUSING"
+            if active and self.stop_event.is_set()
+            else "RUNNING"
+            if active
+            else STATES.get(self.view.get("status"), "Select run")
+        )
         if self.running and not active:
             status += f" · {self.active_run} RUNNING"
         quantity = ""
         if counts := self.view.get("counts"):
             quantity = f" · {self.view.get('count_kind', '')} {counts.get('accepted', '?')}/{counts.get('requested', '?')}"
-        self.query_one("#run-status", Static).update(Text(f"{status}{quantity} · {RESULTS.get(self.view.get('goal_result'), '')}", overflow="ellipsis", no_wrap=True))
-        self.query_one("#title", Static).update(Text(f"MedD2B / {self.selected_run or 'Runs'}", overflow="ellipsis", no_wrap=True))
+        self.query_one("#run-status", Static).update(
+            Text(
+                f"{status}{quantity} · {RESULTS.get(self.view.get('goal_result'), '')}",
+                overflow="ellipsis",
+                no_wrap=True,
+            )
+        )
+        self.query_one("#title", Static).update(
+            Text(f"MedD2B / {self.selected_run or 'Runs'}", overflow="ellipsis", no_wrap=True)
+        )
         self.query_one("#pause", Button).disabled = not active or self.stop_event.is_set()
-        self.query_one("#resume", Button).disabled = self.running or not self.selected_run or self.view.get("status") not in {"draft", "ready", "paused", "interrupted"}
-        self.query_one("#resume", Button).label = "Start" if self.view.get("status") in {"draft", "ready"} else "Resume"
+        self.query_one("#resume", Button).disabled = (
+            self.running
+            or not self.selected_run
+            or self.view.get("status") not in {"draft", "ready", "paused", "interrupted"}
+        )
+        self.query_one("#resume", Button).label = (
+            "Start" if self.view.get("status") in {"draft", "ready"} else "Resume"
+        )
         for selector in ("#settings", "#task", "#dataset"):
             self.query_one(selector, Button).disabled = not self.selected_run or active
 
@@ -231,8 +303,15 @@ class MBAApp(App):
             text = row["action"] if row else "idle"
             if row and row["running"] and self.view.get("status") != "running":
                 text = "last: " + text
-            duration = f"{elapsed(row)}s" if row and row["running"] and self.running and self.selected_run == self.active_run else (
-                f"{row['event']['elapsed_ms'] / 1000:.1f}s" if row and row["event"].get("elapsed_ms") is not None else "—")
+            duration = (
+                f"{elapsed(row)}s"
+                if row and row["running"] and self.running and self.selected_run == self.active_run
+                else (
+                    f"{row['event']['elapsed_ms'] / 1000:.1f}s"
+                    if row and row["event"].get("elapsed_ms") is not None
+                    else "—"
+                )
+            )
             table.add_row(label, Text(text, overflow="ellipsis", no_wrap=True), duration, key=agent)
         if enabled:
             table.move_cursor(row=min(selected, len(enabled) - 1))
@@ -263,13 +342,20 @@ class MBAApp(App):
             self.latest_activity[row["agent_id"]] = row
         if rows:
             self.render_agents()
-            self.query_one("#activity-preview", Static).update(Text(rows[-1]["action"] + "\n" + rows[-1].get("summary", ""), overflow="ellipsis"))
+            self.query_one("#activity-preview", Static).update(
+                Text(rows[-1]["action"] + "\n" + rows[-1].get("summary", ""), overflow="ellipsis")
+            )
             if isinstance(self.screen, ActivityScreen):
                 self.screen.update_rows(list(reader.events))
 
     @on(DataTable.RowSelected, "#agents")
     def activity_selected(self, event):
-        self.push_screen(ActivityScreen(list(self.reader.events) if self.reader else [], str(event.row_key.value)))
+        self.push_screen(
+            ActivityScreen(
+                list(self.reader.events) if self.reader else [],
+                str(event.row_key.value),
+            )
+        )
 
     def configure_task(self):
         if not self.selected_run:
@@ -277,7 +363,10 @@ class MBAApp(App):
         if self.view.get("status") != "draft":
             self.notify("Run frozen. Clone to edit.")
             return
-        self.push_screen(DraftScreen(self.draft.model_copy(deep=True), self.service.directory), self.draft_ready)
+        self.push_screen(
+            DraftScreen(self.draft.model_copy(deep=True), self.service.directory),
+            self.draft_ready,
+        )
 
     def draft_ready(self, result):
         if result is None:
@@ -301,7 +390,11 @@ class MBAApp(App):
     @on(TextArea.Changed, "#message")
     def command_changed(self):
         text = self.query_one(Composer).text
-        self.command_matches = [key for key in COMMANDS if key.startswith(text[1:])] if text.startswith("/") and "\n" not in text else []
+        self.command_matches = (
+            [key for key in COMMANDS if key.startswith(text[1:])]
+            if text.startswith("/") and "\n" not in text
+            else []
+        )
         options = self.query_one("#command-options", OptionList)
         options.clear_options()
         options.add_options([f"/{key}  {COMMANDS[key]}" for key in self.command_matches])
@@ -318,7 +411,9 @@ class MBAApp(App):
         if event.key == "tab":
             self.query_one(Composer).load_text("/" + self.command_matches[index])
         else:
-            options.highlighted = (index + (1 if event.key == "down" else -1)) % len(self.command_matches)
+            options.highlighted = (index + (1 if event.key == "down" else -1)) % len(
+                self.command_matches
+            )
 
     @on(OptionList.OptionSelected, "#command-options")
     def command_selected(self, event):
@@ -357,19 +452,35 @@ class MBAApp(App):
     def dispatch(self, action):
         if action == "new":
             return self.action_new_run()
+
         if action == "runs":
             return self.action_runs()
         if action == "help":
-            self.notify("^N new · ^R runs · ^P commands · Tab complete · Enter send · ^C quit", timeout=12)
+            self.notify(
+                "^N new · ^R runs · ^P commands · Tab complete · Enter send · ^C quit",
+                timeout=12,
+            )
             return
         if not self.selected_run:
             self.notify("Select a run.")
             return
-        if action in {"dataset", "config"} and self.running and self.selected_run == self.active_run:
+        if (
+            action in {"dataset", "config"}
+            and self.running
+            and self.selected_run == self.active_run
+        ):
             self.notify("Pause before editing.")
             return
         if action == "dataset":
-            self.push_screen(DatasetScreen(self.draft, directory=self.service.directory, catalog=self.runtime_root.parent / "datasets.json", frozen=self.view.get("status") != "draft"), self.dataset_selected)
+            self.push_screen(
+                DatasetScreen(
+                    self.draft,
+                    directory=self.service.directory,
+                    catalog=self.runtime_root.parent / "datasets.json",
+                    frozen=self.view.get("status") != "draft",
+                ),
+                self.dataset_selected,
+            )
         elif action == "config":
             self.push_screen(ConnectionScreen(self.service.directory / "config.toml", self.draft))
         elif action == "pause":
@@ -391,7 +502,18 @@ class MBAApp(App):
 
     @on(Button.Pressed)
     def pressed(self, event):
-        if isinstance(self.screen, (RunsScreen, NameScreen, DatasetScreen, DraftScreen, ConnectionScreen, ActivityScreen, ArtifactsScreen)):
+        if isinstance(
+            self.screen,
+            (
+                RunsScreen,
+                NameScreen,
+                DatasetScreen,
+                DraftScreen,
+                ConnectionScreen,
+                ActivityScreen,
+                ArtifactsScreen,
+            ),
+        ):
             return
         action = event.button.id
         if action == "copy-run":
@@ -401,7 +523,12 @@ class MBAApp(App):
         elif action == "send":
             self.send(self.query_one(Composer).text)
         else:
-            self.dispatch({"settings": "config", "details": "events", "products": "artifacts"}.get(action, action))
+            self.dispatch(
+                {"settings": "config", "details": "events", "products": "artifacts"}.get(
+                    action,
+                    action,
+                )
+            )
 
     def start_execution(self, *, draft=None, answer=None):
         if self.running or not self.selected_run:
@@ -410,8 +537,13 @@ class MBAApp(App):
         self.active_run = self.selected_run
         self.stop_event.clear()
         self.render_status()
-        self.execute(self.selected_run, draft, answer, self.view.get("question_id") if answer is not None else None,
-                     self.view.get("status") not in {"draft", "ready"})
+        self.execute(
+            self.selected_run,
+            draft,
+            answer,
+            self.view.get("question_id") if answer is not None else None,
+            self.view.get("status") not in {"draft", "ready"},
+        )
 
     @work(thread=True, exclusive=True, group="execution")
     def execute(self, name, draft, answer, question_id, resume):
@@ -423,7 +555,12 @@ class MBAApp(App):
                     return
                 service.submit_draft(draft)
                 self.call_from_thread(self.started, name, draft)
-            for event in service.run(resume=resume, answer=answer, question_id=question_id, stop_requested=self.stop_event.is_set):
+            for event in service.run(
+                resume=resume,
+                answer=answer,
+                question_id=question_id,
+                stop_requested=self.stop_event.is_set,
+            ):
                 self.call_from_thread(self.show_event, name, event)
         except Exception as exc:
             self.call_from_thread(self.execution_error, name, str(sanitize(str(exc))))
@@ -432,7 +569,11 @@ class MBAApp(App):
 
     def started(self, name, draft):
         if name == self.selected_run:
-            self.view = {"status": "running", "goal": draft.goal, "run_directory": str(self.service.directory)}
+            self.view = {
+                "status": "running",
+                "goal": draft.goal,
+                "run_directory": str(self.service.directory),
+            }
             self.reader = self.service.activity_reader()
             self.latest_activity.clear()
             self.chat("you", draft.goal, identity="goal")
@@ -444,18 +585,30 @@ class MBAApp(App):
         if event.kind == "initialized":
             self.view = event.payload
         elif event.kind == "answer_accepted":
-            self.chat("you", event.payload["answer"], identity="answer-" + str(event.payload["question_id"]))
+            self.chat(
+                "you",
+                event.payload["answer"],
+                identity="answer-" + str(event.payload["question_id"]),
+            )
             self.query_one(Composer).load_text("")
             self.pending_answer = None
         elif event.kind == "progress":
             self.view = event.payload["view"]
             row = event.payload["work"]
-            self.chat(AGENTS.get(row["agent_id"], row["agent_id"]), row["summary"], identity=row["request_id"])
+            self.chat(
+                AGENTS.get(row["agent_id"], row["agent_id"]),
+                row["summary"],
+                identity=row["request_id"],
+            )
         elif event.kind in {"finished", "needs_input", "paused"}:
             self.view = event.payload
             self.show_question(self.view)
             if event.kind == "finished":
-                self.chat("RESULT", f"{RESULTS.get(self.view.get('goal_result'), '')}\n{self.view.get('summary', '')}", identity="finish")
+                self.chat(
+                    "RESULT",
+                    f"{RESULTS.get(self.view.get('goal_result'), '')}\n{self.view.get('summary', '')}",
+                    identity="finish",
+                )
         self.render_status()
 
     def execution_error(self, name, message):

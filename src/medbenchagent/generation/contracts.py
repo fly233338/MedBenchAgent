@@ -1,6 +1,7 @@
 """Execution bindings and immutable generation products; Leaf owns assembly semantics."""
 
 from typing import Any
+
 from pydantic import Field, model_validator
 
 from medbenchagent.contracts import BenchmarkItem
@@ -96,6 +97,7 @@ class ReviewReport(CanonicalModel):
             for values in (self.checked_task_ids, self.checked_scenario_ids, self.checked_item_ids)
         ):
             raise ValueError("Review coverage IDs must be unique")
+
         if self.approved and (self.unchecked_scope or any(f.blocking for f in self.findings)):
             raise ValueError("Approved Review cannot contain blocking findings or unchecked scope")
         return self
@@ -116,17 +118,22 @@ def validate_generation_spec(
         or task.revision != spec.task_revision
     ):
         raise ValueError("Task revision is excluded or not ready")
+
     if task.task_data != spec.task_data or reader.content_digest != spec.task_data.digest:
         raise ValueError("GenerationSpec binds another TaskData product")
     acceptance = plan.task_data_acceptances.get(spec.task_data.artifact_id)
     if acceptance is None or acceptance.digest != spec.task_data.digest:
         raise ValueError("Planner has not accepted this TaskData")
+
     if set(task.requirement_ids) - plan.acceptances.keys():
         raise ValueError("Leaf has unaccepted data requirements")
+
     if task.dataset != reader.manifest.dataset:
         raise ValueError("TaskData belongs to another source dataset revision")
+
     if plan.scenarios[task.scenario_id].decision != "keep":
         raise ValueError("Task Scenario is not kept")
+
     if (
         task.assembly is not None
         and task.assembly.backend_id not in plan.scenarios[task.scenario_id].backend_ids

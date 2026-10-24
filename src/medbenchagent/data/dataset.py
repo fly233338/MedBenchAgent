@@ -43,8 +43,17 @@ def file_digest(path: Path) -> str:
 
 
 def _referenced_members(root, manifest):
-    paths = {(None, value) for value in (manifest.cases_path, manifest.assets_path,
-             manifest.mapping_path, manifest.sampling_path, manifest.split_path) if value}
+    paths = {
+        (None, value)
+        for value in (
+            manifest.cases_path,
+            manifest.assets_path,
+            manifest.mapping_path,
+            manifest.sampling_path,
+            manifest.split_path,
+        )
+        if value
+    }
     assets = _rows(_relative_file(root, manifest.assets_path), AssetEntry)
     cases = _rows(_relative_file(root, manifest.cases_path), CaseRecord)
     paths.update((asset.source_id, asset.source_path) for asset in assets)
@@ -58,9 +67,17 @@ def seal_manifest(root: Path, manifest: DatasetManifest) -> DatasetManifest:
     """Explicit producer operation. Readers never recompute accepted identities."""
     root = root.resolve()
     sources = {source.source_id: (root / source.root).resolve() for source in manifest.sources}
-    members = [DatasetMember(source_id=source, path=path, digest=file_digest(
-        _relative_file(root if source is None else sources[source], path)))
-        for source, path in sorted(_referenced_members(root, manifest), key=lambda item: (item[0] or "", item[1]))]
+    members = [
+        DatasetMember(
+            source_id=source,
+            path=path,
+            digest=file_digest(_relative_file(root if source is None else sources[source], path)),
+        )
+        for source, path in sorted(
+            _referenced_members(root, manifest),
+            key=lambda item: (item[0] or "", item[1]),
+        )
+    ]
     return manifest.model_copy(update={"members": members})
 
 
@@ -88,13 +105,21 @@ def snapshot_dataset(source: Path, destination: Path) -> Path:
 
     for member in manifest.members:
         root = reader._root if member.source_id is None else reader._source_roots[member.source_id]
-        relative = member.path if member.source_id is None else f"sources/{member.source_id}/{member.path}"
+        relative = (
+            member.path if member.source_id is None else f"sources/{member.source_id}/{member.path}"
+        )
         content = _relative_file(root, member.path).read_bytes()
         if hashlib.sha256(content).hexdigest() != member.digest:
             raise ValueError("Dataset member changed during snapshot")
         copy_once(relative, content)
-    frozen = manifest.model_copy(update={"sources": [DatasetSource(
-        source_id=item.source_id, root=f"sources/{item.source_id}") for item in manifest.sources]})
+    frozen = manifest.model_copy(
+        update={
+            "sources": [
+                DatasetSource(source_id=item.source_id, root=f"sources/{item.source_id}")
+                for item in manifest.sources
+            ]
+        }
+    )
     copy_once("manifest.json", (frozen.model_dump_json(indent=2) + "\n").encode("utf-8"))
     FileDatasetReader(destination / "manifest.json")
     return destination / "manifest.json"
@@ -127,6 +152,7 @@ def _relative_file(root: Path, value: str) -> Path:
     resolved = (root / path).resolve()
     if not resolved.is_relative_to(root):
         raise ValueError(f"File escapes its declared root: {value}")
+
     if not resolved.is_file():
         raise FileNotFoundError(resolved)
     return resolved
@@ -168,23 +194,31 @@ class FileDatasetReader:
                 raise FileNotFoundError(root)
             self._source_roots[source.source_id] = root
         for value in (
-            self._manifest.mapping_path, self._manifest.sampling_path, self._manifest.split_path,
+            self._manifest.mapping_path,
+            self._manifest.sampling_path,
+            self._manifest.split_path,
         ):
             if value is not None:
                 _relative_file(self._root, value)
         self._assets = _unique(
             _rows(_relative_file(self._root, self._manifest.assets_path), AssetEntry),
-            "asset_id", "Asset ID",
+            "asset_id",
+            "Asset ID",
         )
         self._cases = _unique(
             _rows(_relative_file(self._root, self._manifest.cases_path), CaseRecord),
-            "case_id", "Case ID",
+            "case_id",
+            "Case ID",
         )
         self._case_ids = sorted(self._cases)
         accepted = {(member.source_id, member.path) for member in self._manifest.members}
-        if (len(accepted) != len(self._manifest.members)
-                or accepted != _referenced_members(self._root, self._manifest)):
-            raise ValueError("Dataset members must cover exactly the referenced files without duplicates")
+        if len(accepted) != len(self._manifest.members) or accepted != _referenced_members(
+            self._root,
+            self._manifest,
+        ):
+            raise ValueError(
+                "Dataset members must cover exactly the referenced files without duplicates"
+            )
         for asset in self._assets.values():
             self.resolve_asset(asset.asset_id)
         for case in self._cases.values():
@@ -204,6 +238,7 @@ class FileDatasetReader:
     def verify_integrity(self):
         if self._initializing:
             return
+
         if file_digest(self._path) != self._digest:
             raise ValueError("Dataset manifest content changed")
         for member in self._manifest.members:
@@ -220,7 +255,9 @@ class FileDatasetReader:
         self.verify_integrity()
         if self._manifest.mapping_path is None:
             return None
-        return json.loads(_relative_file(self._root, self._manifest.mapping_path).read_text(encoding="utf-8"))
+        return json.loads(
+            _relative_file(self._root, self._manifest.mapping_path).read_text(encoding="utf-8")
+        )
 
     def _check_source(self, reference: SourceRef) -> None:
         if reference.source_id not in self._source_roots:
@@ -235,7 +272,7 @@ class FileDatasetReader:
         self.verify_integrity()
         if type(offset) is not int or type(limit) is not int or offset < 0 or limit <= 0:
             raise ValueError("offset must be nonnegative and limit must be positive integers")
-        ids = self._case_ids[offset:offset + limit]
+        ids = self._case_ids[offset : offset + limit]
         end = offset + len(ids)
         return CasePage(
             items=[self._cases[identifier].model_copy(deep=True) for identifier in ids],
@@ -265,5 +302,7 @@ class FileDatasetReader:
         if file_digest(path) != asset.file_digest:
             raise ValueError(f"Asset content changed: {asset_id}")
         return ResolvedLocator(
-            source_id=asset.source_id, path=str(path), file_digest=asset.file_digest,
+            source_id=asset.source_id,
+            path=str(path),
+            file_digest=asset.file_digest,
         )

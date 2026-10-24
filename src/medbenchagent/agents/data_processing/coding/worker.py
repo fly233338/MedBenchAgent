@@ -19,7 +19,14 @@ import uuid
 
 from pydantic import Field
 
-from medbenchagent.compilation.contracts import Contract, Identifier, Text, WorkIssue, WorkOutcome, WorkRequest
+from medbenchagent.compilation.contracts import (
+    Contract,
+    Identifier,
+    Text,
+    WorkIssue,
+    WorkOutcome,
+    WorkRequest,
+)
 from .skills import FrozenSkills, load_native_skills
 from medbenchagent.runtime.construction import record_event, payload_summary, result_summary
 
@@ -51,32 +58,42 @@ class CodingSubmission(Contract):
 
 def failure(request_id: str, outcome: WorkOutcome, code: str, message: str) -> CodingCandidate:
     return CodingCandidate(
-        request_id=request_id, outcome=outcome, summary=message,
+        request_id=request_id,
+        outcome=outcome,
+        summary=message,
         issues=[WorkIssue(code=code, message=message)],
     )
 
 
 def _host_message(event) -> bool:
-    return (getattr(event, "source", None) == "user"
-            and getattr(getattr(event, "llm_message", None), "role", None) == "user"
-            and str(getattr(event, "sender", "") or "").startswith("compilation:"))
+    return (
+        getattr(event, "source", None) == "user"
+        and getattr(getattr(event, "llm_message", None), "role", None) == "user"
+        and str(getattr(event, "sender", "") or "").startswith("compilation:")
+    )
 
 
 def _turn_events(conversation, request_id: str, message: str):
     events = list(conversation.state.events)
-    matches = [index for index, event in enumerate(events)
-               if _host_message(event) and event.sender == f"compilation:{request_id}"]
+    matches = [
+        index
+        for index, event in enumerate(events)
+        if _host_message(event) and event.sender == f"compilation:{request_id}"
+    ]
     if not matches:
         return None, False
+
     if len(matches) != 1:
         raise ValueError("Duplicate durable Host messages for the same request")
     start = matches[0]
     original = "".join(getattr(part, "text", "") for part in events[start].llm_message.content)
     if original != message:
         raise ValueError("A request ID cannot be reused with different work or input locations")
-    end = next((index for index in range(start + 1, len(events)) if _host_message(events[index])),
-               len(events))
-    return events[start + 1:end], end < len(events)
+    end = next(
+        (index for index in range(start + 1, len(events)) if _host_message(events[index])),
+        len(events),
+    )
+    return events[start + 1 : end], end < len(events)
 
 
 def execute_turn(conversation, finish_tool, request: WorkRequest, prompt: str) -> CodingCandidate:
@@ -98,78 +115,161 @@ def execute_turn(conversation, finish_tool, request: WorkRequest, prompt: str) -
     if events is not None:
         if candidate := submitted(events):
             return candidate
+
         if superseded:
-            return failure(request.request_id, "failed", "superseded_request",
-                           "This unfinished request was already followed by another Host request")
+            return failure(
+                request.request_id,
+                "failed",
+                "superseded_request",
+                "This unfinished request was already followed by another Host request",
+            )
     else:
         conversation.send_message(message, sender=f"compilation:{request.request_id}")
     conversation.run()
     events, _ = _turn_events(conversation, request.request_id, message)
     if candidate := submitted(events or []):
         return candidate
-    status = getattr(conversation.state.execution_status, "value", conversation.state.execution_status)
-    return failure(request.request_id, "blocked" if status == "stuck" else "failed",
-                   "sdk_incomplete", f"OpenHands stopped without a submitted result (status={status})")
+    status = getattr(
+        conversation.state.execution_status,
+        "value",
+        conversation.state.execution_status,
+    )
+    return failure(
+        request.request_id,
+        "blocked" if status == "stuck" else "failed",
+        "sdk_incomplete",
+        f"OpenHands stopped without a submitted result (status={status})",
+    )
 
 
 def activity_callback(payload, secrets=()):
     """Project only executable actions and observations, never SDK reasoning messages."""
     from openhands.sdk.event import ActionEvent, ObservationEvent
     from openhands.sdk.event.conversation_error import ConversationErrorEvent
+
     from time import perf_counter
+
     started = {}
-    identity = {"compilation_id": payload["request"]["compilation_id"], "agent_id": "coding",
-                "request_id": payload["request"]["request_id"], "parent_request_id": payload.get("parent_request_id"),
-                "operation": payload.get("parent_operation") or "execute", "workstream_id": payload["request"]["workstream_id"]}
+    identity = {
+        "compilation_id": payload["request"]["compilation_id"],
+        "agent_id": "coding",
+        "request_id": payload["request"]["request_id"],
+        "parent_request_id": payload.get("parent_request_id"),
+        "operation": payload.get("parent_operation") or "execute",
+        "workstream_id": payload["request"]["workstream_id"],
+    }
     path = Path(payload["runtime_directory"]) / "events.jsonl"
+
     def observe(event):
         values = {**identity, "event_id": payload["conversation_id"] + ":" + str(event.id)}
         if isinstance(event, ActionEvent):
             if event.tool_name == "ThinkTool":
                 return
             started[event.tool_call_id] = perf_counter()
-            record_event(path, "coding_action", redactions=secrets, **values, tool_name=event.tool_name,
-                         tool_call_id=event.tool_call_id, model_call_id=str(event.llm_response_id),
-                         arguments=payload_summary(event.action.model_dump(mode="json")) if event.action else {})
+            record_event(
+                path,
+                "coding_action",
+                redactions=secrets,
+                **values,
+                tool_name=event.tool_name,
+                tool_call_id=event.tool_call_id,
+                model_call_id=str(event.llm_response_id),
+                arguments=payload_summary(event.action.model_dump(mode="json"))
+                if event.action
+                else {},
+            )
         elif isinstance(event, ObservationEvent):
             beginning = started.pop(event.tool_call_id, None)
             output = "".join(getattr(part, "text", "") for part in event.observation.to_llm_content)
-            record_event(path, "coding_observation", redactions=secrets, **values, tool_name=event.tool_name,
-                         tool_call_id=event.tool_call_id, output=result_summary(output), status="failed" if event.observation.is_error else "completed",
-                         elapsed_ms=int((perf_counter() - beginning) * 1000) if beginning is not None else None)
+            record_event(
+                path,
+                "coding_observation",
+                redactions=secrets,
+                **values,
+                tool_name=event.tool_name,
+                tool_call_id=event.tool_call_id,
+                output=result_summary(output),
+                status="failed" if event.observation.is_error else "completed",
+                elapsed_ms=int((perf_counter() - beginning) * 1000)
+                if beginning is not None
+                else None,
+            )
         elif isinstance(event, ConversationErrorEvent):
-            record_event(path, "coding_error", redactions=secrets, **values, summary="OpenHands conversation error")
+            record_event(
+                path,
+                "coding_error",
+                redactions=secrets,
+                **values,
+                summary="OpenHands conversation error",
+            )
+
     return observe
 
 
 def model_callback(payload):
     """Observe the SDK's native provider calls, including its condenser and retries."""
     from litellm.integrations.custom_logger import CustomLogger
-    identity = {"compilation_id": payload["request"]["compilation_id"], "agent_id": "coding",
-                "request_id": payload["request"]["request_id"], "parent_request_id": payload.get("parent_request_id"),
-                "operation": payload.get("parent_operation") or "execute", "workstream_id": payload["request"]["workstream_id"]}
+
+    identity = {
+        "compilation_id": payload["request"]["compilation_id"],
+        "agent_id": "coding",
+        "request_id": payload["request"]["request_id"],
+        "parent_request_id": payload.get("parent_request_id"),
+        "operation": payload.get("parent_operation") or "execute",
+        "workstream_id": payload["request"]["workstream_id"],
+    }
     path = Path(payload["runtime_directory"]) / "events.jsonl"
 
     class Observer(CustomLogger):
         def call_id(self, kwargs):
-            return str(kwargs.get("litellm_call_id") or kwargs.get("litellm_params", {}).get("litellm_call_id") or "unavailable")
+            return str(
+                kwargs.get("litellm_call_id")
+                or kwargs.get("litellm_params", {}).get("litellm_call_id")
+                or "unavailable"
+            )
 
         def log_pre_api_call(self, model, messages, kwargs):
-            record_event(path, "model_started", **identity, model=model, model_call_id=self.call_id(kwargs))
+            record_event(
+                path,
+                "model_started",
+                **identity,
+                model=model,
+                model_call_id=self.call_id(kwargs),
+            )
 
         def log_success_event(self, kwargs, response_obj, start_time, end_time):
             usage = getattr(response_obj, "usage", None)
             input_tokens = getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", None))
-            output_tokens = getattr(usage, "completion_tokens", getattr(usage, "output_tokens", None))
+            output_tokens = getattr(
+                usage,
+                "completion_tokens",
+                getattr(usage, "output_tokens", None),
+            )
             available = isinstance(input_tokens, int) and isinstance(output_tokens, int)
-            record_event(path, "model_finished", **identity, model=kwargs.get("model"), model_call_id=self.call_id(kwargs),
-                         provider_response_id=getattr(response_obj, "id", None),
-                         elapsed_ms=int((end_time - start_time).total_seconds() * 1000), token_usage_available=available,
-                         input_tokens=input_tokens if available else None, output_tokens=output_tokens if available else None)
+            record_event(
+                path,
+                "model_finished",
+                **identity,
+                model=kwargs.get("model"),
+                model_call_id=self.call_id(kwargs),
+                provider_response_id=getattr(response_obj, "id", None),
+                elapsed_ms=int((end_time - start_time).total_seconds() * 1000),
+                token_usage_available=available,
+                input_tokens=input_tokens if available else None,
+                output_tokens=output_tokens if available else None,
+            )
 
         def log_failure_event(self, kwargs, response_obj, start_time, end_time):
-            record_event(path, "model_failed", **identity, model=kwargs.get("model"), model_call_id=self.call_id(kwargs),
-                         elapsed_ms=int((end_time - start_time).total_seconds() * 1000), summary="Coding model invocation failed")
+            record_event(
+                path,
+                "model_failed",
+                **identity,
+                model=kwargs.get("model"),
+                model_call_id=self.call_id(kwargs),
+                elapsed_ms=int((end_time - start_time).total_seconds() * 1000),
+                summary="Coding model invocation failed",
+            )
+
     return Observer()
 
 
@@ -200,38 +300,61 @@ def _conversation(payload):
     llm = LLM(
         # /models supplied an exact served ID, which may itself contain slashes.
         model=f"openai/{name}",
-        base_url=model["base_url"], api_key=SecretStr(key),
-        usage_id="compilation_coding", num_retries=model["max_retries"],
+        base_url=model["base_url"],
+        api_key=SecretStr(key),
+        usage_id="compilation_coding",
+        num_retries=model["max_retries"],
         timeout=max(1, math.ceil(model["timeout_seconds"])),
         temperature=model["default_temperature"],
         reasoning_effort=model["reasoning_effort"] or None,
         max_output_tokens=runtime["max_output_tokens"],
         log_completions=False,
     )
-    finish_spec = Tool(name="FinishTool", params={"response_schema": CodingSubmission.model_json_schema()})
+    finish_spec = Tool(
+        name="FinishTool",
+        params={"response_schema": CodingSubmission.model_json_schema()},
+    )
     agent = Agent(
         llm=llm,
         agent_context=AgentContext(
-            skills=load_native_skills(Path(payload["runtime_directory"]), FrozenSkills.model_validate(payload["skills"])),
-            load_user_skills=False, load_public_skills=False, load_project_skills=False, load_memory=False,
+            skills=load_native_skills(
+                Path(payload["runtime_directory"]),
+                FrozenSkills.model_validate(payload["skills"]),
+            ),
+            load_user_skills=False,
+            load_public_skills=False,
+            load_project_skills=False,
+            load_memory=False,
         ),
-        tools=[Tool(name=TerminalTool.name, params={"terminal_type": "powershell"} if os.name == "nt" else {}),
-               Tool(name=FileEditorTool.name), finish_spec],
+        tools=[
+            Tool(
+                name=TerminalTool.name,
+                params={"terminal_type": "powershell"} if os.name == "nt" else {},
+            ),
+            Tool(name=FileEditorTool.name),
+            finish_spec,
+        ],
         include_default_tools=["ThinkTool"],
         condenser=LLMSummarizingCondenser(
             llm=llm.model_copy(update={"usage_id": "compilation_coding_context"}),
-            max_size=runtime["condenser_max_events"], keep_first=2,
+            max_size=runtime["condenser_max_events"],
+            keep_first=2,
             max_tokens=runtime["condenser_max_tokens"],
         ),
     )
     conversation = Conversation(
-        agent=agent, workspace=Path(payload["workspace"]),
+        agent=agent,
+        workspace=Path(payload["workspace"]),
         persistence_dir=Path(payload["persistence_dir"]),
         conversation_id=uuid.UUID(payload["conversation_id"]),
         max_iteration_per_run=runtime["max_iterations"],
-        stuck_detection=True, delete_on_close=False, visualizer=None,
-        observability_metadata={name: payload["request"][name]
-                                for name in ("compilation_id", "request_id", "agent_id", "workstream_id")},
+        stuck_detection=True,
+        delete_on_close=False,
+        visualizer=None,
+        observability_metadata={
+            name: payload["request"][name]
+            for name in ("compilation_id", "request_id", "agent_id", "workstream_id")
+        },
         callbacks=[activity_callback(payload, [key])],
     )
     # Resolving the builtin parser does not initialize terminal tools or call a model.
@@ -242,7 +365,9 @@ def main():
     payload = json.load(sys.stdin)
     request = WorkRequest.model_validate(payload["request"])
     conversation = None
-    secrets = [os.environ.get(name) for name in ("MEDBENCH_CODING_LLM_API_KEY", "MEDBENCH_LLM_API_KEY")]
+    secrets = [
+        os.environ.get(name) for name in ("MEDBENCH_CODING_LLM_API_KEY", "MEDBENCH_LLM_API_KEY")
+    ]
 
     def diagnostic(exc):
         message = f"{type(exc).__name__}: {exc}"
@@ -256,15 +381,23 @@ def main():
         try:
             conversation, finish_tool = _conversation(payload)
         except Exception as exc:
-            candidate = failure(request.request_id, "blocked", "environment_unavailable",
-                                f"Cannot open the frozen Coding environment: {diagnostic(exc)}")
+            candidate = failure(
+                request.request_id,
+                "blocked",
+                "environment_unavailable",
+                f"Cannot open the frozen Coding environment: {diagnostic(exc)}",
+            )
             print(f"Coding setup: {diagnostic(exc)}", file=sys.stderr)
         else:
             try:
                 candidate = execute_turn(conversation, finish_tool, request, payload["prompt"])
             except Exception as exc:
-                candidate = failure(request.request_id, "failed", "coding_execution_failed",
-                                    f"OpenHands execution failed: {diagnostic(exc)}")
+                candidate = failure(
+                    request.request_id,
+                    "failed",
+                    "coding_execution_failed",
+                    f"OpenHands execution failed: {diagnostic(exc)}",
+                )
                 print(f"Coding execution: {diagnostic(exc)}", file=sys.stderr)
             finally:
                 conversation.close()

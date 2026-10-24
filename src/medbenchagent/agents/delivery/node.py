@@ -41,7 +41,8 @@ def delivery_spec():
             audit = AuditReport.model_validate(read_json_artifact(directory, audit_ref))
             review = ReviewReport.model_validate(read_json_artifact(directory, review_ref))
             bound = SimpleNamespace(
-                state={}, context=SimpleNamespace(directory=directory, request=request)
+                state={},
+                context=SimpleNamespace(directory=directory, request=request),
             )
             executions = {
                 spec.artifact_id: load_execution(spec, lambda p, k: bound_path(bound, p, k))
@@ -71,7 +72,10 @@ def delivery_spec():
                 limitation_reason=reason,
             )
             ref = register_file(
-                directory, request, path.relative_to(directory).as_posix(), kind="delivery_manifest"
+                directory,
+                request,
+                path.relative_to(directory).as_posix(),
+                kind="delivery_manifest",
             )
             result = WorkResult(
                 request_id=request.request_id,
@@ -92,5 +96,6 @@ def delivery_spec():
         "Deterministic portable delivery. Bind exactly one candidate, matching Audit/Review and all referenced "
         "specs, TaskPlans and TaskData. Empty or blocking results cannot publish. For a nonempty limited delivery, "
         "the frozen goal must permit limited delivery; explain limitations in the objective/constraints.",
-        node, operations=("publish",),
+        node,
+        operations=("publish",),
     )

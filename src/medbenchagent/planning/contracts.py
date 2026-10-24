@@ -9,9 +9,7 @@ from medbenchagent.data.models import CanonicalModel, EvidenceRef
 from medbenchagent.data.task_data import ProductBinding
 
 
-TaskFamily = Literal[
-    "closed_vqa", "open_vqa", "report_generation", "visual_grounding", "detection"
-]
+TaskFamily = Literal["closed_vqa", "open_vqa", "report_generation", "visual_grounding", "detection"]
 
 
 class ProfileEvidenceRef(CanonicalModel):
@@ -34,15 +32,29 @@ class LeafAssembly(CanonicalModel):
     @model_validator(mode="after")
     def bindings(self):
         from string import Formatter
+
         if len(self.input_fields) != len(set(self.input_fields)):
             raise ValueError("Leaf input fields must be unique and ordered")
-        if self.options is not None and (len(self.options) < 2 or len(self.options) != len(set(self.options))):
+
+        if self.options is not None and (
+            len(self.options) < 2 or len(self.options) != len(set(self.options))
+        ):
             raise ValueError("Options must have at least two unique values")
+
         if self.options is not None and any(not value.strip() for value in self.options):
             raise ValueError("Options cannot be blank")
-        if any(not name.isidentifier() or name in {"options", "task_objective"} for name in self.question_fields):
-            raise ValueError("Question variables must be identifiers and cannot replace reserved placeholders")
-        if self.label_map and (self.options is None or set(self.label_map.values()) - set(self.options)):
+
+        if any(
+            not name.isidentifier() or name in {"options", "task_objective"}
+            for name in self.question_fields
+        ):
+            raise ValueError(
+                "Question variables must be identifiers and cannot replace reserved placeholders"
+            )
+
+        if self.label_map and (
+            self.options is None or set(self.label_map.values()) - set(self.options)
+        ):
             raise ValueError("Label mapping must target declared options")
         allowed = {"options", "task_objective", *self.question_fields}
         for text in self.question_templates:
@@ -97,7 +109,17 @@ class SemanticTaskSpec(CanonicalModel):
     reference_evidence_refs: list[EvidenceRef] = Field(default_factory=list)
     task_data: ProductBinding | None = None
     assembly: LeafAssembly | None = None
-    capability_category: Literal["Recognition", "Localization", "Quantification", "Comparison", "Integration", "Generation"] | None = None
+    capability_category: (
+        Literal[
+            "Recognition",
+            "Localization",
+            "Quantification",
+            "Comparison",
+            "Integration",
+            "Generation",
+        ]
+        | None
+    ) = None
 
 
 Axis = Literal["input_structure", "operation", "clinical_target"]
@@ -151,12 +173,19 @@ class TaskPlan(CanonicalModel):
 
     @model_validator(mode="after")
     def identities(self):
-        for items, key in ((self.tasks, "task_id"), (self.requirements, "requirement_id"),
-                           (self.scenarios, "scenario_id")):
+        for items, key in (
+            (self.tasks, "task_id"),
+            (self.requirements, "requirement_id"),
+            (self.scenarios, "scenario_id"),
+        ):
             if any(identifier != getattr(item, key) for identifier, item in items.items()):
                 raise ValueError("Plan dictionary keys must equal object identities")
-        if set(self.exclusions) - self.tasks.keys() or set(self.acceptances) - self.requirements.keys():
+        if (
+            set(self.exclusions) - self.tasks.keys()
+            or set(self.acceptances) - self.requirements.keys()
+        ):
             raise ValueError("Unknown task exclusion or requirement acceptance")
+
         if any(key != value.artifact_id for key, value in self.task_data_acceptances.items()):
             raise ValueError("TaskData acceptance keys must match their artifact IDs")
         return self

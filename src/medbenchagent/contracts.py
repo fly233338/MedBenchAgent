@@ -1,11 +1,16 @@
 """Canonical benchmark item contract at generation and audit boundaries."""
+
 from typing import Any, Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-CapabilityCategory = Literal["Recognition", "Localization", "Quantification", "Comparison", "Integration", "Generation"]
+CapabilityCategory = Literal[
+    "Recognition", "Localization", "Quantification", "Comparison", "Integration", "Generation"
+]
 TaskParadigm = Literal["VQA", "Visual Grounding", "Report Generation", "Detection"]
 OutputSpec = Literal["label", "labels", "number", "text", "bbox", "index", "detections"]
+
 
 class QuestionInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -15,10 +20,15 @@ class QuestionInput(BaseModel):
 
     @model_validator(mode="after")
     def shape(self):
-        if self.kind == "asset" and (not isinstance(self.value, dict)
-                or not isinstance(self.value.get("path"), str) or not self.value["path"]
-                or not isinstance(self.value.get("file_digest"), str) or not self.value["file_digest"]):
+        if self.kind == "asset" and (
+            not isinstance(self.value, dict)
+            or not isinstance(self.value.get("path"), str)
+            or not self.value["path"]
+            or not isinstance(self.value.get("file_digest"), str)
+            or not self.value["file_digest"]
+        ):
             raise ValueError("Asset inputs require an explicit file path and digest")
+
         if self.kind == "text" and not isinstance(self.value, str):
             raise ValueError("Text inputs require a string")
         return self

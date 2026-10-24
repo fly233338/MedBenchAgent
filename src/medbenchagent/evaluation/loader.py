@@ -1,10 +1,18 @@
 """Read the canonical published package without construction runtime or Prepared state."""
+
 import json
 from pathlib import Path
 import hashlib
+
 from medbenchagent.contracts import BenchmarkItem
 
-PACKAGE_FILES = ("benchmark.jsonl", "benchmark_manifest.json", "audit_report.json", "quarantine.jsonl")
+PACKAGE_FILES = (
+    "benchmark.jsonl",
+    "benchmark_manifest.json",
+    "audit_report.json",
+    "quarantine.jsonl",
+)
+
 
 def digest_file(path):
     with Path(path).open("rb") as stream:
@@ -17,7 +25,11 @@ def verify_package(root):
     if not isinstance(marker, dict) or marker.get("schema_version") != "benchmark-delivery":
         raise ValueError("Unsupported delivery completion marker")
     files = marker.get("files", {})
-    if not isinstance(files, dict) or not set(PACKAGE_FILES) <= set(files) or "compilation_report.md" not in files:
+    if (
+        not isinstance(files, dict)
+        or not set(PACKAGE_FILES) <= set(files)
+        or "compilation_report.md" not in files
+    ):
         raise ValueError("Delivery completion marker is incomplete")
     for name, expected in files.items():
         path = (root / name).resolve()
@@ -27,7 +39,6 @@ def verify_package(root):
     if marker.get("benchmark_id") != manifest["benchmark_id"]:
         raise ValueError("Delivery identity mismatch")
     return manifest
-
 
 
 def load_benchmark_package(directory):
@@ -51,7 +62,9 @@ def load_benchmark_package(directory):
                 continue
             asset = entry["value"]
             path = Path(asset["path"])
-            if manifest.get("package_mode") == "portable" and (path.is_absolute() or not (root / path).resolve().is_relative_to(root)):
+            if manifest.get("package_mode") == "portable" and (
+                path.is_absolute() or not (root / path).resolve().is_relative_to(root)
+            ):
                 raise ValueError("Portable image reference escapes package")
             path = path if path.is_absolute() else root / path
             if not path.is_file() or digest_file(path) != asset["file_digest"]:

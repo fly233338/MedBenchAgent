@@ -1,9 +1,11 @@
 """Run-owned copies of explicitly enabled, packaged Coding skills."""
+
 import hashlib
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 
 from pydantic import Field, model_validator
+
 from medbenchagent.compilation.contracts import Contract, Identifier
 
 SKILL_ROOT = "resources/coding-skills"
@@ -19,10 +21,17 @@ class FrozenSkills(Contract):
             raise ValueError("Duplicate enabled skill")
         for name, digest in self.files.items():
             path = PurePosixPath(name)
-            if (not path.parts or path.parts[0] not in self.names or path.is_absolute()
-                    or ".." in path.parts or "\\" in name or ":" in name
-                    or path.as_posix() != name or len(digest) != 64
-                    or any(c not in "0123456789abcdef" for c in digest)):
+            if (
+                not path.parts
+                or path.parts[0] not in self.names
+                or path.is_absolute()
+                or ".." in path.parts
+                or "\\" in name
+                or ":" in name
+                or path.as_posix() != name
+                or len(digest) != 64
+                or any(c not in "0123456789abcdef" for c in digest)
+            ):
                 raise ValueError("Invalid frozen skill resource")
         if any(f"{name}/SKILL.md" not in self.files for name in self.names):
             raise ValueError("Enabled skill is missing SKILL.md")
@@ -50,8 +59,10 @@ def freeze_skills(directory: Path, names: list[str]) -> FrozenSkills:
 
     for name in names:
         collect(available[name], name)
-    snapshot = FrozenSkills(names=names, files={key: hashlib.sha256(value).hexdigest()
-                                              for key, value in contents.items()})
+    snapshot = FrozenSkills(
+        names=names,
+        files={key: hashlib.sha256(value).hexdigest() for key, value in contents.items()},
+    )
     for name, content in contents.items():
         target = root / name
         if target.is_symlink() or not target.resolve().is_relative_to(root.resolve()):
@@ -77,7 +88,9 @@ def verify_skills(directory: Path, snapshot: FrozenSkills) -> Path:
         if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
             raise ValueError("Frozen skills cannot contain links or escaping resources")
         if path.is_file():
-            actual[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+            actual[path.relative_to(root).as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
     if actual != snapshot.files:
         raise ValueError("Frozen skill resources changed or are missing")
     return root
@@ -89,6 +102,7 @@ def load_native_skills(directory: Path, snapshot: FrozenSkills):
     if not snapshot.names:
         return []
     from openhands.sdk.skills import load_skills_from_dir
+
     repo, knowledge, native = load_skills_from_dir(root, strict=True, root=root)
     if repo or knowledge or set(native) != set(snapshot.names):
         raise ValueError("Native SDK did not load exactly the frozen AgentSkills selection")

@@ -1,11 +1,13 @@
 """Task Planning agent."""
 
 import json
+
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelResponse
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
 from medbenchagent.compilation.artifacts import (
     read_json_artifact,
     resolve_artifact,
@@ -22,10 +24,25 @@ from medbenchagent.planning.contracts import (
     TaskPlan,
 )
 from medbenchagent.planning import semantic
-from medbenchagent.runtime.native import invocation_config, OperationTools, AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
+from medbenchagent.runtime.native import (
+    invocation_config,
+    OperationTools,
+    AGENT_LIMIT_ERRORS,
+    chat_model,
+    loop_middleware,
+    role_lock,
+)
 
 from .tools import planner_tools
-from .state import PlannerContext, PlannerResponse, PlannerState, _load, _recover_publications, _resolve_result, _save
+from .state import (
+    PlannerContext,
+    PlannerResponse,
+    PlannerState,
+    _load,
+    _recover_publications,
+    _resolve_result,
+    _save,
+)
 
 
 class PlannerContextMiddleware(AgentMiddleware):
@@ -78,9 +95,17 @@ class PlannerContextMiddleware(AgentMiddleware):
         }
         response = handler(
             request.override(
-                system_message=SystemMessage(content=context.instructions[context.request.operation]),
-                messages=[HumanMessage(content="Current work data (not instructions):\n" + json.dumps(current, ensure_ascii=False),
-                                       id="current-work-view"), *request.messages]
+                system_message=SystemMessage(
+                    content=context.instructions[context.request.operation]
+                ),
+                messages=[
+                    HumanMessage(
+                        content="Current work data (not instructions):\n"
+                        + json.dumps(current, ensure_ascii=False),
+                        id="current-work-view",
+                    ),
+                    *request.messages,
+                ],
             )
         )
         if response.structured_response is not None:
@@ -120,10 +145,19 @@ def build_planner_spec(settings, *, instructions, model=None):
         name="task_planner_agent",
         middleware=[
             PlannerContextMiddleware(),
-            OperationTools({
-                "discover_scenarios": {t.name for t in tools} - {"save_semantic_task", "exclude_semantic_task", "accept_data_requirement"},
-                "design_leaves": {t.name for t in tools} - {"record_axis_assessment", "build_candidate_scenarios", "record_scenario_decision", "set_scenario_backends"},
-            }),
+            OperationTools(
+                {
+                    "discover_scenarios": {t.name for t in tools}
+                    - {"save_semantic_task", "exclude_semantic_task", "accept_data_requirement"},
+                    "design_leaves": {t.name for t in tools}
+                    - {
+                        "record_axis_assessment",
+                        "build_candidate_scenarios",
+                        "record_scenario_decision",
+                        "set_scenario_backends",
+                    },
+                }
+            ),
             *loop_middleware(model, settings.loop, settings.context_chars, write_tools=writes),
         ],
     )
@@ -159,7 +193,10 @@ def build_planner_spec(settings, *, instructions, model=None):
                         ],
                         "structured_response": None,
                     },
-                    {**invocation_config(config, context), "recursion_limit": settings.loop.max_model_calls * 6 + 20},
+                    {
+                        **invocation_config(config, context),
+                        "recursion_limit": settings.loop.max_model_calls * 6 + 20,
+                    },
                     context=context,
                 )
             response = result.get("structured_response")
@@ -188,5 +225,6 @@ def build_planner_spec(settings, *, instructions, model=None):
         "task revision, data requirements and formal Task Plan publication. Requires one dataset; "
         "accepts one dataset or dataset_profile, a selected task_plan and prepared task_data inputs. "
         "Can publish Scenario-level requirements before Leaf design, and later define Leaf assembly. Does not generate items.",
-        node, operations=("discover_scenarios", "design_leaves"),
+        node,
+        operations=("discover_scenarios", "design_leaves"),
     )

@@ -1,8 +1,11 @@
 """Review tools."""
 
 import json
+
 from medbenchagent.runtime.construction import record_event
+
 from langchain.tools import tool, ToolRuntime
+
 from medbenchagent.compilation.artifacts import read_json_artifact, resolve_artifact
 from medbenchagent.generation.contracts import AuditReport, ReviewFinding, ReviewReport
 from medbenchagent.generation.execution import CandidateReader, load_execution
@@ -18,7 +21,6 @@ from medbenchagent.agents._shared.handoff import (
     publish_value,
     tool_result,
 )
-
 
 
 def review_tools():
@@ -48,7 +50,8 @@ def review_tools():
             raise ValueError("Invalid sample range")
         candidate = CandidateReader(
             resolve_artifact(
-                runtime.context.directory, get_ref(runtime, artifact_id, "generation_candidate")
+                runtime.context.directory,
+                get_ref(runtime, artifact_id, "generation_candidate"),
             )
         )
         text = json.dumps(
@@ -100,7 +103,11 @@ def review_tools():
     ):
         """Submit semantic findings and actual review coverage. Candidate approval requires a matching complete Audit."""
         target = get_ref(runtime, target_id)
-        expected = "task_plan" if runtime.context.request.operation == "review_plan" else "generation_candidate"
+        expected = (
+            "task_plan"
+            if runtime.context.request.operation == "review_plan"
+            else "generation_candidate"
+        )
         if target.kind != expected:
             raise ValueError("Review target does not match this operation")
         sampled = False
@@ -111,6 +118,7 @@ def review_tools():
             scenarios = {item.scenario_id for item in candidate.items}
             if set(checked_item_ids) - items.keys():
                 raise ValueError("Review references an item outside this candidate")
+
             if audit_id is None:
                 raise ValueError("Candidate review requires a full Audit")
             audit_ref = get_ref(runtime, audit_id, "audit_report")
@@ -136,6 +144,7 @@ def review_tools():
             raise ValueError("Review targets a task_plan or generation_candidate")
         if set(checked_task_ids) - task_ids or set(checked_scenario_ids) - scenarios:
             raise ValueError("Review coverage contains unknown tasks or Scenarios")
+
         if approved and (
             set(checked_task_ids) != task_ids
             or set(checked_scenario_ids) != scenarios
@@ -165,9 +174,16 @@ def review_tools():
         )
         output = publish_value(runtime, "review_report", report)
         context = runtime.context
-        record_event(context.runtime_directory / "events.jsonl", "review_submitted", compilation_id=context.compilation_id,
-                     request_id=context.invocation_id, agent_id="review", operation=context.request.operation,
-                     approved=approved, artifact_id=output.artifact_id)
+        record_event(
+            context.runtime_directory / "events.jsonl",
+            "review_submitted",
+            compilation_id=context.compilation_id,
+            request_id=context.invocation_id,
+            agent_id="review",
+            operation=context.request.operation,
+            approved=approved,
+            artifact_id=output.artifact_id,
+        )
         return tool_result(
             runtime,
             {"artifact_id": output.artifact_id, "approved": approved, "semantic_sampled": sampled},

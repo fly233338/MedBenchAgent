@@ -1,15 +1,23 @@
 """Register source or current canonical Dataset manifests, without legacy bundles."""
+
 import json
 import re
 from pathlib import Path
+
 from filelock import FileLock
+
 from medbenchagent.settings import load_paths
 from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.data.dataset import FileDatasetReader
 from medbenchagent.data.task_data import SourceManifest
 
+
 def catalog_path(catalog=None):
-    return Path(catalog) if catalog is not None else load_paths()["runtime_root"].parent / "datasets.json"
+    return (
+        Path(catalog)
+        if catalog is not None
+        else load_paths()["runtime_root"].parent / "datasets.json"
+    )
 
 
 def validate_dataset_id(value):
@@ -58,4 +66,8 @@ def remove_registration(dataset_id, catalog=None):
 
 def registered_input(dataset_id, catalog=None):
     entry = list_datasets(catalog)[dataset_id]
-    return {"source_manifest" if entry["kind"] == "source" else "dataset_manifest": Path(entry["manifest"])}
+    return {
+        "source_manifest" if entry["kind"] == "source" else "dataset_manifest": Path(
+            entry["manifest"]
+        )
+    }

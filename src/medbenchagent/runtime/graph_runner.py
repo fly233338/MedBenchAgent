@@ -8,7 +8,11 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from medbenchagent.compilation.assembly import assemble_compilation
-from medbenchagent.compilation.artifacts import register_file, write_json_artifact, read_json_artifact
+from medbenchagent.compilation.artifacts import (
+    register_file,
+    write_json_artifact,
+    read_json_artifact,
+)
 from medbenchagent.compilation.contracts import ArtifactRef, WorkRecord, WorkRequest
 from medbenchagent.compilation.graph import build_compilation_graph
 from medbenchagent.compilation.interfaces import record_summary
@@ -28,20 +32,55 @@ class RunEvent:
 def initial_state(directory, options):
     verify_input(options)
     identifier = options.compilation_id
-    request = WorkRequest(compilation_id=identifier, request_id=f"{identifier}-input",
-                          agent_id="input", operation="bind", objective="Bind source inputs")
+    request = WorkRequest(
+        compilation_id=identifier,
+        request_id=f"{identifier}-input",
+        agent_id="input",
+        operation="bind",
+        objective="Bind source inputs",
+    )
     if options.source_manifest:
         path = Path(options.source_manifest)
         source = SourceManifest.model_validate_json(path.read_bytes())
         for item in source.sources:
             item.root = str((path.parent / item.root).resolve())
-        refs = [write_json_artifact(directory, request, "sources.json", kind="source_manifest", value=source.model_dump())]
+        refs = [
+            write_json_artifact(
+                directory,
+                request,
+                "sources.json",
+                kind="source_manifest",
+                value=source.model_dump(),
+            )
+        ]
     else:
-        path = snapshot_dataset(Path(options.dataset_manifest), directory / "artifacts" / request.request_id / "dataset")
-        refs = [register_file(directory, request, path.relative_to(directory).as_posix(), kind="dataset")]
+        path = snapshot_dataset(
+            Path(options.dataset_manifest),
+            directory / "artifacts" / request.request_id / "dataset",
+        )
+        refs = [
+            register_file(
+                directory,
+                request,
+                path.relative_to(directory).as_posix(),
+                kind="dataset",
+            )
+        ]
     if options.benchmark_request:
-        refs.append(write_json_artifact(directory, request, "target.json", kind="benchmark_request", value=options.benchmark_request))
-    return {"compilation_id": identifier, "goal": options.goal, "artifacts": [r.model_dump() for r in refs]}
+        refs.append(
+            write_json_artifact(
+                directory,
+                request,
+                "target.json",
+                kind="benchmark_request",
+                value=options.benchmark_request,
+            )
+        )
+    return {
+        "compilation_id": identifier,
+        "goal": options.goal,
+        "artifacts": [r.model_dump() for r in refs],
+    }
 
 
 def _enabled_agents(options):
@@ -68,28 +107,52 @@ def _view(values, directory, options, interrupts=(), *, active=False, errors=())
         status = "interrupted"
     counts, count_kind = None, None
     for kind in ("delivery_manifest", "generation_candidate"):
-        product = next((row for row in reversed(values.get("artifacts", [])) if row["kind"] == kind), None)
+        product = next(
+            (row for row in reversed(values.get("artifacts", [])) if row["kind"] == kind),
+            None,
+        )
         if product:
             try:
-                counts = read_json_artifact(directory, ArtifactRef.model_validate(product)).get("counts")
+                counts = read_json_artifact(directory, ArtifactRef.model_validate(product)).get(
+                    "counts"
+                )
                 count_kind = "Delivery" if kind == "delivery_manifest" else "Candidate"
             except (OSError, ValueError):
                 pass
             break
-    return {"compilation_id": options.compilation_id, "run_directory": str(directory), "runtime_directory": options.runtime_directory, "goal": options.goal,
-            "target_count": (options.benchmark_request or {}).get("sample_count"), "counts": counts, "count_kind": count_kind,
-            "error": str(errors[0]) if errors else None,
-            "status": status, "goal_result": values.get("goal_result"), "summary": values.get("summary", ""),
-            "feedback": values.get("feedback", []), "enabled_agents": _enabled_agents(options),
-            "history": [record_summary(WorkRecord.model_validate(row)) for row in values.get("history", [])],
-            "artifacts": values.get("artifacts", []), "answers": values.get("answers", []),
-            "questions": [item.value for item in interrupts], "question_id": interrupts[0].id if interrupts else None}
+    return {
+        "compilation_id": options.compilation_id,
+        "run_directory": str(directory),
+        "runtime_directory": options.runtime_directory,
+        "goal": options.goal,
+        "target_count": (options.benchmark_request or {}).get("sample_count"),
+        "counts": counts,
+        "count_kind": count_kind,
+        "error": str(errors[0]) if errors else None,
+        "status": status,
+        "goal_result": values.get("goal_result"),
+        "summary": values.get("summary", ""),
+        "feedback": values.get("feedback", []),
+        "enabled_agents": _enabled_agents(options),
+        "history": [
+            record_summary(WorkRecord.model_validate(row)) for row in values.get("history", [])
+        ],
+        "artifacts": values.get("artifacts", []),
+        "answers": values.get("answers", []),
+        "questions": [item.value for item in interrupts],
+        "question_id": interrupts[0].id if interrupts else None,
+    }
 
 
 def state_view(snapshot, directory, options, *, active=False):
-    return _view(snapshot.values, directory, options,
-                 [item for task in snapshot.tasks for item in task.interrupts], active=active,
-                 errors=[task.error for task in snapshot.tasks if task.error])
+    return _view(
+        snapshot.values,
+        directory,
+        options,
+        [item for task in snapshot.tasks for item in task.interrupts],
+        active=active,
+        errors=[task.error for task in snapshot.tasks if task.error],
+    )
 
 
 def inspect_compilation(directory):
@@ -97,7 +160,11 @@ def inspect_compilation(directory):
     options = RunOptions.model_validate_json((directory / "run.json").read_bytes())
     runtime_directory = Path(options.runtime_directory)
     if (runtime_directory / "studio-thread.txt").exists():
-        return {**_view({}, directory, options), "status": "external", "summary": "Open the bound Studio thread."}
+        return {
+            **_view({}, directory, options),
+            "status": "external",
+            "summary": "Open the bound Studio thread.",
+        }
     active = False
     try:
         with FileLock(runtime_directory / "locks" / "execution.lock", timeout=0):
@@ -110,30 +177,70 @@ def inspect_compilation(directory):
         checkpoint = saver.get_tuple({"configurable": {"thread_id": options.compilation_id}})
     if checkpoint is None:
         return _view({}, directory, options, active=active)
-    interrupts = [item for _, channel, value in checkpoint.pending_writes or []
-                  if channel == "__interrupt__" for item in value]
-    errors = [value for _, channel, value in checkpoint.pending_writes or [] if channel == "__error__"]
-    return _view(checkpoint.checkpoint["channel_values"], directory, options, interrupts, active=active, errors=errors)
+    interrupts = [
+        item
+        for _, channel, value in checkpoint.pending_writes or []
+        if channel == "__interrupt__"
+        for item in value
+    ]
+    errors = [
+        value for _, channel, value in checkpoint.pending_writes or [] if channel == "__error__"
+    ]
+    return _view(
+        checkpoint.checkpoint["channel_values"],
+        directory,
+        options,
+        interrupts,
+        active=active,
+        errors=errors,
+    )
 
 
-def execute_compilation(directory, *, resume=False, answer=None, question_id=None, stop_requested=None):
+def execute_compilation(
+    directory, *, resume=False, answer=None, question_id=None, stop_requested=None
+):
     options = RunOptions.model_validate_json((Path(directory) / "run.json").read_bytes())
     log = Path(options.runtime_directory) / "events.jsonl"
     identity = {"compilation_id": options.compilation_id, "agent_id": "runtime"}
     try:
-        for event in _execute_compilation(directory, resume=resume, answer=answer, question_id=question_id, stop_requested=stop_requested):
-            kind = {"initialized": "run_resumed" if resume else "run_started", "paused": "run_paused",
-                    "needs_input": "run_waiting", "finished": "run_finished", "answer_accepted": "answer_accepted"}.get(event.kind)
+        for event in _execute_compilation(
+            directory,
+            resume=resume,
+            answer=answer,
+            question_id=question_id,
+            stop_requested=stop_requested,
+        ):
+            kind = {
+                "initialized": "run_resumed" if resume else "run_started",
+                "paused": "run_paused",
+                "needs_input": "run_waiting",
+                "finished": "run_finished",
+                "answer_accepted": "answer_accepted",
+            }.get(event.kind)
             if kind:
-                record_event(log, kind, **identity, status=event.payload.get("status"),
-                             goal_result=event.payload.get("goal_result"), question_id=event.payload.get("question_id"))
+                record_event(
+                    log,
+                    kind,
+                    **identity,
+                    status=event.payload.get("status"),
+                    goal_result=event.payload.get("goal_result"),
+                    question_id=event.payload.get("question_id"),
+                )
             yield event
     except Exception as exc:
-        record_event(log, "execution_failed", **identity, error_type=type(exc).__name__, summary="Execution stopped with an error; inspect its checkpoint")
+        record_event(
+            log,
+            "execution_failed",
+            **identity,
+            error_type=type(exc).__name__,
+            summary="Execution stopped with an error; inspect its checkpoint",
+        )
         raise
 
 
-def _execute_compilation(directory, *, resume=False, answer=None, question_id=None, stop_requested=None):
+def _execute_compilation(
+    directory, *, resume=False, answer=None, question_id=None, stop_requested=None
+):
     directory = Path(directory).resolve()
     options = RunOptions.model_validate_json((directory / "run.json").read_bytes())
     runtime_directory = Path(options.runtime_directory)
@@ -144,16 +251,23 @@ def _execute_compilation(directory, *, resume=False, answer=None, question_id=No
     with FileLock(runtime_directory / "locks" / "execution.lock", timeout=0):
         if resume:
             options = resume_run(directory, identifier)
-        with assemble_compilation(options, directory) as (agents, context), SqliteSaver.from_conn_string(str(runtime_directory / "checkpoints.sqlite")) as saver:
+        with (
+            assemble_compilation(options, directory) as (agents, context),
+            SqliteSaver.from_conn_string(str(runtime_directory / "checkpoints.sqlite")) as saver,
+        ):
             graph = build_compilation_graph(agents, checkpointer=saver)
             snapshot = graph.get_state(config)
             questions = [item for task in snapshot.tasks for item in task.interrupts]
             if resume and snapshot.values:
                 if snapshot.values.get("status") == "stopped" or not snapshot.next:
                     raise ValueError("This run has ended; create a new run")
+
                 if bool(questions) != (answer is not None):
                     raise ValueError("Supply an answer only for a waiting user question")
-                if answer is not None and (not answer.strip() or question_id is not None and questions[0].id != question_id):
+
+                if answer is not None and (
+                    not answer.strip() or question_id is not None and questions[0].id != question_id
+                ):
                     raise ValueError("The answer is empty or belongs to a different question")
                 invocation = Command(resume=answer) if questions else None
                 if not questions:
@@ -161,11 +275,22 @@ def _execute_compilation(directory, *, resume=False, answer=None, question_id=No
             else:
                 if answer is not None:
                     raise ValueError("There is no saved question to answer")
+
                 if snapshot.values:
                     raise ValueError("This run has started; use resume")
                 invocation = initial_state(directory, options)
-            yield RunEvent(identifier, "initialized", state_view(graph.get_state(config), directory, options, active=True))
-            stream = graph.stream(invocation, config, context=context, durability="sync", stream_mode="updates")
+            yield RunEvent(
+                identifier,
+                "initialized",
+                state_view(graph.get_state(config), directory, options, active=True),
+            )
+            stream = graph.stream(
+                invocation,
+                config,
+                context=context,
+                durability="sync",
+                stream_mode="updates",
+            )
             try:
                 for update in stream:
                     last_node = None
@@ -174,18 +299,47 @@ def _execute_compilation(directory, *, resume=False, answer=None, question_id=No
                             continue
                         last_node = node
                         if node == "ask_user" and answer is not None:
-                            yield RunEvent(identifier, "answer_accepted", {"question_id": questions[0].id, "answer": answer,
-                                "after_work": len(snapshot.values.get("history", []))})
+                            yield RunEvent(
+                                identifier,
+                                "answer_accepted",
+                                {
+                                    "question_id": questions[0].id,
+                                    "answer": answer,
+                                    "after_work": len(snapshot.values.get("history", [])),
+                                },
+                            )
                             answer = None
                         if node == "collect" and isinstance(value, dict) and value.get("history"):
                             work = record_summary(WorkRecord.model_validate(value["history"][-1]))
-                            yield RunEvent(identifier, "progress", {"work": work, "text": work["summary"],
-                                "view": state_view(graph.get_state(config), directory, options, active=True)})
+                            yield RunEvent(
+                                identifier,
+                                "progress",
+                                {
+                                    "work": work,
+                                    "text": work["summary"],
+                                    "view": state_view(
+                                        graph.get_state(config),
+                                        directory,
+                                        options,
+                                        active=True,
+                                    ),
+                                },
+                            )
                     saved = graph.get_state(config)
-                    if stop_requested and stop_requested() and last_node and saved.next and saved.values.get("status") != "waiting":
+                    if (
+                        stop_requested
+                        and stop_requested()
+                        and last_node
+                        and saved.next
+                        and saved.values.get("status") != "waiting"
+                    ):
                         stream.close()
                         graph.update_state(config, {"status": "paused"}, as_node=last_node)
-                        yield RunEvent(identifier, "paused", state_view(graph.get_state(config), directory, options))
+                        yield RunEvent(
+                            identifier,
+                            "paused",
+                            state_view(graph.get_state(config), directory, options),
+                        )
                         return
             finally:
                 stream.close()

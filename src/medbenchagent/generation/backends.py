@@ -44,8 +44,10 @@ def validate_leaf(task: SemanticTaskSpec, reader: TaskDataReader):
     assembly = task.assembly
     if assembly is None or task.task_data is None:
         raise ValueError("Leaf requires TaskData and an assembly definition")
+
     if task.capability_category is None:
         raise ValueError("Planner must assign the Leaf capability category")
+
     if (
         assembly.backend_id != reader.manifest.backend_id
         or task.scenario_id not in reader.manifest.scenario_ids
@@ -57,10 +59,12 @@ def validate_leaf(task: SemanticTaskSpec, reader: TaskDataReader):
         or assembly.output_spec not in capability["outputs"]
     ):
         raise ValueError("Backend does not implement this task family/output")
+
     if task.task_family == "closed_vqa" and (
         assembly.output_spec not in {"label", "labels"} or not assembly.options
     ):
         raise ValueError("Closed VQA requires label(s) and explicit options")
+
     if task.output_paradigm != assembly.output_spec:
         raise ValueError("Leaf output paradigm and assembly output differ")
     matched = 0
@@ -83,6 +87,7 @@ def validate_leaf(task: SemanticTaskSpec, reader: TaskDataReader):
             fields[name].input_visibility != "model_visible" for name in visible
         ):
             raise ValueError("Input/reference leakage or unknown input visibility")
+
         if any(fields[name].type == "asset" for name in assembly.question_fields.values()):
             raise ValueError(
                 "Question interpolation requires prepared text or values, not asset paths"
@@ -99,6 +104,7 @@ def validate_leaf(task: SemanticTaskSpec, reader: TaskDataReader):
 def _region(value: Any, asset_ids: set[str], reader, *, label=False):
     if not isinstance(value, dict):
         raise ValueError("Region references require an object")
+
     if value.get("asset_id") not in asset_ids:
         raise ValueError("Region must anchor a selected input asset")
     coordinates = value.get("box")
@@ -106,6 +112,7 @@ def _region(value: Any, asset_ids: set[str], reader, *, label=False):
     size = 6 if system == "physical_xyzxyz" else 4
     if system not in {"normalized_xyxy", "pixel_xyxy", "physical_xyzxyz"}:
         raise ValueError("Region requires an explicit supported coordinate system")
+
     if (
         not isinstance(coordinates, list)
         or len(coordinates) != size
@@ -115,19 +122,25 @@ def _region(value: Any, asset_ids: set[str], reader, *, label=False):
     dimensions = size // 2
     if any(coordinates[i] >= coordinates[i + dimensions] for i in range(dimensions)):
         raise ValueError("Region minima must precede maxima")
+
     if system == "normalized_xyxy" and any(not 0 <= x <= 1 for x in coordinates):
         raise ValueError("Normalized coordinates must be in [0, 1]")
+
     if system == "pixel_xyxy" and any(x < 0 for x in coordinates):
         raise ValueError("Pixel coordinates must be nonnegative")
+
     if system == "physical_xyzxyz" and not value.get("unit"):
         raise ValueError("Physical coordinates require a unit")
     metadata = reader.assets[value["asset_id"]].metadata
     if system == "pixel_xyxy":
         width, height = metadata.get("width"), metadata.get("height")
         if not width or not height or coordinates[2] > width or coordinates[3] > height:
-            raise ValueError("Pixel coordinates require matching asset width/height and valid bounds")
+            raise ValueError(
+                "Pixel coordinates require matching asset width/height and valid bounds"
+            )
     if system == "physical_xyzxyz" and metadata.get("unit") != value.get("unit"):
         raise ValueError("Physical coordinates must match the asset's declared unit")
+
     if label and (not isinstance(value.get("label"), str) or not value["label"].strip()):
         raise ValueError("Detection targets require a label")
 
@@ -184,6 +197,7 @@ def assemble_item(task: SemanticTaskSpec, reader: TaskDataReader, case_id: str, 
         and answer not in assembly.options
     ):
         raise ValueError("Reference is outside the declared labels")
+
     if output == "labels" and (
         not isinstance(answer, list)
         or not all(isinstance(v, str) for v in answer)
@@ -191,10 +205,13 @@ def assemble_item(task: SemanticTaskSpec, reader: TaskDataReader, case_id: str, 
         and set(answer) - set(assembly.options)
     ):
         raise ValueError("Reference is outside the declared label set")
+
     if output == "number" and (type(answer) not in (int, float) or not math.isfinite(answer)):
         raise ValueError("Reference must be a finite number")
+
     if output == "text" and not isinstance(answer, str):
         raise ValueError("Reference must be text")
+
     if output == "index" and (type(answer) is not int or not 0 <= answer < len(inputs)):
         raise ValueError("Reference index is outside ordered inputs")
     if output == "bbox":
@@ -218,7 +235,10 @@ def assemble_item(task: SemanticTaskSpec, reader: TaskDataReader, case_id: str, 
             "visual_grounding": "Visual Grounding",
             "report_generation": "Report Generation",
             "detection": "Detection",
-        }.get(task.task_family, "VQA"),
+        }.get(
+            task.task_family,
+            "VQA",
+        ),
         output_spec=output,
         question=assembly.question_templates[template_index].format_map(parameters),
         template_index=template_index,

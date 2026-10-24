@@ -5,10 +5,12 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
 from langchain.agents import AgentState
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from pydantic import Field
+
 from medbenchagent.compilation.artifacts import (
     read_json_artifact,
     resolve_artifact,
@@ -30,7 +32,6 @@ from medbenchagent.planning.contracts import (
     TaskPlan,
 )
 from medbenchagent.planning import semantic
-
 
 
 class PlannerState(AgentState):
@@ -81,7 +82,10 @@ def _load(state, context):
 def _save(plan, context):
     content = (plan.model_dump_json(indent=2) + "\n").encode("utf-8")
     path = (
-        context.runtime_directory / "planner" / "drafts" / (hashlib.sha256(content).hexdigest() + ".json")
+        context.runtime_directory
+        / "planner"
+        / "drafts"
+        / (hashlib.sha256(content).hexdigest() + ".json")
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -127,23 +131,48 @@ def _update(runtime, base_revision, operation):
         raise ValueError(f"Stale draft revision: expected {plan.revision}")
     before = plan.model_copy(deep=True)
     operation(plan)
-    if context.request.operation == "design_leaves" and (plan.axis_assessments != before.axis_assessments or plan.scenarios != before.scenarios):
+    if context.request.operation == "design_leaves" and (
+        plan.axis_assessments != before.axis_assessments or plan.scenarios != before.scenarios
+    ):
         raise ValueError("Scenario changes require discover_scenarios")
     if all(scope.kind != "artifact" for scope in context.request.scope):
         scenarios, tasks, requirements = semantic.scoped_objects(before, context.request.scope)
-        explicit_scenarios = {key for scope in context.request.scope if scope.kind == "scenario" for key in scope.object_ids}
+        explicit_scenarios = {
+            key
+            for scope in context.request.scope
+            if scope.kind == "scenario"
+            for key in scope.object_ids
+        }
         if plan.axis_assessments != before.axis_assessments:
             raise ValueError("Axis changes require explicit whole-plan scope")
-        for name, allowed in (("scenarios", explicit_scenarios), ("tasks", tasks), ("requirements", requirements),
-                              ("acceptances", requirements), ("exclusions", tasks)):
+        for name, allowed in (
+            ("scenarios", explicit_scenarios),
+            ("tasks", tasks),
+            ("requirements", requirements),
+            ("acceptances", requirements),
+            ("exclusions", tasks),
+        ):
             old, new = getattr(before, name), getattr(plan, name)
             for key in old.keys() | new.keys():
                 if old.get(key) != new.get(key) and key not in allowed:
                     value = new.get(key)
-                    related = key not in old and name == "tasks" and value and value.scenario_id in explicit_scenarios
-                    related = related or (key not in old and name == "requirements" and value and (
-                        bool(value.affected_scenario_ids) and set(value.affected_scenario_ids) <= explicit_scenarios
-                        or bool(value.affected_task_ids) and set(value.affected_task_ids) <= tasks))
+                    related = (
+                        key not in old
+                        and name == "tasks"
+                        and value
+                        and value.scenario_id in explicit_scenarios
+                    )
+                    related = related or (
+                        key not in old
+                        and name == "requirements"
+                        and value
+                        and (
+                            bool(value.affected_scenario_ids)
+                            and set(value.affected_scenario_ids) <= explicit_scenarios
+                            or bool(value.affected_task_ids)
+                            and set(value.affected_task_ids) <= tasks
+                        )
+                    )
                     if not related:
                         raise ValueError("Draft change exceeds the delegated scope")
     plan.revision += 1
@@ -170,6 +199,7 @@ def _resolve_result(response, state, context):
     }
     if len(response.artifact_ids) != len(set(response.artifact_ids)):
         raise ValueError("Duplicate final artifact IDs")
+
     if set(response.artifact_ids) - submitted.keys():
         raise ValueError("Final response may only select artifacts submitted in this request")
     artifacts = [submitted[key] for key in response.artifact_ids]
@@ -179,6 +209,7 @@ def _resolve_result(response, state, context):
     published = [ref for ref in artifacts if ref.kind == "task_plan"]
     if response.outcome == "completed" and not published:
         raise ValueError("Publish the current Task Plan before reporting completed")
+
     if published and (
         len(published) != 1
         or TaskPlan.model_validate(read_json_artifact(context.directory, published[0])) != plan
@@ -187,7 +218,12 @@ def _resolve_result(response, state, context):
     _verify_acceptances(plan, context)
     pending = semantic.pending_requirements(plan)
     if response.outcome == "completed":
-        semantic.check_operation_complete(plan, context.request.operation, context.request.scope, task_data=context.task_data)
+        semantic.check_operation_complete(
+            plan,
+            context.request.operation,
+            context.request.scope,
+            task_data=context.task_data,
+        )
     needs = []
     if published:
         for requirement_id in sorted(pending):
@@ -208,7 +244,10 @@ def _resolve_result(response, state, context):
                 artifacts.append(ref)
             needs.append(
                 WorkNeed(
-                    need_id=requirement_id, kind="work", summary=requirement.purpose, detail_ref=ref
+                    need_id=requirement_id,
+                    kind="work",
+                    summary=requirement.purpose,
+                    detail_ref=ref,
                 )
             )
     if response.user_question:
@@ -248,12 +287,14 @@ def _check_task_data(plan, context, identifier, requirement_id=None):
     manifest = reader.manifest
     if manifest.dataset != plan.dataset:
         raise ValueError("TaskData binds a different Dataset")
+
     if isinstance(context.reader, ProfileReader) and (
         manifest.profile is None
         or manifest.profile.artifact_id != context.dataset.artifact_id
         or manifest.profile.digest != context.dataset.digest
     ):
         raise ValueError("TaskData must bind the current Profile")
+
     if set(manifest.scenario_ids) - plan.scenarios.keys():
         raise ValueError("TaskData references an unknown Scenario")
     if requirement_id is not None:
@@ -263,13 +304,19 @@ def _check_task_data(plan, context, identifier, requirement_id=None):
             manifest.backend_id,
         }:
             raise ValueError("TaskData does not answer this data requirement/backend")
+
         if set(requirement.affected_scenario_ids) - set(manifest.scenario_ids):
             raise ValueError("TaskData is missing required Scenarios")
         from medbenchagent.data.task_data import validate_preparation
+
         product = manifest.requirements[requirement_id]
-        ref = next((r for r in context.request.inputs if r.artifact_id == product.artifact_id), None)
+        ref = next(
+            (r for r in context.request.inputs if r.artifact_id == product.artifact_id),
+            None,
+        )
         if ref is None or ref.digest != product.digest or ref.kind != "data_requirement":
             raise ValueError("Bind the exact requirement used to prepare this TaskData")
+
         if read_json_artifact(context.directory, ref) != requirement.model_dump(mode="json"):
             raise ValueError("TaskData was prepared for a different requirement revision")
         validate_preparation(reader, requirement)
@@ -293,7 +340,10 @@ def _recover_publications(context):
                 raise ValueError("Published content does not match its immutable submission name")
             if isinstance(value, TaskPlan):
                 semantic.validate_plan(
-                    value, context.reader, publish=True, task_data=context.task_data
+                    value,
+                    context.reader,
+                    publish=True,
+                    task_data=context.task_data,
                 )
                 _verify_acceptances(value, context)
             recovered.append(

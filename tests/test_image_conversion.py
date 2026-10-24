@@ -1,12 +1,16 @@
 from medbenchagent.data.models import AssetEntry, PresentationSpec
 from medbenchagent.data.sources import digest_file
 from medbenchagent.data.readers import RasterReader
+
 import numpy as np
 import pytest
 from PIL import Image
 
 from medbenchagent.data.asset_adapters import (
-    ConversionError, UnsupportedMedicalImage, materialize_image, detect_format,
+    ConversionError,
+    UnsupportedMedicalImage,
+    materialize_image,
+    detect_format,
 )
 
 
@@ -15,8 +19,13 @@ def test_explicit_raster_conversion_writes_real_png(tmp_path, encoding):
     source = tmp_path / ("source.png" if encoding == "PNG" else "source.jpg")
     Image.new("RGB", (3, 2), (90, 20, 70)).save(source, format=encoding)
     target = tmp_path / "output.png"
-    asset = AssetEntry(asset_id="source", kind="image", format=detect_format(source).split(":")[-1],
-                       source_path=source.name, file_digest=digest_file(source))
+    asset = AssetEntry(
+        asset_id="source",
+        kind="image",
+        format=detect_format(source).split(":")[-1],
+        source_path=source.name,
+        file_digest=digest_file(source),
+    )
     materialize_image(asset, PresentationSpec(), target, source_root=tmp_path)
     with Image.open(target) as rendered, Image.open(source) as original:
         assert rendered.format == "PNG"
@@ -28,8 +37,13 @@ def test_uint16_tiff_retains_bit_depth_and_pixel_values(tmp_path):
     source = tmp_path / "source.tif"
     Image.fromarray(values).save(source)
     target = tmp_path / "image.png"
-    asset = AssetEntry(asset_id="source", kind="image", format=detect_format(source).split(":")[-1],
-                       source_path=source.name, file_digest=digest_file(source))
+    asset = AssetEntry(
+        asset_id="source",
+        kind="image",
+        format=detect_format(source).split(":")[-1],
+        source_path=source.name,
+        file_digest=digest_file(source),
+    )
     materialize_image(asset, PresentationSpec(), target, source_root=tmp_path)
     with Image.open(target) as image:
         assert image.size == (3, 2)
@@ -39,7 +53,13 @@ def test_uint16_tiff_retains_bit_depth_and_pixel_values(tmp_path):
 def test_float_pixels_need_explicit_window_and_multiframe_is_rejected(tmp_path):
     source = tmp_path / "float.tif"
     Image.fromarray(np.array([[0, 5], [10, 20]], dtype=np.float32)).save(source)
-    asset = AssetEntry(asset_id="source", kind="image", format="tiff", source_path=source.name, file_digest=digest_file(source))
+    asset = AssetEntry(
+        asset_id="source",
+        kind="image",
+        format="tiff",
+        source_path=source.name,
+        file_digest=digest_file(source),
+    )
     target = tmp_path / "output.png"
     with pytest.raises(ConversionError, match="explicit user decision"):
         materialize_image(asset, PresentationSpec(), target, source_root=tmp_path)

@@ -3,7 +3,9 @@
 import hashlib
 import json
 from pathlib import Path
+
 from langchain.tools import tool, ToolRuntime
+
 from medbenchagent.compilation.artifacts import read_json_artifact, register_file
 from medbenchagent.compilation.contracts import WorkRequest
 from medbenchagent.data.dataset import file_digest
@@ -44,10 +46,18 @@ def data_processing_tools():
             if not root.is_absolute() or not root.is_dir():
                 raise ValueError("Delegated source roots must be existing absolute directories")
             from medbenchagent.data.sources import inspect_source
-            rows.append({"source_id": entry.source_id, **inspect_source(
-                root, offset=offset, limit=runtime.context.settings.page_size)})
-        return {"dataset": source.dataset.model_dump(), "sources": rows,
-                "key_files": [item.model_dump() for item in source.key_files]}
+
+            rows.append(
+                {
+                    "source_id": entry.source_id,
+                    **inspect_source(root, offset=offset, limit=runtime.context.settings.page_size),
+                }
+            )
+        return {
+            "dataset": source.dataset.model_dump(),
+            "sources": rows,
+            "key_files": [item.model_dump() for item in source.key_files],
+        }
 
     @tool
     def invoke_coding(
@@ -73,7 +83,8 @@ def data_processing_tools():
         request = WorkRequest(
             request_id=f"call-{identity}",
             compilation_id=context.compilation_id,
-            agent_id="coding", operation="execute",
+            agent_id="coding",
+            operation="execute",
             workstream_id=workstream_id,
             objective=objective,
             inputs=inputs,
@@ -93,11 +104,17 @@ def data_processing_tools():
             if calls[request.request_id]["request"] != request.model_dump(mode="json"):
                 raise ValueError("A Coding call identity cannot change its instructions")
             return tool_result(
-                runtime, calls[request.request_id], updates={"coding_sessions": sessions}
+                runtime,
+                calls[request.request_id],
+                updates={"coding_sessions": sessions},
             )
         candidate, files = context.coding.execute_candidate(
-            context.directory, request, context.goal, runtime_directory=context.runtime_directory,
-            parent_request_id=context.invocation_id, parent_operation=context.request.operation,
+            context.directory,
+            request,
+            context.goal,
+            runtime_directory=context.runtime_directory,
+            parent_request_id=context.invocation_id,
+            parent_operation=context.request.operation,
         )
         receipt = {
             "call_id": request.request_id,
@@ -110,7 +127,9 @@ def data_processing_tools():
         }
         calls[request.request_id] = receipt
         return tool_result(
-            runtime, receipt, updates={"coding_sessions": sessions, "coding_calls": calls}
+            runtime,
+            receipt,
+            updates={"coding_sessions": sessions, "coding_calls": calls},
         )
 
     @tool
@@ -193,13 +212,34 @@ def data_processing_tools():
             raise ValueError("Select unique candidate Manifest paths")
         refs = []
         for _, verified, kind in checked:
-            target = runtime.context.directory / "artifacts" / runtime.context.invocation_id / kind / file_digest(verified)
-            path = (snapshot_profile(verified, target, runtime_directory=runtime.context.runtime_directory)
-                    if kind == "dataset_profile" else snapshot_task_data(verified, target))
-            refs.append(register_file(runtime.context.directory, runtime.context.request,
-                                      path.relative_to(runtime.context.directory).as_posix(), kind=kind))
+            target = (
+                runtime.context.directory
+                / "artifacts"
+                / runtime.context.invocation_id
+                / kind
+                / file_digest(verified)
+            )
+            path = (
+                snapshot_profile(
+                    verified,
+                    target,
+                    runtime_directory=runtime.context.runtime_directory,
+                )
+                if kind == "dataset_profile"
+                else snapshot_task_data(verified, target)
+            )
+            refs.append(
+                register_file(
+                    runtime.context.directory,
+                    runtime.context.request,
+                    path.relative_to(runtime.context.directory).as_posix(),
+                    kind=kind,
+                )
+            )
         return tool_result(
-            runtime, {"artifacts": [ref.model_dump(mode="json") for ref in refs]}, artifacts=refs
+            runtime,
+            {"artifacts": [ref.model_dump(mode="json") for ref in refs]},
+            artifacts=refs,
         )
 
     return [

@@ -8,18 +8,41 @@ from rich.text import Text
 from textual import on, work
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Collapsible, DirectoryTree, Input, Label, RichLog, Select, SelectionList, Static, Switch, TextArea
+from textual.widgets import (
+    Button,
+    Collapsible,
+    DirectoryTree,
+    Input,
+    Label,
+    RichLog,
+    Select,
+    SelectionList,
+    Static,
+    Switch,
+    TextArea,
+)
 
 from medbenchagent.compilation.contracts import ArtifactRef
 from medbenchagent.compilation.artifacts import read_json_artifact, resolve_artifact
 from medbenchagent.runtime.activity import AGENTS, PRODUCTS, artifact_summary
-from medbenchagent.runtime.intake import InputDraft, SelectedFile, input_path, validate_draft, connection_values, save_connection, save_advanced_config, set_session_credentials, probe_connections
+from medbenchagent.runtime.intake import (
+    InputDraft,
+    SelectedFile,
+    input_path,
+    validate_draft,
+    connection_values,
+    save_connection,
+    save_advanced_config,
+    set_session_credentials,
+    probe_connections,
+)
 from medbenchagent.runtime.construction import sanitize
 from medbenchagent.generation.publication import export_benchmark
 
 
 class Dialog(ModalScreen):
     BINDINGS = [("escape", "cancel", "Close")]
+
     def action_cancel(self):
         self.dismiss(None)
 
@@ -34,7 +57,10 @@ class PathPicker(Dialog):
 
     def compose(self):
         with Vertical(classes="dialog picker"):
-            yield Label("Source directory" if self.directory else "Key file", classes="dialog-title")
+            yield Label(
+                "Source directory" if self.directory else "Key file",
+                classes="dialog-title",
+            )
             with Horizontal():
                 yield Input(str(self.start), id="browse-path")
                 yield Button("Go", id="browse-go")
@@ -78,23 +104,57 @@ class DraftScreen(Dialog):
         with Vertical(classes="dialog"):
             yield Label("Task", classes="dialog-title")
             with VerticalScroll():
-                yield Input(self.draft.dataset_id or "", placeholder="Dataset ID · auto", id="draft-dataset-id")
+                yield Input(
+                    self.draft.dataset_id or "",
+                    placeholder="Dataset ID · auto",
+                    id="draft-dataset-id",
+                )
                 yield Label("Sources · one path per line")
-                yield TextArea("\n".join(self.draft.source_dirs), id="sources", classes="short-area")
+                yield TextArea(
+                    "\n".join(self.draft.source_dirs),
+                    id="sources",
+                    classes="short-area",
+                )
                 with Horizontal():
                     yield Button("+ Directory", id="add-dir")
                     yield Button("+ Key file", id="add-file")
-                with Collapsible(title="Key files · path | purpose", collapsed=not self.draft.key_files, id="key-files-panel"):
-                    yield TextArea("\n".join(f"{f.path} | {f.purpose}" for f in self.draft.key_files), id="key-files", classes="short-area")
-                yield Select([("Profile", "profile"), ("Scenarios", "scenarios"), ("Executable tasks", "executable_leaves"), ("Benchmark", "benchmark")], value=self.draft.goal_kind, allow_blank=False, id="draft-kind")
+                with Collapsible(
+                    title="Key files · path | purpose",
+                    collapsed=not self.draft.key_files,
+                    id="key-files-panel",
+                ):
+                    yield TextArea(
+                        "\n".join(f"{f.path} | {f.purpose}" for f in self.draft.key_files),
+                        id="key-files",
+                        classes="short-area",
+                    )
+                yield Select(
+                    [
+                        ("Profile", "profile"),
+                        ("Scenarios", "scenarios"),
+                        ("Executable tasks", "executable_leaves"),
+                        ("Benchmark", "benchmark"),
+                    ],
+                    value=self.draft.goal_kind,
+                    allow_blank=False,
+                    id="draft-kind",
+                )
                 with Horizontal(id="quantity"):
-                    yield Input(str(self.draft.sample_count or ""), placeholder="Count · default if blank", type="integer", id="draft-count")
+                    yield Input(
+                        str(self.draft.sample_count or ""),
+                        placeholder="Count · default if blank",
+                        type="integer",
+                        id="draft-count",
+                    )
                     yield Input(self.draft.language, placeholder="Language", id="draft-language")
                     yield Label("Partial")
                     yield Switch(self.draft.allow_limited_delivery, id="draft-limited")
                 yield Label("Goal")
                 yield TextArea(self.draft.goal, id="draft-goal", classes="short-area")
-                with Collapsible(title="Canonical input", collapsed=not self.draft.canonical_manifest):
+                with Collapsible(
+                    title="Canonical input",
+                    collapsed=not self.draft.canonical_manifest,
+                ):
                     yield Label("Manifest path")
                     yield Input(self.draft.canonical_manifest or "", id="canonical")
             yield Static("", id="draft-error")
@@ -118,15 +178,27 @@ class DraftScreen(Dialog):
         for line in self.query_one("#key-files", TextArea).text.splitlines():
             if line.strip():
                 path, _, purpose = line.partition("|")
-                files.append(SelectedFile(path=path.strip(), purpose=purpose.strip() or "Selected key file"))
-        return InputDraft(goal=self.query_one("#draft-goal", TextArea).text,
-            source_dirs=[] if canonical else [line.strip() for line in self.query_one("#sources", TextArea).text.splitlines() if line.strip()],
-            key_files=[] if canonical else files, goal_kind=kind,
+                files.append(
+                    SelectedFile(path=path.strip(), purpose=purpose.strip() or "Selected key file")
+                )
+        return InputDraft(
+            goal=self.query_one("#draft-goal", TextArea).text,
+            source_dirs=[]
+            if canonical
+            else [
+                line.strip()
+                for line in self.query_one("#sources", TextArea).text.splitlines()
+                if line.strip()
+            ],
+            key_files=[] if canonical else files,
+            goal_kind=kind,
             sample_count=int(count) if count and kind == "benchmark" else None,
-            allow_limited_delivery=self.query_one("#draft-limited", Switch).value, canonical_manifest=canonical,
+            allow_limited_delivery=self.query_one("#draft-limited", Switch).value,
+            canonical_manifest=canonical,
             source_manifest=None if canonical else self.draft.source_manifest,
             dataset_id=self.query_one("#draft-dataset-id", Input).value.strip() or None,
-            language=self.query_one("#draft-language", Input).value.strip() or "en")
+            language=self.query_one("#draft-language", Input).value.strip() or "en",
+        )
 
     @on(Button.Pressed)
     def pressed(self, event):
@@ -135,12 +207,24 @@ class DraftScreen(Dialog):
         if action == "cancel":
             self.dismiss(None)
         elif action in {"add-dir", "add-file"}:
+
             def chosen(path):
                 if path:
-                    area = self.query_one("#sources" if action == "add-dir" else "#key-files", TextArea)
-                    area.load_text((area.text + "\n" + path + (" | Key file" if action == "add-file" else "")).strip())
+                    area = self.query_one(
+                        "#sources" if action == "add-dir" else "#key-files",
+                        TextArea,
+                    )
+                    area.load_text(
+                        (
+                            area.text
+                            + "\n"
+                            + path
+                            + (" | Key file" if action == "add-file" else "")
+                        ).strip()
+                    )
                     if action == "add-file":
                         self.query_one("#key-files-panel", Collapsible).collapsed = False
+
             self.app.push_screen(PathPicker(directory=action == "add-dir"), chosen)
         elif action in {"start-draft", "save-draft"}:
             try:
@@ -187,18 +271,60 @@ class ConnectionScreen(Dialog):
             with VerticalScroll():
                 yield Label("Endpoint")
                 yield Input(self.values["base_url"], id="base-url", disabled=self.frozen)
-                yield Select([(Text(self.values["model"]), self.values["model"])] if self.values["model"] else [],
-                             value=self.values["model"] or Select.NULL, prompt="Select model", id="chat-model", disabled=self.frozen)
+                yield Select(
+                    [(Text(self.values["model"]), self.values["model"])]
+                    if self.values["model"]
+                    else [],
+                    value=self.values["model"] or Select.NULL,
+                    prompt="Select model",
+                    id="chat-model",
+                    disabled=self.frozen,
+                )
                 yield Input(password=True, placeholder="API key · session only", id="chat-key")
                 with Collapsible(title="Coding · local process", collapsed=False):
-                    yield Input(self.values["worker_venv"], placeholder="Worker venv", id="worker-venv", disabled=self.frozen)
-                    yield Input(self.values["coding_base_url"], placeholder="Endpoint · inherit if blank", id="coding-url", disabled=self.frozen)
-                    yield Select([(Text(self.values["coding_model"]), self.values["coding_model"])] if self.values["coding_model"] else [],
-                                 value=self.values["coding_model"] or Select.NULL, prompt="Inherit / select model", id="coding-model", disabled=self.frozen)
-                    yield Input(password=True, placeholder="Coding key · session only", id="coding-key")
-                    yield SelectionList(*[(name, name, name in self.values["skills"]) for name in ("tabular-inspection", "medical-image", "mask-geometry")], id="skills", disabled=self.frozen)
+                    yield Input(
+                        self.values["worker_venv"],
+                        placeholder="Worker venv",
+                        id="worker-venv",
+                        disabled=self.frozen,
+                    )
+                    yield Input(
+                        self.values["coding_base_url"],
+                        placeholder="Endpoint · inherit if blank",
+                        id="coding-url",
+                        disabled=self.frozen,
+                    )
+                    yield Select(
+                        [(Text(self.values["coding_model"]), self.values["coding_model"])]
+                        if self.values["coding_model"]
+                        else [],
+                        value=self.values["coding_model"] or Select.NULL,
+                        prompt="Inherit / select model",
+                        id="coding-model",
+                        disabled=self.frozen,
+                    )
+                    yield Input(
+                        password=True,
+                        placeholder="Coding key · session only",
+                        id="coding-key",
+                    )
+                    yield SelectionList(
+                        *[
+                            (name, name, name in self.values["skills"])
+                            for name in ("tabular-inspection", "medical-image", "mask-geometry")
+                        ],
+                        id="skills",
+                        disabled=self.frozen,
+                    )
                 with Collapsible(title="Advanced", collapsed=True):
-                    yield TextArea((self.config.parent / "run.json").read_text(encoding="utf-8") if self.frozen else self.config.read_text(encoding="utf-8"), id="advanced-config", classes="config-area", read_only=self.frozen)
+                    yield TextArea(
+                        (self.config.parent / "run.json").read_text(encoding="utf-8")
+                        if self.frozen
+                        else self.config.read_text(encoding="utf-8"),
+                        id="advanced-config",
+                        classes="config-area",
+                        read_only=self.frozen,
+                    )
                     yield Button("Save TOML", id="save-advanced", disabled=self.frozen)
             yield Static("Keys stay in memory.", id="connection-status")
             with Horizontal():
@@ -210,9 +336,15 @@ class ConnectionScreen(Dialog):
         def model(identifier):
             value = self.query_one(identifier, Select).value
             return "" if value is Select.NULL else str(value)
-        return {"base_url": self.query_one("#base-url", Input).value.strip(), "model": model("#chat-model"),
-                "coding_base_url": self.query_one("#coding-url", Input).value.strip(), "coding_model": model("#coding-model"),
-                "worker_venv": self.query_one("#worker-venv", Input).value.strip(), "skills": self.query_one("#skills", SelectionList).selected}
+
+        return {
+            "base_url": self.query_one("#base-url", Input).value.strip(),
+            "model": model("#chat-model"),
+            "coding_base_url": self.query_one("#coding-url", Input).value.strip(),
+            "coding_model": model("#coding-model"),
+            "worker_venv": self.query_one("#worker-venv", Input).value.strip(),
+            "skills": self.query_one("#skills", SelectionList).selected,
+        }
 
     @on(Button.Pressed)
     def pressed(self, event):
@@ -226,7 +358,10 @@ class ConnectionScreen(Dialog):
                 self.dismiss(True)
             else:
                 values = self.values_now()
-                set_session_credentials(self.query_one("#chat-key", Input).value, self.query_one("#coding-key", Input).value)
+                set_session_credentials(
+                    self.query_one("#chat-key", Input).value,
+                    self.query_one("#coding-key", Input).value,
+                )
                 if event.button.id == "save-connection":
                     save_connection(self.config, values)
                     self.dismiss(True)
@@ -261,7 +396,13 @@ class ConnectionScreen(Dialog):
                 select = self.query_one(identifier, Select)
                 previous = select.value
                 select.set_options([(Text(name), name) for name in result[key]])
-                select.value = previous if previous in result[key] else result[key][0] if len(result[key]) == 1 else Select.NULL
+                select.value = (
+                    previous
+                    if previous in result[key]
+                    else result[key][0]
+                    if len(result[key]) == 1
+                    else Select.NULL
+                )
 
 
 class ActivityScreen(Dialog):
@@ -272,7 +413,12 @@ class ActivityScreen(Dialog):
     def compose(self):
         with Vertical(classes="dialog"):
             yield Label("Trace · last 80", classes="dialog-title")
-            yield Select([("All", "*")] + [(label, key) for key, label in AGENTS.items()], value=self.selected, allow_blank=False, id="activity-filter")
+            yield Select(
+                [("All", "*")] + [(label, key) for key, label in AGENTS.items()],
+                value=self.selected,
+                allow_blank=False,
+                id="activity-filter",
+            )
             yield RichLog(id="activity-detail", wrap=True, markup=False, max_lines=1500)
             yield Button("Close", id="cancel")
 
@@ -288,7 +434,10 @@ class ActivityScreen(Dialog):
         log.clear()
         selected = self.query_one(Select).value
         for row in [row for row in self.rows if selected in {"*", row["agent_id"]}][-80:]:
-            log.write(Text(f"{row['label']} · {row['action']}\n{row['detail']}\n"), scroll_end=False)
+            log.write(
+                Text(f"{row['label']} · {row['action']}\n{row['detail']}\n"),
+                scroll_end=False,
+            )
 
     def update_rows(self, rows):
         log = self.query_one(RichLog)
@@ -353,7 +502,14 @@ class ArtifactsScreen(Dialog):
     def compose(self):
         with Vertical(classes="dialog"):
             yield Label("Artifacts", classes="dialog-title")
-            yield Select([(Text(f"{index + 1}. {PRODUCTS.get(ref.kind, ref.kind)}"), index) for index, ref in enumerate(self.refs)], prompt="Select artifact", id="artifact-choice")
+            yield Select(
+                [
+                    (Text(f"{index + 1}. {PRODUCTS.get(ref.kind, ref.kind)}"), index)
+                    for index, ref in enumerate(self.refs)
+                ],
+                prompt="Select artifact",
+                id="artifact-choice",
+            )
             yield TextArea(read_only=True, id="artifact-summary")
             with Collapsible(title="Raw", collapsed=True):
                 yield TextArea(read_only=True, id="artifact-raw", classes="config-area")
@@ -370,9 +526,23 @@ class ArtifactsScreen(Dialog):
         self.selected = self.refs[event.value]
         try:
             path = resolve_artifact(self.directory, self.selected)
-            self.query_one("#artifact-summary", TextArea).load_text(str(sanitize(artifact_summary(self.directory, self.selected), limit=16000)))
-            self.query_one("#artifact-raw", TextArea).load_text(str(path) + "\n" + self.selected.model_dump_json(indent=2) + "\n" + json.dumps(sanitize(read_json_artifact(self.directory, self.selected)), ensure_ascii=False, indent=2))
-            self.query_one("#export-artifact", Button).disabled = self.selected.kind != "delivery_manifest"
+            self.query_one("#artifact-summary", TextArea).load_text(
+                str(sanitize(artifact_summary(self.directory, self.selected), limit=16000))
+            )
+            self.query_one("#artifact-raw", TextArea).load_text(
+                str(path)
+                + "\n"
+                + self.selected.model_dump_json(indent=2)
+                + "\n"
+                + json.dumps(
+                    sanitize(read_json_artifact(self.directory, self.selected)),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            self.query_one("#export-artifact", Button).disabled = (
+                self.selected.kind != "delivery_manifest"
+            )
         except (OSError, ValueError) as exc:
             self.query_one("#artifact-summary", TextArea).load_text(str(exc))
 
@@ -394,6 +564,10 @@ class ArtifactsScreen(Dialog):
                 if os.name == "nt":
                     os.startfile(path.parent)
                 else:
-                    subprocess.Popen(["xdg-open", str(path.parent)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen(
+                        ["xdg-open", str(path.parent)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
             elif event.button.id == "export-artifact":
                 self.app.push_screen(ExportScreen(path.parent))

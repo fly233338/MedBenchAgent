@@ -14,11 +14,27 @@ from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from medbenchagent.runtime.llm import RequestContextBudgetError
-from medbenchagent.runtime.native import invocation_config, AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
+from medbenchagent.runtime.native import (
+    invocation_config,
+    AGENT_LIMIT_ERRORS,
+    chat_model,
+    loop_middleware,
+    role_lock,
+)
 from medbenchagent.settings import SupervisorSettings
 
 from medbenchagent.compilation.artifacts import preview_artifact
-from medbenchagent.compilation.contracts import AskUser, Contract, Delegate, Finish, Identifier, Text, WorkRecord, WorkResult, WorkScope
+from medbenchagent.compilation.contracts import (
+    AskUser,
+    Contract,
+    Delegate,
+    Finish,
+    Identifier,
+    Text,
+    WorkRecord,
+    WorkResult,
+    WorkScope,
+)
 from medbenchagent.compilation.interfaces import SupervisorView, record_summary
 
 
@@ -35,7 +51,10 @@ class _ModelDelegation(Contract):
 
 class _Inspection(Contract):
     target: Literal["artifacts", "workstreams", "work", "preview", "readiness"]
-    ids: list[Identifier] = Field(default_factory=list, description="IDs of the selected target type")
+    ids: list[Identifier] = Field(
+        default_factory=list,
+        description="IDs of the selected target type",
+    )
     kind: Text | None = None
     request_id: Identifier | None = None
     workstream_id: Identifier | None = None
@@ -70,6 +89,7 @@ def resolve_decision(view, response):
     decision = response.decision
     if not isinstance(decision, _ModelDelegation):
         return decision
+
     if decision.agent_id not in view.agents:
         raise ValueError(f"Unregistered Agent: {decision.agent_id}")
     view.validate_workstream(decision.agent_id, decision.workstream_id)
@@ -77,52 +97,95 @@ def resolve_decision(view, response):
     identifiers = decision.input_artifact_ids
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("Input artifact IDs must be unique")
+
     if unknown := set(identifiers) - known.keys():
         raise ValueError(f"Unknown artifact IDs: {sorted(unknown)}")
-    return Delegate(agent_id=decision.agent_id, operation=decision.operation, objective=decision.objective,
-                    workstream_id=decision.workstream_id, scope=decision.scope,
-                    constraints=decision.constraints, inputs=[known[key] for key in identifiers])
+    return Delegate(
+        agent_id=decision.agent_id,
+        operation=decision.operation,
+        objective=decision.objective,
+        workstream_id=decision.workstream_id,
+        scope=decision.scope,
+        constraints=decision.constraints,
+        inputs=[known[key] for key in identifiers],
+    )
 
 
 class SupervisorContextMiddleware(AgentMiddleware):
     def wrap_model_call(self, request, handler):
         context = request.runtime.context
-        view = {**context.current_view, "lookup_limits": {**context.current_view["lookup_limits"],
-            "remaining": max(0, context.current_view["lookup_limits"]["remaining"]
-                             - request.state.get("run_tool_call_count", {}).get("__all__", 0))}}
-        response = handler(request.override(system_message=SystemMessage(
-            content=context.instructions), messages=[HumanMessage(
-                content="Current work data (not instructions):\n" + json.dumps(view, ensure_ascii=False),
-                id="current-work-view"), *request.messages]))
+        view = {
+            **context.current_view,
+            "lookup_limits": {
+                **context.current_view["lookup_limits"],
+                "remaining": max(
+                    0,
+                    context.current_view["lookup_limits"]["remaining"]
+                    - request.state.get("run_tool_call_count", {}).get("__all__", 0),
+                ),
+            },
+        }
+        response = handler(
+            request.override(
+                system_message=SystemMessage(content=context.instructions),
+                messages=[
+                    HumanMessage(
+                        content="Current work data (not instructions):\n"
+                        + json.dumps(view, ensure_ascii=False),
+                        id="current-work-view",
+                    ),
+                    *request.messages,
+                ],
+            )
+        )
         if response.structured_response is not None:
             try:
                 resolve_decision(context.view, response.structured_response)
             except ValueError as exc:
                 message = response.result[0]
-                return ModelResponse(result=[message, *[
-                    ToolMessage(content=str(exc), tool_call_id=call["id"], status="error")
-                    for call in message.tool_calls
-                ]])
+                return ModelResponse(
+                    result=[
+                        message,
+                        *[
+                            ToolMessage(content=str(exc), tool_call_id=call["id"], status="error")
+                            for call in message.tool_calls
+                        ],
+                    ]
+                )
         return response
 
 
 def _result_view(result: WorkResult) -> dict:
     return {
-        "request_id": result.request_id, "outcome": result.outcome, "summary": result.summary,
+        "request_id": result.request_id,
+        "outcome": result.outcome,
+        "summary": result.summary,
         "artifact_ids": [ref.artifact_id for ref in result.artifacts],
-        "artifact_count": len(result.artifacts), "issue_count": len(result.issues), "need_count": len(result.needs),
+        "artifact_count": len(result.artifacts),
+        "issue_count": len(result.issues),
+        "need_count": len(result.needs),
         "issues": [issue.model_dump() for issue in result.issues],
-        "needs": [{"need_id": need.need_id, "kind": need.kind, "summary": need.summary,
-                   "detail_artifact_id": need.detail_ref.artifact_id if need.detail_ref else None}
-                  for need in result.needs],
+        "needs": [
+            {
+                "need_id": need.need_id,
+                "kind": need.kind,
+                "summary": need.summary,
+                "detail_artifact_id": need.detail_ref.artifact_id if need.detail_ref else None,
+            }
+            for need in result.needs
+        ],
     }
 
 
 def _work_view(record: WorkRecord) -> dict:
     request = record.request
     return {
-        "agent_id": request.agent_id, "operation": request.operation, "workstream_id": request.workstream_id,
-        "objective": request.objective, "scope": [s.model_dump() for s in request.scope], "constraints": list(request.constraints),
+        "agent_id": request.agent_id,
+        "operation": request.operation,
+        "workstream_id": request.workstream_id,
+        "objective": request.objective,
+        "scope": [s.model_dump() for s in request.scope],
+        "constraints": list(request.constraints),
         "input_artifact_ids": [ref.artifact_id for ref in request.inputs],
         **_result_view(record.result),
     }
@@ -138,7 +201,9 @@ def _excerpt(value: Any, text_limit: int, item_limit: int, field: str = "") -> t
         return value[:text_limit], len(value) > text_limit
     if isinstance(value, list):
         items = [_excerpt(item, text_limit, item_limit, field) for item in value[:item_limit]]
-        return [item for item, _ in items], len(value) > item_limit or any(flag for _, flag in items)
+        return [item for item, _ in items], len(value) > item_limit or any(
+            flag for _, flag in items
+        )
     if isinstance(value, dict):
         entries = {key: _excerpt(item, text_limit, item_limit, key) for key, item in value.items()}
         truncated = any(flag for _, flag in entries.values())
@@ -150,7 +215,15 @@ def _excerpt(value: Any, text_limit: int, item_limit: int, field: str = "") -> t
 
 
 class ModelSupervisor:
-    def __init__(self, directory: Path, settings: SupervisorSettings, *, instructions: str, runtime_directory: Path, model=None):
+    def __init__(
+        self,
+        directory: Path,
+        settings: SupervisorSettings,
+        *,
+        instructions: str,
+        runtime_directory: Path,
+        model=None,
+    ):
         if not settings.llm.model:
             raise ValueError("Resolve the Supervisor model before starting a run")
         self.directory = Path(directory).resolve()
@@ -168,60 +241,115 @@ class ModelSupervisor:
             return self._inspect(runtime.context.view, query)
 
         self.agent = create_agent(
-            model, tools=[inspect], response_format=ToolStrategy(SupervisorResponse),
-            context_schema=SupervisorContext, checkpointer=True, name="supervisor_agent",
-            middleware=[SupervisorContextMiddleware(), *loop_middleware(
-                model, replace(settings.loop, max_tool_calls=min(settings.max_lookups, settings.loop.max_tool_calls)), settings.context_chars)],
+            model,
+            tools=[inspect],
+            response_format=ToolStrategy(SupervisorResponse),
+            context_schema=SupervisorContext,
+            checkpointer=True,
+            name="supervisor_agent",
+            middleware=[
+                SupervisorContextMiddleware(),
+                *loop_middleware(
+                    model,
+                    replace(
+                        settings.loop,
+                        max_tool_calls=min(settings.max_lookups, settings.loop.max_tool_calls),
+                    ),
+                    settings.context_chars,
+                ),
+            ],
         )
 
     @staticmethod
     def _artifact_catalog(view: SupervisorView) -> list[dict]:
-        producers = {ref.artifact_id: row.request for row in view.history for ref in row.result.artifacts}
+        producers = {
+            ref.artifact_id: row.request for row in view.history for ref in row.result.artifacts
+        }
         rows = []
         for ref in view.artifacts:
             request = producers.get(ref.artifact_id)
             parts = PurePosixPath(ref.path).parts
             initial_request = parts[1] if len(parts) > 2 and parts[0] == "artifacts" else None
-            rows.append({"artifact_id": ref.artifact_id, "kind": ref.kind,
-                         "request_id": request.request_id if request else initial_request,
-                         "agent_id": request.agent_id if request else None,
-                         "workstream_id": request.workstream_id if request else None})
+            rows.append(
+                {
+                    "artifact_id": ref.artifact_id,
+                    "kind": ref.kind,
+                    "request_id": request.request_id if request else initial_request,
+                    "agent_id": request.agent_id if request else None,
+                    "workstream_id": request.workstream_id if request else None,
+                }
+            )
         return rows
 
     def _validate_inspection(self, view: SupervisorView, query: _Inspection) -> None:
-        ceiling = self.settings.max_artifacts if query.target == "preview" else self.settings.catalog_page_size
+        ceiling = (
+            self.settings.max_artifacts
+            if query.target == "preview"
+            else self.settings.catalog_page_size
+        )
         if query.limit is not None and query.limit > ceiling:
             raise ValueError(f"Inspection limit cannot exceed {ceiling}")
-        if len(query.ids) > self.settings.catalog_page_size or len(query.ids) != len(set(query.ids)):
+
+        if len(query.ids) > self.settings.catalog_page_size or len(query.ids) != len(
+            set(query.ids)
+        ):
             raise ValueError("Inspection IDs must be unique and fit catalog_page_size")
-        known = ({row["suggestion_id"] for rows in (view.readiness.get("available_operations", []), view.readiness.get("blocked_reasons", [])) for row in rows} if query.target == "readiness"
-                 else {ref.artifact_id for ref in view.artifacts} if query.target in {"artifacts", "preview"}
-                 else {item.workstream_id for item in view.workstreams} if query.target == "workstreams"
-                 else {row.request.request_id for row in view.history})
+        known = (
+            {
+                row["suggestion_id"]
+                for rows in (
+                    view.readiness.get("available_operations", []),
+                    view.readiness.get("blocked_reasons", []),
+                )
+                for row in rows
+            }
+            if query.target == "readiness"
+            else {ref.artifact_id for ref in view.artifacts}
+            if query.target in {"artifacts", "preview"}
+            else {item.workstream_id for item in view.workstreams}
+            if query.target == "workstreams"
+            else {row.request.request_id for row in view.history}
+        )
         if unknown := set(query.ids) - known:
             raise ValueError(f"Unknown inspection IDs: {sorted(unknown)}")
+
         if query.agent_id is not None and query.agent_id not in view.agents:
             raise ValueError(f"Unregistered Agent: {query.agent_id}")
-        if (query.workstream_id is not None
-                and query.workstream_id not in {item.workstream_id for item in view.workstreams}):
+
+        if query.workstream_id is not None and query.workstream_id not in {
+            item.workstream_id for item in view.workstreams
+        }:
             raise ValueError(f"Unknown Workstream ID: {query.workstream_id}")
+
         if query.kind is not None and query.target != "artifacts":
             raise ValueError("kind filters the artifact catalog only")
+
         if query.operation is not None and query.target != "readiness":
             raise ValueError("operation filters readiness only")
+
         if query.feedback_only and query.target != "work":
             raise ValueError("feedback_only filters reported work needs/issues only")
-        if query.target == "preview" and (not query.ids or any(
-                value is not None for value in (query.kind, query.request_id, query.workstream_id, query.agent_id))):
+
+        if query.target == "preview" and (
+            not query.ids
+            or any(
+                value is not None
+                for value in (query.kind, query.request_id, query.workstream_id, query.agent_id)
+            )
+        ):
             raise ValueError("preview requires artifact IDs and accepts no provenance filters")
+
         if query.target == "workstreams" and query.request_id is not None:
             raise ValueError("Use work inspection to find a request's Workstream")
 
     def _inspect(self, view: SupervisorView, query: _Inspection) -> dict:
         self._validate_inspection(view, query)
         if query.target == "readiness":
-            rows = [{**row, "ready": ready} for name, ready in (("available_operations", True), ("blocked_reasons", False))
-                    for row in view.readiness.get(name, [])]
+            rows = [
+                {**row, "ready": ready}
+                for name, ready in (("available_operations", True), ("blocked_reasons", False))
+                for row in view.readiness.get(name, [])
+            ]
             key = "suggestion_id"
         elif query.target in {"artifacts", "preview"}:
             rows, key = self._artifact_catalog(view), "artifact_id"
@@ -229,28 +357,56 @@ class ModelSupervisor:
             rows, key = view.workstream_summaries(), "workstream_id"
         else:
             rows, key = [_work_view(row) for row in view.history], "request_id"
-        matching = [row for row in rows if (not query.ids or row[key] in query.ids)
-                    and all(expected is None or row.get(name) == expected
-                            for name, expected in (("kind", query.kind), ("request_id", query.request_id),
-                                                   ("workstream_id", query.workstream_id), ("agent_id", query.agent_id), ("operation", query.operation)))
-                    and (not query.feedback_only or row.get("need_count") or row.get("issue_count"))]
+        matching = [
+            row
+            for row in rows
+            if (not query.ids or row[key] in query.ids)
+            and all(
+                expected is None or row.get(name) == expected
+                for name, expected in (
+                    ("kind", query.kind),
+                    ("request_id", query.request_id),
+                    ("workstream_id", query.workstream_id),
+                    ("agent_id", query.agent_id),
+                    ("operation", query.operation),
+                )
+            )
+            and (not query.feedback_only or row.get("need_count") or row.get("issue_count"))
+        ]
         if query.offset > len(matching):
             raise ValueError(f"Inspection offset exceeds {len(matching)} matching records")
-        limit = query.limit or (self.settings.max_artifacts if query.target == "preview"
-                                else self.settings.catalog_page_size)
-        selected = matching[query.offset:query.offset + limit]
+        limit = query.limit or (
+            self.settings.max_artifacts
+            if query.target == "preview"
+            else self.settings.catalog_page_size
+        )
+        selected = matching[query.offset : query.offset + limit]
         if query.target == "preview":
             known = {ref.artifact_id: ref for ref in view.artifacts}
-            selected = [preview_artifact(self.directory, known[row["artifact_id"]], limit=self.settings.artifact_chars)
-                        for row in selected]
+            selected = [
+                preview_artifact(
+                    self.directory,
+                    known[row["artifact_id"]],
+                    limit=self.settings.artifact_chars,
+                )
+                for row in selected
+            ]
         text_limit, item_limit = self.settings.artifact_chars, self.settings.catalog_page_size
         budget = self.settings.context_chars // 4
         while True:
-            projected = selected if query.target == "readiness" else [_excerpt(row, text_limit, item_limit)[0] for row in selected]
+            projected = (
+                selected
+                if query.target == "readiness"
+                else [_excerpt(row, text_limit, item_limit)[0] for row in selected]
+            )
             end = query.offset + len(selected)
-            result = {"query": query.model_dump(mode="json", exclude_none=True), "items": projected,
-                      "total": len(matching), "offset": query.offset,
-                      "next_offset": end if end < len(matching) else None}
+            result = {
+                "query": query.model_dump(mode="json", exclude_none=True),
+                "items": projected,
+                "total": len(matching),
+                "offset": query.offset,
+                "next_offset": end if end < len(matching) else None,
+            }
             size = len(json.dumps(result, ensure_ascii=False))
             if size <= budget:
                 return result
@@ -263,8 +419,14 @@ class ModelSupervisor:
 
     def _context(self, view: SupervisorView) -> dict:
         result = view.last_result
-        candidates = ([need.detail_ref for need in result.needs if need.detail_ref is not None]
-                      + list(result.artifacts)) if result else list(view.artifacts)
+        candidates = (
+            (
+                [need.detail_ref for need in result.needs if need.detail_ref is not None]
+                + list(result.artifacts)
+            )
+            if result
+            else list(view.artifacts)
+        )
         known = {ref.artifact_id: ref for ref in view.artifacts}
         for ref in candidates:
             if known.get(ref.artifact_id) != ref:
@@ -274,28 +436,53 @@ class ModelSupervisor:
         if view.history:
             priority += [ref.artifact_id for ref in view.history[-1].request.inputs]
         priority += [ref.artifact_id for ref in reversed(view.artifacts)]
-        priority = list(dict.fromkeys(priority))[:self.settings.catalog_page_size]
+        priority = list(dict.fromkeys(priority))[: self.settings.catalog_page_size]
         catalog = {row["artifact_id"]: row for row in self._artifact_catalog(view)}
-        previews = [preview_artifact(self.directory, ref, limit=self.settings.artifact_chars)
-                    for ref in list(unique.values())[:self.settings.max_artifacts]]
+        previews = [
+            preview_artifact(self.directory, ref, limit=self.settings.artifact_chars)
+            for ref in list(unique.values())[: self.settings.max_artifacts]
+        ]
         # These facts are never truncated; an oversized mandatory core is an explicit error.
-        required = {"compilation_id": view.compilation_id, "goal": view.goal, "agents": dict(view.agents),
-                    "workstream_agents": list(view.workstream_agents), "user_answers": list(view.answers),
-                    "catalog_totals": {"artifacts": len(view.artifacts), "workstreams": len(view.workstreams),
-                                       "readiness": sum(len(view.readiness.get(key, [])) for key in ("available_operations", "blocked_reasons")),
-                                       "work": len(view.history), "feedback_records": sum(
-                                           bool(row.result.needs or row.result.issues) for row in view.history)},
-                    "lookup_limits": {"remaining": min(self.settings.max_lookups, self.settings.loop.max_tool_calls),
-                                      "catalog_page_size": self.settings.catalog_page_size,
-                                      "preview_items": self.settings.max_artifacts,
-                                      "preview_chars": self.settings.artifact_chars}}
+        required = {
+            "compilation_id": view.compilation_id,
+            "goal": view.goal,
+            "agents": dict(view.agents),
+            "workstream_agents": list(view.workstream_agents),
+            "user_answers": list(view.answers),
+            "catalog_totals": {
+                "artifacts": len(view.artifacts),
+                "workstreams": len(view.workstreams),
+                "readiness": sum(
+                    len(view.readiness.get(key, []))
+                    for key in ("available_operations", "blocked_reasons")
+                ),
+                "work": len(view.history),
+                "feedback_records": sum(
+                    bool(row.result.needs or row.result.issues) for row in view.history
+                ),
+            },
+            "lookup_limits": {
+                "remaining": min(self.settings.max_lookups, self.settings.loop.max_tool_calls),
+                "catalog_page_size": self.settings.catalog_page_size,
+                "preview_items": self.settings.max_artifacts,
+                "preview_chars": self.settings.artifact_chars,
+            },
+        }
         optional = {
-            "readiness": {name: view.readiness.get(name, [])[:self.settings.catalog_page_size]
-                          for name in ("available_operations", "blocked_reasons")},
+            "readiness": {
+                name: view.readiness.get(name, [])[: self.settings.catalog_page_size]
+                for name in ("available_operations", "blocked_reasons")
+            },
             "last_result": _result_view(result) if result else None,
-            "history": [dict(record_summary(row), need_count=len(row.result.needs), issue_count=len(row.result.issues))
-                        for row in view.history[-self.settings.history_items:]],
-            "workstreams": view.workstream_summaries()[-self.settings.history_items:],
+            "history": [
+                dict(
+                    record_summary(row),
+                    need_count=len(row.result.needs),
+                    issue_count=len(row.result.issues),
+                )
+                for row in view.history[-self.settings.history_items :]
+            ],
+            "workstreams": view.workstream_summaries()[-self.settings.history_items :],
             "available_artifacts": [catalog[key] for key in priority if key in catalog],
             "artifact_previews": previews,
         }
@@ -335,14 +522,36 @@ class ModelSupervisor:
 
     def __call__(self, view: SupervisorView, config):
         invocation_id = f"supervisor-{len(view.history)}-{len(view.answers)}-{len(view.feedback)}"
-        context = SupervisorContext(self.directory, view, {**self._context(view), "feedback": view.feedback, "goal_spec": view.goal_spec.model_dump()},
-                                    self.instructions, invocation_id, runtime_directory=self.runtime_directory, settings=self.settings)
+        context = SupervisorContext(
+            self.directory,
+            view,
+            {
+                **self._context(view),
+                "feedback": view.feedback,
+                "goal_spec": view.goal_spec.model_dump(),
+            },
+            self.instructions,
+            invocation_id,
+            runtime_directory=self.runtime_directory,
+            settings=self.settings,
+        )
         with role_lock(self.runtime_directory, "supervisor"):
             try:
                 result = self.agent.invoke(
-                    {"messages": [HumanMessage(content="Choose the next action using the current view.",
-                                               id=invocation_id)], "structured_response": None},
-                    {**invocation_config(config, context), "recursion_limit": self.settings.loop.max_model_calls * 6 + 20}, context=context,
+                    {
+                        "messages": [
+                            HumanMessage(
+                                content="Choose the next action using the current view.",
+                                id=invocation_id,
+                            )
+                        ],
+                        "structured_response": None,
+                    },
+                    {
+                        **invocation_config(config, context),
+                        "recursion_limit": self.settings.loop.max_model_calls * 6 + 20,
+                    },
+                    context=context,
                 )
             except AGENT_LIMIT_ERRORS as exc:
                 raise RuntimeError(f"Supervisor invocation budget exhausted: {exc}") from exc

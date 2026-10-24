@@ -34,14 +34,13 @@ def resolve_artifact(root: str | Path, reference: ArtifactRef) -> Path:
     path = _within(Path(root), reference.path)
     if not path.is_file():
         raise FileNotFoundError(path)
+
     if _digest(path) != reference.digest:
         raise ArtifactIntegrityError(f"Artifact content changed: {reference.artifact_id}")
     return path
 
 
-def register_file(
-    root: str | Path, request: WorkRequest, path: str, *, kind: str
-) -> ArtifactRef:
+def register_file(root: str | Path, request: WorkRequest, path: str, *, kind: str) -> ArtifactRef:
     """Register an existing file owned by this request; never accept a claimed file."""
     root = Path(root).resolve()
     actual = _within(root, path)
@@ -50,7 +49,8 @@ def register_file(
         raise ValueError(f"Expected a file in this request's output directory: {path}")
     relative = actual.relative_to(root).as_posix()
     identifier = uuid.uuid5(
-        uuid.NAMESPACE_URL, f"{request.compilation_id}/{request.request_id}/{relative}"
+        uuid.NAMESPACE_URL,
+        f"{request.compilation_id}/{request.request_id}/{relative}",
     ).hex
     return ArtifactRef(artifact_id=identifier, kind=kind, path=relative, digest=_digest(actual))
 
@@ -81,8 +81,9 @@ def write_artifact(
 def write_json_artifact(
     root: str | Path, request: WorkRequest, name: str, *, kind: str, value: Any
 ) -> ArtifactRef:
-    content = (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)
-               + "\n").encode("utf-8")
+    content = (
+        json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    ).encode("utf-8")
     return write_artifact(root, request, name, kind=kind, content=content)
 
 

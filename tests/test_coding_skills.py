@@ -2,13 +2,16 @@ import json
 import os
 from pathlib import Path
 import subprocess
+
 import pytest
+
 from medbenchagent.agents.data_processing.coding.skills import freeze_skills, verify_skills
 from medbenchagent.settings import load_coding_settings
 
 
 def test_frozen_skills_bind_all_resources_and_detect_changes(tmp_path, monkeypatch):
     import medbenchagent.agents.data_processing.coding.skills as skills
+
     snapshot = freeze_skills(tmp_path, ["medical-image"])
     assert freeze_skills(tmp_path / "disabled", []).names == []
     with pytest.raises(ValueError, match="packaged"):
@@ -27,7 +30,7 @@ def test_native_sdk_loads_and_invokes_frozen_skill_offline(tmp_path):
     if not Path(settings.worker_python).is_file():
         pytest.skip("Provision the independent Coding environment for the SDK contract check")
     snapshot = freeze_skills(tmp_path, settings.skill_names)
-    code = '''
+    code = """
 import json,sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,10 +68,20 @@ except ValueError as exc:
 else:
     raise AssertionError("SDK parse failure was silently ignored")
 print(json.dumps([skill.name for skill in skills]))
-'''
-    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src"), "PYTHONUTF8": "1"}
-    result = subprocess.run([settings.worker_python, "-c", code],
-                            input=json.dumps([str(tmp_path), snapshot.model_dump()]), capture_output=True,
-                            text=True, encoding="utf-8", env=environment, timeout=60)
+"""
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+        "PYTHONUTF8": "1",
+    }
+    result = subprocess.run(
+        [settings.worker_python, "-c", code],
+        input=json.dumps([str(tmp_path), snapshot.model_dump()]),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=60,
+    )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == settings.skill_names

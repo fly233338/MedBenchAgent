@@ -53,10 +53,14 @@ class AgentLoopSettings:
     def parse(cls, values):
         if not isinstance(values, dict) or set(values) != set(cls.__dataclass_fields__):
             raise ValueError("Unexpected or missing agent loop settings")
-        result = cls(**{key: _integer(value, f"loop.{key}", minimum=1)
-                       for key, value in values.items()})
-        if not (result.summary_keep_tokens < result.summary_trigger_tokens
-                < result.context_tokens - result.max_output_tokens):
+        result = cls(
+            **{key: _integer(value, f"loop.{key}", minimum=1) for key, value in values.items()}
+        )
+        if not (
+            result.summary_keep_tokens
+            < result.summary_trigger_tokens
+            < result.context_tokens - result.max_output_tokens
+        ):
             raise ValueError("Agent summary limits must leave room for context and output")
         return result
 
@@ -93,17 +97,31 @@ class SupervisorSettings:
         if not isinstance(values, dict) or set(values) != {"llm", "supervisor"}:
             raise ValueError("Supervisor settings require llm and supervisor sections")
         limits = values["supervisor"]
-        if (not isinstance(limits, dict)
-                or set(limits) != {"context_chars", "artifact_chars", "max_artifacts", "history_items",
-                                   "catalog_page_size", "max_lookups", "loop"}):
+        if not isinstance(limits, dict) or set(limits) != {
+            "context_chars",
+            "artifact_chars",
+            "max_artifacts",
+            "history_items",
+            "catalog_page_size",
+            "max_lookups",
+            "loop",
+        }:
             raise ValueError("Unexpected or missing Supervisor limit fields")
         return cls(
             llm=_checked_llm_settings(values["llm"]),
             context_chars=_integer(limits["context_chars"], "supervisor.context_chars", minimum=1),
-            artifact_chars=_integer(limits["artifact_chars"], "supervisor.artifact_chars", minimum=1),
+            artifact_chars=_integer(
+                limits["artifact_chars"],
+                "supervisor.artifact_chars",
+                minimum=1,
+            ),
             max_artifacts=_integer(limits["max_artifacts"], "supervisor.max_artifacts", minimum=1),
             history_items=_integer(limits["history_items"], "supervisor.history_items", minimum=1),
-            catalog_page_size=_integer(limits["catalog_page_size"], "supervisor.catalog_page_size", minimum=1),
+            catalog_page_size=_integer(
+                limits["catalog_page_size"],
+                "supervisor.catalog_page_size",
+                minimum=1,
+            ),
             max_lookups=_integer(limits["max_lookups"], "supervisor.max_lookups", minimum=1),
             loop=AgentLoopSettings.parse(limits["loop"]),
         )
@@ -129,10 +147,14 @@ class TaskPlannerSettings:
         limits = values["planner"]
         if set(limits) != {"context_chars", "page_size", "preview_chars", "max_scenarios", "loop"}:
             raise ValueError("Unexpected or missing Planner settings")
-        return cls(llm=_checked_llm_settings(values["llm"]),
-                   loop=AgentLoopSettings.parse(limits["loop"]),
-                   **{key: _integer(limits[key], f"planner.{key}", minimum=1)
-                      for key in ("context_chars", "page_size", "preview_chars", "max_scenarios")})
+        return cls(
+            llm=_checked_llm_settings(values["llm"]),
+            loop=AgentLoopSettings.parse(limits["loop"]),
+            **{
+                key: _integer(limits[key], f"planner.{key}", minimum=1)
+                for key in ("context_chars", "page_size", "preview_chars", "max_scenarios")
+            },
+        )
 
 
 @dataclass(frozen=True)
@@ -149,11 +171,22 @@ class WorkAgentSettings:
 
     @classmethod
     def from_snapshot(cls, values):
-        if set(values) != {"llm", "agent"} or set(values["agent"]) != {"context_chars", "page_size", "preview_chars", "loop"}:
+        if set(values) != {"llm", "agent"} or set(values["agent"]) != {
+            "context_chars",
+            "page_size",
+            "preview_chars",
+            "loop",
+        }:
             raise ValueError("Unexpected native Agent configuration")
         limits = values["agent"]
-        return cls(llm=_checked_llm_settings(values["llm"]), loop=AgentLoopSettings.parse(limits["loop"]),
-                   **{key: _integer(limits[key], key, minimum=1) for key in ("context_chars", "page_size", "preview_chars")})
+        return cls(
+            llm=_checked_llm_settings(values["llm"]),
+            loop=AgentLoopSettings.parse(limits["loop"]),
+            **{
+                key: _integer(limits[key], key, minimum=1)
+                for key in ("context_chars", "page_size", "preview_chars")
+            },
+        )
 
 
 @dataclass(frozen=True)
@@ -179,34 +212,47 @@ class CodingSettings:
         if not isinstance(values, dict) or set(values) != {"llm", "coding"}:
             raise ValueError("Coding settings require llm and coding sections")
         runtime = values["coding"]
-        if (not isinstance(runtime, dict)
-                or set(runtime) != set(cls.__dataclass_fields__) - {"llm"}):
+        if not isinstance(runtime, dict) or set(runtime) != set(cls.__dataclass_fields__) - {"llm"}:
             raise ValueError("Unexpected or missing Coding configuration fields")
         worker_python = _string(runtime["worker_python"], "coding.worker_python")
         if not Path(worker_python).is_absolute():
             raise ValueError("coding.worker_python must be an absolute path")
         packages = runtime["sdk_packages"]
-        if (not isinstance(packages, dict)
-                or set(packages) != {"openhands-sdk", "openhands-tools"}):
+        if not isinstance(packages, dict) or set(packages) != {"openhands-sdk", "openhands-tools"}:
             raise ValueError("Coding requires frozen OpenHands SDK and Tools versions")
-        timeout = _number(runtime["timeout_seconds"], "coding.timeout_seconds",
-                          minimum=0.000001, maximum=float("inf"))
+        timeout = _number(
+            runtime["timeout_seconds"],
+            "coding.timeout_seconds",
+            minimum=0.000001,
+            maximum=float("inf"),
+        )
         if not math.isfinite(timeout):
             raise ValueError("coding.timeout_seconds must be finite")
         limits = {
             name: _integer(runtime[name], f"coding.{name}", minimum=1)
-            for name in ("max_iterations", "max_output_tokens", "condenser_max_events",
-                         "condenser_max_tokens")
+            for name in (
+                "max_iterations",
+                "max_output_tokens",
+                "condenser_max_events",
+                "condenser_max_tokens",
+            )
         }
         if limits["condenser_max_events"] <= 2:
             raise ValueError("coding.condenser_max_events must exceed the two retained events")
         names = runtime["skill_names"]
-        if not isinstance(names, list) or any(not isinstance(name, str) or not name for name in names) or len(names) != len(set(names)):
+        if (
+            not isinstance(names, list)
+            or any(not isinstance(name, str) or not name for name in names)
+            or len(names) != len(set(names))
+        ):
             raise ValueError("coding.skills.enabled requires distinct skill names")
         return cls(
-            llm=_checked_llm_settings(values["llm"]), worker_python=worker_python,
+            llm=_checked_llm_settings(values["llm"]),
+            worker_python=worker_python,
             sdk_packages={name: _string(value, name) for name, value in packages.items()},
-            skill_names=names, timeout_seconds=timeout, **limits,
+            skill_names=names,
+            timeout_seconds=timeout,
+            **limits,
         )
 
 
@@ -227,6 +273,7 @@ class RagSettings:
 @dataclass(frozen=True)
 class AppSettings:
     """Settings for standalone retrieval utilities; Agents load their own frozen settings."""
+
     llm: LlmSettings
     rag: RagSettings
 
@@ -239,7 +286,11 @@ def load_project_env() -> None:
 def local_config_path() -> Path | None:
     load_project_env()
     configured = os.getenv("MEDBENCH_CONFIG")
-    path = (PROJECT_ROOT / Path(configured).expanduser()).resolve() if configured else PROJECT_ROOT / "config/local.toml"
+    path = (
+        (PROJECT_ROOT / Path(configured).expanduser()).resolve()
+        if configured
+        else PROJECT_ROOT / "config/local.toml"
+    )
     return path if path.is_file() else None
 
 
@@ -340,11 +391,17 @@ def _llm_settings(llm: dict[str, Any]) -> LlmSettings:
         model=_optional_string(llm["model"], "llm.model"),
         base_url=_string(llm["base_url"], "llm.base_url"),
         timeout_seconds=_number(
-            llm["timeout_seconds"], "llm.timeout_seconds", minimum=0.000001, maximum=float("inf"),
+            llm["timeout_seconds"],
+            "llm.timeout_seconds",
+            minimum=0.000001,
+            maximum=float("inf"),
         ),
         max_retries=_integer(llm["max_retries"], "llm.max_retries", minimum=0),
         default_temperature=_number(
-            llm["default_temperature"], "llm.default_temperature", minimum=0, maximum=2,
+            llm["default_temperature"],
+            "llm.default_temperature",
+            minimum=0,
+            maximum=2,
         ),
         reasoning_effort=_optional_string(llm["reasoning_effort"], "llm.reasoning_effort"),
     )
@@ -355,8 +412,14 @@ def _checked_llm_settings(values: dict[str, Any]) -> LlmSettings:
         raise ValueError("Unexpected or missing LLM configuration fields")
     llm = _llm_settings(values)
     url = urlsplit(llm.base_url)
-    if (url.scheme not in {"http", "https"} or not url.netloc or url.username is not None
-            or url.password is not None or url.query or url.fragment):
+    if (
+        url.scheme not in {"http", "https"}
+        or not url.netloc
+        or url.username is not None
+        or url.password is not None
+        or url.query
+        or url.fragment
+    ):
         raise ValueError("llm.base_url must be an HTTP(S) base URL without credentials or query")
     return llm
 
@@ -389,8 +452,11 @@ def load_supervisor_settings(config_path: Path | None = None) -> SupervisorSetti
     values = {name: defaults[name] for name in ("llm", "supervisor")}
     raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
     if raw_path:
-        path = (Path(raw_path).expanduser().resolve() if config_path is not None
-                else _resolve_path(str(raw_path), "MEDBENCH_CONFIG"))
+        path = (
+            Path(raw_path).expanduser().resolve()
+            if config_path is not None
+            else _resolve_path(str(raw_path), "MEDBENCH_CONFIG")
+        )
         override = _read_toml(path)
         _merge(values, {name: override[name] for name in values if name in override})
     _apply_environment(values)
@@ -403,8 +469,11 @@ def load_planner_settings(config_path: Path | None = None) -> TaskPlannerSetting
     values = {name: defaults[name] for name in ("llm", "planner")}
     raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
     if raw_path:
-        path = (Path(raw_path).expanduser().resolve() if config_path is not None
-                else _resolve_path(str(raw_path), "MEDBENCH_CONFIG"))
+        path = (
+            Path(raw_path).expanduser().resolve()
+            if config_path is not None
+            else _resolve_path(str(raw_path), "MEDBENCH_CONFIG")
+        )
         override = _read_toml(path)
         _merge(values, {name: override[name] for name in values if name in override})
     _apply_environment(values)
@@ -412,13 +481,21 @@ def load_planner_settings(config_path: Path | None = None) -> TaskPlannerSetting
 
 
 def load_work_agent_settings(role: str, config_path: Path | None = None) -> WorkAgentSettings:
-    section = {"data_processing": "data_processing_agent", "generation": "generation_agent", "review": "review_agent"}[role]
+    section = {
+        "data_processing": "data_processing_agent",
+        "generation": "generation_agent",
+        "review": "review_agent",
+    }[role]
     load_project_env()
     defaults = _read_toml(DEFAULT_CONFIG_PATH)
     values = {"llm": defaults["llm"], section: defaults[section]}
     raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
     if raw_path:
-        path = Path(raw_path).expanduser().resolve() if config_path is not None else _resolve_path(str(raw_path), "MEDBENCH_CONFIG")
+        path = (
+            Path(raw_path).expanduser().resolve()
+            if config_path is not None
+            else _resolve_path(str(raw_path), "MEDBENCH_CONFIG")
+        )
         override = _read_toml(path)
         _merge(values, {name: override[name] for name in values if name in override})
     _apply_environment(values)
@@ -430,12 +507,24 @@ def load_compilation_target(config_path: Path | None = None, *, sample_count: in
     values = {"benchmark": _read_toml(DEFAULT_CONFIG_PATH)["benchmark"]}
     raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
     if raw_path:
-        path = Path(raw_path).expanduser().resolve() if config_path is not None else _resolve_path(str(raw_path), "MEDBENCH_CONFIG")
+        path = (
+            Path(raw_path).expanduser().resolve()
+            if config_path is not None
+            else _resolve_path(str(raw_path), "MEDBENCH_CONFIG")
+        )
         override = _read_toml(path)
         if "benchmark" in override:
             _merge(values, {"benchmark": override["benchmark"]})
-    return {"sample_count": _integer(sample_count if sample_count is not None else values["benchmark"]["default_sample_count"], "sample_count", minimum=1),
-            "language": _string(values["benchmark"]["default_language"], "language")}
+    return {
+        "sample_count": _integer(
+            sample_count
+            if sample_count is not None
+            else values["benchmark"]["default_sample_count"],
+            "sample_count",
+            minimum=1,
+        ),
+        "language": _string(values["benchmark"]["default_language"], "language"),
+    }
 
 
 def load_coding_settings(config_path: Path | None = None) -> CodingSettings:
@@ -446,8 +535,11 @@ def load_coding_settings(config_path: Path | None = None) -> CodingSettings:
     raw_path = config_path if config_path is not None else os.getenv("MEDBENCH_CONFIG")
     overrides = {}
     if raw_path:
-        path = (Path(raw_path).expanduser().resolve() if config_path is not None
-                else _resolve_path(str(raw_path), "MEDBENCH_CONFIG"))
+        path = (
+            Path(raw_path).expanduser().resolve()
+            if config_path is not None
+            else _resolve_path(str(raw_path), "MEDBENCH_CONFIG")
+        )
         override = _read_toml(path)
         coding = override.get("coding", {})
         if not isinstance(coding, dict):
@@ -455,22 +547,30 @@ def load_coding_settings(config_path: Path | None = None) -> CodingSettings:
         overrides = coding.get("llm", {})
         if not isinstance(overrides, dict):
             raise ValueError("coding.llm must be a table")
-        _merge(values, {**({"llm": override["llm"]} if "llm" in override else {}),
-                        "coding": {key: value for key, value in coding.items() if key != "llm"}})
+        _merge(
+            values,
+            {
+                **({"llm": override["llm"]} if "llm" in override else {}),
+                "coding": {key: value for key, value in coding.items() if key != "llm"},
+            },
+        )
     _apply_environment(values)
     _merge(values["llm"], overrides, prefix="coding.llm")
     runtime = dict(values["coding"])
     runtime.pop("llm")
     runtime["skill_names"] = runtime.pop("skills")["enabled"]
     venv = _resolve_path(runtime.pop("worker_venv"), "coding.worker_venv")
-    runtime["worker_python"] = str(venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
+    runtime["worker_python"] = str(
+        venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    )
     requirements = _CONFIG_ROOT / "coding-worker.requirements.txt"
-    pins = dict(line.strip().split("==", 1) for line in requirements.read_text(encoding="utf-8").splitlines()
-                if line.startswith(("openhands-sdk==", "openhands-tools==")))
+    pins = dict(
+        line.strip().split("==", 1)
+        for line in requirements.read_text(encoding="utf-8").splitlines()
+        if line.startswith(("openhands-sdk==", "openhands-tools=="))
+    )
     runtime["sdk_packages"] = pins
     return CodingSettings.from_snapshot({"llm": values["llm"], "coding": runtime})
-
-
 
 
 def load_settings(config_path: Path | None = None) -> AppSettings:

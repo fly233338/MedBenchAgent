@@ -38,6 +38,7 @@ def publish_delivery(
     current_audit = audit_candidate(candidate, candidate_binding, executions)
     if current_audit != audit:
         raise ValueError("Audit no longer matches actual candidate contents")
+
     if not candidate.items:
         raise ValueError("An empty candidate cannot be delivered")
     counts = candidate.manifest.counts
@@ -76,7 +77,8 @@ def publish_delivery(
     }
     identity = hashlib.sha256(
         json.dumps(
-            {"dependencies": dependencies, "limitation": limitation_reason}, sort_keys=True
+            {"dependencies": dependencies, "limitation": limitation_reason},
+            sort_keys=True,
         ).encode()
     ).hexdigest()
     tasks, plans, specs = {}, {}, {}
@@ -127,7 +129,8 @@ def publish_delivery(
         "files": {**assets, **{name: file_digest(root / name) for name in files}},
     }
     write_once(
-        root / "complete.json", (json.dumps(marker, sort_keys=True, indent=2) + "\n").encode()
+        root / "complete.json",
+        (json.dumps(marker, sort_keys=True, indent=2) + "\n").encode(),
     )
     load_benchmark_package(root)
     return root / "complete.json"
@@ -136,6 +139,7 @@ def publish_delivery(
 def export_benchmark(source, destination):
     """Copy exactly the files bound by a portable package, preserving review evidence."""
     from medbenchagent.evaluation.loader import verify_package
+
     source, destination = Path(source).resolve(), Path(destination).resolve()
     verify_package(source)
     load_benchmark_package(source)

@@ -13,11 +13,15 @@ from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
 from medbenchagent.rag.remote import (
-    REQUEST_TIMEOUT_SECONDS, RagUnavailable, embed_texts, rerank_documents,
+    REQUEST_TIMEOUT_SECONDS,
+    RagUnavailable,
+    embed_texts,
+    rerank_documents,
 )
 from medbenchagent.settings import get_settings
 from medbenchagent.data.sources import digest_file
 from medbenchagent.runtime.run_artifacts import atomic_write_json
+
 from filelock import FileLock
 
 
@@ -27,7 +31,9 @@ def discover_medical_materials(materials_root: str | Path) -> list[dict[str, str
     if not root.is_dir():
         raise RagUnavailable(f"Medical-material directory does not exist: {root}")
     materials: list[dict[str, str]] = []
-    for pdf in sorted(path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"):
+    for pdf in sorted(
+        path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"
+    ):
         relative_path = pdf.relative_to(root)
         category = relative_path.parts[0] if len(relative_path.parts) > 1 else ""
         if not category:
@@ -77,7 +83,11 @@ def _pdf_sources(root: Path, selected_files):
             path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"
         )
     else:
-        if not selected_files or not all(isinstance(name, str) for name in selected_files) or len(selected_files) != len(set(selected_files)):
+        if (
+            not selected_files
+            or not all(isinstance(name, str) for name in selected_files)
+            or len(selected_files) != len(set(selected_files))
+        ):
             raise RagUnavailable("Selected medical materials must be a non-empty unique file list.")
         pdfs = []
         for selected_file in selected_files:
@@ -100,9 +110,15 @@ def _pdf_sources(root: Path, selected_files):
 
 
 def _source_description(root, pdfs, chunk_size, overlap):
-    return {"schema": "pdf-chunks", "strategy": "paragraph-window",
-            "chunk_size": chunk_size, "overlap": overlap,
-            "documents": [{"path": pdf.relative_to(root).as_posix(), "digest": digest_file(pdf)} for pdf in pdfs]}
+    return {
+        "schema": "pdf-chunks",
+        "strategy": "paragraph-window",
+        "chunk_size": chunk_size,
+        "overlap": overlap,
+        "documents": [
+            {"path": pdf.relative_to(root).as_posix(), "digest": digest_file(pdf)} for pdf in pdfs
+        ],
+    }
 
 
 def extract_pdf_chunks(
@@ -140,8 +156,11 @@ def extract_pdf_chunks(
             raise RagUnavailable(f"Cannot read PDF text: {relative_path}: {exc}") from exc
     if not chunks:
         raise RagUnavailable("PDF materials contain no extractable text.")
+
     if source_description != _source_description(root, pdfs, chunk_size, overlap):
-        raise RagUnavailable("Medical PDF content changed during extraction; retry with a stable source.")
+        raise RagUnavailable(
+            "Medical PDF content changed during extraction; retry with a stable source."
+        )
     source_identity = json.dumps(source_description, sort_keys=True)
     return source_identity, chunks
 
@@ -149,8 +168,14 @@ def extract_pdf_chunks(
 class LocalPdfRag:
     """Chroma retrieval using independently served embedding and reranking models."""
 
-    def __init__(self, materials_root: str | Path, cache_root: str | Path,
-                 selected_files: list[str] | None = None, *, refresh: bool = False) -> None:
+    def __init__(
+        self,
+        materials_root: str | Path,
+        cache_root: str | Path,
+        selected_files: list[str] | None = None,
+        *,
+        refresh: bool = False,
+    ) -> None:
         self.materials_root = Path(materials_root).expanduser().resolve()
         self.cache_root = Path(cache_root) / "pdf-cache"
         self.selected_files = list(selected_files) if selected_files is not None else None
@@ -158,14 +183,27 @@ class LocalPdfRag:
 
     def _ensure_cache(self, *, refresh=False):
         settings = get_settings().rag
-        if not all((settings.embedding_base_url, settings.embedding_model,
-                    settings.reranker_base_url, settings.reranker_model)):
-            raise RagUnavailable("Embedding and reranker API endpoints and models must be configured.")
+        if not all(
+            (
+                settings.embedding_base_url,
+                settings.embedding_model,
+                settings.reranker_base_url,
+                settings.reranker_model,
+            )
+        ):
+            raise RagUnavailable(
+                "Embedding and reranker API endpoints and models must be configured."
+            )
         root = self.materials_root
         pdfs = _pdf_sources(root, self.selected_files)
         sources = _source_description(root, pdfs, settings.chunk_size, settings.chunk_overlap)
-        identity = {"schema": "pdf-rag-cache", "root": str(root), "sources": sources,
-                    "embedding_base_url": settings.embedding_base_url, "embedding_model": settings.embedding_model}
+        identity = {
+            "schema": "pdf-rag-cache",
+            "root": str(root),
+            "sources": sources,
+            "embedding_base_url": settings.embedding_base_url,
+            "embedding_model": settings.embedding_model,
+        }
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
         cache = self.cache_root / key
         cache.mkdir(parents=True, exist_ok=True)
@@ -177,15 +215,33 @@ class LocalPdfRag:
                     saved = json.loads(manifest.read_text(encoding="utf-8"))
                 except (ValueError, OSError):
                     pass
-            valid = (isinstance(saved, dict) and saved.get("identity") == identity and chunks_path.is_file()
-                     and saved.get("chunks_digest") == digest_file(chunks_path))
+            valid = (
+                isinstance(saved, dict)
+                and saved.get("identity") == identity
+                and chunks_path.is_file()
+                and saved.get("chunks_digest") == digest_file(chunks_path)
+            )
             if refresh or not valid:
-                _, chunks = extract_pdf_chunks(root, self.selected_files,
-                                               chunk_size=settings.chunk_size, overlap=settings.chunk_overlap)
-                if sources != _source_description(root, pdfs, settings.chunk_size, settings.chunk_overlap):
-                    raise RagUnavailable("Medical PDF content changed during extraction; retry with a stable source.")
+                _, chunks = extract_pdf_chunks(
+                    root,
+                    self.selected_files,
+                    chunk_size=settings.chunk_size,
+                    overlap=settings.chunk_overlap,
+                )
+                if sources != _source_description(
+                    root,
+                    pdfs,
+                    settings.chunk_size,
+                    settings.chunk_overlap,
+                ):
+                    raise RagUnavailable(
+                        "Medical PDF content changed during extraction; retry with a stable source."
+                    )
                 atomic_write_json(chunks_path, chunks)
-                atomic_write_json(manifest, {"identity": identity, "chunks_digest": digest_file(chunks_path)})
+                atomic_write_json(
+                    manifest,
+                    {"identity": identity, "chunks_digest": digest_file(chunks_path)},
+                )
                 (cache / "indexed.json").unlink(missing_ok=True)
             self.chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
             self.chunks_digest = digest_file(chunks_path)
@@ -199,10 +255,15 @@ class LocalPdfRag:
             raise RagUnavailable("PDF RAG dependencies are not installed.") from exc
         client = chromadb.PersistentClient(path=str(self.cache_dir))
         settings = self.settings
-        with FileLock(str(self.cache_dir / ".index.lock")), httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as api:
+        with (
+            FileLock(str(self.cache_dir / ".index.lock")),
+            httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as api,
+        ):
             collection = client.get_or_create_collection("medical_references")
             indexed = self.cache_dir / "indexed.json"
-            complete = indexed.is_file() and indexed.read_text(encoding="utf-8").strip() == json.dumps(self.chunks_digest)
+            complete = indexed.is_file() and indexed.read_text(
+                encoding="utf-8"
+            ).strip() == json.dumps(self.chunks_digest)
             if not complete or collection.count() != len(self.chunks):
                 if collection.count():
                     client.delete_collection("medical_references")
@@ -210,8 +271,12 @@ class LocalPdfRag:
                 collection.upsert(
                     ids=[str(chunk["chunk_id"]) for chunk in self.chunks],
                     documents=[str(chunk["text"]) for chunk in self.chunks],
-                    embeddings=embed_texts(api, settings.embedding_base_url, settings.embedding_model,
-                                           [str(chunk["text"]) for chunk in self.chunks]),
+                    embeddings=embed_texts(
+                        api,
+                        settings.embedding_base_url,
+                        settings.embedding_model,
+                        [str(chunk["text"]) for chunk in self.chunks],
+                    ),
                     metadatas=[
                         {"pdf": str(chunk["pdf"]), "page": int(chunk["page"])}
                         for chunk in self.chunks
@@ -219,8 +284,12 @@ class LocalPdfRag:
                 )
                 atomic_write_json(indexed, self.chunks_digest)
             response = collection.query(
-                query_embeddings=embed_texts(api, settings.embedding_base_url,
-                                             settings.embedding_model, [query]),
+                query_embeddings=embed_texts(
+                    api,
+                    settings.embedding_base_url,
+                    settings.embedding_model,
+                    [query],
+                ),
                 n_results=min(settings.candidate_count, collection.count()),
                 include=["documents", "metadatas", "distances"],
             )
@@ -242,7 +311,10 @@ class LocalPdfRag:
         ]
         with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as api:
             scores = rerank_documents(
-                api, settings.reranker_base_url, settings.reranker_model, query,
+                api,
+                settings.reranker_base_url,
+                settings.reranker_model,
+                query,
                 [str(candidate["text"]) for candidate in candidates],
                 max_length=settings.reranker_max_length,
             )
@@ -252,5 +324,6 @@ class LocalPdfRag:
             candidate["rerank_score"] = float(score)
             if float(score) >= threshold:
                 accepted.append(candidate)
-        return sorted(accepted, key=lambda item: float(item["rerank_score"]), reverse=True)[: limit or settings.result_limit]
-
+        return sorted(accepted, key=lambda item: float(item["rerank_score"]), reverse=True)[
+            : limit or settings.result_limit
+        ]

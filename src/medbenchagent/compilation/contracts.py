@@ -32,6 +32,7 @@ class WorkScope(Contract):
     def explicit_objects(self):
         if (self.kind == "artifact") != (not self.object_ids):
             raise ValueError("Use artifact for the whole input, otherwise supply object IDs")
+
         if len(set(self.object_ids)) != len(self.object_ids):
             raise ValueError("Duplicate scope objects")
         return self

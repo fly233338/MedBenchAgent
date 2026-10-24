@@ -1,4 +1,5 @@
 """Streaming table inspection with explicit scan coverage and identity checks."""
+
 import csv
 from collections import Counter
 from contextlib import contextmanager
@@ -15,6 +16,7 @@ def _rows(path, sheet):
             yield iter(csv.reader(handle)), None
     elif path.suffix.lower() == ".xlsx":
         from openpyxl import load_workbook
+
         book = load_workbook(path, read_only=True, data_only=True)
         try:
             selected = book.worksheets[0] if sheet is None else book[sheet]
@@ -27,13 +29,22 @@ def _rows(path, sheet):
 
 def inspect_table(path, *, sheet=None, id_columns=(), preview_rows=5, max_rows=None):
     """Measure scanned rows; max_rows never silently represents full-table coverage."""
-    if type(preview_rows) is not int or preview_rows < 0 or (max_rows is not None and (type(max_rows) is not int or max_rows < 1)):
+    if (
+        type(preview_rows) is not int
+        or preview_rows < 0
+        or (max_rows is not None and (type(max_rows) is not int or max_rows < 1))
+    ):
         raise ValueError("Invalid table scan limits")
     path = Path(path)
     with _rows(path, sheet) as (rows, selected):
         headers = next(rows, None)
-        if not headers or any(not isinstance(h, str) or not h.strip() for h in headers) or len(set(headers)) != len(headers):
+        if (
+            not headers
+            or any(not isinstance(h, str) or not h.strip() for h in headers)
+            or len(set(headers)) != len(headers)
+        ):
             raise ValueError("Table requires distinct nonempty column names")
+
         if len(id_columns) != len(set(id_columns)) or set(id_columns) - set(headers):
             raise ValueError("ID columns must select distinct table columns")
         missing, kinds = Counter(), {h: Counter() for h in headers}
@@ -59,10 +70,21 @@ def inspect_table(path, *, sheet=None, id_columns=(), preview_rows=5, max_rows=N
                     duplicate_rows += identity in identities
                     identities.add(identity)
             if len(preview) < preview_rows:
-                preview.append({name: value.isoformat() if isinstance(value, (date, datetime)) else value
-                                for name, value in row.items()})
+                preview.append(
+                    {
+                        name: value.isoformat() if isinstance(value, (date, datetime)) else value
+                        for name, value in row.items()
+                    }
+                )
             count += 1
-    return {"path": str(path.resolve()), "sheet": selected, "rows_scanned": count,
-            "complete": complete, "columns": [{"name": h, "missing": missing[h], "types": dict(kinds[h])} for h in headers],
-            "id_columns": list(id_columns), "duplicate_id_rows": duplicate_rows, "missing_id_rows": missing_ids,
-            "preview": preview}
+    return {
+        "path": str(path.resolve()),
+        "sheet": selected,
+        "rows_scanned": count,
+        "complete": complete,
+        "columns": [{"name": h, "missing": missing[h], "types": dict(kinds[h])} for h in headers],
+        "id_columns": list(id_columns),
+        "duplicate_id_rows": duplicate_rows,
+        "missing_id_rows": missing_ids,
+        "preview": preview,
+    }
