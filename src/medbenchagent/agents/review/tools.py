@@ -165,7 +165,7 @@ def review_tools():
         )
         output = publish_value(runtime, "review_report", report)
         context = runtime.context
-        record_event(context.directory / "events.jsonl", "review_submitted", compilation_id=context.compilation_id,
+        record_event(context.runtime_directory / "events.jsonl", "review_submitted", compilation_id=context.compilation_id,
                      request_id=context.invocation_id, agent_id="review", operation=context.request.operation,
                      approved=approved, artifact_id=output.artifact_id)
         return tool_result(

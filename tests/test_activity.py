@@ -16,7 +16,7 @@ from medbenchagent.settings import load_coding_settings
 def test_tool_activity_arrives_before_completion_and_filters_sensitive_values(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDBENCH_LLM_API_KEY", "secret-test-value")
     entered, release = threading.Event(), threading.Event()
-    request = SimpleNamespace(runtime=SimpleNamespace(context=SimpleNamespace(directory=tmp_path,
+    request = SimpleNamespace(runtime=SimpleNamespace(context=SimpleNamespace(directory=tmp_path, runtime_directory=tmp_path,
         compilation_id="run", agent_id="data_processing", invocation_id="work", request=SimpleNamespace(operation="profile"))),
         state={"messages": []}, tool_call={"name": "inspect_sources", "id": "call", "args": {"api_key": "secret-test-value", "path": "secret-test-value"}})
     def slow(_):
@@ -35,7 +35,7 @@ def test_tool_activity_arrives_before_completion_and_filters_sensitive_values(tm
         release.set()
         thread.join(5)
     assert reader.read()[-1]["event"]["event_type"] == "tool_finished"
-    assert "已截断" in reader.events[-1]["detail"]
+    assert reader.events[-1]["event"]["output"]["characters"] > 10000
     assert reader.read() == []
     pending = json.dumps({"event_id": "partial", "agent_id": "coding", "event_type": "coding_started"}).encode()
     with reader.path.open("ab") as output:
@@ -46,7 +46,7 @@ def test_tool_activity_arrives_before_completion_and_filters_sensitive_values(tm
     assert reader.read()[0]["id"] == "partial"
     other = ActivityReader(tmp_path / "other")
     record_event(other.path, "work_result", agent_id="review", outcome="completed", issues=[{"code": "review_template"}])
-    assert other.read()[0]["action"] == "审查完成 · 需修订"
+    assert other.read()[0]["action"] == "review · rework"
     assert len(reader.events) == 3
 
 
@@ -62,7 +62,7 @@ from openhands.sdk.event import ActionEvent,ObservationEvent
 from openhands.sdk.llm import TextContent
 from openhands.tools.terminal import TerminalAction,TerminalObservation
 folder=sys.argv[1]
-callback=activity_callback({"run_directory":folder,"conversation_id":"conversation","request":{"compilation_id":"run","request_id":"coding-call","workstream_id":"ws"},"parent_request_id":"dp-request","parent_operation":"profile"},["private-token"])
+callback=activity_callback({"runtime_directory":folder,"conversation_id":"conversation","request":{"compilation_id":"run","request_id":"coding-call","workstream_id":"ws"},"parent_request_id":"dp-request","parent_operation":"profile"},["private-token"])
 action=ActionEvent(thought=[TextContent(text="hidden-thought")],action=TerminalAction(command="echo private-token"),tool_name="terminal",tool_call_id="call",tool_call={"id":"call","name":"terminal","arguments":"{}","origin":"completion"},llm_response_id="response")
 callback(action)
 callback(ObservationEvent(tool_name="terminal",tool_call_id="call",action_id=action.id,observation=TerminalObservation.from_text("private-token result",command="echo private-token",exit_code=0)))

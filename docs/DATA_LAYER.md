@@ -121,3 +121,12 @@ TaskData 还声明 case_granularity、input_relationships、preparation_scripts 
 兼容表示可以共享数据；相同 backend 不要求同一物理 JSONL。minimum_cases 和字段规则来自绑定需求。
 准备脚本与参数可追溯，空间资源在 metadata 声明 width/height、单位等必要信息。
 大型索引、原始文件转换与医学质量判断不由 Reader 自动完成。
+
+
+## Run 内的数据保留
+
+一个用户 Run 只绑定一个 Dataset；多目录通过同一 SourceManifest 的 sources 表达。
+inputs 保存冻结输入，artifacts 保存正式发布内容，运行目录保存未验收候选。
+Profile 发布会复制 Coding 派生证据成员并改写对应 source root，原始来源仍外部引用；
+TaskData 发布沿用完整成员快照。正式产物校验不依赖 Coding 临时文件继续存在。
+Dataset 登记只保存 manifest/revision 引用；取消登记不删除来源或既有 Run。

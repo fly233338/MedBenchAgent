@@ -1,4 +1,5 @@
 """Native Supervisor tool loop, private persistence, bounded context and formal decisions."""
+from runtime_fixtures import runtime_for
 
 import json
 from dataclasses import replace
@@ -64,7 +65,7 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
     model = ScriptedChatModel(responder=respond)
     supervisor = ModelSupervisor(
         tmp_path, settings, instructions=load_prompt("supervisor/prompts/system.md"), model=model
-    )
+    , runtime_directory=runtime_for(tmp_path))
 
     def worker(state):
         assert state["request"]["inputs"] == [ref.model_dump()]
@@ -75,8 +76,8 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
         }
 
     config = {"configurable": {"thread_id": "native"}}
-    context = CompilationContext(tmp_path, supervisor, "Inspect")
-    with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
+    context = CompilationContext(tmp_path, supervisor, "Inspect", runtime_directory=runtime_for(tmp_path))
+    with SqliteSaver.from_conn_string(str(runtime_for(tmp_path) / "checkpoints.sqlite")) as saver:
         graph = build_compilation_graph(
             {"inspector": AgentSpec("Inspect", worker, operations=("inspect",))}, checkpointer=saver
         )
@@ -93,7 +94,7 @@ def test_native_supervisor_repairs_tools_and_decisions_and_resumes(tmp_path):
         ]
         assert any("messages" in row.checkpoint["channel_values"] for row in private)
     assert all(binding.get("parallel_tool_calls") is False for binding in model.bindings)
-    logs = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    logs = [json.loads(line) for line in (runtime_for(tmp_path) / "events.jsonl").read_text().splitlines()]
     assert any(row["event_type"] == "model_started" for row in logs)
 
 
@@ -110,7 +111,7 @@ def test_context_queries_and_frozen_budgets(tmp_path):
     )
     supervisor = ModelSupervisor(
         tmp_path, settings, instructions=load_prompt("supervisor/prompts/system.md"), model=model
-    )
+    , runtime_directory=runtime_for(tmp_path))
     view = SupervisorView(
         compilation_id="bounded",
         goal="Inspect",
@@ -169,7 +170,7 @@ def test_native_summarization_and_cross_compilation_isolation(tmp_path):
     model = ScriptedChatModel(responder=respond)
     supervisor = ModelSupervisor(
         tmp_path, settings, instructions=load_prompt("supervisor/prompts/system.md"), model=model
-    )
+    , runtime_directory=runtime_for(tmp_path))
 
     def worker(state):
         return {
@@ -186,7 +187,7 @@ def test_native_summarization_and_cross_compilation_isolation(tmp_path):
             result = graph.invoke(
                 {"compilation_id": identifier, "goal": "Inspect"},
                 {"configurable": {"thread_id": identifier}},
-                context=CompilationContext(tmp_path, supervisor, "Inspect"),
+                context=CompilationContext(tmp_path, supervisor, "Inspect", runtime_directory=runtime_for(tmp_path)),
             )
             assert result["status"] == "stopped" and len(result["history"]) == 2
     assert summaries and seen == {"one", "two"}

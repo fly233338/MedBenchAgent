@@ -60,3 +60,17 @@
     → Finish
     → compilation.policy.check_goal
 ```
+
+## Run / Runtime 补强（2026-10-24）
+
+- 删除 Experiment 多运行容器入口：一个命名 Run 绑定一个 Dataset 和一次 Compilation，重做使用 Clone。
+- runs 保存配置、冻结定义、输入和正式产物；.runtime/runs 保存 Checkpoint、UI 草稿/回执、事件、规划草稿、Skill 快照及 Coding 会话。
+- 上下文显式区分数据目录与运行目录；输入 Manifest 摘要冻结，Profile 派生成员随正式发布固化。
+- 复用 LangChain callbacks、工具 middleware 和 SDK/provider callbacks，记录可关联的实际用量及执行事件；不建立新状态账本。
+- Textual 改为 Run 列表入口、英文短文案、独立 TCSS、命令候选及 Dataset/配置/产物入口。已有问题回答、安全暂停和恢复路径保留。
+- 本地 Coding 保持宿主用户权限；候选路径、摘要和来源检查由 Host 执行。本轮不实现 Docker 或 OS 级只读隔离。
+
+验收记录：完整回归 77 项通过（保留库的 pynrrd 有一条 datetime.utcnow 弃用提示）；
+后续输入路径边界修复的 28 项相关复测通过。Ruff、sdist/wheel 构建以及独立 wheel 导入与 Textual 启动检查通过。
+80×24、100×35、140×45 的交互、缩放及深浅主题渲染已执行；最终英文界面文案和截图样例通过文本检查。
+Chat 与 Coding 的配置端点探测均为 ConnectError，未执行真实模型/真实数据编译；本地 BrEaST 夹具的 Scripted Agent 端到端已验证。

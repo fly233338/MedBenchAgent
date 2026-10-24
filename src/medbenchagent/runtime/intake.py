@@ -1,11 +1,11 @@
 """User drafts and deterministic input adaptation; no execution or semantic planning."""
 import json
+import hashlib
 import os
 import re
 import subprocess
 from pathlib import Path
 from typing import Literal
-from uuid import uuid4
 from urllib.parse import urlsplit
 
 import tomlkit
@@ -15,7 +15,6 @@ from medbenchagent.compilation.contracts import GoalSpec
 from medbenchagent.compilation.run import required_roles
 from medbenchagent.data.dataset import DatasetRef, DatasetSource, FileDatasetReader
 from medbenchagent.data.task_data import KeyFile, SourceManifest
-from medbenchagent.runtime.run_artifacts import atomic_write_json
 from medbenchagent.settings import (
     DEFAULT_CONFIG_PATH, get_coding_api_key, get_llm_api_key,
     load_coding_settings, load_supervisor_settings,
@@ -25,7 +24,7 @@ from medbenchagent.settings import (
 class SelectedFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
-    purpose: str = "用户选定的关键文件"
+    purpose: str = "Selected key file"
 
 
 class InputDraft(BaseModel):
@@ -37,6 +36,9 @@ class InputDraft(BaseModel):
     sample_count: int | None = Field(default=None, gt=0)
     allow_limited_delivery: bool = True
     canonical_manifest: str | None = None
+    source_manifest: str | None = None
+    dataset_id: str | None = None
+    language: str = "en"
 
     def goal_spec(self):
         plan = self.goal_kind in {"scenarios", "executable_leaves"}
@@ -74,44 +76,67 @@ def suggest_draft(text: str, previous: InputDraft | None = None) -> InputDraft:
 
 def validate_draft(draft: InputDraft, output: Path):
     if not draft.goal.strip():
-        raise ValueError("请填写任务要求")
+        raise ValueError("Goal required.")
     goal = draft.goal_spec()
     required_roles(goal, raw_source=not bool(draft.canonical_manifest))
     if draft.goal_kind != "benchmark" and draft.sample_count is not None:
-        raise ValueError("只有 Benchmark 目标需要题目数量")
+        raise ValueError("Count applies to Benchmark only.")
     if draft.canonical_manifest:
         if draft.source_dirs or draft.key_files:
-            raise ValueError("已有 Dataset 与原始目录不能混用")
+            raise ValueError("Choose canonical input or raw sources.")
         path = input_path(draft.canonical_manifest)
         FileDatasetReader(path)
         return {"dataset_manifest": path}
     if not draft.source_dirs:
-        raise ValueError("请选择至少一个数据目录")
+        raise ValueError("Add a source directory.")
     roots = list(dict.fromkeys(input_path(value) for value in draft.source_dirs))
     for path in roots:
         if output.resolve().is_relative_to(path):
-            raise ValueError("数据目录不能包含运行输出目录，请选择实际数据子目录")
+            raise ValueError("Source directory contains the Run output.")
         try:
             with os.scandir(path) as entries:
                 next(entries, None)
         except OSError as exc:
-            raise ValueError(f"无法读取数据目录：{path}") from exc
-    sources = [DatasetSource(source_id=f"source-{index + 1}", root=str(path)) for index, path in enumerate(roots)]
+            raise ValueError(f"Source not readable: {path}") from exc
+    original = None
+    if draft.source_manifest:
+        original_path = input_path(draft.source_manifest)
+        original = SourceManifest.model_validate_json(original_path.read_bytes())
+    existing_ids = {(original_path.parent / item.root).resolve(): item.source_id for item in original.sources} if original else {}
+    used = set(existing_ids.values())
+    sources = []
+    for index, path in enumerate(roots):
+        identifier = existing_ids.get(path)
+        if identifier is None:
+            number = index + 1
+            while f"source-{number}" in used:
+                number += 1
+            identifier = f"source-{number}"
+        used.add(identifier)
+        sources.append(DatasetSource(source_id=identifier, root=str(path)))
     files = []
     for selected in draft.key_files:
         path = input_path(selected.path)
         matching = [source for source in sources if path.is_relative_to(Path(source.root))]
         if not matching:
-            raise ValueError(f"请先添加关键文件所属的来源目录：{path}")
+            raise ValueError(f"Key file is outside selected sources: {path}")
         source = max(matching, key=lambda entry: len(Path(entry.root).parts))
         try:
             with path.open("rb") as handle:
                 handle.read(1)
         except OSError as exc:
-            raise ValueError(f"无法读取关键文件：{path}") from exc
+            raise ValueError(f"Key file not readable: {path}") from exc
         files.append(KeyFile(source_id=source.source_id, path=path.relative_to(source.root).as_posix(), purpose=selected.purpose))
     name = re.sub(r"[^a-zA-Z0-9_-]+", "-", roots[0].name).strip("-_") or "dataset"
-    manifest = SourceManifest(dataset=DatasetRef(dataset_id=name, revision="input-" + uuid4().hex[:12]),
+    definition = {"sources": [s.model_dump() for s in sources], "key_files": [f.model_dump() for f in files]}
+    revision = "input-" + hashlib.sha256(json.dumps(definition, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+    dataset = DatasetRef(dataset_id=draft.dataset_id or name, revision=revision)
+    if original is not None:
+        previous = {"sources": [{"source_id": s.source_id, "root": str((original_path.parent / s.root).resolve())} for s in original.sources],
+                    "key_files": [f.model_dump() for f in original.key_files]}
+        if previous == definition and dataset.dataset_id == original.dataset.dataset_id:
+            dataset = original.dataset
+    manifest = SourceManifest(dataset=dataset,
                               sources=sources, key_files=files)
     return {"source": manifest}
 
@@ -119,13 +144,59 @@ def validate_draft(draft: InputDraft, output: Path):
 def prepare_input(draft: InputDraft, directory: Path):
     result = validate_draft(draft, directory)
     if "source" in result:
-        path = directory / "inputs" / "sources.json"
-        atomic_write_json(path, result.pop("source").model_dump(mode="json"))
-        result["source_manifest"] = path
-    return {**result, "goal_spec": draft.goal_spec(), "sample_count": draft.sample_count}
+        result["source_manifest"] = snapshot_source(result.pop("source"), directory)
+    return {**result, "goal_spec": draft.goal_spec(), "sample_count": draft.sample_count,
+            "language": draft.language if draft.goal_kind == "benchmark" else None}
+
+
+def snapshot_source(source: SourceManifest, directory: Path) -> Path:
+    from medbenchagent.data.task_data import write_once
+    content = (source.model_dump_json(indent=2) + "\n").encode()
+    # Dataset revisions are semantic identifiers, never filesystem names.
+    path = directory / "inputs" / "sources" / (hashlib.sha256(content).hexdigest() + ".json")
+    write_once(path, content)
+    return path
+
+
+def register_draft(directory, draft, *, catalog=None):
+    from medbenchagent.data.dataset_catalog import register_dataset
+    result = validate_draft(draft.model_copy(update={"goal": draft.goal or "Register source"}), Path(directory))
+    if "source" in result:
+        source = result["source"]
+        return register_dataset(source.dataset.dataset_id, snapshot_source(source, Path(directory)), kind="source", catalog=catalog)
+    path = result["dataset_manifest"]
+    return register_dataset(FileDatasetReader(path).get_manifest().dataset_id, path, catalog=catalog)
+
+
+def select_dataset(dataset_id, draft, *, catalog=None):
+    from medbenchagent.data.dataset_catalog import registered_input
+    selected = registered_input(dataset_id, **({"catalog": catalog} if catalog else {}))
+    result = draft.model_copy(deep=True)
+    if "dataset_manifest" in selected:
+        result.canonical_manifest = str(selected["dataset_manifest"])
+        result.source_manifest, result.source_dirs, result.key_files = None, [], []
+    else:
+        path = selected["source_manifest"]
+        source = SourceManifest.model_validate_json(path.read_bytes())
+        roots = {s.source_id: (path.parent / s.root).resolve() for s in source.sources}
+        result.source_dirs = [str(root) for root in roots.values()]
+        result.key_files = [SelectedFile(path=str(roots[f.source_id] / f.path), purpose=f.purpose) for f in source.key_files]
+        result.source_manifest, result.canonical_manifest = str(path), None
+    result.dataset_id = dataset_id
+    return result
 
 
 def connection_values(config: Path) -> dict:
+    if (config.parent / "run.json").exists():
+        from medbenchagent.compilation.run import RunOptions
+        frozen = RunOptions.model_validate_json((config.parent / "run.json").read_bytes())
+        common = frozen.supervisor_settings["llm"]
+        coding = frozen.coding_settings or {"llm": common, "coding": {}}
+        runtime = coding["coding"]
+        return {"base_url": common["base_url"], "model": common["model"],
+                "coding_base_url": coding["llm"]["base_url"], "coding_model": coding["llm"]["model"],
+                "worker_venv": str(Path(runtime["worker_python"]).parent.parent) if runtime.get("worker_python") else "",
+                "skills": runtime.get("skill_names", [])}
     values = tomlkit.parse(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
     override = tomlkit.parse(config.read_text(encoding="utf-8"))
     def merge(base, update):
@@ -143,14 +214,16 @@ def connection_values(config: Path) -> dict:
 
 
 def save_connection(config: Path, values: dict):
+    if (config.parent / "run.json").exists():
+        raise ValueError("Run frozen. Clone to edit.")
     for value in (values["base_url"], values.get("coding_base_url", "")):
         if not value:
             continue
         url = urlsplit(value)
         if url.scheme not in {"http", "https"} or not url.netloc or url.username or url.password or url.query or url.fragment:
-            raise ValueError("模型地址必须是无凭据和查询参数的 HTTP(S) 地址")
+            raise ValueError("Use an HTTP(S) endpoint without credentials or query.")
     if not values["base_url"]:
-        raise ValueError("请填写 Chat 服务地址")
+        raise ValueError("Endpoint required.")
     document = tomlkit.parse(config.read_text(encoding="utf-8"))
     document.setdefault("llm", {}).update({key: values[key] for key in ("base_url", "model")})
     coding = document.setdefault("coding", {})
@@ -166,14 +239,40 @@ def set_session_credentials(common="", coding=""):
             os.environ[name] = value.strip()
 
 
+def save_advanced_config(config, text):
+    from tempfile import TemporaryDirectory
+    from medbenchagent.settings import _merge, load_work_agent_settings, load_planner_settings
+    if (config.parent / "run.json").exists():
+        raise ValueError("Run frozen. Clone to edit.")
+    document = tomlkit.parse(text)
+    checked = tomlkit.parse(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    _merge(checked, document)
+    if document.get("paths") != tomlkit.parse(config.read_text(encoding="utf-8")).get("paths"):
+        raise ValueError("Run paths are fixed.")
+    for section in (checked["llm"], checked["coding"].get("llm", {})):
+        if section.get("base_url"):
+            url = urlsplit(section["base_url"])
+            if url.username or url.password or url.query or url.fragment:
+                raise ValueError("Endpoint cannot contain credentials or query.")
+    with TemporaryDirectory(prefix="medbench-config-") as folder:
+        path = Path(folder) / "config.toml"
+        path.write_text(text, encoding="utf-8")
+        load_supervisor_settings(path)
+        load_planner_settings(path)
+        load_coding_settings(path)
+        for role in ("data_processing", "generation", "review"):
+            load_work_agent_settings(role, path)
+    config.write_text(text, encoding="utf-8")
+
+
 def _check_coding_environment(settings):
     if not Path(settings.worker_python).is_file():
-        raise ValueError(f"Coding Python 不存在：{settings.worker_python}")
+        raise ValueError(f"Coding Python missing: {settings.worker_python}")
     code = "import importlib.metadata,json; print(json.dumps({p:importlib.metadata.version(p) for p in ['openhands-sdk','openhands-tools']}))"
     result = subprocess.run([settings.worker_python, "-c", code], capture_output=True, text=True,
                             encoding="utf-8", timeout=20, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if result.returncode or json.loads(result.stdout) != settings.sdk_packages:
-        raise ValueError("Coding 环境缺少固定版本的 OpenHands SDK/Tools，请按 requirements 配置")
+        raise ValueError("Coding SDK mismatch. Install coding-worker.requirements.txt.")
 
 
 def check_connections(config: Path, draft: InputDraft):

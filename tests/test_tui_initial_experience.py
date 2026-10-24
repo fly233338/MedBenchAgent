@@ -1,74 +1,117 @@
 import asyncio
+from pathlib import Path
+
 import pytest
-from medbenchagent.runtime.sessions import create_experiment
+from textual.widgets import Input, OptionList, TextArea
+
+from medbenchagent.runtime import sessions
+from medbenchagent.runtime.intake import InputDraft
 from medbenchagent.tui.app import MBAApp
-from textual.widgets import TextArea
+from medbenchagent.tui.screens import RunsScreen, NameScreen
+from medbenchagent.tui.dialogs import ConnectionScreen, DraftScreen
+from medbenchagent.tui.widgets import Composer
 
 
-def test_new_rejects_existing_name_before_configuration(tmp_path):
-    create_experiment("example", root=tmp_path)
-    with pytest.raises(ValueError, match="already exists"):
-        create_experiment("example", root=tmp_path)
-
-
-@pytest.mark.parametrize("size", [(80, 24), (140, 45)])
-def test_chat_workbench_keeps_composer_visible_and_opens_settings(tmp_path, monkeypatch, size):
-    from medbenchagent.tui.widgets import Composer
-    from medbenchagent.tui.dialogs import ConnectionScreen
+@pytest.mark.parametrize("size", [(80, 24), (100, 35), (140, 45)])
+def test_run_entry_creation_commands_and_rendering(tmp_path, monkeypatch, size):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
     async def check():
-        app = MBAApp(root=tmp_path)
+        app = MBAApp(root=tmp_path / "runs", runtime_root=tmp_path / "runtime")
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
-            assert app.experiment == "default"
+            assert isinstance(app.screen, RunsScreen)
+            assert not (tmp_path / "runs").exists()
+            screenshots = Path(".runtime/tui-review")
+            screenshots.mkdir(parents=True, exist_ok=True)
+            app.save_screenshot(path=str(screenshots), filename=f"home-{size[0]}.svg")
+            await pilot.click("#create-run")
+            assert isinstance(app.screen, NameScreen)
+            app.screen.query_one("#run-name", Input).value = "research"
+            await pilot.click("#confirm-name")
+            for _ in range(100):
+                if app.selected_run == "research" and app.view.get("status") == "draft":
+                    break
+                await pilot.pause(0.02)
+            assert app.selected_run == "research" and app.view["status"] == "draft"
             composer = app.query_one(Composer)
             assert composer.region.bottom <= size[1] and composer.region.height >= 3
-            composer.load_text("用数据目录构建 4 道题")
-            await pilot.press("shift+enter")
-            assert "\n" in composer.text
-            await pilot.click("#settings")
+            composer.focus()
+            composer.load_text("/conf")
             await pilot.pause()
+            assert app.query_one("#command-options", OptionList).display
+            await pilot.press("tab", "enter")
             assert isinstance(app.screen, ConnectionScreen)
             assert "[llm]" in app.screen.query_one("#advanced-config", TextArea).text
             await pilot.press("escape")
-            dispatched = []
-            monkeypatch.setattr(app, "execute", lambda *args: dispatched.append(args))
-            app.selected_run = "prepared-run"
-            app.view = {"status": "ready"}
+            composer.focus()
+            composer.load_text("Build a dataset task 👩‍💻 é")
+            await pilot.press("shift+enter")
+            assert "\n" in composer.text
+            await pilot.press("enter")
+            assert isinstance(app.screen, DraftScreen)
+            await pilot.press("escape")
+            composer.load_text("Build 4 questions from the selected dataset.")
+            app.chat("INPUT REQUIRED", "Do these views belong to the same case?")
+            app.view = {"status": "waiting", "enabled_agents": ["supervisor", "data_processing", "coding"]}
             app.render_status()
-            await pilot.click("#resume")
-            assert dispatched[0][2] == "prepared-run" and dispatched[0][-1] is False
-            app.running = False
+            app.render_agents()
+            await pilot.pause()
+            app.save_screenshot(path=str(screenshots), filename=f"workbench-{size[0]}.svg")
+            await pilot.resize_terminal(70, 20)
+            await pilot.pause()
+            await pilot.resize_terminal(*size)
+            await pilot.pause()
+            assert composer.region.bottom <= size[1]
+            app.theme = "textual-light"
+            await pilot.pause()
+            app.save_screenshot(path=str(screenshots), filename=f"light-{size[0]}.svg")
     asyncio.run(check())
 
 
-def test_history_reading_and_activity_selection_do_not_jump_or_mix_runs(tmp_path):
+def test_history_focus_and_other_run_activity_do_not_mix(tmp_path):
     from textual.containers import VerticalScroll
     from medbenchagent.runtime.activity import ActivityReader
     from medbenchagent.runtime.construction import record_event
+
+    record = sessions.create_session("history", root=tmp_path / "runs", runtime_root=tmp_path / "runtime")
+    sessions.save_draft(record["directory"], InputDraft(goal="Review old evidence"))
     async def check():
-        app = MBAApp(root=tmp_path / "experiments")
+        app = MBAApp(root=tmp_path / "runs", runtime_root=tmp_path / "runtime")
         async with app.run_test(size=(100, 35)) as pilot:
-            active = ActivityReader(tmp_path / "active")
-            old = ActivityReader(tmp_path / "old")
+            await pilot.pause()
+            app.pop_screen()
+            app.select_run("history")
+            await pilot.pause(0.2)
+            active = app.reader
+            old = ActivityReader(tmp_path / "other")
             record_event(old.path, "coding_started", agent_id="coding", request_id="old")
-            app.reader, app.selected_run = active, "active"
-            app.activities(old, "default", "old", old.read())
-            assert not app.latest_activity
+            app.activities(old, "other", old.read())
+            assert app.reader is active and not app.latest_activity
             for index in range(30):
-                app.chat("回执", f"已完成工作 {index}")
+                app.chat("RESULT", f"Completed work {index}")
             await pilot.pause()
             history = app.query_one("#conversation", VerticalScroll)
             history.scroll_to(y=5, animate=False)
             await pilot.pause()
             position = history.scroll_y
-            app.chat("回执", "后台刚完成的新工作")
+            app.chat("RESULT", "New activity")
             await pilot.pause()
             assert history.scroll_y == position and app.unread > 0
-            assert app.query_one("#new-content").display
+            app.action_copy_run()
+            await pilot.pause()
+            app.screen.query_one("#run-name", Input).value = "copied"
+            await pilot.click("#confirm-name")
+            for _ in range(100):
+                if app.selected_run == "copied":
+                    break
+                await pilot.pause(0.02)
+            assert app.selected_run == "copied"
+            assert not (tmp_path / "runs/copied/run.json").exists()
     asyncio.run(check())
 
 
-def test_first_launch_prefers_existing_local_configuration(tmp_path, monkeypatch):
+def test_run_configuration_reuses_existing_local_defaults(tmp_path, monkeypatch):
     import medbenchagent.settings as settings
     from medbenchagent.runtime.intake import connection_values
     source = settings.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace('model = ""', 'model = "existing-model"', 1)
@@ -76,9 +119,5 @@ def test_first_launch_prefers_existing_local_configuration(tmp_path, monkeypatch
     (tmp_path / "config/local.toml").write_text(source, encoding="utf-8")
     monkeypatch.setattr(settings, "PROJECT_ROOT", tmp_path)
     monkeypatch.delenv("MEDBENCH_CONFIG", raising=False)
-    async def check():
-        app = MBAApp(root=tmp_path / "experiments")
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            assert connection_values(tmp_path / "experiments/default/config.toml")["model"] == "existing-model"
-    asyncio.run(check())
+    record = sessions.create_session("local", root=tmp_path / "runs", runtime_root=tmp_path / "runtime")
+    assert connection_values(Path(record["directory"]) / "config.toml")["model"] == "existing-model"

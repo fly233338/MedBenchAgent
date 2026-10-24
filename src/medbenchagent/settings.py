@@ -236,6 +236,21 @@ def load_project_env() -> None:
     load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
+def local_config_path() -> Path | None:
+    load_project_env()
+    configured = os.getenv("MEDBENCH_CONFIG")
+    path = (PROJECT_ROOT / Path(configured).expanduser()).resolve() if configured else PROJECT_ROOT / "config/local.toml"
+    return path if path.is_file() else None
+
+
+def load_paths(config_path: Path | None = None) -> dict[str, Path]:
+    values = _read_toml(DEFAULT_CONFIG_PATH)["paths"]
+    selected = config_path or local_config_path()
+    if selected is not None:
+        _merge(values, _read_toml(selected).get("paths", {}), prefix="paths")
+    return {key: _resolve_path(value, "paths." + key) for key, value in values.items()}
+
+
 def get_llm_api_key() -> str:
     """Read the Chat credential without storing it in run settings."""
     return os.getenv("MEDBENCH_LLM_API_KEY") or "local-vllm"

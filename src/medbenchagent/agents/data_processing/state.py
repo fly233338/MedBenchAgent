@@ -3,7 +3,7 @@
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from medbenchagent.compilation.artifacts import read_json_artifact, resolve_artifact
+from medbenchagent.compilation.artifacts import _within, read_json_artifact, resolve_artifact
 from medbenchagent.data.dataset import DatasetSource, file_digest
 from medbenchagent.data.task_data import (
     SourceManifest,
@@ -47,7 +47,7 @@ def data_contracts():
 
 
 def _allowed_sources(context, call):
-    roots = [context.directory / "coding" / call["request"]["workstream_id"] / "workspace"]
+    roots = [context.runtime_directory / "coding" / call["request"]["workstream_id"] / "workspace"]
     for ref in context.request.inputs:
         if ref.kind not in {"source_manifest", "dataset_profile", "dataset", "task_data"}:
             continue
@@ -64,7 +64,10 @@ def _candidate(runtime, call_id, path):
     receipt = next((row for row in call["files"] if row["path"] == path), None)
     if receipt is None:
         raise ValueError("Select a file returned by this Coding call")
-    actual = Path(receipt["read_path"]).resolve()
+    output = runtime.context.runtime_directory / "coding" / call["request"]["workstream_id"] / "workspace" / "outputs" / call_id
+    actual = _within(output, receipt["path"])
+    if actual != Path(receipt["read_path"]).resolve():
+        raise ValueError("Coding candidate location changed after execution")
     if file_digest(actual) != receipt["digest"]:
         raise ValueError("Coding candidate changed after execution; make a new Coding call")
     return call, receipt, actual

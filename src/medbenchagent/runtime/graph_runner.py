@@ -12,9 +12,10 @@ from medbenchagent.compilation.artifacts import register_file, write_json_artifa
 from medbenchagent.compilation.contracts import ArtifactRef, WorkRecord, WorkRequest
 from medbenchagent.compilation.graph import build_compilation_graph
 from medbenchagent.compilation.interfaces import record_summary
-from medbenchagent.compilation.run import RunOptions, resume_run
+from medbenchagent.compilation.run import RunOptions, resume_run, verify_input
 from medbenchagent.data.dataset import snapshot_dataset
 from medbenchagent.data.task_data import SourceManifest
+from medbenchagent.runtime.construction import record_event
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class RunEvent:
 
 
 def initial_state(directory, options):
+    verify_input(options)
     identifier = options.compilation_id
     request = WorkRequest(compilation_id=identifier, request_id=f"{identifier}-input",
                           agent_id="input", operation="bind", objective="Bind source inputs")
@@ -70,11 +72,11 @@ def _view(values, directory, options, interrupts=(), *, active=False, errors=())
         if product:
             try:
                 counts = read_json_artifact(directory, ArtifactRef.model_validate(product)).get("counts")
-                count_kind = "交付" if kind == "delivery_manifest" else "候选"
+                count_kind = "Delivery" if kind == "delivery_manifest" else "Candidate"
             except (OSError, ValueError):
                 pass
             break
-    return {"compilation_id": options.compilation_id, "run_directory": str(directory), "goal": options.goal,
+    return {"compilation_id": options.compilation_id, "run_directory": str(directory), "runtime_directory": options.runtime_directory, "goal": options.goal,
             "target_count": (options.benchmark_request or {}).get("sample_count"), "counts": counts, "count_kind": count_kind,
             "error": str(errors[0]) if errors else None,
             "status": status, "goal_result": values.get("goal_result"), "summary": values.get("summary", ""),
@@ -93,17 +95,18 @@ def state_view(snapshot, directory, options, *, active=False):
 def inspect_compilation(directory):
     directory = Path(directory).resolve()
     options = RunOptions.model_validate_json((directory / "run.json").read_bytes())
-    if (directory / "studio-thread.txt").exists():
-        return {**_view({}, directory, options), "status": "external", "summary": "请在绑定的 Studio 线程中查看和恢复此运行"}
+    runtime_directory = Path(options.runtime_directory)
+    if (runtime_directory / "studio-thread.txt").exists():
+        return {**_view({}, directory, options), "status": "external", "summary": "Open the bound Studio thread."}
     active = False
     try:
-        with FileLock(directory / "execution.lock", timeout=0):
+        with FileLock(runtime_directory / "locks" / "execution.lock", timeout=0):
             pass
     except Timeout:
         active = True
-    if not (directory / "checkpoints.sqlite").is_file():
+    if not (runtime_directory / "checkpoints.sqlite").is_file():
         return _view({}, directory, options, active=active)
-    with SqliteSaver.from_conn_string(str(directory / "checkpoints.sqlite")) as saver:
+    with SqliteSaver.from_conn_string(str(runtime_directory / "checkpoints.sqlite")) as saver:
         checkpoint = saver.get_tuple({"configurable": {"thread_id": options.compilation_id}})
     if checkpoint is None:
         return _view({}, directory, options, active=active)
@@ -114,16 +117,34 @@ def inspect_compilation(directory):
 
 
 def execute_compilation(directory, *, resume=False, answer=None, question_id=None, stop_requested=None):
+    options = RunOptions.model_validate_json((Path(directory) / "run.json").read_bytes())
+    log = Path(options.runtime_directory) / "events.jsonl"
+    identity = {"compilation_id": options.compilation_id, "agent_id": "runtime"}
+    try:
+        for event in _execute_compilation(directory, resume=resume, answer=answer, question_id=question_id, stop_requested=stop_requested):
+            kind = {"initialized": "run_resumed" if resume else "run_started", "paused": "run_paused",
+                    "needs_input": "run_waiting", "finished": "run_finished", "answer_accepted": "answer_accepted"}.get(event.kind)
+            if kind:
+                record_event(log, kind, **identity, status=event.payload.get("status"),
+                             goal_result=event.payload.get("goal_result"), question_id=event.payload.get("question_id"))
+            yield event
+    except Exception as exc:
+        record_event(log, "execution_failed", **identity, error_type=type(exc).__name__, summary="Execution stopped with an error; inspect its checkpoint")
+        raise
+
+
+def _execute_compilation(directory, *, resume=False, answer=None, question_id=None, stop_requested=None):
     directory = Path(directory).resolve()
-    if (directory / "studio-thread.txt").exists():
-        raise ValueError("This run belongs to Studio; resume its bound Studio thread")
     options = RunOptions.model_validate_json((directory / "run.json").read_bytes())
+    runtime_directory = Path(options.runtime_directory)
+    if (runtime_directory / "studio-thread.txt").exists():
+        raise ValueError("This run belongs to Studio; resume its bound Studio thread")
     identifier = options.compilation_id
     config = {"configurable": {"thread_id": identifier}, "recursion_limit": 300}
-    with FileLock(directory / "execution.lock", timeout=0):
+    with FileLock(runtime_directory / "locks" / "execution.lock", timeout=0):
         if resume:
             options = resume_run(directory, identifier)
-        with assemble_compilation(options, directory) as (agents, context), SqliteSaver.from_conn_string(str(directory / "checkpoints.sqlite")) as saver:
+        with assemble_compilation(options, directory) as (agents, context), SqliteSaver.from_conn_string(str(runtime_directory / "checkpoints.sqlite")) as saver:
             graph = build_compilation_graph(agents, checkpointer=saver)
             snapshot = graph.get_state(config)
             questions = [item for task in snapshot.tasks for item in task.interrupts]

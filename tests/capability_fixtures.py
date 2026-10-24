@@ -1,4 +1,5 @@
 """Small real files and direct tool calls for the new capability boundaries; no model service."""
+from runtime_fixtures import runtime_for
 
 import json
 from dataclasses import replace
@@ -71,7 +72,7 @@ class ToolCalls:
             "base_revision" in inspect.signature(function).parameters
             and "base_revision" not in arguments
         ):
-            path = self.context.directory / self.state["draft_path"]
+            path = self.context.runtime_directory / self.state["draft_path"]
             arguments["base_revision"] = json.loads(path.read_text())["revision"]
         self.trace.append({"name": name, "args": json.loads(json.dumps(
             {key: value for key, value in arguments.items() if key != "runtime"},
@@ -229,7 +230,7 @@ def build_capabilities(tmp_path):
     coding_settings = load_coding_settings()
     coding_settings = replace(coding_settings, llm=replace(coding_settings.llm, model="offline"))
     coding = OpenHandsCodingAgent(
-        coding_settings, instructions=freeze_composition("coding").text, skills=freeze_skills(directory, coding_settings.skill_names), runner=runner
+        coding_settings, instructions=freeze_composition("coding").text, skills=freeze_skills(runtime_for(directory), coding_settings.skill_names), runner=runner
     )
 
     operations = {"profile": "profile", "scenarios": "discover_scenarios", "prepare": "prepare_task_data",
@@ -259,7 +260,7 @@ def build_capabilities(tmp_path):
             "data_processing",
             coding,
             "Prepare data",
-        ),
+         runtime_directory=runtime_for(directory)),
         known,
     )
     result = dp.call(
@@ -285,7 +286,7 @@ def build_capabilities(tmp_path):
         profile_ref,
         planner_settings,
         {key: freeze_composition(key).text for key in ("discover_scenarios", "design_leaves")},
-    )
+     runtime_directory=runtime_for(directory))
     planner = ToolCalls(
         planner_tools(), planning_context, known, middleware=PlannerContextMiddleware()
     )
@@ -461,7 +462,7 @@ def build_capabilities(tmp_path):
             load_work_agent_settings("generation"),
             {"generate": freeze_composition("generate").text},
             "generation",
-        ),
+         runtime_directory=runtime_for(directory)),
         known,
     )
     specs = []

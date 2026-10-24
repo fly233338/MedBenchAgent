@@ -88,6 +88,8 @@ def build_compilation_graph(
         if (state.get("no_progress", 0) >= limits.no_progress
                 or state.get("total_repairs", 0) >= limits.total
                 or max(state.get("problem_attempts", {}).values(), default=0) >= limits.per_problem):
+            record_event(runtime.context.runtime_directory / "events.jsonl", "repair_exhausted",
+                         compilation_id=compilation_id, agent_id="supervisor", total_repairs=state.get("total_repairs", 0))
             return {"status": "stopped", "goal_result": "blocked", "next_node": END,
                     "summary": "Repair budget exhausted; valid artifacts are preserved."}
         view = interfaces.SupervisorView(
@@ -110,6 +112,9 @@ def build_compilation_graph(
                     "summary": str(exc)}
 
         def rejected(exc):
+            record_event(runtime.context.runtime_directory / "events.jsonl", "decision_rejected",
+                         compilation_id=compilation_id, agent_id="supervisor", error_type=type(exc).__name__,
+                         summary="Decision did not satisfy the work contract")
             return {"feedback": [str(exc)], "next_node": "supervisor",
                     "no_progress": state.get("no_progress", 0) + 1,
                     "total_repairs": state.get("total_repairs", 0) + 1}
@@ -146,13 +151,13 @@ def build_compilation_graph(
             except (ValueError, KeyError, OSError) as exc:
                 return rejected(exc)
             record_event(
-                runtime.context.directory / "events.jsonl", "work_delegated",
+                runtime.context.runtime_directory / "events.jsonl", "work_delegated",
                 compilation_id=compilation_id, request_id=request.request_id,
                 agent_id=request.agent_id, operation=request.operation, workstream_id=workstream_id,
                 input_artifact_ids=[ref.artifact_id for ref in request.inputs],
                 summary=request.objective, scope=[scope.model_dump() for scope in request.scope],
             )
-            record_event(runtime.context.directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
+            record_event(runtime.context.runtime_directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
                          request_id=request.request_id, agent_id="supervisor", decision="delegate", target_agent=request.agent_id,
                          operation=request.operation, summary=request.objective)
             return {
@@ -161,7 +166,7 @@ def build_compilation_graph(
                 "next_node": decision.agent_id, "status": "running", "feedback": [],
             }
         if isinstance(decision, AskUser):
-            record_event(runtime.context.directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
+            record_event(runtime.context.runtime_directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
                          agent_id="supervisor", decision="ask_user", summary=decision.question)
             return {"question": decision.question, "next_node": "ask_user", "status": "waiting"}
         assert isinstance(decision, Finish)
@@ -170,7 +175,7 @@ def build_compilation_graph(
                 runtime.context.check_goal(decision, tuple(known.values()), view.history)
         except (ValueError, KeyError, OSError) as exc:
             return rejected(exc)
-        record_event(runtime.context.directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
+        record_event(runtime.context.runtime_directory / "events.jsonl", "supervisor_decision", compilation_id=compilation_id,
                      agent_id="supervisor", decision="finish", goal_result=decision.goal_result, summary=decision.summary)
         return {"summary": decision.summary, "next_node": END, "status": "stopped",
                 "goal_result": decision.goal_result, "feedback": []}
@@ -227,8 +232,18 @@ def build_compilation_graph(
         else:
             problems.pop(key, None)
         record = WorkRecord(request=request, result=result).model_dump(mode="json")
+        for ref in accepted.values():
+            record_event(runtime.context.runtime_directory / "events.jsonl", "artifact_submitted",
+                         compilation_id=request.compilation_id, request_id=request.request_id, agent_id=request.agent_id,
+                         workstream_id=request.workstream_id, operation=request.operation,
+                         artifact_id=ref.artifact_id, kind=ref.kind, digest=ref.digest, artifact_path=ref.path)
+        if repairing:
+            record_event(runtime.context.runtime_directory / "events.jsonl", "repair_requested",
+                         compilation_id=request.compilation_id, request_id=request.request_id, agent_id=request.agent_id,
+                         operation=request.operation, problem_key=key, attempt=problems[key],
+                         issue_codes=[issue.code for issue in result.issues])
         record_event(
-            runtime.context.directory / "events.jsonl", "work_result",
+            runtime.context.runtime_directory / "events.jsonl", "work_result",
             compilation_id=request.compilation_id, request_id=request.request_id,
             agent_id=request.agent_id, workstream_id=request.workstream_id,
             outcome=result.outcome, artifact_ids=[ref.artifact_id for ref in result.artifacts],
@@ -254,7 +269,7 @@ def build_compilation_graph(
         }
 
     builder = StateGraph(CompilationState, context_schema=None if default_context else interfaces.CompilationContext)
-    def with_context(node):
+    def with_context(node, agent_id=None):
         import inspect
         from dataclasses import replace
         def invoke(state, config: RunnableConfig, runtime: Runtime[interfaces.CompilationContext]):
@@ -262,19 +277,31 @@ def build_compilation_graph(
             if context is None:
                 raise ValueError("Compilation requires its assembled runtime context")
             runtime = replace(runtime, context=context)
-            if hasattr(node, "invoke"):
-                return node.invoke(state, config, context=context)
-            kwargs = {"runtime": runtime} if "runtime" in inspect.signature(node).parameters else {}
-            if "config" in inspect.signature(node).parameters:
-                kwargs["config"] = config
-            return node(state, **kwargs)
+            identity = {}
+            if agent_id:
+                request = WorkRequest.model_validate(state["request"])
+                identity = {"compilation_id": request.compilation_id, "request_id": request.request_id,
+                            "agent_id": agent_id, "operation": request.operation, "workstream_id": request.workstream_id}
+                record_event(context.runtime_directory / "events.jsonl", "work_started", **identity)
+            try:
+                if hasattr(node, "invoke"):
+                    return node.invoke(state, config, context=context)
+                kwargs = {"runtime": runtime} if "runtime" in inspect.signature(node).parameters else {}
+                if "config" in inspect.signature(node).parameters:
+                    kwargs["config"] = config
+                return node(state, **kwargs)
+            except Exception as exc:
+                if agent_id:
+                    record_event(context.runtime_directory / "events.jsonl", "work_failed", **identity,
+                                 error_type=type(exc).__name__, summary="Agent invocation failed")
+                raise
         return invoke
 
     builder.add_node("supervisor", with_context(supervisor))
     builder.add_node("collect", with_context(collect))
     builder.add_node("ask_user", ask_user)
     for name, spec in agents.items():
-        builder.add_node(name, with_context(spec.node), input_schema=interfaces.AgentInput)
+        builder.add_node(name, with_context(spec.node, name), input_schema=interfaces.AgentInput)
         builder.add_edge(name, "collect")
     if initial is not None:
         builder.add_node("initialize", lambda state: initial if not state.get("compilation_id") else {})

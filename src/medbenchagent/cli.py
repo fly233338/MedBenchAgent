@@ -1,36 +1,37 @@
-"""One CLI for the canonical Compilation core and its experiment UI."""
+"""One CLI for user-facing Runs and the canonical Compilation core."""
 import argparse
 import json
+import sys
 from pathlib import Path
 from uuid import uuid4
 
-from medbenchagent.compilation.contracts import GoalSpec
-from medbenchagent.compilation.run import create_run
+from medbenchagent.runtime.intake import InputDraft, SelectedFile, select_dataset
 from medbenchagent.runtime.graph_runner import execute_compilation, inspect_compilation
 from medbenchagent.runtime import sessions
+from medbenchagent.settings import load_paths
 
 
 def _parser():
     parser = argparse.ArgumentParser(prog="medd2b")
     sub = parser.add_subparsers(dest="command")
-    create = sub.add_parser("create", help="Create an experiment and editable config")
-    create.add_argument("experiment")
+    create = sub.add_parser("create", help="Create one Run and editable config")
+    create.add_argument("name")
     create.add_argument("--config", type=Path)
     run = sub.add_parser("run", help="Start a Compilation from explicit real inputs")
-    run.add_argument("experiment", nargs="?")
+    run.add_argument("name", nargs="?")
     run.add_argument("--directory", type=Path)
-    run.add_argument("--compilation-id")
     run.add_argument("--config", type=Path)
     run.add_argument("--prepare-only", action="store_true", help="Freeze a run for Studio without executing agents")
-    run.add_argument("--goal", default="Compile and deliver a traceable benchmark from the supplied data.")
-    source = run.add_mutually_exclusive_group(required=True)
+    run.add_argument("--goal")
+    source = run.add_mutually_exclusive_group()
     source.add_argument("--source-manifest", type=Path)
     source.add_argument("--dataset-manifest", type=Path)
     source.add_argument("--dataset", help="Registered dataset ID")
+    source.add_argument("--source-dir", type=Path, action="append")
+    run.add_argument("--key-file", type=Path, action="append", default=[])
     for command in (run,):
         _goal_arguments(command)
-    batch = sub.add_parser("batch", help="Run registered datasets independently in one experiment")
-    batch.add_argument("experiment")
+    batch = sub.add_parser("batch", help="Create an independent Run for each registered Dataset")
     batch.add_argument("dataset_ids", nargs="+")
     batch.add_argument("--goal", default="Compile and deliver a traceable benchmark.")
     _goal_arguments(batch)
@@ -53,16 +54,10 @@ def _parser():
 
 
 def _goal_arguments(parser):
-    parser.add_argument("--goal-kind", choices=("profile", "plan", "benchmark"), default="benchmark")
+    parser.add_argument("--goal-kind", choices=("profile", "plan", "benchmark"))
     parser.add_argument("--plan-level", choices=("scenarios", "executable_leaves"))
     parser.add_argument("--sample-count", type=int)
-    parser.add_argument("--no-limited-delivery", action="store_true")
-
-
-def goal_options(args):
-    return {"goal_spec": GoalSpec(kind=args.goal_kind,
-        plan_level=(args.plan_level or "scenarios") if args.goal_kind == "plan" else args.plan_level,
-        allow_limited_delivery=not args.no_limited_delivery), "sample_count": args.sample_count}
+    parser.add_argument("--no-limited-delivery", action="store_true", default=None)
 
 
 def _consume(events):
@@ -80,37 +75,68 @@ def main(argv=None):
     try:
         if args.command in {None, "tui"}:
             from medbenchagent.tui.app import MBAApp
+            if not sys.stdout.isatty() or __import__("os").getenv("TERM") == "dumb":
+                parser.print_help()
+                return
             MBAApp().run()
             return
         if args.command == "create":
-            print(json.dumps(sessions.create_experiment(args.experiment, template=args.config)))
+            print(json.dumps(sessions.create_session(args.name, template=args.config)))
         elif args.command == "run":
-            inputs = {key: getattr(args, key) for key in ("source_manifest", "dataset_manifest") if getattr(args, key)}
+            name = args.name or (args.directory.name if args.directory else "run-" + uuid4().hex[:12])
+            directory = args.directory.resolve() if args.directory else sessions.run_path(name, load_paths(args.config)["runs_root"])
+            if args.name and args.directory and args.name != args.directory.name:
+                raise ValueError("Run name must match --directory")
+            if not directory.exists():
+                sessions.create_session(name, root=directory.parent, template=args.config)
+            elif args.config:
+                raise ValueError("Existing Runs use their own config.toml")
+            record = sessions.load_session(directory)
+            draft = InputDraft.model_validate(record["draft"])
+            draft.goal = args.goal or draft.goal or "Compile a traceable benchmark."
+            if args.goal_kind is not None:
+                draft.goal_kind = (args.plan_level or "scenarios") if args.goal_kind == "plan" else args.goal_kind
+            elif args.plan_level is not None:
+                draft.goal_kind = args.plan_level
+            if args.sample_count is not None:
+                draft.sample_count = args.sample_count
+            if args.no_limited_delivery is not None:
+                draft.allow_limited_delivery = not args.no_limited_delivery
             if args.dataset:
-                from medbenchagent.data.dataset_catalog import registered_input
-                inputs = registered_input(args.dataset)
-            if args.experiment:
-                if args.directory or args.compilation_id or args.config:
-                    raise ValueError("Experiment runs use their experiment directory and config")
-                run = sessions.add_run(args.experiment, args.goal, **inputs, **goal_options(args))
-                directory = Path(run["directory"])
-            else:
-                identifier = args.compilation_id or "run-" + uuid4().hex[:12]
-                directory = args.directory or Path(".runtime") / identifier
-                create_run(directory, compilation_id=identifier, goal=args.goal, config_path=args.config,
-                           **inputs, **goal_options(args))
+                draft = select_dataset(args.dataset, draft)
+            elif args.source_dir:
+                draft.source_dirs = [str(path.resolve()) for path in args.source_dir]
+                draft.key_files = [SelectedFile(path=str(path.resolve())) for path in args.key_file]
+                draft.canonical_manifest = draft.source_manifest = None
+            elif args.source_manifest:
+                from medbenchagent.data.task_data import SourceManifest
+                path = args.source_manifest.resolve()
+                source = SourceManifest.model_validate_json(path.read_bytes())
+                roots = {s.source_id: (path.parent / s.root).resolve() for s in source.sources}
+                draft.source_manifest, draft.canonical_manifest = str(path), None
+                draft.dataset_id = source.dataset.dataset_id
+                draft.source_dirs = [str(root) for root in roots.values()]
+                draft.key_files = [SelectedFile(path=str(roots[f.source_id] / f.path), purpose=f.purpose) for f in source.key_files]
+            elif args.dataset_manifest:
+                draft.canonical_manifest = str(args.dataset_manifest.resolve())
+                draft.source_dirs, draft.key_files, draft.source_manifest = [], [], None
+            sessions.freeze_session(directory, draft)
             if args.prepare_only:
                 print(directory.resolve())
                 return
             raise SystemExit(_consume(execute_compilation(directory)))
         elif args.command == "batch":
-            from medbenchagent.data.dataset_catalog import registered_input
             if len(set(args.dataset_ids)) != len(args.dataset_ids):
                 raise ValueError("Batch dataset IDs must be distinct")
             status = 0
             for identifier in args.dataset_ids:
-                run = sessions.add_run(args.experiment, args.goal, **registered_input(identifier), **goal_options(args))
-                status = max(status, _consume(execute_compilation(run["directory"])))
+                name = "run-" + uuid4().hex[:12]
+                record = sessions.create_session(name)
+                draft = select_dataset(identifier, InputDraft(**record["draft"], goal=args.goal,
+                    goal_kind=(args.plan_level or "scenarios") if args.goal_kind == "plan" else (args.goal_kind or "benchmark"),
+                    sample_count=args.sample_count, allow_limited_delivery=not args.no_limited_delivery))
+                sessions.freeze_session(record["directory"], draft)
+                status = max(status, _consume(execute_compilation(record["directory"])))
             raise SystemExit(status)
         elif args.command == "resume":
             raise SystemExit(_consume(execute_compilation(args.directory, resume=True, answer=args.answer)))

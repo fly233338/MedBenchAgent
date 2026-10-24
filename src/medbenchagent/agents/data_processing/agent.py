@@ -53,6 +53,7 @@ def build_data_processing_spec(settings, coding, *, instructions, model=None):
             "data_processing",
             coding,
             runtime.context.goal,
+            runtime_directory=runtime.context.runtime_directory,
         )
         return invoke_work(agent, context, config)
 

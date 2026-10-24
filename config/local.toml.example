@@ -1,4 +1,8 @@
 # New runs freeze these settings. Credentials stay in .env or environment variables.
+[paths]
+runs_root = "runs"
+runtime_root = ".runtime/runs"
+
 [llm]
 # model = "your-chat-model"
 # base_url = "http://127.0.0.1:8005/v1"

@@ -22,7 +22,7 @@ from medbenchagent.planning.contracts import (
     TaskPlan,
 )
 from medbenchagent.planning import semantic
-from medbenchagent.runtime.native import OperationTools, AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
+from medbenchagent.runtime.native import invocation_config, OperationTools, AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
 
 from .tools import planner_tools
 from .state import PlannerContext, PlannerResponse, PlannerState, _load, _recover_publications, _resolve_result, _save
@@ -144,13 +144,14 @@ def build_planner_spec(settings, *, instructions, model=None):
                 datasets[0],
                 settings,
                 instructions,
+                runtime_directory=runtime.context.runtime_directory,
                 task_data={
                     ref.artifact_id: TaskDataReader(resolve_artifact(directory, ref))
                     for ref in request.inputs
                     if ref.kind == "task_data"
                 },
             )
-            with role_lock(directory, "task_planner"):
+            with role_lock(context.runtime_directory, "task_planner"):
                 result = agent.invoke(
                     {
                         "messages": [
@@ -158,7 +159,7 @@ def build_planner_spec(settings, *, instructions, model=None):
                         ],
                         "structured_response": None,
                     },
-                    {**config, "recursion_limit": settings.loop.max_model_calls * 6 + 20},
+                    {**invocation_config(config, context), "recursion_limit": settings.loop.max_model_calls * 6 + 20},
                     context=context,
                 )
             response = result.get("structured_response")

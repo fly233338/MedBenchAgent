@@ -16,6 +16,7 @@ from medbenchagent.settings import DEFAULT_CONFIG_PATH
 from medbenchagent.tui.app import MBAApp
 from medbenchagent.tui.dialogs import DraftScreen, ActivityScreen
 from medbenchagent.tui.widgets import Composer
+from medbenchagent.runtime import sessions
 
 
 def test_tui_directory_to_partial_delivery_live_activity_pause_and_answer(tmp_path, monkeypatch):
@@ -73,12 +74,18 @@ def test_tui_directory_to_partial_delivery_live_activity_pause_and_answer(tmp_pa
         raise AssertionError("TUI did not reach the expected state")
 
     async def check():
-        app = MBAApp(root=tmp_path / "experiments", config_template=template)
+        sessions.create_session("breast", root=tmp_path / "runs", runtime_root=tmp_path / "runtime", template=template)
+        app = MBAApp(root=tmp_path / "runs", runtime_root=tmp_path / "runtime", config_template=template)
         async with app.run_test(size=(100, 35)) as pilot:
-            app.query_one(Composer).load_text(f'使用 "{raw}" 构建 4 道题，保持缺失与未知关系。')
+            await pilot.pause()
+            app.pop_screen()
+            app.select_run("breast")
+            await until(pilot, lambda: app.view.get("status") == "draft")
+            app.query_one(Composer).focus()
+            app.query_one(Composer).load_text(f'Build 4 questions using "{raw}". Preserve missing and unknown relations.')
             await pilot.press("enter")
             assert isinstance(app.screen, DraftScreen)
-            app.screen.query_one("#key-files", TextArea).load_text(f"{script.workbook} | 标签表")
+            app.screen.query_one("#key-files", TextArea).load_text(f"{script.workbook} | Labels")
             await pilot.click("#start-draft")
             await until(pilot, lambda: entered.is_set() and "coding" in app.latest_activity)
             assert app.running and app.latest_activity["coding"]["running"]
@@ -106,8 +113,11 @@ def test_tui_directory_to_partial_delivery_live_activity_pause_and_answer(tmp_pa
             assert app.query_one(Composer).region.bottom <= 35
             identifier = app.selected_run
             (tmp_path / "workbench.svg").write_text(app.export_screenshot(), encoding="utf-8")
-        reopened = MBAApp(root=tmp_path / "experiments")
+        reopened = MBAApp(root=tmp_path / "runs", runtime_root=tmp_path / "runtime")
         async with reopened.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            reopened.pop_screen()
+            reopened.select_run(identifier)
             await until(pilot, lambda: reopened.view.get("status") == "stopped")
             assert reopened.selected_run == identifier and not reopened.running
             assert reopened.view["goal_result"] == "partial"

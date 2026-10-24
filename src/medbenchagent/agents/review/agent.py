@@ -47,6 +47,7 @@ def build_review_spec(settings, *, instructions, model=None):
                 settings,
                 instructions,
                 "review",
+                runtime_directory=runtime.context.runtime_directory,
             ),
             config,
         )

@@ -1,0 +1,50 @@
+Screen { background: $background; color: $text; }
+#toolbar, #navigation, #controls { height: 3; padding: 0 1; }
+#toolbar { background: $surface; }
+#title { width: 1fr; padding: 1; text-style: bold; color: $accent; }
+Button { height: 3; content-align: center middle; width: auto; min-width: 8; margin: 0 1 0 0; border: none; }
+Button:focus { text-style: bold reverse; }
+#run-status { height: 1; margin: 0 2; color: $text-muted; }
+#workbench { height: 1fr; padding: 0 2; }
+#conversation-column { width: 2fr; }
+#conversation { height: 1fr; padding: 0 1; }
+.chat-message { height: auto; margin: 1 0; }
+#activity-column { width: 1fr; min-width: 32; margin-left: 2; padding-left: 1; border-left: solid $surface; }
+.section-label { height: 2; color: $text-muted; text-style: bold; }
+#agents { height: 12; background: $surface; }
+#activity-preview { height: 1fr; margin-top: 1; color: $text-muted; }
+#new-content { height: 1; color: $accent; text-align: center; }
+#message { height: 4; margin: 0 2; border: round $primary-muted; }
+#message:focus { border: round $accent; }
+#command-options { height: auto; max-height: 6; margin: 0 2; border: none; background: $surface; }
+#key-hint { width: 1fr; padding: 1 0; color: $text-muted; }
+Screen.compact #workbench { layout: vertical; }
+Screen.compact #activity-column { width: 1fr; min-width: 0; height: 5; margin: 0; padding: 0; border: none; }
+Screen.compact #agents { height: 4; }
+Screen.compact .section-label, Screen.compact #activity-preview { display: none; }
+Screen.compact #key-hint { content-align: right middle; padding: 0; }
+Screen.too-small #workbench { display: none; }
+Screen.too-small #run-status { color: $warning; }
+ModalScreen { align: center middle; background: $background 70%; }
+.dialog { width: 92%; max-width: 108; height: 90%; padding: 1 2; border: round $primary-muted; background: $surface; }
+.small-dialog { height: auto; max-height: 19; max-width: 68; }
+.dialog-title { height: 2; text-style: bold; color: $accent; }
+.dialog Horizontal { height: 3; }
+.dialog Input, .dialog Select { width: 1fr; }
+.dialog Label { height: auto; }
+.dialog VerticalScroll { height: 1fr; }
+.short-area { height: 4; }
+.config-area { height: 12; }
+#path-tree, #activity-detail, #history-runs, #artifact-summary, #datasets { height: 1fr; }
+#skills { height: 5; }
+#draft-error, #connection-status, #picker-error, #export-status, #name-error, #dataset-status { height: auto; max-height: 4; color: $warning; }
+#dataset-current { height: auto; max-height: 4; margin: 1 0; }
+#run-home { width: 100%; max-width: 120; height: 1fr; padding: 2 4; align-horizontal: center; }
+#home-title { height: 3; text-style: bold; color: $accent; }
+#home-description { height: 3; color: $text-muted; }
+#run-home-actions { height: 3; margin-bottom: 1; }
+#run-search { width: 1fr; }
+#run-list { height: 1fr; border: none; background: $surface; }
+#run-empty { height: auto; padding: 2; }
+.muted { color: $text-muted; height: auto; margin-top: 1; }
+#run-name { margin: 1 0; }

@@ -1,7 +1,7 @@
 # Task
 Execute the bounded Host coding request in the current Workstream. Inspect the supplied inputs and
 contracts before writing scripts. Use source access only within the delegated scope. Treat input
-manifests as read-only; resolve their relative members against the manifest location.
+manifests and original source files as read-only; resolve their relative members against the manifest location.
 
 Implement reproducible parsing, transformations, measured statistics, and requested validations.
 Preserve source identities and provenance. Report missing, malformed, or ambiguous inputs instead

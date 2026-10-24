@@ -18,17 +18,35 @@ Copy-Item config/local.toml.example config/local.toml
 ```
 
 For the main user interface, run `uv run --locked medd2b tui` (or just `uv run --locked medd2b`).
-The single-column chat workbench creates a default experiment automatically. Describe the task,
-select local source directories, confirm the goal/count, and start. It creates SourceManifest and Run
-files for you. Quoted Windows paths with spaces are supported. Key files must belong to a selected source.
-An existing canonical Dataset remains an advanced input option.
+The TUI opens a searchable Run list. **New** creates one Run for one Dataset and one Compilation;
+**Clone** reuses configuration and source selection without copying execution state. Open a Run,
+use **Task** to select source directories/key files and set the goal, count and language, then **Start**.
+Quoted Windows paths with spaces and Chinese input are supported. No hand-written manifest is required.
+**Dataset** registers reusable source references or selects an existing Dataset; **Unlink** removes only
+the index entry. A Dataset can have multiple source directories. Changing its source definition creates
+a new revision; unchanged selections preserve the identity. Revision tracks the registered definition,
+not a recursive scan of changing source data.
 
-Use **设置** to discover/select models, check the Coding environment and select skills. Non-sensitive
-settings apply to new runs; password inputs last only for the current process and never enter the
-experiment configuration, chat history or activity events. Existing environment credentials continue
-to work. Hand-written TOML and manifests are only needed for advanced CLI/library use.
-The wheel bundles the same default configuration and Coding dependency pins. In an installed-wheel
-session, experiment/output paths and `.env` are relative to the launch directory; source checkouts retain the project root.
+**Config** selects models and the local Coding environment. Global defaults/local configuration are
+copied into the Run, then frozen on first execution. Started Runs are read-only in configuration views;
+clone to change the task, dataset or model. API keys stay in process memory/environment and never enter
+Run configuration or diagnostic events. Keep sensitive input out of the goal if it need not be retained.
+The wheel bundles defaults, dependency pins, prompts, skills and TUI styles. Installed-wheel paths are
+relative to the launch directory; source checkouts use the project root. Configure both roots in [paths].
+
+```text
+runs/<name>/                   .runtime/runs/<compilation_id>/
+  config.toml                    checkpoints.sqlite
+  run.json                       events.jsonl
+  inputs/                        locks/ + session.json
+  artifacts/                     planner/ + resources/
+                                 coding/<workstream_id>/
+```
+
+Run definitions and formal data live under runs/. Checkpoints, UI records, drafts, Coding workspaces
+and SDK persistence live under .runtime/. Recovery needs the runtime directory; published derived
+files do not. Original source datasets remain external references. Existing old runs are left untouched
+and are not migrated or resumed through compatibility branches.
 
 The default development group includes pytest, Ruff, Studio tooling and openpyxl for the BrEaST
 example. Use `--no-dev` for the core environment. Standalone PDF retrieval and optional medical
@@ -64,11 +82,11 @@ an existing current canonical DatasetManifest. Production never creates syntheti
 ## Run, inspect and resume
 
 ```powershell
-uv run --locked medd2b run --directory .runtime/example --compilation-id example --source-manifest .runtime/sources.json --goal-kind benchmark --sample-count 20 --config config/local.toml --goal "Compile a traceable benchmark and report actual coverage."
-uv run --locked medd2b inspect --directory .runtime/example
-uv run --locked medd2b resume --directory .runtime/example
+uv run --locked medd2b run example --source-dir datasets/example --goal-kind benchmark --sample-count 20 --config config/local.toml --goal "Compile a traceable benchmark and report actual coverage."
+uv run --locked medd2b inspect --directory runs/example
+uv run --locked medd2b resume --directory runs/example
 # Only when the saved run is waiting for a user fact:
-uv run --locked medd2b resume --directory .runtime/example --answer "The two studies are explicitly paired in the source mapping."
+uv run --locked medd2b resume --directory runs/example --answer "The two studies are explicitly paired in the source mapping."
 ```
 
 `python -m medbenchagent.compilation` exposes the same CLI. Use `--goal-kind profile` with a SourceManifest for source
@@ -84,28 +102,35 @@ uv run --locked medd2b create research --config config/local.toml
 uv run --locked medd2b run research --source-manifest .runtime/sources.json --sample-count 20
 uv run --locked medd2b tui
 uv run --locked medd2b register --dataset-id example --manifest .runtime/sources.json --kind source
-uv run --locked medd2b batch research example --sample-count 20
+uv run --locked medd2b batch example --sample-count 20
 uv run --locked medd2b export PATH_TO_DELIVERY NEW_DESTINATION
 ```
 
-The TUI keeps a compact Agent activity table above the chat. Coding appears under Data Processing.
-Select a row or **活动** to inspect recent tool arguments, commands and bounded output, filtered by role.
-Activities update while work is still running; no reasoning transcript or estimated completion percentage
-is shown. **历史** switches runs, **产物** shows readable summaries, verified paths and portable export.
-Enter sends; Shift+Enter/Ctrl+J inserts a newline. Reading older messages does not force scrolling to the end.
+The TUI uses concise English labels with dark/light themes and keyboard-first navigation. Use
+**Trace** for correlated model/tool/Coding activity and actual token usage (or an explicit unavailable
+marker), and **Artifacts** for verified product details and export. Wide terminals show an activity
+pane; compact terminals stack it. Rendering is designed for UTF-8 terminals at 80x24 or larger.
+Below that size the workbench collapses and asks for resize. NO_COLOR is respected; TERM=dumb or
+non-TTY CLI startup prints help. RTL shaping depends on the terminal; screen-reader support is limited.
+The CLI inspect command provides structured output without the TUI.
 
-**暂停** requests a pause after the current parent graph node: Coding may still be executing until then.
-**继续** resumes the saved pending node. Questions appear in the chat and are answered in the same input.
-Closing during execution requests the same safe pause. A run with an unfinished checkpoint and no execution
-lock is shown as interrupted/recoverable, not falsely running. Prepared runs offer **开始** without recreating inputs;
-runs already bound to Studio remain managed by their Studio thread. Experiment files contain UI messages/drafts
-and run references; Checkpoint remains the execution authority. Finished runs cannot be resumed.
+Keys: Ctrl+N new, Ctrl+R runs, Ctrl+P commands, Tab completion, Enter send, Shift+Enter/Ctrl+J newline,
+Esc close, Ctrl+C safe exit. Slash commands: /new, /runs, /dataset, /config, /pause, /resume, /events,
+/artifacts, /export, /help. Reading history preserves scroll position. Switching Runs leaves active work
+running; only one executor is started by each TUI instance.
+
+**Pause** and quit wait for the current parent graph node to save its checkpoint; this can include a
+Coding call. **Resume** continues the saved node, and pending questions use the same input. An unfinished
+checkpoint without an execution lock appears as interrupted. Finished Runs cannot resume; use Clone.
+Events are diagnostic, never a completion ledger. Local Coding runs with the user's filesystem
+permissions: read-only source instructions and Host path/digest checks are not an OS sandbox.
+No Docker backend, detached executor or monitoring service is introduced.
 
 For Studio, freeze a dedicated run without executing its agents, then point LangGraph at it:
 
 ```powershell
-uv run --locked medd2b run --prepare-only --directory .runtime/studio --compilation-id studio --source-manifest .runtime/sources.json --config config/local.toml --sample-count 20
-$env:MEDBENCH_STUDIO_RUN = (Resolve-Path .runtime/studio).Path
+uv run --locked medd2b run --prepare-only --directory runs/studio --source-manifest .runtime/sources.json --config config/local.toml --sample-count 20
+$env:MEDBENCH_STUDIO_RUN = (Resolve-Path runs/studio).Path
 uv run --locked langgraph dev
 ```
 
@@ -172,3 +197,6 @@ Standalone retrieval remains `LocalPdfRag(...).retrieve(query, limit=...)` under
 It returns PDF/page/chunk locations, excerpts and retrieval scores. No Agent currently calls it.
 Future Planner/Review integration must additionally bind document digests, retrieval configuration and
 evidence identities to the Run; literature cannot replace dataset annotations. No generic Retriever layer is introduced.
+
+TUI tests render home/workbench views at 80x24, 100x35 and 140x45 in dark/light themes into
+.runtime/tui-review/. Inspect rendered SVGs as well as Pilot assertions after layout changes.

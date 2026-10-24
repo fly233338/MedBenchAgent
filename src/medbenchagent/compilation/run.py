@@ -1,11 +1,12 @@
 """Run-owned configuration and prompt snapshots, with no Agent assembly or legacy BIR."""
 
 from dataclasses import replace
+import hashlib
 import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import model_validator, Field
+from pydantic import model_validator, Field, TypeAdapter
 
 from medbenchagent.agents._shared import prompting as prompts
 from medbenchagent.settings import (
@@ -33,6 +34,8 @@ def required_roles(goal: GoalSpec, *, raw_source: bool) -> set[str]:
 
 class RunOptions(Contract):
     compilation_id: Identifier
+    runtime_directory: str
+    input_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     goal: Text
     goal_spec: GoalSpec = Field(default_factory=GoalSpec)
     repair_limits: RepairLimits = Field(default_factory=RepairLimits)
@@ -49,6 +52,8 @@ class RunOptions(Contract):
 
     @model_validator(mode="after")
     def check_selected_implementations(self):
+        if not Path(self.runtime_directory).is_absolute():
+            raise ValueError("runtime_directory must be absolute")
         required = set()
         if (self.source_manifest is None) == (self.dataset_manifest is None):
             raise ValueError("Select exactly one source or canonical Dataset")
@@ -93,14 +98,21 @@ def create_run(
     dataset_manifest: Path | None = None,
     source_manifest: Path | None = None,
     sample_count: int | None = None,
+    runtime_directory: Path | None = None,
+    language: str | None = None,
 ) -> RunOptions:
+    compilation_id = TypeAdapter(Identifier).validate_python(compilation_id)
     directory = directory.resolve()
     path = directory / "run.json"
+    from medbenchagent.settings import load_paths
+    from medbenchagent.runtime.run_artifacts import separate_directories
+    runtime_directory = (runtime_directory or load_paths(config_path)["runtime_root"] / compilation_id).resolve()
+    separate_directories(directory, runtime_directory)
     goal_spec = goal_spec or GoalSpec()
     if (source_manifest is None) == (dataset_manifest is None):
         raise ValueError("Supply exactly one source_manifest or dataset_manifest")
     roles = required_roles(goal_spec, raw_source=source_manifest is not None)
-    if path.exists() or (directory / "checkpoints.sqlite").exists():
+    if path.exists() or (runtime_directory / "checkpoints.sqlite").exists():
         raise ValueError("This directory already contains a run; use resume")
     if sample_count is not None and (type(sample_count) is not int or sample_count <= 0 or "generation" not in roles):
         raise ValueError("sample_count requires enabled Generation and a positive integer")
@@ -116,6 +128,7 @@ def create_run(
                     next(entries, None)
             except OSError as exc:
                 raise ValueError(f"Source {item.source_id} directory is not readable: {root}") from exc
+        separate_directories(directory, runtime_directory, [(source_manifest.parent / item.root).resolve() for item in source.sources])
         roots = {item.source_id: (source_manifest.parent / item.root).resolve() for item in source.sources}
         from medbenchagent.data.dataset import _relative_file
         for item in source.key_files:
@@ -123,7 +136,9 @@ def create_run(
                 handle.read(1)
     if dataset_manifest is not None:
         from medbenchagent.data.dataset import FileDatasetReader
-        FileDatasetReader(dataset_manifest)
+        canonical = FileDatasetReader(dataset_manifest).get_manifest()
+        separate_directories(directory, runtime_directory,
+                             [dataset_manifest.parent, *((dataset_manifest.parent / item.root).resolve() for item in canonical.sources)])
     snapshots, instructions = {}, {}
     for agent, loader, credential in (
         ("supervisor", load_supervisor_settings, get_llm_api_key),
@@ -156,17 +171,31 @@ def create_run(
         from medbenchagent.settings import DEFAULT_CONFIG_PATH
         values = tomllib.loads((config_path or DEFAULT_CONFIG_PATH).read_text(encoding="utf-8"))
         repair_limits = RepairLimits.model_validate(values.get("compilation", {}).get("repair_limits", {}))
+    from medbenchagent.data.task_data import write_once
+    if source_manifest is not None:
+        from medbenchagent.data.dataset import DatasetSource
+        source = source.model_copy(update={"sources": [DatasetSource(source_id=item.source_id, root=str((source_manifest.parent / item.root).resolve())) for item in source.sources]})
+        source_manifest = directory / "inputs" / "sources.json"
+        write_once(source_manifest, (source.model_dump_json(indent=2) + "\n").encode())
+    else:
+        from medbenchagent.data.dataset import snapshot_dataset
+        dataset_manifest = snapshot_dataset(dataset_manifest, directory / "inputs" / "dataset")
+    runtime_directory.mkdir(parents=True, exist_ok=True)
+    (runtime_directory / "locks").mkdir(exist_ok=True)
     options = RunOptions(
-        compilation_id=compilation_id, goal=goal,
+        compilation_id=compilation_id, goal=goal, runtime_directory=str(runtime_directory),
+        input_digest=hashlib.sha256((source_manifest or dataset_manifest).read_bytes()).hexdigest(),
         goal_spec=goal_spec, repair_limits=repair_limits,
         implementation_digest=implementation_digest(),
         planner_settings=snapshots.get("planner"),
         dataset_manifest=str(dataset_manifest.resolve()) if dataset_manifest is not None else None,
         source_manifest=str(source_manifest.resolve()) if source_manifest is not None else None,
         professional_settings=professional,
-        benchmark_request=load_compilation_target(config_path, sample_count=sample_count) if "generation" in roles else None,
+        benchmark_request=({**load_compilation_target(config_path, sample_count=sample_count),
+                            **({"language": language.strip()} if language is not None and language.strip() else {})}
+                           if "generation" in roles else None),
         supervisor_settings=snapshots["supervisor"], coding_settings=snapshots.get("coding"),
-        coding_skills=freeze_skills(directory, snapshots["coding"]["coding"]["skill_names"]) if "coding" in roles else None,
+        coding_skills=freeze_skills(runtime_directory, snapshots["coding"]["coding"]["skill_names"]) if "coding" in roles else None,
         prompts=instructions,
     )
     directory.mkdir(parents=True, exist_ok=True)
@@ -179,16 +208,23 @@ def resume_run(directory: Path, compilation_id: str) -> RunOptions:
     options = RunOptions.model_validate_json((directory / "run.json").read_text(encoding="utf-8"))
     if options.implementation_digest != implementation_digest():
         raise ValueError("This run uses incompatible code/contracts/tools. Start a new run; existing files are left untouched.")
+    verify_input(options)
     if options.coding_skills is not None:
-        verify_skills(directory, options.coding_skills)
+        verify_skills(Path(options.runtime_directory), options.coding_skills)
     if options.compilation_id != compilation_id:
         raise ValueError("The directory belongs to another Compilation")
-    if not (directory / "checkpoints.sqlite").is_file():
+    if not (Path(options.runtime_directory) / "checkpoints.sqlite").is_file():
         raise ValueError("No saved checkpoint exists")
     if options.prompts:
         # Credentials may rotate; neither live settings nor prompt resources are read.
         load_project_env()
     return options
+
+
+def verify_input(options):
+    from medbenchagent.data.dataset import file_digest
+    if file_digest(Path(options.source_manifest or options.dataset_manifest)) != options.input_digest:
+        raise ValueError("Frozen Run input manifest changed")
 
 
 def implementation_digest():

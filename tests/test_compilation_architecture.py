@@ -1,4 +1,5 @@
 """Composition boundaries and frozen resources, using the existing fake SDK runner."""
+from runtime_fixtures import runtime_for
 
 import ast
 import hashlib
@@ -19,12 +20,12 @@ def test_assembly_freezes_prompts_and_resumes_without_live_sources(tmp_path, mon
     source = create_demo_source(tmp_path / "source")
     monkeypatch.setattr(services, "resolve_model_service", lambda kind, *_: f"{kind.lower()}-model")
     directory = tmp_path / "run"
-    options = run.create_run(directory, compilation_id="freeze", goal="Freeze", source_manifest=source)
-    with SqliteSaver.from_conn_string(str(directory / "checkpoints.sqlite")) as saver:
+    options = run.create_run(directory, compilation_id="freeze", goal="Freeze", source_manifest=source, runtime_directory=runtime_for(directory))
+    with SqliteSaver.from_conn_string(str(runtime_for(directory) / "checkpoints.sqlite")) as saver:
         saver.setup()
     original = prompts.load_prompt
     monkeypatch.setattr(prompts, "load_prompt", lambda name: original(name) + "\nCHANGED SOURCE\n")
-    fresh = run.create_run(tmp_path / "fresh", compilation_id="fresh", goal="New", source_manifest=source)
+    fresh = run.create_run(tmp_path / "fresh", compilation_id="fresh", goal="New", source_manifest=source, runtime_directory=runtime_for(tmp_path / "fresh"))
     assert all(fresh.prompts[name].digest != options.prompts[name].digest for name in options.prompts)
     monkeypatch.setattr(prompts, "load_prompt", lambda _: pytest.fail("Resume read live prompts"))
     monkeypatch.setattr(services, "resolve_model_service", lambda *_: pytest.fail("Resume contacted model service"))
@@ -54,15 +55,15 @@ def test_studio_assembles_frozen_run_without_live_discovery_or_model_calls(tmp_p
     source = create_demo_source(tmp_path / "source")
     monkeypatch.setattr(services, "resolve_model_service", lambda *_: "offline")
     directory = tmp_path / "studio"
-    run.create_run(directory, compilation_id="studio", goal="Compile", source_manifest=source)
+    run.create_run(directory, compilation_id="studio", goal="Compile", source_manifest=source, runtime_directory=runtime_for(directory))
     monkeypatch.setattr(services, "resolve_model_service", lambda *_: pytest.fail("Studio rediscovered models"))
     monkeypatch.setattr(prompts, "load_prompt", lambda *_: pytest.fail("Studio reread live prompts"))
     monkeypatch.setattr(native, "chat_model", lambda *_: ScriptedChatModel(
         responder=lambda *_: pytest.fail("Assembly called a model")))
     graph = studio_graph({"configurable": {"directory": str(directory), "thread_id": "studio"}})
     assert graph.get_input_jsonschema()
-    assert (directory / "studio-thread.txt").read_text() == "studio"
-    assert not (directory / "checkpoints.sqlite").exists()
+    assert (runtime_for(directory) / "studio-thread.txt").read_text() == "studio"
+    assert not (runtime_for(directory) / "checkpoints.sqlite").exists()
 
 
 def test_agent_interfaces_do_not_depend_on_graph_or_sdk():
@@ -121,17 +122,17 @@ def test_artifact_digest_detects_changes_and_cannot_be_reregistered_over_an_acce
     def decide(view):
         return Finish(summary="Checked", goal_result="blocked") if view.last_result else Delegate(agent_id="writer", operation="write", objective="Replay")
 
-    with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
+    with SqliteSaver.from_conn_string(str(runtime_for(tmp_path) / "checkpoints.sqlite")) as saver:
         built = graph.build_compilation_graph({"writer": interfaces.AgentSpec("Test writer", rewriting_agent, operations=("write",))},
                                               checkpointer=saver)
         result = built.invoke({"compilation_id": "integrity", "goal": "Check content", "artifacts": [ref.model_dump()]},
                               {"configurable": {"thread_id": "integrity"}},
-                              context=interfaces.CompilationContext(tmp_path, decide, "Check content"), durability="sync")
+                              context=interfaces.CompilationContext(tmp_path, decide, "Check content", runtime_directory=runtime_for(tmp_path)), durability="sync")
     assert result["result"]["outcome"] == "failed"
     assert result["result"]["issues"][0]["code"] == "artifact_integrity"
     assert result["artifacts"] == [ref.model_dump()]
-    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    records = [json.loads(line) for line in (runtime_for(tmp_path) / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     records = [row for row in records if row["event_type"] != "supervisor_decision"]
-    assert [row["event_type"] for row in records] == ["work_delegated", "work_result"]
+    assert [row["event_type"] for row in records] == ["work_delegated", "work_started", "repair_requested", "work_result"]
     assert all(row["compilation_id"] == "integrity" and row["request_id"] == seed.request_id
                and row["agent_id"] == "writer" for row in records)

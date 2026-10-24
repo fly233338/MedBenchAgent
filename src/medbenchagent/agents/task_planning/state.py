@@ -50,6 +50,7 @@ class PlannerResponse(Contract):
 @dataclass(frozen=True)
 class PlannerContext:
     directory: Path
+    runtime_directory: Path = field(kw_only=True)
     request: WorkRequest
     reader: FileDatasetReader | ProfileReader
     dataset: ArtifactRef
@@ -68,8 +69,8 @@ class PlannerContext:
 
 
 def _load(state, context):
-    path = (context.directory / state["draft_path"]).resolve()
-    if not path.is_relative_to(context.directory / "planner" / "drafts"):
+    path = (context.runtime_directory / state["draft_path"]).resolve()
+    if not path.is_relative_to(context.runtime_directory / "planner" / "drafts"):
         raise ValueError("Draft reference escaped the Planner directory")
     content = path.read_bytes()
     if path.stem != hashlib.sha256(content).hexdigest():
@@ -80,7 +81,7 @@ def _load(state, context):
 def _save(plan, context):
     content = (plan.model_dump_json(indent=2) + "\n").encode("utf-8")
     path = (
-        context.directory / "planner" / "drafts" / (hashlib.sha256(content).hexdigest() + ".json")
+        context.runtime_directory / "planner" / "drafts" / (hashlib.sha256(content).hexdigest() + ".json")
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -93,7 +94,7 @@ def _save(plan, context):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-    return path.relative_to(context.directory).as_posix()
+    return path.relative_to(context.runtime_directory).as_posix()
 
 
 def _product_digest(value):

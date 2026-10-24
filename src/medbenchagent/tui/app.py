@@ -1,216 +1,223 @@
-"""Single-column chat workbench; execution and projections belong to runtime services."""
+"""Textual Run workbench. Compilation owns execution; screens own navigation."""
 import threading
-import os
 from pathlib import Path
 
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Button, DataTable, Static
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import Button, DataTable, Static, OptionList, TextArea
 
+from medbenchagent.settings import load_paths
 from medbenchagent.runtime import sessions
-from medbenchagent.runtime.activity import AGENTS, OPERATIONS, elapsed
-from medbenchagent.runtime.construction import sanitize
+from medbenchagent.runtime.activity import AGENTS, elapsed
 from medbenchagent.runtime.conversation_service import ConversationService
 from medbenchagent.runtime.intake import InputDraft, suggest_draft, check_connections
+from medbenchagent.runtime.construction import sanitize
 from .widgets import Composer, ChatMessage
-from .dialogs import DraftScreen, ConnectionScreen, HistoryScreen, ActivityScreen, ArtifactsScreen
+from .dialogs import DraftScreen, ConnectionScreen, ActivityScreen, ArtifactsScreen
+from .screens import RunsScreen, NameScreen, DatasetScreen
 
-STATES = {"ready": "准备启动", "running": "运行中", "paused": "已暂停", "waiting": "等待回答",
-          "stopped": "已结束", "interrupted": "异常中断，可恢复", "unavailable": "运行不可用", "external": "由 Studio 管理"}
-RESULTS = {"succeeded": "目标完成", "partial": "部分交付", "blocked": "目标受阻", "failed": "目标失败"}
+STATES = {"draft": "DRAFT", "ready": "READY", "running": "RUNNING", "paused": "PAUSED", "waiting": "WAITING",
+          "stopped": "STOPPED", "interrupted": "INTERRUPTED", "external": "STUDIO"}
+RESULTS = {"succeeded": "SUCCESS", "partial": "PARTIAL", "blocked": "BLOCKED", "failed": "FAILED"}
+COMMANDS = {"new": "New run", "runs": "Browse runs", "dataset": "Select dataset",
+            "config": "Configure", "pause": "Pause", "resume": "Start / resume",
+            "events": "Trace", "artifacts": "Artifacts", "export": "Export", "help": "Keys"}
 
 
 class MBAApp(App):
     TITLE = "MedD2B"
-    CSS = """
-    Screen { background: #151a23; color: #d8e2ee; }
-    #toolbar, #controls { height: 3; }
-    #title { width: 1fr; padding: 1 1; color: #7ccdc6; text-style: bold; }
-    Button { min-width: 8; width: auto; margin: 0; }
-    #run-status { height: 1; padding: 0 1; color: #a6b5ce; }
-    #agents { height: 6; margin: 0 1; background: #1b2330; }
-    #conversation { height: 1fr; min-height: 3; padding: 0 2; }
-    .chat-message { height: auto; margin: 1 0 0 0; }
-    #new-content { height: 1; color: #7ccdc6; text-align: center; }
-    #message { height: 3; margin: 0 1; border: round #4d617b; }
-    #key-hint { width: 1fr; padding: 1 1; color: #8494a8; }
-    ModalScreen { align: center middle; background: #101620b0; }
-    .dialog { width: 90%; max-width: 105; height: 90%; padding: 1 2; border: round #5d8492; background: #1b2330; }
-    .small-dialog { height: auto; max-height: 20; }
-    .dialog-title { height: 2; text-style: bold; color: #7ccdc6; }
-    .dialog Horizontal { height: 3; }
-    .dialog Input, .dialog Select { width: 1fr; }
-    .dialog Label { height: auto; }
-    .dialog VerticalScroll { height: 1fr; }
-    .short-area { height: 4; }
-    .config-area { height: 12; }
-    #path-tree, #activity-detail, #history-runs, #artifact-summary { height: 1fr; }
-    #skills { height: 5; }
-    #draft-error, #connection-status, #picker-error, #export-status { height: auto; max-height: 4; color: #e5bd87; }
-    """
-    BINDINGS = [("ctrl+q", "request_quit", "退出"), ("ctrl+n", "new_task", "新任务")]
+    CSS_PATH = "app.tcss"
+    BINDINGS = [Binding("ctrl+c", "request_quit", "Quit", priority=True),
+                Binding("ctrl+n", "new_run", "New run"), Binding("ctrl+r", "runs", "Runs"),
+                Binding("ctrl+p", "commands", "Commands")]
 
-    def __init__(self, *, root=sessions.EXPERIMENTS_ROOT, config_template=None):
+    def __init__(self, *, root=None, runtime_root=None, config_template=None):
         super().__init__()
-        self.root, self.config_template = Path(root), config_template
-        self.experiment = "default"
+        paths = load_paths(config_template)
+        self.root = Path(root or paths["runs_root"])
+        self.runtime_root = Path(runtime_root or paths["runtime_root"])
+        self.config_template = config_template
         self.selected_run = self.active_run = None
-        self.active_experiment = None
-        self.running = False
-        self.exit_after = False
+        self.running = self.exit_after = False
         self.stop_event = threading.Event()
-        self.view = {}
+        self.view, self.latest_activity = {}, {}
         self.draft = InputDraft()
         self.reader = None
         self.reading = False
-        self.latest_activity = {}
-        self.scope_labels = {}
         self.seen_messages = set()
-        self.unread = 0
-        self.pending_answer = None
-        self.selection = 0
+        self.unread = self.selection = 0
         self.rendering_history = False
+        self.pending_answer = None
+        self.command_matches = []
 
     @property
     def service(self):
-        return ConversationService(self.experiment, root=self.root)
+        return ConversationService(sessions.run_path(self.selected_run, self.root))
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="toolbar"):
+            yield Button("Runs", id="runs")
             yield Static("MedD2B", id="title")
-            yield Button("历史", id="history")
-            yield Button("产物", id="products")
-            yield Button("活动", id="details")
-            yield Button("设置", id="settings")
-        yield Static("选择数据，描述目标，即可开始。", id="run-status")
-        yield DataTable(id="agents", cursor_type="row")
-        yield VerticalScroll(id="conversation")
-        yield Static("", id="new-content")
+            yield Button("Clone", id="copy-run")
+            yield Button("New", id="new")
+        yield Static("Select a run.", id="run-status")
+        with Horizontal(id="navigation"):
+            yield Button("Task", id="task")
+            yield Button("Dataset", id="dataset")
+            yield Button("Config", id="settings")
+            yield Button("Trace", id="details")
+            yield Button("Artifacts", id="products")
+        with Horizontal(id="workbench"):
+            with Vertical(id="conversation-column"):
+                yield VerticalScroll(id="conversation")
+                yield Static("", id="new-content")
+            with Vertical(id="activity-column"):
+                yield Static("AGENT ACTIVITY", classes="section-label")
+                yield DataTable(id="agents", cursor_type="row")
+                yield Static("Select an agent for details.", id="activity-preview")
+        yield OptionList(id="command-options")
         yield Composer(id="message", soft_wrap=True)
         with Horizontal(id="controls"):
-            yield Button("新任务", id="new")
-            yield Button("暂停", id="pause", disabled=True)
-            yield Button("继续", id="resume", disabled=True)
-            yield Static("Enter 发送 · Shift+Enter 换行", id="key-hint")
-            yield Button("发送", id="send", variant="primary")
+            yield Button("Pause", id="pause", disabled=True)
+            yield Button("Start", id="resume", disabled=True, variant="primary")
+            yield Static("Enter send · Shift+Enter newline · ^P commands", id="key-hint")
+            yield Button("Send", id="send")
 
     def on_mount(self):
-        if not (self.root / "default" / "session.json").exists():
-            from medbenchagent.settings import PROJECT_ROOT, load_project_env
-            load_project_env()
-            configured = os.getenv("MEDBENCH_CONFIG")
-            existing = (PROJECT_ROOT / Path(configured).expanduser()).resolve() if configured else PROJECT_ROOT / "config" / "local.toml"
-            template = self.config_template or (existing if existing.is_file() else None)
-            sessions.create_experiment("default", root=self.root, template=template)
-        self.query_one("#agents", DataTable).add_columns("Agent", "当前 / 最近动作", "耗时")
+        self.query_one("#agents", DataTable).add_columns("Agent", "Activity", "Time")
         self.query_one("#new-content").display = False
-        self.query_one("#agents").display = False
-        record = self.service.record()
-        self.draft = InputDraft.model_validate(record.get("draft", {}))
-        if record["runs"]:
-            self.select_run(record["runs"][-1]["id"])
-        else:
-            self.chat("MedD2B", "描述任务并选择本地数据目录。系统会自动准备运行文件；遇到需要确认的事实，会在这里询问。")
+        self.query_one("#command-options").display = False
         self.set_interval(0.25, self.poll_activity)
-        self.query_one(Composer).focus()
+        self.action_runs()
+
+    def on_resize(self, event):
+        for screen in self.screen_stack:
+            screen.set_class(event.size.width < 110, "compact")
+            screen.set_class(event.size.width < 80 or event.size.height < 24, "too-small")
+        if event.size.width < 80 or event.size.height < 24:
+            self.notify("Resize to 80x24+", timeout=3)
+
+    def action_runs(self):
+        if isinstance(self.screen, RunsScreen):
+            self.screen.refresh_runs()
+        else:
+            self.push_screen(RunsScreen())
+
+    def action_new_run(self):
+        self.push_screen(NameScreen(), lambda name: self.create_named_run(name) if name else None)
+
+    def action_copy_run(self):
+        if self.selected_run:
+            source = self.service.directory
+            self.push_screen(NameScreen(copy_name=self.selected_run), lambda name: self.create_named_run(name, source) if name else None)
+
+    @work(thread=True, group="create-run", exclusive=True)
+    def create_named_run(self, name, source=None):
+        try:
+            options = {"root": self.root, "runtime_root": self.runtime_root}
+            record = (sessions.copy_session(source, name, **options) if source else
+                      sessions.create_session(name, template=self.config_template, **options))
+            self.call_from_thread(self.open_created, record["name"])
+        except Exception as exc:
+            self.call_from_thread(self.notify, str(sanitize(str(exc))), severity="error")
+
+    def open_created(self, name):
+        if isinstance(self.screen, RunsScreen):
+            self.pop_screen()
+        self.select_run(name)
+
+    def select_run(self, name, *, preserve_scroll=False):
+        history = self.query_one("#conversation", VerticalScroll)
+        viewport = (history.is_vertical_scroll_end, history.scroll_y) if preserve_scroll else (True, 0)
+        self.selected_run = name
+        self.selection += 1
+        if not preserve_scroll:
+            self.unread = 0
+            self.query_one("#new-content").display = False
+            self.reader = self.service.activity_reader()
+            self.latest_activity.clear()
+        self.load_run(name, self.selection, viewport)
+
+    @work(thread=True, group="load-view", exclusive=True)
+    def load_run(self, name, selection, viewport):
+        try:
+            service = ConversationService(sessions.run_path(name, self.root))
+            self.call_from_thread(self.loaded, name, selection, service.inspect(), service.record(), viewport)
+        except Exception as exc:
+            self.call_from_thread(self.notify, str(sanitize(str(exc))), severity="error")
+
+    def loaded(self, name, selection, view, record, viewport):
+        if (name, selection) != (self.selected_run, self.selection):
+            return
+        self.view = view
+        self.draft = InputDraft.model_validate(record.get("draft", {}))
+        self.rendering_history = True
+        self.query_one("#conversation", VerticalScroll).remove_children()
+        self.seen_messages.clear()
+        history = view.get("history", [])
+        if view["status"] == "draft":
+            self.chat("SETUP", self.draft.goal or "Set input. Define goal. Run.")
+        for after_work in range(len(history) + 1):
+            for index, message in enumerate(record["messages"]):
+                if message.get("after_work", 0) == after_work:
+                    self.chat("you" if message["role"] == "user" else "INPUT REQUIRED", message["text"],
+                              identity=message.get("id", f"message-{index}"))
+            if after_work < len(history):
+                item = history[after_work]
+                self.chat(AGENTS.get(item["agent_id"], item["agent_id"]), item["summary"], identity=item["request_id"])
+        self.show_question(view)
+        if view["status"] == "stopped":
+            self.chat("RESULT", f"{RESULTS.get(view.get('goal_result'), '')}\n{view.get('summary', '')}", identity="finish")
+        if view.get("error"):
+            self.chat("INTERRUPTED", view["error"], identity="execution-error")
+        self.rendering_history = False
+        history = self.query_one("#conversation", VerticalScroll)
+        self.call_after_refresh(history.scroll_end, animate=False) if viewport[0] else self.call_after_refresh(history.scroll_to, y=viewport[1], animate=False)
+        self.render_status()
+        self.render_agents()
 
     def chat(self, role, text, *, identity=None):
-        if not text or identity in self.seen_messages:
+        if not text or identity is not None and identity in self.seen_messages:
             return
         if identity is not None:
             self.seen_messages.add(identity)
         history = self.query_one("#conversation", VerticalScroll)
         follow = history.is_vertical_scroll_end
-        history.mount(ChatMessage(role, str(text) if role == "你" else str(sanitize(str(text)))))
+        history.mount(ChatMessage(role, str(sanitize(str(text)))))
         if self.rendering_history:
             return
         if follow:
             self.call_after_refresh(history.scroll_end, animate=False)
         else:
             self.unread += 1
-            self.query_one("#new-content", Static).update(f"↓ {self.unread} 条新消息 · 滚动到底部查看")
+            self.query_one("#new-content", Static).update(f"↓ {self.unread} new")
             self.query_one("#new-content").display = True
 
-    def select_run(self, run_id, *, preserve_scroll=False):
-        history = self.query_one("#conversation", VerticalScroll)
-        viewport = (history.is_vertical_scroll_end, history.scroll_y) if preserve_scroll else (True, 0)
-        if not preserve_scroll:
-            self.unread = 0
-            self.query_one("#new-content").display = False
-        self.selection += 1
-        self.selected_run = run_id
-        if not preserve_scroll or self.reader is None:
-            self.reader = self.service.activity_reader(run_id)
-            self.latest_activity.clear()
-            self.scope_labels.clear()
-        self.load_run(self.experiment, run_id, self.selection, viewport)
-
-    @work(thread=True, group="load-view", exclusive=True)
-    def load_run(self, experiment, run_id, selection, viewport):
-        try:
-            service = ConversationService(experiment, root=self.root)
-            view, record = service.inspect(run_id), service.record()
-            self.call_from_thread(self.loaded, experiment, run_id, selection, view, record, viewport)
-        except Exception as exc:
-            self.call_from_thread(self.notify, str(sanitize(str(exc))), severity="error")
-
-    def loaded(self, experiment, run_id, selection, view, record, viewport):
-        if (experiment, run_id, selection) != (self.experiment, self.selected_run, self.selection):
-            return
-        self.view = view
-        self.rendering_history = True
-        self.query_one("#conversation", VerticalScroll).remove_children()
-        self.seen_messages.clear()
-        history = view.get("history", [])
-        for after_work in range(len(history) + 1):
-            for index, message in enumerate(record["messages"]):
-                if message.get("run_id") == run_id and message.get("after_work", 0) == after_work:
-                    key = message.get("id", f"message-{index}")
-                    self.chat("你" if message["role"] == "user" else "需要你的回答", message["text"], identity=key)
-            if after_work < len(history):
-                item = history[after_work]
-                self.chat(AGENTS.get(item["agent_id"], item["agent_id"]), item["summary"], identity=item["request_id"])
-        self.show_question(view)
-        if view.get("status") == "stopped":
-            self.chat("结果", f"{RESULTS.get(view.get('goal_result'), '')}\n{view.get('summary', '')}", identity="finish")
-        if view.get("error"):
-            self.chat("运行中断", view["error"], identity="execution-error")
-        self.rendering_history = False
-        history = self.query_one("#conversation", VerticalScroll)
-        if viewport[0]:
-            self.call_after_refresh(history.scroll_end, animate=False)
-        else:
-            self.call_after_refresh(history.scroll_to, y=viewport[1], animate=False)
-        self.render_status()
-        self.render_agents()
-
     def show_question(self, view):
-        questions = view.get("questions", [])
-        if questions:
-            question = questions[0]
-            text = question.get("question", str(question)) if isinstance(question, dict) else str(question)
-            self.chat("需要你的回答", text, identity="question-" + str(view.get("question_id", text)))
+        if view.get("questions"):
+            question = view["questions"][0]
+            self.chat("INPUT REQUIRED", question.get("question", str(question)),
+                      identity="question-" + str(view.get("question_id")))
             self.query_one(Composer).focus()
 
     def render_status(self):
-        active = self.running and (self.experiment, self.selected_run) == (self.active_experiment, self.active_run)
-        status = "正在暂停 · 当前工作结束后保存" if self.running and self.stop_event.is_set() else "运行中" if active else STATES.get(self.view.get("status"), "准备启动")
-        if self.running and self.active_run is None:
-            status = "正在检查输入和模型连接…" if not self.stop_event.is_set() else "正在取消启动…"
-        background = " · 另一个任务在后台运行" if self.running and self.active_run and not active else ""
-        summary = self.view.get("goal", self.draft.goal) or "描述目标并选择数据目录"
-        result = RESULTS.get(self.view.get("goal_result"), "")
-        counts = self.view.get("counts")
-        quantity = (f"{self.view['count_kind']} {counts.get('accepted', '?')}/{counts.get('requested', '?')} · 缺口 {counts.get('shortfall', '?')}"
-                    if counts else f"目标 {self.view['target_count']} 题" if self.view.get("target_count") else summary)
-        self.query_one("#run-status", Static).update(Text(f"{status}{background} · {quantity} · {result}", overflow="ellipsis", no_wrap=True))
-        self.query_one("#title", Static).update(Text(f"MedD2B · {self.experiment}", overflow="ellipsis", no_wrap=True))
-        self.query_one("#pause", Button).disabled = not self.running or self.stop_event.is_set()
-        self.query_one("#resume", Button).disabled = self.running or not self.selected_run or self.view.get("status") not in {"ready", "paused", "interrupted"}
-        self.query_one("#resume", Button).label = "开始" if self.view.get("status") == "ready" else "继续"
-        self.query_one("#settings", Button).disabled = self.running
+        active = self.running and self.selected_run == self.active_run
+        status = "PAUSING" if active and self.stop_event.is_set() else "RUNNING" if active else STATES.get(self.view.get("status"), "Select run")
+        if self.running and not active:
+            status += f" · {self.active_run} RUNNING"
+        quantity = ""
+        if counts := self.view.get("counts"):
+            quantity = f" · {self.view.get('count_kind', '')} {counts.get('accepted', '?')}/{counts.get('requested', '?')}"
+        self.query_one("#run-status", Static).update(Text(f"{status}{quantity} · {RESULTS.get(self.view.get('goal_result'), '')}", overflow="ellipsis", no_wrap=True))
+        self.query_one("#title", Static).update(Text(f"MedD2B / {self.selected_run or 'Runs'}", overflow="ellipsis", no_wrap=True))
+        self.query_one("#pause", Button).disabled = not active or self.stop_event.is_set()
+        self.query_one("#resume", Button).disabled = self.running or not self.selected_run or self.view.get("status") not in {"draft", "ready", "paused", "interrupted"}
+        self.query_one("#resume", Button).label = "Start" if self.view.get("status") in {"draft", "ready"} else "Resume"
+        for selector in ("#settings", "#task", "#dataset"):
+            self.query_one(selector, Button).disabled = not self.selected_run or active
 
     def render_agents(self):
         table = self.query_one("#agents", DataTable)
@@ -221,22 +228,12 @@ class MBAApp(App):
             if agent not in enabled:
                 continue
             row = self.latest_activity.get(agent)
-            if row:
-                identity = row.get("parent_request_id") or row.get("request_id")
-                scope = self.scope_labels.get(identity, "")
-                text = row["action"] + (" · " + scope if scope else "")
-                if row["running"] and not (self.running and (self.experiment, self.selected_run) == (self.active_experiment, self.active_run)):
-                    text = "上次：" + text
-                duration = f"{elapsed(row)}s" if row["running"] and self.running and (self.experiment, self.selected_run) == (self.active_experiment, self.active_run) else f"{row['event']['elapsed_ms'] / 1000:.1f}s" if row["event"].get("elapsed_ms") is not None else "—"
-            else:
-                previous = next((work for work in reversed(self.view.get("history", [])) if work["agent_id"] == agent), None)
-                text = {"completed": "本次工作完成", "blocked": "本次工作受阻", "failed": "本次工作失败"}.get(previous["outcome"], "已返回") if previous else "暂无活动记录" if self.view.get("status") != "ready" else "待委派"
-                duration = "—"
-            if agent == "supervisor" and self.view.get("status") == "stopped":
-                text = "已结束 · " + RESULTS.get(self.view.get("goal_result"), "")
-            table.add_row(label, text[:max(20, self.size.width - 35)], duration, key=agent)
-        table.styles.height = min(9, max(2, len(enabled) + 1))
-        table.display = bool(enabled)
+            text = row["action"] if row else "idle"
+            if row and row["running"] and self.view.get("status") != "running":
+                text = "last: " + text
+            duration = f"{elapsed(row)}s" if row and row["running"] and self.running and self.selected_run == self.active_run else (
+                f"{row['event']['elapsed_ms'] / 1000:.1f}s" if row and row["event"].get("elapsed_ms") is not None else "—")
+            table.add_row(label, Text(text, overflow="ellipsis", no_wrap=True), duration, key=agent)
         if enabled:
             table.move_cursor(row=min(selected, len(enabled) - 1))
 
@@ -248,154 +245,209 @@ class MBAApp(App):
             self.query_one("#new-content").display = False
         if self.reader and not self.reading:
             self.reading = True
-            self.read_activity(self.reader, self.experiment, self.selected_run)
-        self.render_agents()
+            self.read_activity(self.reader, self.selected_run)
 
     @work(thread=True, group="activity")
-    def read_activity(self, reader, experiment, run_id):
+    def read_activity(self, reader, name):
         try:
             rows = reader.read()
             if self.is_running:
-                self.call_from_thread(self.activities, reader, experiment, run_id, rows)
+                self.call_from_thread(self.activities, reader, name, rows)
         finally:
             self.reading = False
 
-    def activities(self, reader, experiment, run_id, rows):
-        if not self.query("#agents"):
-            return
-        if reader is not self.reader or (experiment, run_id) != (self.experiment, self.selected_run):
+    def activities(self, reader, name, rows):
+        if reader is not self.reader or name != self.selected_run:
             return
         for row in rows:
             self.latest_activity[row["agent_id"]] = row
-            event = row["event"]
-            if event["event_type"] == "work_delegated":
-                objects = [key for scope in event.get("scope", []) for key in scope.get("object_ids", [])]
-                self.scope_labels[row["request_id"]] = ", ".join(objects) or OPERATIONS.get(row["operation"], row["operation"])
-        if rows and isinstance(self.screen, ActivityScreen):
-            self.screen.update_rows(list(reader.events))
-        self.render_agents()
+        if rows:
+            self.render_agents()
+            self.query_one("#activity-preview", Static).update(Text(rows[-1]["action"] + "\n" + rows[-1].get("summary", ""), overflow="ellipsis"))
+            if isinstance(self.screen, ActivityScreen):
+                self.screen.update_rows(list(reader.events))
 
     @on(DataTable.RowSelected, "#agents")
     def activity_selected(self, event):
         self.push_screen(ActivityScreen(list(self.reader.events) if self.reader else [], str(event.row_key.value)))
 
-    def action_new_task(self):
-        self.push_screen(DraftScreen(self.draft.model_copy(deep=True), self.service.folder / "runs"), self.draft_ready)
+    def configure_task(self):
+        if not self.selected_run:
+            return self.action_new_run()
+        if self.view.get("status") != "draft":
+            self.notify("Run frozen. Clone to edit.")
+            return
+        self.push_screen(DraftScreen(self.draft.model_copy(deep=True), self.service.directory), self.draft_ready)
 
     def draft_ready(self, result):
         if result is None:
             return
         self.draft, start = result
-        self.service.save_draft(self.draft)
-        if start:
-            if self.running:
-                self.notify("草稿已保存；当前运行结束或暂停后再开始")
-            else:
-                self.start_execution(draft=self.draft)
+        try:
+            self.service.save_draft(self.draft)
+        except (ValueError, OSError) as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if start and not self.running:
+            self.start_execution(draft=self.draft)
         else:
-            self.notify("草稿已保存")
+            self.notify("Draft saved.")
+            self.select_run(self.selected_run)
 
     @on(Composer.Submitted)
     def submitted(self, event):
         self.send(event.value)
 
+    @on(TextArea.Changed, "#message")
+    def command_changed(self):
+        text = self.query_one(Composer).text
+        self.command_matches = [key for key in COMMANDS if key.startswith(text[1:])] if text.startswith("/") and "\n" not in text else []
+        options = self.query_one("#command-options", OptionList)
+        options.clear_options()
+        options.add_options([f"/{key}  {COMMANDS[key]}" for key in self.command_matches])
+        options.display = bool(self.command_matches)
+        if self.command_matches:
+            options.highlighted = 0
+
+    @on(Composer.CommandKey)
+    def command_key(self, event):
+        options = self.query_one("#command-options", OptionList)
+        if not self.command_matches:
+            return
+        index = options.highlighted or 0
+        if event.key == "tab":
+            self.query_one(Composer).load_text("/" + self.command_matches[index])
+        else:
+            options.highlighted = (index + (1 if event.key == "down" else -1)) % len(self.command_matches)
+
+    @on(OptionList.OptionSelected, "#command-options")
+    def command_selected(self, event):
+        self.send("/" + self.command_matches[event.option_index])
+
+    def action_commands(self):
+        self.query_one(Composer).load_text("/")
+        self.query_one(Composer).focus()
+
     def send(self, text):
-        if not text.strip():
+        text = text.strip()
+        if not text:
+            return
+        if text.startswith("/"):
+            command = text[1:].split()[0] if text[1:] else ""
+            if command not in COMMANDS:
+                self.notify("Unknown command. /help")
+                return
+            self.query_one(Composer).load_text("")
+            self.dispatch(command)
             return
         if self.running:
-            self.notify("当前正在运行。可用“新任务”保存草稿；需要回答时会在这里提示。")
-            return
-        if self.view.get("questions") and self.selected_run:
-            self.pending_answer = text.strip()
-            self.start_execution(run_id=self.selected_run, answer=self.pending_answer)
-        else:
+            self.notify("Busy. Awaiting agent output.")
+        elif self.view.get("questions"):
+            self.pending_answer = text
+            self.start_execution(answer=text)
+        elif self.selected_run:
+            if self.view.get("status") != "draft":
+                self.notify("Run frozen. Clone to edit.")
+                return
             self.draft = suggest_draft(text, self.draft)
-            self.action_new_task()
+            self.configure_task()
+        else:
+            self.action_new_run()
+
+    def dispatch(self, action):
+        if action == "new":
+            return self.action_new_run()
+        if action == "runs":
+            return self.action_runs()
+        if action == "help":
+            self.notify("^N new · ^R runs · ^P commands · Tab complete · Enter send · ^C quit", timeout=12)
+            return
+        if not self.selected_run:
+            self.notify("Select a run.")
+            return
+        if action in {"dataset", "config"} and self.running and self.selected_run == self.active_run:
+            self.notify("Pause before editing.")
+            return
+        if action == "dataset":
+            self.push_screen(DatasetScreen(self.draft, directory=self.service.directory, catalog=self.runtime_root.parent / "datasets.json", frozen=self.view.get("status") != "draft"), self.dataset_selected)
+        elif action == "config":
+            self.push_screen(ConnectionScreen(self.service.directory / "config.toml", self.draft))
+        elif action == "pause":
+            if self.running and self.selected_run == self.active_run:
+                self.stop_event.set()
+                self.render_status()
+        elif action == "resume" and not self.running:
+            self.configure_task() if self.view.get("status") == "draft" else self.start_execution()
+        elif action == "events":
+            self.push_screen(ActivityScreen(list(self.reader.events) if self.reader else [], "*"))
+        elif action in {"artifacts", "export"}:
+            self.push_screen(ArtifactsScreen(self.view))
+
+    def dataset_selected(self, draft):
+        if draft:
+            self.draft = draft
+            self.service.save_draft(draft)
+            self.configure_task()
 
     @on(Button.Pressed)
     def pressed(self, event):
+        if isinstance(self.screen, (RunsScreen, NameScreen, DatasetScreen, DraftScreen, ConnectionScreen, ActivityScreen, ArtifactsScreen)):
+            return
         action = event.button.id
-        if action == "new":
-            self.action_new_task()
+        if action == "copy-run":
+            self.action_copy_run()
+        elif action == "task":
+            self.configure_task()
         elif action == "send":
             self.send(self.query_one(Composer).text)
-        elif action == "pause":
-            self.stop_event.set()
-            self.render_status()
-        elif action == "resume" and self.selected_run and not self.running:
-            self.start_execution(run_id=self.selected_run)
-        elif action == "settings" and not self.running:
-            self.push_screen(ConnectionScreen(sessions.config_path(self.experiment, self.root), self.draft))
-        elif action == "history":
-            self.push_screen(HistoryScreen(sessions.list_experiments(self.root), self.experiment, self.service.record()["runs"]), self.history_selected)
-        elif action == "products" and self.view.get("run_directory"):
-            self.push_screen(ArtifactsScreen(self.view))
-        elif action == "details":
-            self.push_screen(ActivityScreen(list(self.reader.events) if self.reader else [], "*"))
+        else:
+            self.dispatch({"settings": "config", "details": "events", "products": "artifacts"}.get(action, action))
 
-    def history_selected(self, result):
-        if result:
-            self.experiment, run_id = result
-            record = self.service.record()
-            self.draft = InputDraft.model_validate(record.get("draft", {}))
-            if run_id or record["runs"]:
-                self.select_run(run_id or record["runs"][-1]["id"])
-
-    def start_execution(self, *, draft=None, run_id=None, answer=None):
-        if self.running:
+    def start_execution(self, *, draft=None, answer=None):
+        if self.running or not self.selected_run:
             return
         self.running = True
-        self.active_run, self.active_experiment = run_id, self.experiment
+        self.active_run = self.selected_run
         self.stop_event.clear()
         self.render_status()
-        self.execute(self.experiment, draft, run_id, answer, self.view.get("question_id") if answer is not None else None,
-                     run_id is not None and self.view.get("status") != "ready")
+        self.execute(self.selected_run, draft, answer, self.view.get("question_id") if answer is not None else None,
+                     self.view.get("status") not in {"draft", "ready"})
 
     @work(thread=True, exclusive=True, group="execution")
-    def execute(self, experiment, draft, run_id, answer, question_id, resume):
-        phase = "connection"
+    def execute(self, name, draft, answer, question_id, resume):
         try:
-            service = ConversationService(experiment, root=self.root)
-            if run_id is None:
-                check_connections(sessions.config_path(experiment, self.root), draft)
+            service = ConversationService(sessions.run_path(name, self.root))
+            if draft is not None:
+                check_connections(service.directory / "config.toml", draft)
                 if self.stop_event.is_set():
                     return
-                phase = "input"
-                row = service.submit_draft(draft)
-                run_id = row["id"]
-                self.call_from_thread(self.started, experiment, row, draft)
-            for event in service.run(run_id, resume=resume, answer=answer, question_id=question_id, stop_requested=self.stop_event.is_set):
-                self.call_from_thread(self.show_event, experiment, event)
+                service.submit_draft(draft)
+                self.call_from_thread(self.started, name, draft)
+            for event in service.run(resume=resume, answer=answer, question_id=question_id, stop_requested=self.stop_event.is_set):
+                self.call_from_thread(self.show_event, name, event)
         except Exception as exc:
-            self.call_from_thread(self.execution_error, str(sanitize(str(exc))), run_id is None and phase == "connection")
+            self.call_from_thread(self.execution_error, name, str(sanitize(str(exc))))
         finally:
-            self.call_from_thread(self.finished, experiment, run_id)
+            self.call_from_thread(self.finished, name)
 
-    def started(self, experiment, row, draft):
-        self.active_run = row["id"]
-        if self.experiment == experiment:
-            self.selected_run = row["id"]
-            self.selection += 1
-            self.view = {"status": "running", "goal": draft.goal, "run_directory": row["directory"]}
-            self.reader = self.service.activity_reader(row["id"])
+    def started(self, name, draft):
+        if name == self.selected_run:
+            self.view = {"status": "running", "goal": draft.goal, "run_directory": str(self.service.directory)}
+            self.reader = self.service.activity_reader()
             self.latest_activity.clear()
-            self.scope_labels.clear()
-            self.seen_messages.clear()
-            self.query_one("#conversation", VerticalScroll).remove_children()
-            self.chat("你", draft.goal)
+            self.chat("you", draft.goal, identity="goal")
             self.query_one(Composer).load_text("")
-            self.render_status()
 
-    def show_event(self, experiment, event):
-        if (experiment, event.run_session_id) != (self.experiment, self.selected_run):
+    def show_event(self, name, event):
+        if name != self.selected_run:
             return
         if event.kind == "initialized":
             self.view = event.payload
         elif event.kind == "answer_accepted":
-            self.chat("你", self.pending_answer or "", identity="answer-" + str(event.payload.get("question_id")))
+            self.chat("you", event.payload["answer"], identity="answer-" + str(event.payload["question_id"]))
             self.query_one(Composer).load_text("")
             self.pending_answer = None
-        elif event.kind == "progress" and event.payload.get("work"):
+        elif event.kind == "progress":
             self.view = event.payload["view"]
             row = event.payload["work"]
             self.chat(AGENTS.get(row["agent_id"], row["agent_id"]), row["summary"], identity=row["request_id"])
@@ -403,29 +455,27 @@ class MBAApp(App):
             self.view = event.payload
             self.show_question(self.view)
             if event.kind == "finished":
-                self.chat("结果", f"{RESULTS.get(self.view.get('goal_result'), '')}\n{self.view.get('summary', '')}", identity="finish")
+                self.chat("RESULT", f"{RESULTS.get(self.view.get('goal_result'), '')}\n{self.view.get('summary', '')}", identity="finish")
         self.render_status()
 
-    def execution_error(self, message, before_run):
-        self.chat("运行提示", message)
-        if before_run and not self.exit_after:
-            self.call_after_refresh(self.push_screen, ConnectionScreen(sessions.config_path(self.experiment, self.root), self.draft))
+    def execution_error(self, name, message):
+        if name == self.selected_run:
+            self.chat("ERROR", message)
+        self.notify(f"{name}: {message}", severity="error")
 
-    def finished(self, experiment, run_id):
+    def finished(self, name):
         self.running = False
         self.active_run = None
         if self.exit_after:
             self.exit()
-            return
-        if (experiment, run_id) == (self.experiment, self.selected_run) and run_id:
-            self.select_run(run_id, preserve_scroll=True)
-        self.render_status()
+        elif name == self.selected_run:
+            self.select_run(name, preserve_scroll=True)
 
     def action_request_quit(self):
         if self.running:
             self.exit_after = True
             self.stop_event.set()
-            self.notify("已请求暂停；当前工作保存后退出")
+            self.notify("Pausing at checkpoint. Exit pending.")
             self.render_status()
         else:
             self.exit()

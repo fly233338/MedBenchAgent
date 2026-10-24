@@ -26,7 +26,7 @@ def assemble_compilation(
 
         settings = SupervisorSettings.from_snapshot(options.supervisor_settings)
         decide = ModelSupervisor(directory, settings, model=model_for(settings),
-                                 instructions=options.prompts["supervisor"].text)
+                                 instructions=options.prompts["supervisor"].text, runtime_directory=Path(options.runtime_directory))
         agents = {}
         if options.coding_settings is not None:
             from medbenchagent.settings import CodingSettings
@@ -66,6 +66,6 @@ def assemble_compilation(
             raise ValueError("Additional agents cannot replace a frozen built-in selection")
         agents.update(additional_agents)
         yield agents, CompilationContext(directory.resolve(), decide, options.goal,
-            goal_spec=options.goal_spec, repair_limits=options.repair_limits,
+            runtime_directory=Path(options.runtime_directory), goal_spec=options.goal_spec, repair_limits=options.repair_limits,
             check_goal=partial(check_goal, directory, options.goal_spec, options.benchmark_request),
             readiness=partial(readiness, directory, agents))

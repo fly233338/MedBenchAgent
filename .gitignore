@@ -20,8 +20,9 @@ TODO.md
 .coverage
 htmlcov/
 
-# Compilation runs, experiment records, and local retrieval caches
+# Compilation runs, retained historical records, and local retrieval caches
 benchmarks/
+runs/
 .runtime/
 experiments/
 experiments-v2/

@@ -47,6 +47,7 @@ def build_generation_spec(settings, *, instructions, model=None):
                 settings,
                 instructions,
                 "generation",
+                runtime_directory=runtime.context.runtime_directory,
             ),
             config,
         )

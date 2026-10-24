@@ -1,7 +1,7 @@
 """Model decisions with bounded, inspectable context owned by the Supervisor."""
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
@@ -14,7 +14,7 @@ from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from medbenchagent.runtime.llm import RequestContextBudgetError
-from medbenchagent.runtime.native import AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
+from medbenchagent.runtime.native import invocation_config, AGENT_LIMIT_ERRORS, chat_model, loop_middleware, role_lock
 from medbenchagent.settings import SupervisorSettings
 
 from medbenchagent.compilation.artifacts import preview_artifact
@@ -53,6 +53,8 @@ class SupervisorResponse(Contract):
 @dataclass(frozen=True)
 class SupervisorContext:
     directory: Path
+    runtime_directory: Path = field(kw_only=True)
+    settings: object = field(kw_only=True)
     view: SupervisorView
     current_view: dict
     instructions: str
@@ -148,10 +150,11 @@ def _excerpt(value: Any, text_limit: int, item_limit: int, field: str = "") -> t
 
 
 class ModelSupervisor:
-    def __init__(self, directory: Path, settings: SupervisorSettings, *, instructions: str, model=None):
+    def __init__(self, directory: Path, settings: SupervisorSettings, *, instructions: str, runtime_directory: Path, model=None):
         if not settings.llm.model:
             raise ValueError("Resolve the Supervisor model before starting a run")
         self.directory = Path(directory).resolve()
+        self.runtime_directory = Path(runtime_directory).resolve()
         self.settings = settings
         self.instructions = instructions
         model = model or chat_model(settings.llm, settings.loop)
@@ -333,13 +336,13 @@ class ModelSupervisor:
     def __call__(self, view: SupervisorView, config):
         invocation_id = f"supervisor-{len(view.history)}-{len(view.answers)}-{len(view.feedback)}"
         context = SupervisorContext(self.directory, view, {**self._context(view), "feedback": view.feedback, "goal_spec": view.goal_spec.model_dump()},
-                                    self.instructions, invocation_id)
-        with role_lock(self.directory, "supervisor"):
+                                    self.instructions, invocation_id, runtime_directory=self.runtime_directory, settings=self.settings)
+        with role_lock(self.runtime_directory, "supervisor"):
             try:
                 result = self.agent.invoke(
                     {"messages": [HumanMessage(content="Choose the next action using the current view.",
                                                id=invocation_id)], "structured_response": None},
-                    {**config, "recursion_limit": self.settings.loop.max_model_calls * 6 + 20}, context=context,
+                    {**invocation_config(config, context), "recursion_limit": self.settings.loop.max_model_calls * 6 + 20}, context=context,
                 )
             except AGENT_LIMIT_ERRORS as exc:
                 raise RuntimeError(f"Supervisor invocation budget exhausted: {exc}") from exc

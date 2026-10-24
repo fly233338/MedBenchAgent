@@ -7,14 +7,14 @@ from pathlib import Path
 from medbenchagent.runtime.construction import sanitize
 
 AGENTS = {"supervisor": "Supervisor", "data_processing": "Data Processing", "coding": "  ↳ Coding",
-          "task_planner": "Task Planning", "generation": "Generation", "review": "Review", "delivery": "Delivery"}
-OPERATIONS = {"profile": "调研来源", "prepare_task_data": "准备任务数据", "discover_scenarios": "发现场景",
-              "design_leaves": "设计 / 修订任务", "generate": "生成题目", "review_plan": "审查计划",
-              "review_candidate": "审查候选", "publish": "交付", "execute": "执行代码"}
-PRODUCTS = {"source_manifest": "输入来源", "dataset_profile": "数据调研", "task_plan": "任务计划",
-            "data_requirement": "数据需求", "task_data": "任务数据", "generation_spec": "组题配置",
-            "generation_candidate": "候选题目", "review_report": "审查报告", "audit_report": "自动检查",
-            "delivery_manifest": "交付包", "benchmark_request": "目标数量", "allocation": "数量分配", "generation_batch": "生成批次"}
+          "task_planner": "Task Planning", "generation": "Generation", "review": "Review", "delivery": "Delivery", "runtime": "Run"}
+OPERATIONS = {"profile": "profile", "prepare_task_data": "prepare data", "discover_scenarios": "Scenarios",
+              "design_leaves": "design", "generate": "generate", "review_plan": "review plan",
+              "review_candidate": "review candidate", "publish": "Delivery", "execute": "coding"}
+PRODUCTS = {"source_manifest": "Sources", "dataset_profile": "Profile", "task_plan": "Plan",
+            "data_requirement": "Requirements", "task_data": "TaskData", "generation_spec": "Generation spec",
+            "generation_candidate": "Candidate", "review_report": "Review", "audit_report": "Audit",
+            "delivery_manifest": "Delivery", "benchmark_request": "Target", "allocation": "Allocation", "generation_batch": "Batch"}
 
 
 class ActivityReader:
@@ -76,7 +76,7 @@ class ActivityReader:
         except FileNotFoundError:
             return []
         except OSError:
-            self.error = "活动日志暂不可读；运行状态仍以 Checkpoint 为准"
+            self.error = "Trace unavailable. Checkpoint remains authoritative."
             return []
 
 
@@ -86,30 +86,38 @@ def activity_view(event):
         return None
     kind = event.get("event_type", "")
     status = event.get("status", "")
-    labels = {"model_started": "调用模型", "model_finished": "模型已返回", "model_failed": "模型调用失败",
-              "tool_started": "调用工具", "tool_finished": "工具已返回", "tool_failed": "工具失败，可返工",
-              "work_delegated": "已委派", "work_result": "工作已返回", "coding_started": "执行代码",
-              "coding_finished": "Coding 已返回", "coding_action": "执行工具", "coding_observation": "收到工具回执",
-              "coding_error": "Coding 执行错误", "review_submitted": "审查报告已提交", "supervisor_decision": "已决策"}
+    labels = {"model_started": "model start", "model_finished": "model done", "model_failed": "model failed",
+              "run_started": "run start", "run_resumed": "run resume", "run_paused": "run paused",
+              "run_waiting": "awaiting input", "run_finished": "run done", "execution_failed": "interrupted",
+              "answer_accepted": "answer accepted", "work_started": "work start", "work_failed": "work failed",
+              "artifact_submitted": "artifact committed", "repair_requested": "repair needed", "repair_exhausted": "repair exhausted",
+              "decision_rejected": "decision rejected", "context_budget": "context checked",
+              "tool_started": "tool start", "tool_finished": "tool done", "tool_failed": "tool failed",
+              "work_delegated": "delegated", "work_result": "work done", "coding_started": "coding",
+              "coding_finished": "coding done", "coding_action": "tool start", "coding_observation": "tool result",
+              "coding_error": "coding error", "coding_failed": "coding failed", "review_submitted": "review committed", "supervisor_decision": "decision"}
     if kind not in labels:
         return None
     action = labels[kind]
     if kind == "supervisor_decision":
-        action = {"delegate": "委派 → " + AGENTS.get(event.get("target_agent"), ""),
-                  "ask_user": "等待用户回答", "finish": "已结束 · " + {"succeeded": "目标完成", "partial": "部分交付", "blocked": "目标受阻", "failed": "目标失败"}.get(event.get("goal_result"), "")}.get(event.get("decision"), action)
+        action = {"delegate": "delegate → " + AGENTS.get(event.get("target_agent"), ""),
+                  "ask_user": "awaiting input", "finish": "STOPPED · " + {"succeeded": "SUCCESS", "partial": "PARTIAL", "blocked": "BLOCKED", "failed": "FAILED"}.get(event.get("goal_result"), "")}.get(event.get("decision"), action)
     if kind == "coding_finished" and event.get("outcome") in {"blocked", "failed"}:
-        action = "Coding 受阻" if event["outcome"] == "blocked" else "Coding 失败"
+        action = "coding blocked" if event["outcome"] == "blocked" else "coding failed"
     if event.get("tool_name"):
         action += " · " + event["tool_name"]
+    if kind == "model_finished":
+        action += (f" · {event.get('input_tokens', '?')} → {event.get('output_tokens', '?')} tokens"
+                   if event.get("token_usage_available") else " · usage unavailable")
     if kind == "work_result":
         outcome = event.get("outcome", "")
-        action = {"completed": "本次工作完成", "blocked": "本次工作受阻", "failed": "本次工作失败",
-                  "needs_input": "需要补充信息", "progress": "已取得进展"}.get(outcome, action)
+        action = {"completed": "completed", "blocked": "blocked", "failed": "failed",
+                  "needs_input": "needs input", "progress": "progress"}.get(outcome, action)
         if agent == "review" and any(i.get("code", "").startswith("review_") for i in event.get("issues", [])):
-            action = "审查完成 · 需修订"
+            action = "review · rework"
     if kind == "review_submitted" and event.get("approved") is False:
-        action = "审查完成 · 未批准"
-    running = kind in {"model_started", "tool_started", "work_delegated", "coding_started", "coding_action"}
+        action = "review · rejected"
+    running = kind in {"model_started", "tool_started", "work_delegated", "work_started", "coding_started", "coding_action", "run_started", "run_resumed"}
     return {"id": event["event_id"], "timestamp": event.get("timestamp", ""), "agent_id": agent,
             "request_id": event.get("request_id"), "parent_request_id": event.get("parent_request_id"),
             "label": AGENTS[agent], "action": action, "operation": event.get("operation", ""),
@@ -129,23 +137,23 @@ def artifact_summary(directory, ref):
     value = read_json_artifact(Path(directory), ref)
     kind = ref.kind
     if kind == "source_manifest":
-        return "输入来源\n" + "\n".join(source["root"] for source in value["sources"]) + f"\n关键文件：{len(value.get('key_files', []))}"
+        return "Sources\n" + "\n".join(source["root"] for source in value["sources"]) + f"\nKey file：{len(value.get('key_files', []))}"
     if kind == "dataset_profile":
-        return f"数据调研 · {value.get('description', '')}\n范围：{value.get('coverage', '')}\n未知项：" + "；".join(value.get("unknowns", []))
+        return f"Profile · {value.get('coverage', '')}\n{value.get('description', '')}\nUnknown: " + "; ".join(value.get("unknowns", []))
     if kind == "task_plan":
         pending = set(value.get("requirements", {})) - value.get("acceptances", {}).keys()
-        return f"任务计划 · {len(value.get('scenarios', {}))} 个场景 / {len(value.get('tasks', {}))} 个任务 / {len(pending)} 个未解决需求"
+        return f"Plan · {len(value.get('scenarios', {}))} scenarios / {len(value.get('tasks', {}))} tasks / {len(pending)} pending"
     if kind == "task_data":
-        return f"任务数据 · {value.get('case_count', 0)} 个 Case · {value.get('backend_id', '')}"
+        return f"TaskData · {value.get('case_count', 0)} cases · {value.get('backend_id', '')}"
     if kind == "review_report":
-        return f"审查 · {'已批准' if value.get('approved') else '未批准'}\n" + "\n".join(item["summary"] for item in value.get("findings", []))
+        return f"Review · {'approved' if value.get('approved') else 'rejected'}\n" + "\n".join(item["summary"] for item in value.get("findings", []))
     if kind == "audit_report":
-        return f"自动检查 · {'通过' if value.get('passed') else '未通过'} · 已检查 {value.get('checked_count', 0)} 条"
+        return f"Audit · {'pass' if value.get('passed') else 'fail'} · {value.get('checked_count', 0)} checked"
     if kind == "data_requirement":
-        return "数据需求 · " + value["purpose"] + "\n验收条件：" + "；".join(value.get("acceptance_criteria", []))
+        return "Requirements · " + value["purpose"] + "\nChecks: " + "; ".join(value.get("acceptance_criteria", []))
     if "counts" in value:
         counts = value["counts"]
-        return f"{PRODUCTS.get(kind, kind)} · 请求 {counts.get('requested', '?')} / 接受 {counts.get('accepted', '?')} / 缺口 {counts.get('shortfall', '?')}"
+        return f"{PRODUCTS.get(kind, kind)} · requested {counts.get('requested', '?')} / accepted {counts.get('accepted', '?')} / shortfall {counts.get('shortfall', '?')}"
     if kind == "benchmark_request":
-        return f"目标：{value['sample_count']} 题"
-    return PRODUCTS.get(kind, "正式产物") + "\n已登记并绑定到本次运行；具体字段见技术详情。"
+        return f"Target: {value['sample_count']} items"
+    return PRODUCTS.get(kind, "Artifact")

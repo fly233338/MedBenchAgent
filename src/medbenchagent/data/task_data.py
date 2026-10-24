@@ -383,6 +383,34 @@ def write_once(path: Path, content: bytes):
     os.replace(temporary, path)
 
 
+def snapshot_profile(source: Path, destination: Path, *, runtime_directory: Path):
+    """Publish derived Profile evidence without retaining disposable workspace paths."""
+    reader = ProfileReader(source)
+    profile = reader.profile
+    roots = _source_roots(source.parent, profile.sources)
+    copied = {key for key, root in roots.items() if root.is_relative_to(runtime_directory.resolve())}
+    for member in profile.members:
+        if member.source_id is not None and member.source_id not in copied:
+            continue
+        root = source.parent if member.source_id is None else roots[member.source_id]
+        relative = member.path if member.source_id is None else f"sources/{member.source_id}/{member.path}"
+        target = (destination / relative).resolve()
+        if not target.is_relative_to(destination.resolve()):
+            raise ValueError("Profile member escapes destination")
+        content = _relative_file(root, member.path).read_bytes()
+        if hashlib.sha256(content).hexdigest() != member.digest:
+            raise ValueError("Profile member changed during snapshot")
+        write_once(target, content)
+    frozen = profile.model_copy(update={"sources": [DatasetSource(
+        source_id=item.source_id,
+        root=f"sources/{item.source_id}" if item.source_id in copied else str(roots[item.source_id]),
+    ) for item in profile.sources]})
+    target = destination / "manifest.json"
+    write_once(target, (frozen.model_dump_json(indent=2) + "\n").encode())
+    ProfileReader(target)
+    return target
+
+
 def snapshot_task_data(source: Path, destination: Path):
     reader = TaskDataReader(source)
     manifest = reader.manifest

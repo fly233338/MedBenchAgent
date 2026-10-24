@@ -11,12 +11,12 @@ from medbenchagent.data.task_data import (
     SourceManifest,
     TaskDataReader,
     snapshot_task_data,
+    snapshot_profile,
 )
 from medbenchagent.generation.backends import backend_catalog
 from medbenchagent.agents._shared.handoff import (
     get_ref,
     inspect_artifact,
-    publish_value,
     tool_result,
 )
 
@@ -96,7 +96,7 @@ def data_processing_tools():
                 runtime, calls[request.request_id], updates={"coding_sessions": sessions}
             )
         candidate, files = context.coding.execute_candidate(
-            context.directory, request, context.goal,
+            context.directory, request, context.goal, runtime_directory=context.runtime_directory,
             parent_request_id=context.invocation_id, parent_operation=context.request.operation,
         )
         receipt = {
@@ -192,26 +192,12 @@ def data_processing_tools():
         if not checked or len(paths) != len(set(paths)):
             raise ValueError("Select unique candidate Manifest paths")
         refs = []
-        for value, verified, kind in checked:
-            if kind == "dataset_profile":
-                refs.append(publish_value(runtime, kind, value))
-            else:
-                target = (
-                    runtime.context.directory
-                    / "artifacts"
-                    / runtime.context.invocation_id
-                    / "task_data"
-                    / file_digest(verified)
-                )
-                path = snapshot_task_data(verified, target)
-                refs.append(
-                    register_file(
-                        runtime.context.directory,
-                        runtime.context.request,
-                        path.relative_to(runtime.context.directory).as_posix(),
-                        kind=kind,
-                    )
-                )
+        for _, verified, kind in checked:
+            target = runtime.context.directory / "artifacts" / runtime.context.invocation_id / kind / file_digest(verified)
+            path = (snapshot_profile(verified, target, runtime_directory=runtime.context.runtime_directory)
+                    if kind == "dataset_profile" else snapshot_task_data(verified, target))
+            refs.append(register_file(runtime.context.directory, runtime.context.request,
+                                      path.relative_to(runtime.context.directory).as_posix(), kind=kind))
         return tool_result(
             runtime, {"artifacts": [ref.model_dump(mode="json") for ref in refs]}, artifacts=refs
         )

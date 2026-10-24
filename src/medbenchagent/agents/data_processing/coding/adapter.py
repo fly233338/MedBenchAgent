@@ -10,12 +10,14 @@ from pathlib import Path
 import signal
 import subprocess
 import uuid
+from time import perf_counter
 
 from filelock import FileLock, Timeout
 
 from medbenchagent.runtime.construction import record_event
 from medbenchagent.settings import CodingSettings, get_coding_api_key
 from medbenchagent.data.dataset import file_digest
+from medbenchagent.runtime.run_artifacts import separate_directories
 
 from medbenchagent.compilation.artifacts import _within, resolve_artifact
 from medbenchagent.compilation.contracts import WorkRequest
@@ -42,7 +44,8 @@ def run_local_worker(payload: dict) -> CodingCandidate:
         return failure(request.request_id, "blocked", "environment_unavailable",
                        f"Coding interpreter does not exist: {python}")
     environment = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
-                   "OPENHANDS_SUPPRESS_BANNER": "1", "MEDBENCH_CODING_LLM_API_KEY": get_coding_api_key()}
+                   "OPENHANDS_SUPPRESS_BANNER": "1", "LITELLM_LOCAL_MODEL_COST_MAP": "True",
+                   "MEDBENCH_CODING_LLM_API_KEY": get_coding_api_key()}
     environment.pop("MEDBENCH_LLM_API_KEY", None)
     environment["PATH"] = os.pathsep.join((str(python.parent), environment.get("PATH", "")))
     environment["VIRTUAL_ENV"] = str(python.parent.parent)
@@ -98,14 +101,15 @@ class OpenHandsCodingAgent:
         self.skills = skills
         self.runner = runner or run_local_worker
 
-    def execute_candidate(self, directory: Path, request: WorkRequest, goal: str, *, parent_request_id=None, parent_operation=None):
+    def execute_candidate(self, directory: Path, request: WorkRequest, goal: str, *, runtime_directory: Path, parent_request_id=None, parent_operation=None):
         """Execute/recover one SDK call and return candidate receipts, without publication."""
         if request.operation != "execute":
             raise ValueError("Coding only accepts internal execute requests")
         if request.workstream_id is None:
             raise ValueError("Coding requests require a Host-assigned Workstream ID")
-        verify_skills(directory, self.skills)
-        root = _within(directory, f"coding/{request.workstream_id}")
+        verify_skills(runtime_directory, self.skills)
+        separate_directories(directory, runtime_directory)
+        root = _within(runtime_directory, f"coding/{request.workstream_id}")
         workspace = _within(root, "workspace")
         output = _within(workspace, f"outputs/{request.request_id}")
         inputs = []
@@ -123,6 +127,13 @@ class OpenHandsCodingAgent:
             if not path.is_relative_to(_within(directory, "artifacts")):
                 raise ValueError("Coding inputs must be formal artifacts, not workspace files")
             inputs.append({**ref.model_dump(mode="json"), "read_path": str(path)})
+            if ref.kind in {"source_manifest", "dataset_profile", "dataset", "task_data"}:
+                value = json.loads(path.read_bytes())
+                for source in value.get("sources", []):
+                    source_root = (path.parent / source["root"]).resolve()
+                    if source_root.is_relative_to(directory / "artifacts"):
+                        continue
+                    separate_directories(directory, runtime_directory, [source_root])
         conversation_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
                                         f"{request.compilation_id}/{request.agent_id}/{request.workstream_id}"))
         details = {
@@ -132,7 +143,7 @@ class OpenHandsCodingAgent:
         }
         payload = {
             "parent_request_id": parent_request_id, "parent_operation": parent_operation,
-            "run_directory": str(directory.resolve()), "skills": self.skills.model_dump(mode="json"),
+            "run_directory": str(directory.resolve()), "runtime_directory": str(runtime_directory.resolve()), "skills": self.skills.model_dump(mode="json"),
             **details, "conversation_id": conversation_id,
             "persistence_dir": str(_within(root, "conversations")),
             "log_path": str(_within(root, f"logs/{request.request_id}.log")),
@@ -140,16 +151,15 @@ class OpenHandsCodingAgent:
             "prompt": self.instructions + "\n" + json.dumps(details, ensure_ascii=False, sort_keys=True),
         }
         root.mkdir(parents=True, exist_ok=True)
+        started = perf_counter()
+        identity = {"compilation_id": request.compilation_id, "request_id": request.request_id,
+                    "agent_id": "coding", "operation": parent_operation or request.operation,
+                    "parent_request_id": parent_request_id, "workstream_id": request.workstream_id}
         try:
             with FileLock(str(root / ".lock"), timeout=0):
                 output.mkdir(parents=True, exist_ok=True)
-                identity = {"compilation_id": request.compilation_id, "request_id": request.request_id,
-                            "agent_id": "coding", "operation": parent_operation or request.operation,
-                            "parent_request_id": parent_request_id, "workstream_id": request.workstream_id}
-                record_event(directory / "events.jsonl", "coding_started", **identity, summary=request.objective)
+                record_event(runtime_directory / "events.jsonl", "coding_started", **identity, summary=request.objective)
                 candidate = CodingCandidate.model_validate(self.runner(payload))
-                record_event(directory / "events.jsonl", "coding_finished", **identity,
-                             summary=candidate.summary, outcome=candidate.outcome, issues=[issue.model_dump() for issue in candidate.issues])
                 if candidate.request_id != request.request_id:
                     raise ValueError("Coding candidate belongs to another request")
                 # Validate every candidate before publishing any file.
@@ -161,7 +171,15 @@ class OpenHandsCodingAgent:
                     seen.add(actual)
                     files.append({"path": actual.relative_to(output).as_posix(), "kind": item.kind,
                                   "read_path": str(actual), "digest": file_digest(actual)})
+                record_event(runtime_directory / "events.jsonl", "coding_finished", **identity,
+                             elapsed_ms=int((perf_counter() - started) * 1000),
+                             summary=candidate.summary, outcome=candidate.outcome, issue_codes=[issue.code for issue in candidate.issues])
                 return candidate, files
         except Timeout:
             return failure(request.request_id, "blocked", "workstream_busy",
                            "This Workstream is already executing another request"), []
+        except Exception as exc:
+            record_event(runtime_directory / "events.jsonl", "coding_failed", **identity,
+                         elapsed_ms=int((perf_counter() - started) * 1000), error_type=type(exc).__name__,
+                         summary="Coding candidate failed Host validation or execution")
+            raise

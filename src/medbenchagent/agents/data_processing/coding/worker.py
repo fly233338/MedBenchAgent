@@ -21,7 +21,7 @@ from pydantic import Field
 
 from medbenchagent.compilation.contracts import Contract, Identifier, Text, WorkIssue, WorkOutcome, WorkRequest
 from .skills import FrozenSkills, load_native_skills
-from medbenchagent.runtime.construction import record_event
+from medbenchagent.runtime.construction import record_event, payload_summary, result_summary
 
 
 class CandidateFile(Contract):
@@ -121,22 +121,56 @@ def activity_callback(payload, secrets=()):
     identity = {"compilation_id": payload["request"]["compilation_id"], "agent_id": "coding",
                 "request_id": payload["request"]["request_id"], "parent_request_id": payload.get("parent_request_id"),
                 "operation": payload.get("parent_operation") or "execute", "workstream_id": payload["request"]["workstream_id"]}
-    path = Path(payload["run_directory"]) / "events.jsonl"
+    path = Path(payload["runtime_directory"]) / "events.jsonl"
     def observe(event):
         values = {**identity, "event_id": payload["conversation_id"] + ":" + str(event.id)}
         if isinstance(event, ActionEvent):
+            if event.tool_name == "ThinkTool":
+                return
             started[event.tool_call_id] = perf_counter()
             record_event(path, "coding_action", redactions=secrets, **values, tool_name=event.tool_name,
-                         tool_call_id=event.tool_call_id, arguments=event.action.model_dump(mode="json") if event.action else {})
+                         tool_call_id=event.tool_call_id, model_call_id=str(event.llm_response_id),
+                         arguments=payload_summary(event.action.model_dump(mode="json")) if event.action else {})
         elif isinstance(event, ObservationEvent):
             beginning = started.pop(event.tool_call_id, None)
             output = "".join(getattr(part, "text", "") for part in event.observation.to_llm_content)
             record_event(path, "coding_observation", redactions=secrets, **values, tool_name=event.tool_name,
-                         tool_call_id=event.tool_call_id, output=output, status="failed" if event.observation.is_error else "completed",
+                         tool_call_id=event.tool_call_id, output=result_summary(output), status="failed" if event.observation.is_error else "completed",
                          elapsed_ms=int((perf_counter() - beginning) * 1000) if beginning is not None else None)
         elif isinstance(event, ConversationErrorEvent):
-            record_event(path, "coding_error", redactions=secrets, **values, summary=event.detail)
+            record_event(path, "coding_error", redactions=secrets, **values, summary="OpenHands conversation error")
     return observe
+
+
+def model_callback(payload):
+    """Observe the SDK's native provider calls, including its condenser and retries."""
+    from litellm.integrations.custom_logger import CustomLogger
+    identity = {"compilation_id": payload["request"]["compilation_id"], "agent_id": "coding",
+                "request_id": payload["request"]["request_id"], "parent_request_id": payload.get("parent_request_id"),
+                "operation": payload.get("parent_operation") or "execute", "workstream_id": payload["request"]["workstream_id"]}
+    path = Path(payload["runtime_directory"]) / "events.jsonl"
+
+    class Observer(CustomLogger):
+        def call_id(self, kwargs):
+            return str(kwargs.get("litellm_call_id") or kwargs.get("litellm_params", {}).get("litellm_call_id") or "unavailable")
+
+        def log_pre_api_call(self, model, messages, kwargs):
+            record_event(path, "model_started", **identity, model=model, model_call_id=self.call_id(kwargs))
+
+        def log_success_event(self, kwargs, response_obj, start_time, end_time):
+            usage = getattr(response_obj, "usage", None)
+            input_tokens = getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", None))
+            output_tokens = getattr(usage, "completion_tokens", getattr(usage, "output_tokens", None))
+            available = isinstance(input_tokens, int) and isinstance(output_tokens, int)
+            record_event(path, "model_finished", **identity, model=kwargs.get("model"), model_call_id=self.call_id(kwargs),
+                         provider_response_id=getattr(response_obj, "id", None),
+                         elapsed_ms=int((end_time - start_time).total_seconds() * 1000), token_usage_available=available,
+                         input_tokens=input_tokens if available else None, output_tokens=output_tokens if available else None)
+
+        def log_failure_event(self, kwargs, response_obj, start_time, end_time):
+            record_event(path, "model_failed", **identity, model=kwargs.get("model"), model_call_id=self.call_id(kwargs),
+                         elapsed_ms=int((end_time - start_time).total_seconds() * 1000), summary="Coding model invocation failed")
+    return Observer()
 
 
 def _conversation(payload):
@@ -152,6 +186,9 @@ def _conversation(payload):
     from openhands.sdk.tool.registry import resolve_tool
     from openhands.tools.file_editor import FileEditorTool
     from openhands.tools.terminal import TerminalTool
+    import litellm
+
+    litellm.callbacks.append(model_callback(payload))
 
     # Only the in-memory LLM receives the key; terminal children do not inherit it.
     key = os.environ.pop("MEDBENCH_CODING_LLM_API_KEY", None)
@@ -169,12 +206,13 @@ def _conversation(payload):
         temperature=model["default_temperature"],
         reasoning_effort=model["reasoning_effort"] or None,
         max_output_tokens=runtime["max_output_tokens"],
+        log_completions=False,
     )
     finish_spec = Tool(name="FinishTool", params={"response_schema": CodingSubmission.model_json_schema()})
     agent = Agent(
         llm=llm,
         agent_context=AgentContext(
-            skills=load_native_skills(Path(payload["run_directory"]), FrozenSkills.model_validate(payload["skills"])),
+            skills=load_native_skills(Path(payload["runtime_directory"]), FrozenSkills.model_validate(payload["skills"])),
             load_user_skills=False, load_public_skills=False, load_project_skills=False, load_memory=False,
         ),
         tools=[Tool(name=TerminalTool.name, params={"terminal_type": "powershell"} if os.name == "nt" else {}),

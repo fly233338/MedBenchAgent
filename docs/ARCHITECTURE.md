@@ -8,7 +8,7 @@
 ```mermaid
 flowchart TB
     CLI[CLI] --> Runner[runtime.graph_runner]
-    TUI[tui.app / widgets / dialogs] --> UIService[runtime.conversation_service]
+    TUI[tui.app / screens / widgets / dialogs] --> UIService[runtime.conversation_service]
     TUI --> Intake[runtime.intake]
     UIService --> Intake
     UIService --> Activity[runtime.activity]
@@ -34,7 +34,7 @@ flowchart TB
     Worker --> Public
     Worker --> SDK[OpenHands SDK]
     Worker --> SkillSnapshot
-    CLI --> Sessions[session UI records]
+    CLI --> Sessions[runtime.sessions: one Run per Dataset]
     UIService --> Sessions
     UIService --> Runner
     Graph & Native & Worker --> Events[runtime.construction]
@@ -44,7 +44,7 @@ flowchart TB
 Policy 是 Assembly 注入的请求、结果与目标检查函数，领域语义仍由 Reader、规划及生成模块检查。
 Supervisor 实现位于 agents.supervisor.agent；Coding 适配器与子进程也归属 agents，由 Assembly 注入 DP。
 DP 通过注入的适配器调用 Coding，不导入其私有实现；下图单独表示运行时交接。
-Graph 不导入领域实现或 SDK。实验记录不是第二个执行账本；standalone RAG、图像转换与几何函数
+Graph 不导入领域实现或 SDK。Run 的 UI 记录不是第二个执行账本；standalone RAG、图像转换与几何函数
 是保留的库能力，不是额外 Agent。旧 Workflow/BIR/Resolver/Harness/Preparation 编排已移除。
 Intake 仅把用户草稿与目录/关键文件适配成当前输入契约；连接向导复用模型发现和 Coding 环境检查。
 Activity 是诊断事件的增量读取与展示投影，不参与委派、结果验收或恢复。
@@ -98,16 +98,19 @@ Skill 正文与随附资源只保存在运行目录，SDK 加载时核对名称�
 
 | 所有者 | 内容与位置 |
 | --- | --- |
-| Run | run.json：目标类型、数量、配置、修复限额、Prompt 组合、Skill 资源摘要和实现指纹；resources/coding-skills 保存 Skill 内容 |
+| Run 数据目录 | runs/name 下 config.toml、冻结 run.json（含 runtime_directory）、inputs 和 artifacts；保存可追溯定义与正式数据 |
+| Run 运行目录 | .runtime/runs/compilation_id 下 checkpoints.sqlite、locks、planner 草稿、resources/coding-skills 和 coding/workstream_id |
 | 父图 | 请求/结果、正式引用、用户答案、反馈、paused/waiting/stopped 及少量修复/无进展计数 |
 | 专业 Agent | 私有消息、当前 operation、草稿/提交引用、请求临时状态 |
 | DP / SDK | DP 拥有 Coding 会话与调用身份；SDK 保存自己的对话和执行记录 |
 | 正式产物 | Profile、TaskPlan、需求、TaskData、Spec、批次、候选、审查及 Delivery |
-| UI 实验 | 运行目录索引、用户消息/问题回执、输入草稿和新运行配置；执行状态由 Checkpoint 查询 |
+| UI Run | 运行目录的 session.json 保存消息/问题回执、输入草稿和位置引用；不保存执行状态，状态由 Checkpoint 查询 |
 | UI 内存 | 当前选择、后台执行句柄、暂停请求、活动字节游标与有界缓存；不作为恢复事实 |
 | 日志 | events.jsonl 及 SDK 日志，用于诊断，不作为恢复事实 |
 
-CLI 使用 SQLite；Studio 使用平台注入的 Checkpointer。一目录一运行，Studio 另绑定单一线程。
+一个命名 Run 对应一个 Dataset 和一次 Compilation；数据目录与运行目录必须互不重叠。
+CompilationContext、专业 Agent 上下文显式注入 directory 与 runtime_directory，ArtifactRef 仍相对数据目录。
+CLI 使用运行目录中的 SQLite；Studio 使用平台注入的 Checkpointer，线程绑定文件归运行目录。
 恢复使用冻结指令，代码/工具/契约指纹不匹配时拒绝恢复。配置和凭据入口保持分离。
 Supervisor/Planner 固定为原生模型实现，Coding 固定使用 OpenHands；Run 不保存单值实现选择器。
 启用角色由目标与输入类型决定，冻结配置的存在性是唯一装配依据；测试替身通过模型和执行器注入。
@@ -117,11 +120,23 @@ Executable Leaf Plan 使用 Supervisor/DP/Coding/Planner；Benchmark 才启用 G
 
 ## TUI 生命周期与活动
 
-新任务由 InputDraft 校验后自动保存 SourceManifest，再调用原有 create_run/Assembly/Graph。
-模型、工具和 SDK callbacks 将动作与观察回执写入同一运行 events.jsonl；展示事件过滤凭据并截断长内容。
+TUI 启动进入 Run 列表，不自动创建默认实验；创建、复制、配置与执行沿用 sessions/intake/graph_runner。
+InputDraft 保存到运行目录，首次执行时自动冻结 SourceManifest 与配置，再调用 create_run/Assembly/Graph。
+后续恢复不读取可变配置；复制仅复制配置和数据选择，不复制 Checkpoint、会话或产物。
+LangChain 模型 callbacks、工具 middleware 与 SDK/provider callbacks 向运行目录的 events.jsonl 写入诊断。
+模型事件记录实际 usage（含摘要调用），缺失时明确标记；工具任意正文只保留结构摘要，不复制 Prompt 或推理内容。
 Coding 回执关联父 DP request，stdout 仍只用于候选协议。TUI 在后台约每 250ms 增量读取诊断事件。
 
 暂停先保留内存请求，直到父图节点保存后用原生 update_state 写入 paused 并保留 next。
 已有 interrupt 或终止状态优先；回答通过 Command(resume=...) 消费，UI 使用 interrupt ID 防止回答过期问题。
 运行锁表示活动执行器；未结束但没有锁的运行显示为异常中断。日志不能把运行标为成功或驱动恢复。
 界面区分工作完成、Review 拒绝和最终目标失败；修复计数、无进展算法与角色循环未改写。
+
+
+## 数据发布与本地工作区
+
+Coding 子进程只接受正式输入引用，按 Workstream 保存 workspace/conversations/logs；候选必须位于
+当前请求 outputs 目录。Host 验证引用、真实路径、摘要及领域契约后发布。TaskData 沿用完整快照；
+Profile 将运行目录中的派生成员固化到正式产物，原始来源仍可外部引用。正式派生文件不依赖 .runtime。
+本地模式具有宿主用户权限，不提供文件系统只读隔离。本轮无 Docker，也没有新增通用执行后端。
+静态行为边界仍归包内 Prompt；动态工作区位置由适配器装配。

@@ -64,6 +64,7 @@ class SupervisorView:
 @dataclass(frozen=True)
 class CompilationContext:
     directory: Path
+    runtime_directory: Path = field(kw_only=True)
     decide: Callable[..., SupervisorDecision]  # RunnableConfig is injected when accepted.
     goal: str
     goal_spec: GoalSpec = field(default_factory=GoalSpec)

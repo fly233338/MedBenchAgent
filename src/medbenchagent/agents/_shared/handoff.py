@@ -29,7 +29,7 @@ from medbenchagent.compilation.contracts import (
     WorkResult,
 )
 from medbenchagent.data.task_data import ProductBinding
-from medbenchagent.runtime.native import AGENT_LIMIT_ERRORS, role_lock
+from medbenchagent.runtime.native import invocation_config, AGENT_LIMIT_ERRORS, role_lock
 
 
 class WorkState(AgentState):
@@ -55,6 +55,7 @@ class WorkResponse(Contract):
 @dataclass(frozen=True)
 class WorkContext:
     directory: Path
+    runtime_directory: Path = field(kw_only=True)
     request: WorkRequest
     settings: object
     instructions: dict[str, str]
@@ -245,7 +246,7 @@ class WorkInstructions(AgentMiddleware):
 
 def invoke_work(agent, context, config):
     try:
-        with role_lock(context.directory, context.agent_id):
+        with role_lock(context.runtime_directory, context.agent_id):
             state = agent.invoke(
                 {
                     "messages": [
@@ -253,7 +254,7 @@ def invoke_work(agent, context, config):
                     ],
                     "structured_response": None,
                 },
-                {**config, "recursion_limit": context.settings.loop.max_model_calls * 6 + 20},
+                {**invocation_config(config, context), "recursion_limit": context.settings.loop.max_model_calls * 6 + 20},
                 context=context,
             )
         response = state.get("structured_response")

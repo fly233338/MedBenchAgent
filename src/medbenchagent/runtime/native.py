@@ -2,7 +2,6 @@
 
 import json
 from time import perf_counter
-from uuid import uuid4
 from pathlib import Path
 
 from filelock import FileLock
@@ -13,6 +12,7 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
 )
 from langchain_core.messages import ToolMessage
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_openai import ChatOpenAI
@@ -20,12 +20,66 @@ from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededE
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langgraph.errors import GraphRecursionError
 
-from medbenchagent.runtime.construction import record_event
+from medbenchagent.runtime.construction import record_event, payload_summary, result_summary
 from medbenchagent.runtime.llm import RequestContextBudgetError
 from medbenchagent.settings import get_llm_api_key
 
 
 AGENT_LIMIT_ERRORS = (ModelCallLimitExceededError, ToolCallLimitExceededError, GraphRecursionError)
+
+
+def invocation_identity(context):
+    request = getattr(context, "request", None)
+    return {"compilation_id": context.compilation_id, "agent_id": context.agent_id,
+            "request_id": context.invocation_id, "operation": getattr(request, "operation", "decide"),
+            "workstream_id": getattr(request, "workstream_id", None)}
+
+
+class ModelEvents(BaseCallbackHandler):
+    """Native callbacks include summary-model calls without logging their messages."""
+    def __init__(self, context):
+        self.path = context.runtime_directory / "events.jsonl"
+        self.identity = invocation_identity(context)
+        self.model = context.settings.llm.model
+        self.started = {}
+
+    def on_chat_model_start(self, serialized, messages, *, run_id, parent_run_id=None, **kwargs):
+        self.started[run_id] = perf_counter()
+        record_event(self.path, "model_started", **self.identity, model=self.model,
+                     model_call_id=str(run_id), parent_call_id=str(parent_run_id) if parent_run_id else None)
+
+    def on_llm_start(self, serialized, prompts, **kwargs):
+        self.on_chat_model_start(serialized, [], **kwargs)
+
+    def on_llm_end(self, response, *, run_id, **kwargs):
+        messages = [getattr(item, "message", None) for row in response.generations for item in row]
+        usage = next((m.usage_metadata for m in messages if getattr(m, "usage_metadata", None) is not None), None)
+        reported = next((m.response_metadata.get("model_name") or m.response_metadata.get("model")
+                         for m in messages if getattr(m, "response_metadata", None)), None)
+        if usage is None:
+            raw = (response.llm_output or {}).get("token_usage")
+            if raw and isinstance(raw.get("prompt_tokens"), int) and isinstance(raw.get("completion_tokens"), int):
+                usage = {"input_tokens": raw["prompt_tokens"], "output_tokens": raw["completion_tokens"]}
+        began = self.started.pop(run_id, None)
+        record_event(self.path, "model_finished", **self.identity, model=reported or self.model,
+                     model_call_id=str(run_id), elapsed_ms=int((perf_counter() - began) * 1000) if began is not None else None,
+                     token_usage_available=usage is not None,
+                     input_tokens=usage.get("input_tokens") if usage else None,
+                     output_tokens=usage.get("output_tokens") if usage else None,
+                     tool_call_ids=[call["id"] for m in messages for call in getattr(m, "tool_calls", [])])
+
+    def on_llm_error(self, error, *, run_id, **kwargs):
+        began = self.started.pop(run_id, None)
+        record_event(self.path, "model_failed", **self.identity, model=self.model, model_call_id=str(run_id),
+                     elapsed_ms=int((perf_counter() - began) * 1000) if began is not None else None,
+                     error_type=type(error).__name__, summary="Model invocation failed")
+
+
+def invocation_config(config, context):
+    from langchain_core.callbacks.manager import CallbackManager
+    callbacks = CallbackManager.configure(inheritable_callbacks=config.get("callbacks"))
+    callbacks.add_handler(ModelEvents(context), inherit=True)
+    return {**config, "callbacks": callbacks}
 
 
 class OperationTools(AgentMiddleware):
@@ -102,20 +156,9 @@ class InvocationGuard(AgentMiddleware):
                 self.context_chars,
             )
         context = request.runtime.context
-        identity = {"compilation_id": context.compilation_id, "agent_id": context.agent_id,
-                    "request_id": context.invocation_id, "operation": getattr(getattr(context, "request", None), "operation", "decide"),
-                    "model_call_id": uuid4().hex}
-        record_event(context.directory / "events.jsonl", "model_started", **identity, estimated_tokens=tokens)
-        started = perf_counter()
-        try:
-            result = handler(request.override(model_settings={**request.model_settings, "parallel_tool_calls": False}))
-        except Exception as exc:
-            record_event(context.directory / "events.jsonl", "model_failed", **identity,
-                         elapsed_ms=int((perf_counter() - started) * 1000), summary=str(exc))
-            raise
-        record_event(context.directory / "events.jsonl", "model_finished", **identity,
-                     elapsed_ms=int((perf_counter() - started) * 1000))
-        return result
+        record_event(context.runtime_directory / "events.jsonl", "context_budget", **invocation_identity(context),
+                     estimated_tokens=tokens, output_reserve_tokens=self.limits.max_output_tokens)
+        return handler(request.override(model_settings={**request.model_settings, "parallel_tool_calls": False}))
 
     def wrap_tool_call(self, request, handler):
         calls = next(
@@ -127,10 +170,9 @@ class InvocationGuard(AgentMiddleware):
             [],
         )
         context = request.runtime.context
-        identity = {"compilation_id": context.compilation_id, "agent_id": context.agent_id,
-                    "request_id": context.invocation_id, "operation": getattr(getattr(context, "request", None), "operation", "decide"),
+        identity = {**invocation_identity(context),
                     "tool_name": request.tool_call["name"], "tool_call_id": request.tool_call["id"]}
-        record_event(context.directory / "events.jsonl", "tool_started", **identity, arguments=request.tool_call.get("args", {}))
+        record_event(context.runtime_directory / "events.jsonl", "tool_started", **identity, arguments=payload_summary(request.tool_call.get("args", {})))
         started = perf_counter()
         try:
             if request.tool_call["name"] in self.write_tools and sum(call["name"] in self.write_tools for call in calls) > 1:
@@ -139,12 +181,12 @@ class InvocationGuard(AgentMiddleware):
             messages = getattr(result, "update", {}).get("messages", [])
             receipt = messages[-1] if messages else result
             failed = getattr(receipt, "status", None) == "error"
-            record_event(context.directory / "events.jsonl", "tool_failed" if failed else "tool_finished", **identity,
-                         elapsed_ms=int((perf_counter() - started) * 1000), output=getattr(receipt, "content", str(receipt)))
+            record_event(context.runtime_directory / "events.jsonl", "tool_failed" if failed else "tool_finished", **identity,
+                         elapsed_ms=int((perf_counter() - started) * 1000), output=result_summary(getattr(receipt, "content", str(receipt))))
             return result
         except Exception as exc:
-            record_event(context.directory / "events.jsonl", "tool_failed", **identity,
-                         elapsed_ms=int((perf_counter() - started) * 1000), summary=str(exc), error_type=type(exc).__name__)
+            record_event(context.runtime_directory / "events.jsonl", "tool_failed", **identity,
+                         elapsed_ms=int((perf_counter() - started) * 1000), summary="Tool execution failed", error_type=type(exc).__name__)
             if not isinstance(exc, (ValueError, KeyError, FileNotFoundError)):
                 raise
             return ToolMessage(content=json.dumps({"error": type(exc).__name__, "detail": str(exc)}),

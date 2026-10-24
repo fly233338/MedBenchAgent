@@ -1,3 +1,4 @@
+from runtime_fixtures import runtime_for
 from types import SimpleNamespace
 import pytest
 
@@ -37,7 +38,7 @@ def test_goal_loads_only_required_role_configuration(tmp_path, monkeypatch, goal
     else:
         ref = create_synthetic_inputs(tmp_path / "data", "data")[0]
         inputs = {"dataset_manifest": resolve_artifact(tmp_path / "data", ref)}
-    options = run.create_run(tmp_path / "run", compilation_id="goal", goal="Check", goal_spec=goal, **inputs)
+    options = run.create_run(tmp_path / "run", compilation_id="goal", goal="Check", goal_spec=goal, **inputs, runtime_directory=runtime_for(tmp_path / "run"))
     assert set(calls) == expected
     assert (options.coding_skills is not None) == ("Coding" in expected)
     monkeypatch.setattr(native, "chat_model", lambda *_: ScriptedChatModel(responder=lambda *_: pytest.fail("Assembly invoked a model")))

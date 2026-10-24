@@ -19,7 +19,7 @@ Worker 从 stdin 接收内部请求并在 stdout 返回候选；旧 Compilation 
 ## 冻结领域 Skill
 
 [coding.skills].enabled 选择包内 tabular-inspection、medical-image、mask-geometry，可设为空列表。
-创建 Run 时复制所选 SKILL.md 及随附资源到 resources/coding-skills，run.json 只保存名称和逐文件摘要。
+创建 Run 时复制所选 SKILL.md 及随附资源到运行目录的 resources/coding-skills，run.json 只保存名称和逐文件摘要。
 恢复及每次调用先校验快照；Worker 通过 SDK 1.49.6 原生加载器加载，使用 AgentContext 与 InvokeSkillTool。
 加载结果必须与允许集合完全一致，解析失败不得静默跳过。公共、用户、项目 Skill 和记忆自动加载关闭。
 Coding 按需调用技能，同一会话始终使用同一允许集合；Skill 不是 Workstream 生命周期或新调度层。
@@ -28,5 +28,12 @@ Coding 按需调用技能，同一会话始终使用同一允许集合；Skill �
 现有 Reader/Adapter/Mask API。统计结果带扫描范围，缺失标签和不明确的关系不自动补全。
 
 Worker 使用 SDK 1.49.6 的 Conversation callbacks 投影 ActionEvent、ObservationEvent 和会话错误。
-只记录工具动作、参数、截断观察和关联身份，不记录 thought/reasoning；事件带父 DP request ID。
+只记录工具动作、安全参数/观察摘要和关联身份，不记录 thought/reasoning；事件带父 DP request ID。
 该诊断通道与 stdout 候选协议分离，日志缺失不改变正式验收或 SDK 恢复事实。
+
+
+用户 Run 的 artifacts 保存正式数据；Coding 的 workspace、conversations 和 logs 位于
+.runtime/runs/compilation_id/coding/workstream_id。数据与运行目录通过上下文显式传入。
+SDK 底层 LiteLLM 原生回调记录模型调用开始、结束、失败和 provider usage，覆盖主模型与 condenser；
+模型返回 ID 可与 ActionEvent 关联。完整 completion 日志关闭。缺失 usage 不估算为实际值。
+本地进程使用包内模型元数据，不在导入时下载价格表。来源只读是工作契约，不是系统权限保证。

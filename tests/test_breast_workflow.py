@@ -1,4 +1,5 @@
 """BrEaST-shaped offline collaboration through real native agents and host checks."""
+from runtime_fixtures import runtime_for
 import json
 from pathlib import Path
 import runpy
@@ -249,7 +250,7 @@ def test_breast_partial_delivery_with_blocked_sibling_repair_and_resume(tmp_path
     source = tmp_path / "source.json"
     source.write_text(SourceManifest(dataset=script.dataset, sources=[DatasetSource(source_id="raw", root=str(raw))]).model_dump_json(), encoding="utf-8")
     monkeypatch.setattr(services, "resolve_model_service", lambda *_: "offline")
-    options = create_run(directory, compilation_id="breast", goal="Four traceable questions", source_manifest=source, sample_count=4)
+    options = create_run(directory, compilation_id="breast", goal="Four traceable questions", source_manifest=source, sample_count=4, runtime_directory=runtime_for(directory))
     for snapshot in [options.supervisor_settings, options.planner_settings, *options.professional_settings.values()]:
         limits = next(value for key, value in snapshot.items() if key != "llm")
         limits["context_chars"] = 2000000
@@ -271,7 +272,7 @@ def test_breast_partial_delivery_with_blocked_sibling_repair_and_resume(tmp_path
         ref = ArtifactRef.model_validate(row)
         script.known[ref.artifact_id] = script.latest[ref.kind] = ref
     config = {"configurable": {"thread_id": "breast"}, "recursion_limit": 100}
-    with assemble_compilation(options, directory) as (agents, context), SqliteSaver.from_conn_string(str(directory / "checkpoints.sqlite")) as saver:
+    with assemble_compilation(options, directory) as (agents, context), SqliteSaver.from_conn_string(str(runtime_for(directory) / "checkpoints.sqlite")) as saver:
         graph = build_compilation_graph(agents, checkpointer=saver)
         state = graph.invoke(initial, config, context=context)
         assert state["status"] == "waiting" and len(state["history"]) == 3
@@ -286,9 +287,9 @@ def test_breast_partial_delivery_with_blocked_sibling_repair_and_resume(tmp_path
     replay = OpenHandsCodingAgent(CodingSettings.from_snapshot(restored.coding_settings),
         instructions=restored.prompts["coding"].text, skills=restored.coding_skills,
         runner=FakeRunner(lambda _: pytest.fail("Completed Coding request executed again")))
-    result, _ = replay.execute_candidate(directory, WorkRequest.model_validate(runner.payloads[-1]["request"]), options.goal)
+    result, _ = replay.execute_candidate(directory, WorkRequest.model_validate(runner.payloads[-1]["request"]), options.goal, runtime_directory=runtime_for(directory))
     assert result.outcome == "completed"
-    with assemble_compilation(restored, directory) as (agents, context), SqliteSaver.from_conn_string(str(directory / "checkpoints.sqlite")) as saver:
+    with assemble_compilation(restored, directory) as (agents, context), SqliteSaver.from_conn_string(str(runtime_for(directory) / "checkpoints.sqlite")) as saver:
         graph = build_compilation_graph(agents, checkpointer=saver)
         state = graph.invoke(Command(resume="Continue"), config, context=context)
     assert state["goal_result"] == "partial" and len(state["history"]) == 11

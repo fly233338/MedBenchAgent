@@ -1,10 +1,11 @@
+from runtime_fixtures import runtime_for
 import json
 from pathlib import Path
 import pytest
 
 from medbenchagent.runtime.intake import InputDraft, SelectedFile, suggest_draft, prepare_input, connection_values, save_connection
 from medbenchagent.runtime.conversation_service import ConversationService
-from medbenchagent.runtime.sessions import create_experiment, config_path
+from medbenchagent.runtime.sessions import create_session
 from medbenchagent.data.task_data import SourceManifest
 
 
@@ -18,31 +19,31 @@ def test_directory_draft_creates_run_without_user_manifest(tmp_path, monkeypatch
     assert draft.source_dirs == [str(raw)] and draft.sample_count == 4
     draft.key_files = [SelectedFile(path=str(raw / "labels.csv"), purpose="标签表")]
     root = tmp_path / "experiments"
-    create_experiment("default", root=root)
-    service = ConversationService("default", root=root)
+    create_session("default", root=root, runtime_root=runtime_for(root))
+    service = ConversationService(root / "default")
     row = service.submit_draft(draft)
     options = json.loads((Path(row["directory"]) / "run.json").read_text(encoding="utf-8"))
     source = SourceManifest.model_validate_json(Path(options["source_manifest"]).read_bytes())
     assert source.key_files[0].path == "labels.csv" and source.key_files[0].purpose == "标签表"
     assert options["benchmark_request"]["sample_count"] == 4
     assert service.record()["draft"]["goal"] == draft.goal
-    assert "status" not in service.record()["runs"][0]
+    assert "status" not in service.record() and "runs" not in service.record()
 
 
 def test_draft_boundaries_and_nonsecret_connection_settings(tmp_path):
     raw = tmp_path / "raw"
     raw.mkdir()
     draft = InputDraft(goal="Inspect", source_dirs=[str(raw)], goal_kind="profile")
-    with pytest.raises(ValueError, match="包含"):
+    with pytest.raises(ValueError, match="contains"):
         prepare_input(draft, raw / "run")
     draft.key_files = [SelectedFile(path=str(tmp_path / "elsewhere.csv"))]
-    with pytest.raises(ValueError, match="来源目录"):
+    with pytest.raises(ValueError, match="outside selected sources"):
         prepare_input(draft, tmp_path / "run")
     draft.goal = ""
-    with pytest.raises(ValueError, match="任务要求"):
+    with pytest.raises(ValueError, match="Goal required"):
         prepare_input(draft, tmp_path / "run")
-    create_experiment("settings", root=tmp_path / "experiments")
-    config = config_path("settings", tmp_path / "experiments")
+    create_session("settings", root=tmp_path / "runs", runtime_root=runtime_for(tmp_path / "runs"))
+    config = tmp_path / "runs/settings/config.toml"
     values = connection_values(config)
     values.update(model="offline", api_key="never-store-this")
     save_connection(config, values)
@@ -54,8 +55,8 @@ def test_connection_probe_exposes_model_choices_and_skips_unused_coding(tmp_path
     import httpx
     import medbenchagent.runtime.model_services as models
     from medbenchagent.runtime.intake import probe_connections, check_connections
-    create_experiment("connect", root=tmp_path)
-    path = config_path("connect", tmp_path)
+    create_session("connect", root=tmp_path, runtime_root=runtime_for(tmp_path))
+    path = tmp_path / "connect/config.toml"
     values = connection_values(path)
     values["worker_venv"] = str(tmp_path / "missing-coding")
     save_connection(path, values)

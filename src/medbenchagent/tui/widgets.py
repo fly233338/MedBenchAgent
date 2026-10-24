@@ -5,12 +5,22 @@ from rich.text import Text
 
 
 class Composer(TextArea):
+    class CommandKey(Message):
+        def __init__(self, key):
+            super().__init__()
+            self.key = key
+
     class Submitted(Message):
         def __init__(self, value):
             super().__init__()
             self.value = value
 
     async def _on_key(self, event: events.Key):
+        if self.text.startswith("/") and event.key in {"tab", "up", "down"}:
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.CommandKey(event.key))
+            return
         if event.key in {"enter", "shift+enter", "ctrl+j"}:
             event.prevent_default()
             event.stop()
@@ -25,6 +35,6 @@ class Composer(TextArea):
 class ChatMessage(Static):
     def __init__(self, role, text):
         content = Text()
-        content.append(role + "\n", style="bold #7ccdc6" if role == "你" else "bold #a6b5ce")
+        content.append(role + "\n", style="bold")
         content.append(text)
         super().__init__(content, classes="chat-message")

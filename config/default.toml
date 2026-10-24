@@ -1,4 +1,8 @@
 
+[paths]
+runs_root = "runs"
+runtime_root = ".runtime/runs"
+
 [benchmark]
 default_sample_count = 1000
 default_language = "en"

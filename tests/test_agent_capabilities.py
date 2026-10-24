@@ -1,4 +1,5 @@
 """Two small offline collaboration checks using real tools, native agents and files."""
+from runtime_fixtures import runtime_for
 import json
 import shutil
 from types import SimpleNamespace
@@ -29,7 +30,7 @@ def test_profile_taskdata_leaf_generation_capabilities(tmp_path, monkeypatch):
         operation="review_candidate", objective="Review generated content",
         scope=[WorkScope(artifact_id=bundle.candidate_ref.artifact_id)], inputs=list(bundle.known.values()))
     review = ToolCalls(review_tools(), WorkContext(bundle.directory, request,
-        load_work_agent_settings("review"), {key: freeze_composition(key).text for key in ("review_plan", "review_candidate")}, "review"), bundle.known)
+        load_work_agent_settings("review"), {key: freeze_composition(key).text for key in ("review_plan", "review_candidate")}, "review", runtime_directory=runtime_for(bundle.directory)), bundle.known)
     audit = review.call("run_candidate_audit", candidate_id=bundle.candidate_ref.artifact_id)
     review.call("finalize_review", target_id=bundle.candidate_ref.artifact_id, audit_id=audit["artifact_id"],
         findings=[], checked_task_ids=list(bundle.plan.tasks),
@@ -102,7 +103,7 @@ def test_profile_taskdata_leaf_generation_capabilities(tmp_path, monkeypatch):
     monkeypatch.setattr(native, "chat_model", lambda *_: ScriptedChatModel(responder=respond))
     monkeypatch.setattr(coding, "OpenHandsCodingAgent", lambda settings, **kw: original(settings, **kw, runner=FakeRunner(bundle.produce)))
     directory = tmp_path / "native"
-    options = create_run(directory, compilation_id="cap", goal="Deliver five items", source_manifest=bundle.source_file, sample_count=5)
+    options = create_run(directory, compilation_id="cap", goal="Deliver five items", source_manifest=bundle.source_file, sample_count=5, runtime_directory=runtime_for(directory))
     # Keep the scripted fixture focused on collaboration, not forced summarization.
     snapshots = [options.supervisor_settings, options.planner_settings, *options.professional_settings.values()]
     for snapshot in snapshots:
@@ -111,7 +112,7 @@ def test_profile_taskdata_leaf_generation_capabilities(tmp_path, monkeypatch):
         section["loop"].update(context_tokens=500000, summary_trigger_tokens=300000, summary_keep_tokens=10000)
     shutil.copytree(bundle.directory / "artifacts" / "cap-input", directory / "artifacts" / "cap-input")
     config = {"configurable": {"thread_id": "cap"}, "recursion_limit": 100}
-    with assemble_compilation(options, directory) as (agents, context), SqliteSaver.from_conn_string(str(directory / "checkpoints.sqlite")) as saver:
+    with assemble_compilation(options, directory) as (agents, context), SqliteSaver.from_conn_string(str(runtime_for(directory) / "checkpoints.sqlite")) as saver:
         graph = build_compilation_graph(agents, checkpointer=saver)
         state = graph.invoke({"compilation_id": "cap", "goal": options.goal,
             "artifacts": [bundle.source_ref.model_dump(), bundle.target_ref.model_dump()]}, config, context=context)
@@ -119,7 +120,7 @@ def test_profile_taskdata_leaf_generation_capabilities(tmp_path, monkeypatch):
         assert state["history"][1]["result"]["outcome"] == "completed"
         assert state["history"][1]["result"]["needs"]
         assert "messages" not in state
-    with assemble_compilation(options, directory) as (agents, context), SqliteSaver.from_conn_string(str(directory / "checkpoints.sqlite")) as saver:
+    with assemble_compilation(options, directory) as (agents, context), SqliteSaver.from_conn_string(str(runtime_for(directory) / "checkpoints.sqlite")) as saver:
         graph = build_compilation_graph(agents, checkpointer=saver)
         state = graph.invoke(Command(resume="Continue"), config, context=context)
         assert state["goal_result"] == "succeeded", state
@@ -145,7 +146,7 @@ def test_review_and_delivery_bind_exact_candidate_contents(tmp_path):
             load_work_agent_settings("review"),
             {key: freeze_composition(key).text for key in ("review_plan", "review_candidate")},
             "review",
-        ),
+         runtime_directory=runtime_for(bundle.directory)),
         bundle.known,
     )
     audit = review.call("run_candidate_audit", candidate_id=bundle.candidate_ref.artifact_id)
